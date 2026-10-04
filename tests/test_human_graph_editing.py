@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.core.models import RELATION_SPEC
 from rcp.core.validation.constants import NODE_PREFIXES
 from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR, EXPECTATION_RELATIONS
-from tests.helpers import create_named_app
+from tests.helpers import create_named_app, signed_in_client
 
 
 def _draft():
@@ -39,7 +38,7 @@ def _draft():
 
 def test_human_nodes_edges_preview_sync_remove_preserve_history(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{app.state.default_project_id}"
     history = app.state.service.history
     before = history.load_patches()
@@ -67,7 +66,7 @@ def test_human_nodes_edges_preview_sync_remove_preserve_history(manifest, tmp_pa
 
 def test_experiment_proxies_and_produces_expectation_sync_and_replay(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{app.state.default_project_id}/sync"
     history = app.state.service.history
     proxy = {"stands_for": "caffeine intake", "measure": "cups of coffee per week"}
@@ -123,7 +122,7 @@ def test_experiment_proxies_and_produces_expectation_sync_and_replay(manifest, t
 
 def test_edge_replacement_stale_draft_and_invalid_endpoint_are_atomic(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{app.state.default_project_id}/sync"
     draft = _draft()
     draft["base_revision"] = app.state.service.history.state().revision
@@ -153,7 +152,7 @@ def test_edge_replacement_stale_draft_and_invalid_endpoint_are_atomic(manifest, 
 
 def test_graph_edit_options_are_backend_owned(manifest, tmp_path, monkeypatch):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     def unexpected_materialization(*args, **kwargs):
         raise AssertionError("static editing options must not replay history")
@@ -175,7 +174,7 @@ def test_graph_edit_options_are_backend_owned(manifest, tmp_path, monkeypatch):
 
 def test_sync_new_edges_accept_generated_ids_and_reject_duplicate_effective_ids(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{app.state.default_project_id}/sync"
     draft = _draft()
     draft["base_revision"] = app.state.service.history.state().revision
@@ -194,7 +193,7 @@ def test_sync_new_edges_accept_generated_ids_and_reject_duplicate_effective_ids(
 
 def test_sync_rejects_connection_to_node_removed_by_same_draft(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{app.state.default_project_id}/sync"
     draft = _draft()
     draft["base_revision"] = app.state.service.history.state().revision
@@ -245,7 +244,7 @@ def test_minimal_human_nodes_preview_and_sync_receive_backend_defaults(
     manifest, tmp_path, node_type, prefix, content, defaults
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     history = app.state.service.history
     base = f"/api/projects/{app.state.default_project_id}/sync"
     node_id = f"{prefix}/minimal"
@@ -270,7 +269,7 @@ def test_minimal_human_nodes_preview_and_sync_receive_backend_defaults(
 @pytest.mark.parametrize("legacy_strength", [None, "supporting"])
 def test_human_evidence_cannot_supply_compatibility_strength(manifest, tmp_path, legacy_strength):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     history = app.state.service.history
     base = f"/api/projects/{app.state.default_project_id}/sync"
     request = {
@@ -299,7 +298,7 @@ def test_preview_and_sync_publish_same_final_quality_flags_without_preview_write
     manifest, tmp_path, connect
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     history = app.state.service.history
     base = f"/api/projects/{app.state.default_project_id}/sync"
     initial = client.post(

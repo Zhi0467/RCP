@@ -6,12 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import app as app_module
 from rcp.background import StartupEffectFence
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_until
 from .legacy_artifacts import create_legacy_artifact
@@ -68,7 +68,7 @@ def test_import_waits_for_fence_and_does_not_block_startup_or_another_project(
         return None
 
     monkeypatch.setattr(app_module, "import_project_artifacts", import_pass)
-    with TestClient(app, base_url="http://testserver:18422") as client:
+    with signed_in_client(app, base_url="http://testserver:18422") as client:
         try:
             assert client.get("/api/health").status_code == 200
             if fenced:
@@ -94,7 +94,7 @@ def test_import_shutdown_waits_for_active_pass(manifest, tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(app_module, "import_project_artifacts", import_pass)
-    client = TestClient(app, base_url="http://testserver:18422")
+    client = signed_in_client(app, base_url="http://testserver:18422")
     client.__enter__()
     assert entered.wait(5)
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -119,7 +119,7 @@ def test_maintenance_pauses_import_and_resumes_one_worker(manifest, tmp_path, mo
         return 3600
 
     monkeypatch.setattr(app_module, "import_project_artifacts", import_pass)
-    with TestClient(app, base_url="http://testserver:18422"):
+    with signed_in_client(app, base_url="http://testserver:18422"):
         wait_until(lambda: len(calls) == 1)
         gate = app.state.background_admission_gate
         coordinator = app.state.maintenance_coordinator
@@ -156,7 +156,7 @@ def test_background_import_serves_legacy_artifact_or_durable_reason(manifest, tm
         "artifacts"
     )
     assert store.artifact(descriptor.artifact_id) is None
-    with TestClient(app, base_url="http://testserver:18422") as client:
+    with signed_in_client(app, base_url="http://testserver:18422") as client:
         if missing:
             status = wait_until(lambda: store.artifact_import_status(descriptor.artifact_id))
             response = client.get(base + "/content")

@@ -7,7 +7,6 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.attachments as attachments_module
 from rcp.agents import AgentEvent, PromptFactory
@@ -16,6 +15,7 @@ from rcp.project_references import ResolvedProjectReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
@@ -360,7 +360,7 @@ def test_attachment_api_claims_set_into_server_owned_task_metadata(
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
     client_id = str(uuid.uuid4())
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         upload = client.post(
             f"/api/projects/{project_id}/chats/{chat_id}/attachments",
             data={"client_id": client_id},
@@ -411,7 +411,7 @@ def test_attachment_claim_rolls_back_when_task_creation_fails(
         "start",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("task creation failed")),
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         upload = client.post(
             f"/api/projects/{project_id}/chats/{chat_id}/attachments",
             data={"client_id": client_id},

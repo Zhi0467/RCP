@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT
 from rcp.phone_listener import PhoneListener, create_phone_listener_app
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_web_push import _PUBLIC_ADDRESS, _receiver
@@ -23,7 +23,7 @@ def _registration(code):
 
 
 def _listener(store):
-    return TestClient(
+    return signed_in_client(
         create_phone_listener_app(store, lambda _host: [_PUBLIC_ADDRESS]),
         base_url="https://mac.example.ts.net",
     )
@@ -50,7 +50,7 @@ def test_listener_serves_only_its_allowlist(manifest, tmp_path) -> None:
 def test_redeeming_a_code_registers_a_notify_only_phone(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
-    owner = TestClient(app)
+    owner = signed_in_client(app)
     code = owner.post("/api/notifications/phone-pairings", json={}).json()["code"]
     client = _listener(store)
     response = client.post("/api/register", json=_registration(code), headers=_ORIGIN)

@@ -9,7 +9,6 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl, ProviderReadiness
 from rcp.providers import ProviderSteeringState, ProviderSteerReceipt
@@ -20,6 +19,7 @@ from rcp.service import (
     iter_canonical_chat_backup_prefix,
     iter_canonical_chat_transfer,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, store_test_claude_token, wait_until
 
@@ -30,7 +30,7 @@ def running_chat(manifest, tmp_path, monkeypatch, request):
     runtime = "claude.stream-json.v1" if provider == "claude" else "codex.app-server-stdio.v1"
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store_test_claude_token(app.state.background_tasks.store)
-    client = TestClient(app)
+    client = signed_in_client(app)
     background = app.state.background_tasks
     project_id = app.state.default_project_id
     done = threading.Event()
@@ -346,7 +346,7 @@ def test_steer_requires_named_human_identity_before_any_delivery(manifest, tmp_p
     from rcp.api.app import create_app
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "unnamed-data")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{app.state.default_project_id}/tasks/{uuid.uuid4()}/steer",
             json=_body(),
@@ -523,7 +523,7 @@ time.sleep(120)
     )
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
-    client = TestClient(app)
+    client = signed_in_client(app)
     try:
         accepted = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",

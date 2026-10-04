@@ -7,6 +7,7 @@ import pytest
 
 from rcp import web_assets
 from rcp.web_assets import WebBuildError, prepared_web_assets
+from tests.helpers import signed_in_client
 
 
 def test_prepared_web_assets_builds_once_without_watch(monkeypatch) -> None:
@@ -164,7 +165,6 @@ def test_stop_process_group_force_kills_after_timeout(monkeypatch) -> None:
 def test_served_pages_revalidate_but_hashed_assets_keep_default_caching(
     tmp_path, monkeypatch
 ) -> None:
-    from fastapi.testclient import TestClient
 
     from rcp.api.app import create_app
 
@@ -173,7 +173,7 @@ def test_served_pages_revalidate_but_hashed_assets_keep_default_caching(
     (dist / "index.html").write_text("<main>RCP</main>", encoding="utf-8")
     (dist / "assets" / "index-abc.js").write_text("void 0", encoding="utf-8")
     monkeypatch.setattr("rcp.api.app.web_dist_path", lambda: dist)
-    client = TestClient(create_app(data_dir=tmp_path / "data"))
+    client = signed_in_client(create_app(data_dir=tmp_path / "data"))
 
     page = client.get("/")
     assert page.headers["cache-control"] == "no-cache"

@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.core.models import Patch
+from tests.helpers import signed_in_client
 
 from .test_branch_chats import _app_branch
 from .test_branch_merge_api import _admit_held_merge_task, _create_branch_harness
@@ -19,7 +19,7 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     manifest, tmp_path, owner_mode
 ):
     app, main, episode, _root = _app_branch(manifest, tmp_path, owner_mode=owner_mode)
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
     main_before = main.history.state()
@@ -134,7 +134,7 @@ def test_branch_inbox_approval_has_human_authority_only_on_selected_branch(manif
             ],
         )
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.post(
         f"/api/projects/{episode.project_id}/sync",
         params={"branch_id": episode.episode_id},
@@ -240,7 +240,7 @@ def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_pa
     manifest, tmp_path
 ):
     app, main, episode, root = _app_branch(manifest, tmp_path)
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
     branch = main.for_graph_target(episode.graph_target).history
@@ -296,7 +296,7 @@ def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
     from rcp.history.branches import BranchHistoryManager
 
     app, main, episode, _root = _app_branch(manifest, tmp_path)
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
     replays = []

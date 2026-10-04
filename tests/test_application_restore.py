@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
 
 from rcp.api import create_app
@@ -27,6 +26,7 @@ from rcp.server_ops.maintenance import MaintenanceIdentity
 from rcp.server_ops.restore import RestorePrepareRequest, RestoreRefused, prepare_restore
 from rcp.storage import AppStore
 from rcp.storage.digest import append_digest_event
+from tests.helpers import signed_in_client
 from tests.legacy_artifacts import insert_legacy_view
 from tests.test_application_deployment import captured, socket_root  # noqa: F401
 
@@ -240,7 +240,7 @@ def test_restore_preserves_uncaptured_project_as_visible_unavailable(
         data_dir=Path(value["data_dir"]),
         maintenance_identity=MaintenanceIdentity(str(uuid.uuid4()), result["boundary_sha256"]),
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert client.get("/api/health").status_code == 503
         digest = verify_live_application(
             Path(result["proof_path"]),

@@ -55,6 +55,7 @@ from rcp.storage import (
     NodeStatusGraphCondition,
     WatcherContinuation,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -267,7 +268,7 @@ def _create_branch_harness(
 
     return _BranchHarness(
         app=app,
-        client=TestClient(app),
+        client=signed_in_client(app),
         project_id=project_id,
         store=store,
         service=service,
@@ -521,7 +522,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
         return record
 
     monkeypatch.setattr(tasks, "_spawn_record", hold_after_branch)
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{app.state.default_project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
     )
@@ -538,7 +539,7 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     }
     assert launch_observations == [payload["root_operation_id"]]
 
-    refused = TestClient(app).post(
+    refused = signed_in_client(app).post(
         f"/api/projects/{app.state.default_project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
     )
@@ -570,7 +571,7 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
         raise ValueError("canonical branch publication unavailable")
 
     monkeypatch.setattr(service.history, "create_episode_branch", unavailable_branch)
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
     )
@@ -591,7 +592,7 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
     assert root is not None
     assert root.status == "failed"
     assert "before provider launch" in (root.error or "")
-    listed = TestClient(app).get(
+    listed = signed_in_client(app).get(
         f"/api/projects/{project_id}/episodes",
         params={"mode": "auto_research"},
     )
@@ -622,8 +623,8 @@ def test_episode_list_projects_a_reservation_while_remote_branch_publication_is_
 
     monkeypatch.setattr(service.history, "create_episode_branch", delayed_create)
     monkeypatch.setattr(tasks, "_spawn_record", lambda record, _request, **_kwargs: record)
-    start_client = TestClient(app)
-    list_client = TestClient(app)
+    start_client = signed_in_client(app)
+    list_client = signed_in_client(app)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             start_client.post,
@@ -1001,7 +1002,7 @@ def test_merge_requires_a_named_member_without_disclosing_nonmember_projects(
     tmp_path: Path,
 ) -> None:
     unnamed_app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
-    unnamed = TestClient(unnamed_app).post(
+    unnamed = signed_in_client(unnamed_app).post(
         f"/api/projects/{unnamed_app.state.default_project_id}/episodes/{uuid.uuid4()}/merge",
         json={},
     )
@@ -1021,7 +1022,7 @@ def test_merge_requires_a_named_member_without_disclosing_nonmember_projects(
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, opened: opened.space_user(acting[0]),
     )
-    team_client = TestClient(team_app)
+    team_client = signed_in_client(team_app)
     created = team_app.state.setup.create(
         ProjectSetupRequest.model_validate(
             _setup_payload(tmp_path / "team-project", name="Private project")

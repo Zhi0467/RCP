@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from rcp.core.authority import (
@@ -38,7 +37,7 @@ from rcp.core.operations import (
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import ValidationReport, validate_patch
 from rcp.history import HistoryManager
-from tests.helpers import create_named_app, fabricated_authorizer
+from tests.helpers import create_named_app, fabricated_authorizer, signed_in_client
 
 EVIDENCE_ID = "ev/transfer-result"
 HYPOTHESIS_A_ID = "hyp/transfer-persists"
@@ -792,7 +791,7 @@ def test_graph_api_serializes_assessment_on_the_relation(manifest, tmp_path) -> 
         )
     )
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     response = client.get(f"/api/projects/{app.state.default_project_id}/graph")
 

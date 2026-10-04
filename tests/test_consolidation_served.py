@@ -30,6 +30,12 @@ def test_served_consolidation_schedule_inbox_notification_and_shutdown(manifest,
             wait_until(lambda: app.state.startup_effect_runtime_event.is_set())
             assert app.state.consolidation_poller.is_running()
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+                assert (
+                    client.post(
+                        "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                    ).status_code
+                    == 200
+                )
                 base = f"/api/projects/{project}/consolidation"
                 before = client.get(base)
                 assert before.status_code == 200

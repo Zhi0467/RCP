@@ -18,6 +18,7 @@ from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
+from tests.helpers import signed_in_client
 
 from .helpers import (
     agent_patch_json,
@@ -212,7 +213,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     _, retried = _retry_task(
         client,
@@ -275,7 +276,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
 
     def make_legacy(_failed: dict[str, object]) -> None:
@@ -393,7 +394,7 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     body = {"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"], "mode": "work"}
     first = client.post(
@@ -469,7 +470,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -536,7 +537,7 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
 
@@ -627,7 +628,7 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     _, retried = _retry_task(
         client,
@@ -703,7 +704,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
             run_truth_scope=["repo-a"],
             mode="discuss",
         )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
         assert response.status_code == 202
         first = wait_for_task_response(

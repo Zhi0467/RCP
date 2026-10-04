@@ -43,7 +43,7 @@ def _turn(tmp_path: Path, provider: str, *, ready: bool = True):
                 "result": {
                     "thread": {"id": "thread"},
                     "approvalPolicy": "never",
-                    "sandbox": {"type": "workspaceWrite"},
+                    "activePermissionProfile": {"id": "rcp_discuss"},
                 },
             },
             {"id": 4, "result": {"turn": {"id": "turn"}}},
@@ -331,7 +331,7 @@ for line in sys.stdin:
         method = value.get('method')
         if method == 'initialize': emit({{'id':value['id'],'result':{{}}}})
         elif method == 'config/read': emit({{'id':value['id'],'result':{{'config':{{}}}}}})
-        elif method == 'thread/start': emit({{'id':value['id'],'result':{{'thread':{{'id':'thread'}},'approvalPolicy':'never','sandbox':{{'type':'workspaceWrite'}}}}}})
+        elif method == 'thread/start': emit({{'id':value['id'],'result':{{'thread':{{'id':'thread'}},'approvalPolicy':'never','activePermissionProfile':{{'id':'rcp_discuss'}}}}}})
         elif method == 'turn/start': emit({{'id':value['id'],'result':{{'turn':{{'id':'turn'}}}}}})
         elif method == 'turn/steer':
             if {behavior!r} == 'disconnect': raise SystemExit(3)

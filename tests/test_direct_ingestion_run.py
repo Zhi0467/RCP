@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.runs.tasks.graph as graph_run
 from rcp.agents import AgentEvent
@@ -23,6 +22,7 @@ from rcp.runs.tasks.graph import (
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
 from rcp.transfer import TransferArchiveEntry
+from tests.helpers import signed_in_client
 
 from .helpers import (
     agent_patch_json,
@@ -86,7 +86,7 @@ def test_successful_ingest_answer_is_persisted_and_readable(
     app.state.background_tasks.stream = stream
     project_id = app.state.default_project_id
     assert project_id is not None
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/tasks/{kind}",
             json={"run_truth_scope": ["repo-a"]},
@@ -125,7 +125,7 @@ def test_failed_ingest_keeps_its_independent_answer(manifest, tmp_path) -> None:
     app.state.background_tasks.stream = stream
     project_id = app.state.default_project_id
     assert project_id is not None
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/tasks/seed",
             json={"run_truth_scope": ["repo-a"]},

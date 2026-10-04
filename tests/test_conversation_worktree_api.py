@@ -8,12 +8,12 @@ from pathlib import Path
 from threading import Event
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.storage import AgentTaskRecord
+from tests.helpers import signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -79,7 +79,7 @@ class _Harness:
         self.project_id = self.app.state.default_project_id
         self.store = self.app.state.background_tasks.store
         self.launcher = _ChatLauncher(self)
-        self.client = TestClient(self.app)
+        self.client = signed_in_client(self.app)
 
         async def stream(_project_id, kind, request, execution):
             assert kind == "project_chat"

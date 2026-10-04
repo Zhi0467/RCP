@@ -34,6 +34,7 @@ from rcp.runs.auto_research_admission import (
     start_auto_research_turn,
 )
 from rcp.storage import EpisodeNotRunning, GraphWatcherRecord, WatcherContinuation
+from tests.helpers import signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -219,7 +220,7 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     )
     store = app.state.background_tasks.store
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = _start_episode(
             client,
             project_id,
@@ -297,7 +298,7 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     )
     store = app.state.background_tasks.store
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = _start_episode(
             client,
             project_id,
@@ -327,7 +328,7 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     )
     restarted_store = restarted.state.background_tasks.store
 
-    with TestClient(restarted) as client:
+    with signed_in_client(restarted) as client:
         # Startup reconciles the abandoned root, not construction, so this is
         # read inside the lifespan rather than immediately after create_app.
         interrupted = restarted_store.agent_task(root_operation_id)
@@ -412,7 +413,7 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
     )
     store = app.state.background_tasks.store
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = _start_episode(
             client,
             project_id,
@@ -472,7 +473,7 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
     )
     store = app.state.background_tasks.store
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = _start_episode(
             client,
             project_id,
@@ -585,7 +586,7 @@ def test_acceptance_episode_stop_is_the_only_ending_without_a_report(
     assert project_id is not None
     store = app.state.background_tasks.store
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = _start_episode(
             client,
             project_id,
@@ -666,7 +667,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
     root_release_path: Path | None = None
     worker_release_path: Path | None = None
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = _start_episode(
             client,
             project_id,

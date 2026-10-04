@@ -3,13 +3,13 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
 from rcp.runs.auto_research import auto_research_exhaustion_signal
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.watchers import WatcherPoller
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, record_launched_experiment_turn, wait_for_task
 from .test_auto_research_children_storage import _experiment_route
@@ -35,7 +35,7 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
 
     app.state.background_tasks.stream = root_stream
     # Shut down the real root's runtime before arranging the deferred recovery.
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/episodes",
             json={"mode": "auto_research", "invocation_ceiling": 6},
@@ -179,7 +179,7 @@ def test_startup_reconciles_deferred_parent_older_than_recent_window(
     # A background poll must not hide a missed startup reconciliation pass.
     monkeypatch.setattr(WatcherPoller, "start", lambda _self: None)
 
-    with TestClient(restarted):
+    with signed_in_client(restarted):
         if not settled_before_restart:
             assert store.episode_wrapup(parent.episode_id) is None
             assert not launches

@@ -4,10 +4,10 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import AppStore, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import authorized_human, create_named_app
 from .test_episode_api import create_recoverable_auto_episode
@@ -55,7 +55,7 @@ def test_archive_round_trip_survives_restart_without_changing_episode_or_graph(
     store = app.state.background_tasks.store
     episode = _episode(store, project_id, authorized_human(store))
     base = f"/api/projects/{project_id}/episodes"
-    client = TestClient(app)
+    client = signed_in_client(app)
     history_head = app.state.catalog.open(project_id).history.head_ref()
 
     before = client.get(base, params={"episode_id": episode.episode_id}).json()[0]
@@ -69,7 +69,7 @@ def test_archive_round_trip_survives_restart_without_changing_episode_or_graph(
     assert app.state.catalog.open(project_id).history.head_ref() == history_head
 
     reopened = create_named_app(str(manifest.path), data_dir=data_dir)
-    restarted = TestClient(reopened)
+    restarted = signed_in_client(reopened)
     retained = restarted.get(base).json()
     assert next(item for item in retained if item["episode_id"] == episode.episode_id)["archived"]
     for _ in range(2):
@@ -137,7 +137,7 @@ def test_every_episode_state_can_archive_without_changing_retained_work_or_proje
         store.episode_invocations(episode.episode_id),
     )
     main_head = history.head_ref()
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{project_id}/episodes"
     path = f"{base}/{episode.episode_id}/archive"
     before_response = client.get(base, params={"episode_id": episode.episode_id})
@@ -168,7 +168,7 @@ def test_archive_rejects_invalid_body_without_changing_visibility(manifest, tmp_
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     episode = _episode(store, project_id, authorized_human(store), ended=False)
-    client = TestClient(app)
+    client = signed_in_client(app)
     path = f"/api/projects/{project_id}/episodes/{episode.episode_id}/archive"
 
     for invalid in ({"archived": "true"}, {"archived": True, "status": "stopped"}, {}):
@@ -194,7 +194,7 @@ def test_archive_and_unarchive_preserve_project_write_admission(
         raise ValueError("This project is moving to its admitted team space.")
 
     monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transferring_project)
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/episodes/{episode.episode_id}/archive",
         json={"archived": archived},
     )
@@ -220,7 +220,7 @@ def test_archived_history_remains_in_episode_list_after_recent_limit(manifest, t
             created_at=(now - timedelta(minutes=offset)).isoformat(),
         )
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     for params in ({}, {"mode": "experiment_loop"}):
         response = client.get(f"/api/projects/{project_id}/episodes", params=params)
         assert response.status_code == 200, response.text
@@ -275,7 +275,7 @@ def test_transfer_preparation_advertises_archived_history_only_when_present(
     if archived:
         store.set_episode_archived(project_id, episode.episode_id, actor.user_id, archived=True)
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         "/api/project-transfers/source-requests",
         json={
             "request_id": str(uuid.uuid4()),
@@ -303,7 +303,7 @@ def test_archive_cannot_address_an_episode_through_a_different_project(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     episode = _episode(store, app.state.default_project_id, authorized_human(store))
-    client = TestClient(app)
+    client = signed_in_client(app)
     other_id = _create_project(client, tmp_path / "another-repo")
     response = client.post(
         f"/api/projects/{other_id}/episodes/{episode.episode_id}/archive",

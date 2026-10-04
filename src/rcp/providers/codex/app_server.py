@@ -15,7 +15,10 @@ from rcp.providers.base import (
     _require_project_write_scope,
     _require_provider_version,
 )
-from rcp.providers.codex.profile import _codex_permission_profile
+from rcp.providers.codex.profile import (
+    _codex_discuss_permission_profile,
+    _codex_permission_profile,
+)
 
 CODEX_APP_SERVER_RUNTIME_ID = "codex.app-server-stdio.v1"
 _INITIALIZE_ID = 1
@@ -93,6 +96,19 @@ class _CodexAppServerTurn(ProviderTurn):
                     'default_permissions="rcp_project"',
                     "--config",
                     _codex_permission_profile(scope),
+                ]
+            )
+        elif request.capability == "discuss":
+            if request.write_scope is not None:
+                raise ValueError("Discuss cannot carry a project write scope")
+            command.extend(
+                [
+                    "--config",
+                    'approval_policy="never"',
+                    "--config",
+                    'default_permissions="rcp_discuss"',
+                    "--config",
+                    _codex_discuss_permission_profile(request.cwd),
                 ]
             )
         else:
@@ -304,6 +320,8 @@ class _CodexAppServerTurn(ProviderTurn):
             params["ephemeral"] = False
         if self._work_like:
             params["permissions"] = "rcp_project"
+        elif self._request.capability == "discuss":
+            params["permissions"] = "rcp_discuss"
         else:
             params["sandbox"] = (
                 "read-only" if self._request.capability == "paper_readonly" else "workspace-write"
@@ -319,7 +337,7 @@ class _CodexAppServerTurn(ProviderTurn):
             "model": self._request.model,
             "threadId": thread_id,
         }
-        if not self._work_like:
+        if not self._work_like and self._request.capability != "discuss":
             params["sandboxPolicy"] = _sandbox_policy(
                 self._request.cwd,
                 read_only=self._request.capability == "paper_readonly",
@@ -329,9 +347,10 @@ class _CodexAppServerTurn(ProviderTurn):
     def _enforcement_problem(self, result: dict[str, object]) -> str | None:
         if result.get("approvalPolicy") != "never":
             return "Codex app-server did not apply RCP's noninteractive approval policy."
-        if self._work_like:
+        if self._work_like or self._request.capability == "discuss":
+            expected = "rcp_project" if self._work_like else "rcp_discuss"
             profile = result.get("activePermissionProfile")
-            if not isinstance(profile, dict) or profile.get("id") != "rcp_project":
+            if not isinstance(profile, dict) or profile.get("id") != expected:
                 return "Codex app-server did not activate RCP's exact project permission profile."
             return None
         sandbox = result.get("sandbox")

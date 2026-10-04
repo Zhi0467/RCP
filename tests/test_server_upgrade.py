@@ -14,7 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.storage.base as storage_base_module
 import rcp.storage.models as storage_models
@@ -22,6 +21,7 @@ from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from . import server_upgrade_harness
 from .server_upgrade_harness import (
@@ -345,7 +345,7 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
             acceptance_agent=True,
             trusted_principal_resolver=lambda _request, opened: opened.space_user(user_id),
         )
-        with TestClient(app) as client:
+        with signed_in_client(app) as client:
             health = client.get("/api/health")
             assert health.status_code == 200
             health_payload = health.json()

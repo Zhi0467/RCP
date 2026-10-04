@@ -8,12 +8,12 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
-from fastapi.testclient import TestClient
 
 from rcp import web_push
 from rcp.api import create_app
 from rcp.storage import AppStore
 from rcp.web_push import Subscription, VapidKey, WebPushRefused, b64url_decode, b64url_encode
+from tests.helpers import signed_in_client
 
 # RFC 8291 section 5 and appendix A.
 _RFC_UA_PUBLIC = (
@@ -179,7 +179,7 @@ def test_team_phone_registers_receives_and_detaches(manifest, tmp_path) -> None:
     sender.transport = httpx.MockTransport(
         lambda request: sent.append(request) or httpx.Response(201)
     )
-    client = TestClient(app, base_url="https://testserver")
+    client = signed_in_client(app, base_url="https://testserver")
     client.post("/api/team/session/exchange", json={"token": token})
     origin = {"Origin": "https://testserver"}
     key = client.get("/api/notifications/web-push/key").json()["application_server_key"]
@@ -228,7 +228,7 @@ def test_personal_owner_cannot_register_a_phone_on_the_owner_api(manifest, tmp_p
     from .helpers import create_named_app
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     _, p256dh, auth = _receiver()
     response = client.post(
         "/api/notifications/devices/web-push",

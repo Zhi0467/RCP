@@ -8,7 +8,6 @@ import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.repository_preview as preview_module
 import rcp.repository_window as window_module
@@ -20,6 +19,7 @@ from rcp.repository_preview import (
 )
 from rcp.transport import StateUnavailable
 from rcp.transport.ssh import SSH_OPTIONS
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app as create_app
 
@@ -273,7 +273,7 @@ def test_repository_preview_route_windows_an_oversized_file(
     oversized = preview_module.REPOSITORY_PREVIEW_MAX_BYTES // 10 + 1000
     source_path.write_text(_numbered_lines(oversized), encoding="utf-8")
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     response = client.get(
         f"/api/projects/{app.state.default_project_id}/repositories/files/preview",
@@ -375,7 +375,7 @@ def test_repository_preview_route_returns_escaped_get_and_empty_head(manifest, t
     source_path.write_text("first\n<script>alert(1)</script>\n", encoding="utf-8")
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{project_id}/repositories/files/preview"
 
     response = client.get(url, params={"path": str(source_path), "line": 2})
@@ -397,7 +397,7 @@ def test_repository_preview_route_returns_escaped_get_and_empty_head(manifest, t
 def test_repository_preview_route_maps_missing_and_invalid_requests(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{project_id}/repositories/files/preview"
     repo_a = Path(manifest.repository_map["repo-a"].path)
 
@@ -444,7 +444,7 @@ def test_repository_preview_route_names_ambiguous_aliases_before_reading(
     monkeypatch.setattr(preview_module, "_read_local_file", unexpected_reader)
     monkeypatch.setattr(preview_module, "_read_remote_file", unexpected_reader)
 
-    response = TestClient(app).get(
+    response = signed_in_client(app).get(
         f"/api/projects/{project_id}/repositories/files/preview",
         params={"path": str(root / "answer.py")},
     )
@@ -470,7 +470,7 @@ def test_repository_preview_route_reloads_the_registered_manifest(manifest, tmp_
         encoding="utf-8",
     )
 
-    response = TestClient(app).get(
+    response = signed_in_client(app).get(
         f"/api/projects/{project_id}/repositories/files/preview",
         params={"path": str(replacement_root / "answer.py")},
     )

@@ -6,13 +6,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api.episode_timeline import build_episode_timeline
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import EPISODE_TIMELINE_ERROR_MAX_LENGTH, EPISODE_TIMELINE_HEADLINE_MAX_LENGTH
 from rcp.storage import AgentTaskRecord, AppStore, AutoResearchStateRecord, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import authorized_human, create_named_app
 
@@ -224,7 +224,7 @@ def timeline(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     episode = seed_episode_timeline(store, app.state.default_project_id)
-    return store, episode, TestClient(app)
+    return store, episode, signed_in_client(app)
 
 
 def test_actor_kinds_and_recorded_links(timeline):

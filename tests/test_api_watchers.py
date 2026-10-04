@@ -3,8 +3,6 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from rcp.storage import (
     GraphWatcherRecord,
     NodeStatusGraphCondition,
@@ -12,6 +10,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.watchers import WatcherCheckResult, WatchSpec
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -59,7 +58,7 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
         )
 
     app.state.watcher_poller.check_runner = recovered
-    client = TestClient(app)
+    client = signed_in_client(app)
     listed = client.get(f"/api/projects/{project_id}/watchers")
     assert listed.status_code == 200
     assert listed.json()[0]["can_check_now"] is True
@@ -113,7 +112,7 @@ def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
     )
     store.create_watchers([active])
     store.create_watchers([graph])
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     missing_project = client.post(
         f"/api/projects/{uuid.uuid4()}/watchers/{active.watcher_id}/check", json={}
@@ -164,7 +163,7 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
         created_at="2026-08-12T01:00:00+00:00",
     )
     store.create_watchers([watcher])
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     listed = client.get(f"/api/projects/{project_id}/watchers")
     assert listed.status_code == 200
@@ -192,7 +191,7 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     from fastapi import HTTPException
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.services.store
     project_id = app.state.default_project_id
     watcher = WatcherRecord(

@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import get_args
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 from rcp_supervisor.checkpoint import (
@@ -45,6 +44,7 @@ from rcp.server_ops.deployment import (
 from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 from tests.supervisor_reboot_build import MIGRATION_TABLE, add_forward_migration
 from tests.supervisor_reboot_data import prepare_data
 
@@ -674,7 +674,7 @@ def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path
 
     # Running the lifespan opens its disposable local socket but leaves every
     # ordinary runtime owner asleep until the verified fence release.
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert client.get("/api/health").status_code == 503
         assert command("maintenance_status").quiescent
         assert not app.state.startup_effect_runtime_started
@@ -779,7 +779,7 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
             ServerControlPeer(pid=os.getpid(), uid=0, gid=0),
         )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         initial = command("maintenance_status")
         assert not initial.closed and initial.maintenance_id is None
         assert initial.boundary_sha256 is None

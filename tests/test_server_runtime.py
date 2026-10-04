@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import stat
 
-from fastapi.testclient import TestClient
-
 from rcp.server_runtime import (
     SERVER_METADATA_SCHEMA_VERSION,
     ServerMetadata,
@@ -12,6 +10,7 @@ from rcp.server_runtime import (
     read_server_metadata,
     remove_server_metadata,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app as create_app
 
@@ -88,7 +87,7 @@ def test_frozen_app_shutdown_cleans_metadata_before_the_outer_server_context_exi
 
     with published_server_metadata(data_dir, metadata):
         app = create_app(data_dir=data_dir, instance_metadata=metadata)
-        with TestClient(app):
+        with signed_in_client(app):
             assert read_server_metadata(data_dir) == metadata
         assert not (data_dir / "rcp-server.json").exists()
 
@@ -104,7 +103,7 @@ def test_source_app_shutdown_leaves_outer_supervisor_metadata_in_place(tmp_path)
 
     with published_server_metadata(data_dir, metadata):
         app = create_app(data_dir=data_dir, instance_metadata=metadata)
-        with TestClient(app):
+        with signed_in_client(app):
             pass
         assert read_server_metadata(data_dir) == metadata
 

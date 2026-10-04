@@ -7,8 +7,6 @@ import uuid
 from io import BytesIO, StringIO
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from rcp.api import create_app
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
@@ -17,6 +15,7 @@ from rcp.server_ops.members import MemberRemovalCoordinator, prepare_member_remo
 from rcp.server_ops.models import ServerCommandRequest, ServerStepEvent
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
+from tests.helpers import signed_in_client
 
 
 class _CoordinatorControl:
@@ -212,7 +211,7 @@ def test_installed_service_startup_reconciles_a_fenced_member(tmp_path) -> None:
         )
         app = create_app(data_dir=tmp_path, instance_metadata=metadata)
 
-        with TestClient(app):
+        with signed_in_client(app):
             tombstone = app.state.services.store.space_user(bob.user_id)
             assert tombstone is not None
             assert tombstone.removed_at is not None

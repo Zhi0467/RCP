@@ -20,7 +20,7 @@ from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
 from rcp.config import MachineComputeConfig
 from rcp.storage import AppStore
-from tests.helpers import wait_until
+from tests.helpers import signed_in_client, wait_until
 
 
 @pytest.mark.parametrize("status", [0, 7])
@@ -412,7 +412,6 @@ def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_f
     manifest,
     monkeypatch,
 ):
-    from fastapi.testclient import TestClient
 
     from rcp.api.app import create_app
     from rcp.background import StartupEffectFence
@@ -460,7 +459,7 @@ def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_f
         created_at=store.now(),
     )
     store.create_compute_job(record)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         try:
             assert client.get("/api/health").status_code == 200
             assert store.compute_job("startup").status == "running"

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.compute_jobs.probe import _result
 from rcp.config import load_manifest
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -12,7 +12,7 @@ from .helpers import create_named_app
 @pytest.fixture
 def compute_api(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    return app, TestClient(app), f"/api/projects/{app.state.default_project_id}"
+    return app, signed_in_client(app), f"/api/projects/{app.state.default_project_id}"
 
 
 def settings_body(snapshot):

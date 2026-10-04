@@ -4,13 +4,13 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.artifact_comments import supports_comments
 from rcp.artifacts import artifact_view, classify_artifact_bytes, descriptor_for
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, Artifact
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -128,7 +128,7 @@ def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=
 def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, data):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     task, descriptor, _path, base = _seed(app, tmp_path, name, data)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         result = client.get(f"/api/projects/{task.project_id}/tasks/{task.operation_id}").json()[
             "result"
         ]
@@ -186,7 +186,7 @@ def test_stored_type_pinning_and_changed_typed_bytes(tmp_path, manifest):
     )
     _, _, typed_path, typed = _seed(app, tmp_path, "typed.html", b"<p>valid</p>")
     typed_path.write_bytes(b"\xff")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert client.get(plain + "/content").status_code == 404
         response = client.get(plain + "/download")
         assert response.status_code == 200
@@ -198,7 +198,7 @@ def test_stored_type_pinning_and_changed_typed_bytes(tmp_path, manifest):
 def test_viewer_without_chat_uses_stored_artifact_admission(tmp_path, manifest):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     _, _, _, base = _seed(app, tmp_path, "view.html", b"<p>view</p>", chat=False)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         viewer = client.get(base + "/viewer")
         assert viewer.status_code == 200 and 'id="message"' in viewer.text
         content = client.get(base + "/content")

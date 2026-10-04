@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from rcp.agents import AgentLauncher
@@ -28,6 +27,7 @@ from rcp.transfer.source import (
     source_transfer_export_path,
     stage_transfer_archive,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_until
 from .test_project_transfer_request_api import _source_project
@@ -76,7 +76,7 @@ def _source(tmp_path):
     not os.environ.get("RCP_FROZEN_BACKEND"), reason="requires a built desktop backend"
 )
 def test_frozen_backend_prepares_local_unpushed_commits(tmp_path):
-    _app, _store, _actor_value, project, repository, _base = _source(tmp_path)
+    _app, store, _actor_value, project, repository, _base = _source(tmp_path)
     head = _commit(repository, "unpublished frozen-backend revision")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -100,7 +100,7 @@ def test_frozen_backend_prepares_local_unpushed_commits(tmp_path):
                 "prebuilt",
             ],
             env=environment,
-            stdout=log,
+            stdout=subprocess.PIPE,
             stderr=log,
         )
         try:
@@ -114,6 +114,12 @@ def test_frozen_backend_prepares_local_unpushed_commits(tmp_path):
                         return False
 
                 wait_until(healthy, timeout=TASK_SETTLE_TIMEOUT, detail="frozen backend startup")
+                assert (
+                    client.post(
+                        "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                    ).status_code
+                    == 200
+                )
                 response = client.post(
                     "/api/project-transfers/source-requests",
                     json={
@@ -150,7 +156,7 @@ def test_source_create_binds_choice_and_preserves_legacy_wire(tmp_path, include)
         target_space_id=str(uuid.uuid4()),
         include_local_commits=include,
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post("/api/project-transfers/source-requests", json=body)
         assert response.status_code == 201, response.text
         configuration = response.json()["source_configuration"]

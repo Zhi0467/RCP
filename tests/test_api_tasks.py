@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from rcp.agents import AgentEvent
 from rcp.api.tasks import AgentArtifactResponse
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES
+from tests.helpers import sign_in_async_client, signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -74,6 +75,7 @@ def test_remote_artifact_read_does_not_stall_health(
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             artifact = asyncio.create_task(client.get(url))
             try:
                 assert await asyncio.to_thread(entered.wait, TASK_SETTLE_TIMEOUT)
@@ -108,7 +110,7 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     requests = {
         "seed": {},
         "refresh": {},

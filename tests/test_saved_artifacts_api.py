@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.artifacts import descriptor_for, html_document_title
 from rcp.core.transition_models import GraphTargetRef
@@ -21,6 +20,7 @@ from rcp.storage import (
     EpisodeReportRecord,
 )
 from rcp.transport import StateUnavailable
+from tests.helpers import signed_in_client
 
 from .helpers import authorized_human, create_named_app
 from .test_auto_research_commands import _routed_worker
@@ -286,7 +286,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
                 status_message="Completed",
             )
         )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert (
             client.post(
                 f"/api/projects/{project_id}/episodes/{episode.episode_id}/archive",
@@ -368,7 +368,7 @@ def test_legacy_project_url_lists_saved_outputs_with_canonical_viewer_urls(manif
         )
     # Reopen to load the durable alias into the catalog's request-path snapshot.
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         canonical = client.get(f"/api/projects/{project_id}/artifacts")
         legacy = client.get(f"/api/projects/{alias}/artifacts")
         assert canonical.status_code == legacy.status_code == 200
@@ -395,7 +395,7 @@ def test_saved_origins_use_exact_main_and_branch_chats_in_one_scan_per_target(
         return original(service)
 
     monkeypatch.setattr(type(main), "_canonical_chat_files", counted)
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.get(f"/api/projects/{project_id}/artifacts")
     assert response.status_code == 200, response.text
     assert sorted(scans) == sorted(["main", branch.graph_target.key])
@@ -423,7 +423,7 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
     task, report = _create_chat_report(app, tmp_path, parent=parent, parent_root=parent_root)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    client = TestClient(app)
+    client = signed_in_client(app)
     # Inventory uses summaries and the concluding operation, never report HTML.
     with monkeypatch.context() as patch:
         patch.setattr(
@@ -485,7 +485,7 @@ def test_auto_research_worker_artifact_opens_its_parent_episode_in_runs(manifest
                 "DELETE FROM auto_research_child_work_attempts WHERE operation_id = ?",
                 (task.operation_id,),
             )
-    client = TestClient(app)
+    client = signed_in_client(app)
     entries = client.get(f"/api/projects/{project_id}/artifacts").json()
     entry = next(item for item in entries if item["operation_id"] == task.operation_id)
     assert entry["episode_mode"] == "auto_research"
@@ -514,7 +514,7 @@ def test_saved_preview_survives_missing_or_unavailable_source_chat(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     task, _ = create_saved_artifact(app, project_id, with_chat=False)
-    client = TestClient(app)
+    client = signed_in_client(app)
     entry = client.get(f"/api/projects/{project_id}/artifacts").json()[0]
     assert entry["source_chat_href"] is None
     assert client.get(entry["viewer_url"]).status_code == 200
@@ -534,7 +534,7 @@ def test_saved_preview_survives_missing_or_unavailable_source_chat(
 
 def test_report_provenance_cannot_link_to_another_projects_chat(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     first = app.state.default_project_id
     second = _create_project(client, tmp_path / "second", name="Second")
     foreign, _ = create_saved_artifact(app, second)
@@ -572,7 +572,7 @@ def test_report_without_a_subject_uses_a_plain_title_instead_of_its_episode_hash
         starting_instruction=None,
         report_html="<!doctype html><h1>Retained report</h1>",
     )
-    entry = TestClient(app).get(f"/api/projects/{project_id}/artifacts").json()[0]
+    entry = signed_in_client(app).get(f"/api/projects/{project_id}/artifacts").json()[0]
     assert entry["name"] == "Report"
     assert entry["episode_mode"] == "auto_research"
     assert entry["source_chat_href"] is None
@@ -582,7 +582,7 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     task, _ = _create_chat_report(app, tmp_path, with_artifact=True)
-    client = TestClient(app)
+    client = signed_in_client(app)
     entries = client.get(f"/api/projects/{project_id}/artifacts").json()
     entry = next(item for item in entries if item["operation_id"] == task.operation_id)
     assert entry["episode_mode"] == "experiment_loop"
@@ -634,7 +634,7 @@ def test_edit_outputs_keep_bounded_runs_links(manifest, tmp_path, owner, valid_o
     result = _keep_task_artifact(app, edit.model_copy(update={"episode_id": origin.episode_id}))
     store.complete_agent_task(edit.operation_id, applied_revision=None, result=result)
     artifact_id = result["artifacts"][0]["artifact_id"]
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.get(f"/api/projects/{edit.project_id}/artifacts")
     assert response.status_code == 200, response.text
     saved = next(item for item in response.json() if item["operation_id"] == edit.operation_id)

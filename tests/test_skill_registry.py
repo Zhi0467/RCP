@@ -10,6 +10,7 @@ from rcp.agents.prompts import PromptFactory
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillDefaults, SkillReference, SkillSelection, official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app as create_app
 
@@ -379,9 +380,8 @@ def test_the_task_contract_carries_staged_package_paths(tmp_path: Path) -> None:
 
 
 def test_the_read_only_package_inspector_serves_the_package_text(manifest, tmp_path) -> None:
-    from fastapi.testclient import TestClient
 
-    client = TestClient(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    client = signed_in_client(create_app(str(manifest.path), data_dir=tmp_path / "data"))
 
     workflow = client.get("/api/skills/workflow/research-graph-audit")
     missing = client.get("/api/skills/skill/no-such-skill")
