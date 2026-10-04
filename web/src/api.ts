@@ -761,8 +761,10 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
   return api("/api/voice/settings");
 }
 
-/** Send only the fields that changed; the backend keeps the rest. */
-export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
+/** Only the confirm toggle; voice models change through the checked connection update. */
+export function saveVoiceSettings(
+  settings: Pick<VoiceSettings, "confirm">,
+): Promise<VoiceSettings> {
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 

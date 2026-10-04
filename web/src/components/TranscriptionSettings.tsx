@@ -486,14 +486,20 @@ function ServiceCard({
     setBusy(true);
     setError(null);
     try {
-      // The voice models are OpenAI account settings, sent with any OpenAI key.
+      // Send only what the member changed, so a card left open never overwrites a
+      // newer value saved elsewhere. Voice models are OpenAI account settings.
+      const changed = (value: string, saved: string | undefined) =>
+        value.trim() === saved ? undefined : value.trim();
       const voiceModels = openai
-        ? { delegation_model: delegation.trim(), live_model: live.trim() }
+        ? {
+            delegation_model: changed(delegation, voice?.delegation_model),
+            live_model: changed(live, voice?.live_model),
+          }
         : {};
       if (editing) {
         await updateServiceConnection(editing.id, {
           purposes: editing.purposes,
-          model: dictation ? model.trim() : undefined,
+          model: dictation ? changed(model, editing.model) : undefined,
           ...voiceModels,
         });
       } else {
@@ -637,23 +643,13 @@ function ServiceCard({
               />
             </>
           ) : null}
-          {dictation ? (
-            <p>
-              Dictation audio goes from your device to RCP, which sends it to {destination}. RCP
-              keeps the key on its server, never shows it again, and does not store audio. What{" "}
-              {destination} keeps is set by your account there.
-            </p>
-          ) : null}
-          {openai ? (
-            <p>
-              Standby voice agent audio goes directly between this page and OpenAI; RCP only starts
-              each session with the key it keeps on its server.
-            </p>
-          ) : null}
           <p>
-            {openai
-              ? "RCP checks dictation with two short test clips, and the voice models with OpenAI, before saving. Pick what each service is used for after connecting."
-              : "RCP checks dictation with two short test clips before saving. Pick what each service is used for after connecting."}
+            RCP keeps the key on its server and never shows it again.
+            {dictation
+              ? ` Dictation audio passes through RCP to ${destination} and is not stored.`
+              : ""}
+            {openai ? " Voice audio goes straight between this page and OpenAI." : ""} Saving checks
+            dictation with two short test clips{openai ? " and the voice models with OpenAI" : ""}.
           </p>
         </div>
         {error ? (

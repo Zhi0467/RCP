@@ -220,15 +220,16 @@ def test_voice_requires_openai_preset_before_transport(voice_setup, monkeypatch)
 def test_settings_default_roundtrip_and_preserve_dictation(voice_setup):
     _, private, client = voice_setup
     path = "/api/voice/settings"
-    live = {"live_model": "gpt-live-1"}
-    assert client.get(path).json() == {"delegation_model": "gpt-6-luna", "confirm": "tap", **live}
-    value = {"delegation_model": "custom-model", "confirm": "none"}
-    assert client.put(path, json=value).json() == {**value, **live}
+    models = {"delegation_model": "gpt-6-luna", "live_model": "gpt-live-1"}
+    assert client.get(path).json() == {**models, "confirm": "tap"}
+    assert client.put(path, json={"confirm": "none"}).json() == {**models, "confirm": "none"}
+    # Voice models change only through the checked connection update.
+    unchecked = client.put(path, json={"confirm": "tap", "delegation_model": "unchecked"})
+    assert unchecked.status_code == 422
     item = connection()
     private.save(item, KEY)
     private.select(item["id"])
-    assert client.get(path).json() == {**value, **live}
-    assert client.put(path, json={"confirm": "tap"}).json() == {**value, "confirm": "tap", **live}
+    assert client.get(path).json() == {**models, "confirm": "none"}
     assert private.summary()["dictation"] == item["id"]
 
 

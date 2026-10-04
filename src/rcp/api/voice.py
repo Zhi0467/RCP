@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
 from rcp.api.service_connections import ServiceConnectionRoute, connections
@@ -17,9 +20,16 @@ def settings(request: Request):
     return connections(request).voice_settings()
 
 
+class VoicePreferences(BaseModel):
+    """What this route may change; voice models go through the checked connection update."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    confirm: Literal["tap", "none"]
+
+
 @router.put("/settings")
-def update_settings(request: Request, body: VoiceSettings):
-    return connections(request).voice_settings(body)
+def update_settings(request: Request, body: VoicePreferences):
+    return connections(request).voice_settings(VoiceSettings(confirm=body.confirm))
 
 
 @router.post("/sessions")

@@ -946,11 +946,12 @@ returns `voice_not_connected` (409); an OpenAI failure returns
 `idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`, and
 `commentary_max_chars` from `limits.py`, and the page enforces them.
 
-`GET` and `PUT /api/voice/settings` hold `{live_model, delegation_model,
-confirm}` in the member's private settings file; a session uses the saved
-`live_model` (default `gpt-live-1`) and `delegation_model`.
-`confirm` is `tap` (the default) or `none`. A `PUT` changes only the fields it
-sends. The panel's toggle sets `confirm`. In the Dictation and voice card, the
+`GET /api/voice/settings` returns `{live_model, delegation_model, confirm}`
+from the member's private settings file; a session uses the saved `live_model`
+(default `gpt-live-1`) and `delegation_model`. `PUT` takes only `{confirm}`:
+the voice models change only through the checked connection update below, and
+the card sends only the models the member changed.
+`confirm` is `tap` (the default) or `none`; the panel's toggle sets it. In the Dictation and voice card, the
 **Standby voice agent** section picks the connection it **Runs on** (Off, or an
 OpenAI connection). Choosing a connection gives it the `voice` purpose, which
 RCP checks against OpenAI before saving. The voice models are set on that
