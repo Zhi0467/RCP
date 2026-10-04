@@ -298,7 +298,8 @@ function ThisMac({
     );
   if (!showMachinePowerCard(spaceKind, status) || !status) return null;
   const disabled = writesDisabled || busy;
-  const lidEnabled = status.lid_mode.enabled && !status.latched;
+  // A damaged or removed install shows the toggle off, so turning it on repairs.
+  const lidEnabled = status.lid_mode.enabled && status.installed && !status.latched;
   const label = (value: string) => value.replaceAll("_", " ");
   const mode = (value: { enabled: boolean; active: boolean }) =>
     value.active ? "active" : value.enabled ? "waiting" : "off";
