@@ -159,3 +159,31 @@ def test_batch_preflight_matches_single_target_results_and_error_order(
             assert str(actual) == str(exc)
         else:
             assert outcome == {"facts": expected}
+
+
+def test_interrupted_markers_are_found_under_a_newline_repository_path(tmp_path: Path) -> None:
+    from rcp.transport import conversation_worktree
+
+    from .test_conversation_worktree_git import git
+
+    parent = tmp_path / "line\nbreak"
+    root = parent / "repository"
+    root.mkdir(parents=True)
+    git(root, "init", "--initial-branch=main")
+    git(
+        root,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Initial",
+    )
+    worktree = parent / "worktree"
+    git(root, "worktree", "add", "-b", "episode", str(worktree))
+    (root / ".git" / "worktrees" / "worktree" / "MERGE_HEAD").write_text("marker\n")
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        conversation_worktree._interrupted(worktree, 10.0)
+    assert exc.value.code == "interrupted_git_state"

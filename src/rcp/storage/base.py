@@ -363,6 +363,7 @@ class AppStoreBase:
             connection.commit()
             # Bound instrumentation callbacks must not retain a dropped store.
             connection.set_trace_callback(None)
+            connection.set_authorizer(None)
         except BaseException:
             discard = True
             with suppress(sqlite3.Error):
@@ -2891,6 +2892,8 @@ class AppStoreBase:
                 self._baseline_storage_schema()
                 connection = sqlite3.connect(":memory:")
                 connection.row_factory = sqlite3.Row
+                # An empty chain writes no files; keep any future one out of real data.
+                file_root = tempfile.TemporaryDirectory(prefix="rcp-migration-")
                 try:
                     connection.execute("PRAGMA legacy_alter_table = ON")
                     connection.execute("BEGIN IMMEDIATE")
@@ -2903,7 +2906,7 @@ class AppStoreBase:
                         require_new=False,
                         schema_template=False,
                         schema_capture=None,
-                        file_root=self.path.parent,
+                        file_root=Path(file_root.name),
                     )
                     self.__class__._baseline_storage_sql = tuple(
                         row[0]
@@ -2914,6 +2917,7 @@ class AppStoreBase:
                     )
                 finally:
                     connection.close()
+                    file_root.cleanup()
             return self.__class__._baseline_storage_sql
 
     def _normalize_legacy_startup_schema(self, connection: sqlite3.Connection) -> None:

@@ -490,20 +490,33 @@ def test_episode_leftovers_respect_ignore_and_do_not_commit_shared_changes(repos
         ("missing", "target_missing"),
         ("same", "target_is_episode_branch"),
         ("other", "target_checked_out_elsewhere"),
+        ("late_other", "target_checked_out_elsewhere"),
         ("dirty", "target_dirty"),
     ],
 )
-def test_episode_target_refusals_preserve_leftovers(repository, rule, code):
+def test_episode_target_refusals_preserve_leftovers(repository, monkeypatch, rule, code):
     binding = episode_binding(repository)
     worktree = episode_edit(binding)
     target = "research"
+    other = repository.parent / "other"
     if rule == "missing":
         target = "missing"
     elif rule == "same":
         target = binding["branch"]
     elif rule == "other":
         target = "release"
-        git(repository, "worktree", "add", str(repository.parent / "other"), target)
+        git(repository, "worktree", "add", str(other), target)
+    elif rule == "late_other":
+        # Checked out only after validation listed the registrations.
+        target = "release"
+        interrupted = conversation_worktree._interrupted
+
+        def check_out_target_late(root, timeout):
+            interrupted(root, timeout)
+            if not other.exists():
+                git(repository, "worktree", "add", str(other), target)
+
+        monkeypatch.setattr(conversation_worktree, "_interrupted", check_out_target_late)
     else:
         (repository / "human.txt").write_text("human\n")
     with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:

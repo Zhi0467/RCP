@@ -28,9 +28,11 @@ _IDLE: OrderedDict[tuple[object, object], None] = OrderedDict()
 
 
 def _discard(key: tuple[object, object]) -> None:
-    entry = _CONNECTIONS.pop(key)
+    # A finalizer can re-enter `_retire` on this thread and discard the key first.
+    entry = _CONNECTIONS.pop(key, None)
     _IDLE.pop(key, None)
-    entry.handle.close()
+    if entry is not None:
+        entry.handle.close()
 
 
 def _retire(owner: object) -> None:

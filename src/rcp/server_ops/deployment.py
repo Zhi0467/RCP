@@ -271,8 +271,8 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
                 inventory = next(
                     item for item in sqlite.projects if item.project_id == project.project_id
                 )
-                with sqlite3.connect(
-                    f"file:{sqlite.snapshot_path}?mode=ro", uri=True
+                with closing(
+                    sqlite3.connect(f"file:{sqlite.snapshot_path}?mode=ro", uri=True)
                 ) as connection:
                     row = connection.execute(
                         "SELECT state_remote FROM projects WHERE project_id=?",
@@ -689,7 +689,7 @@ def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
         )
         with database.open("rb") as source:
             digest = hashlib.file_digest(source, "sha256").hexdigest()
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             schema_digest = database_schema_sha256(connection)
         receipt = BackupSQLiteCaptureReceipt(
             capture_id=capture_id,

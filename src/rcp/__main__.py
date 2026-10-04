@@ -380,7 +380,8 @@ def _require_team_bind_is_loopback(args: argparse.Namespace, data_dir: Path) -> 
     database_path = data_dir / "rcp.sqlite3"
     if not database_path.exists():
         return
-    with closing(AppStore.open_read_only_snapshot(database_path)) as store:
+    # A running server keeps its connections open, so read through its WAL.
+    with closing(AppStore.open_read_only(database_path)) as store:
         if store.space_kind != "team":
             return
     host = getattr(args, "host", None)

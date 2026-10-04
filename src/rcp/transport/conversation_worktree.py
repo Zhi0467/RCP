@@ -157,7 +157,7 @@ def _checkout_common_dir(root: Path, *, timeout: float) -> str | ValueError:
 
 def _validate(
     binding: dict, *, timeout: float, require_owner: bool, allowed_branch: str | None = None
-) -> tuple[Path, Path, dict[str, dict[str, str]]]:
+) -> tuple[Path, Path]:
     shared = _directory(binding["shared_path"], require_owner=require_owner)
     worktree = _directory(binding["worktree_path"], require_owner=require_owner)
     expected_path, expected_branch = _names(shared, binding)
@@ -170,8 +170,7 @@ def _validate(
     if binding["branch"] != expected_branch:
         raise ValueError("Worktree branch does not match its chat binding")
     common_dirs = [_checkout_common_dir(root, timeout=timeout) for root in (shared, worktree)]
-    registrations = _registered(shared, timeout=timeout)
-    registration = registrations.get(str(worktree))
+    registration = _registered(shared, timeout=timeout).get(str(worktree))
     branches = {f"refs/heads/{binding['branch']}"}
     if allowed_branch is not None:
         _git(shared, "check-ref-format", f"refs/heads/{allowed_branch}", timeout=timeout)
@@ -200,13 +199,13 @@ def _validate(
         f"refs/heads/{binding['branch']}",
         timeout=timeout,
     )
-    return shared, worktree, registrations
+    return shared, worktree
 
 
 def _inspect(
     binding: dict, *, timeout: float, require_owner: bool, allowed_branch: str | None = None
 ) -> dict:
-    shared, worktree, _registrations = _validate(
+    shared, worktree = _validate(
         binding, timeout=timeout, require_owner=require_owner, allowed_branch=allowed_branch
     )
     default_ref = _git(
@@ -295,6 +294,9 @@ def _interrupted(root: Path, timeout: float) -> None:
         *(argument for name in names for argument in ("--git-path", name)),
         timeout=timeout,
     ).split("\n")
+    if len(paths) != len(names):
+        # A newline in the repository path splits the batched output; ask per path.
+        paths = [_git(root, "rev-parse", "--git-path", name, timeout=timeout) for name in names]
     for index, name in enumerate(names):
         if (root / paths[index]).exists():
             raise WorktreeValidationError("interrupted_git_state", name)
@@ -337,18 +339,20 @@ def _merge_inputs(payload: dict, timeout: float, require_owner: bool) -> tuple[P
     binding = payload["binding"]
     if not execute({"operation": "git_version", "timeout_seconds": timeout})["supported"]:
         raise WorktreeValidationError("git_version_unsupported")
-    shared, worktree, registrations = _validate(
-        binding, timeout=timeout, require_owner=require_owner
-    )
+    shared, worktree = _validate(binding, timeout=timeout, require_owner=require_owner)
     _interrupted(worktree, timeout)
     target = payload.get("target_branch") or binding["starting_branch"]
     if target == binding["branch"]:
         raise WorktreeValidationError("target_is_episode_branch")
     target_commit = _ref_commit(shared, target, timeout)
-    target_registrations = [
-        entry for entry in registrations.values() if entry.get("branch") == f"refs/heads/{target}"
+    # Read registrations again: another worktree may have checked out the target
+    # since validation, and landing by update-ref would move its branch under it.
+    registrations = [
+        entry
+        for entry in _registered(shared, timeout=timeout).values()
+        if entry.get("branch") == f"refs/heads/{target}"
     ]
-    if any(Path(entry["worktree"]).resolve() != shared for entry in target_registrations):
+    if any(Path(entry["worktree"]).resolve() != shared for entry in registrations):
         raise WorktreeValidationError("target_checked_out_elsewhere")
     shared_branch = _git(
         shared, "symbolic-ref", "--quiet", "--short", "HEAD", timeout=timeout, optional=True
@@ -735,9 +739,7 @@ def execute(payload: dict) -> dict:
             )
         return _inspect(binding, timeout=timeout, require_owner=require_owner)
     if operation == "remote_branch":
-        shared, _worktree, _registrations = _validate(
-            binding, timeout=timeout, require_owner=require_owner
-        )
+        shared, _worktree = _validate(binding, timeout=timeout, require_owner=require_owner)
         try:
             result = subprocess.run(
                 [
