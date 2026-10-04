@@ -9,8 +9,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from rcp.agents.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.core.transition_models import GraphTargetRef
+from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 
 
 class ChatDisplayStoreMixin:

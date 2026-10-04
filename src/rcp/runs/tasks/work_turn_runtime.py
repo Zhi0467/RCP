@@ -12,7 +12,6 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.command_mailbox import (
     CommandHandler,
     CommandTurnCredential,
@@ -28,6 +27,7 @@ from rcp.config import AgentSurface
 from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import Patch
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import (

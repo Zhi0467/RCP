@@ -8,7 +8,6 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from rcp.agents.browser_grant import BrowserTurnStatus
 from rcp.agents.provider_accounts import account_login_refusal
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.dependencies import require_registered_project
@@ -29,6 +28,7 @@ from rcp.episode_health import (
     project_episode_health,
 )
 from rcp.projects import ProjectCatalog
+from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.storage import (
     AgentFailureKind,
     AgentTaskRecord,

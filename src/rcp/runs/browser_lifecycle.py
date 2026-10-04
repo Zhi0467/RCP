@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from rcp.agents.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
+from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
 from rcp.transport import RemoteRunStage
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
-from rcp.agents.browser_grant import BrowserGrant
+from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope

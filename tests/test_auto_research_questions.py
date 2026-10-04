@@ -4,9 +4,9 @@ import json
 import uuid
 
 from rcp.agents import AgentEvent
-from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.command_protocol import AskCommandRequest
 from rcp.background import BackgroundAgentTasks
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.auto_research import AutoResearchCommandDispatcher
 from rcp.runs.auto_research_delivery import deliver_pending_auto_research_mail
 from rcp.runs.auto_research_questions import (

@@ -316,7 +316,7 @@ def test_browser_preference_is_local_and_snapshotted_at_admission(manifest, tmp_
 def test_turning_the_browser_off_deletes_the_chat_profile_without_a_turn(
     manifest, tmp_path, monkeypatch
 ):
-    from rcp.agents.browser_grant import BrowserOwnerKey
+    from rcp.providers.browser_grant import BrowserOwnerKey
     from rcp.runs import browser_runtime_seam
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")

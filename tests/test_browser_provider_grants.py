@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.providers import ProviderTurnRequest, profile_for
+from rcp.providers.browser_grant import BrowserGrant
 
 
 def _request(provider: str, status: str) -> ProviderTurnRequest:
@@ -131,3 +132,10 @@ def test_excluded_profiles_do_not_add_browser_shell(capability):
             config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
             agent = turn.command[turn.command.index("--agent") + 1]
             assert "bash" not in config["agent"][agent]["permission"]
+
+
+@pytest.mark.parametrize("module", ["rcp.browser", "rcp.transport", "rcp.storage", "rcp.providers"])
+def test_lower_layers_import_first_in_a_fresh_interpreter(module):
+    # Grant models are shared below storage; importing them from rcp.agents made
+    # these packages fail with a circular import when imported first.
+    subprocess.run([sys.executable, "-c", f"import {module}"], check=True)

@@ -15,7 +15,6 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from rcp.agents.browser_grant import BrowserGrant
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -37,6 +36,7 @@ from rcp.providers.base import (
     _usage_dedupe_key,
     _usage_int,
 )
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.opencode.remote import EXIT_MARKER, OpenCodeRunTurnFence
 
 if TYPE_CHECKING:

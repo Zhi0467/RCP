@@ -27,7 +27,6 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
-from rcp.agents.browser_grant import BrowserTurnStatus
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import selected_compute_connections
@@ -113,6 +112,7 @@ from rcp.providers import (
     configured_runtime,
     profile_for,
 )
+from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,

@@ -12,7 +12,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -31,6 +30,7 @@ from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _append_chat_exchange,

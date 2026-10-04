@@ -28,7 +28,6 @@ from rcp.agents.auto_research_prompt import (
     auto_research_prompt_values,
     auto_research_worker_task_contract,
 )
-from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.command_mailbox import (
     CommandTurnIdentity,
     StagedCommandMailbox,
@@ -49,6 +48,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
 from rcp.providers import classify_terminal_error
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,

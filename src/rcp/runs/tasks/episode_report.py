@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
@@ -21,6 +20,7 @@ from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,

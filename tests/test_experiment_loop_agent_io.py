@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl, PromptFactory
-from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
@@ -16,6 +15,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,

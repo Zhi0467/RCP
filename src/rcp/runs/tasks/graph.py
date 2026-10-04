@@ -22,7 +22,6 @@ from rcp.agents import (
     prepare_agent_patch,
     validate_agent_patch_shape,
 )
-from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
@@ -37,6 +36,7 @@ from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS, PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.providers import classify_terminal_error
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,

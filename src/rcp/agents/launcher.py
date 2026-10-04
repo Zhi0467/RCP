@@ -23,7 +23,6 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
-from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -62,6 +61,7 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 from rcp.transport.provider_discovery import discover_provider
 from rcp.transport.remote_terminate_provider import ABSENT as REMOTE_PROBE_ABSENT

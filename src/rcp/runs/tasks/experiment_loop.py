@@ -20,7 +20,6 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
-from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -59,6 +58,7 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _append_chat_graph_receipt,

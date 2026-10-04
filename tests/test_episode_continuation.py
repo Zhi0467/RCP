@@ -7,9 +7,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from rcp.agents import AgentEvent
-from rcp.agents.browser_grant import BrowserTurnStatus
 from rcp.api.episodes import episode_on_branch
 from rcp.background import AgentTaskExecution
+from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.service import RunRequest
 from rcp.transport import StateUnavailable

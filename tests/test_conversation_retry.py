@@ -758,7 +758,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
 def test_browser_grant_precedes_persisted_prompt_and_turns_off(
     manifest, tmp_path, monkeypatch, mode, browser_status
 ):
-    from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
     from rcp.runs import browser_runtime_seam
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -847,7 +847,7 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
 async def test_work_browser_lease_finishes_when_prompt_rendering_fails(
     manifest, tmp_path, monkeypatch
 ):
-    from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
     from rcp.runs import browser_runtime_seam
     from rcp.runs.tasks import work
 

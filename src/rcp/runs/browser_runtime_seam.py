@@ -5,8 +5,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from rcp.agents.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.browser import SessionLease, Unavailable, close_owner, ensure_session, release_session
+from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.transport import RemoteRunStage
 
 # Active leases by id. A controller restart forgets them; the runtime clears that

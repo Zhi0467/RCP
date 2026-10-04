@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
-from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -29,6 +28,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
+from rcp.providers.browser_grant import BrowserGrant
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
 ACCEPTANCE_CAMPAIGN_FINISH_MARKER = "[RCP acceptance: campaign finish]"

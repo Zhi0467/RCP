@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
-from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
@@ -29,6 +28,7 @@ from rcp.core.models import GraphState, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
+from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest

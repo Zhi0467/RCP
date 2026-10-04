@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.agents import AgentEvent
-from rcp.agents.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
+from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
 from rcp.runs.browser_lifecycle import (
     acquire_turn_browser,

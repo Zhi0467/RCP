@@ -1958,7 +1958,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
 ) -> None:
     service = _service(manifest, tmp_path)
     store, _auto_research, _root, worker = _setup_auto_research(tmp_path)
-    from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
     from rcp.runs import browser_lifecycle
 
     grant = BrowserGrant(requested=True, status="granted", session_name="browser-test-session")
