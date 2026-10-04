@@ -533,25 +533,30 @@ class MachinePowerController:
         except PermissionError:
             # A privileged child may still be exiting; prove the group is gone.
             pass
-        deadline = self.monotonic() + MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
-        while True:
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
-                return
-            except PermissionError:
-                pass  # The group exists, but is not ours to signal.
-            if self.monotonic() >= deadline:
-                break
-            self._stop.wait(0.02)
+        if self._wait_group_gone(process.pid):
+            return
         try:
             os.killpg(process.pid, signal.SIGKILL)
-            os.killpg(process.pid, 0)
         except ProcessLookupError:
             return
         except PermissionError:
             pass
-        raise OSError("watchdog command group is still alive")
+        # A killed process can still exist for a moment after SIGKILL.
+        if not self._wait_group_gone(process.pid):
+            raise OSError("watchdog command group is still alive")
+
+    def _wait_group_gone(self, pid) -> bool:
+        deadline = self.monotonic() + MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
+        while True:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                pass  # The group exists, but is not ours to signal.
+            if self.monotonic() >= deadline:
+                return False
+            self._stop.wait(0.02)
 
     def _replace_lost_watchdog(self):
         process = self._watchdog
@@ -565,9 +570,9 @@ class MachinePowerController:
                 self._cleanup_failed("clear_failed")
             raise
 
-    def _consume_result(self) -> bool:
+    def _consume_result(self, generation: str | None = None) -> bool:
         result = read_record(self.directory / "result")
-        generation = str(self._generation)
+        generation = str(self._generation) if generation is None else generation
         if result.get("generation") != generation or result.get("complete") != "1":
             return False
         if self._state["result_generation"] == generation:
@@ -663,6 +668,11 @@ class MachinePowerController:
         if (self._state["cleanup_failure"] or {}).get("kind") == "clear_failed":
             return
         if not self._state["lid_mode"] and self._watchdog is None:
+            # A result left by a backend that died before reading it still
+            # carries a cleanup failure the human must see.
+            previous = read_record(self.directory / "result").get("generation")
+            if previous:
+                self._consume_result(previous)
             if self.installer.status().install_problem in {"other_account", "foreign_file"}:
                 return
             if read_record(self.directory / "activation").get("set") != "1":

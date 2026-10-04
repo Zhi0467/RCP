@@ -300,6 +300,7 @@ class LidMachine:
         self.reasons = ["episode"]
         self.ack = True
         self.group_alive = False
+        self.linger_after_kill = None
         self.now = 1000.0
         self.ticks = 0.0
         self.installed = True
@@ -350,6 +351,12 @@ class LidMachine:
         self.commands.append((pid, sig))
         if not self.group_alive:
             raise ProcessLookupError
+        if self.linger_after_kill is not None and (pid, signal.SIGKILL) in self.commands:
+            if self.linger_after_kill:
+                self.linger_after_kill -= 1
+            else:
+                self.group_alive = False
+                raise ProcessLookupError
 
     def spawn(self, argv):
         child = Process(500 + len(self.children))
@@ -700,15 +707,18 @@ def test_shutdown_replaces_dead_watchdog_to_release(lid_machine, off_published):
     assert lid_machine.flag is False
 
 
-@pytest.mark.parametrize("group_alive", [False, True])
+@pytest.mark.parametrize("group_alive", [False, True, "exits_after_kill"])
 def test_watchdog_dies_while_shutdown_waits(lid_machine, group_alive):
     lid_machine.activate()
     previous = lid_machine.controller._watchdog
     previous.on_wait = lambda: setattr(previous, "returncode", -9)
-    lid_machine.group_alive = group_alive
+    lid_machine.group_alive = bool(group_alive)
+    if group_alive == "exits_after_kill":
+        # The killed group is still visible on the first probe after SIGKILL.
+        lid_machine.linger_after_kill = 1
     lid_machine.controller.stop()
     assert (previous.pid, signal.SIGTERM) in lid_machine.commands
-    if group_alive:
+    if group_alive is True:
         assert lid_machine.controller._watchdog is previous
         assert lid_machine.flag is True
         assert lid_machine.controller.status()["cleanup_failure"]["kind"] == "clear_failed"
@@ -902,6 +912,17 @@ def test_restart_consumes_previous_executor_result_before_rearming(lid_machine, 
     lid_machine.controller = lid_machine.new_controller()
     lid_machine.controller.safety_pass()
     assert lid_machine.controller.status()["latched"] is None
+
+
+def test_opted_out_restart_still_reports_an_unread_sleep_failure(lid_machine):
+    lid_machine.activate()
+    lid_machine.controller.update({"lid_mode": False})
+    lid_machine.controller.safety_pass()
+    lid_machine.execute(sleep_failed=True)
+    lid_machine.controller._close_owner()
+    lid_machine.controller = lid_machine.new_controller()
+    lid_machine.controller.safety_pass()
+    assert lid_machine.controller.status()["cleanup_failure"]["kind"] == "sleep_failed"
 
 
 def test_shutdown_recovers_previous_owned_activation_without_a_safety_pass(lid_machine):
