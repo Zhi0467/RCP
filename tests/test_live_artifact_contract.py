@@ -5,7 +5,11 @@ import re
 
 import pytest
 
-from rcp.limits import LIVE_ARTIFACT_MAX_NEEDS
+from rcp.limits import (
+    LIVE_ARTIFACT_MAX_NEEDS,
+    LIVE_ARTIFACT_MAX_PATTERN_CHARS,
+    LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS,
+)
 from rcp.live_artifacts import (
     LiveTag,
     parse_live_tag,
@@ -30,7 +34,12 @@ def test_skill_examples_validate_against_live_schema() -> None:
     assert len(examples) == 3
     parsed = [parse_live_tag(example, allow_episode=True) for example in examples]
     assert all(isinstance(tag, LiveTag) for tag in parsed)
-    assert {need.kind for tag in parsed for need in tag.needs} == {"job", "file", "episode"}
+    assert {need.kind for tag in parsed for need in tag.needs} == {
+        "job",
+        "file",
+        "files",
+        "episode",
+    }
     with pytest.raises(ValueError):
         parse_live_tag(examples[-1])
 
@@ -73,3 +82,31 @@ def test_invalid_declarations_fail_closed(needs: list[dict]) -> None:
 def test_invalid_tags_fail_closed(html: str) -> None:
     with pytest.raises(ValueError):
         parse_live_tag(html)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "../x",
+        "/x",
+        "a/**b",
+        "./x",
+        "a/" * LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS + "x",
+        "x" * (LIVE_ARTIFACT_MAX_PATTERN_CHARS + 1),
+    ],
+)
+def test_folder_patterns_refuse_unbounded_or_unsafe_paths(pattern):
+    with pytest.raises(ValueError):
+        parse_live_tag(
+            _html(
+                [
+                    dict(
+                        kind="files",
+                        dir="/project/run",
+                        pattern=pattern,
+                        read="whole",
+                        format="text",
+                    )
+                ]
+            )
+        )

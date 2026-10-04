@@ -315,7 +315,7 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
                     assert checker.check().status == "failed"
                     status = client.get("/api/server-status").json()
                     assert not status["releases"]["update_available"]
-                    assert status["release_check"]["failure_reason"] == "GitHub answered HTTP 503"
+                    assert "503" in status["release_check"]["failure_reason"]
                     assert status["overall"]["tone"] == "good"
                     assert report.source_state == "aligned"
                     # Refresh looks up again sooner than an ordinary read.

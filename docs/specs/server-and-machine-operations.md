@@ -447,7 +447,9 @@ Invitation revocation is recorded distinctly from an invitee decline.
 Identity/admission checks reject the member immediately.
 The immutable user row and name remain as a tombstone for historical
 attribution. Existing graceful task/episode owners then stop live authorized
-work; an in-flight provider turn may settle but Apply rechecks membership. Only
+work; an in-flight provider turn may settle but Apply rechecks membership. The
+member's service connections are deleted after the fence commits and again
+before completion, under the lock their writers take. Only
 after no live work remains does the operation mark the member removed. Startup
 and CLI re-entry resume a crash-interrupted removal from its durable fence rather
 than restoring access or forgetting to stop work. This guard avoids stranding
@@ -463,25 +465,38 @@ ordinary loss recovery is re-invitation by the other enrolled member.
 
 ## Keeping a Mac awake
 
-A personal-space backend on macOS can keep its Mac awake while it has work.
-`src/rcp/machine_power.py` owns the policy; the desktop shell only shows it.
-The [decision record](../decisions/2026-10-01-backend-owns-macos-keep-awake.md)
-explains the tradeoffs. A team space has no controller, and the API returns 404.
-On any platform but macOS, the API reports `supported: false`.
+A personal-space backend on macOS keeps its Mac from idle-sleeping while it has
+work. `src/rcp/machine_power.py` owns the policy; Settings → This Mac shows it
+and has an idle-hold toggle, on by default. A team space has no controller, and the API
+returns 404. Other platforms report `supported: false`; each supported
+platform is one entry in `IDLE_HOLD_COMMANDS`.
 
-There are two modes:
-
-- **Idle hold**, on by default. While there is demand, the backend runs
-  `caffeinate -i -w <worker pid>`. It needs no root and ends with the worker.
-- **Lid-closed mode**, opt-in. While there is demand, the kernel
-  `SleepDisabled` flag is set. It needs the one-time install below.
+**The hold.** While there is demand, the backend runs
+`caffeinate -i -w <backend pid>`, an ordinary idle-sleep assertion. It needs no
+root, leaves no system state behind, and ends with the backend. A locked
+screen or a sleeping display does not end it. macOS still overrides it: closing
+the lid without an external display sleeps the Mac, as does a battery or
+thermal emergency. Work then pauses, and the wake gate in `machine_sleep.py`
+holds automatic launches until the Mac has stayed awake. Lid-closed operation
+is not part of this hold.
 
 **Demand** is coarse. There is demand while a locally owned episode has health
 `starting`, `active`, `recovering`, `stopping`, or `wrapping_up` (not
 `wrapping_up` blocked on sign-in); a task is running, pausing, or queued and
 not refused for sign-in; the background runtime is not idle; or a transport
 retry is scheduled. Ended episodes, human-only waits, and armed watchers alone
-are not demand. The 30 s wake gate in `machine_sleep.py` is unchanged.
+are not demand. A pass every 10 s re-reads demand. A failed read keeps the
+current hold and is logged, since it is not evidence that work ended.
+
+The preference lives in the data directory's SQLite `machine_power_state`
+row, not in project manifests.
+
+### Lid-closed mode
+
+**Lid-closed mode** is opt-in. While there is demand, the kernel
+`SleepDisabled` flag is set. It needs the one-time install below. The
+[decision record](../decisions/2026-10-01-backend-owns-macos-keep-awake.md)
+explains the tradeoffs. The 30 s wake gate in `machine_sleep.py` is unchanged.
 
 **Install** is one admin prompt (`osascript ... with administrator
 privileges`). It writes `/etc/sudoers.d/rcp-keep-awake`, granting the enrolled
@@ -508,9 +523,10 @@ generation and exits, so a resumed backend cannot re-arm it.
 
 **Safety.** Each pass reads battery, thermal state, lid, and flag. With the
 flag set, the kernel refuses its own low-battery and thermal sleep, so RCP
-releases at 20% or less on battery and on any thermal warning; both also drop
-the idle hold. A reading that fails, or an installation that is no longer
-complete, releases lid mode only. Ending demand drops
+releases lid mode at 20% or less on battery and on any thermal warning.
+A reading that fails, an installation that is no longer complete, or a watchdog
+failure also releases lid mode only. The idle hold remains demand-driven.
+Ending demand drops
 both holds and never sleeps an open Mac. pmset omits the `SleepDisabled` line
 until the flag has been set once since boot; RCP reads that as off.
 
@@ -521,8 +537,8 @@ power. If the flag cannot be cleared, the space home page shows
 sleep, it shows `pmset sleepnow`. A removed sudoers rule can strand the flag;
 that is accepted.
 
-Preferences and latches live in the data directory's SQLite
-`machine_power_state` row, not in project manifests.
+Lid-mode preferences and latches share the data directory's SQLite
+`machine_power_state` row.
 
 ## Release selection, deployment, and automatic recovery
 
@@ -1591,7 +1607,8 @@ A fresh host remains stopped and needs no dummy team initialization.
 
 It preserves `space_id`, converts captured active work to interrupted, and never
 claims that RCP itself can prove the old authority is offline. Because provider
-homes, the `providers` credential directory, run stages, and provider-native
+homes, the `providers` credential directory, member `service-connections`, run
+stages, and provider-native
 conversation state are excluded, restore
 marks every pre-restore task history-only, clears `writing_sessions` and
 `chat_session_contexts`, and exposes no old native-session id as an executable

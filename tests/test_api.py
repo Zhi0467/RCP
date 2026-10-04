@@ -648,7 +648,7 @@ class ScriptedLauncher:
         self.launch_kwargs.append(kwargs)
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
-        master_path = next(re.finditer(r"/[^\n]+\.md", prompt)).group()
+        master_path = next(re.finditer(r"/[^\n]+/inputs/[^\n]+\.md", prompt)).group()
         inputs = Path(master_path).parent
         self.input_snapshots.append(
             {
@@ -1451,6 +1451,7 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     )
     cleared = client.delete(f"/api/projects/{project_id}/caches")
     assert cleared.status_code == 200
+    assert cleared.json()["project_page_rebuilt"] is True
     assert cleared.json()["remote_sources"]["count"] == 0
     assert cleared.json()["session_slices"]["count"] == 0
     assert not cached.exists()
@@ -1491,6 +1492,8 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     store.fail_agent_task("this-project-cache-reader", "finished for test")
     all_cleared = client.delete(f"/api/projects/{project_id}/caches/all")
     assert all_cleared.status_code == 200
+    # project-b is a bare record with no manifest: its page is reported, not rebuilt.
+    assert all_cleared.json()["project_pages_not_rebuilt"] == ["project-b"]
     assert all_cleared.json()["remote_sources"]["count"] == 0
     assert all_cleared.json()["remote_sources"]["bytes"] == 0
     assert all_cleared.json()["session_slices"]["count"] == 0
@@ -2181,6 +2184,9 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(app, manifest
             self.directories.append(label)
             return str(self.root / "inputs" / label)
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     stage = RecordingStage()
     staged = _stage_graph_context(context, service, stage, "laptop")
 
@@ -2321,6 +2327,9 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tm
 
         def put_directory(self, _source: Path, label: str) -> str:
             return str(self.root / "inputs" / label)
+
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
 
     remote_repository = context.repositories[0].model_copy(
         update={"machine": "remote-1", "host": "remote.example"}
@@ -5122,6 +5131,10 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def __init__(self, host: str) -> None:
             self.host = host
             self.root = None
+            self.workspace_text: dict[str, str] = {}
+
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.workspace_text[name] = content
 
         @property
         def workspace(self):

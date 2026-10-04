@@ -214,15 +214,25 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
     assert not (workspace / "patch.json").exists()
     assert store.agent_task_contract("edit", "session_master") is None
     artifacts = [event.artifact for event in events if event.event == "artifact"]
-    assert {artifact.name for artifact in artifacts} == (
-        {"extra.txt", "chart.html"} if undo else {"extra.txt"}
-    )
+    assert {artifact.name for artifact in artifacts} == {"extra.txt", "chart.html"}
+    edited = next(artifact for artifact in artifacts if artifact.name == "chart.html")
+    assert (edited.artifact_id == source.artifact_id) is not undo
     assert store.read_artifact_bytes(source.artifact_id) == (
         b"<p>original</p>" if undo else b"<p>edited</p>"
     )
-    if undo:
-        edited = next(artifact for artifact in artifacts if artifact.name == "chart.html")
-        assert store.read_artifact_bytes(edited.artifact_id) == b"<p>edited</p>"
+    assert store.read_artifact_bytes(edited.artifact_id) == b"<p>edited</p>"
+    from rcp.api.tasks import _read_agent_artifact_bytes
+
+    store.complete_agent_task(
+        "edit",
+        applied_revision=None,
+        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
+    )
+    for artifact in artifacts:
+        _, data = _read_agent_artifact_bytes(
+            store, app.state.default_project_id, "edit", artifact.artifact_id, "download"
+        )
+        assert data == store.read_artifact_bytes(artifact.artifact_id)
 
 
 @pytest.mark.parametrize("failure", ["error", "session", "no_result"])
@@ -273,7 +283,7 @@ def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest,
     )
     client = TestClient(app)
     path = f"/api/projects/{app.state.default_project_id}/artifacts/{source.artifact_id}"
-    refused = client.post(path + "/comments", json={"message": "Change this chart"})
+    refused = client.post(path + "/comments", json={"comments": [{"text": "Change this chart"}]})
     assert refused.status_code == 409
     undone = client.post(path + "/undo", json={})
     assert undone.status_code == 200
@@ -546,6 +556,24 @@ def test_live_resolution_failure_does_not_record_publish_completion(
     assert execution.store.read_artifact_bytes(published_id) == b"<p>edited</p>"
     assert execution.store.artifact(published_id).current_version == published_version
     assert execution.store.artifact_versions(published_id) == versions
+
+
+def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp_path):
+    # Serving is pinned by test_revoking_edit_uses_recorded_workspace_and_publishes_cas.
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    (directory / source.name).write_bytes(b"<p>edited</p>")
+    artifacts = _finalize(app, request, execution, directory)
+    assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
+    assert _finalize(app, request, execution, directory) == artifacts
+
+
+def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
+    # Descriptor sizes are positive or unknown; an emptied artifact must not fail the turn.
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    (directory / source.name).write_bytes(b"")
+    artifacts = _finalize(app, request, execution, directory)
+    assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
+    assert execution.store.read_artifact_bytes(source.artifact_id) == b""
 
 
 @pytest.mark.asyncio

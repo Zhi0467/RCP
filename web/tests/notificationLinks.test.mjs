@@ -33,6 +33,10 @@ test("notification links parse exactly and refuse other hashes", () => {
 test("graph items open the Inbox and episodes their exact run", () => {
   const graph = parseNotificationLink("#/projects/p/targets/main/blocker/b");
   assert.equal(graphNotificationHash(graph), "#/projects/p?view=attention");
+  const consolidation = parseNotificationLink("#/projects/p/targets/main/consolidation/run-1");
+  assert.equal(consolidation.kind, "consolidation");
+  assert.equal(consolidation.itemId, "run-1");
+  assert.equal(graphNotificationHash(consolidation), "#/projects/p?view=attention");
 
   const link = parseNotificationLink("#/projects/p/targets/main/episode/e1");
   assert.equal(

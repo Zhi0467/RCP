@@ -66,6 +66,61 @@ test("machine power requests use the contract routes and return backend status",
   ]);
 });
 
+test("Settings polling follows the hold and stops on cleanup", async (t) => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    configFile: false,
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true },
+  });
+  let scheduled = null;
+  let data = status;
+  const received = [];
+  const errors = [];
+  t.mock.method(globalThis, "fetch", async () => Response.json(data));
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setTimeout(callback, delay) {
+      scheduled = { callback, delay };
+      return 1;
+    },
+    clearTimeout() {
+      scheduled = null;
+    },
+  };
+  try {
+    const { startMachinePowerPolling } = await server.ssrLoadModule(
+      "/src/hooks/useMachinePower.ts",
+    );
+    const { EXPERIMENT_BOARD_POLL_DELAY_MS } = await server.ssrLoadModule(
+      "/src/hooks/useProjectTabs.ts",
+    );
+    const stop = startMachinePowerPolling(
+      (next) => received.push(next),
+      (error) => errors.push(error),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled.delay, EXPERIMENT_BOARD_POLL_DELAY_MS);
+    assert.equal(received.at(-1).idle_hold.active, true);
+    data = { ...status, idle_hold: { enabled: true, active: false }, demand_reasons: [] };
+    scheduled.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.at(-1).idle_hold.active, false);
+    // An in-flight read must not update state or reschedule after unmount.
+    scheduled.callback();
+    stop();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled, null);
+    assert.equal(received.length, 2);
+    assert.deepEqual(errors, []);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+    await server.close();
+  }
+});
+
 test("Settings polling observes activation and a later latch, then stops on cleanup", async (t) => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
@@ -99,7 +154,6 @@ test("Settings polling observes activation and a later latch, then stops on clea
     const stop = startMachinePowerPolling(
       (next) => received.push(next),
       (error) => errors.push(error),
-      true,
     );
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(scheduled.delay, EXPERIMENT_BOARD_POLL_DELAY_MS);

@@ -19,60 +19,6 @@ from rcp.storage import AppStore
 from tests.helpers import wait_until
 
 
-def test_personal_power_status_and_preferences(tmp_path):
-    app = create_app(data_dir=tmp_path)
-    with TestClient(app) as client:
-        response = client.get("/api/machine-power")
-        assert response.status_code == 200
-        status = response.json()
-        assert set(status) == {
-            "platform",
-            "supported",
-            "installed",
-            "install_problem",
-            "idle_hold",
-            "lid_mode",
-            "demand",
-            "demand_reasons",
-            "latched",
-            "last_release",
-            "cleanup_failure",
-            "external_owner",
-        }
-        assert status["platform"] == "linux"
-        assert status["supported"] is False
-        assert status["idle_hold"] == {"enabled": True, "active": False}
-        assert status["lid_mode"] == {"enabled": False, "active": False}
-        updated = client.put("/api/machine-power", json={"idle_hold": False})
-        assert updated.status_code == 200
-        assert updated.json()["idle_hold"] == {"enabled": False, "active": False}
-        assert updated.json().keys() == status.keys()
-        assert client.get("/api/machine-power").json() == updated.json()
-        assert client.put("/api/machine-power", json={"lid_mode": "yes"}).status_code == 422
-
-
-@pytest.mark.parametrize(
-    "method,path",
-    [
-        ("get", "/api/machine-power"),
-        ("put", "/api/machine-power"),
-        ("post", "/api/machine-power/install"),
-        ("post", "/api/machine-power/uninstall"),
-    ],
-)
-def test_team_power_endpoints_are_absent(tmp_path, method, path):
-    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team")
-    member, _ = store.enroll_team_member(bootstrap, "Member")
-    app = create_app(
-        data_dir=tmp_path,
-        trusted_principal_resolver=lambda _request, current: current.space_user(member.user_id),
-    )
-    with TestClient(app) as client:
-        response = client.request(method, path, json={})
-        assert response.status_code == 404
-    assert app.state.machine_power is None
-
-
 @pytest.fixture
 def mac_power(tmp_path, monkeypatch):
     installer = Mock()
@@ -114,6 +60,103 @@ def mac_power(tmp_path, monkeypatch):
     return installer
 
 
+def test_personal_power_status_and_preferences(tmp_path, mac_power):
+    app = create_app(data_dir=tmp_path)
+    with TestClient(app) as client:
+        assert app.state.machine_power._thread.is_alive()
+        response = client.get("/api/machine-power")
+        assert response.status_code == 200
+        status = response.json()
+        assert set(status) == {
+            "platform",
+            "supported",
+            "installed",
+            "install_problem",
+            "idle_hold",
+            "lid_mode",
+            "demand",
+            "demand_reasons",
+            "latched",
+            "last_release",
+            "cleanup_failure",
+            "external_owner",
+        }
+        assert status["supported"] is True
+        assert status["lid_mode"] == {"enabled": False, "active": False}
+        assert status["idle_hold"] == {"enabled": True, "active": False}
+        updated = client.put("/api/machine-power", json={"idle_hold": False})
+        assert updated.status_code == 200
+        assert updated.json()["idle_hold"] == {"enabled": False, "active": False}
+        assert client.get("/api/machine-power").json() == updated.json()
+        for invalid in (
+            {},
+            {"idle_hold": "yes"},
+            {"lid_mode": "yes"},
+            {"idle_hold": None},
+            {"lid_mode": None},
+            {"unknown": True},
+        ):
+            assert client.put("/api/machine-power", json=invalid).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", "/api/machine-power"),
+        ("put", "/api/machine-power"),
+        ("post", "/api/machine-power/install"),
+        ("post", "/api/machine-power/uninstall"),
+    ],
+)
+def test_team_power_endpoints_are_absent(tmp_path, method, path):
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team")
+    member, _ = store.enroll_team_member(bootstrap, "Member")
+    app = create_app(
+        data_dir=tmp_path,
+        trusted_principal_resolver=lambda _request, current: current.space_user(member.user_id),
+    )
+    with TestClient(app) as client:
+        response = client.request(method, path, json={})
+        assert response.status_code == 404
+    assert app.state.machine_power is None
+
+
+def test_power_follows_deferred_startup_and_outlasts_worker_shutdown(tmp_path, monkeypatch):
+    controller = Mock()
+    monkeypatch.setattr("rcp.api.app.MachinePowerController", lambda *a, **kw: controller)
+    fence = StartupEffectFence("keep-awake startup ordering")
+    app = create_app(data_dir=tmp_path, startup_effect_fence=fence)
+    order = []
+    controller.start.side_effect = lambda: order.append("start")
+    controller.stop.side_effect = lambda: order.append("off")
+    original_shutdown = app.state.background_tasks.shutdown
+
+    def shutdown(*args, **kwargs):
+        order.append("workers")
+        return original_shutdown(*args, **kwargs)
+
+    monkeypatch.setattr(app.state.background_tasks, "shutdown", shutdown)
+    with TestClient(app):
+        assert order == []
+        fence.release()
+        assert app.state.startup_effect_runtime_event.wait(timeout=5)
+        assert order == ["start"]
+    assert order == ["start", "workers", "off"]
+
+
+def test_failed_startup_stops_power(tmp_path, monkeypatch):
+    controller = Mock()
+    monkeypatch.setattr("rcp.api.app.MachinePowerController", lambda *a, **kw: controller)
+    app = create_app(data_dir=tmp_path)
+    monkeypatch.setattr(
+        app.state.background_tasks, "recover_at_startup", Mock(side_effect=RuntimeError("boom"))
+    )
+    with pytest.raises(RuntimeError, match="boom"), TestClient(app):
+        pass
+    controller.start.assert_called_once()
+    controller.stop.assert_called_once()
+
+
 @pytest.mark.parametrize("action", ["install", "uninstall"])
 def test_cancelled_admin_prompt_preserves_status(tmp_path, mac_power, action):
     app = create_app(data_dir=tmp_path / "data")
@@ -134,7 +177,7 @@ def test_served_macos_power_preferences(tmp_path, mac_power, caplog):
     caplog.set_level(logging.INFO)
     app = create_app(data_dir=tmp_path / "data")
     with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
+        sock.bind(("127.0.0.1", 8431))
         port = sock.getsockname()[1]
         assert port != 8421
         server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=True))
@@ -157,26 +200,3 @@ def test_served_macos_power_preferences(tmp_path, mac_power, caplog):
             worker.join(timeout=10)
         assert not worker.is_alive()
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
-
-
-def test_power_follows_deferred_startup_and_precedes_worker_shutdown(tmp_path, monkeypatch):
-    controller = Mock()
-    monkeypatch.setattr("rcp.api.app.MachinePowerController", lambda *a, **kw: controller)
-    fence = StartupEffectFence("keep-awake startup ordering")
-    app = create_app(data_dir=tmp_path, startup_effect_fence=fence)
-    order = []
-    controller.start.side_effect = lambda: order.append("start")
-    controller.stop.side_effect = lambda: order.append("off")
-    original_shutdown = app.state.background_tasks.shutdown
-
-    def shutdown(*args, **kwargs):
-        order.append("workers")
-        return original_shutdown(*args, **kwargs)
-
-    monkeypatch.setattr(app.state.background_tasks, "shutdown", shutdown)
-    with TestClient(app):
-        assert order == []
-        fence.release()
-        assert app.state.startup_effect_runtime_event.wait(timeout=5)
-        assert order == ["start"]
-    assert order == ["start", "off", "workers"]

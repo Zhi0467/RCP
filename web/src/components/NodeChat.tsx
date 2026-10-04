@@ -1,3 +1,19 @@
+import { MAIN_GRAPH } from "../graphTarget";
+import { ProjectReferencePicker } from "./ProjectReferencePicker";
+import { ReferenceChip } from "./ReferenceChip";
+import {
+  MAX_CHAT_ATTACHMENTS,
+  extractReferences,
+  mergeReferences,
+  referenceKey,
+  referenceDraftKey,
+  referenceFallbackLabel,
+  labelArtifactReferences,
+  parseReferenceDraft,
+  unlabeledArtifactIds,
+  sourceReference,
+  type DraftReference,
+} from "../projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "../hooks/useQuestions";
 import { questionIsOpen, questionTranscript } from "../questions";
@@ -10,6 +26,7 @@ import {
   Download,
   ExternalLink,
   File,
+  FolderOpen,
   History,
   Inbox,
   LoaderCircle,
@@ -22,6 +39,7 @@ import {
   RadioTower,
   RotateCcw,
   Send,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -36,7 +54,14 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { api, removeChatAttachment, steerChatTurn, uploadChatAttachment } from "../api";
+import {
+  api,
+  loadServiceConnections,
+  removeChatAttachment,
+  steerChatTurn,
+  transcribeAudio,
+  uploadChatAttachment,
+} from "../api";
 import {
   artifactUrl,
   chatTasksMissingFromHistory,
@@ -88,7 +113,15 @@ import {
   latestPersistedComputeIds,
   reconcileActiveComputeIds,
 } from "../compute";
+import {
+  chooseRecordingFormat,
+  liveDictationSpan,
+  serviceConnectionFailure,
+  type DictationSpan,
+} from "../dictation";
+import { errorMessage } from "../errors";
 import type { GlossaryIndex } from "../glossary";
+import { claimMicrophone, type MicrophoneClaim } from "../microphone";
 import {
   graphConditionLabel,
   isExternalWatcherRecord,
@@ -115,7 +148,9 @@ import type {
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
+  ProjectArtifact,
   ProjectSnapshot,
+  ServiceConnection,
   StartAgentTask,
   WatcherRecord,
   WorktreeIntegrationOption,
@@ -179,10 +214,10 @@ interface ComposerAttachment {
   error?: string;
 }
 
-interface DictationSpan {
+/** A network dictation session; `recorder` is null until the microphone opens. */
+interface NetworkDictation {
   sessionId: string;
-  start: number;
-  end: number;
+  recorder: MediaRecorder | null;
 }
 
 interface SelectedChatAnnotationComposer {
@@ -203,6 +238,9 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+const DICTATION_SEGMENT_MS = 55_000;
+const SYSTEM_DICTATION_ELSEWHERE =
+  "Your dictation service is macOS, which works only in the desktop app. Choose a connection in Space settings, under Dictation and voice.";
 
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -363,13 +401,46 @@ export function NodeChat({
   const [computeMenuOpen, setComputeMenuOpen] = useState(false);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
+  const referencesKey = referenceDraftKey(project.id, project.graph_target ?? MAIN_GRAPH, chatId);
+  const [references, setReferences] = useState<DraftReference[]>(() =>
+    parseReferenceDraft(readStorage(referencesKey)),
+  );
+  const referencesIdentity = useRef(referencesKey);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  useEffect(() => {
+    if (referencesIdentity.current !== referencesKey) {
+      referencesIdentity.current = referencesKey;
+      setReferences(parseReferenceDraft(readStorage(referencesKey)));
+      return;
+    }
+    if (references.length) writeStorage(referencesKey, JSON.stringify(references));
+    else removeStorage(referencesKey);
+  }, [referencesKey, references]);
+  const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
+  useEffect(() => {
+    if (!unlabeledArtifacts) return;
+    const controller = new AbortController();
+    api<ProjectArtifact[]>(`/api/projects/${encodeURIComponent(project.id)}/artifacts`, {
+      signal: controller.signal,
+    })
+      .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
+      // A lookup failure keeps the fallback label; the sent turn shows the server's name.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [project.id, unlabeledArtifacts]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const [dictationState, setDictationState] = useState<
-    "idle" | "starting" | "recording" | "stopping" | "error"
+    "idle" | "starting" | "preparing" | "recording" | "stopping" | "transcribing" | "error"
   >("idle");
   const [dictationError, setDictationError] = useState<string | null>(null);
+  const [dictationEngine, setDictationEngine] = useState<DictationStateEvent["engine"] | null>(
+    null,
+  );
+  const [dictationService, setDictationService] = useState<string | null>(null);
+  const [dictationUnavailable, setDictationUnavailable] = useState<string | null>(null);
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
     () => new Set(),
@@ -386,6 +457,8 @@ export function NodeChat({
   const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
+  const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
+  const networkDictationRef = useRef<NetworkDictation | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastChatIdRef = useRef(chatId);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -474,6 +547,14 @@ export function NodeChat({
   const annotationComposerOpen = annotationComposer !== null;
   const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
   const dictating = dictationState !== "idle" && dictationState !== "error";
+  const dictationStatus =
+    dictationState === "preparing"
+      ? "Downloading the macOS speech model…"
+      : dictationState === "transcribing"
+        ? `Transcribing with ${dictationService ?? "your service"}…`
+        : dictationState === "recording" && dictationEngine === "apple_server"
+          ? "Dictating with Apple's server recognizer"
+          : null;
   useEffect(() => {
     const identity = `${project.id}\0${chatId}`;
     const reset = scopeIdentityRef.current !== identity;
@@ -598,8 +679,8 @@ export function NodeChat({
     let disposed = false;
     const unlisten: Array<() => void> = [];
     void listenDesktopEvent<DictationResultEvent>("rcp://dictation-result", (payload) => {
-      const span = dictationSpanRef.current;
-      if (!span || span.sessionId !== payload.session_id) return;
+      const span = liveDictationSpan(dictationSpanRef.current, payload.session_id);
+      if (!span) return;
       setMessage((current) => {
         const next = replaceTextSpan(current, span, payload.text);
         span.end = next.end;
@@ -613,8 +694,21 @@ export function NodeChat({
       });
     }).then((dispose) => (disposed ? dispose() : unlisten.push(dispose)));
     void listenDesktopEvent<DictationStateEvent>("rcp://dictation-state", (payload) => {
-      if (dictationSpanRef.current?.sessionId !== payload.session_id) return;
-      if (payload.state === "recording") setDictationState("recording");
+      // The recognizer holds the microphone until it reports the end, even after typing.
+      if (payload.state === "stopped" || payload.state === "error")
+        releaseMicrophone(payload.session_id);
+      if (!liveDictationSpan(dictationSpanRef.current, payload.session_id)) return;
+      if (payload.state === "preparing") setDictationState("preparing");
+      if (payload.state === "recording") {
+        setDictationState("recording");
+        setDictationEngine(payload.engine ?? null);
+        // The cap counts recording, not a first-use model download.
+        if (dictationTimerRef.current === null)
+          dictationTimerRef.current = window.setTimeout(
+            () => stopDictation(),
+            DICTATION_SEGMENT_MS,
+          );
+      }
       if (payload.state === "error") {
         clearDictationTimer(dictationTimerRef);
         dictationSpanRef.current = null;
@@ -630,13 +724,38 @@ export function NodeChat({
     return () => {
       disposed = true;
       unlisten.forEach((dispose) => dispose());
-      clearDictationTimer(dictationTimerRef);
-      const sessionId = dictationSpanRef.current?.sessionId;
-      dictationSpanRef.current = null;
-      if (sessionId) void stopDesktopDictation(sessionId);
     };
     // The event bridge belongs to the native shell lifetime, not each draft render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desktop]);
+
+  useEffect(
+    () => () => {
+      stopDictation(true);
+      releaseMicrophone();
+    },
+    // Dictation ends with the composer; both helpers read refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  useEffect(() => {
+    // Off the desktop only a connection can dictate; a macOS choice points to Settings.
+    if (desktop) return;
+    let cancelled = false;
+    void loadServiceConnections().then(
+      (settings) => {
+        if (!cancelled)
+          setDictationUnavailable(
+            settings.dictation === "system" ? SYSTEM_DICTATION_ELSEWHERE : null,
+          );
+      },
+      // Starting dictation reloads the choice and reports a failure there.
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
   }, [desktop]);
 
   const selectMode = useCallback(
@@ -679,20 +798,119 @@ export function NodeChat({
     setSubmitError(null);
   };
 
+  const releaseMicrophone = (sessionId?: string) => {
+    const held = microphoneRef.current;
+    if (!held || (sessionId !== undefined && held.sessionId !== sessionId)) return;
+    microphoneRef.current = null;
+    held.claim.release();
+  };
+
+  const failDictation = (sessionId: string, error: unknown) => {
+    if (!liveDictationSpan(dictationSpanRef.current, sessionId)) return;
+    clearDictationTimer(dictationTimerRef);
+    dictationSpanRef.current = null;
+    setDictationState("error");
+    setDictationError(serviceConnectionFailure(error) ?? errorMessage(error));
+  };
+
+  /** The member's Stop finishes the segment; `invalidate` (typing, sending) drops it. */
   const stopDictation = (invalidate = false) => {
     const sessionId = dictationSpanRef.current?.sessionId;
     if (!sessionId) return;
     clearDictationTimer(dictationTimerRef);
-    setDictationState("stopping");
-    if (invalidate) {
+    const network =
+      networkDictationRef.current?.sessionId === sessionId ? networkDictationRef.current : null;
+    const native =
+      microphoneRef.current?.sessionId === sessionId &&
+      microphoneRef.current.claim.holder === "native_dictation";
+    const recording = network?.recorder?.state === "recording";
+    if (invalidate || (!native && !recording)) {
+      // Nothing from this session may land any more, including a late transcription.
       dictationSpanRef.current = null;
       setDictationState("idle");
     }
-    void stopDesktopDictation(sessionId).catch((error) => {
-      dictationSpanRef.current = null;
-      setDictationState("error");
-      setDictationError(error instanceof Error ? error.message : String(error));
+    if (network) {
+      if (recording && !invalidate) {
+        setDictationState("transcribing");
+        network.recorder?.stop();
+        return;
+      }
+      networkDictationRef.current = null;
+      if (recording) network.recorder?.stop();
+      releaseMicrophone(sessionId);
+      return;
+    }
+    if (!native) return;
+    if (!invalidate) setDictationState("stopping");
+    void stopDesktopDictation(sessionId, { finish: !invalidate }).catch((error) => {
+      releaseMicrophone(sessionId);
+      failDictation(sessionId, error);
     });
+  };
+
+  const transcribe = async (
+    sessionId: string,
+    connectionId: string,
+    audio: Blob,
+    mimeType: string,
+  ) => {
+    try {
+      const { text } = audio.size
+        ? await transcribeAudio(connectionId, audio, mimeType)
+        : { text: "" };
+      const span = liveDictationSpan(dictationSpanRef.current, sessionId);
+      // Typing during transcription invalidated the span; the late result is dropped.
+      if (!span) return;
+      dictationSpanRef.current = null;
+      setDictationState("idle");
+      const end = span.start + text.length;
+      setMessage((current) => {
+        const next = replaceTextSpan(current, span, text);
+        skills.readMessage(next.value);
+        return next.value;
+      });
+      window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(end, end));
+    } catch (error) {
+      failDictation(sessionId, error);
+    }
+  };
+
+  const startNetworkDictation = async (sessionId: string, connection: ServiceConnection) => {
+    const mimeType = chooseRecordingFormat(
+      connection.formats,
+      (type) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(type),
+    );
+    if (!mimeType)
+      throw new Error(
+        `${connection.label} accepts ${connection.formats.join(" or ")}, and this browser records neither.`,
+      );
+    const dictation: NetworkDictation = { sessionId, recorder: null };
+    networkDictationRef.current = dictation;
+    setDictationService(connection.label);
+    microphoneRef.current = { sessionId, claim: claimMicrophone("network_dictation") };
+    // A Stop or typing while permission is pending releases the claim, and this throws.
+    const stream = await microphoneRef.current.claim.open();
+    const recorder = new MediaRecorder(stream, { mimeType });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size) chunks.push(event.data);
+    };
+    recorder.onerror = () => {
+      networkDictationRef.current = null;
+      releaseMicrophone(sessionId);
+      failDictation(sessionId, new Error("Recording stopped unexpectedly."));
+    };
+    recorder.onstop = () => {
+      releaseMicrophone(sessionId);
+      // An invalidated session cleared its entry first: its audio goes nowhere.
+      if (networkDictationRef.current !== dictation) return;
+      networkDictationRef.current = null;
+      void transcribe(sessionId, connection.id, new Blob(chunks, { type: mimeType }), mimeType);
+    };
+    dictation.recorder = recorder;
+    recorder.start();
+    setDictationState("recording");
+    dictationTimerRef.current = window.setTimeout(() => stopDictation(), DICTATION_SEGMENT_MS);
   };
 
   const toggleDictation = async () => {
@@ -711,16 +929,32 @@ export function NodeChat({
     }
     setSubmitError(null);
     setDictationError(null);
+    setDictationEngine(null);
+    setDictationService(null);
     setDictationState("starting");
     try {
+      // The choice is read now and kept, so a Settings change elsewhere cannot redirect this audio.
+      const settings = await loadServiceConnections();
+      if (!liveDictationSpan(dictationSpanRef.current, sessionId)) return;
+      if (settings.dictation !== "system") {
+        setDictationUnavailable(null);
+        const connection = settings.connections.find((item) => item.id === settings.dictation);
+        if (!connection) throw new Error("Your dictation service is no longer connected.");
+        await startNetworkDictation(sessionId, connection);
+        return;
+      }
+      if (!desktop) {
+        setDictationUnavailable(SYSTEM_DICTATION_ELSEWHERE);
+        throw new Error(SYSTEM_DICTATION_ELSEWHERE);
+      }
+      microphoneRef.current = { sessionId, claim: claimMicrophone("native_dictation") };
       await startDesktopDictation(sessionId);
-      if (dictationSpanRef.current?.sessionId !== sessionId) return;
-      setDictationState("recording");
-      dictationTimerRef.current = window.setTimeout(() => stopDictation(), 55_000);
+      if (!liveDictationSpan(dictationSpanRef.current, sessionId)) return;
+      setDictationState((current) => (current === "starting" ? "recording" : current));
     } catch (error) {
-      dictationSpanRef.current = null;
-      setDictationState("error");
-      setDictationError(error instanceof Error ? error.message : String(error));
+      if (networkDictationRef.current?.sessionId === sessionId) networkDictationRef.current = null;
+      releaseMicrophone(sessionId);
+      failDictation(sessionId, error);
     }
   };
 
@@ -733,9 +967,9 @@ export function NodeChat({
     }
     attachmentUploadBusyRef.current = true;
     setSubmitError(null);
-    const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
+    const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length - references.length);
     if (incoming.length > available) {
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files.`);
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
     }
     const candidates = incoming.slice(0, available).map<ComposerAttachment>((file) => ({
       localId: crypto.randomUUID(),
@@ -818,6 +1052,41 @@ export function NodeChat({
       }
     }
     attachmentUploadBusyRef.current = false;
+  };
+
+  const addReference = (item: DraftReference) => {
+    if (submitting || artifactContext) return;
+    const result = mergeReferences(references, [item], attachments.length);
+    setReferences(result.references);
+    if (result.rejected)
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
+  };
+  const insertReferenceText = (
+    text: string,
+    fileCount = attachments.length,
+    insertPlainText = false,
+  ) => {
+    if (submitting || artifactContext || !text) return false;
+    const target = project.graph_target ?? MAIN_GRAPH;
+    const result = extractReferences(text, project.id, references, fileCount, (selector) =>
+      selector.kind === "node" &&
+      (selector.branch_id ?? null) === (target.kind === "branch" ? target.branch_id : null)
+        ? (project.graph?.nodes[selector.node_id]?.title ?? selector.node_id)
+        : referenceFallbackLabel(selector),
+    );
+    if (result.rejected)
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
+    if (result.text === text && !insertPlainText) return false;
+    setReferences(result.references);
+    const input = textareaRef.current;
+    const start = input?.selectionStart ?? message.length;
+    const end = input?.selectionEnd ?? start;
+    if (dictating) stopDictation(true);
+    updateMessage(message.slice(0, start) + result.text + message.slice(end));
+    requestAnimationFrame(() =>
+      input?.setSelectionRange(start + result.text.length, start + result.text.length),
+    );
+    return true;
   };
 
   const removeAttachment = (item: ComposerAttachment) => {
@@ -1005,7 +1274,15 @@ export function NodeChat({
       return;
     }
     // Files and artifact selections are staged for a new turn; a steer carries text only.
-    if (!text || attachments.length || artifactContext || submitting || !task.steer_turn_id) return;
+    if (
+      !text ||
+      attachments.length ||
+      references.length ||
+      artifactContext ||
+      submitting ||
+      !task.steer_turn_id
+    )
+      return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const request = {
@@ -1064,8 +1341,9 @@ export function NodeChat({
       return;
     }
     if (
-      !text ||
+      !(text || artifactContext) ||
       attachmentsUnready ||
+      (Boolean(artifactContext) && references.length > 0) ||
       relatedActive ||
       pausedAttempt ||
       submitting ||
@@ -1098,6 +1376,7 @@ export function NodeChat({
         mode,
         activeComputeIds: computeState.ids,
         artifactContext,
+        references: references.map((item) => item.selector),
         attachmentSetId: readyAttachments.length ? attachmentSetId : null,
         attachmentClientId: readyAttachments.length ? attachmentClientId : null,
         skills: skills.selection,
@@ -1108,6 +1387,8 @@ export function NodeChat({
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
       setAttachments([]);
+      setReferences([]);
+      setReferencePickerOpen(false);
       setAnnotations([]);
       setAnnotationsOpen(false);
       removeSessionStorage(annotationsKey);
@@ -1536,7 +1817,29 @@ export function NodeChat({
                       {line.steering.reason && <span>{line.steering.reason}</span>}
                     </div>
                   )}
+                  {line.attachments?.some((attachment) => attachment.reference) && (
+                    <div className="chat-input-references">
+                      {line.attachments.map((attachment) =>
+                        attachment.reference ? (
+                          <ReferenceChip
+                            key={attachment.attachment_id}
+                            projectId={project.id}
+                            reference={{
+                              ...sourceReference(attachment.reference),
+                              label: attachment.name,
+                            }}
+                            version={
+                              attachment.reference.graph_head
+                                ? `r${attachment.reference.graph_head.revision}`
+                                : attachment.reference.version?.slice(0, 7)
+                            }
+                          />
+                        ) : null,
+                      )}
+                    </div>
+                  )}
                   {line.attachments?.map((attachment) => {
+                    if (attachment.reference) return null;
                     const expired = Date.parse(attachment.expires_at) <= expiryClock;
                     return (
                       <div
@@ -1728,10 +2031,20 @@ export function NodeChat({
           className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
           data-mode={mode}
           onDragEnter={(event) => {
-            if (event.dataTransfer.types.includes("Files")) setDraggingFiles(true);
+            if (
+              event.dataTransfer.types.some((type) =>
+                ["Files", "text/plain", "text/uri-list"].includes(type),
+              )
+            )
+              setDraggingFiles(true);
           }}
           onDragOver={(event) => {
-            if (!event.dataTransfer.types.includes("Files")) return;
+            if (
+              !event.dataTransfer.types.some((type) =>
+                ["Files", "text/plain", "text/uri-list"].includes(type),
+              )
+            )
+              return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }}
@@ -1741,9 +2054,27 @@ export function NodeChat({
             }
           }}
           onDrop={(event) => {
-            if (!event.dataTransfer.files.length) return;
-            event.preventDefault();
-            void addFiles(Array.from(event.dataTransfer.files));
+            setDraggingFiles(false);
+            const files = Array.from(event.dataTransfer.files);
+            const text =
+              event.dataTransfer.getData("text/uri-list") ||
+              event.dataTransfer.getData("text/plain");
+            if (files.length) {
+              event.preventDefault();
+              void addFiles(files);
+            }
+            if (
+              insertReferenceText(
+                text,
+                attachments.length +
+                  Math.min(
+                    files.length,
+                    MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
+                  ),
+                files.length === 0,
+              )
+            )
+              event.preventDefault();
           }}
         >
           <SkillPicker {...skills.props} />
@@ -1808,6 +2139,25 @@ export function NodeChat({
               </div>
             </section>
           )}
+          {references.length > 0 && (
+            <div className="chat-attachment-chips" aria-label="References for this turn">
+              {references.map((item) => (
+                <ReferenceChip
+                  key={referenceKey(item.selector)}
+                  projectId={project.id}
+                  reference={item}
+                  onRemove={() =>
+                    setReferences((current) =>
+                      current.filter(
+                        (candidate) =>
+                          referenceKey(candidate.selector) !== referenceKey(item.selector),
+                      ),
+                    )
+                  }
+                />
+              ))}
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="chat-attachment-chips" aria-label="Files for this turn">
               {attachments.map((item) => (
@@ -1862,9 +2212,21 @@ export function NodeChat({
             }}
             onPaste={(event) => {
               const files = Array.from(event.clipboardData.files);
-              if (!files.length) return;
-              event.preventDefault();
-              void addFiles(files);
+              if (files.length) {
+                event.preventDefault();
+                void addFiles(files);
+              }
+              if (
+                insertReferenceText(
+                  event.clipboardData.getData("text/plain"),
+                  attachments.length +
+                    Math.min(
+                      files.length,
+                      MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
+                    ),
+                )
+              )
+                event.preventDefault();
             }}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
@@ -1883,20 +2245,63 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <button
-                className="icon-button chat-add-file"
-                type="button"
-                aria-label="Add files"
-                disabled={
-                  attachments.length >= MAX_CHAT_ATTACHMENTS ||
-                  attachmentsPreparing ||
-                  submitting ||
-                  awaitingSteerReceipt
-                }
-                onClick={() => attachmentInputRef.current?.click()}
-              >
-                <Plus size={16} />
-              </button>
+              <div className="chat-add-picker">
+                <button
+                  className="icon-button chat-add-file"
+                  type="button"
+                  aria-label="Add files"
+                  aria-expanded={addMenuOpen}
+                  disabled={
+                    attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
+                    attachmentsPreparing ||
+                    submitting ||
+                    awaitingSteerReceipt
+                  }
+                  onClick={() => {
+                    setReferencePickerOpen(false);
+                    setAddMenuOpen((open) => !open);
+                  }}
+                >
+                  <Plus size={16} />
+                </button>
+                {addMenuOpen && (
+                  <div className="chat-add-menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        attachmentInputRef.current?.click();
+                      }}
+                    >
+                      <Upload size={14} />
+                      Upload file
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={Boolean(artifactContext)}
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setReferencePickerOpen(true);
+                      }}
+                    >
+                      <FolderOpen size={14} />
+                      From RCP…
+                    </button>
+                  </div>
+                )}
+                {referencePickerOpen && (
+                  <ProjectReferencePicker
+                    projectId={project.id}
+                    target={project.graph_target ?? MAIN_GRAPH}
+                    nodes={project.graph?.nodes ?? {}}
+                    selectedKeys={new Set(references.map((item) => referenceKey(item.selector)))}
+                    onPick={addReference}
+                    onClose={() => setReferencePickerOpen(false)}
+                  />
+                )}
+              </div>
               {!artifactContext && (
                 <>
                   <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
@@ -1985,28 +2390,41 @@ export function NodeChat({
               )}
             </div>
             <div className="chat-send-actions">
-              {desktop && (
-                <button
-                  className={`icon-button chat-dictation-button${dictating ? " recording" : ""}`}
-                  type="button"
-                  aria-label={dictating ? "Stop dictation" : "Start dictation"}
-                  aria-pressed={dictating}
-                  title={dictationError || (dictating ? "Stop dictation" : "Dictate")}
-                  disabled={submitting}
-                  onClick={() => void toggleDictation()}
-                >
-                  {dictating ? <MicOff size={15} /> : <Mic size={15} />}
-                </button>
-              )}
+              <button
+                className={`icon-button chat-dictation-button${
+                  dictating && dictationState !== "transcribing" ? " recording" : ""
+                }`}
+                type="button"
+                aria-label={dictating ? "Stop dictation" : "Start dictation"}
+                aria-pressed={dictating}
+                aria-disabled={dictationUnavailable ? true : undefined}
+                title={
+                  dictationUnavailable ||
+                  dictationError ||
+                  (dictating ? "Stop dictation" : "Dictate")
+                }
+                disabled={submitting || dictationState === "transcribing"}
+                // An unavailable microphone still rereads the choice, then points to Settings.
+                onClick={() => void toggleDictation()}
+              >
+                {dictationState === "transcribing" ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : dictating ? (
+                  <MicOff size={15} />
+                ) : (
+                  <Mic size={15} />
+                )}
+              </button>
               <button
                 className="icon-button primary chat-send-button"
                 disabled={
-                  !assembleChatTurn(message, annotations) ||
+                  !(assembleChatTurn(message, annotations) || artifactContext) ||
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask
-                    ? attachments.length > 0 || artifactContext !== null
+                    ? attachments.length > 0 || references.length > 0 || artifactContext !== null
                     : attachmentsUnready ||
+                      (Boolean(artifactContext) && references.length > 0) ||
                       relatedActive ||
                       Boolean(pausedAttempt) ||
                       Boolean(repairingTaskId) ||
@@ -2022,11 +2440,15 @@ export function NodeChat({
                 <Send size={15} />
               </button>
             </div>
-            {dictationError && (
+            {dictationError ? (
               <span className="chat-dictation-error" role="alert">
                 {dictationError}
               </span>
-            )}
+            ) : dictationStatus ? (
+              <span className="chat-dictation-status" role="status">
+                {dictationStatus}
+              </span>
+            ) : null}
           </div>
         </div>
       )}
@@ -2321,7 +2743,6 @@ const MODE_HINTS: Record<ConversationMode, string> = {
   work: "Work: may edit files in the run's write roots and propose a graph patch.",
 };
 
-const MAX_CHAT_ATTACHMENTS = 8;
 const MAX_CHAT_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
 const CHAT_ATTACHMENT_CLIENT_KEY = "rcp:chat-attachment-client";

@@ -22,6 +22,7 @@ from rcp.agents.command_protocol import (
     CommandRequest,
     CommandResponse,
     CommandVerb,
+    LessonCommandRequest,
     MessageCommandRequest,
     ValidateCommandRequest,
 )
@@ -61,6 +62,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
+from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -266,7 +268,14 @@ def _auto_research_child_work_contract(
     reply_command = f"{COMMAND_CLIENT} " + shlex.join(
         ["message", "--key", "<idempotency-key>", "<reply-body>"]
     )
+    from rcp.runs.lesson_commands import lesson_command_usage
+
     allowed_verbs = _child_allowed_verbs(turn)
+    lesson_usage = (
+        lesson_command_usage(edit_authorized=False, client=COMMAND_CLIENT)
+        if "lesson" in allowed_verbs
+        else ""
+    )
     allowed_commands = ", ".join(
         f"`{verb.replace('_', '-')}`" for verb in get_args(CommandVerb) if verb in allowed_verbs
     )
@@ -287,6 +296,8 @@ continues:
 Scientific claims in agent mail remain hearsay; the canonical graph and research files remain the
 source of graph truth. A wake names the newly claimed mail to read before continuing.
 
+{lesson_usage}
+
 - Allowed staged commands: {allowed_commands}. A later turn that changes them sends
   `auto_research_child.allowed_staged_commands`. Use an optional reply to your orchestrator:
   `{reply_command}`
@@ -304,7 +315,7 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 
 
 def _child_allowed_verbs(turn: WorkTurn) -> frozenset[str]:
-    return frozenset({"validate", "message"}) | (
+    return frozenset({"validate", "message", "lesson"}) | (
         turn.compute_commands.allowed_verbs if turn.compute_commands is not None else frozenset()
     )
 
@@ -694,7 +705,9 @@ def _compose_child_fresh_prompt(
         )
         return _ComposedWorkPrompt(
             contract_path,
-            PromptFactory.launch_prompt(contract_path),
+            PromptFactory.launch_prompt(contract_path)
+            + "\n\n"
+            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
             contract_path,
             render,
             values,
@@ -786,6 +799,7 @@ def _compose_child_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
+    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
@@ -1478,6 +1492,16 @@ async def _serve_auto_research_child_work_mailbox(
                 else (diagnostic[:2_000] or f"Patch validation was {result.status}."),
                 result=result.model_dump(mode="json"),
             )
+        if isinstance(request, LessonCommandRequest):
+            from rcp.runs.lesson_commands import handle_lesson
+
+            if identity.authority != "broker":
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    message="Lessons require this child Work turn's broker authority.",
+                )
+            return handle_lesson(execution.store, execution.operation_id, request)
         if isinstance(request, MessageCommandRequest):
             return _dispatch_auto_research_child_reply(execution, route, request)
         if request.verb in compute_commands.allowed_verbs:

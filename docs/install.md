@@ -116,7 +116,7 @@ research history remains in each project's configured state repository.
 
 ## Run the source-built macOS desktop app
 
-The desktop app additionally requires Rust and the Xcode command-line tools.
+Source desktop builds also require Rust and Xcode command-line tools; Command Line Tools for Xcode 26 enable SpeechAnalyzer without full Xcode.
 
 Run directly from the checkout:
 

@@ -59,6 +59,15 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/providers/{provider}/logins/sign-in/{login_id}/cancel"),
     (("POST",), "/api/providers/{provider}/logins/token"),
     (("POST",), "/api/providers/{provider}/logins/sign-out"),
+    (("GET",), "/api/service-connections"),
+    (("POST",), "/api/service-connections"),
+    (("DELETE",), "/api/service-connections/{connection_id}"),
+    (("PUT",), "/api/service-connections/selection"),
+    (("PUT",), "/api/service-connections/{connection_id}/purposes"),
+    (("POST",), "/api/service-connections/{connection_id}/transcribe"),
+    (("GET",), "/api/voice/settings"),
+    (("PUT",), "/api/voice/settings"),
+    (("POST",), "/api/voice/sessions"),
     (("POST",), "/api/projects"),
     (("POST",), "/api/project-setup/preflight"),
     (("POST",), "/api/project-setup/create"),
@@ -141,6 +150,11 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/experiments/{node_id:path}/run"),
     (("GET",), "/api/projects/{project_id}/tasks"),
     (("GET",), "/api/projects/{project_id}/usage"),
+    (("GET",), "/api/projects/{project_id}/consolidation"),
+    (("PUT",), "/api/projects/{project_id}/consolidation/schedule"),
+    (("DELETE",), "/api/projects/{project_id}/consolidation/schedule"),
+    (("POST",), "/api/projects/{project_id}/consolidation/runs/{run_id}/keep"),
+    (("POST",), "/api/projects/{project_id}/consolidation/runs/{run_id}/dismiss"),
     (("GET",), "/api/projects/{project_id}/watchers"),
     (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/check"),
     (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/stop"),
@@ -228,6 +242,10 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/notifications/devices/{device_id}/test"),
     (("POST",), "/api/notifications/phone-pairings"),
     (("GET",), "/api/notifications/devices"),
+    (("GET",), "/api/projects/{project_id}/lessons"),
+    (("POST",), "/api/projects/{project_id}/lessons"),
+    (("PATCH",), "/api/projects/{project_id}/lessons/{lesson_id}"),
+    (("DELETE",), "/api/projects/{project_id}/lessons/{lesson_id}"),
 )
 
 
@@ -256,13 +274,13 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 197
-    assert len(_FROZEN_ROUTE_INVENTORY) == 197
+    assert len(entries) == 215
+    assert len(_FROZEN_ROUTE_INVENTORY) == 215
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 193
+    assert sum(isinstance(route, APIRoute) for route in routes) == 211
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

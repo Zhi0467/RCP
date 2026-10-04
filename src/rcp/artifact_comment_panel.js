@@ -18,10 +18,18 @@ if (boxLayer) {
   window.addEventListener("pagehide", () => { observer.disconnect(); boxLayer.remove(); }, {once:true});
 }
 const items = document.getElementById("items"),
-  empty = document.getElementById("empty"),
-  add = document.getElementById("add"),
+  count = document.getElementById("count"),
+  tray = document.getElementById("tray"),
+  queue = document.getElementById("queue"),
+  editNow = document.getElementById("editNow"),
+  send = document.getElementById("send"),
+  general = document.getElementById("general"),
   notice = document.getElementById("notice");
 const message = document.getElementById("message");
+// Every comment is one object: its text, and the selection it is anchored to (or
+// none, for the whole artifact). Edit now and Send post the same list.
+const comments = [];
+let current = null;
 let viewerState = null;
 let sending = false;
 let sendError = "";
@@ -47,78 +55,131 @@ const bounded = (value, limit) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, limit);
-function saveSelections() {
+function saveComments() {
   try {
-    localStorage.setItem(draftKey, JSON.stringify({ selections, message: message.value }));
+    // The comment being written keeps its anchor, so a reopened viewer offers it again.
+    localStorage.setItem(
+      draftKey,
+      JSON.stringify({ comments, draft: { text: message.value, selection: current } }),
+    );
   } catch {
     notice.textContent = "Comments could not be saved. Keep this preview open and try again.";
   }
 }
 function render() {
   items.replaceChildren();
-  empty.hidden = selections.length > 0;
-  updateSend();
-  selections.forEach((selection, index) => {
+  count.textContent = String(comments.length);
+  count.hidden = comments.length === 0;
+  comments.forEach((comment, index) => {
     const card = document.createElement("section");
     card.className = "selection";
     const label = document.createElement("b");
-    label.textContent = `${index + 1} · ${selection.kind}`;
+    label.textContent = `${index + 1} · ${comment.selection ? comment.selection.kind : "whole artifact"}`;
     const excerpt = document.createElement("div");
     excerpt.className = "excerpt";
-    excerpt.textContent = describeSelection(selection);
-    const comment = document.createElement("textarea");
-    comment.placeholder = "Comment or question";
-    comment.maxLength = 2048;
-    comment.value = selection.comment || "";
-    comment.addEventListener("input", () => {
-      selection.comment = comment.value.slice(0, 2048);
-      saveSelections();
-    });
+    excerpt.textContent = comment.selection ? describeSelection(comment.selection) : "";
+    const text = document.createElement("p");
+    text.textContent = comment.text;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "remove";
     remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove selection ${index + 1}`);
+    remove.setAttribute("aria-label", `Remove comment ${index + 1}`);
     remove.addEventListener("click", () => {
-      selections.splice(index, 1);
-      saveSelections();
+      comments.splice(index, 1);
+      saveComments();
       render();
     });
-    card.append(remove, label, excerpt, comment);
+    card.append(remove, label, excerpt, text);
     items.append(card);
   });
+  updateSend();
 }
+let restoredSelection = null;
 try {
   const saved = JSON.parse(localStorage.getItem(draftKey) || "null");
-  if (saved && Array.isArray(saved.selections)) {
-    selections.push(...saved.selections.slice(0, config.maxSelections));
-    render();
-    message.value = typeof saved.message === "string" ? saved.message : "";
-  }
+  // Drafts saved before comments were one object held selections and a message.
+  const restored = Array.isArray(saved?.comments)
+    ? saved.comments
+    : [
+        ...(Array.isArray(saved?.selections) ? saved.selections : [])
+          .filter((selection) => selection?.comment)
+          .map(({ comment, ...selection }) => ({ text: comment, selection })),
+        ...(typeof saved?.message === "string" && saved.message.trim()
+          ? [{ text: saved.message, selection: null }]
+          : []),
+      ];
+  comments.push(
+    ...restored
+      .filter((comment) => typeof comment?.text === "string" && comment.text.trim())
+      .slice(0, config.maxSelections),
+  );
+  const draft = typeof saved?.draft === "string" ? { text: saved.draft } : saved?.draft;
+  message.value = typeof draft?.text === "string" ? draft.text : "";
+  restoredSelection = draft?.selection && typeof draft.selection === "object" ? draft.selection : null;
+  render();
 } catch {
-  selections.length = 0;
+  comments.length = 0;
   render();
   notice.textContent = "Saved comments could not be restored.";
 }
-function appendSelection(selection) {
-  if (selections.length >= config.maxSelections) {
-    notice.textContent = `A prompt can include at most ${config.maxSelections} selections.`;
-    return;
+function addComment(selection) {
+  const text = message.value.trim();
+  if (!text) return false;
+  const anchor = selection && selection.kind !== "whole" ? selection : null;
+  const comment = { text: text.slice(0, 2048), selection: anchor };
+  // The server refuses a list past these limits, so the list never grows past them.
+  if (comments.length >= config.maxSelections) {
+    notice.textContent = `A prompt can include at most ${config.maxSelections} comments.`;
+    return false;
   }
-  selections.push(selection);
-  saveSelections();
+  // Measured as the server does: whole-artifact comments join with a blank line.
+  const next = [...comments, comment];
+  const general = next.filter((item) => !item.selection).map((item) => item.text);
+  const size =
+    general.join("\n\n").length +
+    next.filter((item) => item.selection).reduce((total, item) => total + item.text.length, 0);
+  if (size > config.maxChars) {
+    notice.textContent = "These comments are too long to send together. Send or remove some first.";
+    return false;
+  }
+  comments.push(comment);
+  message.value = "";
+  current = null;
+  saveComments();
   render();
-  items.lastElementChild?.querySelector("textarea")?.focus();
+  return true;
 }
 let clearImageSelection = null;
-const offerSelection = installSelectionConfirmation(
-  document.getElementById("pending"),
-  appendSelection,
-  () => {
-    if (frame) frame.contentWindow?.postMessage({ type: "rcp-artifact-selection-clear" }, "*");
-    else clearImageSelection?.();
-  },
+const clearSelection = () => {
+  if (frame) frame.contentWindow?.postMessage({ type: "rcp-artifact-selection-clear" }, "*");
+  else clearImageSelection?.();
+};
+const offerComposer = installSelectionConfirmation(
+  document.getElementById("composer"),
+  addComment,
+  clearSelection,
 );
+function offerSelection(selection) {
+  current = selection;
+  offerComposer(selection);
+  if (selection) message.focus();
+  saveComments();
+  updateSend();
+}
+if (restoredSelection && message.value.trim()) offerSelection(restoredSelection);
+general.addEventListener("click", () => offerSelection({ kind: "whole" }));
+// Cancel drops the comment being written, so its text never lands on the next selection.
+const dropCurrent = () => {
+  current = null;
+  message.value = "";
+  saveComments();
+  updateSend();
+};
+document.getElementById("composer").querySelector("[data-cancel]").addEventListener("click", dropCurrent);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") dropCurrent();
+});
 window.addEventListener("message", (event) => {
   if (!config.selectionEnabled || !frame || event.source !== frame.contentWindow) return;
   const value = event.data;
@@ -196,8 +257,14 @@ if (boxLayer)
     offerSelection(mapped ? { ...mapped, comment: "" } : null);
   });
 function updateSend() {
-  add.disabled = sending || !viewerState?.can_comment || !message.value.trim();
-  add.textContent = (freshSessionRequired || viewerState?.fresh_session_required) ? "Edit in a new session" : "Send";
+  const fresh = freshSessionRequired || viewerState?.fresh_session_required;
+  const blocked = sending || !viewerState?.can_comment;
+  const writing = Boolean(current && message.value.trim());
+  queue.disabled = !writing;
+  editNow.disabled = blocked || !writing;
+  send.disabled = blocked || comments.length === 0;
+  editNow.textContent = fresh ? "Edit now in a new session" : "Edit now";
+  send.textContent = fresh ? "Send in a new session" : "Send to original chat";
 }
 async function refreshState() {
   if (stateLoading || stopped || permanentStateError || document.hidden) return;
@@ -211,7 +278,11 @@ async function refreshState() {
       throw new Error("Comment availability could not be loaded.");
     }
     viewerState = await response.json();
-    notice.textContent = sendError || viewerState.comment_unavailable_reason || "";
+    // A failed edit settles after the send succeeded, so the shell learns it here.
+    const failure = viewerState.edit_failure
+      ? `The last edit did not finish: ${viewerState.edit_failure}`
+      : "";
+    notice.textContent = sendError || failure || viewerState.comment_unavailable_reason || "";
   } catch (error) {
     viewerState = null;
     notice.textContent = sendError || error.message;
@@ -220,19 +291,23 @@ async function refreshState() {
   }
   updateSend();
 }
-message.addEventListener("input", () => { sendError = ""; saveSelections(); updateSend(); });
-add.addEventListener("click", async () => {
-  if (add.disabled) return;
+message.addEventListener("input", () => { sendError = ""; saveComments(); updateSend(); });
+async function postComments(now) {
   sendError = "";
   sending = true;
   updateSend();
+  // A comment added while this send is in flight stays in the list.
+  const sent = comments.slice();
   try {
     const response = await fetch(config.commentsUrl, {
       method: "POST",
       credentials: "same-origin",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message: message.value, selections,
-        fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required}),
+      body: JSON.stringify({
+        comments: sent.map(({ text, selection }) => ({ text, selection })),
+        edit_now: now,
+        fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required,
+      }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -242,10 +317,13 @@ add.addEventListener("click", async () => {
         result.detail?.message || "Comment could not be sent.");
     }
     freshSessionRequired = false;
-    selections.length = 0;
-    message.value = "";
-    saveSelections();
-    offerSelection(null);
+    // A sent comment removed meanwhile is already gone.
+    for (const comment of sent) {
+      const index = comments.indexOf(comment);
+      if (index >= 0) comments.splice(index, 1);
+    }
+    saveComments();
+    tray.open = comments.length > 0 && tray.open;
     render();
     window.parent.postMessage({type: "rcp-artifact-edit-started", version: 1,
       artifact_id: config.artifactId, operation_id: result.operation_id}, location.origin);
@@ -257,6 +335,16 @@ add.addEventListener("click", async () => {
     sending = false;
     updateSend();
   }
+}
+// Edit now adds the comment being written to the list, then asks for the edit at once.
+editNow.addEventListener("click", () => {
+  if (editNow.disabled || !addComment(current)) return;
+  clearSelection();
+  offerComposer(null);
+  void postComments(true);
+});
+send.addEventListener("click", () => {
+  if (!send.disabled) void postComments(false);
 });
 window.addEventListener("focus", refreshState);
 async function pollState() {

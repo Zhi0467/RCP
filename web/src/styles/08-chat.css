@@ -1147,11 +1147,19 @@
   border-radius: 10px;
   position: relative;
 }
-.chat-dictation-error {
+.chat-dictation-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.chat-dictation-error,
+.chat-dictation-status {
   color: var(--red);
   font-size: var(--type-4xs);
   max-width: 150px;
   text-align: right;
+}
+.chat-dictation-status {
+  color: var(--muted);
 }
 @keyframes dictation-ring {
   from {
@@ -1387,4 +1395,168 @@
 .chat-open-questions:empty,
 .episode-questions:empty {
   display: none;
+}
+
+.chat-reference-chip a,
+.chat-input-reference a {
+  color: inherit;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  text-decoration: none;
+}
+.chat-reference-chip a:hover strong,
+.chat-input-reference a:hover strong {
+  text-decoration: underline;
+}
+.chat-input-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+.chat-input-reference {
+  align-items: center;
+  background: color-mix(in srgb, var(--sheet) 70%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  display: flex;
+  gap: 7px;
+  max-width: min(240px, 100%);
+  min-width: 0;
+  padding: 6px 9px 6px 7px;
+}
+.chat-input-reference strong,
+.chat-input-reference small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-input-reference strong {
+  font-family: var(--mono);
+  font-size: var(--type-3xs);
+}
+.chat-input-reference small {
+  color: var(--muted);
+  font-size: var(--type-4xs);
+}
+.chat-add-picker {
+  position: relative;
+}
+.chat-add-menu,
+.chat-reference-picker {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  bottom: 38px;
+  box-shadow: var(--shadow);
+  left: 0;
+  position: absolute;
+  z-index: 16;
+}
+.chat-add-menu {
+  display: grid;
+  min-width: 180px;
+}
+.chat-reference-picker {
+  width: min(360px, calc(100vw - 38px));
+}
+.chat-add-menu button,
+.chat-reference-picker li button {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  display: flex;
+  font: inherit;
+  font-size: var(--type-xs);
+  gap: 8px;
+  padding: 9px 10px;
+  text-align: left;
+  width: 100%;
+}
+.chat-add-menu button:last-child,
+.chat-reference-picker li:last-child button {
+  border-bottom: 0;
+}
+.chat-add-menu button:hover:not(:disabled),
+.chat-add-menu button:focus-visible,
+.chat-reference-picker li button:hover:not(:disabled),
+.chat-reference-picker li button:focus-visible {
+  background: var(--cobalt-soft);
+  outline: 0;
+}
+.chat-reference-picker li button:disabled {
+  color: var(--muted);
+}
+.chat-reference-picker-heading {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  gap: 7px;
+  padding: 7px 8px 7px 10px;
+}
+.chat-reference-picker-heading input {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--ink);
+  flex: 1;
+  font-size: var(--type-xs);
+  min-width: 0;
+  outline: 0;
+  padding: 2px 0;
+}
+.chat-reference-picker-heading button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--muted);
+  display: inline-flex;
+  padding: 3px;
+}
+.chat-reference-picker-heading button:hover {
+  background: var(--surface-cool);
+  color: var(--ink);
+}
+.chat-reference-picker [role="status"],
+.chat-reference-picker [role="alert"] {
+  color: var(--muted);
+  display: block;
+  font-size: var(--type-2xs);
+  padding: 9px 10px;
+}
+.chat-reference-picker ul {
+  list-style: none;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 0;
+}
+.chat-reference-picker li button span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-reference-picker li button small {
+  color: var(--muted);
+  font: 700 var(--type-4xs) var(--mono);
+  text-transform: uppercase;
+}
+.chat-reference-path {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font: 700 var(--type-4xs) var(--mono);
+  padding: 6px 10px;
+  text-transform: uppercase;
+}
+.chat-reference-empty {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+  padding: 9px 10px;
 }

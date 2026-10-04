@@ -60,8 +60,12 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         episode_mode: "experiment_loop",
         path: "artifacts/plot.html",
         source_chat_href: "#/projects/project?view=chats&branch_id=branch-one&chat=plot-chat",
+        source_node_id: "exp/transfer",
+        can_download: true,
+        download_url: "/api/projects/project/tasks/task/artifacts/plot/download",
       }),
       entry("unavailable", "Unavailable plot", {
+        source_node_id: "exp/not-in-this-graph",
         can_open: false,
         available: false,
         viewer_url: null,
@@ -239,6 +243,37 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       command: "open_artifact_pdf",
       args: { projectId: "project", artifactId: "pdf" },
     });
+    // Every action sits at the row's right end, whatever the title length.
+    const plot = page.locator(".artifact-entry").filter({ hasText: "Saved plot" });
+    const [download, openBox, rowBox] = await Promise.all([
+      plot.getByLabel("Download Saved plot", { exact: true }).boundingBox(),
+      plot.getByRole("link", { name: "Open Saved plot", exact: true }).boundingBox(),
+      plot.boundingBox(),
+    ]);
+    assert.ok(openBox.x - (download.x + download.width) < 24);
+    assert.ok(rowBox.x + rowBox.width - (openBox.x + openBox.width) < 24);
+    // The source node opens in place, above the stretched preview target.
+    const previews = await page.evaluate(() => window.previewCalls.length);
+    await page.getByRole("button", { name: "Open source node for Saved plot" }).click();
+    assert.deepEqual(await page.evaluate(() => window.openedNodes), ["exp/transfer"]);
+    assert.equal(await page.evaluate(() => window.previewCalls.length), previews);
+    assert.equal(
+      await page.getByRole("button", { name: "Open source node for Unavailable plot" }).count(),
+      0,
+    );
+    // Coming back shows the last list at once while the refresh is in flight.
+    let releaseRefresh;
+    await page.route("**/api/projects/project/artifacts", async (route) => {
+      await new Promise((resolve) => (releaseRefresh = resolve));
+      await route.fulfill({ json: entries });
+    });
+    await page.evaluate(async () => {
+      const { remountArtifacts } = await import("/tests/fixtures/artifacts.tsx");
+      remountArtifacts();
+    });
+    await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
+    assert.equal(await page.getByRole("status").count(), 0);
+    releaseRefresh?.();
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

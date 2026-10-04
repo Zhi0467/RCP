@@ -606,6 +606,8 @@
 }
 
 .artifact-entry > div {
+  /* Fill the row so every action button stays at its right end. */
+  flex: 1;
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -616,9 +618,33 @@
   flex-shrink: 0;
 }
 
-.artifact-entry-download {
+.artifact-entry-download,
+.artifact-entry-copy {
   position: relative;
   z-index: 1;
+}
+
+/* On a phone the name takes its own line and the actions wrap below it. */
+@media (max-width: 560px) {
+  .artifact-entry {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .artifact-entry > div {
+    flex-basis: 100%;
+  }
+  .artifact-entry-copy .copy-reference-label {
+    display: none;
+  }
+}
+
+.artifact-entry-node {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: start;
 }
 
 .artifact-entry-chat {
@@ -1080,4 +1106,334 @@
   font-size: var(--type-md);
   font-weight: 450;
   height: 34px;
+}
+
+/* Nightly consolidation: the settings card and its Inbox rows.
+ *
+ * The card is a night sky in both modes: a fixed deep gradient with its own
+ * light ink, so it never inherits the paper palette. Dark mode only deepens the
+ * sky so it does not glow against the dark page. `:root` and the doubled
+ * class outrank the theme's shared panel material, which loads first. */
+:root .settings-section.project-consolidation {
+  --night-top: #171a33;
+  --night-mid: #262646;
+  --night-horizon: #3f3040;
+  --night-ink: #efe9f6;
+  --night-muted: #b9b2cc;
+  --night-line: rgb(239 233 246 / 16%);
+  --night-moon: #f2d98f;
+  --night-fail: #f2a08e;
+  background:
+    radial-gradient(120% 90% at 92% -10%, rgb(242 217 143 / 14%), transparent 55%),
+    linear-gradient(172deg, var(--night-top) 0%, var(--night-mid) 58%, var(--night-horizon) 100%);
+  border-color: var(--night-top);
+  color: var(--night-ink);
+  isolation: isolate;
+  overflow: hidden;
+  position: relative;
+}
+:root[data-color-mode="dark"] .settings-section.project-consolidation {
+  --night-top: #0c0e1f;
+  --night-mid: #17172b;
+  --night-horizon: #271d27;
+  border-color: var(--rule);
+}
+/* Two star layers, pure gradients; the second twinkles slowly. */
+.project-consolidation::before,
+.project-consolidation::after {
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: -1;
+}
+.project-consolidation::before {
+  background:
+    radial-gradient(1.5px 1.5px at 12% 22%, rgb(255 255 255 / 70%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 34% 64%, rgb(255 255 255 / 45%), transparent 60%),
+    radial-gradient(2px 2px at 58% 18%, rgb(255 255 255 / 60%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 77% 48%, rgb(255 255 255 / 50%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 88% 80%, rgb(255 255 255 / 40%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 22% 86%, rgb(255 255 255 / 35%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 46% 38%, rgb(255 255 255 / 30%), transparent 60%);
+}
+.project-consolidation::after {
+  animation: consolidation-twinkle 7s ease-in-out infinite alternate;
+  background:
+    radial-gradient(2px 2px at 26% 12%, rgb(255 255 255 / 75%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 66% 72%, rgb(255 255 255 / 60%), transparent 60%),
+    radial-gradient(2px 2px at 93% 30%, rgb(255 255 255 / 65%), transparent 60%),
+    radial-gradient(1.5px 1.5px at 6% 58%, rgb(255 255 255 / 55%), transparent 60%);
+}
+@keyframes consolidation-twinkle {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.project-consolidation > header {
+  border-bottom-color: var(--night-line);
+}
+.project-consolidation > header > span:first-child {
+  background: rgb(242 217 143 / 14%);
+  border-radius: 50%;
+  box-shadow: 0 0 14px rgb(242 217 143 / 28%);
+  color: var(--night-moon);
+}
+/* Controls keep their own surfaces, so they keep the page's ink. */
+.project-consolidation :is(.button, input) {
+  color: var(--ink);
+}
+.project-consolidation :is(button, input):focus-visible {
+  outline: 2px solid var(--night-moon);
+  outline-offset: 2px;
+}
+.project-consolidation .project-member-error {
+  color: var(--night-fail);
+  padding: 0 20px 18px;
+}
+.project-consolidation .consolidation-expired {
+  color: var(--night-fail);
+}
+.project-consolidation .consolidation-sky {
+  display: grid;
+  gap: 18px;
+  padding: 18px 20px 0;
+}
+.project-consolidation .consolidation-schedule {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+  gap: 0.6rem 1rem;
+  margin: 0;
+}
+.project-consolidation :is(.consolidation-schedule dt, .consolidation-label) {
+  color: var(--night-muted);
+  font: var(--type-4xs)/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.project-consolidation .consolidation-schedule dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.project-consolidation .consolidation-schedule .mono {
+  font-size: 0.8rem;
+}
+
+/* Authorization: days left of the 30-day grant. */
+.project-consolidation .consolidation-authorization-row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  gap: 0.25rem 1rem;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.project-consolidation .consolidation-authorization-track {
+  background: rgb(239 233 246 / 12%);
+  border-radius: 999px;
+  height: 6px;
+  overflow: hidden;
+}
+.project-consolidation .consolidation-authorization-track > span {
+  background: linear-gradient(90deg, rgb(242 217 143 / 55%), var(--night-moon));
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.project-consolidation
+  .consolidation-authorization.renew
+  .consolidation-authorization-track
+  > span {
+  background: var(--night-fail);
+}
+.project-consolidation .consolidation-authorization.expired .consolidation-authorization-track {
+  background: repeating-linear-gradient(135deg, rgb(242 160 142 / 30%) 0 4px, transparent 4px 8px);
+}
+
+/* The recent-nights strip: shape, not just color, carries each outcome. */
+.project-consolidation .consolidation-nights ol {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  list-style: none;
+  margin: 8px 0 0;
+  max-width: 300px;
+  padding: 0;
+}
+.project-consolidation .consolidation-night {
+  align-items: center;
+  color: var(--night-muted);
+  display: grid;
+  font: var(--type-3xs)/1.2 var(--mono);
+  gap: 5px;
+  justify-items: center;
+}
+.project-consolidation .consolidation-night-dot {
+  border: 1.5px solid currentcolor;
+  border-radius: 50%;
+  box-sizing: border-box;
+  display: block;
+  height: 14px;
+  width: 14px;
+}
+/* Succeeded: a full moon. */
+.project-consolidation .consolidation-night.succeeded .consolidation-night-dot {
+  background: var(--night-moon);
+  border-color: var(--night-moon);
+  box-shadow: 0 0 8px rgb(242 217 143 / 45%);
+}
+/* Skipped: an empty ring. */
+.project-consolidation .consolidation-night.skipped .consolidation-night-dot {
+  border-color: var(--night-ink);
+}
+/* Failed: a diamond. */
+.project-consolidation .consolidation-night.failed .consolidation-night-dot {
+  background: var(--night-fail);
+  border-color: var(--night-fail);
+  border-radius: 2px;
+  height: 11px;
+  margin: 1.5px;
+  transform: rotate(45deg);
+  width: 11px;
+}
+/* Running: a half moon that breathes. */
+.project-consolidation .consolidation-night.running .consolidation-night-dot {
+  animation: consolidation-running 1.8s ease-in-out infinite;
+  background: linear-gradient(90deg, var(--night-moon) 50%, transparent 50%);
+  border-color: var(--night-moon);
+}
+@keyframes consolidation-running {
+  50% {
+    opacity: 0.5;
+  }
+}
+/* Empty slot: a faint dotted ring. */
+.project-consolidation .consolidation-night.empty .consolidation-night-dot {
+  border-style: dotted;
+  opacity: 0.45;
+}
+.project-consolidation .consolidation-enable {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 18px 20px 0;
+  font-size: 0.9rem;
+}
+.project-consolidation .consolidation-enable label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-consolidation::after,
+  .project-consolidation .consolidation-night.running .consolidation-night-dot {
+    animation: none;
+  }
+  .project-consolidation .consolidation-authorization-track > span {
+    transition: none;
+  }
+}
+.project-lessons .project-member-error {
+  padding: 0 20px 18px;
+}
+.consolidation-inbox {
+  margin-top: 30px;
+}
+.consolidation-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin: 0 0 12px;
+  padding: 14px 16px;
+}
+.consolidation-row h3 {
+  overflow-wrap: anywhere;
+  margin: 6px 0 8px;
+}
+.consolidation-row.failure h3 {
+  color: var(--oxblood);
+}
+.consolidation-counts {
+  display: flex;
+  gap: 1.5rem;
+  margin: 0 0 8px;
+}
+.consolidation-counts dt {
+  color: var(--muted);
+  font: var(--type-4xs)/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.consolidation-counts dd {
+  margin: 0;
+}
+.consolidation-revisions {
+  overflow-wrap: anywhere;
+  margin: 0 0 8px;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+}
+.consolidation-error {
+  color: var(--oxblood);
+  font-size: 0.8rem;
+  margin: 0 0 8px;
+}
+
+/* Operational lessons: one row per lesson, editable in place. */
+.project-lesson-list {
+  list-style: none;
+  margin: 0;
+  padding: 18px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.project-lesson-list.is-expanded {
+  max-height: 28rem;
+  overflow-y: auto;
+}
+.project-lesson-list li {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 0.3rem 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-bottom: 0.6rem;
+}
+.project-lesson-list li > p,
+.project-lesson-list li > textarea {
+  grid-column: 1 / -1;
+}
+.project-lesson-list p {
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+.project-lesson-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+.project-lesson-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.project-lesson-toggle {
+  margin: 0.6rem 20px 0;
+}
+.project-lessons textarea {
+  font: inherit;
+  font-size: 0.85rem;
+  min-height: 3.2rem;
+  flex: 1 1 260px;
+  width: 100%;
 }

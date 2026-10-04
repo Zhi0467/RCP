@@ -21,7 +21,8 @@ import type {
   IdentityResponse,
   MachineDirectoryListing,
   MachineDirectoryRequest,
-  ProjectCacheMetrics,
+  AllProjectCacheClearResult,
+  ProjectCacheClearResult,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
@@ -30,6 +31,11 @@ import type {
   ProviderSignInStatus,
   ProviderResumeSummary,
   ServerStatus,
+  ServiceConnection,
+  ServiceConnectionCreateRequest,
+  ServiceConnectionPurpose,
+  ServiceConnections,
+  TranscriptionResult,
   SpaceMachine,
   SpaceMachineCreateRequest,
   SpaceMachineUpdateRequest,
@@ -41,15 +47,19 @@ import type {
   TeamDevicePairing,
   TeamDevicePairingStatus,
   TeamSession,
+  VoiceSessionResponse,
+  VoiceSettings,
 } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
 type TransportFailureHandler = () => void;
+type AccessLossHandler = () => void;
 
 let mutationFailureHandler: MutationFailureHandler | null = null;
 let transportFailureHandler: TransportFailureHandler | null = null;
 let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
+let accessLossHandler: AccessLossHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
 export const TEAM_SHELL_PROTOCOL_HEADER = "RCP-Team-Shell-Protocol";
@@ -57,11 +67,16 @@ export const TEAM_SHELL_PROTOCOL_VERSION = 3;
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code: string | undefined;
+  /** The route's structured `detail`, for callers that read its fields. */
+  readonly detail: Record<string, unknown> | undefined;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, detail?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
+    this.code = typeof detail?.code === "string" ? detail.code : undefined;
   }
 }
 
@@ -97,6 +112,7 @@ export async function api<T>(
     throw error;
   }
   if (!response.ok) {
+    if (!mutation && (response.status === 401 || response.status === 403)) accessLossHandler?.();
     const body = await readErrorBody(response);
     if (
       mutation &&
@@ -126,6 +142,7 @@ export async function api<T>(
 
 // A body can also be cut off by a dropped transport; a parse error cannot.
 async function readJson<T>(response: Response): Promise<T> {
+  if (response.status === 204) return undefined as T;
   try {
     return (await response.json()) as T;
   } catch (error) {
@@ -144,6 +161,11 @@ export function isMutationRequest(init?: RequestInit): boolean {
 
 export function registerMutationFailureHandler(handler: MutationFailureHandler | null): void {
   mutationFailureHandler = handler;
+}
+
+/** Called whenever a read is refused with 401 or 403: the page lost its identity or access. */
+export function registerAccessLossHandler(handler: AccessLossHandler | null): void {
+  accessLossHandler = handler;
 }
 
 /** Called, without waiting, whenever a request never reached the backend. */
@@ -297,17 +319,31 @@ function apiError(status: number, body: unknown): ApiError {
     body && typeof body === "object" && "detail" in body
       ? (body as { detail: unknown }).detail
       : undefined;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const { message } = detail as { message?: unknown };
+    return new ApiError(
+      typeof message === "string" ? message : JSON.stringify(detail),
+      status,
+      detail as Record<string, unknown>,
+    );
+  }
+  if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
+    return new ApiError(detail[0].msg, status);
+  }
   return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
 }
 
-export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics> {
-  return api<ProjectCacheMetrics>(`${apiBase}/caches`, { method: "DELETE" });
+export function clearProjectCaches(apiBase: string): Promise<ProjectCacheClearResult> {
+  return api<ProjectCacheClearResult>(`${apiBase}/caches`, { method: "DELETE" });
 }
 
-export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
-  return api<ProjectCacheMetrics>(`/api/projects/${encodeURIComponent(projectId)}/caches/all`, {
-    method: "DELETE",
-  });
+export function clearAllProjectCaches(projectId: string): Promise<AllProjectCacheClearResult> {
+  return api<AllProjectCacheClearResult>(
+    `/api/projects/${encodeURIComponent(projectId)}/caches/all`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function loadSpaceMachines(): Promise<SpaceMachine[]> {
@@ -669,6 +705,70 @@ export function verifyProviderLogin(
   return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
     method: "POST",
     body: JSON.stringify({ host }),
+  });
+}
+
+export function loadServiceConnections(): Promise<ServiceConnections> {
+  return api("/api/service-connections");
+}
+
+export function connectServiceConnection(
+  request: ServiceConnectionCreateRequest,
+): Promise<ServiceConnection> {
+  return api("/api/service-connections", { method: "POST", body: JSON.stringify(request) });
+}
+
+export function disconnectServiceConnection(connectionId: string): Promise<void> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function selectDictationService(dictation: string): Promise<unknown> {
+  return api("/api/service-connections/selection", {
+    method: "PUT",
+    body: JSON.stringify({ dictation }),
+  });
+}
+
+/** Add or remove purposes; RCP checks each newly added one with the stored key. */
+export function setServiceConnectionPurposes(
+  connectionId: string,
+  purposes: ServiceConnectionPurpose[],
+): Promise<ServiceConnection> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/purposes`, {
+    method: "PUT",
+    body: JSON.stringify({ purposes }),
+  });
+}
+
+export function loadVoiceSettings(): Promise<VoiceSettings> {
+  return api("/api/voice/settings");
+}
+
+/** Send only the fields that changed; the backend keeps the rest. */
+export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
+  return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
+}
+
+/** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
+export function createVoiceSession(
+  body: { sdp_offer: string; tools: unknown[] },
+  signal?: AbortSignal,
+): Promise<VoiceSessionResponse> {
+  return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
+}
+
+/** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */
+export function transcribeAudio(
+  connectionId: string,
+  audio: Blob,
+  mimeType: string,
+): Promise<TranscriptionResult> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/transcribe`, {
+    method: "POST",
+    headers: { "Content-Type": mimeType },
+    body: audio,
   });
 }
 

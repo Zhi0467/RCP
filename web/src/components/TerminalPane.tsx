@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { openTerminalSocket } from "../terminalSocket";
 
 export function TerminalPane({
   socketPath,
@@ -48,10 +49,7 @@ export function TerminalPane({
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(element);
-    const url = new URL(socketPath, window.location.href);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(url);
-    socket.binaryType = "arraybuffer";
+    const socket = openTerminalSocket(socketPath);
     setStatus("Connecting…");
     setSessionEnded(false);
     let reported = false;

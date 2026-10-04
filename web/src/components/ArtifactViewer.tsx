@@ -1,3 +1,5 @@
+import { CopyReferenceButton } from "./CopyReferenceButton";
+import { graphTargetFromHash } from "../graphTarget";
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, PanelRightClose, X } from "lucide-react";
 import { api, ApiError } from "../api";
@@ -237,6 +239,17 @@ export function ArtifactViewer() {
           </span>
         )}
         {state && <span>v{state.version_number}</span>}
+        {target.kind === "artifact" && state && !error && (
+          <CopyReferenceButton
+            projectId={target.projectId}
+            graphTarget={
+              parseProjectHash(state?.thread_href ?? "").experimentRoute?.graph_target ??
+              graphTargetFromHash(state?.thread_href ?? window.location.hash)
+            }
+            reference={{ kind: "artifact", artifact_id: target.artifactId }}
+            className="artifact-viewer-control"
+          />
+        )}
         {editing && <span role="status">Editing</span>}
         {state?.can_undo && (
           <button disabled={undoing} onClick={() => void undo()}>

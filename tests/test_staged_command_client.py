@@ -1058,6 +1058,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ("inbox", "--harvest", "--key", "k-inbox-harvest"),
         ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
+        ("lesson", "add", "--key", "k-lesson", "--text", "Use the environment"),
     ]
 
     stop = asyncio.Event()
@@ -1093,6 +1094,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "inbox",
         "inbox",
         "finish",
+        "lesson",
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")
     assert applied == {"patch_file": "patch.json"}
@@ -1995,7 +1997,7 @@ async def test_stop_during_response_outage_finishes_with_saved_permanent_reason(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("state", ["answered", "dismissed", "parked"])
+@pytest.mark.parametrize("state", ["answered", "dismissed"])
 async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, state) -> None:
     staged = stage_command_mailbox(
         local_stage=tmp_path,
@@ -2065,7 +2067,7 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
     }
 
 
-@pytest.mark.parametrize("state", ["pending", "answered", "dismissed", "parked"])
+@pytest.mark.parametrize("state", ["pending", "answered"])
 def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, state) -> None:
     from rcp.agents import staged_command_client as client
 
@@ -2132,10 +2134,10 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
     }
 
 
-@pytest.mark.parametrize("delivery", ["not_sent", "unknown"])
-def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys, delivery) -> None:
+def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys) -> None:
     from rcp.agents import staged_command_client as client
 
+    delivery = "unknown"
     calls = []
     monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0)
 

@@ -24,6 +24,7 @@ from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import Patch
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.runs.chat import _ChatPatchInputs
@@ -78,6 +79,7 @@ class DeliverableFailure:
     # Set only when Apply could not reach canonical state: what its commit point
     # showed. The rules never judged the Patch, so this is not a rejection.
     commit_status: Literal["absent", "present", "unknown"] | None = None
+    code: str | None = None
 
 
 def failed_graph_update(
@@ -1025,6 +1027,7 @@ def apply_work_patch(
             correctable=True,
             change_summary=change_summary,
             proposal_ids=proposal_ids,
+            code=exc.code if isinstance(exc, AgentAuthorizerDeparted) else None,
         )
 
     if canonical_patch is not None:

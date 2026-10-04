@@ -54,7 +54,7 @@ def identity(authority="broker", task_id="turn"):
 def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):
     execution, human = work_execution(tmp_path)
     handler = work_command_handler(execution, None)
-    assert handler.allowed_verbs == {"validate", "ask"}
+    assert handler.allowed_verbs == {"validate", "ask", "lesson"}
     request = ask_request()
     pending = handler(request, identity())
     assert pending.result["state"] == "pending"
@@ -117,12 +117,14 @@ def test_question_receipts_beyond_display_cap_are_replayed(tmp_path):
     assert store.get_question(question_id).client_receipt_revision == 1
 
 
-def test_answer_not_returned_before_turn_end_remains_eligible(tmp_path):
+def test_offered_answer_without_acknowledgement_remains_eligible(tmp_path):
     execution, human = work_execution(tmp_path)
     handler = work_command_handler(execution, None)
-    pending = handler(ask_request(), identity())
-    question_id = pending.result["question_id"]
+    request = ask_request()
+    question_id = handler(request, identity()).result["question_id"]
     execution.store.answer_question(question_id, answer="Use A", resolved_by=human)
+    offered = handler(request.model_copy(update={"request_id": "d" * 32}), identity())
+    assert offered.result["state"] == "answered"
     execution.store.complete_agent_task("turn", applied_revision=None, result={})
     record_work_question_receipts(execution)
     assert execution.store.get_question(question_id).client_receipt_revision is None
@@ -147,10 +149,13 @@ def test_discuss_refuses_ask_and_work_master_uses_resolved_verbs(tmp_path):
     assert _work_execution_instructions(turn) == ""
 
 
-def test_human_work_prompt_includes_ask_without_compute(tmp_path):
+def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
+    from rcp.runs.tasks import work
+
+    monkeypatch.setattr(work, "ask_contract", lambda _returns: "<shared-ask-contract>")
     execution, _ = work_execution(tmp_path)
     turn = SimpleNamespace(execution=execution, compute_commands=None)
-    assert "ask --key" in _work_execution_instructions(turn)
+    assert "<shared-ask-contract>" in _work_execution_instructions(turn, client="rcp-client")
 
 
 @pytest.mark.parametrize("session_drift", [False, True])

@@ -117,6 +117,18 @@ merge agent receives that orchestrator graph profile for carrying legal branch
 changes to main. This exception does not grant Proposal approval, project
 configuration, membership, ontology, or server authority.
 
+A request from the member's own authenticated session is a human action, whatever
+the input device, including one made by an agent the member runs inside their
+RCP page: a WebMCP host agent or RCP's voice agent
+([decision](../decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)).
+Such an agent acts only through the page's fixed tool catalog, and history
+records the member. The catalog can authorize an Experiment or Auto-research
+episode and gracefully stop one. It holds none of the other actions above, so
+they stay visible controls. Provider agents never run in a member's page. The
+four boundaries hold: the catalog is fixed in web code, the model only chooses
+among its tools, and the voice confirmation toggle removes a guard without
+adding a capability.
+
 Contest and Agree are independent human controls. Clearing or replacing either
 returns standing to the corresponding staged state, and Sync is the only
 canonical commit. Blocker standing and lifecycle are independent: humans and

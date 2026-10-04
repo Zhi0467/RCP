@@ -830,8 +830,8 @@ pub fn desktop_start_dictation(app: AppHandle, session_id: String) -> Result<(),
 }
 
 #[tauri::command]
-pub fn desktop_stop_dictation(session_id: String) -> Result<(), String> {
-    dictation::stop(&session_id)
+pub fn desktop_stop_dictation(session_id: String, finish: bool) -> Result<(), String> {
+    dictation::stop(&session_id, finish)
 }
 
 #[tauri::command]

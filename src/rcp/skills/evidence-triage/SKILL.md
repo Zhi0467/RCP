@@ -45,8 +45,9 @@ incomplete run may justify only a qualified snapshot and does not establish the 
 
 ## Assess each Hypothesis relation
 
-Connect Evidence to every Hypothesis it bears on, including each one its producing Experiment
-tests; use `inconclusive` when it settles nothing. Write one claim-relative `assessment` on every
+Connect Evidence to every Hypothesis it bears on; use `inconclusive` when it bears on a claim but
+settles nothing. A Hypothesis the producing Experiment tests usually qualifies, but a side finding
+or readiness check that does not concern it gets no edge. Write one claim-relative `assessment` on every
 new edge the graph rules say requires one. Calibrate
 it honestly for that claim alone: the same Evidence may have different relevance, weight, scope,
 and qualifications for different Hypotheses. Historical unassessed relations remain readable, but

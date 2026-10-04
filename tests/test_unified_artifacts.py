@@ -156,6 +156,9 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
             assert (source / "remote.html").read_bytes() == source_bytes
             return f"/remote/revision-stage/inputs/{label}"
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     execution = AgentTaskExecution(
         operation_id=revision_id,
         store=store,
@@ -290,10 +293,10 @@ def test_viewer_sends_comments_through_stored_artifact_route() -> None:
     assert "/api/projects/project/artifacts/0123456789abcdef01234567/comments" in document
     assert "frame-ancestors 'self'" in csp
     assert 'id="state"' not in document
-    assert "mode" not in document
+    assert "mode:" not in document and '"mode"' not in document
     assert "fetch(config.keepUrl" in document
     assert "right - left < 4" in document
-    assert 'id="pending"' in document
+    assert 'id="composer"' in document
     assert "installSelectionConfirmation" in document
     assert 'frame.addEventListener("load", enableSelection)' in document
     assert 'type: "rcp-artifact-selection-enable"' in document
@@ -354,7 +357,7 @@ def test_episode_report_shell_has_no_repository_save_action(commentable) -> None
         descriptor=descriptor_for("scope", "episode-report.html", media_type="text/html"),
     )
     assert 'id="preview"' in document
-    assert ('id="pending"' in document) == commentable
+    assert ('id="composer"' in document) == commentable
     assert ("rcp-artifact-selection-enable" in document) == commentable
     assert ("connect-src 'self'" in csp) == commentable
     assert 'id="save"' not in document

@@ -7,7 +7,6 @@ import { EXPERIMENT_BOARD_POLL_DELAY_MS } from "./useProjectTabs";
 export function startMachinePowerPolling(
   receive: (status: MachinePowerStatus) => void,
   fail: (error: unknown) => void,
-  repeat: boolean,
 ) {
   let active = true;
   let timer = 0;
@@ -18,7 +17,7 @@ export function startMachinePowerPolling(
     } catch (failure) {
       if (active) fail(failure);
     } finally {
-      if (active && repeat) {
+      if (active) {
         timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
       }
     }
@@ -30,8 +29,8 @@ export function startMachinePowerPolling(
   };
 }
 
-/** Settings polls while mounted; the home page supplies its existing refresh result. */
-export function useMachinePower(spaceKind: "personal" | "team" | undefined, refresh?: unknown) {
+/** Polls while mounted, so the status follows work starting and ending. */
+export function useMachinePower(spaceKind: "personal" | "team" | undefined) {
   const [status, setStatus] = useState<MachinePowerStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -46,8 +45,7 @@ export function useMachinePower(spaceKind: "personal" | "team" | undefined, refr
         setError(null);
       },
       (failure) => setError(errorMessage(failure)),
-      refresh === undefined,
     );
-  }, [spaceKind, refresh]);
+  }, [spaceKind]);
   return { status: spaceKind === "personal" ? status : null, setStatus, error };
 }

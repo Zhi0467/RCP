@@ -102,19 +102,28 @@ for any of them.
 
 ## Keep-awake checks
 
-Keep-awake changes machine-wide power state, so a disposable `RCP_DATA_DIR`
-does not isolate it. Run these on the packaged candidate, on a Mac you can
-leave on a desk. Behavior is in
+The idle hold is a machine-wide power assertion, so a disposable
+`RCP_DATA_DIR` does not isolate it. Behavior is in
 [the server spec](specs/server-and-machine-operations.md#keeping-a-mac-awake).
-
-Inspect the state at any point:
-
-```bash
-pmset -g | grep SleepDisabled
-```
+With work running, the assertion is listed:
 
 ```bash
 pmset -g assertions | grep caffeinate
+```
+
+1. **Lock screen.** Start an episode or task, lock the screen, and wait past
+   the display and system sleep timers. Unlock: `pmset -g log` shows no sleep
+   in between, and the work kept advancing.
+2. **Work ends.** When nothing is running, the assertion is gone.
+
+### Lid-closed mode
+
+Keep-awake changes machine-wide power state, so a disposable `RCP_DATA_DIR`
+does not isolate it. Run these on the packaged candidate, on a Mac you can
+leave on a desk. Inspect the flag at any point:
+
+```bash
+pmset -g | grep SleepDisabled
 ```
 
 ```bash

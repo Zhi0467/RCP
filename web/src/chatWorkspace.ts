@@ -1,6 +1,7 @@
 import { experimentBoardHref, experimentBoardRouteToken } from "./experimentBoard.ts";
 import { sameGraphTarget } from "./graphTarget.ts";
 import type {
+  ProjectReferenceSelector,
   AgentRunConfig,
   AgentTask,
   AgentTaskRequest,
@@ -150,6 +151,7 @@ export interface ConversationTurnSubmission {
   mode: ConversationMode;
   activeComputeIds?: string[];
   artifactContext?: ArtifactContextRequest | null;
+  references?: ProjectReferenceSelector[];
   attachmentSetId?: string | null;
   attachmentClientId?: string | null;
   skills?: SkillDefaults;
@@ -160,7 +162,9 @@ export interface ConversationTurnSubmission {
 
 export function conversationTurnRequest(submission: ConversationTurnSubmission): AgentTaskRequest {
   const message = submission.message.trim();
-  if (!message) throw new Error("A conversation turn requires a non-blank message.");
+  // An artifact comment turn may carry only its comments; the server writes their text.
+  if (!message && !submission.artifactContext?.selections.length)
+    throw new Error("A conversation turn requires a non-blank message.");
   const skills = submission.skills ?? { workflow_ids: [], skill_ids: [] };
   return {
     ...submission.config,
@@ -176,6 +180,7 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
       ? { worktree_integration: submission.worktreeIntegration }
       : {}),
     active_compute_ids: submission.activeComputeIds ?? [],
+    ...(submission.references?.length ? { references: submission.references } : {}),
     ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
     ...(submission.attachmentSetId && submission.attachmentClientId
       ? {

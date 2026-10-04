@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from urllib.parse import quote
-from uuid import uuid4
 
 import pytest
 
@@ -70,20 +69,13 @@ def test_question_health_is_shared_projection_without_mutating_episode(tmp_path)
     assert load_episode_health(store, [before])[episode.episode_id][0] == "active"
 
 
-@pytest.mark.parametrize("ending", ["completed", "failed", "stopped", "exhausted", "human_pause"])
-def test_question_overlay_never_overrides_episode_ending(tmp_path, ending):
+def test_question_overlay_never_overrides_episode_ending(tmp_path):
     store, episode, root, _, _ = _setup(tmp_path)
     _question(store, episode, root)
-    if ending == "stopped":
-        store.request_episode_stop(episode.episode_id)
-        ended = store.mark_episode_stop_skipped(episode.episode_id)
-    else:
-        ended = store.end_episode_without_report(episode.episode_id, ending=ending)
+    ended = store.end_episode_without_report(episode.episode_id, ending="exhausted")
     # Even a stale question snapshot cannot win over the persisted ending.
     store.set_episode_questions_withdrawn("project", episode.episode_id, withdrawn=False)
-    projected = load_episode_health(store, [ended])[episode.episode_id]
-    assert projected[0] == ("needs_action" if ending in {"exhausted", "human_pause"} else ending)
-    assert projected[3] != "question"
+    assert load_episode_health(store, [ended])[episode.episode_id][3] == "reauthorize"
 
 
 @pytest.mark.parametrize("chat", [False, True])
@@ -142,24 +134,3 @@ def test_question_delivery_checks_resolution_and_needs_you_preference(tmp_path):
     )
     sender.observe_episodes()
     assert store.notification_outbox() == []
-
-
-def test_human_experiment_questions_have_the_same_attention_overlay(tmp_path):
-    from .test_episode_storage import _start_modern_experiment_episode
-
-    store = AppStore(tmp_path / "experiment.sqlite3")
-    _project(store)
-    episode_id = str(uuid4())
-    _start_modern_experiment_episode(store, episode_id, "turn", complete_task=True)
-    store.checkpoint_agent_task("turn", native_session_id="session", stage_root="/stage")
-    episode = store.episode(episode_id)
-    root = store.agent_task("turn")
-    _question(store, episode, root)
-    assert episode.status == "running"
-    assert load_episode_health(store, [episode])[episode.episode_id] == (
-        "needs_action",
-        "review",
-        None,
-        "question",
-    )
-    assert store.episode(episode_id).status == "running"

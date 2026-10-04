@@ -8,7 +8,7 @@ const script = readFileSync(
   "utf8",
 );
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-function shell() {
+function shell(stored = new Map()) {
   const element = () => ({
     value: "",
     hidden: false,
@@ -18,22 +18,42 @@ function shell() {
       this.listeners[name] = handler;
     },
     replaceChildren() {},
+    append() {},
+    focus() {},
+    setAttribute() {},
+    querySelector() {
+      return this.child ?? (this.child = element());
+    },
     after(child) {
       this.afterElement = child;
     },
   });
   const elements = Object.fromEntries(
-    ["items", "empty", "add", "notice", "message", "pending"].map((id) => [id, element()]),
+    [
+      "items",
+      "count",
+      "tray",
+      "queue",
+      "editNow",
+      "send",
+      "general",
+      "notice",
+      "message",
+      "composer",
+    ].map((id) => [id, element()]),
   );
   const listeners = {};
   const timers = new Map();
   const requests = [];
   const messages = [];
-  const saved = new Map();
+  const saved = stored;
   let canComment = true;
+  let editFailure = null;
   let status = 200;
   let sendStatus = 409;
   let timerId = 0;
+  let confirmComment = null;
+  const offered = [];
   const context = {
     config: {
       projectId: "p",
@@ -41,6 +61,7 @@ function shell() {
       stateUrl: "/state",
       commentsUrl: "/comments",
       maxSelections: 10,
+      maxChars: 4096,
       stateRefreshMs: 1000,
     },
     document: {
@@ -62,7 +83,10 @@ function shell() {
       getItem: (key) => saved.get(key),
       setItem: (key, value) => saved.set(key, value),
     },
-    installSelectionConfirmation: () => () => {},
+    installSelectionConfirmation: (_composer, confirm) => {
+      confirmComment = confirm;
+      return (selection) => offered.push(selection);
+    },
     setTimeout(handler) {
       timers.set(++timerId, handler);
       return timerId;
@@ -79,7 +103,7 @@ function shell() {
         status: code,
         json: async () =>
           url === "/state"
-            ? { can_comment: canComment, fresh_session_required: false }
+            ? { can_comment: canComment, fresh_session_required: false, edit_failure: editFailure }
             : {
                 detail: { code: "fresh_session_required", message: "Start a fresh session" },
                 operation_id: "edit",
@@ -95,7 +119,12 @@ function shell() {
     setCanComment: (value) => {
       canComment = value;
     },
+    setEditFailure: (value) => {
+      editFailure = value;
+    },
     listeners,
+    addComment: (selection) => confirmComment(selection),
+    offered,
     requests,
     timers,
     setStatus: (value) => {
@@ -112,34 +141,54 @@ function shell() {
   };
 }
 
-test("shell preserves a conflicted draft and resubmits only with explicit fresh-session consent", async () => {
+test("Edit now and Send post one comment list, and resubmit only with fresh-session consent", async () => {
   const app = shell();
   await settle();
-  assert.equal(app.elements.add.disabled, true);
-  app.elements.message.value = "Update the plot";
-  app.elements.message.listeners.input();
-  assert.equal(app.elements.add.disabled, false);
-  await app.elements.add.listeners.click();
-  assert.equal(JSON.parse(app.requests.at(-1).options.body).fresh_session, false);
-  assert.equal(app.elements.message.value, "Update the plot");
+  const { general, message, editNow, send } = app.elements;
+  assert.equal(editNow.disabled, true);
+  assert.equal(send.disabled, true);
+  general.listeners.click();
+  message.value = "Update the plot";
+  message.listeners.input();
+  assert.equal(editNow.disabled, false);
+  editNow.listeners.click();
+  await settle();
+  const posts = () => app.requests.filter((request) => request.url === "/comments");
+  assert.deepEqual(JSON.parse(posts()[0].options.body), {
+    comments: [{ text: "Update the plot", selection: null }],
+    edit_now: true,
+    fresh_session: false,
+  });
+  // The refused comment stays queued for the tray's one-off send.
   assert.equal(app.messages.length, 0);
+  assert.equal(send.disabled, false);
   app.setCanComment(false);
   await app.tick();
-  assert.equal(app.elements.add.disabled, true);
+  assert.equal(send.disabled, true);
   app.setCanComment(true);
   await app.tick(); // A stale availability projection must not undo the explicit offer.
-  assert.equal(app.elements.add.disabled, false);
   app.setSendStatus(200);
-  await app.elements.add.listeners.click();
-  const posts = app.requests.filter((request) => request.url === "/comments");
-  assert.equal(JSON.parse(posts[1].options.body).fresh_session, true);
-  assert.equal(app.elements.message.value, "");
-  assert.equal(app.elements.add.disabled, true);
-  for (const { options } of posts) {
+  send.listeners.click();
+  // A comment added while that send is in flight is kept, not dropped with the sent ones.
+  message.value = "Also relabel the axis";
+  app.addComment({ kind: "whole" });
+  await settle();
+  const second = JSON.parse(posts()[1].options.body);
+  assert.equal(second.fresh_session, true);
+  assert.equal(second.edit_now, false);
+  assert.equal(second.comments.length, 1);
+  assert.equal(send.disabled, false);
+  for (const { options } of posts()) {
     assert.equal(options.method, "POST");
     assert.equal(options.credentials, "same-origin");
   }
-  assert.equal(JSON.parse([...app.saved.values()][0]).message, "");
+  assert.deepEqual(JSON.parse([...app.saved.values()].at(-1)).comments, [
+    { text: "Also relabel the axis", selection: null },
+  ]);
+  // The edit settles later; its failure reaches the floating window's notice.
+  app.setEditFailure("Provider is not signed in");
+  await app.tick();
+  assert.ok(app.elements.notice.textContent.includes("Provider is not signed in"));
   assert.deepEqual(JSON.parse(JSON.stringify(app.messages)), [
     [
       {
@@ -173,4 +222,37 @@ test("shell stops permanent state failures until Retry and keeps polling transie
       assert.equal(app.timers.size, 1);
     }
   }
+});
+
+test("a reopened viewer offers the unsent comment on its own selection, and Cancel drops it", async () => {
+  const selection = { kind: "text", text: "Figure 2", surrounding_text: "", comment: "" };
+  const stored = new Map([
+    [
+      "rcp:artifact-selections:p:a",
+      JSON.stringify({ comments: [], draft: { text: "Relabel", selection } }),
+    ],
+  ]);
+  const app = shell(stored);
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(app.offered.at(-1))), selection);
+  assert.equal(app.elements.message.value, "Relabel");
+  app.elements.composer.child.listeners.click();
+  assert.equal(app.elements.message.value, "");
+  assert.deepEqual(JSON.parse(stored.get("rcp:artifact-selections:p:a")).draft, {
+    text: "",
+    selection: null,
+  });
+});
+
+test("the queue refuses a comment that the server's joined size would reject", async () => {
+  const app = shell();
+  await settle();
+  const add = (text) => {
+    app.elements.message.value = text;
+    return app.addComment({ kind: "whole" });
+  };
+  // Whole-artifact comments join with a blank line, which counts toward the limit.
+  assert.equal(add("a".repeat(2047)), true);
+  assert.equal(add("b".repeat(2047)), true);
+  assert.equal(add("c"), false);
 });

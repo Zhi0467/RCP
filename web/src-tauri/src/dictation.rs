@@ -18,6 +18,16 @@ struct DictationState<'a> {
     state: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<&'a str>,
+}
+
+fn state_and_engine(state: &str) -> (&str, Option<&str>) {
+    match state {
+        "recording_analyzer" => ("recording", Some("speech_analyzer")),
+        "recording" => ("recording", Some("apple_server")),
+        _ => (state, None),
+    }
 }
 
 fn validate_session_id(session_id: &str) -> Result<(), String> {
@@ -53,7 +63,7 @@ mod platform {
                 *const c_char,
             ),
         ) -> c_int;
-        fn rcp_dictation_stop(session_id: *const c_char) -> c_int;
+        fn rcp_dictation_stop(session_id: *const c_char, finish: c_int) -> c_int;
         fn rcp_dictation_stop_active();
     }
 
@@ -85,11 +95,13 @@ mod platform {
             "state" => {
                 let state = string_from_ptr(state);
                 let error = optional_string_from_ptr(error);
+                let (state, engine) = state_and_engine(&state);
                 let _ = app.emit(
                     "rcp://dictation-state",
                     DictationState {
                         session_id: &session_id,
-                        state: &state,
+                        state,
+                        engine,
                         error: error.as_deref(),
                     },
                 );
@@ -127,10 +139,10 @@ mod platform {
         }
     }
 
-    pub(super) fn stop(session_id: &str) -> Result<(), String> {
+    pub(super) fn stop(session_id: &str, finish: bool) -> Result<(), String> {
         let session_id = CString::new(session_id).map_err(|error| error.to_string())?;
         // SAFETY: The bridge only reads the session id during this call.
-        let result = unsafe { rcp_dictation_stop(session_id.as_ptr()) };
+        let result = unsafe { rcp_dictation_stop(session_id.as_ptr(), i32::from(finish)) };
         if result == 0 {
             Ok(())
         } else {
@@ -152,7 +164,7 @@ mod platform {
         Err("dictation is available only in the macOS desktop app".into())
     }
 
-    pub(super) fn stop(_session_id: &str) -> Result<(), String> {
+    pub(super) fn stop(_session_id: &str, _finish: bool) -> Result<(), String> {
         Err("dictation is available only in the macOS desktop app".into())
     }
 
@@ -164,9 +176,9 @@ pub fn start(app: &AppHandle, session_id: &str) -> Result<(), String> {
     platform::start(app, session_id)
 }
 
-pub fn stop(session_id: &str) -> Result<(), String> {
+pub fn stop(session_id: &str, finish: bool) -> Result<(), String> {
     validate_session_id(session_id)?;
-    platform::stop(session_id)
+    platform::stop(session_id, finish)
 }
 
 pub fn stop_active() {
@@ -176,6 +188,31 @@ pub fn stop_active() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_native_states_and_recording_engines() {
+        for (native, state, engine) in [
+            ("preparing", "preparing", None),
+            ("recording_analyzer", "recording", Some("speech_analyzer")),
+            ("recording", "recording", Some("apple_server")),
+            ("stopped", "stopped", None),
+            ("error", "error", None),
+        ] {
+            assert_eq!(state_and_engine(native), (state, engine));
+            let payload = serde_json::to_value(DictationState {
+                session_id: "session",
+                state,
+                engine,
+                error: None,
+            })
+            .unwrap();
+            assert_eq!(payload["state"], state);
+            assert_eq!(
+                payload.get("engine").and_then(|value| value.as_str()),
+                engine
+            );
+        }
+    }
 
     #[test]
     fn rejects_empty_or_oversized_session_ids() {

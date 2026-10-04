@@ -2029,6 +2029,7 @@ export interface AgentTaskRequest {
   attachment_set_id?: string | null;
   attachment_client_id?: string | null;
   attachments?: ChatAttachmentDescriptor[];
+  references?: ProjectReferenceSelector[];
   session_id?: string | null;
   mode?: ConversationMode;
   artifact_context?: ArtifactContextRequest | null;
@@ -2254,6 +2255,7 @@ export interface ArtifactViewerState {
   live: "live" | "finished" | null;
   /** The operation of an admitted edit that has not published yet. */
   editing_operation_id: string | null;
+  edit_failure?: string | null;
   can_comment: boolean;
   /** Why Send is unavailable right now, such as a session held by another launch. */
   comment_unavailable_reason: string | null;
@@ -2770,6 +2772,22 @@ export interface ChatAttachmentDescriptor {
   media_type: string;
   size: number;
   expires_at: string;
+  /** Set when RCP copied this file from a project reference rather than an upload. */
+  reference?: ProjectReferenceSource | null;
+}
+
+/** A human's pointer to project data; the server copies it into the turn. */
+export type ProjectReferenceSelector =
+  | { kind: "artifact"; artifact_id: string }
+  | { kind: "node"; node_id: string; branch_id: string | null }
+  | { kind: "paper" };
+
+/** What a retained reference copy was taken from, frozen at admission. */
+export interface ProjectReferenceSource {
+  kind: ProjectReferenceSelector["kind"];
+  source_id: string;
+  version: string | null;
+  graph_head: GraphHeadRef | null;
 }
 
 export interface ChatTranscript extends ChatSummary {
@@ -2920,6 +2938,15 @@ export interface CacheMetric {
 export interface ProjectCacheMetrics {
   remote_sources: CacheMetric;
   session_slices: CacheMetric;
+}
+
+/** Clearing rebuilds the project page instead of deleting it; it doubles as the offline copy. */
+export interface ProjectCacheClearResult extends ProjectCacheMetrics {
+  project_page_rebuilt: boolean;
+}
+
+export interface AllProjectCacheClearResult extends ProjectCacheMetrics {
+  project_pages_not_rebuilt: string[];
 }
 
 export interface ProjectCard {
@@ -3131,6 +3158,7 @@ export interface ProjectArtifact {
   episode_id: string | null;
   episode_mode: EpisodeMode | null;
   source_chat_href: string | null;
+  source_node_id: string | null;
   viewer_url: string | null;
   view: ArtifactView;
   available: boolean;
@@ -3191,6 +3219,64 @@ export interface ProviderLoginAccount extends ProviderLoginState {
 /** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */
 export interface ProviderResumeSummary {
   checked: number;
+}
+
+export type ServiceConnectionKind = "openai_compatible" | "gemini";
+export type ServiceConnectionPreset = "openai" | "groq" | "custom";
+export type ServiceConnectionPurpose = "transcription" | "voice";
+
+/** One member's own transcription service connection; the key never leaves the backend. */
+export interface ServiceConnection {
+  id: string;
+  kind: ServiceConnectionKind;
+  preset: ServiceConnectionPreset | null;
+  label: string;
+  base_url: string | null;
+  model: string;
+  /** Full MIME strings with codecs that passed the connect check. */
+  formats: string[];
+  verified_at: string | null;
+  /** At most one connection, an OpenAI preset one, has `voice`. */
+  purposes: ServiceConnectionPurpose[];
+}
+
+/** The acting member's dictation choice, `"system"` (macOS) or a connection id. */
+export interface ServiceConnections {
+  dictation: string;
+  connections: ServiceConnection[];
+}
+
+export interface ServiceConnectionCreateRequest {
+  kind: ServiceConnectionKind;
+  preset: ServiceConnectionPreset | null;
+  /** Accepted only for the custom preset; the backend owns preset URLs. */
+  base_url: string | null;
+  model: string;
+  key: string;
+  purposes: ServiceConnectionPurpose[];
+}
+
+export interface TranscriptionResult {
+  text: string;
+}
+
+/** The acting member's voice settings; a restore falls back to the defaults. */
+export interface VoiceSettings {
+  delegation_model: string;
+  confirm: "tap" | "none";
+}
+
+/** The page enforces these; the backend owns their values. */
+export interface VoiceLimits {
+  idle_seconds: number;
+  hard_cap_seconds: number;
+  confirm_timeout_seconds: number;
+  commentary_max_chars: number;
+}
+
+export interface VoiceSessionResponse {
+  sdp_answer: string;
+  limits: VoiceLimits;
 }
 
 export interface TerminalWorkTurn {
@@ -3297,4 +3383,58 @@ export interface AgentQuestion {
 export interface AnswerQuestionRequest {
   answer: string;
   choices: string[];
+}
+
+export interface ConsolidationSchedule {
+  authorization_id: string;
+  local_time: string;
+  timezone: string;
+  authorized_by: { user_id: string; display_name: string | null };
+  authorized_at: string;
+  expires_at: string;
+  expired: boolean;
+  next_due_at: string;
+  last_run_at: string | null;
+  last_outcome: "succeeded" | "failed" | "skipped" | null;
+}
+
+export interface ConsolidationInboxItem {
+  run_id: string;
+  kind: "report" | "failure";
+  occurrence_date: string;
+  created_at: string;
+  operation_id: string | null;
+  chat_id: string | null;
+  report: { artifact_id: string; title: string } | null;
+  applied_revisions: Array<{ revision: number; summary: string }>;
+  revisions_verified: boolean;
+  proposals_created: number;
+  error: { code: string; message: string } | null;
+  state: "open" | "kept" | "dismissed";
+}
+
+export interface ConsolidationNight {
+  occurrence_date: string;
+  outcome: "succeeded" | "failed" | "skipped" | "running";
+}
+
+export interface ConsolidationView {
+  can_write: boolean;
+  schedule: ConsolidationSchedule | null;
+  inbox: ConsolidationInboxItem[];
+  /** The newest occurrences, oldest first. */
+  recent_nights: ConsolidationNight[];
+}
+
+export type LessonAuthor =
+  | { kind: "agent"; operation_id: string }
+  | { kind: "human"; user_id: string; display_name: string | null };
+
+export interface Lesson {
+  lesson_id: string;
+  text: string;
+  created_at: string;
+  updated_at: string;
+  author: LessonAuthor;
+  human_owned: boolean;
 }

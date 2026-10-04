@@ -13,6 +13,7 @@ const server = await createServer({
 const {
   WEBMCP_NODE_CONTENT_MAX_CHARS,
   WEBMCP_RESULT_MAX_CHARS,
+  authorizeProjectAutoResearch,
   boundJsonToBudget,
   createWebMcpToolRegistry,
   currentWebMcpContext,
@@ -25,21 +26,32 @@ const {
   modelContextFromDocument,
   openProjectFromIndex,
   openProjectArtifact,
+  openProjectView,
   projectArtifactToolDefinitions,
+  projectAutoResearchToolDefinitions,
   projectConversationSendToolDefinitions,
   projectConversationToolDefinitions,
+  projectEpisodeStopToolDefinitions,
   projectExperimentToolDefinitions,
-  projectExperimentStopToolDefinitions,
   projectIndexToolDefinitions,
   projectOverview,
   projectReadToolDefinitions,
+  projectViewToolDefinitions,
+  providerLoginToolDefinitions,
   registerWebMcpTools,
   sendProjectConversationMessage,
   startProjectExperiment,
+  stopProjectAutoResearchEpisode,
   stopProjectExperimentEpisode,
   webMcpSurface,
   webMcpTextResult,
 } = await server.ssrLoadModule("/src/webmcp.ts");
+const { catalog, catalogAsFunctionTools, publishToolSurface, resolve, webMcpHostDefinitions } =
+  await server.ssrLoadModule("/src/toolCatalog.ts");
+const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } =
+  await server.ssrLoadModule("/src/voiceTerminal.ts");
+const { parseProjectHash } = await server.ssrLoadModule("/src/experimentBoard.ts");
+const { graphTargetFromHash } = await server.ssrLoadModule("/src/graphTarget.ts");
 
 after(() => server.close());
 
@@ -671,7 +683,48 @@ test("project overview returns bounded saved facts without an AI summary", () =>
     ["exp-1"],
   );
   assert.equal("summary" in overview, false);
-  assert.doesNotThrow(() => webMcpTextResult(overview));
+  assert.deepEqual(Object.keys(overview.agents), Object.keys(projectFixture().agent_profiles));
+});
+
+test("the overview tool fits every agent role, long recent titles, and many episodes", async () => {
+  const project = projectFixture();
+  for (const role of [
+    "seed",
+    "refresh",
+    "node_chat",
+    "project_chat",
+    "paper_coach",
+    "orchestrator",
+  ]) {
+    project.agent_profiles[role] = { ...project.agent_profiles.node_chat, model: "m".repeat(40) };
+  }
+  for (const type of ["hypothesis", "experiment", "evidence", "blocker"]) {
+    for (const n of [1, 2]) {
+      const id = `${type}-long-${n}`;
+      project.graph.nodes[id] = {
+        ...project.graph.nodes["rq-1"],
+        id,
+        type,
+        title: "t".repeat(200),
+      };
+    }
+  }
+  const episodes = Array.from({ length: 40 }, (_, n) => ({
+    episode_id: `auto-${n}`.padEnd(36, "0"),
+    mode: "auto_research",
+    can_stop: true,
+  }));
+  const result = await projectReadToolDefinitions(project, episodes)[0].execute({});
+  assert.equal(JSON.parse(result.content[0].text).recent.blockers.length, 2);
+});
+
+test("project overview lists only stoppable Auto-research episode ids", () => {
+  const overview = projectOverview(projectFixture(), [
+    { episode_id: "auto-live", mode: "auto_research", can_stop: true },
+    { episode_id: "auto-ended", mode: "auto_research", can_stop: false },
+    { episode_id: "exp-live", mode: "experiment_loop", can_stop: true },
+  ]);
+  assert.deepEqual(overview.stoppable_auto_research_episode_ids, ["auto-live"]);
 });
 
 test("node inspection returns exact saved content and direct relation identities", () => {
@@ -844,6 +897,27 @@ test("the project read surface registers exactly the two confirmed tools", () =>
   );
   assert.equal(tools[1].inputSchema.additionalProperties, false);
   assert.deepEqual(tools[1].inputSchema.required, ["node_id"]);
+});
+
+test("provider logins report each state and never a credential", async () => {
+  const [tool] = providerLoginToolDefinitions(async () => [
+    {
+      provider: "codex",
+      label: "Codex",
+      host: "",
+      machines: ["laptop"],
+      state: "signed_in",
+      detail: null,
+      token: { pasted_at: "t", pasted_by: "m", verified_at: null, estimated_expiry_at: null },
+      login_command: "codex login",
+    },
+  ]);
+  const result = JSON.parse((await tool.execute({})).content[0].text);
+  assert.deepEqual(
+    result.providers.map((item) => [item.provider, item.state]),
+    [["codex", "signed_in"]],
+  );
+  assert.equal("token" in result.providers[0], false);
 });
 
 const noEpisodeFetch = async () => {
@@ -1628,6 +1702,31 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
   );
 });
 
+test("conversation Send refuses supplied references before invoking any callback", async () => {
+  const project = projectFixture();
+  const calls = [];
+  const callback = () => {
+    calls.push("invoked");
+    throw new Error("callback must not run");
+  };
+  for (const references of [[], [{ kind: "paper" }], null, undefined]) {
+    for (const chat_id of [undefined, "chat-1"]) {
+      await assert.rejects(
+        sendProjectConversationMessage(
+          project,
+          [],
+          { message: "Read the reference.", mode: "discuss", chat_id, references },
+          callback,
+          false,
+          callback,
+          callback,
+        ),
+      );
+    }
+  }
+  assert.equal(calls.length, 0);
+});
+
 test("the one Send tool exposes only semantic target, mode, message, and skill inputs", () => {
   const project = projectFixture();
   const tools = projectConversationSendToolDefinitions(
@@ -1918,16 +2017,46 @@ test("Experiment Stop refuses backend can_stop false and hides until available",
     ),
     /already stopping/,
   );
-  assert.deepEqual(
-    projectExperimentStopToolDefinitions(project, async () => undefined),
-    [],
-  );
-  const tools = projectExperimentStopToolDefinitions(project, async () => undefined, true);
+  const stop = async () => undefined;
+  assert.deepEqual(projectEpisodeStopToolDefinitions(project, [], stop, stop), []);
+  const tools = projectEpisodeStopToolDefinitions(project, [], stop, stop, true);
   assert.deepEqual(
     tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint]),
     [["rcp_stop_episode", false]],
   );
-  assert.deepEqual(tools[0].inputSchema.required, ["experiment_id", "episode_id"]);
+});
+
+test("Stop also accepts an exact stoppable Auto-research episode", async () => {
+  const project = projectFixture();
+  project.experiment_control["exp-1"] = { episode_id: null, can_stop: false, reasons: [] };
+  const live = { episode_id: "auto-1", mode: "auto_research", can_stop: true };
+  const stopped = [];
+  const stopAutoResearch = async (episodeId) => stopped.push(episodeId);
+  const stopExperiment = async () => stopped.push("experiment");
+  const [tool] = projectEpisodeStopToolDefinitions(
+    project,
+    [live],
+    stopExperiment,
+    stopAutoResearch,
+  );
+  assert.deepEqual(tool.inputSchema.required, ["episode_id"]);
+  const receipt = JSON.parse((await tool.execute({ episode_id: "auto-1" })).content[0].text);
+  assert.equal(receipt.stop_requested, true);
+  assert.deepEqual(stopped, ["auto-1"]);
+  for (const episode of [
+    { ...live, can_stop: false },
+    { ...live, mode: "experiment_loop" },
+  ]) {
+    await assert.rejects(
+      stopProjectAutoResearchEpisode(
+        project,
+        [episode],
+        { episode_id: "auto-1" },
+        stopAutoResearch,
+      ),
+    );
+  }
+  assert.deepEqual(stopped, ["auto-1"]);
 });
 
 function evalToolDefinitions(state) {
@@ -1946,6 +2075,7 @@ function evalToolDefinitions(state) {
   const { tasks, episodes } = artifactFixtures();
   return [
     ...projectReadToolDefinitions(project),
+    ...providerLoginToolDefinitions(async () => []),
     ...projectArtifactToolDefinitions(project, tasks, episodes, () => true, {
       loadEpisode: async () => null,
       loadTask: async () => null,
@@ -1968,8 +2098,59 @@ function evalToolDefinitions(state) {
     ...projectExperimentToolDefinitions(project, [], [], false, false, false, false, async () => ({
       operation_id: "experiment-task",
     })),
-    ...projectExperimentStopToolDefinitions(project, async () => undefined),
+    ...projectAutoResearchToolDefinitions(project, null, async () => ({ episode_id: "auto-1" })),
+    ...projectEpisodeStopToolDefinitions(
+      project,
+      [],
+      async () => undefined,
+      async () => undefined,
+    ),
+    ...projectViewToolDefinitions(project, tasks, episodes, {}, {}),
+    ...voiceTerminalToolDefinitions(project.id, terminalDoubles().deps),
   ];
+}
+
+function terminalDoubles(output = "", openSessions = [], repository = {}) {
+  const requests = [];
+  const sockets = [];
+  const bytes = (text) => new TextEncoder().encode(text).buffer;
+  const fetchJson = async (path, init) => {
+    requests.push([init?.method ?? "GET", path, init?.body]);
+    if (path.endsWith("/repositories")) {
+      return [
+        {
+          repository_id: "code",
+          machine_id: "local",
+          backend_name: null,
+          eligible: true,
+          ...repository,
+        },
+      ];
+    }
+    return init?.method === "POST" ? { session_id: "s1", repository_id: "code" } : openSessions;
+  };
+  const openSocket = (path) => {
+    const socket = {
+      path,
+      sent: [],
+      closed: false,
+      send(data) {
+        this.sent.push(JSON.parse(data));
+        setTimeout(() => this.onmessage?.({ data: bytes(output) }));
+      },
+      close() {
+        this.closed = true;
+      },
+    };
+    sockets.push(socket);
+    setTimeout(() => {
+      socket.onopen();
+      socket.onmessage({ data: bytes("earlier replay\r\n$ ") });
+    });
+    return socket;
+  };
+  const timing = { quietMs: 5, windowMs: 2_000, settleMs: 5, settleMaxMs: 500 };
+  return { requests, sockets, deps: { fetchJson, openSocket, timing } };
 }
 
 test("all WebMCP metadata stays descriptive and within model-facing budgets", () => {
@@ -1992,6 +2173,236 @@ test("all WebMCP metadata stays descriptive and within model-facing budgets", ()
       );
     }
   }
+});
+
+test("the catalog lists every tool any page state can publish, independent of state", () => {
+  const states = ["landing", "project_ready", "project_live", "project_completed"];
+  const names = catalog().map((tool) => tool.name);
+  assert.equal(new Set(names).size, names.length);
+  assert.deepEqual(
+    new Set(names),
+    new Set(states.flatMap(evalToolDefinitions).map((tool) => tool.name)),
+  );
+  publishToolSurface("project", evalToolDefinitions("project_completed"));
+  assert.deepEqual(
+    catalog().map((tool) => tool.name),
+    names,
+  );
+  publishToolSurface(null, []);
+});
+
+test("resolve returns the published definition or the reason a tool cannot run", () => {
+  assert.equal(resolve("rcp_get_project_overview").ok, false);
+  const definitions = evalToolDefinitions("project_completed");
+  publishToolSurface("project", definitions, { rcp_start_experiment: "start-refusal" });
+  const overview = resolve("rcp_get_project_overview");
+  assert.equal(overview.ok, true);
+  assert.equal(
+    overview.definition,
+    definitions.find((tool) => tool.name === "rcp_get_project_overview"),
+  );
+  assert.deepEqual(resolve("rcp_start_experiment"), { ok: false, refusal: "start-refusal" });
+  for (const name of ["rcp_stop_episode", "rcp_open_project", "rcp_delete_project"]) {
+    assert.equal(resolve(name).ok, false, name);
+    assert.equal(typeof resolve(name).refusal, "string", name);
+  }
+  publishToolSurface(null, []);
+});
+
+test("only Work, Experiment Start, Auto-research, and terminal runs ask for confirmation", () => {
+  const send = catalog().find((tool) => tool.name === "rcp_send_conversation_message");
+  assert.equal(send.confirm({ message: "Check", mode: "discuss" }), false);
+  assert.deepEqual(
+    catalog()
+      .filter((tool) => tool.confirm({ mode: "work" }))
+      .map((tool) => tool.name)
+      .sort(),
+    [
+      "rcp_authorize_auto_research",
+      "rcp_run_terminal_command",
+      "rcp_send_conversation_message",
+      "rcp_start_experiment",
+    ],
+  );
+});
+
+test("voice-only terminal tools resolve for voice but never register with WebMCP", () => {
+  const definitions = evalToolDefinitions("project_completed");
+  publishToolSurface("project", definitions);
+  const host = webMcpHostDefinitions(definitions).map((tool) => tool.name);
+  for (const name of ["rcp_list_terminals", "rcp_run_terminal_command"]) {
+    assert.equal(resolve(name).ok, true, name);
+    assert.ok(!host.includes(name), name);
+  }
+  assert.equal(host.length, definitions.length - 2);
+  publishToolSurface(null, []);
+});
+
+test("a terminal run types one line into a fresh shell and closes it at the prompt", async () => {
+  const output = `\u001b[32mok\u001b[0m\r\n${"x".repeat(5_000)}\r\n\u001b]0;title\u0007$ `;
+  const { requests, sockets, deps } = terminalDoubles(output);
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  const result = JSON.parse(
+    (await run.execute({ repository_id: "code", command: "git status" })).content[0].text,
+  );
+  const opened = requests.find(([method]) => method === "POST");
+  assert.equal(JSON.parse(opened[2]).require_new, true);
+  assert.equal(sockets.length, 1);
+  assert.deepEqual(sockets[0].sent, [{ type: "input", data: "git status\r" }]);
+  assert.ok(sockets[0].closed);
+  assert.equal(result.output.length, TERMINAL_OUTPUT_MAX_CHARS);
+  assert.equal(result.truncated, true);
+  assert.equal(result.finished, true);
+  assert.ok(requests.some(([method, path]) => method === "DELETE" && path.endsWith("/s1")));
+  assert.ok(result.output.endsWith("x\n$ "));
+  assert.ok(!/[\u001b\u0007]|earlier replay/.test(result.output));
+  await assert.rejects(run.execute({ repository_id: "unlisted", command: "ls" }));
+  assert.equal(sockets.length, 1);
+});
+
+test("a command still running when the window ends leaves its shell open", async () => {
+  const { requests, deps } = terminalDoubles("compiling\r\n");
+  deps.timing.windowMs = 50;
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  const result = JSON.parse(
+    (await run.execute({ repository_id: "code", command: "make" })).content[0].text,
+  );
+  assert.equal(result.finished, false);
+  assert.equal(result.still_running, true);
+  assert.equal(
+    requests.some(([method]) => method === "DELETE"),
+    false,
+  );
+});
+
+test("an open or unavailable terminal is refused before anything is typed", async () => {
+  const doubles = [
+    terminalDoubles("", [{ session_id: "member-shell", repository_id: "code", state: "live" }]),
+    terminalDoubles("", [], { eligible: false, unavailable_reason: "No terminal backend." }),
+  ];
+  for (const { requests, sockets, deps } of doubles) {
+    const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+    await assert.rejects(run.execute({ repository_id: "code", command: "ls" }));
+    assert.equal(
+      requests.some(([method]) => method === "POST"),
+      false,
+    );
+    assert.deepEqual(sockets, []);
+  }
+});
+
+test("a multi-line or control-character command is refused before anything opens", async () => {
+  const { requests, sockets, deps } = terminalDoubles();
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  for (const command of ["ls\nrm -rf x", "ls\u007f", "", "x".repeat(1_001)]) {
+    await assert.rejects(run.execute({ repository_id: "code", command }));
+  }
+  assert.deepEqual(requests, []);
+  assert.deepEqual(sockets, []);
+});
+
+test("the function-tool form carries only the Responses fields", () => {
+  const tools = catalogAsFunctionTools();
+  assert.deepEqual(JSON.parse(JSON.stringify(tools)), tools);
+  for (const [index, tool] of tools.entries()) {
+    assert.deepEqual(Object.keys(tool).sort(), ["description", "name", "parameters", "type"]);
+    assert.equal(tool.type, "function");
+    assert.equal(tool.name, catalog()[index].name);
+    assert.deepEqual(tool.parameters, catalog()[index].inputSchema);
+  }
+});
+
+test("Auto-research authorization takes the form's inputs and is offered only unrefused", async () => {
+  const project = projectFixture();
+  const starts = [];
+  const start = async (...args) => {
+    starts.push(args);
+    return { episode_id: "auto-1", status: "running", live: true };
+  };
+  assert.deepEqual(projectAutoResearchToolDefinitions(project, "refused", start), []);
+  const [tool] = projectAutoResearchToolDefinitions(project, null, start);
+  const receipt = JSON.parse(
+    (await tool.execute({ invocation_ceiling: 500, starting_instruction: " Probe " })).content[0]
+      .text,
+  );
+  assert.equal(receipt.episode_id, "auto-1");
+  await tool.execute({ invocation_ceiling: 1, code_worktree: false });
+  assert.deepEqual(starts, [
+    [500, "Probe", true],
+    [1, null, false],
+  ]);
+  for (const invocation_ceiling of [0, 1.5, "3", undefined]) {
+    await assert.rejects(authorizeProjectAutoResearch(project, { invocation_ceiling }, start));
+  }
+  assert.equal(starts.length, 2);
+});
+
+test("rcp_open_view uses in-page owners and never addresses another project or graph target", async () => {
+  const graphTarget = { kind: "branch", branch_id: "branch-1" };
+  const project = { ...projectFixture(), graph_target: graphTarget };
+  const { transcript } = conversationFixtures();
+  const { tasks, episodes } = artifactFixtures();
+  episodes.push({ episode_id: "auto-1", project_id: "project-1", mode: "auto_research" });
+  const entry = {
+    project_id: "project-1",
+    node: { id: "exp-1" },
+    control: { episode_id: "episode-1" },
+    episode: { episode_id: "episode-1" },
+    graph_target: graphTarget,
+    parent_episode_id: null,
+  };
+  const calls = [];
+  let current = true;
+  const owners = {
+    openNode: (id) => calls.push(["node", id]),
+    openConversation: (opened) => calls.push(["conversation", opened.chat_id]),
+    openRunRoute: (hash) => calls.push(["run", hash]),
+    openTab: (view) => calls.push(["tab", view]),
+    openArtifact: (record) => {
+      calls.push(["artifact", record.viewer_id]);
+      return true;
+    },
+    isCurrent: (id, target) => current && id === "project-1" && target === graphTarget,
+  };
+  const source = {
+    ...noArtifactFetch,
+    loadTranscript: async () => transcript,
+    loadExperimentEntries: async () => [entry],
+  };
+  const inputs = [
+    { kind: "node", id: "hyp-1" },
+    { kind: "conversation", id: "chat-1" },
+    { kind: "run", id: "auto-1" },
+    { kind: "run", id: "episode-1" },
+    { kind: "artifact", id: "task:task-1:artifact-1" },
+    { kind: "tab", id: "settings" },
+  ];
+  const open = (input) => openProjectView(project, tasks, episodes, input, owners, source);
+  for (const input of inputs) await open(input);
+  assert.deepEqual(
+    calls.map(([kind]) => kind),
+    ["node", "conversation", "run", "run", "artifact", "tab"],
+  );
+  assert.deepEqual(calls.at(-1), ["tab", "settings"]);
+  await assert.rejects(open({ kind: "tab", id: "constructor" }));
+  const [autoRoute, experimentRoute] = calls
+    .filter(([kind]) => kind === "run")
+    .map(([, hash]) => {
+      assert.deepEqual(graphTargetFromHash(hash), graphTarget);
+      return parseProjectHash(hash);
+    });
+  assert.equal(autoRoute.projectId, "project-1");
+  assert.equal(autoRoute.autoResearchEpisodeId, "auto-1");
+  assert.equal(experimentRoute.projectId, "project-1");
+  assert.equal(experimentRoute.experimentRoute.episode_id, "episode-1");
+  calls.length = 0;
+  entry.graph_target = { kind: "main" };
+  await assert.rejects(open({ kind: "run", id: "episode-1" }));
+  episodes.push({ episode_id: "old-run", project_id: "project-1", mode: "experiment_loop" });
+  await assert.rejects(open({ kind: "run", id: "old-run" }));
+  current = false;
+  for (const input of inputs) await assert.rejects(open(input));
+  assert.deepEqual(calls, []);
 });
 
 test("the WebMCP surface opens only behind the page's backend-session gate", () => {

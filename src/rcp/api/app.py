@@ -31,6 +31,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.chats import router as chats_router
+from rcp.api.consolidation import router as consolidation_router
 from rcp.api.dependencies import (
     ApiServices,
     HealthComposition,
@@ -59,6 +60,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
+from rcp.api.lessons import router as lessons_router
 from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.paper import router as paper_router
@@ -68,6 +70,7 @@ from rcp.api.provider_login import router as provider_login_router
 from rcp.api.questions import router as questions_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
+from rcp.api.service_connections import router as service_connections_router
 from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
@@ -75,6 +78,7 @@ from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
 from rcp.api.update_notice import router as update_notice_router
+from rcp.api.voice import router as voice_router
 from rcp.api.watchers import router as watchers_router
 from rcp.artifact_import import import_project_artifacts
 from rcp.attachments import ChatAttachmentStore
@@ -88,6 +92,7 @@ from rcp.build_identity import build_identity
 from rcp.compute_jobs.probe import probe_compute_backend, refresh_compute_probes
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
+from rcp.consolidation import ConsolidationPoller
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
@@ -1240,7 +1245,9 @@ def create_app(
             lambda identity: _project_service(catalog, identity),
             project_id=project_id,
         )
-        statuses.update(reconcile_experiment_question_answers(background_tasks))
+        statuses.update(
+            reconcile_experiment_question_answers(background_tasks, project_id=project_id)
+        )
         return statuses
 
     def after_task_settled(
@@ -1397,6 +1404,13 @@ def create_app(
         store,
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
+    )
+    consolidation_poller = ConsolidationPoller(
+        store,
+        background_tasks,
+        service_for=catalog.open,
+        admission=background_admission_gate,
+        startup_effect_fence=startup_effect_fence,
     )
     health_composition = HealthComposition(
         instance_metadata=identity,
@@ -1653,6 +1667,7 @@ def create_app(
         """Stop process-owned pollers and wait for already-scheduled async reads."""
 
         watcher_poller.stop()
+        consolidation_poller.stop(timeout=timeout)
         graph_watcher_retry_worker.stop(timeout=timeout)
         notification_sender.stop(timeout=timeout)
         if phone_listener is not None:
@@ -1663,6 +1678,10 @@ def create_app(
             )
         if watcher_poller.is_running() or graph_watcher_retry_worker.is_running():
             raise MaintenanceRefused("Timed out stopping watcher polling at the update boundary.")
+        if consolidation_poller.is_running():
+            raise MaintenanceRefused(
+                "Timed out stopping consolidation polling at the update boundary."
+            )
         loop = runtime_loop[0]
         if loop is None or loop.is_closed():
             raise MaintenanceRefused("The app runtime loop is unavailable at the update boundary.")
@@ -1693,6 +1712,7 @@ def create_app(
     def resume_update_runtime_owners() -> None:
         graph_watcher_retry_worker.start()
         watcher_poller.start()
+        consolidation_poller.start()
         notification_sender.start()
         if phone_listener is not None:
             phone_listener.resume()
@@ -1735,8 +1755,7 @@ def create_app(
                 # This is the one ordinary startup sequence. Normal startup calls
                 # it immediately; a cutover candidate calls it after the shared
                 # effect fence opens. Recovery must precede every other owner.
-                # Keep the Mac awake before any recovery owner relaunches work;
-                # recovery can outlast the previous watchdog's heartbeat.
+                # Hold the Mac awake before any recovery owner relaunches work.
                 if machine_power is not None:
                     machine_power.start()
                     app.state.machine_power_started = True
@@ -1894,6 +1913,7 @@ def create_app(
                 graph_watcher_retry_worker.start()
                 graph_watcher_retry_worker.signal()
                 watcher_poller.start()
+                consolidation_poller.start()
                 notification_sender.start()
                 if phone_listener is not None:
                     await asyncio.to_thread(phone_listener.resume)
@@ -1914,6 +1934,9 @@ def create_app(
                 await start_deferred_runtime()
             except BaseException:
                 await terminals.close()
+                if machine_power is not None and app.state.machine_power_started:
+                    app.state.machine_power_started = False
+                    await asyncio.to_thread(machine_power.stop)
                 raise
         try:
             if fenced_startup:
@@ -1947,9 +1970,6 @@ def create_app(
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await release_task
-            if machine_power is not None and app.state.machine_power_started:
-                app.state.machine_power_started = False
-                await asyncio.to_thread(machine_power.stop)
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
@@ -1974,11 +1994,18 @@ def create_app(
                 logger.exception("Terminal shutdown cleanup failed; startup will retry it.")
             await asyncio.to_thread(release_check.stop)
             watcher_poller.stop()
+            await asyncio.to_thread(consolidation_poller.stop)
             graph_watcher_retry_worker.stop()
             await asyncio.to_thread(notification_sender.stop)
             if phone_listener is not None:
                 await asyncio.to_thread(phone_listener.stop)
-            background_tasks.shutdown()
+            try:
+                background_tasks.shutdown()
+            finally:
+                # Hold the Mac awake until workers have drained.
+                if machine_power is not None and app.state.machine_power_started:
+                    app.state.machine_power_started = False
+                    await asyncio.to_thread(machine_power.stop)
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
             # Source reload workers share metadata owned by the outer supervisor,
@@ -2002,6 +2029,7 @@ def create_app(
     app.state.reconcile_question_answers = reconcile_question_answers
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller
+    app.state.consolidation_poller = consolidation_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
     app.state.notification_sender = notification_sender
     app.state.instance_metadata = identity
@@ -2117,18 +2145,32 @@ def create_app(
                     and path_parts[4] == "chats"
                     and path_parts[6] == "attachments"
                 )
-                allowed_media_type = media_type.lower() == "application/json" or (
-                    attachment_upload and media_type.lower() == "multipart/form-data"
+                transcription_upload = (
+                    request.method == "POST"
+                    and len(path_parts) == 5
+                    and path_parts[1:3] == ["api", "service-connections"]
+                    and path_parts[4] == "transcribe"
+                )
+                allowed_media_type = (
+                    media_type.lower() == "application/json"
+                    or (attachment_upload and media_type.lower() == "multipart/form-data")
+                    or (transcription_upload and media_type.lower() in {"audio/webm", "audio/mp4"})
                 )
                 if not allowed_media_type:
                     return JSONResponse(
                         status_code=415,
                         content={
                             "detail": {
-                                "code": "team_json_required",
+                                "code": (
+                                    "audio_type_unsupported"
+                                    if transcription_upload
+                                    else "team_json_required"
+                                ),
                                 "message": (
-                                    "Authenticated team mutations require JSON, except for "
-                                    "the bounded attachment upload."
+                                    "Unsupported audio type."
+                                    if transcription_upload
+                                    else "Authenticated team mutations require JSON, except for "
+                                    "the bounded attachment and transcription uploads."
                                 ),
                             }
                         },
@@ -2256,12 +2298,15 @@ def create_app(
     app.state.project_membership_dependency = require_project_membership
 
     app.include_router(provider_login_router)
+    app.include_router(service_connections_router)
+    app.include_router(voice_router)
     app.include_router(space_machines_router)
     app.include_router(health_router)
     app.include_router(server_status_router)
     app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
+    app.include_router(lessons_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
@@ -2271,6 +2316,7 @@ def create_app(
     app.include_router(experiments_router)
     app.include_router(chats_router)
     app.include_router(questions_router)
+    app.include_router(consolidation_router)
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(result_views_router)

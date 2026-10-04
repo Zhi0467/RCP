@@ -25,6 +25,7 @@ from rcp.agents.command_protocol import (
     FinishCommandRequest,
     InboxArguments,
     InboxCommandRequest,
+    LessonCommandRequest,
     MessageArguments,
     MessageCommandRequest,
     PauseCommandRequest,
@@ -892,6 +893,18 @@ class AutoResearchCommandDispatcher:
         context = self._context(operation_id)
         if request.mailbox_id == "":  # already schema-validated; keeps the binding explicit here
             raise AutoResearchCommandInvalid("The Auto-research command mailbox is missing.")
+
+        if isinstance(request, LessonCommandRequest):
+            from rcp.runs.lesson_commands import handle_lesson
+
+            try:
+                self._check_admission(context, request)
+                self._canonical_command_actor(context)
+            except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable) as exc:
+                return CommandResponse(
+                    request_id=request.request_id, status="invalid", message=str(exc)
+                )
+            return handle_lesson(self.store, operation_id, request)
 
         if isinstance(request, AskCommandRequest):
             return self._dispatch_ask(context, request)

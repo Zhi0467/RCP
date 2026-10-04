@@ -171,9 +171,10 @@ def test_state_edit_operation_tracks_task_lifecycle(viewer_app, status, active):
         status=status,
         request={"artifact_edit": {"artifact_id": artifact.artifact_id}},
     )
-    assert _state(client, artifact)["editing_operation_id"] == (
-        edit.operation_id if active else None
-    )
+    state = _state(client, artifact)
+    assert state["editing_operation_id"] == (edit.operation_id if active else None)
+    # A failure that settles after the send succeeded still reaches the viewer.
+    assert (state["edit_failure"] is not None) == (status in {"failed", "interrupted"})
 
 
 @pytest.mark.parametrize("name,data", [("paper.pdf", b"%PDF-1.7\n"), ("data.bin", b"\x00\xff")])
@@ -260,6 +261,9 @@ def test_run_artifacts_includes_workers_child_experiments_and_retained_reports(v
         child_report.artifact_id,
         kept.artifact_id,
     ]
+    # Only an unkept turn artifact offers Keep; an episode report is permanent.
+    assert not _state(client, report)["can_keep"]
+    assert _state(client, child_artifact)["can_keep"]
     assert entries[1]["worker_label"] == "Summarize results"
     assert all(entry["worker_label"] is None for index, entry in enumerate(entries) if index != 1)
     child_response = client.get(f"/api/projects/{project_id}/episodes/{child.episode_id}/artifacts")

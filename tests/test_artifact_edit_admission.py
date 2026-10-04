@@ -102,7 +102,7 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
     assert availability.can_comment and availability.fresh_session_required
     response = TestClient(app).post(
         f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"message": "Update"},
+        json={"comments": [{"text": "Update"}]},
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "fresh_session_required"
@@ -259,7 +259,7 @@ def test_viewer_session_collision_matches_comment_admission(edit_origin):
     assert response.status_code == 200
     state = response.json()
     assert not state["can_comment"] and not state["fresh_session_required"]
-    response = client.post(url + "/comments", json={"message": "Update this"})
+    response = client.post(url + "/comments", json={"comments": [{"text": "Update this"}]})
     assert response.status_code == 409
 
 
@@ -331,3 +331,49 @@ def test_pending_import_is_transient(edit_origin, monkeypatch, state, expected):
     )
     response = TestClient(app).get(f"/api/projects/{task.project_id}/artifacts/{'a' * 24}/download")
     assert response.status_code == expected
+
+
+def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
+    from types import SimpleNamespace
+
+    from rcp.agents.prompts import _attachment_items
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.html", b"<p>Score</p>")
+    started = []
+    monkeypatch.setattr(
+        "rcp.api.artifacts.start_artifact_edit",
+        lambda _tasks, _project, admitted, **_: (
+            started.append(admitted)
+            or SimpleNamespace(model_dump=lambda **_: {"operation_id": "edit"})
+        ),
+    )
+    box = {
+        "kind": "box",
+        "rect": {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.3},
+        "viewport": {"width": 800, "height": 600},
+        "elements": [{"path": "p", "label": "", "text": "Score"}],
+    }
+    url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
+    client = TestClient(app)
+    # A box with only its own comment is a complete request, sent at once.
+    response = client.post(
+        url,
+        json={
+            "comments": [{"text": "Label these rows", "selection": box}, {"text": "Shorter"}],
+            "edit_now": True,
+        },
+    )
+    assert response.status_code == 202, response.text
+    (admitted,) = started
+    context = admitted.artifact_context
+    assert context.edit_now
+    assert [selection.comment for selection in context.selections] == ["Label these rows"]
+    for text in ("Label these rows", "Shorter"):
+        assert admitted.message.count(text) == 1
+    assert client.post(url, json={"comments": [{"text": " ", "selection": box}]}).status_code == 422
+
+    pointer = {"name": "report.html", "media_type": "text/html", "path": "/a/report.html"}
+    pointer |= {"source_artifact_id": artifact.artifact_id, "selections": [box]}
+    queued, now = (_attachment_items([{**pointer, "edit_now": flag}]) for flag in (False, True))
+    assert len(now.splitlines()) == len(queued.splitlines()) + 1

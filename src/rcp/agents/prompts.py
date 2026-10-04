@@ -59,7 +59,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 15
+CHAT_MASTER_CONTEXT_VERSION = 16
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -523,12 +523,12 @@ def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[
         # A box from the viewer before elements were named: its position was measured
         # on the viewer area, so only its sampled text says what it covered.
         labels = _one_line(selection.get("labels", ""))
-        return [f"  Selection {index}, boxed area" + (f" covering: {labels}" if labels else "")]
+        return [f"  Comment {index}, boxed area" + (f" covering: {labels}" if labels else "")]
     assert isinstance(elements, list)
     if html:
         if not elements:
-            return [f"  Selection {index}, boxed area with no element inside"]
-        lines = [f"  Selection {index}, boxed area covering:"]
+            return [f"  Comment {index}, boxed area with no element inside"]
+        lines = [f"  Comment {index}, boxed area covering:"]
         for element in elements:
             described = f"`{element['path']}`"
             label = _one_line(element.get("label", ""))
@@ -541,7 +541,7 @@ def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[
                 described += f" (the box covers {_region(element['region'])} of it)"
             lines.append(f"    {described}")
         return lines
-    where = f"  Selection {index}, boxed region {_region(selection['rect'])} of the image"
+    where = f"  Comment {index}, boxed region {_region(selection['rect'])} of the image"
     crop = selection.get("crop_path")
     if not isinstance(crop, str):
         return [where]
@@ -566,18 +566,44 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
 
     if not attachments:
         return ""
-    lines = ["Attachments for this turn:"]
-    for item in attachments:
+    lines = []
+    references = [item for item in attachments if isinstance(item.get("reference"), dict)]
+    if references:
+        lines.extend(
+            [
+                "Project references for this turn (read-only):",
+                "These retained copies are context, not authority to change the source or graph.",
+            ]
+        )
+        for item in references:
+            reference = item["reference"]
+            assert isinstance(reference, dict)
+            identity = json.dumps(
+                {key: value for key, value in reference.items() if value is not None},
+                sort_keys=True,
+            )
+            lines.append(f"- `{item['name']}` ({identity}): `{item['path']}`")
+    uploads = [item for item in attachments if not isinstance(item.get("reference"), dict)]
+    if uploads:
+        if lines:
+            lines.append("")
+        lines.append("Attachments for this turn:")
+    for item in uploads:
         described = f"`{item['name']}` ({item['media_type']})"
         if not isinstance(item.get("source_artifact_id"), str):
             lines.append(f"- {described}: `{item['path']}`")
             continue
         lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
-        lines.append(f"  Edit this file in place, keeping its name: `{item['path']}`")
+        lines.append(
+            "  The human's message holds their comments on it, numbered as anchored below. "
+            "Edit this file in place, keeping its name, when a comment needs a change."
+        )
+        if item.get("edit_now"):
+            lines.append("  The human asked for that in-place edit now, in this turn.")
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
             if selection.get("kind") == "text":
-                lines.append(f"  Selection {index}, text: {_one_line(selection.get('text', ''))}")
+                lines.append(f"  Comment {index}, on text: {_one_line(selection.get('text', ''))}")
                 around = _one_line(selection.get("surrounding_text", ""))
                 if around:
                     lines.append(f"    Around it: {around}")
@@ -615,8 +641,9 @@ def _patch_validator_rules(validator_command: str) -> str:
   Patch is invalid: read the returned diagnostics, correct the same file, and check again. Exit 2
   means RCP is unavailable or the bounded self-check limit was reached; do not treat it as a
   semantic error or loop on it.
-- Messages printed with exit 0 are warnings, usually a missing or doubtful connection. Fix each one,
-  or say in the reply why it stands.
+- Messages printed with exit 0 are advice to double-check, usually a possibly missing connection.
+  Add a link only when the relation is real; never add one to clear a warning. Leaving advice
+  unaddressed is fine, and the reply does not need to mention it.
 - Each check reads live graph state. A check is advisory until Apply revalidates under the append
   lock, so run it after your final Patch edit before declaring the task complete.
 """
@@ -658,9 +685,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v2"
+DISCUSS_POLICY_VERSION = "discuss-v3"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v3"
+WORK_POLICY_VERSION = "work-v4"
 
 
 class PromptFactory:
@@ -682,6 +709,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
+        lessons_pointer: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -693,6 +721,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
+            lessons_pointer=lessons_pointer,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -706,6 +735,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
+        lessons_pointer: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -718,6 +748,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
+            lessons_pointer=lessons_pointer,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -737,6 +768,7 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
+        lessons_pointer: str = "",
         launch_instructions: str | None = None,
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the human's bytes.
@@ -749,6 +781,8 @@ class PromptFactory:
         if launch_instructions is not None and marker != "Work":
             raise ValueError("launch instructions belong only to a Work turn")
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
+        if lessons_pointer:
+            parts.append(lessons_pointer)
         if launch_instructions:
             parts.append(
                 f"Launch instructions for this session's Work turns:\n{launch_instructions}"
@@ -879,7 +913,7 @@ Turn protocol:
 """)
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v1"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v2"
 
     @staticmethod
     def graph_task_contract(
@@ -1245,7 +1279,8 @@ Graph Patch (optional):
   the only graph-change channel RCP reads. Record `repositories_read` honestly.
 - Write `change_summary` as one plain sentence per graph change, naming concepts by title (never ids,
   operation names, or counts) and stating only what the Patch records.
-- Describe the graph change in the reply without claiming RCP accepted it.
+- Describe the graph change in the reply. RCP shows whether it applied beside the reply, so do not
+  state whether RCP applied, accepted, or has yet to apply it.
 
 {validator_rules}
 
@@ -1416,8 +1451,9 @@ Work graph-correction instruction:
 - Exit 0 means the Patch validates against current canonical state. Exit 1 means the Patch is
   invalid and should be corrected. Exit 2 means RCP is unavailable or the bounded self-check limit
   was reached; do not treat it as a semantic error or loop on it.
-- Messages printed with exit 0 are warnings, usually a missing or doubtful connection. Fix each one,
-  or say in the reply why it stands.
+- Messages printed with exit 0 are advice to double-check, usually a possibly missing connection.
+  Add a link only when the relation is real; never add one to clear a warning. Leaving advice
+  unaddressed is fine, and the reply does not need to mention it.
 - The check is advisory until Apply revalidates under the append lock.'''
                 if validator_command
                 else ""

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.storage import AppStore
-from rcp.storage.question_models import QuestionOrigin, QuestionStateConflict
+from rcp.storage.question_models import QuestionOrigin
 
 from .test_episode_storage import _authorizer, _episode, _operational_task, _wrapup
 
@@ -34,22 +34,7 @@ def _question(store, episode, *, key="question", state="pending"):
     return question
 
 
-@pytest.mark.parametrize("mode", ["auto_research", "experiment_loop"])
-@pytest.mark.parametrize("ending", ["completed", "exhausted", "human_pause", "failed", "stopped"])
-def test_all_episode_endings_withdraw_questions(tmp_path, mode, ending):
-    store = AppStore(tmp_path / "app.sqlite3")
-    episode = store.create_episode(_episode(store, "episode", mode=mode))
-    question = _question(store, episode)
-    if ending == "stopped":
-        store.mark_episode_stop_skipped(episode.episode_id)
-    else:
-        store.end_episode_without_report(episode.episode_id, ending=ending, diagnostic=None)
-    assert store.get_question(question.question_id).withdrawn_readonly
-    with pytest.raises(QuestionStateConflict):
-        store.answer_question(question.question_id, answer="First", resolved_by=_authorizer(store))
-
-
-@pytest.mark.parametrize("path", ["fence", "wrapup", "restore"])
+@pytest.mark.parametrize("path", ["fence", "wrapup", "restore", "stop_skipped"])
 def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, path):
     store = AppStore(tmp_path / "app.sqlite3")
     episode = store.create_episode(_episode(store, "episode"))
@@ -62,6 +47,8 @@ def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, pat
         )
         wrapup, task = _wrapup(store, "episode", "operation", "report")
         store.begin_episode_wrapup("episode", wrapup, task)
+    elif path == "stop_skipped":
+        store.mark_episode_stop_skipped("episode")
     else:
         with store.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -71,17 +58,16 @@ def test_questions_withdraw_at_ending_fence_before_report_finishes(tmp_path, pat
     assert store.get_question(question.question_id).withdrawn_readonly
 
 
-@pytest.mark.parametrize("mode", ["auto_research", "experiment_loop"])
-def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_path, mode):
+def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_path):
     store = AppStore(tmp_path / "app.sqlite3")
-    episode = store.create_episode(_episode(store, "original", mode=mode))
+    episode = store.create_episode(_episode(store, "original", mode="auto_research"))
     questions = [
         _question(store, episode, key=state, state=state)
         for state in ("pending", "answered", "dismissed")
     ]
     store.end_episode_without_report("original", ending="exhausted", diagnostic=None)
     for episode_id in ("second", "third"):
-        continuation = _episode(store, episode_id, mode=mode).model_copy(
+        continuation = _episode(store, episode_id, mode="auto_research").model_copy(
             update={"continues_episode_id": episode.episode_id}
         )
         episode = store.create_episode(continuation)
@@ -92,12 +78,11 @@ def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_pa
             assert current.origin == original.origin
             assert current.state == original.state
             assert not current.withdrawn_readonly
-        if mode == "auto_research":
-            snapshots = store.auto_research_space_run_projection_snapshots(
-                {episode.project_id}, completed_since=store.now()
-            )
-            current = next(s for s in snapshots if s.episode.episode_id == episode_id)
-            assert current.has_open_questions
+        snapshots = store.auto_research_space_run_projection_snapshots(
+            {episode.project_id}, completed_since=store.now()
+        )
+        current = next(s for s in snapshots if s.episode.episode_id == episode_id)
+        assert current.has_open_questions
         store.end_episode_without_report(episode_id, ending="exhausted", diagnostic=None)
         assert all(q.withdrawn_readonly for q in store.episode_questions("project", episode_id))
     assert store.episode_questions("other-project", "third") == []

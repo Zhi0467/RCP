@@ -22,9 +22,11 @@ from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
 from rcp.storage.base import AppStoreBase
 from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
+from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
 from rcp.storage.episodes import EpisodeStoreMixin
 from rcp.storage.experiments import ExperimentStoreMixin
+from rcp.storage.lessons import LessonStoreMixin
 from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
 from rcp.storage.notifications import NotificationStoreMixin
@@ -47,6 +49,8 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    ConsolidationStoreMixin,
+    LessonStoreMixin,
     QuestionStoreMixin,
     NotificationStoreMixin,
     SpaceMachineStoreMixin,

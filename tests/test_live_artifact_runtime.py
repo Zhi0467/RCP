@@ -591,3 +591,120 @@ def test_running_live_version_never_opens_project_during_reconcile(live):
     saved = version(live, artifact)
     assert saved.live.capture_attempts == 0
     assert saved.live_snapshot is None
+
+
+def files_need(directory, pattern="*/task-*/status.json", **options):
+    return (
+        dict(kind="files", dir=str(directory), pattern=pattern, read="whole", format="text")
+        | options
+    )
+
+
+def test_folder_discovers_later_batches_without_rebinding(live):
+    artifact = live.create([files_need(live.root)])
+    initial = read(live, artifact)
+    assert initial.complete and initial.snapshots[0].files == []
+    for n in range(80):
+        path = live.root / f"arm-{n // 10}" / f"task-{n % 10}" / "status.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"state":"done"}\n')
+    snapshot = read(live, artifact).snapshots[0]
+    assert len(snapshot.files) == 80
+    assert [f.path for f in snapshot.files] == sorted(f.path for f in snapshot.files)
+    assert all(f.rows == ['{"state":"done"}'] for f in snapshot.files)
+    capture(live)
+    assert version(live, artifact).live_snapshot is None
+    live.service.manifest.repositories = []
+    with pytest.raises(ValueError):
+        read(live, artifact)
+
+
+def test_folder_outside_roots_is_refused(live, tmp_path):
+    artifact = live.create([files_need(tmp_path)])
+    assert read(live, artifact).static
+    assert version(live, artifact).live.invalid_reason
+
+
+def test_folder_skips_symlinks_and_nonregular_entries(live):
+    root = live.root / "results"
+    root.mkdir()
+    real = root / "real"
+    real.mkdir()
+    (real / "status.json").write_text("safe\n")
+    (root / "linked-dir").symlink_to(real, target_is_directory=True)
+    (real / "linked-file").symlink_to(real / "status.json")
+    os.mkfifo(real / "fifo")
+    artifact = live.create([files_need(root, "*/*")])
+    snapshot = read(live, artifact)
+    assert snapshot.complete
+    assert [(f.path, f.rows) for f in snapshot.snapshots[0].files] == [
+        ("real/status.json", ["safe"])
+    ]
+
+
+@pytest.mark.parametrize("cap", ["matches", "total_bytes", "file_bytes", "rows", "scanned_entries"])
+def test_folder_caps_report_omitted_content(live, monkeypatch, cap):
+    import rcp.live_artifact_runtime as runtime
+
+    for name in ("a", "b", "c"):
+        (live.root / name).write_text("one\ntwo\n")
+    setting, value = {
+        "matches": ("LIVE_ARTIFACT_MAX_FILES", 2),
+        "total_bytes": ("LIVE_ARTIFACT_MAX_TOTAL_BYTES", 8),
+        "file_bytes": ("LIVE_ARTIFACT_MAX_BYTES", 4),
+        "rows": ("LIVE_ARTIFACT_MAX_ROWS", 1),
+        "scanned_entries": ("LIVE_ARTIFACT_MAX_SCANNED_ENTRIES", 1),
+    }[cap]
+    monkeypatch.setattr(runtime, setting, value)
+    artifact = live.create([files_need(live.root, "*")])
+    snapshot = read(live, artifact).snapshots[0]
+    assert snapshot.truncated
+    if cap == "matches":
+        assert [f.path for f in snapshot.files] == ["a", "b"]
+    if cap == "total_bytes":
+        assert len(snapshot.files) == 1 and snapshot.files[0].rows == ["one", "two"]
+    if cap in {"file_bytes", "rows"}:
+        assert all(f.truncated and f.rows == ["one"] for f in snapshot.files)
+
+
+@pytest.mark.parametrize("failure", ["missing_dir", "invalid_file"])
+def test_folder_errors_prevent_final_capture(live, failure):
+    job(live)
+    root = live.root / "results"
+    if failure == "invalid_file":
+        root.mkdir()
+        (root / "bad").write_bytes(b"\xff")
+        (root / "good").write_text("available\n")
+    artifact = live.create([{"kind": "job", "key": "train"}, files_need(root, "*")])
+    snapshot = read(live, artifact)
+    assert not snapshot.complete and snapshot.snapshots[1].error
+    if failure == "invalid_file":
+        bad, good = snapshot.snapshots[1].files
+        assert bad.error and good.rows == ["available"] and not good.error
+    capture(live)
+    assert version(live, artifact).live_snapshot is None
+    assert version(live, artifact).live.capture_error
+
+
+def test_remote_folder_uses_one_shipped_reader_call_per_snapshot(live, monkeypatch):
+    from rcp.transport import RemoteRunStage
+
+    (live.root / "status.json").write_text("ready\n")
+    host = "execution-host"
+    repo = live.service.manifest.repositories[0]
+    live.service.manifest.machine_map[repo.machine].host = host
+    with live.store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET stage_host=? WHERE operation_id='turn'", (host,))
+    calls = []
+
+    def ssh(self, arguments, **kwargs):
+        calls.append(arguments)
+        return subprocess.run([sys.executable, *arguments[1:]], capture_output=True, timeout=5)
+
+    monkeypatch.setattr(RemoteRunStage, "_ssh_bytes", ssh)
+    artifact = live.create([files_need(live.root, "*.json")])
+    assert not calls
+    for count in (1, 2):
+        snapshot = read(live, artifact)
+        assert snapshot.complete and snapshot.snapshots[0].files[0].rows == ["ready"]
+        assert len(calls) == count

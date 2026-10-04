@@ -1,4 +1,10 @@
-"""Machine-local demand and safety policy; only the detached watchdog changes pmset."""
+"""Keep this machine from idle-sleeping while RCP has work.
+
+The hold is an ordinary power assertion: no root, no persistent system state.
+The OS still overrides it, so a closed lid or a battery emergency sleeps the
+machine, and the assertion dies with this process. Opt-in lid mode layers a
+separate watchdog-controlled SleepDisabled flag onto this idle-hold policy.
+"""
 
 from __future__ import annotations
 
@@ -34,14 +40,14 @@ logger = logging.getLogger(__name__)
 PMSET = "/usr/bin/pmset"
 IOREG = "/usr/sbin/ioreg"
 
-
-def run_command(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, timeout=timeout, capture_output=True, text=True, check=False)
+# One profile per platform: the command that holds an idle-sleep assertion
+# until the given process exits. A platform without an entry is unsupported.
+IDLE_HOLD_COMMANDS: dict[str, Callable[[int], list[str]]] = {
+    "darwin": lambda pid: ["/usr/bin/caffeinate", "-i", "-w", str(pid)],
+}
 
 
 def spawn_command(argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> subprocess.Popen:
-    # The watchdog inherits the advisory owner lock. A dead backend cannot free
-    # ownership before its surviving watchdog has finished releasing the flag.
     return subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
@@ -50,6 +56,10 @@ def spawn_command(argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> subproc
         start_new_session=True,
         pass_fds=pass_fds,
     )
+
+
+def run_command(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, timeout=timeout, capture_output=True, text=True, check=False)
 
 
 def parse_battery(output: str) -> tuple[bool, int | None]:
@@ -108,6 +118,27 @@ def parse_flag(output: str) -> bool:
     raise ValueError("unknown SleepDisabled flag")
 
 
+def read_record(path: Path) -> dict[str, str]:
+    try:
+        return dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    except FileNotFoundError:
+        return {}
+
+
+def write_record(path: Path, values: dict) -> None:
+    """Atomic exchange; no shell ever sources these records."""
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            for key, value in values.items():
+                if "\n" in str(value):
+                    raise ValueError("record value contains a newline")
+                stream.write(f"{key}={value}\n")
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def demand_snapshot(store, background) -> list[str]:
     """Coarse, local reads only; armed watchers alone never create demand."""
     reasons = []
@@ -156,37 +187,16 @@ def demand_snapshot(store, background) -> list[str]:
     return reasons
 
 
-def read_record(path: Path) -> dict[str, str]:
-    try:
-        return dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
-    except FileNotFoundError:
-        return {}
-
-
-def write_record(path: Path, values: dict) -> None:
-    """Atomic exchange; no shell ever sources these records."""
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            for key, value in values.items():
-                if "\n" in str(value):
-                    raise ValueError("record value contains a newline")
-                stream.write(f"{key}={value}\n")
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
 class MachinePowerController:
-    """One safety thread, a worker-bound idle hold, and a revocable lid executor."""
+    """Demand-driven idle hold with a separately revocable lid executor."""
 
     def __init__(
         self,
         store,
         *,
         demand_reader: Callable[[], list[str]],
+        spawn: Callable[[list[str]], subprocess.Popen] | None = None,
         run=run_command,
-        spawn=None,
         clock=time.time,
         monotonic=time.monotonic,
         process_identity: Callable[[], tuple[int, str]] | None = None,
@@ -197,8 +207,8 @@ class MachinePowerController:
         from rcp.machine_power_install import MachinePowerInstaller
 
         self.store, self.demand_reader = store, demand_reader
-        self.run, self.clock, self.monotonic = run, clock, monotonic
         self.spawn = spawn or self._spawn
+        self.run, self.clock, self.monotonic = run, clock, monotonic
         self.platform = (
             "macos"
             if platform == "darwin"
@@ -210,20 +220,20 @@ class MachinePowerController:
         self.directory = directory or self.installer.paths.directory
         self.identity_reader = process_identity or self._process_identity
         self._identity = None
-        self._lock = threading.RLock()
         self._admin_lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = None
         self._owner = None
         self._watchdog = None
-        self._idle = None
         self._generation = 0
         self._desired = "off"
-        self._reasons = []
         self._external = False
         self._lid_active = False
-        self._running = False
         self._release_cause = None
+        self.command = IDLE_HOLD_COMMANDS.get(platform)
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._hold: subprocess.Popen | None = None
+        self._reasons: list[str] = []
         with store.connection() as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS machine_power_state "
@@ -232,8 +242,9 @@ class MachinePowerController:
             row = connection.execute(
                 "SELECT value FROM machine_power_state WHERE singleton=1"
             ).fetchone()
+        self._enabled = bool(json.loads(row[0]).get("idle_hold", True)) if row else True
+
         self._state = {
-            "idle_hold": True,
             "lid_mode": False,
             "latched": None,
             "last_release": None,
@@ -242,7 +253,147 @@ class MachinePowerController:
             "result_generation": None,
         }
         if row:
-            self._state.update(json.loads(row[0]))
+            self._state.update(
+                {key: value for key, value in json.loads(row[0]).items() if key != "idle_hold"}
+            )
+
+    def status(self) -> dict:
+        with self._lock:
+            supported = self.command is not None
+            installed = self.installer.status() if supported else None
+            return {
+                "platform": self.platform,
+                "supported": supported,
+                "installed": installed.installed if installed else False,
+                "install_problem": installed.install_problem if installed else "not_installed",
+                "idle_hold": {
+                    "enabled": self._enabled,
+                    "active": self._held(),
+                },
+                "lid_mode": {"enabled": self._state["lid_mode"], "active": self._lid_active},
+                "demand": bool(self._reasons),
+                "demand_reasons": list(self._reasons),
+                "latched": self._state["latched"],
+                "last_release": self._state["last_release"],
+                "cleanup_failure": self._state["cleanup_failure"],
+                "external_owner": self._external,
+            }
+
+    def update(self, preferences: dict) -> dict:
+        if (
+            not preferences
+            or set(preferences) - {"idle_hold", "lid_mode"}
+            or any(type(value) is not bool for value in preferences.values())
+        ):
+            raise ValueError("invalid machine power preferences")
+        with self._lock:
+            enabled = preferences.get("idle_hold", self._enabled)
+            state = self._state | {
+                key: value for key, value in preferences.items() if key != "idle_hold"
+            }
+            if preferences.get("lid_mode"):
+                state["latched"] = None
+                state["cleanup_failure"] = None
+            # Persist first, so a failed write changes nothing live.
+            with self.store.connection() as connection:
+                connection.execute(
+                    "INSERT INTO machine_power_state VALUES (1,?) "
+                    "ON CONFLICT(singleton) DO UPDATE SET value=excluded.value",
+                    (json.dumps({"idle_hold": enabled, **state}),),
+                )
+            self._enabled = enabled
+            self._state = state
+            if not enabled:
+                # Turning it off never waits on a demand read.
+                self._drop()
+        if self._thread is not None:
+            self.safety_pass()
+        return self.status()
+
+    def start(self) -> None:
+        if self.command is None or self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="rcp-machine-power", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._lock:
+            if (
+                self._thread is not None
+                or self._hold is not None
+                or self._watchdog is not None
+                or (
+                    self.platform == "macos"
+                    and read_record(self.directory / "activation").get("set") == "1"
+                )
+            ):
+                try:
+                    self._release("shutdown")
+                except Exception:
+                    logger.exception(
+                        "Could not publish machine power shutdown; watchdog will expire"
+                    )
+                finally:
+                    self._drop()
+        if self._thread:
+            self._thread.join()
+            self._thread = None
+        with self._lock:
+            try:
+                self._wait_watchdog()
+            except Exception:
+                logger.exception("Machine power shutdown cleanup failed")
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self.safety_pass()
+            self._stop.wait(MACHINE_POWER_PASS_SECONDS)
+
+    def safety_pass(self) -> None:
+        demand_failed = False
+        try:
+            reasons = self.demand_reader()
+        except Exception:
+            # Keep the current hold; a failed read is not evidence that work ended.
+            logger.exception("Could not read keep-awake demand")
+            demand_failed = True
+        with self._lock:
+            if not demand_failed:
+                self._reasons = reasons
+            if self.command is None or self._stop.is_set():
+                return
+            if demand_failed:
+                pass
+            elif self._enabled and reasons:
+                if not self._held():
+                    try:
+                        self._hold = self.spawn(self.command(os.getpid()))
+                    except OSError:
+                        # The next pass retries; the thread must outlive this.
+                        logger.exception("Could not start the keep-awake hold")
+            else:
+                self._drop()
+            if self.platform == "macos":
+                try:
+                    self._pass(demand_failed=demand_failed)
+                except Exception:
+                    logger.exception("Machine power safety pass failed")
+                    try:
+                        self._release("reading_failed")
+                    except Exception:
+                        logger.exception("Could not publish machine power release")
+
+    def _held(self) -> bool:
+        return self._hold is not None and self._hold.poll() is None
+
+    def _drop(self) -> None:
+        if self._hold is not None:
+            if self._hold.poll() is None:
+                self._hold.terminate()
+                self._hold.wait()
+            self._hold = None
 
     def _spawn(self, argv):
         # Only the watchdog inherits the machine lock. An idle hold or unrelated
@@ -268,7 +419,7 @@ class MachinePowerController:
             connection.execute(
                 "INSERT INTO machine_power_state VALUES (1,?) "
                 "ON CONFLICT(singleton) DO UPDATE SET value=excluded.value",
-                (json.dumps(self._state),),
+                (json.dumps({"idle_hold": self._enabled, **self._state}),),
             )
 
     def _save_best_effort(self):
@@ -276,45 +427,6 @@ class MachinePowerController:
             self._save()
         except Exception:
             logger.exception("Could not save machine power release state")
-
-    def status(self) -> dict:
-        with self._lock:
-            supported = self.platform == "macos"
-            installed = self.installer.status() if supported else None
-            return {
-                "platform": self.platform,
-                "supported": supported,
-                "installed": installed.installed if installed else False,
-                "install_problem": installed.install_problem if installed else "not_installed",
-                "idle_hold": {
-                    "enabled": self._state["idle_hold"],
-                    "active": self._idle is not None and self._idle.poll() is None,
-                },
-                "lid_mode": {"enabled": self._state["lid_mode"], "active": self._lid_active},
-                "demand": bool(self._reasons),
-                "demand_reasons": list(self._reasons),
-                "latched": self._state["latched"],
-                "last_release": self._state["last_release"],
-                "cleanup_failure": self._state["cleanup_failure"],
-                "external_owner": self._external,
-            }
-
-    def update(self, preferences: dict) -> dict:
-        with self._lock:
-            if set(preferences) - {"idle_hold", "lid_mode"} or any(
-                type(value) is not bool for value in preferences.values()
-            ):
-                raise ValueError("invalid machine power preferences")
-            self._state.update(preferences)
-            if preferences.get("lid_mode"):
-                self._state["latched"] = None
-                self._state["cleanup_failure"] = None
-            self._save()
-            # A fenced replacement may serve settings, but cannot start any
-            # runtime owner until ordinary deferred startup has completed.
-            if self._running:
-                self.safety_pass()
-            return self.status()
 
     def install(self):
         with self._admin_lock:
@@ -334,7 +446,7 @@ class MachinePowerController:
             with self._lock:
                 if self.installer.cancelled:
                     return before
-                if self._running:
+                if self._thread is not None:
                     self.safety_pass()
                 return self.status()
 
@@ -375,49 +487,6 @@ class MachinePowerController:
             finally:
                 if quiesced:
                     self._lock.release()
-
-    def start(self):
-        with self._lock:
-            if self.platform != "macos" or self._running:
-                return
-            self._running = True
-            self._stop.clear()
-            self._thread = threading.Thread(
-                target=self._loop, name="rcp-machine-power", daemon=True
-            )
-            self._thread.start()
-
-    def _loop(self):
-        while not self._stop.is_set():
-            self.safety_pass()
-            self._stop.wait(MACHINE_POWER_PASS_SECONDS)
-
-    def stop(self):
-        self._stop.set()
-        with self._lock:
-            if (
-                self._running
-                or self._idle is not None
-                or self._watchdog is not None
-                or (
-                    self.platform == "macos"
-                    and read_record(self.directory / "activation").get("set") == "1"
-                )
-            ):
-                self._running = False
-                try:
-                    self._release("shutdown")
-                except Exception:
-                    logger.exception(
-                        "Could not publish machine power shutdown; watchdog will expire"
-                    )
-        if self._thread:
-            self._thread.join(MACHINE_POWER_COMMAND_TIMEOUT_SECONDS * 5)
-        with self._lock:
-            try:
-                self._wait_watchdog()
-            except Exception:
-                logger.exception("Machine power shutdown cleanup failed")
 
     def _close_owner(self):
         if self._owner is not None:
@@ -619,26 +688,13 @@ class MachinePowerController:
             self._state["battery_blocked"] = True
         self._save_best_effort()
 
-    def _drop_idle(self):
-        if self._idle is None:
-            return
-        process, self._idle = self._idle, None
-        if process.poll() is None:
-            process.terminate()
-        try:
-            process.wait(timeout=MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
-
-    def _release(self, cause, *, keep_idle=False):
-        dropping_idle = self._idle is not None and not keep_idle
-        held = dropping_idle or self._desired == "on"
+    def _release(self, cause):
+        held = self._desired == "on"
         # Ending demand is only a release when something was held; a safety
         # cause is always recorded because it latches or blocks re-arming.
         if held or (cause != self._release_cause and cause != "demand_gone"):
             self._record_release(cause)  # Best effort, before any cleanup.
-        # Publish off before waiting for the idle assertion to terminate.
+        # Shutdown publishes off before waiting for the idle assertion to terminate.
         try:
             if (
                 self._watchdog is None
@@ -660,25 +716,8 @@ class MachinePowerController:
                     self._heartbeat("off", cause)
         finally:
             self._lid_active = False
-            if not keep_idle:
-                self._drop_idle()
 
-    def safety_pass(self):
-        with self._lock:
-            # A pass queued behind stop() must not re-arm after shutdown cleanup.
-            if self.platform != "macos" or (self._stop.is_set() and not self._running):
-                return
-            try:
-                self._pass()
-            except Exception:
-                logger.exception("Machine power safety pass failed")
-                try:
-                    self._release("reading_failed")
-                except Exception:
-                    # A failed heartbeat still expires through the watchdog.
-                    logger.exception("Could not publish machine power release")
-
-    def _pass(self):
+    def _pass(self, *, demand_failed=False):
         complete = self._consume_result()
         if self._watchdog is not None and self._watchdog.poll() is not None:
             was_on = self._desired == "on"
@@ -694,7 +733,7 @@ class MachinePowerController:
         # Attempt each reading on every pass; one failure never silently defaults
         # a battery, thermal, lid, or flag input to a safe value.
         readings = {}
-        failed = False
+        failed = demand_failed
         for name, argv, parser in (
             ("battery", [PMSET, "-g", "batt"], parse_battery),
             ("thermal", [PMSET, "-g", "therm"], parse_thermal),
@@ -705,12 +744,6 @@ class MachinePowerController:
                 readings[name] = parser(self._read(argv))
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 failed = True
-        try:
-            self._reasons = self.demand_reader()
-        except Exception:
-            logger.exception("Could not read machine power demand")
-            self._reasons = []
-            failed = True
         battery = readings.get("battery")
         if battery and battery[0] and self._state["battery_blocked"]:
             self._state["battery_blocked"] = False
@@ -733,12 +766,12 @@ class MachinePowerController:
         installation = self.installer.status()
         installed = installation.installed
         # Another account's installation files are not ours to read; only the
-        # idle hold below applies.
+        # independent idle hold applies.
         trusted = installation.install_problem not in {"other_account", "foreign_file"}
         if self._watchdog is None and trusted:
             can_recover = installation.install_problem in {None, "partial"}
             # Another backend owning lid mode gates only recovery and lid mode;
-            # this backend's idle hold still follows its own demand below.
+            # this backend's idle hold still follows its own demand.
             if not can_recover or self._acquire():
                 activation = read_record(self.directory / "activation")
                 owned = activation.get("set") == "1"
@@ -750,21 +783,8 @@ class MachinePowerController:
                     self._release(cause or "watchdog_lost")
                     return
                 self._close_owner()
-        # A failed reading only blocks lid mode. The idle hold is an ordinary
-        # assertion that macOS still overrides at low battery, and a desktop Mac
-        # has no lid to read.
-        if cause and cause != "reading_failed":
-            self._release(cause)
-            return
-        if self._state["idle_hold"] and self._reasons:
-            if self._idle is None or self._idle.poll() is not None:
-                # Only the watchdog needs the full identity; a failing ps must
-                # not block the ordinary hold.
-                self._idle = self.spawn(["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())])
-        else:
-            self._drop_idle()
         if cause:
-            self._release(cause, keep_idle=True)
+            self._release(cause)
             return
 
         # A broken installation may have lost the boot reset, so it releases now

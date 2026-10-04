@@ -32,8 +32,8 @@ Confirmed by the human 2026-10-01.
   login. Verified on Apple Silicon, macOS 26.5.2, which also showed that
   `pmset sleepnow` needs no root, so the sudoers rule stays at two commands.
 - **Coarse demand.** The precise version needed eligibility checks beside six
-  launch owners. Over-holding costs battery down to the floor. Under-holding
-  breaks the overnight run.
+  launch owners. Over-holding in lid mode costs battery down to the floor.
+  Under-holding breaks the overnight run.
 
 ## What this gives up
 
@@ -46,7 +46,7 @@ Confirmed by the human 2026-10-01.
   admin prompt, a second RCP on another data directory could start a `sudo
   pmset` before the rule is removed and finish after the final clear. Its watchdog then fails to clear, and the
   home page shows the command.
-- **The Mac may stay awake longer than needed** when demand over-counts, until
-  the battery floor.
+- **Lid mode may keep the Mac awake longer than needed** when demand
+  over-counts, until the battery floor.
 - **No guarantee beyond orchestration.** Wi-Fi, provider sign-in, SSH, and
   remote hosts can still stop an overnight run.

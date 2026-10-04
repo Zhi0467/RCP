@@ -162,9 +162,12 @@
 .runs-view {
   max-width: 1100px;
 }
+/* minmax(0, 1fr): an implicit auto column grows to its widest card's
+   min-content, which pushed the Runs view sideways on a phone. */
 .operating-sections {
   display: grid;
   gap: 24px;
+  grid-template-columns: minmax(0, 1fr);
 }
 .operating-section > header {
   align-items: center;
@@ -188,6 +191,7 @@
 .operating-section > div {
   display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
 }
 .episode-ledger-section.needs-action > header {
   border-bottom-color: color-mix(in srgb, var(--mustard) 46%, var(--line));

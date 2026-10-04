@@ -48,6 +48,7 @@ from rcp.background import AgentTaskRequest, BackgroundAgentTasks
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import STEERING_MESSAGE_MAX_CHARS
+from rcp.project_references import resolve_project_references
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
@@ -189,6 +190,9 @@ def _agent_task_response(
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
+    if consolidation:
+        response.update(can_resume=False, can_retry=False)
     if record.kind in {"node_chat", "project_chat"}:
         chat_id = record.request.get("chat_id")
         session_id = None
@@ -210,7 +214,7 @@ def _agent_task_response(
         # The provider ran without part of what the launch asked for. Exported
         # here so no surface has to read exit receipts to learn it.
         degradation=(degradations or {}).get(record.operation_id),
-        can_apply_again=_can_apply_again(store, record),
+        can_apply_again=not consolidation and _can_apply_again(store, record),
     )
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
@@ -219,7 +223,7 @@ def _agent_task_response(
     receipt = (discoveries or {}).get(record.operation_id)
     if receipt is not None:
         result["artifact_omissions"] = artifact_omissions(receipt)
-    if record.history_only:
+    if record.history_only or consolidation:
         graph_update = result.get("graph_update")
         if isinstance(graph_update, dict):
             graph_update["repairable"] = False
@@ -288,6 +292,8 @@ def start_agent_task(
     background_tasks: BackgroundTasksDependency,
     branch_id: str | None = None,
 ) -> dict[str, object]:
+    if body.get("references") and kind not in {"node_chat", "project_chat"}:
+        raise HTTPException(status_code=422, detail="Project references require an ordinary chat.")
     if kind in {"auto_research", "branch_merge", "episode_report", "artifact_edit"}:
         raise HTTPException(
             status_code=405,
@@ -341,7 +347,7 @@ def start_agent_task(
                 raise ValueError(
                     "Chat attachments require both attachment_set_id and attachment_client_id."
                 )
-            if request.attachment_set_id and request.attachment_client_id:
+            if request.attachment_set_id or request.references:
                 assert request.chat_id is not None
                 claimed = attachment_store.claim(
                     project_id=project_id,
@@ -349,6 +355,9 @@ def start_agent_task(
                     client_id=request.attachment_client_id,
                     attachment_set_id=request.attachment_set_id,
                     operation_id=operation_id,
+                    reference_files=resolve_project_references(
+                        store, catalog, project_id, request.references
+                    ),
                 )
                 claimed_set = (claimed.attachment_batch_id, operation_id)
                 request = request.model_copy(
@@ -357,6 +366,7 @@ def start_agent_task(
                         "attachment_client_id": None,
                         "attachment_batch_id": claimed.attachment_batch_id,
                         "attachments": claimed.attachments,
+                        "references": [],
                     }
                 )
         try:
@@ -1019,10 +1029,18 @@ def _read_agent_artifact_bytes(
 ) -> tuple[AgentArtifactResponse, bytes]:
     """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
+    # An in-place edit lists the artifact it published, which its origin turn's scope owns.
+    # A revoking edit runs as its own `artifact_edit` task whose other outputs share the
+    # server-recorded staging scope.
+    edit = record.request.get("artifact_edit") if record is not None else None
+    edited = isinstance(edit, dict) and edit.get("artifact_id") == artifact_id
     if (
         record is None
         or record.project_id != project_id
-        or record.kind not in {"node_chat", "project_chat"}
+        or not (
+            record.kind in {"node_chat", "project_chat"}
+            or (record.kind == "artifact_edit" and isinstance(edit, dict))
+        )
     ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     descriptor = _agent_artifact_descriptor(record, artifact_id)
@@ -1039,8 +1057,13 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
-    if scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
+    # Mirrors the turn's staging: an edit binding fixes the scope, even across a Retry.
+    scope_id = (
+        edit["staged_scope_id"]
+        if isinstance(edit, dict)
+        else _logical_chat_turn_operation_id(store, record.operation_id)
+    )
+    if not edited and scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
         raise ValueError("artifact descriptor does not match its task scope")
     stored = store.artifact(artifact_id)
     if stored is None or stored.project_id != project_id:
@@ -1088,6 +1111,12 @@ def _validated_task_request(
 ) -> AgentTaskRequest:
     if "graph_target" in body or "branch_id" in body:
         raise ValueError("Select the graph target with the branch_id route parameter.")
+    if body.get("references") and (
+        kind not in {"node_chat", "project_chat"}
+        or body.get("artifact_context") is not None
+        or body.get("artifact_edit") is not None
+    ):
+        raise ValueError("Project references require an ordinary chat.")
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 
@@ -1097,6 +1126,7 @@ def _validated_task_request(
     client_request.pop("artifact_edit", None)
     client_request.pop("resolved_compute_context", None)
     client_request.pop("worktree_integration_target", None)
+    client_request.pop("attachments", None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",
@@ -1134,7 +1164,9 @@ def _validated_task_request(
             "session_id": None,
         }
     )
-    if not request.message or not request.message.strip() or not request.chat_id:
+    # Artifact comments are a turn's text by themselves; admission writes them in.
+    commented = request.artifact_context is not None and request.artifact_context.selections
+    if not request.chat_id or not (commented or (request.message and request.message.strip())):
         raise ValueError("Chat requires a chat_id and message")
     if chat_scope == "node":
         if not request.node_id:

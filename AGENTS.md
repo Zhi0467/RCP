@@ -28,6 +28,7 @@ choosing a source.
 - Chat, Experiment control, or watcher behavior: `docs/specs/conversations-episodes-and-watchers.md`.
 - Scheduler submission, the launch helper, or job watchers: `docs/specs/compute-jobs.md`.
 - Auto-research or graph-branch scope: `docs/specs/auto-research-and-branch-merge.md` and `docs/decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
+- Nightly graph consolidation or operational lessons: `docs/specs/graph-consolidation-and-lessons.md`.
 - Task storage or persisted requests: `docs/specs/projects-spaces-and-operations.md`.
 - API, Web, or native contracts: `docs/specs/api-web-and-desktop-projections.md`; visual design: `docs/specs/interface-and-visual-design.md`.
 - Paper, previews, reports, or artifact viewing: `docs/specs/paper-artifacts-and-result-views.md`.
@@ -105,7 +106,7 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 1. **Canonical Patch logs are append-only.** Never edit or delete main or branch Patch history; replay would change the past.
 2. **Materialized graph files are outputs.** Never hand-edit `graph.json`, `research.md`, glossary, Proposal, or control projections.
-3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges. The Auto-research orchestrator is the one explicit Decision exception, and a human-dispatched branch merge inherits that profile.
+3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges; a member's own page, including an agent the member runs there, counts as that human ([decision](docs/decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)). The Auto-research orchestrator is the one explicit Decision exception, and a human-dispatched branch merge inherits that profile.
 3b. **Existing ResearchQuestions and Hypotheses are protected beliefs.** Agents may create them; structural or semantic changes to existing ones use a Proposal. Never infer protected intent from operation shape.
 4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no graph/project authority, though every team launch carries its repositories' Git transport ([decision](docs/decisions/2026-09-24-team-launches-carry-git-transport.md)); Work names exact write roots to provider enforcement, which bounds every file-editing tool and bounds the shell only where a provider can do so without disabling compute ([decision](docs/decisions/2026-09-13-claude-work-runs-without-the-os-sandbox.md)); ingestion writes only scratch; paper coach is read-only.
 4b. **`patch.json` in the task stage is the only graph-change channel.** Never parse graph authority from answers, traces, artifacts, or repository edits.

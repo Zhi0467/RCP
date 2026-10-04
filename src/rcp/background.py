@@ -565,8 +565,16 @@ class BackgroundAgentTasks:
                 and self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
             ):
                 question_followups.append(task.operation_id)
+        consolidation_dispatches = {
+            operation_id
+            for operation_id in self.store.pending_consolidation_operation_ids()
+            if (task := self.store.agent_task(operation_id)) is not None
+            and task.status == "queued"
+            and self.store.agent_task_dispatch_was_proven_not_started(operation_id)
+        }
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
+                *consolidation_dispatches,
                 *[item.operation_id for item in preserved_dispatches],
                 *[task.operation_id for _episode, task, _request in reserved_roots],
                 *[task.operation_id for _episode, task in reserved_experiments],
@@ -743,6 +751,8 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task resume")
         previous = self._require_operation(operation_id)
+        if self.store.consolidation_run_for_operation(operation_id) is not None:
+            raise ValueError("consolidation_continuation_forbidden")
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Resume control.")
         if not previous.can_resume or not previous.native_session_id:
@@ -803,6 +813,8 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task retry")
         previous = self._require_operation(operation_id)
+        if self.store.consolidation_run_for_operation(operation_id) is not None:
+            raise ValueError("consolidation_continuation_forbidden")
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Retry control.")
         if not previous.can_retry:
@@ -1017,6 +1029,8 @@ class BackgroundAgentTasks:
 
         self._require_startup_effects_open("provider graph-repair dispatch")
         previous = self._require_operation(operation_id)
+        if self.store.consolidation_run_for_operation(operation_id) is not None:
+            raise ValueError("consolidation_continuation_forbidden")
         if previous.kind not in {"node_chat", "project_chat"}:
             raise ValueError("Only a conversation Work task can repair a graph update.")
         request = self._request_from_record(previous)
@@ -1634,6 +1648,14 @@ class BackgroundAgentTasks:
             ) from exc
         if not _persisted_request_roundtrips(request, record.request):
             raise ValueError("The admitted task request failed its persisted roundtrip.")
+
+        from rcp.runs.consolidation import require_consolidation_launch
+
+        try:
+            require_consolidation_launch(self.store, record)
+        except ValueError as exc:
+            self.store.fail_agent_task(record.operation_id, str(exc))
+            return self._require_operation(record.operation_id)
 
         try:
             self.admit_provider_task(
@@ -2581,6 +2603,8 @@ class BackgroundAgentTasks:
         this reuses it rather than growing a second recovery path.
         """
 
+        if self.store.consolidation_run_for_operation(record.operation_id) is not None:
+            return
         settled = self.store.agent_task(record.operation_id)
         if settled is None or settled.failure_kind != "transport_lost" or not settled.can_retry:
             return

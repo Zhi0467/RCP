@@ -12,10 +12,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, Annotated, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import (
     CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_ATTACHMENT_MAX_FILE_BYTES,
@@ -23,6 +24,57 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.transport import RemoteRunStage
+
+if TYPE_CHECKING:
+    from rcp.project_references import ResolvedProjectReference
+
+
+class ArtifactReferenceSelector(BaseModel):
+    """A human's pointer to a stored artifact; episode reports are artifacts."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["artifact"]
+    artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+
+
+class NodeReferenceSelector(BaseModel):
+    """A human's pointer to a graph node on its source target (None is main)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["node"]
+    node_id: str = Field(min_length=1)
+    branch_id: str | None = Field(default=None, min_length=1)
+
+
+class PaperReferenceSelector(BaseModel):
+    """A human's pointer to the project's saved paper introduction."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["paper"]
+
+
+ProjectReferenceSelector = Annotated[
+    ArtifactReferenceSelector | NodeReferenceSelector | PaperReferenceSelector,
+    Field(discriminator="kind"),
+]
+
+
+class ProjectReferenceSource(BaseModel):
+    """What a retained reference copy was taken from, frozen at admission.
+
+    Server-made only. ``version`` is the artifact version id or the paper's
+    content sha256; a node carries its source ``graph_head`` instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["artifact", "node", "paper"]
+    source_id: str = Field(min_length=1)
+    version: str | None = None
+    graph_head: GraphHeadRef | None = None
 
 
 class ChatAttachmentDescriptor(BaseModel):
@@ -33,6 +85,8 @@ class ChatAttachmentDescriptor(BaseModel):
     media_type: str
     size: int = Field(ge=0, le=CHAT_ATTACHMENT_MAX_FILE_BYTES)
     expires_at: str
+    # Set when RCP copied this file from a project reference rather than an upload.
+    reference: ProjectReferenceSource | None = None
 
 
 class ChatAttachmentUpload(BaseModel):
@@ -329,38 +383,99 @@ class ChatAttachmentStore:
         *,
         project_id: str,
         chat_id: str,
-        client_id: str,
-        attachment_set_id: str,
+        client_id: str | None,
+        attachment_set_id: str | None = None,
         operation_id: str,
+        reference_files: list[ResolvedProjectReference] | None = None,
     ) -> ClaimedAttachmentBatch:
         chat_id = _canonical_uuid(chat_id, "chat_id")
-        client_id = _canonical_uuid(client_id, "client_id")
-        set_id = _canonical_uuid(attachment_set_id, "attachment_set_id")
+        if attachment_set_id:
+            client_id = _canonical_uuid(client_id or "", "client_id")
+            set_id = _canonical_uuid(attachment_set_id, "attachment_set_id")
+        else:
+            client_id = _canonical_uuid(client_id, "client_id") if client_id else str(uuid.uuid4())
+            set_id = str(uuid.uuid4())
         operation_id = _canonical_uuid(operation_id, "operation_id")
+        reference_files = reference_files or []
         with self._lock:
             self.sweep()
-            stored = self._load(set_id)
-            self._require_scope(stored, project_id, chat_id, client_id)
-            if not stored.attachments:
-                raise ValueError("The attachment set is empty.")
-            if stored.claimed_by is not None and stored.claimed_by != operation_id:
-                raise ValueError("This attachment set has already been sent.")
             now = datetime.now(UTC)
-            stored.claimed_by = operation_id
-            stored.expires_at = (now + timedelta(days=RUN_STAGE_RETENTION_DAYS)).isoformat()
-            stored.attachments = [
-                item.model_copy(update={"expires_at": stored.expires_at})
-                for item in stored.attachments
-            ]
-            self._verify(stored)
-            self._write(stored)
+            expires_at = (now + timedelta(days=RUN_STAGE_RETENTION_DAYS)).isoformat()
+            if attachment_set_id:
+                stored = self._load(set_id)
+                self._require_scope(stored, project_id, chat_id, client_id)
+                self._verify(stored)
+            else:
+                stored = _StoredSet(
+                    attachment_set_id=set_id,
+                    project_id=project_id,
+                    chat_id=chat_id,
+                    client_id=client_id,
+                    created_at=now.isoformat(),
+                    expires_at=expires_at,
+                )
+            if stored.claimed_by is not None and (
+                stored.claimed_by != operation_id or reference_files
+            ):
+                raise ValueError("This attachment set has already been sent.")
+            if not stored.attachments and not reference_files:
+                raise ValueError("The attachment set is empty.")
+            if len(stored.attachments) + len(reference_files) > CHAT_ATTACHMENT_MAX_COUNT:
+                raise ValueError("The attachment batch exceeds its file-count limit.")
+            if any(len(item.content) > CHAT_ATTACHMENT_MAX_FILE_BYTES for item in reference_files):
+                raise ValueError("A reference exceeds the attachment file-size limit.")
+            if (
+                sum(item.size for item in stored.attachments)
+                + sum(len(item.content) for item in reference_files)
+                > CHAT_ATTACHMENT_MAX_TOTAL_BYTES
+            ):
+                raise ValueError("The attachment batch exceeds its total-size limit.")
+            files = self._set_path(set_id) / "files"
+            created: list[Path] = []
+            try:
+                if not attachment_set_id:
+                    files.mkdir(mode=0o700, parents=True)
+                for item in reference_files:
+                    attachment_id = str(uuid.uuid4())
+                    extension = Path(item.filename).suffix.casefold()
+                    staged_name = f"{len(stored.attachments):02d}-{attachment_id}{extension}"
+                    destination = files / staged_name
+                    created.append(destination)
+                    with destination.open("xb") as output:
+                        output.write(item.content)
+                    stored.attachments.append(
+                        _StoredAttachment(
+                            attachment_id=attachment_id,
+                            name=item.display_name,
+                            media_type=item.media_type,
+                            size=len(item.content),
+                            expires_at=expires_at,
+                            reference=item.reference,
+                            sha256=hashlib.sha256(item.content).hexdigest(),
+                            staged_name=staged_name,
+                        )
+                    )
+                stored.claimed_by = operation_id
+                stored.expires_at = expires_at
+                stored.attachments = [
+                    item.model_copy(update={"expires_at": expires_at})
+                    for item in stored.attachments
+                ]
+                self._verify(stored)
+                self._write(stored)
+            except BaseException:
+                for path in created:
+                    path.unlink(missing_ok=True)
+                if not attachment_set_id:
+                    shutil.rmtree(self._set_path(set_id), ignore_errors=True)
+                raise
             return ClaimedAttachmentBatch(
                 attachment_batch_id=set_id,
                 attachments=[_public_descriptor(item) for item in stored.attachments],
             )
 
     def release(self, attachment_set_id: str, operation_id: str) -> None:
-        """Return a just-claimed set to ingress if its task record was not created."""
+        """Rollback admission, returning uploads and discarding server snapshots."""
 
         set_id = _canonical_uuid(attachment_set_id, "attachment_set_id")
         operation_id = _canonical_uuid(operation_id, "operation_id")
@@ -368,8 +483,15 @@ class ChatAttachmentStore:
             stored = self._load(set_id)
             if stored.claimed_by != operation_id:
                 raise ValueError("The attachment set is not claimed by this task.")
+            references = [item for item in stored.attachments if item.reference is not None]
+            stored.attachments = [item for item in stored.attachments if item.reference is None]
+            if not stored.attachments:
+                shutil.rmtree(self._set_path(set_id))
+                return
             stored.claimed_by = None
             self._write(stored)
+            for item in references:
+                (self._set_path(set_id) / "files" / item.staged_name).unlink()
 
     def stage(
         self,
@@ -407,6 +529,11 @@ class ChatAttachmentStore:
                     "name": item.name,
                     "media_type": item.media_type,
                     "size": item.size,
+                    **(
+                        {"reference": item.reference.model_dump(mode="json")}
+                        if item.reference is not None
+                        else {}
+                    ),
                 }
                 for item in stored.attachments
             ]
@@ -528,6 +655,7 @@ def _public_descriptor(item: _StoredAttachment) -> ChatAttachmentDescriptor:
         media_type=item.media_type,
         size=item.size,
         expires_at=item.expires_at,
+        reference=item.reference,
     )
 
 

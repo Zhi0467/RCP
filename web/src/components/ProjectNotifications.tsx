@@ -2,7 +2,12 @@ import { Bell } from "lucide-react";
 import { useEffect, useState } from "react";
 
 export type NotificationKind =
-  "proposal" | "decision" | "blocker" | "episode_needs_action" | "episode_finished";
+  | "proposal"
+  | "decision"
+  | "blocker"
+  | "episode_needs_action"
+  | "episode_finished"
+  | "consolidation";
 
 export type NotificationPreferences = Record<NotificationKind, boolean>;
 
@@ -12,6 +17,7 @@ export const NOTIFICATION_KINDS: Array<{ kind: NotificationKind; label: string }
   { kind: "blocker", label: "Blockers" },
   { kind: "episode_needs_action", label: "Episodes that need you" },
   { kind: "episode_finished", label: "Episodes finished" },
+  { kind: "consolidation", label: "Nightly consolidation" },
 ];
 
 interface Props {

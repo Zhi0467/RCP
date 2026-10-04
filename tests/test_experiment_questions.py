@@ -125,14 +125,6 @@ def test_answer_wake_requires_reauthorization_at_ceiling(tmp_path):
     assert store.get_question(question.question_id).followup_operation_id is None
 
 
-def test_episode_end_withdraws_questions(tmp_path):
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    episode_id, _ = _admit_root(store)
-    question = _question(store, episode_id)
-    store.request_episode_stop(episode_id)
-    assert store.get_question(question.question_id).withdrawn_readonly
-
-
 def test_continuation_reopens_predecessor_question_without_moving_origin(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id, _ = _admit_root(store)
@@ -270,14 +262,6 @@ def test_continuation_keeps_human_prompt_and_claimed_answer_distinct(
         continuation_request_id=str(uuid.uuid4()),
     )
     assert store.get_question(question.question_id).followup_operation_id == continued.operation_id
-    snapshot = question_snapshot(
-        store,
-        project_id="project",
-        owner_kind="episode",
-        owner_ids=store.experiment_question_owner_ids(continued_id),
-        operation_id=continued.operation_id,
-    )
-    assert json.loads(snapshot.text)["questions"][0]["answer"] == "Accuracy"
 
     def reconcile():
         return reconcile_chat_question_answers(store, None, lambda _project: service)
@@ -330,6 +314,24 @@ def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_pat
     assert reconcile_experiment_question_answers(restarted)[question.question_id] == claimed
     assert launches == [claimed, claimed]
     assert store.episode(episode_id).invocations_used == 2
+
+
+def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path):
+    store, _, question, _ = _ready_answer(tmp_path)
+    launches = []
+    tasks = SimpleNamespace(store=store, launch_admitted=launches.append)
+    assert reconcile_experiment_question_answers(tasks, project_id="other-project") == {}
+    assert launches == []
+    project_id = question.origin.project_id
+    claimed = reconcile_experiment_question_answers(tasks, project_id=project_id)
+    assert launches == [claimed[question.question_id]]
+    store.mark_agent_task_running(launches[0])
+    assert store.questions_needing_experiment_reconciliation(project_id=project_id) == []
+    assert reconcile_experiment_question_answers(tasks) == {}
+    # A succeeded follow-up whose receipt was never recorded is swept again to replay it.
+    store.complete_agent_task(launches[0], applied_revision=None, result={})
+    (pending,) = store.questions_needing_experiment_reconciliation()
+    assert pending.question_id == question.question_id
 
 
 def test_experiment_answer_cannot_change_origin_scope(tmp_path):

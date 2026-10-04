@@ -1,11 +1,11 @@
-"""Personal-space controls for this backend machine's power policy."""
+"""Personal-space control for this backend machine's idle hold and lid-closed mode."""
 
 from __future__ import annotations
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, StrictBool, model_validator
 
 from rcp.machine_power import MachinePowerController
 from rcp.machine_power_install import InstallError
@@ -29,6 +29,14 @@ class PowerPreferences(BaseModel):
     idle_hold: StrictBool | None = None
     lid_mode: StrictBool | None = None
 
+    @model_validator(mode="after")
+    def require_preferences(self) -> PowerPreferences:
+        if not self.model_fields_set or any(
+            getattr(self, field) is None for field in self.model_fields_set
+        ):
+            raise ValueError("Supply at least one boolean power preference")
+        return self
+
 
 @router.get("/api/machine-power")
 def machine_power(controller: Controller) -> dict[str, object]:
@@ -37,7 +45,7 @@ def machine_power(controller: Controller) -> dict[str, object]:
 
 @router.put("/api/machine-power")
 def update_machine_power(body: PowerPreferences, controller: Controller) -> dict[str, object]:
-    return controller.update(body.model_dump(exclude_none=True))
+    return controller.update(body.model_dump(exclude_unset=True))
 
 
 @router.post("/api/machine-power/install")

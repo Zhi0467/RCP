@@ -20,8 +20,11 @@ Repository and provider side effects remain real operational effects; canonical
 graph history records their research meaning only through an admitted Patch.
 
 RCP schedules autonomous work only inside a human-authorized Auto-research
-episode with a fixed operational invocation budget. Every such episode writes
-research-graph changes to its persistent graph branch. Humans can inspect
+episode with a fixed operational invocation budget, or as the one nightly
+consolidation turn a member authorized for a project. Every such episode writes
+research-graph changes to its persistent graph branch. The consolidation turn
+is ordinary Work on main under an expiring member authorization; it reports
+every change in the Inbox. Humans can inspect
 and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
 during and after the episode. Those conversations have their own sessions and
 authority. Main stays editable,
@@ -47,9 +50,13 @@ so the desktop can be rebuilt or the server updated to a compatible promoted rel
 
 A compatible browser host may expose a page-scoped WebMCP tool surface for
 reading projects, opening existing views, sending ordinary conversation turns,
-and operating bounded Experiment controls. Those tools compose the same browser
-and API owners as visible controls; they add no backend shortcut, graph-change
-channel, provider capability, or human-judgment authority.
+operating bounded Experiment controls, and authorizing or gracefully stopping
+Auto-research. RCP's voice agent uses the same fixed tool catalog. An agent the
+member runs in their own page acts as that member
+([decision](decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)).
+Those tools compose the same browser and API owners as visible controls; they
+add no backend shortcut, graph-change channel, or provider capability, and they
+expose none of the protected judgment controls.
 
 The confirmed first team deployment is one lab using one installed RCP server
 and desktop member clients. A dedicated Linux `rcp` account owns the control
@@ -101,7 +108,9 @@ number here.
   operational state.
 - **Humans retain the protected authority boundary.** Only humans set ordinary
   belief standing, resolve Proposals, change project truth membership, authorize
-  a bounded episode, or dispatch a branch merge. Agents may assert new work and
+  a bounded episode, or dispatch a branch merge. A member's own authenticated
+  page authorizes episodes, including through an agent the member runs there;
+  every other protected action stays a visible control. Agents may assert new work and
   must propose changes to an existing ResearchQuestion or Hypothesis. The one
   deliberate Decision exception is the human-authorized Auto-research
   orchestrator: on its branch, and during its human-dispatched merge, it may
@@ -202,6 +211,9 @@ winner by timestamp or silently implement around it.
 - [Auto-research and branch merge](specs/auto-research-and-branch-merge.md) —
   orchestrator authority, budgets, child work, episode graph branches, and
   human-dispatched semantic merge.
+- [Graph consolidation and lessons](specs/graph-consolidation-and-lessons.md) —
+  the authorized nightly consolidation turn, its Inbox rows, and per-project
+  operational lessons.
 - [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) —
   durable identity, team enrollment, membership, project homes, setup, caches,
   and process ownership.

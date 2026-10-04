@@ -28,7 +28,7 @@ from rcp.agents import (
     parse_agent_patch_json,
 )
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
-from rcp.attachments import ChatAttachmentDescriptor
+from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import selected_compute_connections
 from rcp.config import (
     AgentExecutionProfile,
@@ -94,6 +94,7 @@ from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
+    CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
@@ -162,7 +163,7 @@ class _ProjectSnapshotDraft:
 
 
 ConversationMode = Literal["discuss", "work"]
-TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher"]
+TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher", "schedule"]
 GraphPatchKind = Literal["work", "experiment_loop"]
 
 
@@ -856,6 +857,8 @@ class ArtifactContextRequest(BaseModel):
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
     fresh_session: bool = False
+    # Set by the viewer's Edit now: the one prompt branch asking for the edit this turn.
+    edit_now: bool = False
     selections: list[ArtifactSelection] = Field(
         default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )
@@ -946,6 +949,11 @@ class RunRequest(BaseModel):
     attachment_client_id: str | None = None
     attachment_batch_id: str | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    # Human selectors, accepted only on a human chat request. Admission copies each
+    # source into the claimed attachment batch and clears this list.
+    references: list[ProjectReferenceSelector] = Field(
+        default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
+    )
     active_compute_ids: list[str] = Field(
         default_factory=list,
         max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
@@ -1561,6 +1569,10 @@ class ProjectService:
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),
                 "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
+                # Undeclared fields follow the running release; complete_snapshot refills them.
+                "skill_defaults_declared": sorted(
+                    self.manifest.agent.skill_defaults.model_fields_set
+                ),
                 "provider_logins": self.provider_logins_for(self.manifest, self.launcher),
                 "provider_readiness": {},
                 "provider_skill_inventories": self.provider_skill_inventory_snapshot(),

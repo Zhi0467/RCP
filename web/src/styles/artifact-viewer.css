@@ -72,6 +72,12 @@
   border: 1px solid var(--line-strong);
   box-shadow: var(--shadow);
 }
+/* A phone header wraps its project dock onto a second row, 99px in all. */
+@media (max-width: 560px) {
+  body:has(.project-header .project-dock) .artifact-viewer-tab {
+    top: 109px;
+  }
+}
 .artifact-viewer-error {
   padding: 12px;
   color: var(--red);

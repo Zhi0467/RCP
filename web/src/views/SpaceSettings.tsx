@@ -20,6 +20,7 @@ import { showMachinePowerCard } from "../machinePower";
 import { MachineCard } from "../components/MachineCard";
 import { ProviderLogins } from "../components/ProviderLogins";
 import { ServerSettings } from "../components/ServerSettings";
+import { TranscriptionSettings } from "../components/TranscriptionSettings";
 import { ReleaseCheckRow } from "../components/UpdateNotice";
 import { errorMessage } from "../errors";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
@@ -79,6 +80,7 @@ export function SpaceSettings({
           writesDisabled={writesDisabled}
           onLoginChanged={onLoginChanged}
         />
+        <TranscriptionSettings writesDisabled={writesDisabled} />
         {spaceKind === "personal" && cacheProjectId && (
           <ClearAllCaches
             projectId={cacheProjectId}
@@ -160,9 +162,18 @@ function ClearAllCaches({
     setClearing(true);
     setStatus(null);
     try {
-      onCleared(projectId, await clearAllProjectCaches(projectId));
+      const result = await clearAllProjectCaches(projectId);
+      onCleared(projectId, result);
       setOpen(false);
-      setStatus({ kind: "saved", text: "All project caches cleared." });
+      const kept = result.project_pages_not_rebuilt;
+      setStatus(
+        kept.length === 0
+          ? { kind: "saved", text: "All project caches cleared." }
+          : {
+              kind: "error",
+              text: `All project caches cleared. These project pages could not be rebuilt and keep their previous copy: ${kept.join(", ")}.`,
+            },
+      );
     } catch (failure) {
       setStatus({ kind: "error", text: errorMessage(failure) });
     } finally {
@@ -291,6 +302,7 @@ function ThisMac({
   const label = (value: string) => value.replaceAll("_", " ");
   const mode = (value: { enabled: boolean; active: boolean }) =>
     value.active ? "active" : value.enabled ? "waiting" : "off";
+  const reasons = status.demand_reasons.join(", ");
   return (
     <section className="settings-section provider-path-settings machine-power-settings">
       <header>
@@ -315,7 +327,7 @@ function ThisMac({
             }}
           />
           <span className="settings-check">{status.idle_hold.enabled && <Check size={12} />}</span>
-          <strong>Idle hold</strong>
+          <strong>Stay awake while RCP is working</strong>
         </label>
         <label className={lidEnabled ? "settings-repository selected" : "settings-repository"}>
           <input
@@ -345,7 +357,12 @@ function ThisMac({
         )}
       </div>
       <p className="machine-power-status" role="status">
-        Idle hold: {mode(status.idle_hold)} · Lid-closed mode:{" "}
+        {status.idle_hold.active
+          ? `Keeping this Mac awake: ${reasons}`
+          : status.idle_hold.enabled
+            ? "Nothing running; this Mac may sleep"
+            : "Off"}
+        {" · Lid-closed mode: "}
         {status.latched ? "latched off" : mode(status.lid_mode)}
         {" · Demand: "}
         {status.demand ? status.demand_reasons.map(label).join(", ") || "active" : "none"}
@@ -353,6 +370,11 @@ function ThisMac({
         {status.latched && ` · Latch: ${label(status.latched)}`}
         {status.external_owner && " · External owner"}
         {status.install_problem && ` · Installation: ${label(status.install_problem)}`}
+      </p>
+      <p className="machine-power-note">
+        Locking the screen is fine. Unless lid-closed mode is active, closing the lid still sleeps
+        this Mac: running work pauses, and automatic launches wait until it has been awake for a
+        while.
       </p>
       {error && !installOpen && (
         <div className="settings-error" role="alert">

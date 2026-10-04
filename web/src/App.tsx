@@ -118,7 +118,7 @@ import {
   type TransitionPreviewRouting,
 } from "./projectTransition";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { episodeReportPreviewUrl } from "./campaigns";
+import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./campaigns";
 import {
   cloneAgentTasksSnapshot,
   useAgentTasks,
@@ -172,6 +172,15 @@ import { useProjectSession } from "./hooks/useProjectSession";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
+import { ConsolidationInbox } from "./components/ConsolidationInbox";
+import {
+  CONSOLIDATION_SETTINGS_ANCHOR,
+  consolidationAttentionCount,
+  consolidationNeedsRenewal,
+  openConsolidationItems,
+  resolveConsolidationRun,
+} from "./consolidation";
+import { useConsolidation } from "./hooks/useConsolidation";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
@@ -259,17 +268,28 @@ import { useTheme } from "./hooks/useTheme";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 import {
   createWebMcpToolRegistry,
+  episodeStopRefusal,
+  experimentStartRefusal,
   projectArtifactToolDefinitions,
   type ProjectArtifactRecord,
+  projectAutoResearchToolDefinitions,
   projectConversationSendToolDefinitions,
   projectConversationToolDefinitions,
-  projectExperimentStopToolDefinitions,
+  projectEpisodeStopToolDefinitions,
   projectExperimentToolDefinitions,
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
+  providerLoginToolDefinitions,
+  projectViewToolDefinitions,
   type WebMcpToolRegistry,
+  type WebMcpViewOwners,
   webMcpSurface,
 } from "./webmcp";
+import { publishToolSurface, webMcpHostDefinitions } from "./toolCatalog";
+import { voiceTerminalToolDefinitions } from "./voiceTerminal";
+import { openTerminalSocket } from "./terminalSocket";
+import { useVoiceAgent, type VoicePageState } from "./hooks/useVoiceAgent";
+import { VoiceButton, VoicePanel } from "./components/VoicePanel";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 import {
@@ -860,6 +880,8 @@ export default function App() {
     chatId: initialRoute.project.chatId,
     graphTarget: initialRoute.graphTarget,
   }));
+  // The Agents tab opens the board; anything that names a chat opens that chat.
+  const [agentsBoard, setAgentsBoard] = useState(!initialRoute.project.chatId);
   const activeGraphTargetRef = useRef(graphTarget);
   // One request id per logical continuation, kept until the server has answered
   // it, so a retry after a lost response replays the episode already created.
@@ -2060,6 +2082,8 @@ export default function App() {
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
+      // A route that names a chat opens it; any other entry shows the board.
+      setAgentsBoard(!route.chatId);
       if (
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
@@ -2262,6 +2286,11 @@ export default function App() {
     [watchers],
   );
   const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
+  const {
+    consolidation,
+    error: consolidationError,
+    refresh: refreshConsolidation,
+  } = useConsolidation(apiBase, String(graph.revision));
   const candidateTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
@@ -2363,8 +2392,20 @@ export default function App() {
       const link = initialLinkPending.current ?? parseNotificationLink(window.location.hash);
       initialLinkPending.current = null;
       if (!link) return;
+      setNotificationNode(null);
+      const sourceTarget: GraphTargetRef =
+        link.target === "main" ? MAIN_GRAPH : { kind: "branch", branch_id: link.target };
       let next = graphNotificationHash(link);
-      if (link.kind === "episode") {
+      if (link.kind === "artifact" || link.kind === "paper" || link.kind === "node") {
+        next = graphViewHash(
+          link.projectId,
+          sourceTarget,
+          link.kind === "node" ? "dag" : link.kind === "paper" ? "paper" : "artifacts",
+        );
+        if (link.kind !== "paper") setNotificationNode(link);
+      } else if (link.kind === "consolidation") {
+        // A consolidation row or schedule notice lives in the Inbox itself.
+      } else if (link.kind === "episode") {
         const [episodes, entries] = await Promise.all([
           loadEpisodes(
             `/api/projects/${encodeURIComponent(link.projectId)}`,
@@ -2399,7 +2440,26 @@ export default function App() {
       });
   }, [teamSpace, desktop]);
   useEffect(() => {
-    if (!notificationNode || notificationNode.projectId !== projectId) return;
+    if (!notificationNode || notificationNode.projectId !== projectId || project?.id !== projectId)
+      return;
+    if (notificationNode.kind === "node" || notificationNode.kind === "artifact") {
+      const sourceTarget: GraphTargetRef =
+        notificationNode.target === "main"
+          ? MAIN_GRAPH
+          : { kind: "branch", branch_id: notificationNode.target };
+      // Route state updates before the graph snapshot arrives. Never open a
+      // same-id node from the previous target while that request is pending.
+      if (
+        !sameGraphTarget(graphTarget, sourceTarget) ||
+        !sameGraphTarget(project.graph_target, sourceTarget)
+      )
+        return;
+      if (notificationNode.kind === "artifact") {
+        setNotificationNode(null);
+        openArtifact({ projectId, artifactId: notificationNode.itemId });
+        return;
+      }
+    }
     if (notificationNode.kind === "proposal") {
       // Proposals are not graph nodes: a pending one is shown in the Inbox,
       // and a resolved one reports its outcome.
@@ -2421,7 +2481,16 @@ export default function App() {
     if (!node) return;
     setNotificationNode(null);
     openNode(node);
-  }, [notificationNode, projectId, presentedGraph.nodes, presentedGraph.proposals, openNode]);
+  }, [
+    notificationNode,
+    projectId,
+    project?.id,
+    project?.graph_target,
+    graphTarget,
+    presentedGraph.nodes,
+    presentedGraph.proposals,
+    openNode,
+  ]);
   const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
     openRelatedGraphNode(sourceSlot, presentedGraph.nodes[nodeId] ?? null);
   };
@@ -2687,6 +2756,7 @@ export default function App() {
   };
 
   const openChats = (preferredChatId?: string | null) => {
+    setAgentsBoard(preferredChatId == null);
     const nextChatId =
       preferredChatId ??
       chatEntryConversationId(conversations, activityTask, unreadChatIds, selectedChatId);
@@ -2695,6 +2765,11 @@ export default function App() {
     clearNodeSelections();
     changeView("chats");
   };
+
+  // Leaving Agents resets it to the board, so only a link that names a chat skips it.
+  useEffect(() => {
+    if (view !== "chats") setAgentsBoard(true);
+  }, [view]);
 
   useEffect(() => {
     if (
@@ -2761,10 +2836,23 @@ export default function App() {
   }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
 
   useEffect(() => {
-    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
+    const visibleChatId = visibleUnreadChatId(
+      view,
+      selectedChatId,
+      selectedExperimentChatId,
+      agentsBoard,
+    );
     markVisibleChatRead(tasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
-  }, [chatReads, markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
+  }, [
+    agentsBoard,
+    chatReads,
+    markVisibleChatRead,
+    selectedChatId,
+    selectedExperimentChatId,
+    tasks,
+    view,
+  ]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;
@@ -3377,12 +3465,12 @@ export default function App() {
     [startExperiment],
   );
   const startWebMcpExperiment = useCallback(
-    async (node: GraphNode): Promise<AgentTask> => {
+    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
       if (!project) throw new Error("No RCP project is open.");
       const pendingProjectId = project.id;
       setWebMcpExperimentStartProjectId(pendingProjectId);
       try {
-        return await startExperiment(node);
+        return await startExperiment(node, invocationCeiling);
       } finally {
         setWebMcpExperimentStartProjectId((current) =>
           current === pendingProjectId ? null : current,
@@ -3409,67 +3497,102 @@ export default function App() {
     }
   };
 
+  const autoResearchRefusal = autoResearchStartRefusal({
+    projectOpen: Boolean(project && apiBase),
+    mutationsDisabled,
+    authoritative: projectReconciliation === "authoritative",
+    canonicalReachable: Boolean(project?.canonical_state.reachable),
+    liveAutoResearchEpisode,
+    taskStarting,
+    episodeAction,
+  });
+  // The one Auto-research start: the header form and the WebMCP tool both call it.
+  const startAutoResearch = useCallback(
+    async (
+      invocationCeiling: number,
+      startingInstruction: string | null,
+      codeWorktree = true,
+    ): Promise<Episode> => {
+      if (autoResearchRefusal) throw new Error(autoResearchRefusal);
+      const finishTaskStart = beginTaskStart();
+      if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
+      const finishEpisodeAction = beginEpisodeAction("start");
+      if (!finishEpisodeAction) {
+        finishTaskStart();
+        throw new Error("Wait for the current episode action to finish.");
+      }
+      try {
+        const started = await startEpisode(apiBase, {
+          mode: "auto_research",
+          invocation_ceiling: invocationCeiling,
+          starting_instruction: startingInstruction,
+          // Omitted, the server turns code isolation on only where it is eligible.
+          ...(codeWorktree ? {} : { code_worktree: false }),
+        });
+        replaceEpisode(started);
+        replaceExactAutoResearchSelection(started.project_id, started.episode_id);
+        closeAutoResearchDialog();
+        changeView("execution");
+        try {
+          await reload();
+        } catch (error) {
+          setNotice({
+            kind: "error",
+            text: `Auto-research started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        return started;
+      } finally {
+        finishTaskStart();
+        finishEpisodeAction();
+      }
+    },
+    [
+      apiBase,
+      autoResearchRefusal,
+      beginEpisodeAction,
+      beginTaskStart,
+      changeView,
+      closeAutoResearchDialog,
+      reload,
+      replaceEpisode,
+      replaceExactAutoResearchSelection,
+    ],
+  );
   const authorizeAutoResearch = async (
     invocationCeiling: number,
     startingInstruction: string | null,
     codeWorktree = true,
   ) => {
-    if (!project || !apiBase || mutationsDisabled || episodeAction || taskStarting) return;
-    if (liveAutoResearchEpisode) {
-      reportAutoResearchStartError("An auto-research episode is already live for this project.");
-      return;
-    }
-    const finishTaskStart = beginTaskStart();
-    if (!finishTaskStart) {
-      reportAutoResearchStartError("Another task start is already being submitted.");
-      return;
-    }
-    const finishEpisodeAction = beginEpisodeAction("start");
-    if (!finishEpisodeAction) {
-      finishTaskStart();
-      return;
-    }
     reportAutoResearchStartError(null);
     try {
-      const started = await startEpisode(apiBase, {
-        mode: "auto_research",
-        invocation_ceiling: invocationCeiling,
-        starting_instruction: startingInstruction,
-        // Omitted, the server turns code isolation on only where it is eligible.
-        ...(codeWorktree ? {} : { code_worktree: false }),
-      });
-      replaceEpisode(started);
-      replaceExactAutoResearchSelection(started.project_id, started.episode_id);
-      closeAutoResearchDialog();
-      changeView("execution");
-      try {
-        await reload();
-      } catch (error) {
-        setNotice({
-          kind: "error",
-          text: `Auto-research started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
+      await startAutoResearch(invocationCeiling, startingInstruction, codeWorktree);
     } catch (error) {
       reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
-    } finally {
-      finishTaskStart();
-      finishEpisodeAction();
     }
   };
 
+  // The one Auto-research Stop: the run card and the WebMCP tool both call it.
+  const stopAutoResearchEpisode = useCallback(
+    async (episodeId: string): Promise<void> => {
+      if (!apiBase) throw new Error("No RCP project is open.");
+      const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
+      if (!finishEpisodeAction) throw new Error("Wait for the current episode action to finish.");
+      try {
+        replaceEpisode(await stopEpisode(apiBase, episodeId));
+        await refreshEpisodes();
+      } finally {
+        finishEpisodeAction();
+      }
+    },
+    [apiBase, beginEpisodeAction, refreshEpisodes, replaceEpisode],
+  );
   const requestEpisodeStop = async (episodeId: string) => {
-    if (!apiBase || episodeAction) return;
-    const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
-    if (!finishEpisodeAction) return;
     try {
-      replaceEpisode(await stopEpisode(apiBase, episodeId));
-      await refreshEpisodes();
+      await stopAutoResearchEpisode(episodeId);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;
-    } finally {
-      finishEpisodeAction();
     }
   };
 
@@ -3743,11 +3866,49 @@ export default function App() {
     indexAvailable: projectIndexWebMcpAvailable,
     key: webMcpSurfaceKey,
   } = webMcpSurface({ backendSessionReady, setupOpen, loading, projectId, project });
+  // openNodeById and openChats change every render; rcp_open_view reads the latest at call time.
+  const openNodeByIdRef = useRef(openNodeById);
+  openNodeByIdRef.current = openNodeById;
+  const openChatsRef = useRef(openChats);
+  openChatsRef.current = openChats;
+  const webMcpViewOwners = useMemo<WebMcpViewOwners>(
+    () => ({
+      openNode: (nodeId) => openNodeByIdRef.current(nodeId),
+      openConversation: (transcript) => {
+        selectCanonicalChat(transcript);
+        openChatsRef.current(transcript.chat_id);
+      },
+      // Like the exact-selection owners, replace the address in place and apply its
+      // selection; the route keeps the page's graph target and fires no hashchange.
+      openRunRoute: (hash) => {
+        window.history.replaceState(null, "", hash);
+        const route = parseProjectHash(hash);
+        applyRouteSelection(
+          route.view,
+          route.experimentId,
+          route.experimentRoute,
+          route.autoResearchEpisodeId,
+        );
+      },
+      openTab: changeView,
+      openArtifact: showWebMcpArtifactViewer,
+      isCurrent: (id, target) =>
+        isActiveProject(id) && sameGraphTarget(activeGraphTargetRef.current, target),
+    }),
+    [
+      applyRouteSelection,
+      changeView,
+      isActiveProject,
+      selectCanonicalChat,
+      showWebMcpArtifactViewer,
+    ],
+  );
   const webMcpTools = useMemo(() => {
     if (webMcpProject) {
       const project = webMcpProject;
       return [
-        ...projectReadToolDefinitions(project),
+        ...projectReadToolDefinitions(project, episodes),
+        ...providerLoginToolDefinitions(loadProviderLogins),
         ...projectArtifactToolDefinitions(
           project,
           tasks,
@@ -3781,27 +3942,45 @@ export default function App() {
           experimentStartRequiresSync,
           startWebMcpExperiment,
         ),
-        ...projectExperimentStopToolDefinitions(
+        ...projectAutoResearchToolDefinitions(project, autoResearchRefusal, startAutoResearch),
+        ...projectEpisodeStopToolDefinitions(
           project,
+          episodes,
           requestExperimentStop,
-          experimentStopId !== null,
+          stopAutoResearchEpisode,
+          experimentStopId !== null || Boolean(episodeAction?.startsWith("stop:")),
         ),
+        ...projectViewToolDefinitions(project, tasks, episodes, webMcpViewOwners, {
+          ...webMcpArtifactSource,
+          loadTranscript: loadWebMcpConversation,
+          loadExperimentEntries: () => loadProjectExperimentEpisodes(project.id),
+        }),
+        // Published for voice only; webMcpHostTools keeps them off WebMCP.
+        ...voiceTerminalToolDefinitions(project.id, {
+          fetchJson: api,
+          openSocket: openTerminalSocket,
+        }),
       ];
     }
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
   }, [
+    autoResearchRefusal,
     chatSummaryTotal,
     createWebMcpConversation,
+    episodeAction,
     episodes,
     experimentStartRequiresSync,
     experimentStopId,
+    loadWebMcpConversation,
     mutationsDisabled,
     projectIndexWebMcpAvailable,
     projectIndexWebMcpTools,
     requestExperimentStop,
     showWebMcpArtifactViewer,
+    startAutoResearch,
     startWebMcpConversationTurn,
     startWebMcpExperiment,
+    stopAutoResearchEpisode,
     taskStarting,
     tasks,
     visibleChatSummaries,
@@ -3810,30 +3989,83 @@ export default function App() {
     webMcpConversationSource,
     webMcpExperimentStartProjectId,
     webMcpProject,
+    webMcpViewOwners,
   ]);
+  // Why each conditional project tool is missing, for the catalog's resolve().
+  const webMcpRefusals = useMemo(
+    () =>
+      webMcpProject
+        ? {
+            rcp_start_experiment: experimentStartRefusal(
+              webMcpProject,
+              taskStarting,
+              mutationsDisabled,
+              experimentStartRequiresSync,
+            ),
+            rcp_stop_episode: episodeStopRefusal(webMcpProject, episodes),
+            rcp_authorize_auto_research: autoResearchRefusal,
+          }
+        : {},
+    [
+      autoResearchRefusal,
+      episodes,
+      experimentStartRequiresSync,
+      mutationsDisabled,
+      taskStarting,
+      webMcpProject,
+    ],
+  );
+  // The voice agent acts through the same surface and identity gate as WebMCP.
+  const voicePageRef = useRef<VoicePageState>({
+    project: null,
+    tasks: [],
+    conversationSource: webMcpConversationSource,
+    runScope: [],
+  });
+  voicePageRef.current = {
+    project: webMcpProject,
+    tasks,
+    conversationSource: webMcpConversationSource,
+    runScope,
+  };
+  const voice = useVoiceAgent({
+    ready: backendSessionReady,
+    spaceId: verifiedHealth?.space_id ?? null,
+    page: voicePageRef,
+  });
+  useEffect(() => {
+    publishToolSurface(
+      webMcpProject ? "project" : projectIndexWebMcpAvailable ? "project-index" : null,
+      webMcpTools,
+      webMcpRefusals,
+    );
+  }, [projectIndexWebMcpAvailable, webMcpProject, webMcpRefusals, webMcpTools]);
+  // WebMCP host agents get no RCP confirmation card, so voice-only tools stay off it.
+  const webMcpHostTools = useMemo(() => webMcpHostDefinitions(webMcpTools), [webMcpTools]);
   const webMcpRegistryRef = useRef<{
     surfaceKey: string;
     registry: WebMcpToolRegistry;
   } | null>(null);
   useEffect(() => {
     const current = webMcpRegistryRef.current;
-    if (!webMcpSurfaceKey || webMcpTools.length === 0) {
+    if (!webMcpSurfaceKey || webMcpHostTools.length === 0) {
       current?.registry.dispose();
       webMcpRegistryRef.current = null;
       return;
     }
     if (current?.surfaceKey === webMcpSurfaceKey) {
-      current.registry.update(webMcpTools);
+      current.registry.update(webMcpHostTools);
       return;
     }
     current?.registry.dispose();
-    const registry = createWebMcpToolRegistry(webMcpTools);
+    const registry = createWebMcpToolRegistry(webMcpHostTools);
     webMcpRegistryRef.current = registry ? { surfaceKey: webMcpSurfaceKey, registry } : null;
-  }, [webMcpSurfaceKey, webMcpTools]);
+  }, [webMcpSurfaceKey, webMcpHostTools]);
   useEffect(
     () => () => {
       webMcpRegistryRef.current?.registry.dispose();
       webMcpRegistryRef.current = null;
+      publishToolSurface(null, []);
     },
     [],
   );
@@ -3846,6 +4078,7 @@ export default function App() {
   };
 
   const exitTeamSpace = () => {
+    voice.end("space");
     void returnDesktopToPersonal().catch((error) => {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     });
@@ -4038,6 +4271,9 @@ export default function App() {
   const acceptanceAgentSurface = (
     <AcceptanceAgentIndicator agentMode={verifiedHealth?.agent_mode} />
   );
+  const voiceSurface = (
+    <VoicePanel voice={voice} onOpenSettings={() => setSpaceSettingsOpen(true)} />
+  );
   const setupRoute: ProjectSetupRoute = setupOpen
     ? parseProjectSetupRoute(window.location.hash)
     : { kind: "none" };
@@ -4096,6 +4332,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </div>
     );
   if (setupOpen)
@@ -4113,6 +4350,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </>
     );
   if (spaceSettingsOpen)
@@ -4137,6 +4375,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </>
     );
   if (!projectId)
@@ -4167,6 +4406,7 @@ export default function App() {
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
+          voiceControl={<VoiceButton voice={voice} className="landing-space-settings" />}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
@@ -4178,6 +4418,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </>
     );
   if (project?.id && project.id !== projectId)
@@ -4189,6 +4430,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </div>
     );
   if (!project || !paper)
@@ -4204,10 +4446,21 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </div>
     );
 
-  const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
+  const openConsolidation = openConsolidationItems(consolidation);
+  const needsConsolidationRenewal = consolidationNeedsRenewal(
+    consolidation?.schedule ?? null,
+    Date.now(),
+  );
+  const consolidationCount = consolidationAttentionCount(
+    openConsolidation,
+    needsConsolidationRenewal,
+  );
+  const attentionCount =
+    pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
@@ -4294,6 +4547,7 @@ export default function App() {
   return (
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
+      {voiceSurface}
       {!projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
           <div className="project-header-navigation">
@@ -4398,17 +4652,9 @@ export default function App() {
               </button>
               <button
                 className="button secondary auto-research-control"
-                disabled={
-                  mutationsDisabled ||
-                  projectReconciliation !== "authoritative" ||
-                  !project.canonical_state.reachable ||
-                  taskStarting ||
-                  Boolean(liveAutoResearchEpisode)
-                }
+                disabled={autoResearchRefusal !== null}
                 aria-label="Auto-research"
-                title={
-                  liveAutoResearchEpisode ? "An auto-research episode is already live." : undefined
-                }
+                title={autoResearchRefusal ?? undefined}
                 onClick={() => {
                   openAutoResearchDialog();
                 }}
@@ -4442,6 +4688,7 @@ export default function App() {
               >
                 <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
               </button>
+              <VoiceButton voice={voice} className="icon-button" />
               <button
                 className="icon-button space-settings-control"
                 aria-label="Space settings"
@@ -4757,6 +5004,7 @@ export default function App() {
                   proposals={pendingProposals}
                   decisions={attentionDecisions}
                   blockers={openBlockers}
+                  consolidationCount={consolidationCount}
                   onSelectNode={openNode}
                 />
                 <ProposalJudgmentSection
@@ -4771,6 +5019,26 @@ export default function App() {
                       stageProposalDecision(draft, graph, proposal.id, decision),
                     )
                   }
+                />
+                <ConsolidationInbox
+                  items={openConsolidation}
+                  schedule={consolidation?.schedule ?? null}
+                  needsRenewal={needsConsolidationRenewal}
+                  error={consolidationError}
+                  writesDisabled={!consolidation?.can_write}
+                  onOpenReport={(artifactId) => openArtifact({ projectId: project.id, artifactId })}
+                  onResolve={async (runId, action) => {
+                    await resolveConsolidationRun(apiBase, runId, action);
+                    refreshConsolidation();
+                  }}
+                  onOpenSettings={() => {
+                    changeView("settings");
+                    window.requestAnimationFrame(() =>
+                      document
+                        .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
+                        ?.scrollIntoView({ block: "center" }),
+                    );
+                  }}
                 />
               </div>
               <AttentionRail
@@ -4811,7 +5079,12 @@ export default function App() {
                 paperUnsynced={paper.sync_state !== "synced"}
                 onChange={changeView}
               />
-              <Artifacts key={project.id} projectId={project.id} />
+              <Artifacts
+                key={project.id}
+                projectId={project.id}
+                nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                onOpenNode={openNodeById}
+              />
             </div>
           )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
@@ -4886,6 +5159,7 @@ export default function App() {
                 onChange={changeView}
               />
               <LoadedPaperWorkspace
+                graphTarget={graphTarget}
                 key={project.id}
                 apiBase={apiBase}
                 project={project}
@@ -4914,6 +5188,9 @@ export default function App() {
               onRefreshReadiness={refreshReadiness}
               readinessRequest={providerReadinessRequests[project.id]}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}
+              consolidation={consolidation}
+              consolidationError={consolidationError}
+              onConsolidationChanged={refreshConsolidation}
               onCacheMetricsChange={(cacheMetrics) => {
                 updateProject((current) =>
                   current ? { ...current, cache_metrics: cacheMetrics } : current,
@@ -4943,6 +5220,8 @@ export default function App() {
               project={project}
               conversations={conversations}
               selectedChatId={selectedChatId}
+              board={agentsBoard}
+              onBoardChange={setAgentsBoard}
               nodes={presentedGraph.nodes}
               experimentEntries={experimentLoops}
               graphTarget={graphTarget}
@@ -5007,6 +5286,8 @@ export default function App() {
           <DetailDrawer
             key={`${slot}:${node.id}`}
             node={node}
+            projectId={project.id}
+            graphTarget={graphTarget}
             historical={historical}
             branchChange={project.graph_changes?.nodes.find((change) => change.node_id === node.id)}
             mergePaths={branchMergePaths?.filter(

@@ -20,6 +20,8 @@ import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
 import { MachineCard } from "../components/MachineCard";
 import { ProjectNotifications } from "../components/ProjectNotifications";
+import { ProjectConsolidation } from "../components/ProjectConsolidation";
+import { ProjectLessons } from "../components/ProjectLessons";
 import { AddMachineTile, MachineTile, type MachineSignal } from "../components/MachineTile";
 import { AddProjectMachine } from "../components/AddProjectMachine";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
@@ -50,6 +52,7 @@ import type {
   AgentProfileSettings,
   AgentUsageSnapshot,
   CacheMetric,
+  ConsolidationView,
   ComputeConnection,
   MachineComputeConfig,
   ProjectCacheMetrics,
@@ -81,6 +84,9 @@ interface Props {
   };
   spaceKind: "personal" | "team";
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
+  consolidation: ConsolidationView | null;
+  consolidationError: string | null;
+  onConsolidationChanged: () => void;
 }
 
 export function publishCacheMetrics(
@@ -176,6 +182,9 @@ export function ProjectSettings({
   readinessRequest,
   spaceKind,
   onMovePersonalProjectToTeam,
+  consolidation,
+  consolidationError,
+  onConsolidationChanged,
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
@@ -578,7 +587,14 @@ export function ProjectSettings({
       const metrics = await clearProjectCaches(apiBase);
       if (!requestIsCurrent()) return;
       publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
-      setStatus({ kind: "saved", text: "Project cache cleared." });
+      setStatus(
+        metrics.project_page_rebuilt
+          ? { kind: "saved", text: "Project cache cleared." }
+          : {
+              kind: "error",
+              text: "Project cache cleared, but the project page could not be rebuilt; the previous copy is kept.",
+            },
+      );
     } catch (caught) {
       if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
@@ -858,6 +874,21 @@ export function ProjectSettings({
       </section>
 
       <ProjectNotifications key={`notifications:${project.id}`} projectId={project.id} api={api} />
+      <ProjectConsolidation
+        key={`consolidation:${project.id}:${consolidation?.schedule?.authorization_id ?? ""}`}
+        apiBase={apiBase}
+        schedule={consolidation?.schedule ?? null}
+        recentNights={consolidation?.recent_nights ?? []}
+        loaded={consolidation !== null}
+        loadError={consolidationError}
+        writesDisabled={!consolidation?.can_write}
+        onChanged={onConsolidationChanged}
+      />
+      <ProjectLessons
+        key={`lessons:${project.id}`}
+        apiBase={apiBase}
+        writesDisabled={!consolidation?.can_write}
+      />
 
       <section className="settings-section compute-settings">
         <header>

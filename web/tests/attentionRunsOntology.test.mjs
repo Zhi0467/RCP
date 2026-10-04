@@ -327,6 +327,7 @@ test("Inbox counts pending proposals, queued Decisions, and only asserted open b
 
   const html = renderToStaticMarkup(
     React.createElement(AttentionOverview, {
+      consolidationCount: 3,
       proposals: [pending],
       decisions: [decisionReady, decisionRevisit],
       blockers: [asserted],
@@ -334,6 +335,7 @@ test("Inbox counts pending proposals, queued Decisions, and only asserted open b
     }),
   );
 
+  assert.equal(Number.parseInt(html.match(/class="view-aside">([^<]+)/)[1], 10), 7);
   assert.match(html, /<strong>2<\/strong>/);
   assert.match(html, /<strong>1<\/strong>/);
 });

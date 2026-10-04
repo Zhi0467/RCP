@@ -27,6 +27,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon, supports
 from rcp.artifact_views import artifact_content, artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
 from rcp.background import BackgroundAgentTasks
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.artifact_edit_admission import (
@@ -37,7 +38,13 @@ from rcp.runs.artifact_edit_admission import (
     start_artifact_edit,
 )
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
-from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, EpisodeMode
+from rcp.storage import (
+    AgentTaskAdmissionConflict,
+    AgentTaskRecord,
+    AppStore,
+    Artifact,
+    EpisodeMode,
+)
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -55,6 +62,7 @@ class SavedArtifactResponse(BaseModel):
     episode_id: str | None = None
     episode_mode: EpisodeMode | None = None
     source_chat_href: str | None = None
+    source_node_id: str | None = None
     viewer_url: str | None
     view: ArtifactView
     available: bool
@@ -67,6 +75,19 @@ class SavedArtifactResponse(BaseModel):
 def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
     edit = task.request.get("artifact_edit")
     return edit.get("episode_id") if isinstance(edit, dict) else task.episode_id
+
+
+def _source_node_id(
+    store: AppStore, project_id: str, task: AgentTaskRecord | None, episode_id: str | None
+) -> str | None:
+    """The graph node an artifact came from: its Experiment's node, else its node chat."""
+    episode = store.episode(episode_id) if episode_id else None
+    if episode is not None and episode.project_id == project_id and episode.control_node_id:
+        return episode.control_node_id
+    if task is None or task.project_id != project_id:
+        return None
+    node_id = task.request.get("node_id")
+    return node_id if isinstance(node_id, str) and node_id else None
 
 
 def _episode_runs_query(
@@ -193,6 +214,11 @@ def _saved_chat_origins(
     return origins
 
 
+def _temporary(artifact: Artifact) -> bool:
+    """An unkept turn artifact; episode reports and kept artifacts are permanent."""
+    return artifact.supplier == "turn" and artifact.kept_at is None
+
+
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
 def saved_artifacts(
     project_id: str,
@@ -246,6 +272,7 @@ def saved_artifacts(
                     artifact_id=artifact.artifact_id,
                     episode_mode=episode_mode,
                     source_chat_href=chat_origins.get(task.operation_id),
+                    source_node_id=_source_node_id(store, project_id, task, episode_id),
                     viewer_url=f"{artifact_url}/viewer" if projected.can_open else None,
                     view=projected.view,
                     available=projected.available,
@@ -278,6 +305,7 @@ def saved_artifacts(
                 episode_id=report.episode_id,
                 episode_mode=report.mode,
                 source_chat_href=chat_origins.get(origin.operation_id) if origin else None,
+                source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
                 viewer_url=f"{artifact_url}/viewer",
             )
         )
@@ -288,7 +316,7 @@ def saved_artifacts(
         if (report := store.episode_report(summary.episode_id)) is not None
     )
     for artifact in store.artifacts(project_id):
-        if artifact.artifact_id in represented or artifact.expires_at is not None:
+        if artifact.artifact_id in represented or _temporary(artifact):
             continue
         view = artifact_view(artifact.media_type)
         artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
@@ -301,6 +329,14 @@ def saved_artifacts(
                 artifact_id=artifact.artifact_id,
                 operation_id=artifact.origin_operation_id,
                 episode_id=artifact.episode_id,
+                source_node_id=_source_node_id(
+                    store,
+                    project_id,
+                    store.agent_task(artifact.origin_operation_id)
+                    if artifact.origin_operation_id
+                    else None,
+                    artifact.episode_id,
+                ),
                 viewer_url=f"{artifact_url}/viewer" if view not in {"file", "pdf"} else None,
                 view=view,
                 available=True,
@@ -344,6 +380,7 @@ class ArtifactViewerState(BaseModel):
     can_undo: bool
     live: Literal["live", "finished"] | None
     editing_operation_id: str | None
+    edit_failure: str | None = None
     can_comment: bool
     comment_unavailable_reason: str | None
     fresh_session_required: bool
@@ -432,6 +469,7 @@ def stored_artifact_state(
         can_undo=can_undo,
         live=live,
         editing_operation_id=editing,
+        edit_failure=store.artifact_edit_failure(project_id, artifact_id),
         can_comment=can_comment,
         comment_unavailable_reason=reason,
         fresh_session_required=fresh,
@@ -440,7 +478,7 @@ def stored_artifact_state(
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
         else None,
         download_url=f"{base}/download",
-        can_keep=artifact.expires_at is not None,
+        can_keep=_temporary(artifact),
         expires_at=artifact.expires_at,
     )
 
@@ -551,8 +589,8 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            keep_url=f"{base}/keep" if artifact.expires_at else None,
-            state="temporary" if artifact.expires_at else "kept",
+            keep_url=f"{base}/keep" if _temporary(artifact) else None,
+            state="temporary" if _temporary(artifact) else "kept",
             panel=comment_panel(
                 {
                     "projectId": project_id,
@@ -611,11 +649,23 @@ def stored_artifact_live(
 def keep_stored_artifact(
     project_id: str,
     artifact_id: str,
+    request: Request,
     *,
     store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ):
+    # Keep needs no history snapshot; a named member is recorded on a closed
+    # consolidation row, and an unnamed one keeps the artifact unrecorded.
+    user = identity_access.acting_user(request)
+    human = (
+        AuthorizedHuman(
+            space_id=store.space_id, user_id=user.user_id, display_name=user.display_name
+        )
+        if user.display_name and user.display_name.strip()
+        else None
+    )
     _stored_artifact(store, project_id, artifact_id)
-    return store.keep_artifact(artifact_id)
+    return store.keep_artifact(artifact_id, resolved_by=human)
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")
@@ -644,14 +694,23 @@ def download_stored_artifact(
     )
 
 
+class ArtifactComment(BaseModel):
+    """One comment: its text, anchored to a selection or to the whole artifact."""
+
+    model_config = {"extra": "forbid"}
+
+    text: str = Field(min_length=1, max_length=2048)
+    selection: ArtifactSelection | None = None
+
+
 class ArtifactCommentBody(BaseModel):
     model_config = {"extra": "forbid"}
 
-    message: str
-    fresh_session: bool = False
-    selections: list[ArtifactSelection] = Field(
-        default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    comments: list[ArtifactComment] = Field(
+        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )
+    edit_now: bool = False
+    fresh_session: bool = False
 
 
 @router.post(
@@ -673,8 +732,16 @@ def comment_artifact(
     artifact = store.artifact(artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    if not body.message.strip() or len(body.message) > STEERING_MESSAGE_MAX_CHARS:
-        raise HTTPException(status_code=422, detail="The artifact comment is empty or too long.")
+    if any(not comment.text.strip() for comment in body.comments):
+        raise HTTPException(status_code=422, detail="Every artifact comment needs text.")
+    general = "\n\n".join(c.text.strip() for c in body.comments if c.selection is None)
+    selections = [
+        c.selection.model_copy(update={"comment": c.text.strip()})
+        for c in body.comments
+        if c.selection is not None
+    ]
+    if len(general) + sum(len(s.comment) for s in selections) > STEERING_MESSAGE_MAX_CHARS:
+        raise HTTPException(status_code=422, detail="The artifact comments are too long.")
     author = identity_access.require_patch_capable_identity(request)
     origin = store.agent_task(artifact.origin_operation_id or "")
     if origin is None:
@@ -686,21 +753,13 @@ def comment_artifact(
             service,
             project_id,
             RunRequest(
-                message="\n\n".join(
-                    [
-                        body.message,
-                        *(
-                            f"Selection {index}: {selection.comment}"
-                            for index, selection in enumerate(body.selections, 1)
-                            if selection.comment
-                        ),
-                    ]
-                ),
+                message=general,
                 artifact_context=ArtifactContextRequest(
                     operation_id=origin.operation_id,
                     artifact_id=artifact_id,
                     fresh_session=body.fresh_session,
-                    selections=body.selections,
+                    edit_now=body.edit_now,
+                    selections=selections,
                 ),
             ),
         )

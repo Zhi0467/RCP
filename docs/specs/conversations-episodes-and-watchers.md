@@ -251,7 +251,16 @@ and at startup, an unreceived chat answer admits at most one Work follow-up, tra
 with task insertion, pinned to the asking turn's native session, authority, write
 scope and target. Occupied or paused sessions defer admission; unusable bindings
 remain visible. Each answer is projected once as a human chat message through
-StateWorkspace using its question id and answer revision. A durable projected-revision
+StateWorkspace using its question id and answer revision. Its follow-up turn's id
+derives from the same pair, so the projected answer names that turn before it is
+admitted and a queued follow-up never repeats it. An Experiment answer names only a
+claimed follow-up, because a later continuation may claim it under its own id.
+Projecting a chat answer first reserves the asking turn's prompt at the turn's
+creation time, as a live steer does, so the answer never precedes the prompt.
+The reservation is a no-op once the prompt is recorded. An Experiment
+transcript shows no turn prompts, so it gets none. Settlement and the answer
+route reconcile only their project's unreceived answers; startup sweeps every
+project. A durable projected-revision
 marker retires successful projections from reconciliation; stable-id replay repairs
 a missing marker without republishing. Deferred follow-up admission remains retryable
 after projection succeeds. Question offer and acknowledgement reads query operation
@@ -287,8 +296,14 @@ permission. Refused and unknown input is not silently sent as a subsequent turn.
 The [provider lifecycle](providers-and-containment.md#live-human-steering) owns
 acknowledgment, completion races, and disconnect handling.
 
-The desktop composer may turn one bounded macOS dictation segment into editable
-text. It never sends automatically or retains audio. Temporary input attachments
+The composer may turn one bounded dictation segment into editable text, through
+macOS dictation in the desktop app or through the member's own transcription
+service (see [dictation](api-web-and-desktop-projections.md#dictation)). It never
+sends automatically, and RCP never stores the audio. SpeechAnalyzer recognizes
+speech on the Mac; the older Apple recognizer, used before macOS 26, for
+unsupported languages, and in builds without SpeechAnalyzer, may send audio to
+Apple. A network service receives the audio under its own retention policy.
+Audio files remain refused as attachments. Temporary input attachments
 are claimed atomically for one nonblank Discuss or Work message, bounded by the
 current file allow-list and size/count limits, staged immutably on the execution
 host, and reused exactly by task recovery. A partial or unprovable transfer
@@ -297,6 +312,21 @@ fails the task rather than dropping files and running text-only.
 Attachment bytes, hashes, and paths never become canonical chat or graph data.
 Chat history retains only display metadata and expiry. Files are untrusted
 temporary context and cannot be the sole durable provenance for Evidence.
+
+A turn may also carry project references: a stored artifact (episode reports
+included), a graph node on its source target, or the saved paper introduction.
+The human adds them by drag, by pasting a copied reference link, or from the
+composer's project picker. Accepted node and project chat admission, in Discuss
+or Work, reads each source through its owner and copies the bytes into the
+turn's attachment batch, with the source frozen on the descriptor. Staging,
+remote transfer, and recovery use only that retained copy, so a later edit or
+deletion does not change the turn. A missing source rejects the turn. References
+share the attachment count and size caps. They are read-only context. They add
+no read or write root on RCP storage and no graph authority, and a node from
+another target does not change the chat's target. The prompt lists them apart
+from uploads, never as editable artifact comments. Steering, Experiment runs,
+episode start, continue, and mail, seed, refresh, paper coach, merge, and
+artifact edits refuse them, and question and watcher follow-ups clear them.
 
 An assistant answer also supports temporary selection comments for the next
 human turn. Pointer-selecting answer text opens a comment composer beside the
@@ -312,7 +342,7 @@ send until completed or removed. On send, each contributes only its copied
 selected text followed by `comment: <comment>` to the ordinary human message.
 Artifact comments are not chat annotations. They are sent from the artifact
 viewer; see [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
-There are no message references, source identifiers, offsets, durable
+Annotations carry no message references, source identifiers, offsets, durable
 annotation records, or graph authority. Staging clears when the turn is accepted
 and otherwise remains a client-side draft for that chat.
 

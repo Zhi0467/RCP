@@ -31,6 +31,8 @@ _APPLY_AGAIN_GUARD = threading.Lock()
 def apply_again_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
     """Why this task cannot apply its graph update again, or None when it can."""
 
+    if store.consolidation_run_for_operation(record.operation_id) is not None:
+        return "consolidation_continuation_forbidden"
     graph_update = record.result.get("graph_update") if record.result else None
     if not isinstance(graph_update, dict) or graph_update.get("status") != "unavailable":
         return "This task has no graph update waiting for canonical state."

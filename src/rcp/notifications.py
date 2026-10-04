@@ -23,6 +23,7 @@ from rcp.core.attention import project_graph_attention
 from rcp.core.models import GraphState, Patch
 from rcp.episode_health import load_episode_health
 from rcp.limits import (
+    CONSOLIDATION_EXPIRY_NOTICE_DAYS,
     NOTIFICATION_RECHECK_SECONDS,
     NOTIFICATION_RETRY_BASE_SECONDS,
     NOTIFICATION_RETRY_MAX_SECONDS,
@@ -184,6 +185,7 @@ class NotificationSender:
             try:
                 self._recheck_questions(project)
                 self._recheck_episodes(project)
+                self._recheck_consolidation(project)
             except Exception:
                 _LOG.exception("Could not recheck episode notifications for %s", project.project_id)
 
@@ -355,6 +357,25 @@ class NotificationSender:
         )
         self._first_baselines[project_id] = state.revision
         return {"revision": state.revision, "attention_json": json.dumps(attention)}
+
+    def _recheck_consolidation(self, project: ProjectRecord) -> None:
+        cutoff = (
+            datetime.fromisoformat(self.store.now())
+            + timedelta(days=CONSOLIDATION_EXPIRY_NOTICE_DAYS)
+        ).isoformat()
+        for event, item_id in self.store.unobserved_consolidation_notifications(
+            project.project_id, cutoff
+        ):
+            notification = _notification(
+                project,
+                target="main",
+                kind="consolidation",
+                item_id=item_id,
+                occurrence=event,
+                reason="consolidation",
+            )
+            notification["observed_blocked_reason"] = event
+            self.store.observe_consolidation_notification(event, notification)
 
     def _recheck_questions(self, project: ProjectRecord) -> None:
         for question_id in self.store.unobserved_notification_questions(project.project_id):
@@ -598,6 +619,10 @@ class NotificationSender:
                     continue
                 attention = json.loads(marker["attention_json"])
                 unresolved = row["item_id"] in attention.get(row["kind"], [])
+            elif row["kind"] == "consolidation":
+                unresolved = self.store.consolidation_notification_pending(
+                    row["project_id"], row["item_id"], row["observed_blocked_reason"]
+                )
             elif row["observed_blocked_reason"] == "question":
                 question = self.store.get_question(row["item_id"])
                 unresolved = (

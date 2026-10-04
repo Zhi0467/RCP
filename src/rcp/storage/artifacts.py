@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
 from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.server_ops._local_primitives import fsync_directory
@@ -260,7 +261,9 @@ class ArtifactStoreMixin:
                 raise ValueError("stored live snapshot bytes differ from inventory")
             return data
 
-    def keep_artifact(self, artifact_id: str) -> Artifact:
+    def keep_artifact(
+        self, artifact_id: str, *, resolved_by: AuthorizedHuman | None = None
+    ) -> Artifact:
         with self.artifact_lock(artifact_id):
             artifact = self.artifact(artifact_id)
             if artifact is None:
@@ -272,6 +275,15 @@ class ArtifactStoreMixin:
                 connection.execute(
                     "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
                     (artifact.model_dump_json(), artifact_id),
+                )
+                connection.execute(
+                    "UPDATE consolidation_runs SET state='kept', resolved_by_json=?, resolved_at=? "
+                    "WHERE report_artifact_id=? AND kind='report' AND state='open'",
+                    (
+                        resolved_by.model_dump_json() if resolved_by else None,
+                        self.now(),
+                        artifact_id,
+                    ),
                 )
             return artifact
 
@@ -287,6 +299,19 @@ class ArtifactStoreMixin:
                 (project_id, *statuses, artifact_id),
             ).fetchone()
         return row[0] if row else None
+
+    def artifact_edit_failure(self, project_id: str, artifact_id: str) -> str | None:
+        """Why the latest edit of this artifact failed, while no later edit replaced it."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status, error, status_message FROM graph_runs WHERE project_id = ? "
+                "AND json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
+                "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+                (project_id, artifact_id),
+            ).fetchone()
+        if row is None or row[0] not in {"failed", "interrupted"}:
+            return None
+        return row[1] or row[2] or row[0]
 
     def protected_edit_artifact_ids(self) -> frozenset[str]:
         with self.connection() as connection:
@@ -481,6 +506,7 @@ class ArtifactStoreMixin:
                     or datetime.fromisoformat(artifact.expires_at) > now
                     or self.artifact_edit_operation_id(artifact.project_id, artifact_id) is not None
                     or artifact_id in self.protected_edit_artifact_ids()
+                    or self.consolidation_report_is_pending(artifact)
                 ):
                     continue
                 with _capture_guard(self.path.parent).deletion():

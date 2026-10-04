@@ -245,9 +245,9 @@ class AgentTaskStoreMixin:
     def admit_chat_question_followup(self, question_id: str) -> AgentTaskRecord | None:
         """Claim and insert atomically; unresolved remote liveness still defers."""
         from rcp.service import RunRequest
+        from rcp.storage.question_models import question_followup_operation_id
         from rcp.storage.questions import _question_record
 
-        operation_id = uuid.uuid4().hex
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -256,6 +256,7 @@ class AgentTaskStoreMixin:
             if row is None:
                 raise KeyError(question_id)
             question = _question_record(row)
+            operation_id = question_followup_operation_id(question_id, question.answer_revision)
             if (
                 question.state != "answered"
                 or question.client_receipt_revision is not None
@@ -320,6 +321,7 @@ class AgentTaskStoreMixin:
                     "message": question.answer or "\n".join(question.chosen_choices),
                     "trigger": "human",
                     "attachments": [],
+                    "references": [],
                     "attachment_batch_id": None,
                     "attachment_set_id": None,
                     "attachment_client_id": None,
@@ -1104,6 +1106,22 @@ class AgentTaskStoreMixin:
             raise ValueError(
                 "This conversation belongs to another graph target and cannot continue here."
             )
+        consolidation = connection.execute(
+            "SELECT run_id FROM consolidation_runs WHERE operation_id = ?",
+            (record.operation_id,),
+        ).fetchone()
+        if consolidation is not None:
+            if self._has_resumable_paused_chat_task(
+                connection, record.project_id, record.kind, chat_id
+            ):
+                raise AgentTaskAdmissionConflict("The consolidation chat has a paused turn.")
+            record = record.model_copy(
+                update={
+                    "request": {**record.request, "session_id": None},
+                    "native_session_id": None,
+                }
+            )
+            return record, {"outcome": "fresh", "reason_code": "consolidation", "session_id": None}
         if (
             record.status == "queued"
             and record.parent_operation_id is None
@@ -2706,6 +2724,7 @@ class AgentTaskStoreMixin:
         A Resume or Retry creates a child operation immediately. Once that child
         exists, the paused parent no longer blocks a later ordinary turn; if the
         child itself pauses, it is independently found by this query.
+        Server-bound consolidation operations are never resumable.
         """
 
         with self.connection() as connection:
@@ -2727,6 +2746,11 @@ class AgentTaskStoreMixin:
                 AND (paused.stage_host IS NULL OR paused.stage_host = ''
                      OR paused.stage_root IS NOT NULL)
                 AND json_extract(paused.request_json, '$.chat_id') = ?
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM consolidation_runs AS consolidation
+                    WHERE consolidation.operation_id = paused.operation_id
+                )
                 AND NOT EXISTS (
                     SELECT 1
                     FROM graph_runs AS child

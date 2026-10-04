@@ -33,6 +33,7 @@ def test_personal_preferences_and_device_registration(manifest, tmp_path) -> Non
         "blocker": True,
         "episode_needs_action": True,
         "episode_finished": False,
+        "consolidation": True,
     }
     updated = client.patch(preferences_url, json={"proposal": False, "episode_finished": True})
     assert updated.status_code == 200

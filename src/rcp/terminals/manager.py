@@ -37,6 +37,7 @@ from rcp.limits import (
 from rcp.terminals import launch, remote
 from rcp.terminals.backends import TerminalCapability, machine_capability
 from rcp.terminals.models import (
+    TerminalAlreadyOpen,
     TerminalFrame,
     TerminalRuntime,
     TerminalSession,
@@ -513,8 +514,12 @@ class TerminalManager:
         git_identity: GitIdentity | None = None,
         git_key: Path | None = None,
         machine_writable_paths: list[str] | None = None,
+        require_new: bool = False,
     ) -> TerminalSession:
-        """Open one shell; ``machine_writable_paths`` are its machine card's grants."""
+        """Open one shell; ``machine_writable_paths`` are its machine card's grants.
+
+        ``require_new`` refuses, under the same lock, to hand back an existing shell.
+        """
         key = (project_id, repository_alias)
         async with self._lock:
             if not self._started:
@@ -523,6 +528,8 @@ class TerminalManager:
                 raise PermissionError("Project membership is required to open a terminal.")
             existing = await self._settle_registration(project_id, manifest, repository_alias)
             if existing is not None:
+                if require_new:
+                    raise TerminalAlreadyOpen("A terminal is already open for this repository.")
                 return existing
             if key in self._opening:
                 raise TerminalUnavailable("A terminal for this repository is already opening.")

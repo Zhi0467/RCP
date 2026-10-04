@@ -300,6 +300,8 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             update_command: null,
           };
         else if (/\/episodes\/[^/]+\/questions$/.test(path)) json = [];
+        else if (path.endsWith("/consolidation"))
+          json = { schedule: null, inbox: [], can_write: true, recent_nights: [] };
         else if (path.endsWith("/timeline"))
           json = timelineFixture(episode().episode_id, episode().mode);
         else if (

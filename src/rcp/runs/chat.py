@@ -85,7 +85,7 @@ from rcp.storage import (
 )
 from rcp.storage.artifact_models import ArtifactOperationConflict
 from rcp.storage.artifacts import ArtifactByteLimitError
-from rcp.storage.question_models import QuestionRecord
+from rcp.storage.question_models import QuestionRecord, question_followup_operation_id
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
@@ -1050,7 +1050,7 @@ def stage_artifact_context(
         artifact_id=artifact.artifact_id,
         name=artifact.source_name,
         media_type=artifact.media_type,
-        size_bytes=len(data),
+        size_bytes=len(data) or None,
     )
     if not supports_comments(descriptor.media_type):
         raise ValueError("The artifact type does not support comments.")
@@ -1125,6 +1125,7 @@ def stage_artifact_context(
         "sha256": base_sha256,
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
+        "edit_now": context.edit_now,
         "selections": [
             {
                 **item.model_dump(mode="json"),
@@ -1295,7 +1296,7 @@ def finalize_artifact_edit(
         if task is None:
             raise ValueError("The artifact edit task is unavailable.") from None
         descriptor = descriptor_for(
-            artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data)
+            artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data) or None
         )
         now = execution.store.now()
         execution.store.create_artifact(
@@ -1331,13 +1332,24 @@ def finalize_artifact_edit(
         )
         return [*artifacts, descriptor]
     resolve_artifact_live_version(execution.store, service, edit.artifact_id, version.version_id)
+    # The reply cites this turn's staged copy, so the turn lists the artifact it published.
+    descriptor = AgentArtifactDescriptor(
+        artifact_id=edit.artifact_id,
+        name=edit.source_name,
+        media_type=media_type,
+        size_bytes=len(data) or None,
+    )
     execution.store.record_agent_task_receipt(
         edit.operation_id,
         "artifact_edit_published",
-        {"artifact_id": edit.artifact_id, "version_id": version.version_id},
+        {
+            "artifact_id": edit.artifact_id,
+            "version_id": version.version_id,
+            "descriptor": descriptor.model_dump(mode="json"),
+        },
         tier="summary",
     )
-    return artifacts
+    return [*artifacts, descriptor]
 
 
 def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]:
@@ -1819,10 +1831,47 @@ def project_chat_question_answer(
     if task is None:
         raise ValueError("question_origin_missing")
     request = RunRequest.model_validate(task.request)
+    path = _chat_path(service, request)
     with service.history.workspace.transaction():
+        if question.origin.owner_kind == "chat" and request.trigger != "watcher":
+            # A chat turn's exchange may not be written yet (live, paused, or
+            # interrupted), never (failed), or not at all (a swallowed write failure).
+            # Reserve its prompt first, as a live steer does, so the answer cannot
+            # precede it; an already recorded prompt makes this a no-op. An Experiment
+            # transcript shows no turn prompts, so it gets none.
+            _append_chat_records(
+                service,
+                path,
+                [
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "sessionId": request.chat_id,
+                        "nativeSessionId": question.origin.native_session_id,
+                        "nodeId": request.node_id,
+                        "chatScope": request.chat_scope,
+                        "provider": request.provider,
+                        "model": request.model or "provider-default",
+                        "reasoning": request.reasoning,
+                        "executionMachine": request.run_on,
+                        "cwd": str(service.manifest.research_dir.parent),
+                        "timestamp": task.created_at,
+                        "operationId": task.operation_id,
+                        "mode": request.mode,
+                        "trigger": request.trigger,
+                        "activeComputeIds": request.active_compute_ids,
+                        "type": "user",
+                        "role": "user",
+                        "text": request.message,
+                        "attachments": [
+                            item.model_dump(mode="json") for item in request.attachments
+                        ],
+                    }
+                ],
+                reserve_prompt=True,
+            )
         _append_chat_records(
             service,
-            _chat_path(service, request),
+            path,
             [
                 {
                     "uuid": _question_answer_message_id(question),
@@ -1836,7 +1885,18 @@ def project_chat_question_answer(
                     "executionMachine": request.run_on,
                     "cwd": str(service.manifest.research_dir.parent),
                     "timestamp": question.resolved_at,
-                    "operationId": question.followup_operation_id,
+                    # A chat follow-up always takes the derived id, so the answer can
+                    # name it before admission. An Experiment answer may instead be
+                    # claimed by a continuation with its own id, so it names only a
+                    # claimed follow-up.
+                    "operationId": question.followup_operation_id
+                    or (
+                        question_followup_operation_id(
+                            question.question_id, question.answer_revision
+                        )
+                        if question.origin.owner_kind == "chat"
+                        else None
+                    ),
                     "mode": "work",
                     "trigger": "human",
                     "type": "user",

@@ -58,11 +58,10 @@ test("artifact comments are chips like answer comments, numbered as their select
   const staged = parseStagedChatAnnotations(JSON.stringify(chips));
   assert.deepEqual(staged, chips);
 
+  // Only answer comments are written into the text; artifact comments ride the selections.
   const turn = assembleChatTurn("", staged);
-  const labels = [...turn.matchAll(/^Selection (\d+): /gm)].map((match) => match[1]);
-  assert.deepEqual(labels, ["1", "2"]);
-  assert.ok(turn.indexOf("Why flat?") < turn.indexOf("Source?"));
   assert.ok(turn.includes("An answer sentence.\ncomment: Source?"));
+  assert.ok(!turn.includes("Why flat?") && !turn.includes("Cause?"));
 
   // The turn carries the artifact selections in the order they are numbered, with
   // the comment as edited on the chip.

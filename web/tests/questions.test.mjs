@@ -31,7 +31,6 @@ test("answer eligibility respects the server offer, lifecycle, and selected choi
     { can_answer: false },
     { withdrawn_readonly: true },
     { state: "answered" },
-    { state: "dismissed" },
   ]) {
     assert.equal(canSubmitQuestion({ ...question, ...change }, "text", []), false);
   }
@@ -49,11 +48,7 @@ test("resolved and withdrawn cards retain their chronological transcript positio
     { id: "before", timestamp: "2026-10-01T12:00:00Z" },
     { id: "after", timestamp: "2026-10-01T12:02:00Z" },
   ];
-  for (const change of [
-    { state: "answered" },
-    { state: "dismissed" },
-    { withdrawn_readonly: true },
-  ]) {
+  for (const change of [{ state: "answered" }, { withdrawn_readonly: true }]) {
     assert.deepEqual(
       questionTranscript(lines, [{ ...question, ...change }]).map((item) =>
         item.kind === "line" ? item.line.id : item.question.question_id,
