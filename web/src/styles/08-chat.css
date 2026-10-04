@@ -1565,7 +1565,43 @@
 .browser-consent > p {
   margin: 0;
 }
-.chat-browser-control {
-  padding: 10px 16px;
+.chat-options-menu {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  bottom: 34px;
+  box-shadow: var(--shadow);
+  left: 0;
+  margin: 0;
+  min-width: min(300px, calc(100vw - 38px));
+  padding: 0;
+  position: absolute;
+  z-index: 16;
+}
+.chat-options-menu[hidden] {
+  display: none;
+}
+.chat-options-menu > * {
   border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+}
+.chat-options-menu > :last-child {
+  border-bottom: 0;
+}
+.chat-options-menu .browser-consent {
+  font-size: var(--type-xs);
+  gap: 3px;
+}
+.chat-options-menu .browser-consent > p,
+.chat-option > p,
+.chat-browser-control > p {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+  margin: 3px 0 0;
+}
+.chat-option > label {
+  align-items: center;
+  display: flex;
+  font-size: var(--type-xs);
+  font-weight: 600;
+  gap: 8px;
 }

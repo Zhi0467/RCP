@@ -32,9 +32,8 @@ export function BrowserToggle({
       </label>
       {subject === "chat" ? (
         <p id={consentId}>
-          The agent can use a headless browser on the machine this chat runs on. Browser actions can
-          run agent-written code and write files outside this chat's folders. Changes apply from the
-          next turn. Turning it off deletes this chat's browser logins and cookies.
+          Runs agent-written code outside this chat's folders, from the next turn. Off deletes its
+          logins.
         </p>
       ) : (
         <p id={consentId}>
@@ -51,12 +50,15 @@ export function ChatBrowserControl({
   apiBase,
   chatId,
   disabled = false,
+  onRequestedChange,
 }: {
   apiBase: string;
   chatId: string;
   disabled?: boolean;
+  onRequestedChange?: (requested: boolean) => void;
 }) {
   const [requested, setRequested] = useState<boolean | null>(null);
+  useEffect(() => onRequestedChange?.(requested ?? false), [requested, onRequestedChange]);
   const [pending, setPending] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [error, setError] = useState<string | null>(null);

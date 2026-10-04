@@ -57,8 +57,9 @@ def browser_prompt_line(grant: BrowserGrant) -> str:
     if grant.status == "granted":
         return (
             f"Browser: session {grant.session_name} is already open; run playwright-cli "
-            f"from {grant.invocation_dir}. Start with goto, not open: open, close, and "
-            "kill-all end RCP's session for the rest of the turn. "
+            f"from {grant.invocation_dir}. Start with goto, not open: open, close, close-all, "
+            "and kill-all end RCP's session for the rest of the turn, and delete-data also "
+            "erases its logins. "
             "playwright-cli --help lists commands."
         )
     if grant.status == "unavailable":

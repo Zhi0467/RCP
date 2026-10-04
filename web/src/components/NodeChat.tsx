@@ -39,6 +39,7 @@ import {
   RadioTower,
   RotateCcw,
   Send,
+  SlidersHorizontal,
   Upload,
   X,
 } from "lucide-react";
@@ -163,7 +164,7 @@ import { profileRunConfig } from "./AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { BrowserTurnNotice, ChatBrowserControl } from "./BrowserControls";
-import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
+import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {
   project: ProjectSnapshot;
@@ -400,6 +401,25 @@ export function NodeChat({
   }));
   const computeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const [computeMenuOpen, setComputeMenuOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [browserOn, setBrowserOn] = useState(false);
+  const optionCount = Number(browserOn) + Number(worktree.chosen);
+  const optionsRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!optionsOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!optionsRef.current?.contains(event.target as Node)) setOptionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOptionsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [optionsOpen]);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
   const referencesKey = referenceDraftKey(project.id, project.graph_target ?? MAIN_GRAPH, chatId);
@@ -583,7 +603,10 @@ export function NodeChat({
       if (current.pinned) return { ...current, ids: reconciled };
       return { ids: derivedComputeIds, pinned: false };
     });
-    if (reset) setComputeMenuOpen(false);
+    if (reset) {
+      setComputeMenuOpen(false);
+      setOptionsOpen(false);
+    }
   }, [chatId, computeConnections, derivedComputeIds, project.id]);
 
   useEffect(() => {
@@ -1653,12 +1676,6 @@ export function NodeChat({
       ) : (
         contextControls(true)
       )}
-      <ChatBrowserControl
-        key={`${project.id}:${chatId}`}
-        apiBase={questionApiBase}
-        chatId={chatId}
-        disabled={readOnly}
-      />
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
           {watcherVisibility.error && <p role="alert">{watcherVisibility.error}</p>}
@@ -2335,7 +2352,6 @@ export function NodeChat({
                     key={`${project.id}:${chatId}`}
                     state={worktree.state}
                     error={worktree.error}
-                    chosen={worktree.chosen}
                     disabled={Boolean(
                       relatedActive ||
                       pausedAttempt ||
@@ -2343,7 +2359,6 @@ export function NodeChat({
                       reviewPending ||
                       repairingTaskId,
                     )}
-                    onChoose={worktree.choose}
                     onIntegrate={integrateWorktree}
                     onRemove={worktree.remove}
                     onPreviewRemove={worktree.previewRemoval}
@@ -2351,6 +2366,47 @@ export function NodeChat({
                   />
                 </>
               )}
+              <div className="chat-compute-picker" ref={optionsRef}>
+                <button
+                  className="chat-compute-trigger"
+                  type="button"
+                  aria-expanded={optionsOpen}
+                  onClick={() => setOptionsOpen((open) => !open)}
+                >
+                  <SlidersHorizontal size={14} />
+                  Options
+                  {optionCount ? <strong>{optionCount}</strong> : null}
+                  <ChevronUp size={12} />
+                </button>
+                {/* Mounted while folded, so the count reflects the saved Browser choice. */}
+                <fieldset
+                  className="chat-options-menu"
+                  aria-label="Turn options"
+                  hidden={!optionsOpen}
+                >
+                  <ChatBrowserControl
+                    key={`${project.id}:${chatId}`}
+                    apiBase={questionApiBase}
+                    chatId={chatId}
+                    disabled={readOnly}
+                    onRequestedChange={setBrowserOn}
+                  />
+                  {!artifactContext && (
+                    <WorktreeChooser
+                      state={worktree.state}
+                      chosen={worktree.chosen}
+                      disabled={Boolean(
+                        relatedActive ||
+                        pausedAttempt ||
+                        submitting ||
+                        reviewPending ||
+                        repairingTaskId,
+                      )}
+                      onChoose={worktree.choose}
+                    />
+                  )}
+                </fieldset>
+              </div>
               {computeConnections.length > 0 && (
                 <div className="chat-compute-picker">
                   <button
