@@ -37,4 +37,7 @@ def admit_fresh_chat_turn(
             raise AgentTaskAdmissionConflict(
                 "This conversation has a paused turn. Resume or retry it before starting a new turn."
             )
+        request = request.model_copy(
+            update={"browser_requested": store.chat_browser_requested(project_id, request.chat_id)}
+        )
         yield admit_conversation_worktree(service, store, project_id, request)

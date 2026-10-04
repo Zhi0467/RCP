@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
+from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -172,6 +173,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         supervisor_path: str | None = None,
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
+        browser_grant: BrowserGrant | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -197,6 +199,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     supervise_remote=supervise_remote,
                     supervisor_path=supervisor_path,
                     operation_id=operation_id,
+                    git_access=git_access,
+                    browser_grant=browser_grant,
                 ):
                     yield event
             return

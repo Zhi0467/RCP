@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.agents.browser_grant import BrowserGrant
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -256,6 +257,7 @@ class CodexProfile(ProviderProfile):
         write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
+        browser_grant: BrowserGrant | None = None,
     ) -> list[str]:
         del prompt, read_dirs
         command = [binary, "exec"]

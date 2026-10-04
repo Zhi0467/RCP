@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
+from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
@@ -759,6 +760,7 @@ async def _stream_agent_events(
     invocation_gate: ProviderInvocationGate | None = None,
     required_session_id: str | None = None,
     supervise_remote: bool = False,
+    browser_grant: BrowserGrant | None = None,
 ) -> AsyncIterator[str]:
     """Run one provider pass, recording its outcome and forwarding wire events.
 
@@ -826,6 +828,22 @@ async def _stream_agent_events(
                 )
             ).generation
 
+    if browser_grant is None:
+        # Unannotated launch paths are denied by default. Concrete turn owners
+        # acquire grants before rendering and own their complete lifetime.
+        requested = isinstance(request, RunRequest) and request.browser_requested
+        browser_grant = BrowserGrant(
+            requested=requested,
+            status="unavailable" if requested else "not_requested",
+            reason_code="grant_not_resolved" if requested else None,
+        )
+        if execution is not None:
+            execution.store.set_browser_turn_status(
+                execution.operation_id,
+                BrowserTurnStatus(
+                    status=browser_grant.status, reason_code=browser_grant.reason_code
+                ),
+            )
     async with aclosing(
         launcher.stream(
             request.provider,
@@ -847,6 +865,7 @@ async def _stream_agent_events(
             ),
             invocation_gate=invocation_gate,
             capability=capability,
+            browser_grant=browser_grant,
             binary=binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,

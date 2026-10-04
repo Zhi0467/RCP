@@ -38,7 +38,7 @@ class _ReportLauncher:
         self.kwargs: list[dict[str, object]] = []
         self.prompts: list[str] = []
 
-    async def stream(self, _provider, prompt, **kwargs):
+    async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
         outcome = self.outcomes[self.calls]
         self.calls += 1
         self.kwargs.append(kwargs)
@@ -855,7 +855,7 @@ async def test_report_login_failure_marks_account_and_parks_without_retry(manife
     class LoginFailureLauncher:
         calls = 0
 
-        async def stream(self, _provider, _prompt, **_kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
             self.calls += 1
             yield AgentEvent(event="error", text="refresh_token_reused")
 

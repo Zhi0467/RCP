@@ -745,6 +745,7 @@ def _resolved_auto_research_start_request(
     profile = service.resolve_agent_profile("orchestrator")
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
+        browser_requested=body.browser_requested,
         code_worktree=body.code_worktree if body.code_worktree is not None else False,
         graph_isolation=body.graph_isolation,
         starting_instruction=body.starting_instruction,

@@ -433,6 +433,9 @@ class ProjectStoreMixin:
                     "chat_session_contexts": connection.execute(
                         "DELETE FROM chat_session_contexts WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "chat_browser_preferences": connection.execute(
+                        "DELETE FROM chat_browser_preferences WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "chat_display": connection.execute(
                         "DELETE FROM chat_display WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -578,6 +581,7 @@ class ProjectStoreMixin:
                     "DELETE FROM agent_usage WHERE project_id = ?", (project_id,)
                 ).rowcount
                 for table in (
+                    "browser_turn_status",
                     "graph_run_outputs",
                     "graph_run_events",
                     "graph_run_receipts",

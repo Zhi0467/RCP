@@ -382,12 +382,34 @@ Home-relative paths resolve on the execution host. Discuss uses a named native
 permission profile so the same denial applies in exec and app-server; the
 app-server checks the activated profile before starting a turn.
 
+### Browser grants
+
+The per-chat browser preference is a human grant of a code-defined tool
+([decision](../decisions/2026-10-04-agents-browse-with-playwright-cli.md)).
+Admission resolves one immutable grant before rendering the prompt. The launcher
+passes it explicitly through provider requests and legacy command construction.
+Work, orchestrate, and Discuss admit grants. Paper coach, ingestion, scratch-only
+correction, and recorded replay do not. Prompts render the resolved session and
+invocation directory. Continuations send explicit off or unavailable values.
+The owner releases the grant in a finally block, including prompt preparation
+failures.
+Granted turns merge its environment and prefix its tool directory to PATH.
+SSH launches prefix the execution host's PATH after login-shell initialization;
+they never copy the controller's PATH. Codex retains `shell_environment_policy={}`.
+
+Browser actions execute in an RCP-started process outside the provider sandbox.
+The CLI permits agent-written Playwright code and writes outside the chat's write
+roots. It can reach any address available to its execution account. The human's
+grant accepts this boundary; `patch.json` remains the only graph-change channel.
+
 ### Claude
 
 Work and orchestrate use Claude's supported unattended `dontAsk` mode with an
 RCP-authored strict settings allow-list for the exact workspace and admitted
 repository roots. They never use `bypassPermissions`. RCP suppresses user
-settings and unrelated MCP configuration for this enforced launch. Public
+settings for this enforced launch. Every Claude launch passes strict empty MCP
+configuration; supported skills remain available. A granted Discuss turn adds only
+`Bash(playwright-cli:*)` to its pre-authorized tools. Public
 WebSearch and WebFetch remain available under the provider contract.
 
 Claude's OS sandbox is off. Its Linux backend always unshares the network
@@ -433,7 +455,10 @@ path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages are outside Git. The paper coach runs
 inside the project and denies every edit and the shell outright, so it needs no
 path rules. Discuss and ingestion may edit only their workspace and their own
-write folders, and have no shell.
+write folders. Ingestion has no shell. Discuss has no shell unless the human
+granted the browser; then its ordered bash rules deny `*` and allow
+`playwright-cli *`. Command selection and launch configuration derive the same
+rules, including on resumed sessions.
 
 Work keeps the shell. Like Claude's rules, these bound every file-editing tool
 and do not bound the shell, so the same accepted accidental-write gap applies.

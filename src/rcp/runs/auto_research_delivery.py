@@ -673,6 +673,7 @@ def _auto_research_graph_watcher_binding(
         graph_target=context.task.graph_target,
         execution_host=execution_host,
         continuation=WatcherContinuation(
+            browser_requested=context.episode.browser_requested,
             provider=request.provider,
             model=request.model,
             reasoning=request.reasoning,

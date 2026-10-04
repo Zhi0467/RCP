@@ -129,11 +129,13 @@ def _start_auto_research(
     tasks: BackgroundAgentTasks,
     *,
     invocation_ceiling: int = 6,
+    browser_requested: bool = False,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
     auto_research, root = start_auto_research(
         tasks,
         "project",
         AutoResearchStartRequest(
+            browser_requested=browser_requested,
             invocation_ceiling=invocation_ceiling,
             provider="codex",
             run_on="local",

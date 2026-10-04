@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from rcp.agents import AgentEvent
+from rcp.agents.browser_grant import BrowserTurnStatus
 from rcp.api.episodes import episode_on_branch
 from rcp.background import AgentTaskExecution
 from rcp.runs.auto_research import AutoResearchRunRequest
@@ -56,6 +57,15 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         starting_instruction="Resolve the disputed interpretation.",
         report_error="The report output was invalid.",
     )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET browser_requested = 1 WHERE episode_id = ?",
+            (original.episode_id,),
+        )
+    store.set_browser_turn_status(
+        original_root.operation_id,
+        BrowserTurnStatus(status="lost", reason_code="session_lost"),
+    )
     assert original.status == "needs_action"
     assert original_root.native_session_id and original_root.stage_root
     seen: list[tuple[str | None, str | None]] = []
@@ -70,6 +80,11 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     with signed_in_client(app) as client:
         before = client.get(f"/api/projects/{project_id}/episodes").json()[0]
         assert before["episode_id"] == original.episode_id
+        root_turn = next(
+            item for item in before["tasks"] if item["operation_id"] == original_root.operation_id
+        )
+        assert root_turn["browser_status"]["status"] == "lost"
+        assert root_turn["browser_status"]["reason_code"] == "session_lost"
         assert before["can_continue"] is True
         assert before["continues_episode_id"] is None
         assert before["continued_by_episode_id"] is None
@@ -88,6 +103,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         assert response.status_code == 202, response.text
         payload = response.json()
         continuation_id = payload["episode_id"]
+        assert payload["browser_requested"] is True
         continuation_root_id = payload["root_operation_id"]
         assert continuation_id != original.episode_id
         assert continuation_root_id != original_root.operation_id
@@ -375,6 +391,11 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
     stage = tmp_path / "loop-stage"
     loop.bind_session(stage, native_session_id="native-session-abc")
     loop.settle_exhausted_ending()
+    with app.state.background_tasks.store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET browser_requested = 1 WHERE episode_id = ?",
+            (loop.episode_id,),
+        )
     tasks = app.state.background_tasks
     store = tasks.store
     seen: list[tuple[str | None, str | None]] = []
@@ -395,6 +416,7 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
         assert response.status_code == 202, response.text
         payload = response.json()
         continuation_id = payload["episode_id"]
+        assert payload["browser_requested"] is True
         assert continuation_id != loop.episode_id
         assert payload["mode"] == "experiment_loop"
         assert payload["control_node_id"] == EXPERIMENT_ID

@@ -27,7 +27,7 @@ from .test_compute_jobs_storage import job_record
 from .test_watchers import _record
 
 
-def _waiting_child(tmp_path, *, ceiling=6):
+def _waiting_child(tmp_path, *, ceiling=6, browser_requested=False):
     store = _store(tmp_path)
     seen = []
 
@@ -47,13 +47,16 @@ def _waiting_child(tmp_path, *, ceiling=6):
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = _start_auto_research(tasks, invocation_ceiling=ceiling)
+    episode, root = _start_auto_research(
+        tasks, invocation_ceiling=ceiling, browser_requested=browser_requested
+    )
     worker_id = "00000000-0000-4000-8000-000000000451"
     instruction = "Inspect the result."
     child = start_auto_research_child_work(
         tasks,
         episode.episode_id,
         RunRequest(
+            browser_requested=not browser_requested,
             provider="codex",
             run_on="local",
             run_truth_scope=["repo-a"],

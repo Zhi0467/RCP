@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from rcp.agents.browser_grant import BrowserGrant
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -214,6 +215,7 @@ class OpenCodeProfile(ProviderProfile):
         write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
+        browser_grant: BrowserGrant | None = None,
     ) -> list[str]:
         del prompt, read_dirs
         work_like = capability in {"work_auto", "orchestrate"}
@@ -222,7 +224,7 @@ class OpenCodeProfile(ProviderProfile):
         elif write_scope is not None:
             raise ValueError(f"capability {capability!r} cannot carry a project write scope")
         self.validate_readiness_version(provider_version, capability=capability)
-        permission = _permission(capability, cwd, write_dirs, write_scope)
+        permission = _permission(capability, cwd, write_dirs, write_scope, browser_grant)
         # `--pure` loads no plugin, whose config hook could rewrite these rules.
         command = [binary, "run", "--format", "json", "--pure", "--agent", _agent_name(permission)]
         if session_id:
@@ -239,7 +241,11 @@ class OpenCodeProfile(ProviderProfile):
         """The variables that carry this turn's rules to OpenCode."""
 
         permission = _permission(
-            request.capability, request.cwd, request.write_dirs, request.write_scope
+            request.capability,
+            request.cwd,
+            request.write_dirs,
+            request.write_scope,
+            request.browser_grant,
         )
         policy = {
             "$schema": "https://opencode.ai/config.json",
@@ -320,6 +326,7 @@ def _permission(
     cwd: Path,
     write_dirs: list[Path],
     scope: ProjectWriteScope | None,
+    browser_grant: BrowserGrant | None = None,
 ) -> dict[str, object]:
     # OpenCode applies the last rule that matches, so the blanket deny comes first.
     base: dict[str, object] = {"*": "deny", **dict.fromkeys(_READ_TOOLS, "allow")}
@@ -343,9 +350,13 @@ def _permission(
             edit[_root_pattern(path)] = "allow"
     base["edit"] = edit
     if scope is not None:
-        # Only Work runs commands. Nothing bounds the shell's writes, and Discuss
-        # and ingestion may write no further than their own folders.
+        # Work has an unbounded shell. Other capabilities keep their narrow
+        # file-edit rules, including Discuss when its browser is granted.
         base["bash"] = "allow"
+    elif (
+        capability == "discuss" and browser_grant is not None and browser_grant.status == "granted"
+    ):
+        base["bash"] = {"*": "deny", "playwright-cli *": "allow"}
     return base
 
 

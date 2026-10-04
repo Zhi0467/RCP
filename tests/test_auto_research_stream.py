@@ -502,7 +502,7 @@ class _WorkerLauncher:
         self.write_scopes = []
         self.invocation_gates: list[ProviderInvocationGate | None] = []
 
-    async def stream(self, _provider, prompt, **kwargs):
+    async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
         self.calls += 1
         self.requested_session_ids.append(kwargs["session_id"])
         self.read_dirs.append(list(kwargs["read_dirs"]))
@@ -1053,10 +1053,12 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         (workspace / "patch.json").write_text(fallback_candidate, encoding="utf-8")
 
     class Launcher(_WorkerLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             observed["capability"] = kwargs["capability"]
             observed["session_id"] = kwargs["session_id"]
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = Launcher(session_id="orchestrator-session", writer=writer)
@@ -1956,6 +1958,23 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
 ) -> None:
     service = _service(manifest, tmp_path)
     store, _auto_research, _root, worker = _setup_auto_research(tmp_path)
+    from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.runs import browser_lifecycle
+
+    grant = BrowserGrant(requested=True, status="granted", session_name="browser-test-session")
+    grant_events = []
+
+    def acquire_grant(**_kwargs):
+        grant_events.append("acquired")
+        return grant
+
+    def finish_grant(finished_grant):
+        assert finished_grant is grant
+        grant_events.append("finished")
+        return BrowserTurnStatus(status="granted")
+
+    monkeypatch.setattr(browser_lifecycle, "acquire_turn_browser", acquire_grant)
+    monkeypatch.setattr(browser_lifecycle, "finish_turn_browser", finish_grant)
     staged_mailboxes = []
     started: list[str] = []
     finished: list[str] = []
@@ -1988,6 +2007,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
 
     assert events[-1].event == "error"
     assert events[-1].text == "prompt failed after command mailbox staging"
+    assert grant_events == ["acquired", "finished"]
     assert started == finished == [f"{worker.operation_id}:worker"]
     assert len(staged_mailboxes) == 1
     staged = staged_mailboxes[0]
@@ -2594,7 +2614,7 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
     observed: dict[str, object] = {}
 
     class Launcher(_WorkerLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             observed["host"] = kwargs["host"]
             observed["capability"] = kwargs["capability"]
             contract = _contract(prompt)

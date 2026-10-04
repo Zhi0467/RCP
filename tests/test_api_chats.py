@@ -284,3 +284,30 @@ def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
         client.post(f"{url}/chats/not-a-uuid/read", json={"read_through": later}).status_code == 422
     )
     assert client.get(f"{url}/chat-reads").json()["baseline"] == initial["baseline"]
+
+
+def test_browser_preference_is_local_and_snapshotted_at_admission(manifest, tmp_path):
+    from rcp.runs.chat_admission import admit_fresh_chat_turn
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    url = f"/api/projects/{project_id}/chats/{chat_id}/browser"
+    request = RunRequest(
+        chat_id=chat_id, chat_scope="project", message="hello", browser_requested=True
+    )
+    _append_chat_exchange(app.state.service, request, "answer", None, None)
+    before = app.state.service.chat_transcript(chat_id)
+    assert client.get(url).json() == {"browser_requested": False}
+    with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
+        assert not admitted.browser_requested
+    assert client.put(url, json={"browser_requested": True}).status_code == 200
+    with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
+        assert admitted.browser_requested
+        assert client.put(url, json={"browser_requested": False}).status_code == 200
+        assert admitted.browser_requested
+    assert app.state.service.chat_transcript(chat_id) == before
+    assert client.get(url).json() == {"browser_requested": False}
+    assert client.put(url, json={"browser_requested": True, "env": {}}).status_code == 422

@@ -6,7 +6,7 @@ import json
 import shlex
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, suppress
+from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -22,6 +22,7 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -57,6 +58,7 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -269,6 +271,7 @@ def _prepare_work_chat_prompt(
     launch_instructions: str,
     ontology_extensions: bool,
     question_part: str = "",
+    browser_grant: BrowserGrant | None = None,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -281,7 +284,9 @@ def _prepare_work_chat_prompt(
         remote_stage=remote_stage,
         master_context=master_context,
         contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
-        values=stable_values,
+        values=stable_values
+        if browser_grant is None
+        else {**stable_values, "browser": browser_prompt_line(browser_grant)},
     )
     # A master rendered before this session's first Work turn lacks the launch instructions.
     first_work_turn = not master.bootstrap and "work" not in (master.values or {})
@@ -303,6 +308,12 @@ def _prepare_work_chat_prompt(
     )
     if question_part:
         prompt += "\n\n" + question_part
+    if (
+        node == "session_start"
+        and browser_grant is not None
+        and browser_grant.status != "not_requested"
+    ):
+        prompt += "\n\n" + browser_prompt_line(browser_grant)
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
@@ -885,10 +896,12 @@ def _stage_retry_diagnostics(
 def _compose_resume_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedWorkPrompt:
     return _compose_work_recovery_prompt(
         turn,
         staged,
+        browser_grant=browser_grant,
         mode="resume",
         diagnostics_path=None,
         render=lambda: _work_contract_text(turn, staged),
@@ -959,6 +972,7 @@ def _stage_work_contract(
     retry_diagnostics_path: str | None = None,
     contract: str | None = None,
     values: dict[str, object] | None = None,
+    browser_grant: BrowserGrant | None = None,
 ) -> str:
     """Stage the full Work contract a new native session starts from.
 
@@ -969,6 +983,8 @@ def _stage_work_contract(
 
     if contract is None:
         contract = _work_contract_text(turn, staged, retry_diagnostics_path=retry_diagnostics_path)
+    if browser_grant is not None and browser_grant.status != "not_requested":
+        contract += "\n\n" + browser_prompt_line(browser_grant)
     contract_path, _ = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -1024,6 +1040,7 @@ def _work_continuation(
     values: dict[str, object],
     rendered_values: dict[str, object] | None = None,
     force_bootstrap: bool = False,
+    browser_grant: BrowserGrant | None = None,
 ) -> str:
     """Compose one inline Work continuation: its own part, what changed, and its master.
 
@@ -1043,6 +1060,8 @@ def _work_continuation(
     delta = changed_since_master(replace(master, bootstrap=False), values)
     question_part = prepare_work_question_snapshot(turn)
     parts = [part, question_part] if question_part else [part]
+    if browser_grant is not None and browser_grant.status != "not_requested":
+        delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
     return compose(node, parts=parts, master=master, delta=delta)
 
@@ -1057,6 +1076,7 @@ def _compose_work_recovery_prompt(
     label: str,
     role: str,
     values: dict[str, object] | None = None,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedWorkPrompt:
     """Continue a Work session inline: the reason, what changed, and a master pointer."""
 
@@ -1075,6 +1095,7 @@ def _compose_work_recovery_prompt(
         node=classify(LaunchPhase(session_id=turn.request.session_id, phase="recovery")),
         part=part,
         values=values,
+        browser_grant=browser_grant,
     )
     contract_path = record_inline_prompt(
         turn.execution,
@@ -1091,6 +1112,7 @@ def _compose_work_recovery_prompt(
         base_contract_path=contract_path,
         render_master=render,
         prompt_values=values,
+        browser_grant=browser_grant,
     )
 
 
@@ -1136,12 +1158,17 @@ def _compose_fresh_prompt(
     staged: _StagedWorkInputs,
     *,
     retry_diagnostics_path: str | None = None,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedWorkPrompt:
     assert turn.request.message is not None
     values = _work_prompt_values(turn, staged)
     if not turn.uses_master_protocol:
         contract_path = _stage_work_contract(
-            turn, staged, retry_diagnostics_path=retry_diagnostics_path, values=values
+            turn,
+            staged,
+            retry_diagnostics_path=retry_diagnostics_path,
+            values=values,
+            browser_grant=browser_grant,
         )
         prompt = (
             PromptFactory.launch_prompt(contract_path)
@@ -1166,6 +1193,7 @@ def _compose_fresh_prompt(
             base_contract_path=contract_path,
             render_master=lambda: _work_contract_text(turn, staged),
             prompt_values=values,
+            browser_grant=browser_grant,
         )
 
     prompt, contract_path = _prepare_work_chat_prompt(
@@ -1181,6 +1209,7 @@ def _compose_fresh_prompt(
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
         question_part=prepare_work_question_snapshot(turn),
+        browser_grant=browser_grant,
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
@@ -1188,12 +1217,14 @@ def _compose_fresh_prompt(
         base_contract_path=contract_path,
         render_master=lambda: _work_contract_text(turn, staged),
         prompt_values=values,
+        browser_grant=browser_grant,
     )
 
 
 def _compose_retry_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
@@ -1205,6 +1236,7 @@ def _compose_retry_prompt(
         return _compose_work_recovery_prompt(
             turn,
             staged,
+            browser_grant=browser_grant,
             mode="retry",
             diagnostics_path=retry_diagnostics_path,
             render=render,
@@ -1236,6 +1268,8 @@ def _compose_retry_prompt(
         ),
         invoked_provider_skills=turn.request.resolved_provider_skills,
     )
+    if browser_grant is not None and browser_grant.status != "not_requested":
+        retry_contract += "\n\n" + browser_prompt_line(browser_grant)
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -1251,6 +1285,7 @@ def _compose_retry_prompt(
         base_contract_path=current_contract_path,
         render_master=render,
         prompt_values=_work_prompt_values(turn, staged),
+        browser_grant=browser_grant,
     )
 
 
@@ -1443,6 +1478,7 @@ def _compose_work_correction_prompt(
         part=contract,
         values=values,
         rendered_values=composed.prompt_values,
+        browser_grant=composed.browser_grant,
     )
     return prompt, record_inline_prompt(
         turn.execution,
@@ -1796,6 +1832,7 @@ async def _settle_patch_deliverable(
                 launch_turn,
                 launcher,
                 correction_prompt,
+                browser_grant=composed.browser_grant,
                 session_id=settled.native_session_id,
                 required_session_id=required_session_id,
                 outcome=correction_outcome,
@@ -1999,6 +2036,7 @@ async def _settle_watch_deliverable(
                 launch_turn,
                 launcher,
                 correction_prompt,
+                browser_grant=composed.browser_grant,
                 session_id=settled.native_session_id,
                 outcome=correction_outcome,
                 validator_staged=correction_validator,
@@ -2167,6 +2205,7 @@ async def _launch_and_stream_work_turn(
     required_session_id: str | None = None,
     *,
     supervise_remote: bool = False,
+    browser_grant: BrowserGrant | None = None,
 ) -> AsyncIterator[str]:
     turn.supervise_remote = supervise_remote
     try:
@@ -2229,6 +2268,7 @@ async def _launch_and_stream_work_turn(
                 required_session_id=required_session_id,
                 outcome=turn.outcome,
                 supervise_remote=supervise_remote,
+                browser_grant=browser_grant,
             )
         ) as stream:
             async for frame in stream:
@@ -2448,6 +2488,27 @@ async def stream_work_run(
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
 ) -> AsyncIterator[str]:
+    async with (
+        AsyncExitStack() as browser_stack,
+        aclosing(
+            _stream_work_run(
+                service, launcher, request, data_dir, execution, browser_stack=browser_stack
+            )
+        ) as stream,
+    ):
+        async for frame in stream:
+            yield frame
+
+
+async def _stream_work_run(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution | None = None,
+    *,
+    browser_stack: AsyncExitStack,
+) -> AsyncIterator[str]:
     """Run one operational conversation turn with optional graph reflection."""
 
     if request.patch_kind == "experiment_loop":
@@ -2486,6 +2547,16 @@ async def stream_work_run(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
+        browser_grant = await browser_stack.enter_async_context(
+            browser_turn(
+                turn.request,
+                workspace=turn.workspace,
+                execution_host=turn.execution_host,
+                execution=turn.execution,
+                remote_stage=turn.remote_stage,
+                capability="work_auto",
+            )
+        )
         question_followup = bool(
             execution is not None
             and execution.store.question_for_followup(execution.operation_id) is not None
@@ -2496,16 +2567,17 @@ async def stream_work_run(
         resuming = turn.resuming
         await _prepare_work_prompt_context(turn, staged)
         if resuming:
-            composed_prompt = _compose_resume_prompt(turn, staged)
+            composed_prompt = _compose_resume_prompt(turn, staged, browser_grant=browser_grant)
         else:
             if turn.retrying:
-                composed_prompt = _compose_retry_prompt(turn, staged)
+                composed_prompt = _compose_retry_prompt(turn, staged, browser_grant=browser_grant)
             else:
                 retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
                 composed_prompt = _compose_fresh_prompt(
                     turn,
                     staged,
                     retry_diagnostics_path=retry_diagnostics_path,
+                    browser_grant=browser_grant,
                 )
         contract_path = composed_prompt.contract_path
         prompt = composed_prompt.prompt
@@ -2540,6 +2612,7 @@ async def stream_work_run(
             None,
             required_session_id=required_session_id,
             supervise_remote=bool(turn.execution_host),
+            browser_grant=browser_grant,
         )
     ) as stream:
         async for frame in stream:
@@ -2592,6 +2665,35 @@ async def _stream_work_graph_repair(
     data_dir: Path,
     *,
     execution: AgentTaskExecution,
+    master_for: Callable[[WorkTurn, _StagedWorkInputs], tuple[Callable[[], str], dict[str, object]]]
+    | None = None,
+) -> AsyncIterator[str]:
+    async with (
+        AsyncExitStack() as browser_stack,
+        aclosing(
+            _stream_work_graph_repair_with_browser(
+                service,
+                launcher,
+                request,
+                data_dir,
+                execution=execution,
+                master_for=master_for,
+                browser_stack=browser_stack,
+            )
+        ) as stream,
+    ):
+        async for frame in stream:
+            yield frame
+
+
+async def _stream_work_graph_repair_with_browser(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    *,
+    execution: AgentTaskExecution,
+    browser_stack: AsyncExitStack,
     master_for: Callable[[WorkTurn, _StagedWorkInputs], tuple[Callable[[], str], dict[str, object]]]
     | None = None,
 ) -> AsyncIterator[str]:
@@ -2711,6 +2813,16 @@ async def _stream_work_graph_repair(
             validator_budget=validator_budget,
             outcome=outcome,
         )
+        browser_grant = await browser_stack.enter_async_context(
+            browser_turn(
+                request,
+                workspace=workspace,
+                execution_host=execution_host,
+                execution=execution,
+                remote_stage=remote_stage,
+                capability="work_auto",
+            )
+        )
         previous = _rejected_graph_update_for_repair(execution)
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
         diagnostics_path = _stage_json_task_input(
@@ -2765,6 +2877,7 @@ async def _stream_work_graph_repair(
             part=_patch_correction_contract(diagnostics_path),
             values=values,
             force_bootstrap=True,
+            browser_grant=browser_grant,
         )
         contract_path = record_inline_prompt(
             execution,
@@ -2822,6 +2935,7 @@ async def _stream_work_graph_repair(
             prompt,
             session_id=request.session_id,
             outcome=outcome,
+            browser_grant=browser_grant,
         )
     ) as stream:
         async for frame in stream:

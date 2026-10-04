@@ -23,6 +23,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
+from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -1122,6 +1123,7 @@ class AgentLauncher:
         supervisor_path: str | None = None,
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
+        browser_grant: BrowserGrant | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1163,6 +1165,7 @@ class AgentLauncher:
                         supervisor_path=supervisor_path,
                         operation_id=operation_id,
                         git_access=git_access,
+                        browser_grant=browser_grant,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1210,6 +1213,7 @@ class AgentLauncher:
         supervisor_path: str | None = None,
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
+        browser_grant: BrowserGrant | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1286,6 +1290,7 @@ class AgentLauncher:
                 write_scope=write_scope,
                 capability=capability,
                 provider_version=getattr(readiness, "version", None),
+                browser_grant=browser_grant,
             )
             if runtime.id == profile.legacy_runtime_id
             else None
@@ -1305,6 +1310,7 @@ class AgentLauncher:
                     capability=capability,
                     provider_version=getattr(readiness, "version", None),
                     legacy_command=legacy_command,
+                    browser_grant=browser_grant,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1352,6 +1358,12 @@ class AgentLauncher:
             environment = self.process_environment(provider, host).with_variables(
                 turn.environment, remote=bool(host)
             )
+            if browser_grant is not None and browser_grant.status == "granted":
+                environment = environment.with_variables(browser_grant.env, remote=bool(host))
+                if browser_grant.path_prefix:
+                    environment = environment.with_path_prefix(
+                        browser_grant.path_prefix, remote=bool(host)
+                    )
             if git_access is not None:
                 if git_access.host != host:
                     raise ValueError("Git access does not match the provider execution host.")
@@ -1841,6 +1853,7 @@ class AgentLauncher:
         write_scope: ProjectWriteScope | None = None,
         capability: AgentCapability,
         provider_version: str | None = None,
+        browser_grant: BrowserGrant | None = None,
     ) -> list[str]:
         return profile_for(provider).command(
             prompt,
@@ -1854,6 +1867,7 @@ class AgentLauncher:
             write_scope=write_scope,
             capability=capability,
             provider_version=provider_version,
+            browser_grant=browser_grant,
         )
 
     def _discover_remote_provider(

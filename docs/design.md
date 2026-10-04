@@ -122,7 +122,8 @@ number here.
   enforcement, which bounds file-editing tools on every provider and the shell
   only where the provider can do so without disabling real compute. This is an
   accidental-write guardrail for cooperative users, not a hostile-user security
-  boundary or a read-confidentiality claim.
+  boundary or a read-confidentiality claim. The per-chat browser grant is human
+  consent to a code-defined tool ([decision](decisions/2026-10-04-agents-browse-with-playwright-cli.md)).
 - **Canonical state has one home.** A project has one durable id, one home
   space, and one local or remote canonical state repository. Main and graph
   branch namespaces live inside that repository. Routes never write canonical

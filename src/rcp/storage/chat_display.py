@@ -9,10 +9,87 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from rcp.agents.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.core.transition_models import GraphTargetRef
 
 
 class ChatDisplayStoreMixin:
+    def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT browser_requested FROM chat_browser_preferences "
+                "WHERE project_id = ? AND chat_id = ?",
+                (project_id, chat_id),
+            ).fetchone()
+        return bool(row["browser_requested"]) if row is not None else False
+
+    def set_chat_browser_requested(
+        self, project_id: str, chat_id: str, *, browser_requested: bool
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO chat_browser_preferences (project_id, chat_id, browser_requested) "
+                "VALUES (?, ?, ?) ON CONFLICT(project_id, chat_id) DO UPDATE "
+                "SET browser_requested = excluded.browser_requested",
+                (project_id, chat_id, browser_requested),
+            )
+
+    def record_browser_owner(
+        self,
+        owner: BrowserOwnerKey,
+        *,
+        execution_host: str | None,
+        workspace_dir: str,
+        stage_root: str,
+        chat_id: str | None,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO browser_owners "
+                "(owner_token, owner_json, execution_host, workspace_dir, stage_root, chat_id, project_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_token) DO UPDATE SET "
+                "workspace_dir = excluded.workspace_dir, stage_root = excluded.stage_root, "
+                "chat_id = excluded.chat_id",
+                (
+                    owner.token(),
+                    owner.model_dump_json(),
+                    execution_host or "",
+                    workspace_dir,
+                    stage_root,
+                    chat_id,
+                    owner.project_id,
+                ),
+            )
+
+    def browser_owners(self, project_id: str, chat_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM browser_owners WHERE project_id = ?"
+                + (" AND chat_id = ?" if chat_id is not None else ""),
+                (project_id, chat_id) if chat_id is not None else (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_browser_turn_status(self, operation_id: str, status: BrowserTurnStatus) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO browser_turn_status (operation_id, status_json) VALUES (?, ?) "
+                "ON CONFLICT(operation_id) DO UPDATE SET status_json = excluded.status_json",
+                (operation_id, status.model_dump_json()),
+            )
+
+    def browser_turn_status(self, operation_id: str) -> BrowserTurnStatus:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status_json FROM browser_turn_status WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+        return (
+            BrowserTurnStatus.model_validate_json(row["status_json"])
+            if row is not None
+            else BrowserTurnStatus(status="not_requested")
+        )
+
     def chat_display(self, project_id: str, user_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             rows = connection.execute(

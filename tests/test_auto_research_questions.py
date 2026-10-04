@@ -4,6 +4,7 @@ import json
 import uuid
 
 from rcp.agents import AgentEvent
+from rcp.agents.browser_grant import BrowserGrant
 from rcp.agents.command_protocol import AskCommandRequest
 from rcp.background import BackgroundAgentTasks
 from rcp.runs.auto_research import AutoResearchCommandDispatcher
@@ -201,8 +202,19 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
         lifecycle_path=None,
         skill_pointers=[],
         write_scope=_work_write_scope(),
+        browser_grant=BrowserGrant(
+            requested=True,
+            status="granted",
+            session_name="browser-test-session",
+            invocation_dir="/browser-test-invocation",
+        ),
     )
-    _, prompt, _, values = _orchestrator_prompt(_execution(store, root), turn, **arguments)
+    contract_path, prompt, _, values = _orchestrator_prompt(
+        _execution(store, root), turn, **arguments
+    )
+    assert values["browser"]["status"] == "granted"
+    assert values["browser"]["session_name"] in Path(contract_path).read_text()
+    assert values["browser"]["invocation_dir"] in Path(contract_path).read_text()
     receipt = [
         r for r in store.agent_task_receipts(root.operation_id) if r.category == "question_snapshot"
     ][-1]
@@ -221,10 +233,14 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
             (str(stage), "session", root.operation_id),
         )
     arguments["token"] = "resumed-turn"
+    arguments["browser_grant"] = BrowserGrant()
     # A later launch gets fresh data, not the prior turn's snapshot.
-    _, prompt, _, _ = _orchestrator_prompt(
+    contract_path, prompt, _, resumed_values = _orchestrator_prompt(
         _execution(store, root, continuation="resume"), turn, **arguments
     )
+    assert Path(contract_path).read_text() == prompt
+    assert resumed_values["browser"]["status"] == "not_requested"
+    assert resumed_values["browser"]["session_name"] is None
     receipt = [
         r for r in store.agent_task_receipts(root.operation_id) if r.category == "question_snapshot"
     ][-1]
