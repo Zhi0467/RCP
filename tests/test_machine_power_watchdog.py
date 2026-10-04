@@ -16,6 +16,7 @@ import pytest
 from tests.helpers import wait_until
 
 SCRIPT = Path(__file__).parents[1] / "src/rcp/machine_power_watchdog.sh"
+FIXTURES = Path(__file__).parent / "fixtures/machine_power"
 START = "Thu Oct  1 10:00:00 2026"
 
 
@@ -23,14 +24,17 @@ class Watchdog:
     def __init__(self, root: Path):
         self.root = root
         self.process: subprocess.Popen | None = None
-        self.env = dict(os.environ, RCP_POWER_TEST="1", FAKE_STATE=str(root))
+        self.env = dict(
+            os.environ, RCP_POWER_TEST="1", FAKE_STATE=str(root), FIXTURES=str(FIXTURES)
+        )
         self.write("flag", "0")
         self.write("lid", "No")
         self.write("start", START)
         for name, body in {
             "sudo": 'shift; exec "$@"',
-            "pmset": """case "$*" in
-                '-g') printf ' SleepDisabled %s\\n' "$(cat "$FAKE_STATE/flag")" ;;
+            "pmset": r"""case "$*" in
+                '-g') sed "s/^\( SleepDisabled[[:space:]]*\)[01]$/\1$(cat "$FAKE_STATE/flag")/" \
+                    "$FIXTURES/pmset-g.txt" ;;
                 '-a disablesleep 1') echo on >> "$FAKE_STATE/calls"; echo 1 > "$FAKE_STATE/flag" ;;
                 '-a disablesleep 0')
                     echo clear >> "$FAKE_STATE/calls"
@@ -40,7 +44,7 @@ class Watchdog:
                 *) exit 2 ;;
             esac""",
             "ioreg": '''[ ! -f "$FAKE_STATE/fail_lid" ] || exit 1
-                printf '  |   "AppleClamshellState" = %s\\n' "$(cat "$FAKE_STATE/lid")"''',
+                cat "$FAKE_STATE/ioreg-output"''',
             "ps": '''[ ! -f "$FAKE_STATE/dead" ] || exit 1
                 if [ -f "$FAKE_STATE/hang_ps" ]; then exec sleep 60; fi
                 cat "$FAKE_STATE/start"''',
@@ -54,6 +58,11 @@ class Watchdog:
         temporary = self.root / f".{name}.test"
         temporary.write_text(content + "\n")
         temporary.replace(self.root / name)
+        if name == "lid":
+            capture = (FIXTURES / "ioreg-clamshell.txt").read_text()
+            (self.root / "ioreg-output").write_text(
+                capture.replace('"AppleClamshellState" = No', f'"AppleClamshellState" = {content}')
+            )
 
     def heartbeat(self, *, desired="on", cause="disabled", at=None, pid=123):
         self.write(

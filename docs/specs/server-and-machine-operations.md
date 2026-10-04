@@ -38,7 +38,7 @@ and `sys.executable`, which starts RCP's own Python runtime.
 | `loginctl` | team server | `server_ops/install.py`, `server_ops/doctor.py` | Enable and inspect execution-account linger | PATH existence at install; `show-user` readback and doctor | Refuse install or report unhealthy service account |
 | `mkdir` | execution host | `transport/state.py`, `transport/run_stage.py` | `-p` stage/root creation | No probe today | Refuse preparation/publication on command failure |
 | `npm` | desktop / team server | `web_assets.py` | Run the repository's Web build and watch scripts | No independent version probe today | Source Web build fails visibly; packaged prebuilt Web mode does not invoke npm |
-| `osascript` | desktop | `machine_power_install.py` | `do shell script … with administrator privileges` for the one-time keep-awake install and uninstall | None; macOS only | A cancelled prompt changes nothing; any other failure is reported as `admin_failed` |
+| `osascript` | desktop | `machine_power_macos.py` | `do shell script … with administrator privileges` for the one-time keep-awake install and uninstall | None; macOS only | A cancelled prompt changes nothing; any other failure is reported as `admin_failed` |
 | `ps` | desktop / execution host / team server | `transport/remote_terminate_provider.py` | Process pid, parent, group and command inspection | No independent probe today | Cannot confirm provider process ownership/stopping; no inferred successful stop |
 | `python3` | execution host | `transport/state.py`, `transport/state_transfer.py`, `transport/run_stage.py`, `agents/launcher.py`, `compute_jobs/files.py`, `sources/indexer.py`, `terminals/probe.py`, `server_ops/backup_checkout.py` | Python >=3.9 standard library for shipped helpers | Used in discovery and helper execution; no explicit version gate today | Remote operation fails when interpreter/helper is unavailable |
 | `rm` | execution host | `transport/run_stage.py` | `-f` staged handoff cleanup | No probe today | Stage cleanup reports failure; no silent success |
@@ -469,7 +469,9 @@ A personal-space backend on macOS keeps its Mac from idle-sleeping while it has
 work. `src/rcp/machine_power.py` owns the policy; Settings → This Mac shows it
 and has an idle-hold toggle, on by default. A team space has no controller, and the API
 returns 404. Other platforms report `supported: false`; each supported
-platform is one entry in `IDLE_HOLD_COMMANDS`.
+platform is one entry in `PLATFORM_PROFILES`. The macOS profile in
+`machine_power_macos.py` owns platform commands, readers, and installation;
+profiles without lid mode declare that capability absent.
 
 **The hold.** While there is demand, the backend runs
 `caffeinate -i -w <backend pid>`, an ordinary idle-sleep assertion. It needs no
@@ -521,14 +523,21 @@ clears the flag, reads it back, and runs `pmset sleepnow` unless the lid is
 known to be open. After a stale or mismatched heartbeat it revokes that
 generation and exits, so a resumed backend cannot re-arm it.
 
-**Safety.** Each pass reads battery, thermal state, lid, and flag. With the
+**Safety.** Each pass reads battery, thermal state, lid, and flag through
+lazily loaded macOS frameworks (`ctypes`), with no command-text fallback.
+IOKit power-source descriptions supply AC/battery state and charge;
+`NSProcessInfo.thermalState` supplies thermal state; `AppleClamshellState` on
+`IOPMrootDomain` supplies lid state; and `IOPMCopySystemPowerSettings()` supplies
+`SleepDisabled`. A failed call or missing key is a read failure. With the
 flag set, the kernel refuses its own low-battery and thermal sleep, so RCP
-releases lid mode at 20% or less on battery and on any thermal warning.
+releases lid mode at 20% or less on battery and on serious or critical thermal state (2 or 3).
 A reading that fails, an installation that is no longer complete, or a watchdog
 failure also releases lid mode only. The idle hold remains demand-driven.
 Ending demand drops
-both holds and never sleeps an open Mac. pmset omits the `SleepDisabled` line
-until the flag has been set once since boot; RCP reads that as off.
+both holds and never sleeps an open Mac. The independent shell watchdog retains
+its own `pmset -g` flag and `ioreg` lid parsing, tested against captured output.
+Only that shell path treats an omitted `SleepDisabled` line under the pmset
+settings header as off.
 
 **Re-arm.** Thermal and cleanup failures latch lid mode off until the human
 re-enables it, and the latch survives restarts. A successful uninstall clears it. A battery release re-arms on AC

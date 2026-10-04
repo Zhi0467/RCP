@@ -73,6 +73,7 @@ read_flag() {
         case "$key:$value" in
             SleepDisabled:0|SleepDisabled:1|disablesleep:0|disablesleep:1)
                 printf '%s\n' "$value"; return 0 ;;
+            SleepDisabled:*|disablesleep:*) return 1 ;;
         esac
     done <<FLAGS
 $flag
@@ -89,7 +90,7 @@ flag_is() {
 
 lid_is_open() {
     lid=$(bounded "$ioreg" -r -k AppleClamshellState) || return 1
-    # Open only when every reported row says No, as parse_lid requires.
+    # Open only when every reported row says No.
     open=1
     while read -r line; do
         # ioreg prefixes properties with tree glyphs: `  |   "AppleClamshellState" = No`.

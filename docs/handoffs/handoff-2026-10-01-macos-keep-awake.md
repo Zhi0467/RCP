@@ -3,8 +3,9 @@
 Date: 2026-10-01, rebuilt 2026-10-03.
 Issue: #228.
 Status: lid-closed mode is merged onto the idle hold that shipped in #237.
-The rebuild below was settled with the human on 2026-10-03 and is not yet
-implemented. Current behavior is in
+Rebuild steps 1–4 are implemented: framework readers, captured watchdog
+fixtures, the macOS profile split, and simulated policy tests with a macOS
+reader smoke test. Current behavior is in
 [the server spec](../specs/server-and-machine-operations.md#keeping-a-mac-awake),
 and the tradeoffs are in
 [the decision record](../decisions/2026-10-01-backend-owns-macos-keep-awake.md),
