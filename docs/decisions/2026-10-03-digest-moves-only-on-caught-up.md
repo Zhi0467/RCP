@@ -26,5 +26,7 @@ Confirmed by the human 2026-10-03.
 
 - A member who never presses Caught up keeps a growing digest. The card
   groups by source, so it stays one screen even when large.
-- Operational items use timestamps, so one can reappear after Caught up when a
-  write raced the read. None vanish unseen.
+- Coverage is an event sequence in SQLite, not a time. Each source writes
+  its event in the same transaction as its change, so nothing finishes
+  "before" a Caught up and stays hidden. The cost is one extra insert on each
+  of those writes and a projector that follows graph history.

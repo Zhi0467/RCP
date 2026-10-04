@@ -1,9 +1,10 @@
 # Since you last looked
 
 Date: 2026-10-03
-Status: design settled with the human on 2026-10-03 in a grilling session. The
-human asked for implementation with Codex astra and Claude subagents, with
-review rounds and a served-app check. Nothing is implemented yet.
+Status: design settled with the human on 2026-10-03 in a grilling session,
+and revised after an astra design review the same day. The human asked for
+implementation with Codex astra and Claude subagents, with review rounds and a
+served-app check. Nothing is implemented yet.
 
 Decision: [the digest moves only when you say you caught up](../decisions/2026-10-03-digest-moves-only-on-caught-up.md).
 When this lands, current behavior moves into
@@ -55,70 +56,134 @@ one question on return: what changed since I last looked, and what needs me.
 
 ## Build plan
 
-### Storage
+An astra xhigh design review on 2026-10-03 found that timestamps and history
+replay cannot carry this: a remote job's exit can be recorded after a Caught
+up with an older `ended_at`, branch revisions overlap main numbers, Decisions
+have no `raised_rev`, and every history reader replays the whole log. The plan
+below replaces both with one append-only event log in SQLite.
 
-- New table `digest_marks(project_id, user_id, revision, transition_id, at,
-  marked_at)`, primary key `(project_id, user_id)`. Migration 38
-  `digest_marks_v1`. Follow `chat_reads` (migration 26) for shape and for
-  every place a per-member project table must appear: project transfer,
-  project delete, project-id rewrite, schema normalization, and the restore
-  schema registry hashes. Check whether the upgrade fixture boundary from
-  #248 needs a new entry.
-- `revision` and `transition_id` are the main graph head the digest showed.
-  `at` is the server time the digest's operational reads started.
-- The marker never moves backward. A Caught up with a cursor older than the
-  stored marker is a no-op; a cursor ahead of the current main head is
-  refused.
+### One event log, one sequence
 
-### Digest service
+- New table `digest_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, project_id,
+  kind, item_id, target, source_key, source_label, actor_user_id,
+  node_ids_json, payload_json, created_at)`. SQLite has one writer, so `seq`
+  follows commit order. A digest read sees every event with `seq` up to the
+  maximum in its own read snapshot, and every later commit gets a larger
+  `seq`. That ordering, not any timestamp, is what Caught up acknowledges.
+- New table `digest_marks(project_id, user_id, seq, marked_at)`, primary key
+  `(project_id, user_id)`. Migration 38 `digest_v1` creates both.
+- **Operational events** are inserted in the same SQLite transaction as the
+  state change they describe:
+  - a question is created, or leaves the open state;
+  - an episode ends;
+  - a compute job reaches a terminal status (on the write that records it,
+    whatever `ended_at` it carries);
+  - a non-conversation task fails;
+  - a consolidation run settles (report or failure);
+  - an episode report is published.
+  Each writer is a store method; one helper in the digest storage module
+  appends the row. No timestamp comparison decides coverage.
+- **Graph events** come from a projector that follows accepted transitions,
+  like the notification sender, but with its own head and no shared state.
+  - It listens on `on_accepted_transition`, and catches up on startup, so a
+    crash between the canonical commit and the event insert only delays
+    events.
+  - Per accepted revision after its stored head, it diffs the before and
+    after boundary states and writes one `graph_change` event: source,
+    touched node ids (including removed nodes and both endpoints of changed
+    edges), and Proposal or Decision entries into and out of human attention
+    (`project_graph_attention`, Proposals and ready/revisit Decisions only).
+  - The comparison helper is extracted from `build_semantic_delta` into the
+    history delta module and shared with `branch_changes`; no second differ.
+  - Branch targets: one `branch_change` event per accepted branch revision,
+    with the episode id and an edit count, so the digest shows one line per
+    episode. Confirm the branch history fires the same hook; if not, add it
+    at the branch append point.
+  - If the stored projector head is not a prefix of the current history
+    (restore or reset), the projector moves its head to the current head,
+    writes no events, and logs it.
+  - Replay cost stays where the notification sender already pays it: only on
+    a signalled or lagging project, never in a request.
+- **Attribution** is decided once, at projection time, by precedence: branch
+  merge (episode), consolidation run operation (nightly consolidation, with
+  its report), human producer (that member), ingestion (`seed`/`refresh`), a
+  captured conversation Work task (that chat, joined through `graph_runs`),
+  another agent producer (Agent), system (System), and legacy unattributed
+  human Patches (Unattributed). `source_key` is stable; labels are display
+  only. A missing task row loses the enrichment, never the event.
 
-- One module owns the digest (for example `src/rcp/digest.py`), with a thin
-  route module. It reads; it never writes the graph.
-- Graph groups come from main history after the marker revision, skipping
-  rejected revisions. Attribution comes from the Patch: `branch_merge`
-  (episode merged), the consolidation run's operation id (nightly
-  consolidation, linked to its report), `authorized_by` with no task (a
-  member), a chat Work task (that chat), `seed`/`refresh` (ingestion), and
-  anything else as "Agent".
-- Needs-you items come from the current graph and the questions table,
-  filtered to those raised after the marker (`raised_rev`, `created_at`).
-  Resolved items drop out.
-- Ran items come from `episodes.ended_at`, `compute_jobs.ended_at`,
-  `graph_runs.finished_at`, `consolidation_runs`, and `episode_reports`, after
-  `at`.
-- Operational timestamps are overlap tolerant: an item may reappear once, but
-  must never vanish unseen.
-- Reuse the notification sender's item builders and the history readers
-  where they fit. Do not add a second graph differ beside `branch_changes` and
-  `revision_summaries`.
+### Digest read
 
-### API
+- `GET /api/projects/{id}/digest` reads in one SQLite read transaction: the
+  member's mark, events after it, and the maximum `seq`. It returns that
+  maximum as the cursor.
+  - Needs you: attention entries whose latest event is an entry, still
+    present in the current graph snapshot; open questions (pending and not
+    withdrawn); episodes that currently need the human (the same pure health
+    predicate the notification sender uses for `episode_needs_action`, which
+    covers a ready Decision on an unmerged Auto-research branch).
+  - Changed on main: `graph_change` events grouped by `source_key`. A node
+    id is listed under the latest event that touched it. Events whose actor
+    is the viewer as a direct human edit are dropped, but an earlier agent
+    touch of the same node still shows.
+  - Branch lines: `branch_change` counts per episode.
+  - Ran: the operational events.
+  - Changed node ids: the union, filtered to nodes on the current main
+    graph, for the Research dots.
+- A member with no mark gets one at the current maximum `seq` with an
+  atomic insert-if-absent inside the read path, rechecking project
+  membership. Listing projects never creates a mark.
+- `POST /api/projects/{id}/digest/caught-up {seq}`: stores
+  `max(stored, seq)`; refuses a `seq` above the current maximum. Uses
+  `acting_user()`, skips the project work fence like the chat read marker,
+  and keeps global maintenance admission and POST origin/JSON checks.
+- `ProjectCard.digest_count` on `GET /api/projects`: one batched SQL count of
+  rendered digest lines from the event log for the visible projects, with the
+  same grouping function the digest uses. No graph read, no replay. No mark
+  means zero.
+- The notification sender is not called and its observations are not read.
+  Only pure helpers (attention membership, labels, deep links) are shared.
 
-- `GET /api/projects/{id}/digest` returns the cursor, the stored marker, the
-  three groups, the branch lines, and the changed node ids. Inserts the
-  baseline marker when the member has none.
-- `POST /api/projects/{id}/digest/caught-up` with the cursor from that GET.
-  Skips the write-admission fence like the chat read marker does.
-- `ProjectCard.digest_count` on `GET /api/projects`. The landing page must not
-  replay graph history to compute it.
-- Membership gates as for other project routes.
+### Storage obligations
+
+- Project transfer excludes `digest_events` and `digest_marks`; target
+  members start empty. Add both to the transfer disposition table.
+- Project delete and project-id rewrite cover both tables.
+- Register migration 38, update the fresh and upgraded restore schema
+  hashes, and add populated rows to a backup/restore round trip. The existing
+  frozen upgrade fixtures stay as they are.
 
 ### Web
 
-- `ProjectOverview.tsx`: the digest card at the top, hidden when empty.
-- `DagView` and the Research cards: a dot class on changed node ids.
-- `ProjectLanding.tsx`: the count on the card meta line.
-- Caught up clears the card, the dots, and the count without a reload.
+- The project session owns digest state: load, refetch on revision or
+  operational change, and Caught up. Requests carry a generation; a late
+  response for an older generation or another project is dropped.
+- Caught up posts the cursor of the digest on screen, then refetches. Items
+  that arrived after that cursor stay.
+- `ProjectOverview.tsx`: the card at the top, hidden when empty.
+- `DagView` and Research cards: a dot class on changed node ids, on the main
+  target only.
+- `ProjectLanding.tsx`: the count on the card meta line; updated after a
+  Caught up.
 
 ## Checks
 
-- Backend: marker lifecycle (baseline, monotonic, refuse ahead), each group's
-  attribution, a node appearing once, branch lines, exclusions, transfer and
-  delete of marks, migration and restore registry.
-- Web: the card, dots, count, and Caught up, as unit tests over the payload.
-- Served app on seeded data: return to a project after a consolidation run,
-  an episode merge, and a finished job; see each group; press Caught up; see
-  it clear; a second member's marker is unaffected.
+- Event log: a terminal job recorded after a Caught up with an older
+  `ended_at` still appears; a writer that commits after a digest read
+  appears in the next one.
+- Projector: catch-up after a missed signal; reset/restore rebaseline;
+  touched ids for an edge change, a node removal, and a Proposal-only
+  change; attention entry for created-ready, open-to-ready,
+  decided-to-revisit, and no entry for a title edit while ready.
+- Attribution precedence, including legacy and system Patches.
+- Marks: baseline, monotonic, refuse ahead, two members independent.
+- Transfer exclusion, delete, id rewrite, migration and restore hashes.
+- Landing count makes no history call (instrument it).
+- Web: the card, dots, and count over payloads; late responses in both
+  orders; Caught up keeps an item that arrived meanwhile.
+- Served app on seeded data: return after a consolidation run, an episode
+  merge, a branch in progress, and a finished job; press Caught up; a second
+  member's digest is unchanged.
 
 ## Remaining
 
