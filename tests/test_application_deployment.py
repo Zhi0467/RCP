@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,9 +77,8 @@ def captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, socket_root: Path)
         running_commit="a" * 40,
         web_build_id="sha256:" + "b" * 64,
     )
-    capture = BackupCaptureCoordinator(
-        AppStore(data / "rcp.sqlite3"), data, metadata
-    ).capture_sqlite()
+    with closing(AppStore(data / "rcp.sqlite3")) as store:
+        capture = BackupCaptureCoordinator(store, data, metadata).capture_sqlite()
     assert capture.receipt.status == "complete"
     request = PrepareRequest(
         version=1,

@@ -6,6 +6,7 @@ import re
 import sqlite3
 import stat
 import tempfile
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -19,6 +20,7 @@ from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.artifact_imports import migrate_artifact_imports
 from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
+from rcp.storage.connections import ConnectionCache
 from rcp.storage.digest import migrate_digest
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.lessons import migrate_operational_lessons
@@ -117,6 +119,10 @@ class AppStoreBase:
     _legacy_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
     _baseline_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
 
+    _baseline_storage_sql: ClassVar[tuple[str, ...]] = ()
+    _baseline_lock: ClassVar[threading.RLock] = threading.RLock()
+    _connection_cache_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
         if space_kind is not None and space_kind not in ("personal", "team"):
             raise ValueError("space kind must be 'personal' or 'team'")
@@ -144,6 +150,7 @@ class AppStoreBase:
                 require_new=True,
             )
         except Exception:
+            store.close()
             _discard_failed_team_initialization(
                 path,
                 initial_space_id,
@@ -319,22 +326,53 @@ class AppStoreBase:
         required = {"graph_run_events", "graph_runs", "projects", "space_identity"}
         return required <= tables
 
-    @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
+    def close(self) -> None:
+        """Release cached handles; active blocks retain ownership until exit."""
+        with self._connection_cache_lock:
+            cache = getattr(self, "_connection_cache", None)
+            if cache is not None:
+                cache.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        # Use stays on the owning thread. Shutdown/finalizers/LRU eviction may
+        # close an idle handle from another thread, hence check_same_thread=False.
         if getattr(self, "_read_only_snapshot", False):
             uri = f"{self.path.resolve(strict=True).as_uri()}?mode=ro"
             if getattr(self, "_immutable_read_only", False):
                 uri += "&immutable=1"
-            connection = sqlite3.connect(uri, timeout=30.0, uri=True)
-        else:
-            connection = sqlite3.connect(self.path, timeout=30.0)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.row_factory = sqlite3.Row
+            return sqlite3.connect(uri, timeout=30.0, uri=True, check_same_thread=False)
+        return sqlite3.connect(self.path, timeout=30.0, check_same_thread=False)
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        cached = None
+        if str(self.path) != ":memory:":
+            with self._connection_cache_lock:
+                if not hasattr(self, "_connection_cache"):
+                    self._connection_cache = ConnectionCache()
+                cache = self._connection_cache
+            cached = cache.acquire(self.path, self._connect)
+        connection = cached[1] if cached is not None else self._connect()
+        discard = False
         try:
+            connection.rollback()
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA legacy_alter_table = OFF")
+            connection.row_factory = sqlite3.Row
             yield connection
             connection.commit()
+            # Bound instrumentation callbacks must not retain a dropped store.
+            connection.set_trace_callback(None)
+        except BaseException:
+            discard = True
+            with suppress(sqlite3.Error):
+                connection.rollback()
+            raise
         finally:
-            connection.close()
+            if cached is None:
+                connection.close()
+            else:
+                cache.release(cached[0], discard=discard)
 
     def online_snapshot(self, destination: Path) -> None:
         """Copy this live store with SQLite's online backup API and no app-wide lock."""
@@ -429,6 +467,31 @@ class AppStoreBase:
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute("PRAGMA legacy_alter_table = ON")
             connection.execute("BEGIN IMMEDIATE")
+            if (
+                not _schema_template
+                and connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                ).fetchone()
+                is None
+            ):
+                for statement in self._new_database_schema():
+                    connection.execute(statement)
+                now = self.now()
+                connection.executemany(
+                    "INSERT INTO storage_schema_migrations VALUES (?, ?, ?)",
+                    [(version, name, now) for version, name in self._STORAGE_SCHEMA_MIGRATIONS],
+                )
+                kind = requested_space_kind or "personal"
+                self._insert_space_identity(connection, initial_space_id, kind, initial_space_name)
+                if kind == "personal":
+                    self._insert_local_owner(connection)
+                return self._open_current_storage(
+                    connection,
+                    kind,
+                    initial_space_name=initial_space_name,
+                    issue_bootstrap=issue_bootstrap,
+                    require_new=issue_bootstrap,
+                )
             if not _schema_template and self._storage_schema_is_current(connection):
                 self._validate_storage_schema(connection)
                 return self._open_current_storage(
@@ -784,12 +847,8 @@ class AppStoreBase:
                 )
                 """
             )
-            connection.execute(
-                """
-                INSERT INTO space_identity(singleton, space_id, space_kind, space_name)
-                VALUES (1, ?, ?, ?)
-                """,
-                (initial_space_id or str(uuid.uuid4()), stored_space_kind, initial_space_name),
+            self._insert_space_identity(
+                connection, initial_space_id, stored_space_kind, initial_space_name
             )
         else:
             identity_columns = {
@@ -947,27 +1006,7 @@ class AppStoreBase:
             """
         )
         if not users_table_exists and stored_space_kind == "personal":
-            now = self.now()
-            owner = SpaceUserRecord(
-                user_id=str(uuid.uuid4()),
-                identity_kind="local_owner",
-                created_at=now,
-                updated_at=now,
-            )
-            connection.execute(
-                """
-                INSERT INTO space_users (
-                    user_id, identity_kind, display_name, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    owner.user_id,
-                    owner.identity_kind,
-                    owner.display_name,
-                    owner.created_at,
-                    owner.updated_at,
-                ),
-            )
+            self._insert_local_owner(connection)
         users = self._space_users_from_connection(connection)
         if stored_space_kind == "personal":
             if len(users) != 1 or users[0].identity_kind != "local_owner":
@@ -2169,6 +2208,39 @@ class AppStoreBase:
             )
         return bootstrap_code
 
+    @staticmethod
+    def _insert_space_identity(
+        connection: sqlite3.Connection, space_id: str | None, kind: SpaceKind, name: str | None
+    ) -> None:
+        connection.execute(
+            "INSERT INTO space_identity(singleton, space_id, space_kind, space_name) "
+            "VALUES (1, ?, ?, ?)",
+            (space_id or str(uuid.uuid4()), kind, name),
+        )
+
+    def _insert_local_owner(self, connection: sqlite3.Connection) -> None:
+        now = self.now()
+        owner = SpaceUserRecord(
+            user_id=str(uuid.uuid4()),
+            identity_kind="local_owner",
+            created_at=now,
+            updated_at=now,
+        )
+        connection.execute(
+            """
+            INSERT INTO space_users (
+                user_id, identity_kind, display_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                owner.user_id,
+                owner.identity_kind,
+                owner.display_name,
+                owner.created_at,
+                owner.updated_at,
+            ),
+        )
+
     @classmethod
     def _migrate_episode_stop_provenance(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(connection, "episodes", "stop_initiated_by", "TEXT")
@@ -2797,18 +2869,52 @@ class AppStoreBase:
         )
 
     def _baseline_storage_schema(self) -> tuple[tuple[str, str, str, str], ...]:
-        cached = self.__class__._baseline_storage_schema_cache
-        if cached is not None:
-            return cached
-        template = self.__class__.__new__(self.__class__)
-        template.path = Path(":memory:")
-        template._read_only_snapshot = False
-        template._immutable_read_only = False
-        captured: list[tuple[str, str, str, str]] = []
-        template._initialize(None, _schema_template=True, _schema_capture=captured)
-        result = tuple(captured)
-        self.__class__._baseline_storage_schema_cache = result
-        return result
+        with self._baseline_lock:
+            cached = self.__class__._baseline_storage_schema_cache
+            if cached is not None:
+                return cached
+            template = self.__class__.__new__(self.__class__)
+            template.path = Path(":memory:")
+            template._read_only_snapshot = False
+            template._immutable_read_only = False
+            captured: list[tuple[str, str, str, str]] = []
+            template._initialize(None, _schema_template=True, _schema_capture=captured)
+            result = tuple(captured)
+            self.__class__._baseline_storage_schema_cache = result
+            return result
+
+    def _new_database_schema(self) -> tuple[str, ...]:
+        with self._baseline_lock:
+            if not self.__class__._baseline_storage_sql:
+                # Normalization changes index creation order. Capture the real
+                # migration path after priming its schema-validation template.
+                self._baseline_storage_schema()
+                connection = sqlite3.connect(":memory:")
+                connection.row_factory = sqlite3.Row
+                try:
+                    connection.execute("PRAGMA legacy_alter_table = ON")
+                    connection.execute("BEGIN IMMEDIATE")
+                    self._run_storage_schema_migrations(
+                        connection,
+                        None,
+                        initial_space_id=None,
+                        initial_space_name=None,
+                        issue_bootstrap=False,
+                        require_new=False,
+                        schema_template=False,
+                        schema_capture=None,
+                        file_root=self.path.parent,
+                    )
+                    self.__class__._baseline_storage_sql = tuple(
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid"
+                        )
+                    )
+                finally:
+                    connection.close()
+            return self.__class__._baseline_storage_sql
 
     def _normalize_legacy_startup_schema(self, connection: sqlite3.Connection) -> None:
         """Converge every supported pre-ledger table shape on the baseline schema."""

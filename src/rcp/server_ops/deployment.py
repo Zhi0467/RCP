@@ -13,6 +13,7 @@ import os
 import sqlite3
 import stat
 import sys
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -581,10 +582,10 @@ def inspect(request: InspectRequest) -> dict[str, object]:
         ).fetchall()
     if not schema:
         return {"version": 1, "status": "uninitialized"}
-    store = AppStore.open_read_only_snapshot(database)
-    if store.space_kind != "team" or not store.space_name:
-        raise MaintenanceRefused("Existing database is not an initialized team.")
-    return {"version": 1, "status": "initialized_team", "space_id": store.space_id}
+    with closing(AppStore.open_read_only_snapshot(database)) as store:
+        if store.space_kind != "team" or not store.space_name:
+            raise MaintenanceRefused("Existing database is not an initialized team.")
+        return {"version": 1, "status": "initialized_team", "space_id": store.space_id}
 
 
 def _copy_offline_database(data: Path, database: Path) -> None:
@@ -602,7 +603,10 @@ def _copy_offline_database(data: Path, database: Path) -> None:
         wal = data / "rcp.sqlite3-wal"
         if wal.exists():
             shutil.copyfile(wal, detached.with_name("rcp.sqlite3-wal"))
-        with sqlite3.connect(detached) as origin, sqlite3.connect(database) as destination:
+        with (
+            closing(sqlite3.connect(detached)) as origin,
+            closing(sqlite3.connect(database)) as destination,
+        ):
             origin.backup(destination)
     database.chmod(0o600)
 
@@ -620,20 +624,20 @@ def offline_inventory(request: OfflinePrepareRequest) -> dict[str, object]:
     _new_output(output)
     database = output / "rcp.sqlite3"
     _copy_offline_database(data, database)
-    store = AppStore(database)
-    if store.space_kind != "team" or not store.space_name:
-        raise MaintenanceRefused("Offline snapshot is not an initialized team.")
-    roots = [{"live": str(data)}]
-    for record in sorted(store.projects(), key=lambda item: item.project_id):
-        project = inspect_snapshot_project_inventory(
-            store, record, data_dir=data, captured_at=datetime.now(UTC)
-        )
-        if project.status != "capturable" or project.recovery is None:
-            raise MaintenanceRefused("Inventory capture has an unresolved project.")
-        _, live = _project_restore_location(project)
-        if live is not None:
-            roots.append({"live": str(live)})
-    return {"version": 1, "roots": roots}
+    with closing(AppStore(database)) as store:
+        if store.space_kind != "team" or not store.space_name:
+            raise MaintenanceRefused("Offline snapshot is not an initialized team.")
+        roots = [{"live": str(data)}]
+        for record in sorted(store.projects(), key=lambda item: item.project_id):
+            project = inspect_snapshot_project_inventory(
+                store, record, data_dir=data, captured_at=datetime.now(UTC)
+            )
+            if project.status != "capturable" or project.recovery is None:
+                raise MaintenanceRefused("Inventory capture has an unresolved project.")
+            _, live = _project_restore_location(project)
+            if live is not None:
+                roots.append({"live": str(live)})
+        return {"version": 1, "roots": roots}
 
 
 def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
@@ -665,16 +669,17 @@ def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
         original = output / "original.sqlite3"
         shutil.copyfile(database, original)
         original.chmod(0o600)
-        store = AppStore(database)
-        if store.space_kind != "team" or not store.space_name:
-            raise MaintenanceRefused("Offline snapshot is not an initialized team.")
-        captured_at = datetime.now(UTC)
-        projects = tuple(
-            inspect_snapshot_project_inventory(
-                store, record, data_dir=data, captured_at=captured_at
+        with closing(AppStore(database)) as store:
+            if store.space_kind != "team" or not store.space_name:
+                raise MaintenanceRefused("Offline snapshot is not an initialized team.")
+            captured_at = datetime.now(UTC)
+            projects = tuple(
+                inspect_snapshot_project_inventory(
+                    store, record, data_dir=data, captured_at=captured_at
+                )
+                for record in sorted(store.projects(), key=lambda item: item.project_id)
             )
-            for record in sorted(store.projects(), key=lambda item: item.project_id)
-        )
+            space_id, space_name = store.space_id, store.space_name
         plan = inspect_app_data_capture_plan(data)
         imported = tuple(
             BackupImportedProviderSourceInventory.model_validate(
@@ -690,8 +695,8 @@ def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
             capture_id=capture_id,
             captured_at=captured_at,
             rcp_source_commit=request.source_commit,
-            space_id=store.space_id,
-            space_name=store.space_name,
+            space_id=space_id,
+            space_name=space_name,
             snapshot_path=str(database),
             database_schema_sha256=schema_digest,
             sqlite_snapshot=BackupFileEntry(

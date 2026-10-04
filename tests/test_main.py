@@ -244,7 +244,8 @@ def test_space_init_recovers_an_unclaimed_team_after_terminal_interruption(
 
 
 def test_serve_never_emits_the_team_bootstrap_credential(tmp_path, monkeypatch, capsys) -> None:
-    _store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    store.close()
 
     class FakeSocket:
         def fileno(self) -> int:

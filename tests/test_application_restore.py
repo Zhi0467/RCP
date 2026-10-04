@@ -68,6 +68,7 @@ def restore_request(captured, tmp_path):  # noqa: F811 - imported shared fixture
             "INSERT INTO digest_heads VALUES(?,?,?,?)", (project_id, "main", 1, "restored-head")
         )
     capture = BackupCaptureCoordinator(store, Path(request.data_dir), metadata).capture_sqlite()
+    store.close()
     request = request.model_copy(
         update={
             "sqlite_receipt_path": str(capture.receipt_path),
@@ -446,6 +447,7 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
     )
     manifest = _archive_manifest(value)
     inventory = tuple(store.artifact_inventory())
+    store.close()
     snapshot = manifest.sqlite_snapshot.model_copy(
         update={
             "sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
