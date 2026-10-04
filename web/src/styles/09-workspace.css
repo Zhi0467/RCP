@@ -769,6 +769,95 @@
   color: var(--cobalt);
 }
 
+/* "Since you last looked" */
+.digest-card {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  margin-bottom: 28px;
+  padding: 18px 22px 20px;
+}
+.digest-card-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+.digest-card h2 {
+  font-family: var(--editorial);
+  font-size: var(--type-2xl);
+  font-weight: 500;
+  margin: 0;
+}
+.digest-group {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+.digest-group h3 {
+  color: var(--muted);
+  font-size: var(--type-3xs);
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+.digest-group ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.digest-group li {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.digest-kind,
+.digest-count {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--type-2xs);
+}
+.digest-title {
+  color: var(--ink);
+  font-size: var(--type-base);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+a.digest-title:hover {
+  color: var(--cobalt);
+}
+.digest-report {
+  background: none;
+  border: 0;
+  color: var(--cobalt);
+  cursor: pointer;
+  font-size: var(--type-sm);
+  font-weight: 700;
+  padding: 0;
+}
+/* .dag-node is already absolutely positioned. */
+.research-node-card.digest-changed {
+  position: relative;
+}
+.research-node-card.digest-changed::after,
+.dag-node.digest-changed::after {
+  background: var(--cobalt);
+  border-radius: 50%;
+  content: "";
+  height: 8px;
+  pointer-events: none;
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 8px;
+}
+
 .attention-page {
   display: grid;
   gap: 25px;

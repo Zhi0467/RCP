@@ -384,6 +384,9 @@ export function ProjectLanding({
                   <span className="project-cover-meta">
                     {project.revision == null ? "Not opened" : `Revision ${project.revision}`}
                     {project.attention_count > 0 && <> · {project.attention_count} waiting</>}
+                    {project.digest_count > 0 && (
+                      <span className="project-cover-new"> · {project.digest_count} new</span>
+                    )}
                     {project.last_opened_at && <> · {formatReturn(project.last_opened_at)}</>}
                   </span>
                   <span className="project-cover-open" aria-hidden="true">

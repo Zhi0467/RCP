@@ -570,6 +570,9 @@
   text-transform: uppercase;
   z-index: 1;
 }
+.project-cover-new {
+  font-weight: 750;
+}
 .project-cover-open {
   font-size: var(--type-xs);
   font-weight: 700;

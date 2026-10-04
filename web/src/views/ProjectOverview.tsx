@@ -1,13 +1,29 @@
 import { ArrowUpRight } from "lucide-react";
+import type { ReactNode } from "react";
 import { currentExperimentGuidance } from "../experimentGuidance";
+import {
+  editCountLabel,
+  needsYouKindLabel,
+  projectDigestIsEmpty,
+  ranKindLabel,
+} from "../projectDigest";
 import type {
   AppView,
   GraphNode,
   GraphState,
+  ProjectDigest,
   ProjectSnapshot,
   Proposal,
   RevisionSummary,
 } from "../types";
+
+export interface DigestCardProps {
+  digest: ProjectDigest | null;
+  error: string | null;
+  catchingUp: boolean;
+  onCatchUp: () => void;
+  onOpenArtifact: (artifactId: string) => void;
+}
 
 interface Props {
   project: ProjectSnapshot;
@@ -16,6 +32,7 @@ interface Props {
   decisionsAwaitingChoice: GraphNode[];
   latestRevisionSummary?: RevisionSummary | null;
   onNavigate: (view: AppView) => void;
+  digest: DigestCardProps;
 }
 
 export function ProjectOverview({
@@ -25,6 +42,7 @@ export function ProjectOverview({
   decisionsAwaitingChoice,
   latestRevisionSummary,
   onNavigate,
+  digest,
 }: Props) {
   const nodes = Object.values(graph.nodes);
   const activeExperiments = nodes.filter(
@@ -120,6 +138,7 @@ export function ProjectOverview({
 
   return (
     <section className="overview-page">
+      <DigestCard {...digest} />
       <header className="overview-heading">
         <div className="overview-revision">
           <span>Project revision · {project.canonical_state.remote ? "remote" : "local"}</span>
@@ -140,5 +159,92 @@ export function ProjectOverview({
         ))}
       </div>
     </section>
+  );
+}
+
+/** "Since you last looked": hidden when empty; Caught up acknowledges what is on screen. */
+function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: DigestCardProps) {
+  if (!digest || projectDigestIsEmpty(digest)) return null;
+  return (
+    <section className="digest-card" aria-label="Since you last looked">
+      <header className="digest-card-header">
+        <h2>Since you last looked</h2>
+        <button
+          className="button compact secondary"
+          type="button"
+          disabled={catchingUp}
+          onClick={onCatchUp}
+        >
+          Caught up
+        </button>
+      </header>
+      {error && <p role="alert">{error}</p>}
+      {digest.needs_you.length > 0 && (
+        <DigestGroup title="Needs you">
+          {digest.needs_you.map((item) => (
+            <li key={`${item.kind}:${item.item_id}`}>
+              <span className="digest-kind">{needsYouKindLabel(item)}</span>
+              <DigestLink href={item.deep_link}>{item.title}</DigestLink>
+            </li>
+          ))}
+        </DigestGroup>
+      )}
+      {(digest.changed.length > 0 || digest.branches.length > 0) && (
+        <DigestGroup title="Changed on main">
+          {digest.changed.map((change) => (
+            <li key={change.source_key}>
+              <DigestLink href={change.deep_link}>{change.label}</DigestLink>
+              <span className="digest-count">{editCountLabel(change.edits)}</span>
+              {change.report_artifact_id && (
+                <button
+                  className="digest-report"
+                  type="button"
+                  onClick={() => onOpenArtifact(change.report_artifact_id!)}
+                >
+                  Report
+                </button>
+              )}
+            </li>
+          ))}
+          {digest.branches.map((branch) => (
+            <li key={`branch:${branch.episode_id}`}>
+              <DigestLink href={branch.deep_link}>{branch.title}</DigestLink>
+              <span className="digest-count">{editCountLabel(branch.edits)} on its branch</span>
+            </li>
+          ))}
+        </DigestGroup>
+      )}
+      {digest.ran.length > 0 && (
+        <DigestGroup title="Ran">
+          {digest.ran.map((item) => (
+            <li key={`${item.kind}:${item.item_id}`}>
+              <span className="digest-kind">{ranKindLabel(item)}</span>
+              <DigestLink href={item.deep_link}>{item.title}</DigestLink>
+              {item.status && <span className="digest-count">{item.status}</span>}
+            </li>
+          ))}
+        </DigestGroup>
+      )}
+    </section>
+  );
+}
+
+function DigestGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="digest-group">
+      <h3>{title}</h3>
+      <ul>{children}</ul>
+    </div>
+  );
+}
+
+/** A digest link is the notification link format, resolved by App on hashchange. */
+function DigestLink({ href, children }: { href: string | null; children: ReactNode }) {
+  return href ? (
+    <a className="digest-title" href={href}>
+      {children}
+    </a>
+  ) : (
+    <span className="digest-title">{children}</span>
   );
 }
