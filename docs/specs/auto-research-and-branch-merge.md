@@ -593,3 +593,12 @@ The API supports the bounded episode landing and cleanup above. That
 is current scope rather than a permanent exclusion; a version-control model for
 the graph is admitted in
 [the graph-branch scope decision](../decisions/2026-09-08-graph-branch-scope-is-reopened.md).
+
+### Browser preference in Auto-research
+
+The human's launch request sets `browser_requested` on the generic episode.
+The root request, human Continue, retries, actor wakes, and child Work and
+Experiment admission preserve that preference. Children inherit it from their
+parent episode; an agent's command payload cannot grant browser access.
+Each child uses its own stable stage across retries and wakes. The episode API
+shows the launch preference and each turn's durable browser status.
