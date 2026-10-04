@@ -34,6 +34,7 @@ from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
 from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
 from rcp.server_ops.deployment import (
+    UPDATE_SOURCE_FLOOR,
     ApplicationProof,
     PrepareRequest,
     ValidateRequest,
@@ -730,6 +731,7 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
     assert json.loads(completed.stdout) == {
         "version": 1,
         "maintenance_protocol": 10,
+        "update_source_floor": UPDATE_SOURCE_FLOOR,
         "commands": [
             "inventory",
             "prepare",

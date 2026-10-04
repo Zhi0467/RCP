@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import uuid
 from collections.abc import Callable
@@ -208,6 +209,51 @@ def _require_supervisor(release: VerifiedRelease) -> None:
         )
 
 
+def _application_version(version: object) -> tuple[int, ...] | None:
+    if not isinstance(version, str):
+        return None
+    public = version.split("+", 1)[0]
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", public) is None:
+        return None
+    return tuple(int(part) for part in public.split("."))
+
+
+def _check_update_source(previous: dict, capability: dict, emitter: EventEmitter) -> bool:
+    # Historical targets predate the optional floor capability.
+    if "update_source_floor" not in capability:
+        return True
+    floor = capability["update_source_floor"]
+    floor_version = _application_version(floor)
+    if floor_version is None:
+        raise SupervisorError("The target release declares an invalid update source floor.")
+    installed = _application_version(previous.get("version_string"))
+    if installed is not None and installed >= floor_version:
+        return True
+    if installed is None:
+        message = "The installed release has no comparable version; update compatibility cannot be verified."
+        instruction = (
+            "Repair the selected-release receipt or complete supervised source adoption "
+            "with sudo rcp server install before retrying the update."
+        )
+    else:
+        message = (
+            f"The installed release is older than the target's supported update floor v{floor}."
+        )
+        instruction = (
+            f'Set pin = "v{floor}" in [release] in /etc/rcp/server.toml, '
+            "run sudo rcp server update and confirm that release, then remove the pin "
+            "and run sudo rcp server update again."
+        )
+    emitter.emit(
+        "operator_action_needed",
+        message,
+        actions=[{"kind": "external", "instruction": instruction}],
+        fields=[{"name": "update_source_floor", "value": floor}],
+        resume_argv=["sudo", "rcp", "server", "update"],
+    )
+    return False
+
+
 @_serialized_preparation
 def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     recover(paths=paths)
@@ -245,6 +291,8 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
         return 3
     runtime.require_capability(previous)
     target = prepare_release(runtime, release)
+    if not _check_update_source(previous, runtime.application(target, "capabilities"), emitter):
+        return 3
     store = store_for(paths)
     coordinator = Coordinator(store, runtime)
     result = coordinator.deploy(previous, target)

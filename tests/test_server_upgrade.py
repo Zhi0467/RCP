@@ -21,6 +21,7 @@ import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
+from rcp.server_ops.deployment import UPDATE_SOURCE_FLOOR
 from rcp.storage import AppStore
 
 from . import server_upgrade_harness
@@ -44,11 +45,14 @@ def test_immutable_server_boundary_registry_is_complete() -> None:
 def test_release_catalog_is_complete_and_missing_sources_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tags = [f"v1.0.{index}" for index in range(125)]
+    assert server_upgrade_harness.update_source_floor() == UPDATE_SOURCE_FLOOR
+    tags = [f"v{UPDATE_SOURCE_FLOOR}", *[f"v1.0.{index}" for index in range(125)]]
     releases = [{"tagName": tag, "isDraft": False, "isPrerelease": False} for tag in tags] + [
         {"tagName": "v2.0.0", "isDraft": True, "isPrerelease": False},
         {"tagName": "v2.0.1", "isDraft": False, "isPrerelease": True},
         {"tagName": "build/1", "isDraft": False, "isPrerelease": False},
+        {"tagName": "v0.4.4", "isDraft": False, "isPrerelease": False},
+        {"tagName": "v1.0.0rc1", "isDraft": False, "isPrerelease": False},
     ]
 
     def release_list(argv: list[str], *, cwd: Path) -> str:
@@ -57,7 +61,7 @@ def test_release_catalog_is_complete_and_missing_sources_fail(
 
     monkeypatch.setattr(server_upgrade_harness, "_capture", release_list)
     assert published_release_tags() == tags
-    releases.clear()
+    releases.pop(0)  # Newer releases alone cannot satisfy the floor gate.
     with pytest.raises(ValueError):
         published_release_tags()
     with pytest.raises(subprocess.CalledProcessError):

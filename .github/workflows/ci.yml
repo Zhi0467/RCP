@@ -88,9 +88,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # Use the complete GitHub release catalog: tags alone also include builds
-      # and versions that were never promoted. Discovery failures fail the job.
-      - name: Fetch every published release tag
+      # Discover supported sources from the complete GitHub release catalog.
+      # The harness reads the application floor without importing RCP.
+      # Missing floor releases and discovery failures fail the job.
+      - name: Fetch supported published release tags
         run: |
           python -c 'from tests.server_upgrade_harness import published_release_tags; print("\n".join(published_release_tags()))' > "$RUNNER_TEMP/upgrade-release-tags"
           while IFS= read -r tag; do
@@ -125,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: catalog
-        name: Discover every published stable release
+        name: Discover supported published stable releases
         run: |
           python -c 'import json; from tests.server_upgrade_harness import published_release_tags; print("releases=" + json.dumps({"tag": published_release_tags()}))' >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v7
