@@ -10,10 +10,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
 from rcp.projects import fill_space_machines
 from tests.helpers import create_named_app
 from tests.test_project_membership import _create_project, _team_app
+
+
+@pytest.fixture(autouse=True)
+def browser_probe(monkeypatch):
+    monkeypatch.setattr(
+        "rcp.api.space_machines.readiness",
+        lambda **kwargs: BrowserReadiness(status="not_installed"),
+    )
 
 
 @pytest.fixture
@@ -260,3 +269,26 @@ def test_the_picker_locks_repository_state(app, manifest, tmp_path) -> None:
     entries = client.post(path, json={"path": str(elsewhere)}).json()["entries"]
     locked = {entry["name"]: entry["protected"] for entry in entries}
     assert locked == {"state": True, "ordinary": False}
+
+
+def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> None:
+    calls = []
+
+    def install(**kwargs):
+        calls.append(kwargs)
+        return BrowserReadiness(status="ready")
+
+    monkeypatch.setattr("rcp.api.space_machines.install_browser", install)
+    client = TestClient(app)
+    machine = _machine(client, "laptop")
+    assert machine["browser"]["status"] == "not_installed"
+    assert calls == []
+    response = client.post(f"/api/space/machines/{machine['machine_id']}/browser/install", json={})
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert len(calls) == 1
+    assert calls[0]["host"] == machine["host"]
+    assert calls[0]["os_account"] == machine["os_account"]
+    assert calls[0]["data_dir"] == tmp_path / "data"
+    assert client.post("/api/space/machines/absent/browser/install", json={}).status_code == 404
+    assert len(calls) == 1
