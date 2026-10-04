@@ -1,3 +1,4 @@
+import { BrowserToggle } from "./BrowserControls";
 import { CopyReferenceButton } from "./CopyReferenceButton";
 import { MAIN_GRAPH } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
@@ -79,7 +80,7 @@ interface Props {
   onStage: (changes: Record<string, DraftNodeValue>) => void;
   onApplyField?: (changes: Record<string, DraftNodeValue>, fieldKey: string) => void;
   onDecisionChoice?: (selectedOption: string) => void;
-  onRunExperiment?: (isolation: EpisodeIsolationChoice) => void;
+  onRunExperiment?: (isolation: EpisodeIsolationChoice, browserRequested: boolean) => void;
   /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
   inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
@@ -158,6 +159,8 @@ export function DetailDrawer({
   onOpenRelatedNode,
   onSelectNode,
 }: Props) {
+  const [browserRequested, setBrowserRequested] = useState(false);
+  useEffect(() => setBrowserRequested(false), [node.id]);
   const [editing, setEditing] = useState(behind);
   const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
   const [isolation, setIsolation] = useState<EpisodeIsolationChoice>({
@@ -617,7 +620,9 @@ export function DetailDrawer({
                         experimentRunBusy ||
                         !experimentControl.ready
                       }
-                      onClick={() => onRunExperiment(inheritedIsolation ?? isolation)}
+                      onClick={() =>
+                        onRunExperiment(inheritedIsolation ?? isolation, browserRequested)
+                      }
                     >
                       <FlaskConical size={14} />{" "}
                       {experimentRunBusy
@@ -651,6 +656,11 @@ export function DetailDrawer({
                       Code worktree
                     </label>
                   </div>
+                  <BrowserToggle
+                    checked={browserRequested}
+                    disabled={nodeMutationDisabled || experimentRunBusy}
+                    onChange={setBrowserRequested}
+                  />
                   {experimentControl.reasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
                       {experimentControl.reasons.map((reason) => (

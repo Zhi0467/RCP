@@ -157,6 +157,35 @@ graphs are centered vertically. Adding rows must not shrink the fitted columns.
 Fit preserves manual pins, and leaving and returning restores the zoom, scroll,
 and centering offsets.
 
+## Agent browser controls
+
+Discuss and Work chats have a **Browser** switch in the header area. New chats
+start with it off. Each chat loads and saves its own server preference. The
+switch waits for a successful load and keeps the server value after a failed
+save. Errors offer a check-again action. Paper coaching has no Browser switch.
+
+The consent paragraph is primary content at normal reading size. It states
+that the agent can use a headless browser on its execution machine, run
+agent-written browser code, and write outside the chat's folders. It also
+states that changes apply from the next turn and turning Browser off deletes
+that chat's logins and cookies. Experiment launch controls in node detail and
+Runs, and the Auto-research launch dialog, carry the same switch and consent.
+Continuations keep the episode's existing grant.
+
+Unavailable or lost browser access appears as a notice on the affected chat
+turn and in episode timeline turn details. The notice gives the reason, the
+server detail when present, and a machine-card fix when applicable. Unknown
+codes show a generic failure with the server detail. Unrequested and granted
+turns add no notice.
+
+Each saved machine card loads its Browser row independently after mounting;
+readiness never delays the rest of the card. The row shows status and diagnostic
+detail, offers **Install** when the browser is absent, and tells the human to
+install Node 18+ and npm first when either is missing or too old. Missing system
+libraries show a selectable command and **Copy command**. Install shows progress
+and disables repeat requests until it returns the new readiness. Failed checks
+and installs leave **Check again** available.
+
 ## Conversation composer
 
 Discuss and Work are switchable on every node and project conversation. Discuss

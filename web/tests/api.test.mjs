@@ -675,3 +675,46 @@ test("an unauthorized request signals the sign-in boundary", async () => {
     globalThis.window = originalWindow;
   }
 });
+
+test("browser clients encode owners and send strict preference and install bodies", async () => {
+  const {
+    loadChatBrowser,
+    setChatBrowser,
+    loadMachineBrowser,
+    installMachineBrowser,
+    startEpisode,
+  } = await import("../src/api.ts");
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push([path, init?.method ?? "GET", init?.body ? JSON.parse(init.body) : null]);
+    return new Response(JSON.stringify({ browser_requested: true }), { status: 200 });
+  };
+  try {
+    const base = "/api/projects/project%2F1";
+    assert.deepEqual(await loadChatBrowser(base, "chat/1"), { browser_requested: true });
+    await setChatBrowser(base, "chat/1", true);
+    await setChatBrowser(base, "chat/1", false);
+    await loadMachineBrowser("host/1");
+    await installMachineBrowser("host/1");
+    await startEpisode(base, {
+      mode: "auto_research",
+      invocation_ceiling: 2,
+      browser_requested: true,
+    });
+    assert.deepEqual(calls, [
+      [`${base}/chats/chat%2F1/browser`, "GET", null],
+      [`${base}/chats/chat%2F1/browser`, "PUT", { browser_requested: true }],
+      [`${base}/chats/chat%2F1/browser`, "PUT", { browser_requested: false }],
+      ["/api/space/machines/host%2F1/browser", "GET", null],
+      ["/api/space/machines/host%2F1/browser/install", "POST", {}],
+      [
+        `${base}/episodes`,
+        "POST",
+        { mode: "auto_research", invocation_ceiling: 2, browser_requested: true },
+      ],
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
