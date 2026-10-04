@@ -1,6 +1,19 @@
+import { useMachinePower } from "../hooks/useMachinePower";
+import { machinePowerWarnings } from "../machinePower";
 import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { loadProviderLogins } from "../api";
-import { LogOut, Mail, Ellipsis, Server, Settings, Trash2, WifiOff } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Ellipsis,
+  LogOut,
+  Mail,
+  Server,
+  Settings,
+  Trash2,
+  TriangleAlert,
+  WifiOff,
+} from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { SpaceRuns } from "../components/SpaceRuns";
 import type { AppearancePickerProps, TextScaleControl } from "../components/AppearancePicker";
@@ -12,6 +25,7 @@ import { isDesktopRuntime } from "../desktopRuntime";
 import type { ProjectTab } from "../projectTabs";
 import type { ResolvedTheme } from "../theme";
 import type {
+  MachinePowerStatus,
   ProviderLoginState,
   IdentityResponse,
   ProjectCard,
@@ -210,6 +224,7 @@ export function ProjectLanding({
   onColorModeChoiceChange,
   palette,
 }: Props) {
+  const machinePower = useMachinePower(identity?.space_kind);
   const [providerLogins, setProviderLogins] = useState<ProviderLoginState[]>([]);
   const [loginError, setLoginError] = useState<string | null>(null);
   useEffect(() => {
@@ -337,6 +352,8 @@ export function ProjectLanding({
       </header>
 
       <main className="landing-main">
+        <MachinePowerWarning status={machinePower.status} onOpenSettings={onOpenSpaceSettings} />
+        {machinePower.error && <p role="alert">{machinePower.error}</p>}
         <ProviderLoginNotice states={providerLogins} />
         {loginError && <p role="alert">{loginError}</p>}
         {identity?.space_kind === "personal" && (
@@ -541,4 +558,55 @@ function readCoverPreferences(): Record<string, CoverStyle> {
 
 function isCoverStyle(value: unknown): value is CoverStyle {
   return typeof value === "string" && (COVER_STYLES as readonly string[]).includes(value);
+}
+
+function MachinePowerWarning({
+  status,
+  onOpenSettings,
+}: {
+  status: MachinePowerStatus | null;
+  onOpenSettings?: () => void;
+}) {
+  const { latch, cleanup } = machinePowerWarnings(status);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState(false);
+  if (!latch && !cleanup) return null;
+  return (
+    <aside className="machine-power-warning" role="alert">
+      <TriangleAlert size={20} aria-hidden="true" />
+      {latch && (
+        <span>
+          Lid-closed mode is latched off after {latch.replaceAll("_", " ")}. Re-enable it in
+          Settings.
+        </span>
+      )}
+      {latch && onOpenSettings && (
+        <button className="button secondary compact" type="button" onClick={onOpenSettings}>
+          Settings
+        </button>
+      )}
+      {cleanup && (
+        <>
+          <span>Keep-awake cleanup failed: {cleanup.kind.replaceAll("_", " ")}.</span>
+          <code>{cleanup.command}</code>
+          <button
+            className="button secondary compact"
+            type="button"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(cleanup.command);
+                setCopied(cleanup.command);
+                setCopyError(false);
+              } catch {
+                setCopyError(true);
+              }
+            }}
+          >
+            {copied === cleanup.command ? <Check size={14} /> : <Copy size={14} />} Copy command
+          </button>
+          {copyError && <span>Could not copy command</span>}
+        </>
+      )}
+    </aside>
+  );
 }

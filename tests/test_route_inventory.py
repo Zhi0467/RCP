@@ -231,6 +231,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/terminals/probe"),
     (("GET",), "/api/machine-power"),
     (("PUT",), "/api/machine-power"),
+    (("POST",), "/api/machine-power/install"),
+    (("POST",), "/api/machine-power/uninstall"),
     (("POST",), "/api/notifications/devices/desktop"),
     (("GET",), "/api/notifications/devices/{device_id}/pending"),
     (("POST",), "/api/notifications/devices/{device_id}/items/{notification_id}"),

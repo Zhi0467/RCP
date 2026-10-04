@@ -522,6 +522,13 @@ STATE_TRANSFER_STDERR_BYTES = 4096
 # How often the keep-awake idle hold re-reads RCP's work.
 MACHINE_POWER_PASS_SECONDS = 10
 
+# Machine-local macOS keep-awake safety bounds; never user-configurable.
+MACHINE_POWER_HEARTBEAT_STALE_SECONDS = 60
+MACHINE_POWER_BATTERY_FLOOR = 20
+MACHINE_POWER_COMMAND_TIMEOUT_SECONDS = 5
+MACHINE_POWER_ADMIN_TIMEOUT_SECONDS = 120
+MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS = 1
+
 # Operational lessons are bounded context, independent of graph authority.
 LESSON_TEXT_MAX_CHARS = 600
 LESSONS_PER_PROJECT_MAX = 200
