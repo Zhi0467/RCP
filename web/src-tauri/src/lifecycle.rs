@@ -49,6 +49,7 @@ pub struct Health {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct DesktopStatus {
     pub desktop: bool,
+    pub owner_authenticated: bool,
     pub version: String,
     pub base_url: String,
     pub instance_id: String,
@@ -72,6 +73,7 @@ impl DesktopStatus {
         }
         Ok(Self {
             desktop: true,
+            owner_authenticated: false,
             version: health.version.clone(),
             base_url: outcome.base_url.clone(),
             instance_id: instance_id.to_string(),

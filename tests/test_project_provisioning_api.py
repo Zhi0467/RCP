@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
@@ -19,6 +17,7 @@ from rcp.storage import (
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningProviderCheckRecord,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -108,7 +107,7 @@ def _operator_action(request_id: str) -> ServerStep:
 
 def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_path) -> None:
     data_dir, (alice, bob), selected, app = _team_app(tmp_path, "Alice", "Bob")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         created_response = client.post("/api/project-provisioning/requests", json=_payload())
 
     assert created_response.status_code == 201
@@ -177,7 +176,7 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, opened: opened.space_user(selected[0]),
     )
-    with TestClient(restarted) as client:
+    with signed_in_client(restarted) as client:
         listed = client.get("/api/project-provisioning/requests")
         read = client.get(f"/api/project-provisioning/requests/{created['request_id']}")
         refused = client.post(
@@ -229,7 +228,7 @@ def test_ssh_machine_can_defer_its_default_root_to_exact_account_resolution(tmp_
         assert isinstance(provider, dict)
         provider["machine_alias"] = "gpu"
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post("/api/project-provisioning/requests", json=payload)
 
     assert response.status_code == 201
@@ -251,7 +250,7 @@ def test_invalid_repository_is_rejected_before_persistence(tmp_path, monkeypatch
         "create_project_provisioning_request",
         fail_if_called,
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             "/api/project-provisioning/requests",
             json=_payload(source="https://example.com/openai/rcp.git"),
@@ -282,7 +281,7 @@ def test_new_team_request_requires_all_profiles_on_their_valid_machines(tmp_path
     assert isinstance(misplaced_checks[0], dict)
     misplaced_checks[0]["machine_alias"] = "worker"
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         incomplete_response = client.post(
             "/api/project-provisioning/requests",
             json=incomplete,
@@ -301,7 +300,7 @@ def test_new_team_request_requires_all_profiles_on_their_valid_machines(tmp_path
 
 def test_project_provisioning_requires_a_named_authenticated_team_member(tmp_path) -> None:
     personal = create_named_app(data_dir=tmp_path / "personal")
-    with TestClient(personal) as client:
+    with signed_in_client(personal) as client:
         assert client.post("/api/project-provisioning/requests", json=_payload()).status_code == 404
 
     data_dir = tmp_path / "team-unnamed"
@@ -311,7 +310,7 @@ def test_project_provisioning_requires_a_named_authenticated_team_member(tmp_pat
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, opened: opened.space_user(unnamed.user_id),
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         unnamed_response = client.post("/api/project-provisioning/requests", json=_payload())
     assert unnamed_response.status_code == 428
     assert unnamed_response.json()["detail"]["code"] == "identity_name_required"
@@ -319,14 +318,14 @@ def test_project_provisioning_requires_a_named_authenticated_team_member(tmp_pat
     unauthenticated_dir = tmp_path / "team-unauthenticated"
     AppStore.initialize_team_space(unauthenticated_dir / "rcp.sqlite3", "Team Lab")
     unauthenticated = create_app(data_dir=unauthenticated_dir)
-    with TestClient(unauthenticated) as client:
+    with signed_in_client(unauthenticated) as client:
         response = client.post("/api/project-provisioning/requests", json=_payload())
     assert response.status_code == 401
 
 
 def test_started_and_operator_action_requests_publish_backend_controls(tmp_path) -> None:
     _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         created = client.post("/api/project-provisioning/requests", json=_payload()).json()
         store = app.state.background_tasks.store
         record = store.project_provisioning_request(created["request_id"])
@@ -390,7 +389,7 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
 
 def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> None:
     _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         created = client.post("/api/project-provisioning/requests", json=_payload()).json()
         store = app.state.background_tasks.store
         request = store.project_provisioning_request(created["request_id"])

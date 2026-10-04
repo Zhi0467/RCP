@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -54,6 +53,7 @@ from rcp.watchers import (
     graph_condition_result,
     ready_graph_watcher_groups,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, async_wait_until, wait_until
 from .helpers import create_named_app as create_app
@@ -715,7 +715,7 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
 
     app.state.background_tasks.stream = settle_wake
     blocker = service.history.state().nodes["blk/foo"]
-    client = TestClient(app)
+    client = signed_in_client(app)
     try:
         response = client.post(
             f"/api/projects/{project_id}/sync",
@@ -1716,7 +1716,7 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
         )
 
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
-    with TestClient(reopened) as client:
+    with signed_in_client(reopened) as client:
         assert client.get("/api/health").status_code == 200
         wait_until(
             lambda: deliveries if deliveries else None,
@@ -1790,7 +1790,7 @@ def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
 
     def serve():
-        with TestClient(reopened) as client:
+        with signed_in_client(reopened) as client:
             health = client.get("/api/health")
             serving.set()
             assert release.wait(10), "test did not finish checking startup"

@@ -403,7 +403,7 @@ def test_replace_existing_server_requests_shutdown_then_runs_under_lock(
     monkeypatch.setattr("rcp.__main__.instance_lock", fake_lock)
     monkeypatch.setattr(
         "rcp.__main__._serve_as_owner",
-        lambda args, data_dir: calls.append((args.command, data_dir)),
+        lambda args, data_dir, **_kwargs: calls.append((args.command, data_dir)),
     )
 
     args = _serve_args(force=True, reuse_existing=False)
@@ -522,7 +522,11 @@ def test_owner_publishes_metadata_after_lock_and_reports_owned(
     with instance_lock(tmp_path):
         _serve_as_owner(_serve_args(), tmp_path)
 
-    output = json.loads(capsys.readouterr().out)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2
+    code = lines[0].split("#owner-code=", 1)[1]
+    assert AppStore(tmp_path / "rcp.sqlite3").redeem_owner_sign_in_code(code)
+    output = json.loads(lines[1])
     assert output["outcome"] == "owned"
     assert output["owned"] is True
     assert output["version"] == __version__
@@ -651,7 +655,19 @@ def test_takeover_warning_names_desktop_owned_active_work(tmp_path, monkeypatch)
     assert _replacement_warning(tmp_path) is not None
 
 
-def test_open_existing_server_registers_project_and_opens_its_route(monkeypatch) -> None:
+def test_takeover_requires_confirmation_when_activity_is_unknown(tmp_path, monkeypatch):
+    metadata = _metadata(tmp_path)
+    monkeypatch.setattr("rcp.__main__._lock_owner_pid", lambda _: metadata.pid)
+    monkeypatch.setattr("rcp.__main__._probe_owner", lambda _: (metadata, {}))
+    monkeypatch.setattr("rcp.__main__._confirm_replacement", lambda _: False)
+    monkeypatch.setattr(
+        "rcp.__main__.os.kill", lambda *_: pytest.fail("unconfirmed takeover stopped the owner")
+    )
+    with pytest.raises(SystemExit):
+        _replace_existing_server(_serve_args(force=False), tmp_path)
+
+
+def test_open_existing_server_opens_locator_intent_without_registering(monkeypatch) -> None:
     requests = []
     responses = iter(
         [
@@ -676,12 +692,8 @@ def test_open_existing_server_registers_project_and_opens_its_route(monkeypatch)
 
     _open_existing_server("127.0.0.1", 8421, "/research/project")
 
-    assert [request.get_method() for request, _ in requests] == ["GET", "POST"]
-    assert json.loads(requests[1][0].data) == {"locator": "/research/project"}
-    assert dict(requests[1][0].header_items())["X-rcp-instance-id"] == (
-        "b78a82d8-b6f8-4d52-9f71-c15ed3f1dfe1"
-    )
-    assert opened == ["http://127.0.0.1:8421/#/projects/paper%2Fwith%20spaces"]
+    assert [request.get_method() for request, _ in requests] == ["GET"]
+    assert opened == ["http://127.0.0.1:8421/?project-locator=%2Fresearch%2Fproject"]
 
 
 def test_open_existing_server_marks_an_unhealthy_lock_owner_unavailable(monkeypatch) -> None:

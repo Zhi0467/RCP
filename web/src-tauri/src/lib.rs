@@ -7,6 +7,7 @@ mod lifecycle;
 mod local_https;
 mod navigation;
 mod notifications;
+mod owner_session;
 mod pdf_preview;
 mod project_transfer;
 mod server_commands;
@@ -71,6 +72,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::desktop_status,
+            commands::desktop_owner_sign_in,
             commands::desktop_reconnect_backend,
             commands::desktop_show_ready,
             commands::desktop_build_identity,
@@ -209,8 +211,8 @@ fn start_backend(app: tauri::AppHandle) {
                     return;
                 }
                 eprintln!(
-                    "[rcp] backend ready at {} (owned={})",
-                    status.base_url, status.owned
+                    "[rcp] backend connected at {} (owned={}, authenticated={})",
+                    status.base_url, status.owned, status.owner_authenticated
                 );
                 finish_startup(&app, status)
             }

@@ -14,6 +14,7 @@ from rcp.runs.questions import record_work_question_receipts, work_command_handl
 from rcp.runs.tasks.work import _work_execution_instructions
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
+from tests.helpers import signed_in_client
 
 from .test_ask_protocol import ask_request
 
@@ -164,8 +165,6 @@ def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
 ):
     import json
 
-    from fastapi.testclient import TestClient
-
     from rcp.runs.tasks.work import stream_work_run
     from rcp.storage.question_models import QuestionOrigin
     from tests.helpers import (
@@ -191,7 +190,7 @@ def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
             yield frame
 
     tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={

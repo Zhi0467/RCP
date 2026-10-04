@@ -12,6 +12,7 @@ from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
 from rcp.watchers import WatchSpec, run_watcher_check
+from tests.helpers import signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -334,7 +335,7 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
         data_dir=tmp_path / "acceptance-data",
         acceptance_agent=True,
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert project_id is not None
     service = app.state.service
@@ -392,7 +393,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     _double_fixture_jobs(monkeypatch, finished=False)
     data_dir = tmp_path / "acceptance-data"
     app = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert project_id is not None
     service = app.state.service
@@ -401,7 +402,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     chat_id = str(uuid.uuid4())
 
     try:
-        health = client.get("/api/health")
+        health = client.get("/api/health/details")
         assert health.status_code == 200, health.text
         assert health.json()["agent_mode"] == "acceptance"
         assert app.state.agent_mode == "acceptance"
@@ -451,7 +452,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     _poll_after_due(reopened, armed)
     poll_passes = _count_poll_passes(reopened)
     reopened_store = reopened.state.background_tasks.store
-    with TestClient(reopened) as reopened_client:
+    with signed_in_client(reopened) as reopened_client:
         persisted = reopened_store.watchers(project_id, chat_id=chat_id)
         assert [_watcher_spec(record) for record in persisted] == [
             _watcher_spec(record) for record in armed
@@ -491,7 +492,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
 ) -> None:
     data_dir = tmp_path / "acceptance-data"
     app = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert project_id is not None
     service = app.state.service
@@ -542,7 +543,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
     _poll_after_due(reopened, armed)
     poll_passes = _count_poll_passes(reopened)
     reopened_store = reopened.state.background_tasks.store
-    with TestClient(reopened) as reopened_client:
+    with signed_in_client(reopened) as reopened_client:
         persisted = reopened_store.watchers(project_id, chat_id=chat_id)
         assert len(persisted) == 2
         before_ceiling_ids = {task.operation_id for task in reopened_store.agent_tasks(project_id)}

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi.testclient import TestClient
-
 from rcp.storage import AppStore, EpisodeRecord, EpisodeReportRecord
+from tests.helpers import signed_in_client
 
 from .helpers import authorized_human, create_named_app
 
@@ -103,7 +102,7 @@ def test_history_episode_decoration_keeps_missing_and_cross_project_ids(
     monkeypatch.setattr(store, "episode", episode_lookup)
     monkeypatch.setattr(store, "episode_report", unexpected_report_lookup)
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/history/summaries")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/history/summaries")
 
     assert response.status_code == 200
     assert events[0] == "projection"
@@ -179,7 +178,7 @@ def test_history_episode_decoration_maps_lifecycle_and_singular_report(
         lambda episode_id: report if episode_id == "exhausted" else None,
     )
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/history/summaries")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/history/summaries")
 
     assert response.status_code == 200
     decorated = {item["episode_id"]: item["episode"] for item in response.json()}

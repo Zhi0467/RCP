@@ -116,6 +116,14 @@ export async function api<T>(
     throw error;
   }
   if (!response.ok) {
+    if (
+      typeof window !== "undefined" &&
+      response.status === 401 &&
+      path !== "/api/owner/exchange" &&
+      path !== "/api/owner/redeem"
+    ) {
+      window.dispatchEvent(new Event("rcp:session-required"));
+    }
     if (!mutation && (response.status === 401 || response.status === 403)) accessLossHandler?.();
     const body = await readErrorBody(response);
     if (

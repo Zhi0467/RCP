@@ -32,6 +32,7 @@ from rcp.storage import (
     TeamAuthenticationError,
     normalize_space_access_url,
 )
+from tests.helpers import signed_in_client
 
 
 def _claimed_team(tmp_path):
@@ -685,7 +686,7 @@ def test_team_authentication_middleware_keeps_only_bootstrap_boundaries_public(t
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["space_name"] == "Team Lab"
+    assert "space_name" not in health.json()
     assert client.get("/").status_code == 200
     assert client.get("/openapi.json").status_code == 200
     assert (
@@ -1293,7 +1294,7 @@ def test_trusted_principal_resolver_remains_a_supported_team_authentication_path
 
 def test_personal_space_keeps_its_local_owner_without_team_authentication(tmp_path) -> None:
     app = create_app(data_dir=tmp_path)
-    client = TestClient(app)
+    client = signed_in_client(app)
     owner = app.state.background_tasks.store.local_owner
     assert owner is not None
 

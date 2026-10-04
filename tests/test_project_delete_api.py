@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from fastapi.testclient import TestClient
 
 from rcp.api.dependencies import get_project_service
 from rcp.api.team_shell_protocol import TEAM_SHELL_PROTOCOL_HEADER
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AgentTaskRecord
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app as create_app
 
@@ -34,7 +34,7 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     assert card["can_delete"] is True
     assert card["delete_unavailable_reason"] is None
     [v1_card] = (
-        TestClient(app).get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
+        signed_in_client(app).get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
     )
     assert v1_card == card | {"digest_count": 0}
     now = app.state.background_tasks.store.now()
@@ -51,7 +51,7 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
         )
     )
 
-    response = TestClient(app).delete(f"/api/projects/{project_id}")
+    response = signed_in_client(app).delete(f"/api/projects/{project_id}")
 
     assert response.status_code == 409
     assert "Pause the active agent task" in response.json()["detail"]
@@ -69,7 +69,7 @@ def test_delete_project_validation_status_does_not_depend_on_exception_wording(
 
     monkeypatch.setattr(app.state.catalog, "delete", reject_validation)
 
-    response = TestClient(app).delete(f"/api/projects/{project_id}")
+    response = signed_in_client(app).delete(f"/api/projects/{project_id}")
 
     assert response.status_code == 422
 
@@ -82,7 +82,7 @@ def test_register_project_route_reports_deletion_conflict(manifest, tmp_path, mo
 
     monkeypatch.setattr(app.state.catalog, "register", reject_registration)
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         "/api/projects",
         json={"locator": str(manifest.path)},
     )
@@ -98,7 +98,7 @@ def test_delete_project_route_disappears_after_restart_without_touching_reposito
     app = create_app(str(manifest.path), data_dir=data_dir)
     project_id = app.state.default_project_id
     repository = Path(manifest.repository_map[manifest.state.repository].path)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     before = _tree_digest(repository)
 
@@ -132,7 +132,7 @@ def test_delete_project_route_disappears_after_restart_without_touching_reposito
     assert not stage.exists()
     assert _tree_digest(repository) == before
 
-    restarted = TestClient(create_app(data_dir=data_dir))
+    restarted = signed_in_client(create_app(data_dir=data_dir))
     assert all(card["id"] != project_id for card in restarted.get("/api/projects").json())
     assert restarted.get(f"/api/projects/{project_id}").status_code == 404
 
@@ -140,7 +140,7 @@ def test_delete_project_route_disappears_after_restart_without_touching_reposito
 def test_completed_deletion_refuses_cached_paper_writer(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.post(f"/api/projects/{project_id}/paper/create", json={}).status_code == 200
 
     deleted = client.delete(f"/api/projects/{project_id}")
@@ -169,7 +169,7 @@ def test_completed_deletion_refuses_cached_paper_writer(manifest, tmp_path) -> N
 def test_delete_waits_for_project_write_admission_lock(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    client = TestClient(app)
+    client = signed_in_client(app)
     waiting = threading.Event()
 
     class ObservedLock:

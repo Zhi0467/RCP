@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution
@@ -14,6 +13,7 @@ from rcp.runs.chat import (
     artifact_omissions,
 )
 from rcp.storage import AgentTaskRecord
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -160,7 +160,7 @@ def test_omission_only_turn_is_projected_without_cards(app, tmp_path):
     directory.mkdir()
     (directory / "empty").touch()
     assert _discover_chat_artifacts(execution, execution.operation_id, directory, None) == []
-    response = TestClient(app).get(
+    response = signed_in_client(app).get(
         f"/api/projects/{app.state.default_project_id}/tasks/{execution.operation_id}"
     )
     assert response.status_code == 200

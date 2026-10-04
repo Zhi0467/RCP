@@ -4,12 +4,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.api import service_connections as routes
 from rcp.service_connections import ConnectionError, ServiceConnections, VoiceSettings
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from .test_server_member_removal import _team
 from .test_service_connections import KEY, MIME, connection
@@ -94,7 +94,7 @@ def test_team_audio_allowlist_retains_origin_and_member_isolation(tmp_path, monk
 
     monkeypatch.setattr(routes, "transcribe", transcribe)
     app = create_app(data_dir=tmp_path)
-    with TestClient(app, base_url="https://team.test") as client:
+    with signed_in_client(app, base_url="https://team.test") as client:
         assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
         path = f"/api/service-connections/{item['id']}/transcribe"
         headers = {"content-type": MIME, "origin": "https://team.test"}

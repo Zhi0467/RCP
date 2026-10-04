@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi.testclient import TestClient
-
 from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
 from rcp.api.app import _auto_research_worker_request
@@ -12,6 +10,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_for_task
 from .test_episode_api import settling_auto_research_stream
@@ -61,7 +60,7 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
     stage.mkdir()
     app.state.background_tasks.stream = settling_auto_research_stream(stage)
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/episodes",
             json={
@@ -136,7 +135,7 @@ def test_episode_profile_resolution_failure_is_pre_mutation(
         raise ValueError("orchestrator profile is not launchable")
 
     monkeypatch.setattr(service, "resolve_agent_profile", reject_profile)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/episodes",
             json={"mode": "auto_research", "invocation_ceiling": 5},
@@ -172,7 +171,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         yield f"data: {AgentEvent(event='error', text='Host unreachable.').model_dump_json()}\n\n"
 
     tasks.stream = failing_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 3},

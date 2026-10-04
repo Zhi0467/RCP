@@ -19,6 +19,7 @@ import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TextIO
 
 import uvicorn
 from fastapi import FastAPI
@@ -127,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
             help="Replace an existing server without asking about active work",
         )
         if name == "serve":
+            command.add_argument(
+                "--owner-secret-stdin", action="store_true", help=argparse.SUPPRESS
+            )
             command.add_argument("--maintenance-id", help=argparse.SUPPRESS)
             command.add_argument("--maintenance-boundary", help=argparse.SUPPRESS)
             command.add_argument(
@@ -258,8 +262,8 @@ def main() -> None:
         return
 
     try:
-        with instance_lock(data_dir):
-            _serve_as_owner(args, data_dir)
+        with instance_lock(data_dir) as ownership:
+            _serve_as_owner(args, data_dir, ownership=ownership)
     except InstanceLockHeld:
         if args.command == "open":
             try:
@@ -307,8 +311,8 @@ def _run_space_command(args: argparse.Namespace, data_dir: Path) -> None:
 
 def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
     try:
-        with instance_lock(data_dir):
-            _serve_as_owner(args, data_dir)
+        with instance_lock(data_dir) as ownership:
+            _serve_as_owner(args, data_dir, ownership=ownership)
             return
     except InstanceLockHeld:
         pass
@@ -351,11 +355,7 @@ def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
                 metadata=metadata,
             )
         if args.project:
-            _register_project(
-                metadata.base_url,
-                args.project,
-                expected_instance_id=metadata.instance_id,
-            )
+            webbrowser.open(_project_locator_url(metadata.host, metadata.port, args.project))
     except LaunchRefused as refusal:
         _exit_refused(args, refusal)
     except ExistingServerUnavailable as exc:
@@ -396,7 +396,9 @@ def _require_team_bind_is_loopback(args: argparse.Namespace, data_dir: Path) -> 
         )
 
 
-def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
+def _serve_as_owner(
+    args: argparse.Namespace, data_dir: Path, *, ownership: TextIO | None = None
+) -> None:
     _require_team_bind_is_loopback(args, data_dir)
     with source_checkout_lock():
         control_socket = installed_control_socket_path(data_dir)
@@ -417,6 +419,18 @@ def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
                 _reserved_server_socket(args.host, args.port) as server_socket,
                 published_server_metadata(data_dir, metadata),
             ):
+                store = AppStore(data_dir / "rcp.sqlite3")
+                if store.space_kind == "personal":
+                    if getattr(args, "owner_secret_stdin", False):
+                        secret = sys.stdin.readline(66).rstrip("\r\n")
+                        if not secret or len(secret) > 64:
+                            raise SystemExit("Invalid owner secret on stdin.")
+                        store.enroll_owner_secret(secret, ownership=ownership)
+                    code = store.create_owner_sign_in_code()
+                    print(
+                        f"RCP sign-in: {_base_url(args.host, args.port)}/#owner-code={code}",
+                        flush=True,
+                    )
                 _run_server(
                     args,
                     metadata,
@@ -564,8 +578,8 @@ def _replace_existing_server(args: argparse.Namespace, data_dir: Path) -> None:
         raise SystemExit(f"Cannot stop the existing RCP server (PID {pid}): {exc}") from exc
 
     try:
-        with instance_lock(data_dir, timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS):
-            _serve_as_owner(args, data_dir)
+        with instance_lock(data_dir, timeout=SERVER_SHUTDOWN_TIMEOUT_SECONDS) as ownership:
+            _serve_as_owner(args, data_dir, ownership=ownership)
     except InstanceLockHeld as exc:
         raise SystemExit(
             "The existing RCP server did not stop after a graceful shutdown request."
@@ -580,11 +594,13 @@ def _replacement_warning(data_dir: Path) -> str | None:
             "The current RCP owner could not be verified and may still be doing work: "
             f"{exc}. Replace it?"
         )
-    raw_active = health.get("active_agent_tasks", 0)
-    active = raw_active if isinstance(raw_active, int) and not isinstance(raw_active, bool) else 0
-    if active <= 0:
-        return None
+    raw_active = health.get("active_agent_tasks")
     label = "RCP.app" if metadata.owner_kind == "desktop" else "RCP"
+    if not isinstance(raw_active, int) or isinstance(raw_active, bool) or raw_active < 0:
+        return f"{label} may still be doing work; its activity is private. Replace it?"
+    active = raw_active
+    if active == 0:
+        return None
     noun = "task" if active == 1 else "tasks"
     return f"{label} is running {active} agent {noun}. Replace it?"
 
@@ -678,38 +694,16 @@ def _open_existing_server(
     current_instance_id = health.get("instance_id")
     if not isinstance(current_instance_id, str) or not current_instance_id:
         raise ExistingServerUnavailable("the server health omitted its instance identity")
-    project_id = (
-        _register_project(
-            base_url,
-            project,
-            expected_instance_id=current_instance_id,
-        )
-        if project
-        else None
-    )
-    webbrowser.open(_project_url(host, port, project_id))
+    webbrowser.open(_project_locator_url(host, port, project))
 
 
-def _register_project(
-    base_url: str,
-    project: str,
-    *,
-    expected_instance_id: str,
-) -> str:
-    try:
-        card = _request_json(
-            f"{base_url}/api/projects",
-            payload={"locator": project},
-            headers={"X-RCP-Instance-ID": expected_instance_id},
-        )
-    except ExistingServerError as exc:
-        raise ExistingServerError(
-            f"The existing RCP server could not register {project!r}: {exc}"
-        ) from exc
-    raw_project_id = card.get("id")
-    if not isinstance(raw_project_id, str) or not raw_project_id:
-        raise ExistingServerError("The existing RCP server returned an invalid project record.")
-    return raw_project_id
+def _project_locator_url(host: str, port: int, project: str | None) -> str:
+    url = _base_url(host, port)
+    if project:
+        # Relative locators belong to the CLI's cwd, not the server's cwd.
+        locator = str(Path(project).expanduser().resolve()) if ":" not in project else project
+        url += "/?" + urllib.parse.urlencode({"project-locator": locator})
+    return url
 
 
 def _project_url(host: str, port: int, project_id: str | None) -> str:
@@ -838,7 +832,7 @@ def instance_lock(
     *,
     timeout: float = SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS,
     expected_owner: tuple[int, int] | None = None,
-) -> Iterator[None]:
+) -> Iterator[TextIO]:
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / "rcp.lock"
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
@@ -868,7 +862,7 @@ def instance_lock(
         handle.write(f"{os.getpid()}\n")
         handle.flush()
         try:
-            yield
+            yield handle
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 

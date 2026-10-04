@@ -90,6 +90,12 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
         wait_until(lambda: server.started)
         url = f"http://127.0.0.1:{port}"
         with httpx.Client(base_url=url) as client:
+            assert (
+                client.post(
+                    "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                ).status_code
+                == 200
+            )
             response = client.post("/api/providers/codex/logins/sign-in", json={"host": ""})
             assert response.status_code == 200, response.text
             login_id = response.json()["login_id"]
@@ -106,6 +112,12 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
         restarted.resume_account = services.provider_sign_ins.resume_account
         restarted.reconcile_recovery()
         with httpx.Client(base_url=url) as client:
+            assert (
+                client.post(
+                    "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                ).status_code
+                == 200
+            )
             status = client.get(f"/api/providers/codex/logins/sign-in/{login_id}")
             assert status.status_code == 200 and status.json()["state"] == "succeeded"
             assert "checked" in status.json()["resumed"]

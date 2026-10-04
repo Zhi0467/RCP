@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.server_ops.application_validation as rehearsal_module
 from rcp.__main__ import instance_lock
@@ -39,6 +38,7 @@ from rcp.storage import (
     AppStore,
     ProjectRecord,
 )
+from tests.helpers import signed_in_client
 
 BASE_COMMIT = "a" * 40
 CANDIDATE_COMMIT = "b" * 40
@@ -290,7 +290,7 @@ def test_fenced_startup_only_plans_recovery_and_rejects_effect_entrypoints(
         startup_effect_fence=fence,
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.get("/api/health")
         assert response.status_code == 200
         assert not app.state.notification_sender.is_running()
@@ -324,7 +324,7 @@ def test_releasing_the_same_startup_fence_starts_the_deferred_runtime(tmp_path: 
         startup_effect_fence=fence,
     )
 
-    with TestClient(app):
+    with signed_in_client(app):
         assert not app.state.startup_effect_runtime_started
         assert not app.state.notification_sender.is_running()
         fence.release()

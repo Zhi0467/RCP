@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
 from rcp.api.episode_branches import ensure_episode_graph_target
@@ -14,6 +13,7 @@ from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import reserve_auto_research
 from rcp.runs.episodes.isolation import ensure_episode_isolation
 from rcp.service import RunRequest
+from tests.helpers import signed_in_client
 
 from .helpers import (
     agent_patch_json,
@@ -39,7 +39,7 @@ def _app_branch(manifest, tmp_path, *, include_experiment=False, owner_mode="aut
         with patch.object(
             app.state.background_tasks, "_spawn_record", side_effect=lambda record, *a, **kw: record
         ):
-            response = TestClient(app).post(
+            response = signed_in_client(app).post(
                 f"/api/projects/{app.state.default_project_id}/experiments/exp%2Fbounded-loop/run",
                 json={"chat_id": str(uuid.uuid4()), "graph_isolation": True},
             )
@@ -82,7 +82,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     manifest, tmp_path, monkeypatch, kind, owner_mode
 ):
     app, main, episode, root = _app_branch(manifest, tmp_path, owner_mode=owner_mode)
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.catalog.store
     project_id = app.state.default_project_id
     branch_id = episode.episode_id
@@ -187,7 +187,7 @@ def test_branch_merge_admits_fresh_discuss_without_graph_authority(
     manifest, tmp_path, monkeypatch, kind
 ):
     app, main, episode, root = _app_branch(manifest, tmp_path)
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.catalog.store
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.mark_episode_stop_skipped(episode.episode_id)
@@ -233,7 +233,7 @@ def test_branch_merge_admits_fresh_discuss_without_graph_authority(
 
 def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(manifest, tmp_path):
     app, _main, episode, _root = _app_branch(manifest, tmp_path)
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{app.state.default_project_id}"
     payload = {"chat_id": str(uuid.uuid4()), "message": "Explain this graph."}
     assert (
@@ -260,7 +260,7 @@ def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(m
 def test_branch_chat_recovery_uses_original_graph_target(manifest, tmp_path, monkeypatch, action):
     app, main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     launched_targets: list[dict] = []
     native_session = str(uuid.uuid4())
@@ -305,7 +305,7 @@ def test_branch_chat_recovery_uses_original_graph_target(manifest, tmp_path, mon
 def test_branch_chat_patch_repair_does_not_apply_to_main(manifest, tmp_path, monkeypatch):
     app, main, episode, _root = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
     launcher = ScriptedLauncher(
@@ -343,7 +343,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         manifest, tmp_path, include_experiment=True, owner_mode=owner_mode
     )
     store = app.state.catalog.store
-    client = TestClient(app)
+    client = signed_in_client(app)
     base = f"/api/projects/{branch_episode.project_id}"
     sessions: list[str | None] = []
     native_session = str(uuid.uuid4())
@@ -426,7 +426,7 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
         patch("rcp.api.experiments.ensure_episode_graph_target", lambda *a, **kw: None),
         patch.object(tasks, "_spawn_record", side_effect=lambda record, *a, **kw: record),
     ):
-        response = TestClient(app).post(
+        response = signed_in_client(app).post(
             f"/api/projects/{app.state.default_project_id}/experiments/exp%2Fbounded-loop/run",
             json={"chat_id": str(uuid.uuid4()), "graph_isolation": True},
         )

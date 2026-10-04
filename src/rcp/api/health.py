@@ -51,7 +51,7 @@ def _health_store_snapshot(
     )
 
 
-@router.get("/api/health")
+@router.get("/api/health/details")
 async def health(
     *,
     catalog: CatalogDependency,
@@ -90,6 +90,27 @@ async def health(
     if composition.default_project_name is not None:
         payload["project"] = composition.default_project_name
     return payload
+
+
+@router.get("/api/health")
+async def public_health(composition: HealthCompositionDependency) -> dict[str, object]:
+    identity = build_identity()
+    return {
+        "status": "ok",
+        "agent_mode": composition.agent_mode,
+        "version": __version__,
+        "build": identity.build,
+        "commit": identity.commit,
+        "space_id": composition.space_id,
+        "space_kind": composition.space_kind,
+        "instance_id": composition.instance_metadata.instance_id,
+        "pid": composition.instance_metadata.pid,
+        "data_dir_id": composition.instance_metadata.data_dir_id,
+        "owner_kind": composition.instance_metadata.owner_kind,
+        "running_commit": composition.instance_metadata.running_commit,
+        "web_build_id": composition.instance_metadata.web_build_id,
+        "team_shell_protocol": team_shell_protocol_range(),
+    }
 
 
 __all__ = ["health", "router"]

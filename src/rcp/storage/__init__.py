@@ -31,6 +31,7 @@ from rcp.storage.lessons import LessonStoreMixin
 from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
 from rcp.storage.notifications import NotificationStoreMixin
+from rcp.storage.owner_auth import OwnerAuthStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
@@ -50,6 +51,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    OwnerAuthStoreMixin,
     DigestStoreMixin,
     ConsolidationStoreMixin,
     LessonStoreMixin,

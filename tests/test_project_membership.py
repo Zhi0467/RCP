@@ -24,6 +24,7 @@ from rcp.projects import ProjectCatalog
 from rcp.setup import ProjectSetupRequest
 from rcp.sources import project_cache_roots
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from .helpers import seed_patch
 from .storage_helpers import downgrade_artifacts
@@ -63,7 +64,7 @@ def _team_app(tmp_path: Path, *, members: int = 2):
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, opened: opened.space_user(acting[0]),
     )
-    return app, TestClient(app), store, people, acting
+    return app, signed_in_client(app), store, people, acting
 
 
 def _create_project(
@@ -225,7 +226,7 @@ def test_internal_registration_can_seat_an_unnamed_member(manifest, tmp_path) ->
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, opened: opened.space_user(unnamed.user_id),
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     project_id = _create_project(client, tmp_path / "repo", seat_member=unnamed.user_id)
     assert store.is_project_member(project_id, unnamed.user_id)
@@ -233,7 +234,7 @@ def test_internal_registration_can_seat_an_unnamed_member(manifest, tmp_path) ->
 
 def test_a_personal_space_project_has_exactly_one_member(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
 
@@ -500,7 +501,7 @@ def test_replay_succeeds_with_no_membership_records_present(manifest, tmp_path) 
 
 def test_deleting_a_personal_project_takes_its_membership_with_it(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     assert store.project_members(project_id)
@@ -521,7 +522,7 @@ def test_a_team_project_is_never_left_with_no_members(
 
     if enrol_before_registration:
         app = create_app(data_dir=data_dir)
-        client = TestClient(app, base_url="https://team.test")
+        client = signed_in_client(app, base_url="https://team.test")
         token = client.post(
             "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
         ).json()["token"]
@@ -534,7 +535,7 @@ def test_a_team_project_is_never_left_with_no_members(
     else:
         # The server opens the project before anybody has enrolled.
         app = create_app(str(manifest.path), data_dir=data_dir)
-        client = TestClient(app, base_url="https://team.test")
+        client = signed_in_client(app, base_url="https://team.test")
         project_id = app.state.default_project_id
         assert store.project_members(project_id) == []
         token = client.post(

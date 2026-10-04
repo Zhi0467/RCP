@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import uuid
 
-from fastapi.testclient import TestClient
-
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_protocol import SpawnArguments
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -33,6 +31,7 @@ from rcp.storage import (
     EpisodeRecord,
     ProjectRecord,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, fabricated_authorizer, wait_for_task
 
@@ -656,7 +655,7 @@ def test_app_startup_reconciles_the_crash_window(manifest, tmp_path) -> None:
     project_id = first_app.state.default_project_id
     assert project_id is not None
     first_app.state.background_tasks.stream = _successful_stream
-    with TestClient(first_app) as client:
+    with signed_in_client(first_app) as client:
         started = client.post(
             f"/api/projects/{project_id}/episodes",
             json={"mode": "auto_research", "invocation_ceiling": 4},
@@ -721,7 +720,7 @@ def test_app_startup_reconciles_the_crash_window(manifest, tmp_path) -> None:
 
     restarted = create_named_app(str(manifest.path), data_dir=data_dir)
     restarted.state.background_tasks.stream = _successful_stream
-    with TestClient(restarted):
+    with signed_in_client(restarted):
         restarted_store = restarted.state.background_tasks.store
         route = restarted_store.auto_research_child_work(child_id)
         admission = restarted_store.auto_research_child_admission(child_id)
@@ -742,7 +741,7 @@ def test_normal_live_task_settlement_retries_a_deferred_child_admission(
     assert project_id is not None
     background = app.state.background_tasks
     background.stream = _successful_stream
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/episodes",
             json={"mode": "auto_research", "invocation_ceiling": 4},

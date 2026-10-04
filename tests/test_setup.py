@@ -9,7 +9,6 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import ProviderReadiness
 from rcp.api import create_app
@@ -30,6 +29,7 @@ from rcp.setup import (
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateWorkspace
+from tests.helpers import signed_in_client
 
 from .helpers import seed_patch
 
@@ -92,7 +92,7 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
     monkeypatch.setattr(app.state.setup, "preflight", fail_if_called)
     monkeypatch.setattr(app.state.setup, "create", fail_if_called)
     monkeypatch.setattr(app.state.catalog, "register", fail_if_called)
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(submitted_path))
     payload["confirmed"] = True
     payload["repositories"][0]["path"] = "/"
@@ -254,7 +254,7 @@ def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
 
     invalid = client.post(
@@ -318,7 +318,7 @@ def test_setup_records_discovered_provider_paths_in_new_manifest(tmp_path) -> No
             )
 
     app.state.setup.launcher = DiscoveringLauncher()
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
     payload["confirmed"] = True
 
@@ -335,7 +335,7 @@ def test_existing_local_manifest_is_connected_without_overwrite(tmp_path) -> Non
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
     payload["confirmed"] = True
     assert client.post("/api/project-setup/create", json=payload).status_code == 200
@@ -378,7 +378,7 @@ def test_existing_research_preflight_reports_exact_degraded_boundary_without_wri
         if path.is_file()
     }
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     canonical_repository = manifest.repository_map[manifest.state.repository]
     payload = _local_payload(canonical_repository.path)
 
@@ -421,7 +421,7 @@ def test_degraded_existing_research_opens_last_coherent_state_without_claiming_h
     raw["kind"] = "retired-patch-kind"
     patch_path.write_text(json.dumps(raw), encoding="utf-8")
     app = create_app(data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     canonical_repository = manifest.repository_map[manifest.state.repository]
     payload = _local_payload(canonical_repository.path)
     payload.update(
@@ -454,7 +454,7 @@ def test_degraded_existing_research_opens_last_coherent_state_without_claiming_h
     assert summaries.status_code == 200, summaries.json()
     assert summaries.json() == []
 
-    restarted = TestClient(create_app(data_dir=data_dir))
+    restarted = signed_in_client(create_app(data_dir=data_dir))
     restarted_graph = restarted.get(f"/api/projects/{created.json()['id']}/graph")
     assert restarted_graph.status_code == 200, restarted_graph.json()
     assert restarted_graph.json()["replay_failure"]["code"] == "patch-schema-invalid"
@@ -469,7 +469,7 @@ def test_archive_and_create_uses_new_setup_manifest_and_keeps_old_history(
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     original_payload = _local_payload(str(repository))
     original_payload["confirmed"] = True
     original = client.post("/api/project-setup/create", json=original_payload)
@@ -517,7 +517,7 @@ def test_archive_refuses_a_canonical_location_still_registered(tmp_path) -> None
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
     payload["confirmed"] = True
     created = client.post("/api/project-setup/create", json=payload)
@@ -544,7 +544,7 @@ def test_archive_guard_canonicalizes_a_registered_repository_symlink(tmp_path) -
     alias = tmp_path / "paper-alias"
     alias.symlink_to(repository, target_is_directory=True)
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
     payload["confirmed"] = True
     created = client.post("/api/project-setup/create", json=payload)
@@ -562,7 +562,7 @@ def test_archive_refuses_when_retained_history_changed_after_preflight(tmp_path)
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
     payload["confirmed"] = True
     created = client.post("/api/project-setup/create", json=payload)
@@ -599,7 +599,7 @@ def test_project_delete_refuses_symlinked_cache_root_without_touching_target(tmp
     repository.mkdir()
     data_dir = tmp_path / "data"
     app = create_app(data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     payload = _local_payload(str(repository))
     payload["confirmed"] = True
     created = client.post("/api/project-setup/create", json=payload)
@@ -654,7 +654,7 @@ def test_connect_requires_confirmation_and_names_the_sole_writable_home(
     tmp_path,
 ) -> None:
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     canonical_repository = manifest.repository_map[manifest.state.repository]
     payload = _local_payload(canonical_repository.path)
 
@@ -686,7 +686,7 @@ def test_wizard_rejects_blank_name_and_invalid_state_path(tmp_path) -> None:
     repository = tmp_path / "paper"
     repository.mkdir()
     app = create_app(data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     blank = _local_payload(str(repository))
     blank["name"] = "   "
 

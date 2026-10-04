@@ -10,7 +10,6 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from rcp.api.app import create_app
@@ -19,6 +18,7 @@ from rcp.config import MachineConfig, RepositoryConfig, write_added_machine, wri
 from rcp.storage import AppStore
 from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
+from tests.helpers import signed_in_client
 
 from .helpers import wait_until
 from .test_project_membership import _create_project as _create_membership_project
@@ -126,7 +126,7 @@ def test_terminal_websocket_checks_membership_independently(tmp_path):
 
 def test_terminal_websocket_requires_its_own_team_authentication(tmp_path):
     AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Terminal tests")
-    client = TestClient(create_app(data_dir=tmp_path), base_url="https://testserver")
+    client = signed_in_client(create_app(data_dir=tmp_path), base_url="https://testserver")
 
     with (
         pytest.raises(WebSocketDisconnect) as refused,
@@ -160,7 +160,7 @@ def test_terminal_websocket_resolves_real_team_session_cookie(manifest, tmp_path
     store, bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Terminal tests")
     member, token = store.enroll_team_member(bootstrap, "Terminal member")
     app = create_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app, base_url="https://testserver")
+    client = signed_in_client(app, base_url="https://testserver")
     assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
     project_id = app.state.default_project_id
     assert store.is_project_member(project_id, member.user_id)
@@ -651,7 +651,7 @@ def test_projection_reports_machine_capability_independent_of_space(
         project_id = _create_project(client, tmp_path / "repo")
     else:
         app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
-        client = TestClient(app)
+        client = signed_in_client(app)
         project_id = app.state.default_project_id
     current = app.state.catalog.open(project_id).manifest
     current.machines.append(MachineConfig(alias="ssh", host="worker.invalid"))

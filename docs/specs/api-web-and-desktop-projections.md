@@ -5,6 +5,20 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Personal owner admission
+
+Personal API requests and terminal upgrades require an owner session. Public
+health exposes adoption identity only. The Web shell, auth exchange and code
+redemption, and OPTIONS remain public. The separate phone listener is unchanged.
+The owner cookie is host-only, HttpOnly, and SameSite=Strict; HTTPS adds Secure.
+Team cookie policy remains separate.
+
+The Web reads identity before protected boot data. A personal 401 opens the
+sign-in boundary; a one-time code can be pasted or supplied in the sign-in URL's
+fragment. Project locator intent stays in the URL across sign-in. The human
+confirms it before registration. Display-name entry remains a separate action.
+Authenticated `/api/health/details` supplies runtime and project-creation data.
+
 ## Member terminal API
 
 The project-scoped terminal routes are:
@@ -790,16 +804,18 @@ filesystem inspection, or catalog mutation. The separately validated
 provisioning finalizer is the only team-project entrance into the existing
 setup/registration owners.
 
-The backend health projection preserves its existing identity and runtime
-fields. `version` remains the full package `__version__` verbatim, and
+The public backend health projection carries adoption identity. The protected
+health details projection carries runtime fields. `version` remains the full
+package `__version__` verbatim, and
 `running_commit` keeps its existing meaning as the commit recorded for the
 running installed process. It additionally publishes `build` as the integer
 package build number or null for a source checkout, `commit` as the package
-build's 7-to-40-character hexadecimal commit or null, and
+build's 7-to-40-character hexadecimal commit or null. Protected details expose
 `schema_ledger_head` as the newest applied storage-migration number read from
 the data directory's ledger.
 
-The health projection also carries one `project_creation` control with all three
+The protected health details projection also carries one `project_creation`
+control with all three
 intent identities, per-intent eligibility and preselection, primary action
 label, required fields, pinned source identity when one exists, and an explicit
 unavailable reason. The durable provisioning response similarly publishes the

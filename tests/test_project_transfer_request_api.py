@@ -9,8 +9,6 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from rcp import __version__
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
@@ -29,6 +27,7 @@ from rcp.storage import (
     ProjectTransferSourceConfiguration,
 )
 from rcp.transfer.source import read_transfer_archive, stage_transfer_archive
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_project_transfer_request_storage import (
@@ -226,8 +225,8 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
     team_data, alice, alice_token, bob, bob_token, team_app = _team_app(tmp_path)
     team_store = team_app.state.background_tasks.store
     with (
-        TestClient(source_app, base_url="https://personal.test") as source_client,
-        TestClient(team_app, base_url="https://team.test") as team_client,
+        signed_in_client(source_app, base_url="https://personal.test") as source_client,
+        signed_in_client(team_app, base_url="https://team.test") as team_client,
     ):
         assert (
             team_client.post(
@@ -530,7 +529,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         cookie_only = team_client.get(native_path)
         assert cookie_only.status_code == 401
         assert cookie_only.json()["detail"]["code"] == "team_token_required"
-        with TestClient(team_app, base_url="https://team.test") as native_client:
+        with signed_in_client(team_app, base_url="https://team.test") as native_client:
             premature = native_client.get(
                 native_path,
                 headers={"Authorization": f"Bearer {alice_token}"},
@@ -571,7 +570,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         )
         archive_sha256 = source_request["archive_sha256"]
         archive_size_bytes = source_request["archive_size_bytes"]
-        with TestClient(team_app, base_url="https://team.test") as bob_client:
+        with signed_in_client(team_app, base_url="https://team.test") as bob_client:
             assert (
                 bob_client.post(
                     "/api/team/session/exchange",
@@ -601,7 +600,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         _activate_target(team_store, target_request["request_id"])
         session_count_before = _session_count(team_data / "rcp.sqlite3")
 
-        with TestClient(team_app, base_url="https://team.test") as native_client:
+        with signed_in_client(team_app, base_url="https://team.test") as native_client:
             wrong_member = native_client.get(
                 native_path,
                 headers={"Authorization": f"Bearer {bob_token}"},
@@ -682,7 +681,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             json={"acknowledgment": acknowledgment},
         )
         assert cookie_only_cleanup.status_code == 401
-        with TestClient(team_app, base_url="https://team.test") as native_client:
+        with signed_in_client(team_app, base_url="https://team.test") as native_client:
             forged = dict(acknowledgment)
             forged["archive_sha256"] = "f" * 64
             forged_cleanup = native_client.post(
@@ -718,7 +717,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             is True
         )
         team_store.revoke_team_token(bob.user_id)
-        with TestClient(team_app, base_url="https://team.test") as native_client:
+        with signed_in_client(team_app, base_url="https://team.test") as native_client:
             revoked = native_client.get(
                 native_path,
                 headers={"Authorization": f"Bearer {bob_token}"},
@@ -735,8 +734,8 @@ def test_transfer_coordination_routes_keep_space_and_session_boundaries(tmp_path
     source_app = create_named_app(data_dir=tmp_path / "personal")
     _team_data, _alice, alice_token, _bob, _bob_token, team_app = _team_app(tmp_path)
     with (
-        TestClient(source_app, base_url="https://personal.test") as source_client,
-        TestClient(team_app, base_url="https://team.test") as team_client,
+        signed_in_client(source_app, base_url="https://personal.test") as source_client,
+        signed_in_client(team_app, base_url="https://team.test") as team_client,
     ):
         unauthenticated = team_client.get("/api/project-transfers/requests")
         assert unauthenticated.status_code == 401
@@ -810,7 +809,7 @@ def test_restored_target_reentry_route_is_exact_and_idempotent(tmp_path: Path) -
     }
     before = target.project_transfer_request(target_request.request_id)
     assert before == restored
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         wrong_revision = client.post(
             path,
             json={**payload, "expected_restored_revision": restored.revision + 1},

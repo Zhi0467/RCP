@@ -12,7 +12,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.api.app as api_app_module
 import rcp.api.index as api_index_module
@@ -34,6 +33,7 @@ from rcp.storage import (
     ProjectRecord,
     WatcherContinuation,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
 from .helpers import create_named_app as create_app
@@ -355,7 +355,7 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     cached = client.get(f"/api/projects/{project_id}")
     assert cached.status_code == 200
@@ -418,7 +418,7 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     store = app.state.background_tasks.store
     authorizer = authorized_human(store)
     store.rename_space_user(authorizer.user_id, "Changed display name")
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     response = client.get("/api/space/runs")
@@ -485,7 +485,7 @@ def test_experiment_indexes_overlay_shared_archive_state_without_mutating_cached
     store = app.state.background_tasks.store
     store.request_episode_stop(episode_id)
     store.mark_episode_stop_skipped(episode_id)
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.get(f"/api/projects/{project_id}")
     assert response.status_code == 200, response.text
     cached = response.json()
@@ -590,7 +590,7 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members WHERE project_id = ?", (hidden_project_id,))
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     def reject_old_branch_load(*_args, **_kwargs):
@@ -644,7 +644,7 @@ def test_space_runs_filters_old_completed_auto_research_before_hydration(
         return original_serialize_episode(store, requested_project_id, episode, **kwargs)
 
     monkeypatch.setattr(api_index_module, "serialize_episode", capture_hydration)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     response = client.get("/api/space/runs")
@@ -835,7 +835,7 @@ def test_space_runs_batches_recent_auto_research_without_full_parent_loads(
     monkeypatch.setattr(store, "episode_report", reject_legacy_load)
     monkeypatch.setattr(store, "episode_budget_meter", reject_legacy_load)
 
-    response = TestClient(app).get("/api/space/runs")
+    response = signed_in_client(app).get("/api/space/runs")
 
     assert response.status_code == 200, response.text
     assert terminal_episode_id in {entry["episode_id"] for entry in response.json()}
@@ -947,7 +947,7 @@ def test_space_run_projection_keeps_one_sqlite_snapshot_during_concurrent_lifecy
 def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     _record_loop(
         app.state.background_tasks.store,
@@ -983,7 +983,7 @@ def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_pat
         graph_target=owner.graph_target,
     )
     assert store.auto_research_child_experiment(episode_id) is None
-    client = TestClient(app)
+    client = signed_in_client(app)
     for path in (
         f"/api/projects/{project_id}/experiment-episodes?mode=experiment_loop",
         "/api/episodes?mode=experiment_loop",
@@ -1067,7 +1067,7 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         graph_target=parent.graph_target,
     ) == {"exp/launched"}
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     try:
         cached = client.get(f"/api/projects/{project_id}")
         assert cached.status_code == 200
@@ -1234,7 +1234,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         ]
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         cached = client.get(f"/api/projects/{project_id}")
         assert cached.status_code == 200
         assert "exp/branch-created" not in cached.json()["graph"]["nodes"]
@@ -1281,7 +1281,7 @@ def test_exact_experiment_stop_routes_share_the_named_human_gate(manifest, tmp_p
     assert project_id is not None
     episode_id = str(uuid.uuid4())
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         responses = [
             client.post(
                 f"/api/projects/{project_id}/experiments/exp%2Fbranch-created/stop",
@@ -1330,7 +1330,7 @@ def test_terminal_exact_experiment_stop_is_a_conflict_instead_of_a_server_error(
         "request_experiment_loop_stop",
         terminal_stop,
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{child.project_id}/experiments/exp%2Fterminal-stop/stop",
             params={"episode_id": child.episode_id},
@@ -1347,7 +1347,7 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
     data_dir = tmp_path / "data"
     first_app = create_app(str(manifest.path), data_dir=data_dir)
     project_id, current_episode = _seed_indexed_project(first_app)
-    first_client = TestClient(first_app)
+    first_client = signed_in_client(first_app)
     snapshot = first_client.get(f"/api/projects/{project_id}").json()
     snapshot["canonical_state"]["reachable"] = False
     snapshot["canonical_state"]["error"] = "Project host is unavailable."
@@ -1373,7 +1373,7 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
         raise AssertionError("the experiment index must not open inactive projects")
 
     monkeypatch.setattr(restarted.state.catalog, "_open_service", refuse_open)
-    response = TestClient(restarted).get("/api/episodes?mode=experiment_loop")
+    response = signed_in_client(restarted).get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
     assert len(response.json()) == 1
@@ -1390,7 +1390,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     release = threading.Event()
     operation: dict[str, str] = {}
@@ -1461,7 +1461,7 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
-    assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
+    assert signed_in_client(app).get(f"/api/projects/{project_id}").status_code == 200
 
     def fail_runtime_projection(_project_id, *_args, **_kwargs):
         raise RuntimeError("runtime projection broke")
@@ -1471,7 +1471,7 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
         "experiment_control_projection_snapshots",
         fail_runtime_projection,
     )
-    response = TestClient(app, raise_server_exceptions=False).get(
+    response = signed_in_client(app, raise_server_exceptions=False).get(
         "/api/episodes?mode=experiment_loop"
     )
 
@@ -1504,7 +1504,7 @@ def test_inconsistent_experiment_runtime_is_degraded_without_hiding_healthy_sibl
             (json.dumps(request, separators=(",", ":"), sort_keys=True),),
         )
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     response = client.get("/api/episodes?mode=experiment_loop")
 
@@ -1536,7 +1536,7 @@ def test_experiment_index_settles_stop_under_project_operation_lock(
 
     monkeypatch.setattr(store, "settle_experiment_loop_stop", assert_locked)
 
-    response = TestClient(app).get("/api/episodes?mode=experiment_loop")
+    response = signed_in_client(app).get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200, response.text
     assert observed is True
@@ -1549,7 +1549,7 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
-    assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
+    assert signed_in_client(app).get(f"/api/projects/{project_id}").status_code == 200
 
     async def finish_work(_service, _launcher, _request, _data_dir, *, execution):
         del execution
@@ -1606,7 +1606,7 @@ def test_versioned_cache_commit_cannot_regress_graph_or_project_summary(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     older = client.get(f"/api/projects/{project_id}").json()
     question = app.state.service.history.state().nodes["rq/learning-after-shift"]
     append_fixture_patch(
@@ -1687,7 +1687,7 @@ def test_cache_generation_rejects_out_of_order_same_revision_reachability(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     catalog = app.state.catalog
     first_read = threading.Event()
@@ -1738,7 +1738,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     project_id, current_episode = _seed_indexed_project(app)
     app.state.background_tasks.store.request_episode_stop(current_episode)
     app.state.background_tasks.store.mark_episode_stop_skipped(current_episode)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     entered_cache = threading.Event()
     release_cache = threading.Event()
@@ -1879,7 +1879,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     async def update_then_stop(service, _launcher, _request, _data_dir, *, execution):
@@ -1914,7 +1914,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
 def test_experiment_index_fails_for_malformed_existing_cache(manifest, tmp_path: Path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     app.state.catalog._cached_snapshot_path(project_id).write_text("{", encoding="utf-8")
 
@@ -1928,7 +1928,7 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     healthy_project_id, current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{healthy_project_id}").status_code == 200
 
     store = app.state.background_tasks.store
@@ -1976,7 +1976,7 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
 def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: Path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     store = app.state.background_tasks.store
@@ -2000,7 +2000,7 @@ def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: P
 def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path: Path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     cache_path = app.state.catalog._cached_snapshot_path(project_id)
@@ -2019,7 +2019,7 @@ def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     app.state.catalog._cached_snapshot_path(project_id).unlink()
 

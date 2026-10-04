@@ -10,6 +10,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import TEAM_SESSION_IDLE_DAYS
 from rcp.storage import AppStore, SpaceKind, SpaceUserRecord
 
+OWNER_SESSION_COOKIE = "rcp_owner_session"
 TEAM_SESSION_COOKIE = "__Host-rcp_session"
 TEAM_SESSION_COOKIE_MAX_AGE = TEAM_SESSION_IDLE_DAYS * 24 * 60 * 60
 
@@ -110,12 +111,34 @@ class IdentityAccess:
             raise HTTPException(status_code=401, detail="The browser session is unavailable.")
         return session
 
+    def set_owner_session_cookie(self, response: Response, session: str, *, secure: bool) -> None:
+        response.set_cookie(
+            OWNER_SESSION_COOKIE,
+            session,
+            max_age=TEAM_SESSION_COOKIE_MAX_AGE,
+            path="/",
+            secure=secure,
+            httponly=True,
+            samesite="strict",
+        )
+
+    def resolve_owner_user(
+        self, request: Request, *, touch_session: bool = True
+    ) -> SpaceUserRecord:
+        cached = getattr(request.state, "owner_user", None)
+        if isinstance(cached, SpaceUserRecord):
+            return cached
+        session = request.cookies.get(OWNER_SESSION_COOKIE)
+        owner = self._store.resolve_owner_session(session, touch=touch_session)
+        if owner is None:
+            raise HTTPException(status_code=401, detail={"code": "owner_identity_required"})
+        request.state.owner_user = owner
+        request.state.owner_session = session
+        return owner
+
     def acting_user(self, request: Request) -> SpaceUserRecord:
         if self._space_kind == "personal":
-            owner = self._store.local_owner
-            if owner is None:  # pragma: no cover - guarded by the storage invariant
-                raise HTTPException(status_code=500, detail="Personal owner identity is missing.")
-            return owner
+            return self.resolve_owner_user(request)
         return self.resolve_team_user(request)
 
     def require_patch_capable_identity(self, request: Request) -> AuthorizedHuman:

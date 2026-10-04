@@ -375,6 +375,13 @@ root is refused as a write and kept readable, because RCP stages its `graph.json
 and `research.md` as required run context; Codex treats a denied path as
 unreadable rather than unwritable.
 
+Work, orchestrate, and Discuss also deny reads of the desktop app's WebKit,
+application support, cache, HTTP storage, and cookie paths for both release and Dev
+bundle identifiers. These rules are separate from protected write paths.
+Home-relative paths resolve on the execution host. Discuss uses a named native
+permission profile so the same denial applies in exec and app-server; the
+app-server checks the activated profile before starting a turn.
+
 ### Claude
 
 Work and orchestrate use Claude's supported unattended `dontAsk` mode with an

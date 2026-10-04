@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.background import BackgroundAgentTasks
@@ -24,6 +23,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from tests.helpers import signed_in_client
 
 RESTORE_DIAGNOSTIC = "This work was stopped because RCP restored an older snapshot."
 RESTORE_CONFIRMER = "server operator Alice"
@@ -463,7 +463,7 @@ def test_restore_detachment_is_atomic_idempotent_and_leaves_no_startup_work(
     assert _dump(store) == first_dump
 
     before_startup = _operational_rows(store)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert client.get("/api/health").status_code == 200
         assert app.state.startup_recovery_plan is None
         assert app.state.startup_effect_runtime_started

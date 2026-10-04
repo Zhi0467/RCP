@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from rcp.digest import digest_counts
 from rcp.history.manager import HistoryManager
 from rcp.storage.digest import append_digest_event
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
 
 def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeypatch):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     user_id = store.local_owner.user_id
@@ -43,7 +42,7 @@ def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeyp
 
 def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     url = f"/api/projects/{project_id}/digest"
@@ -83,7 +82,7 @@ def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_p
 
 def test_get_waits_for_projector_before_baselining(manifest, tmp_path, monkeypatch):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     url = f"/api/projects/{project_id}/digest"

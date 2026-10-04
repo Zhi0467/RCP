@@ -8,7 +8,6 @@ import threading
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl, continuation_prompt
 from rcp.agents.continuation_prompt import SECTIONS
@@ -26,6 +25,7 @@ from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore
+from tests.helpers import signed_in_client
 
 from .helpers import (
     agent_patch_json,
@@ -464,7 +464,7 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
@@ -560,7 +560,7 @@ def test_admitted_compute_snapshot_survives_manifest_change_before_launch(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
@@ -626,7 +626,7 @@ def test_resumed_chat_delivers_changed_compute_metadata_in_the_same_session(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     def turn(message: str, active_compute_ids: list[str], *, first: bool = False) -> None:
         body: dict[str, object] = {
@@ -753,7 +753,7 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     first_response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
@@ -850,7 +850,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     first = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
@@ -955,7 +955,7 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     def turn(message: str, resume: bool) -> str:
         body: dict[str, object] = {
@@ -1019,7 +1019,7 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     def turn(message: str, resume: bool) -> None:
         body: dict[str, object] = {
@@ -1074,7 +1074,7 @@ def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi.testclient import TestClient
-
 from rcp.api.app import create_app
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.history import HistoryManager
@@ -14,6 +12,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import seed_patch
 
@@ -99,7 +98,7 @@ def _watcher(
 def test_health_and_personal_identity_get_patch_are_durable(tmp_path) -> None:
     data_dir = tmp_path / "personal"
     app = create_app(data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     health = client.get("/api/health")
     original = client.get("/api/identity")
@@ -130,7 +129,7 @@ def test_health_and_personal_identity_get_patch_are_durable(tmp_path) -> None:
     assert renamed.json()["user"]["user_id"] == user_id
     assert renamed.json()["user"]["display_name"] == "Researcher"
 
-    restarted = TestClient(create_app(data_dir=data_dir)).get("/api/identity")
+    restarted = signed_in_client(create_app(data_dir=data_dir)).get("/api/identity")
     assert restarted.status_code == 200
     assert restarted.json()["space_id"] == app.state.space_id
     assert restarted.json()["user"]["user_id"] == user_id
@@ -148,7 +147,7 @@ def test_team_identity_uses_only_the_trusted_resolver(tmp_path) -> None:
         return selected[0]
 
     app = create_app(data_dir=data_dir, trusted_principal_resolver=resolve)
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     assert client.get("/api/health").json()["space_kind"] == "team"
     assert client.get("/api/identity").json()["user"]["user_id"] == first.user_id
@@ -167,7 +166,7 @@ def test_team_identity_uses_only_the_trusted_resolver(tmp_path) -> None:
     selected[0] = second.user_id
     assert client.get("/api/identity").json()["user"]["user_id"] == second.user_id
 
-    missing = TestClient(create_app(data_dir=data_dir)).get("/api/identity")
+    missing = signed_in_client(create_app(data_dir=data_dir)).get("/api/identity")
     assert missing.status_code == 401
     assert missing.json()["detail"]["code"] == "team_identity_required"
 
@@ -175,7 +174,7 @@ def test_team_identity_uses_only_the_trusted_resolver(tmp_path) -> None:
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, _store: str(uuid.uuid4()),
     )
-    invalid = TestClient(invalid_app).get("/api/identity")
+    invalid = signed_in_client(invalid_app).get("/api/identity")
     assert invalid.status_code == 403
     assert invalid.json()["detail"]["code"] == "team_identity_invalid"
 
@@ -186,7 +185,7 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     monkeypatch,
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     service = app.state.service
     fixture_history = HistoryManager(service.manifest, service.history.workspace)
@@ -424,7 +423,7 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
     member = store.preprovision_team_member("Team member")
 
     missing_app = create_app(str(manifest.path), data_dir=data_dir)
-    missing_client = TestClient(missing_app)
+    missing_client = signed_in_client(missing_app)
     project_id = missing_app.state.default_project_id
     missing = missing_client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     assert missing.status_code == 401
@@ -436,7 +435,7 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, _store: str(uuid.uuid4()),
     )
-    invalid_client = TestClient(invalid_app)
+    invalid_client = signed_in_client(invalid_app)
     invalid = invalid_client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     assert invalid.status_code == 403
     assert invalid.json()["detail"]["code"] == "team_identity_invalid"
@@ -477,7 +476,7 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         )
 
     monkeypatch.setattr(valid_app.state.background_tasks, "start", fake_start)
-    admitted = TestClient(valid_app).post(f"/api/projects/{project_id}/tasks/seed", json={})
+    admitted = signed_in_client(valid_app).post(f"/api/projects/{project_id}/tasks/seed", json={})
     assert admitted.status_code == 202
 
 
@@ -487,7 +486,7 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
     monkeypatch,
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     service = app.state.service
     fixture_history = HistoryManager(service.manifest, service.history.workspace)
@@ -571,7 +570,7 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, store: store.space_user(selected[0]),
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     service = app.state.service
     fixture_history = HistoryManager(service.manifest, service.history.workspace)
@@ -649,7 +648,7 @@ def test_resume_retry_and_repair_capture_the_current_actor_instead_of_parent(
         data_dir=data_dir,
         trusted_principal_resolver=lambda _request, store: store.space_user(selected[0]),
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     parent_authorizer = AuthorizedHuman(
@@ -918,7 +917,7 @@ def test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper(
     monkeypatch,
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     old_project_id = "legacy-project-url"
     store = app.state.background_tasks.store
@@ -929,7 +928,7 @@ def test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper(
         )
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
 
     def refuse_request_path_sqlite_lookup(_project_id: str) -> str:

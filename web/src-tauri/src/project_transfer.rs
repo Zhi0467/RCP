@@ -3667,37 +3667,11 @@ async fn pin_personal_backend(
 }
 
 fn personal_client(base_url: &str) -> Result<Client, String> {
-    Client::builder()
-        .timeout(PERSONAL_REQUEST_TIMEOUT)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| format!("could not create the personal transfer client: {error}"))
-        .and_then(|client| {
-            let url = url::Url::parse(base_url)
-                .map_err(|_| "the personal backend origin is invalid".to_string())?;
-            if url.scheme() != "http" && url.scheme() != "https" {
-                return Err("the personal backend origin is invalid".into());
-            }
-            Ok(client)
-        })
+    crate::owner_session::client(base_url, Some(PERSONAL_REQUEST_TIMEOUT))
 }
 
 fn personal_stream_client(base_url: &str) -> Result<Client, String> {
-    Client::builder()
-        .connect_timeout(PERSONAL_REQUEST_TIMEOUT)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|error| format!("could not create the personal transfer client: {error}"))
-        .and_then(|client| {
-            let url = url::Url::parse(base_url)
-                .map_err(|_| "the personal backend origin is invalid".to_string())?;
-            if url.scheme() != "http" && url.scheme() != "https" {
-                return Err("the personal backend origin is invalid".into());
-            }
-            Ok(client)
-        })
+    crate::owner_session::client(base_url, None)
 }
 
 fn source_request_path(request_id: &str) -> String {

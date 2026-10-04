@@ -6,11 +6,11 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.runs.chat import _append_chat_exchange
 from rcp.service import RunRequest
 from rcp.transport import StateUnavailable
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -76,7 +76,7 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     chat_dir = manifest.research_dir / "chat"
     chat_dir.mkdir(exist_ok=True)
@@ -190,7 +190,7 @@ def test_chat_history_reports_remote_refresh_failure_as_unavailable(
     monkeypatch.setattr(service.history.workspace, "refresh", fail_refresh)
     request_thread = threading.get_ident()
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/chats")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/chats")
 
     assert response.status_code == 503
     assert response.json()["detail"] == "remote transcript refresh failed"
@@ -210,7 +210,7 @@ def test_non_main_project_route_does_not_build_project_snapshot(
         ),
     )
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/chats")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/chats")
 
     assert response.status_code == 200
     assert response.json()["items"] == []
@@ -218,7 +218,7 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
 def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{app.state.default_project_id}"
     first, second = str(uuid.uuid4()), str(uuid.uuid4())
 
@@ -260,7 +260,7 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
 
 def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{app.state.default_project_id}"
     chat_id = str(uuid.uuid4())
 

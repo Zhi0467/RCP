@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.__main__ as main_module
 from rcp.agents.acceptance import (
@@ -31,6 +30,7 @@ from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.runs.auto_research_recovery import AutoResearchOrchestratorTerminalFailure
 from tests.helpers import create_named_app as create_app
+from tests.helpers import signed_in_client
 
 
 async def _events(launcher: AcceptanceAgentLauncher, prompt: str, cwd: Path, **kwargs):
@@ -89,10 +89,10 @@ def test_acceptance_app_mode_is_explicit_and_visible(tmp_path) -> None:
     assert provider_app.state.agent_mode == "provider"
     assert acceptance_app.state.agent_mode == "acceptance"
     assert isinstance(acceptance_app.state.launcher, AcceptanceAgentLauncher)
-    with TestClient(provider_app) as client:
-        assert client.get("/api/health").json()["agent_mode"] == "provider"
-    with TestClient(acceptance_app) as client:
-        assert client.get("/api/health").json()["agent_mode"] == "acceptance"
+    with signed_in_client(provider_app) as client:
+        assert client.get("/api/health/details").json()["agent_mode"] == "provider"
+    with signed_in_client(acceptance_app) as client:
+        assert client.get("/api/health/details").json()["agent_mode"] == "acceptance"
 
 
 def test_acceptance_agent_cli_flag_is_explicit_and_survives_reload(monkeypatch) -> None:

@@ -15,7 +15,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.__main__ import build_parser
 from rcp.server_ops import backup as backup_owner
@@ -44,6 +43,7 @@ from rcp.server_runtime import (
     metadata_path,
     web_build_identity,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -269,7 +269,7 @@ def test_running_release_identity_and_health_are_exact(tmp_path: Path) -> None:
     )
     app = create_named_app(data_dir=layout.data_dir, instance_metadata=metadata)
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         health = client.get("/api/health").json()
 
     assert identity.commit == COMMIT

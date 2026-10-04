@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.history.delta as delta_module
 from rcp.core.materialize import MaterializationResult, materialize_patches
@@ -17,6 +16,7 @@ from tests.helpers import (
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
+    signed_in_client,
 )
 
 
@@ -196,7 +196,7 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
         app.state.service,
         refresh_patch().model_copy(update={"change_summary": []}),
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
 
     summaries = client.get(f"/api/projects/{project_id}/history/summaries")

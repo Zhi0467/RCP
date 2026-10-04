@@ -7,6 +7,8 @@ from contextlib import contextmanager
 import httpx
 import pytest
 
+from tests.helpers import sign_in_async_client
+
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_for_entry
 
 
@@ -24,12 +26,12 @@ def test_health_sqlite_wait_does_not_block_event_loop(manifest, tmp_path, monkey
         with original_connection() as connection:
             yield connection
 
-    monkeypatch.setattr(store, "connection", blocked_connection)
-
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            request = asyncio.create_task(client.get("/api/health"))
+            await sign_in_async_client(client, app)
+            monkeypatch.setattr(store, "connection", blocked_connection)
+            request = asyncio.create_task(client.get("/api/health/details"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
                 # A blocked loop never resumes this tick, so the bound is a
@@ -64,6 +66,7 @@ def test_project_cache_hit_does_not_block_event_loop(manifest, tmp_path, monkeyp
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             request = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
@@ -147,6 +150,7 @@ def test_project_cache_miss_does_not_block_event_loop(
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             request = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)

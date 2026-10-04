@@ -22,6 +22,7 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeRecord,
 )
+from tests.helpers import signed_in_client
 
 from .test_project_membership import _create_project, _team_app
 
@@ -411,7 +412,7 @@ def test_revoking_a_token_does_not_fence_running_work(manifest, tmp_path) -> Non
     data_dir = tmp_path / "team"
     store, bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
     app = create_app(data_dir=data_dir)
-    client = TestClient(app, base_url="https://team.test")
+    client = signed_in_client(app, base_url="https://team.test")
     token = client.post(
         "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
     ).json()["token"]
@@ -488,7 +489,7 @@ def test_revoking_a_token_mid_run_refuses_nothing_and_fences_nothing(manifest, t
     data_dir = tmp_path / "team"
     store, bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
     app = create_app(data_dir=data_dir)
-    client = TestClient(app, base_url="https://team.test")
+    client = signed_in_client(app, base_url="https://team.test")
     token = client.post(
         "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
     ).json()["token"]
@@ -519,14 +520,14 @@ def test_the_whole_flow_works_through_a_real_browser_session(manifest, tmp_path)
     data_dir = tmp_path / "team"
     store, bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
     app = create_app(data_dir=data_dir)
-    alice = TestClient(app, base_url="https://team.test")
+    alice = signed_in_client(app, base_url="https://team.test")
     alice_token = alice.post(
         "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
     ).json()["token"]
     alice.post("/api/team/session/exchange", json={"token": alice_token})
     invite_code = alice.post("/api/team/invitations", json={}).json()["code"]
 
-    bob = TestClient(app, base_url="https://team.test")
+    bob = signed_in_client(app, base_url="https://team.test")
     bob_token = bob.post(
         "/api/team/enroll", json={"code": invite_code, "display_name": "Bob"}
     ).json()["token"]

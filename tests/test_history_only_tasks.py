@@ -5,12 +5,12 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.artifact_import import import_project_artifacts
 from rcp.artifacts import descriptor_for
 from rcp.service import CoachRequest, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -85,7 +85,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     retained_temporary: bool,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     store = app.state.background_tasks.store
     service = app.state.service
     project_id = app.state.default_project_id

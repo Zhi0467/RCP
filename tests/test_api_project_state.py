@@ -10,7 +10,6 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.encoders import jsonable_encoder
-from fastapi.testclient import TestClient
 
 import rcp.projects as projects_module
 from rcp.agents import ProviderReadiness
@@ -22,6 +21,7 @@ from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord
 from rcp.transport import StateUnavailable
+from tests.helpers import sign_in_async_client, signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -78,7 +78,7 @@ def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_p
     with pytest.raises(ValueError, match="__dict__"):
         jsonable_encoder(draft)
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     generation = app.state.catalog.reserve_cached_snapshot_generation(project_id)
     assert app.state.catalog.commit_cached_snapshot(
         project_id,
@@ -118,7 +118,7 @@ def test_cached_project_migrates_retired_campaign_report_default(manifest, tmp_p
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     cache_path = app.state.catalog._cached_snapshot_path(project_id)
@@ -148,7 +148,7 @@ def test_cached_project_rejects_attention_that_disagrees_with_its_graph(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     cache_path = app.state.catalog._cached_snapshot_path(project_id)
     envelope = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -167,7 +167,7 @@ def test_project_revision_probe_is_small_and_does_not_replay_history(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     history = app.state.service.history
 
@@ -226,7 +226,7 @@ def test_project_revision_probe_is_small_and_does_not_replay_history(
 
 def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    response = TestClient(app).get(f"/api/projects/{uuid.uuid4()}/revision")
+    response = signed_in_client(app).get(f"/api/projects/{uuid.uuid4()}/revision")
 
     assert response.status_code == 404
 
@@ -236,7 +236,7 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     probes = 0
 
     def unchanged_head(requested_project_id):
@@ -257,6 +257,7 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             response = await client.get(f"/api/projects/{project_id}/cached/revision")
             for _ in range(100):
                 if project_id not in app.state.project_reconciliation_tasks:
@@ -282,7 +283,7 @@ def test_unchanged_head_reconciles_cached_offline_state(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     offline = {
         **initial,
         "canonical_state": {
@@ -311,6 +312,7 @@ def test_unchanged_head_reconciles_cached_offline_state(
     async def drive():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             await client.get(f"/api/projects/{project_id}/cached/revision")
             await async_wait_until(
                 lambda: project_id not in app.state.project_reconciliation_tasks,
@@ -332,7 +334,7 @@ def test_cached_revision_file_read_does_not_block_the_event_loop(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
+    assert signed_in_client(app).get(f"/api/projects/{project_id}").status_code == 200
     display_cache = app.state.services.project_display_cache
     original = display_cache.cached_project_snapshot
     entered = threading.Event()
@@ -348,6 +350,7 @@ def test_cached_revision_file_read_does_not_block_the_event_loop(
     async def drive() -> tuple[httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             revision_task = asyncio.create_task(
                 client.get(f"/api/projects/{project_id}/cached/revision")
             )
@@ -371,7 +374,7 @@ def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
+    assert signed_in_client(app).get(f"/api/projects/{project_id}").status_code == 200
     clock = 100.0
     probes = 0
 
@@ -399,6 +402,7 @@ def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
         nonlocal clock
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             first = await client.get(f"/api/projects/{project_id}/cached/revision")
             await wait_for_probe()
             clock = 102.999
@@ -419,7 +423,7 @@ def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
 def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, monkeypatch) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     append_fixture_patch(app.state.service, seed_patch())
     append_fixture_patch(app.state.service, _experiment_fixture_patch())
     entered = threading.Event()
@@ -447,6 +451,7 @@ def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, mon
     async def drive() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             first = await client.get(f"/api/projects/{project_id}/cached/revision")
             await asyncio.to_thread(wait_for_entry, entered)
             second = await asyncio.wait_for(
@@ -484,12 +489,13 @@ def test_local_patch_head_refreshes_cache_without_joining_the_write_path(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     append_fixture_patch(app.state.service, seed_patch())
 
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             response = await client.get(f"/api/projects/{project_id}/cached/revision")
             for _ in range(100):
                 if project_id not in app.state.project_reconciliation_tasks:
@@ -510,7 +516,7 @@ def test_transient_head_probe_failure_marks_only_display_freshness_stale(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     monkeypatch.setattr(
         app.state.catalog,
         "probe_remote_patch_log_head",
@@ -520,6 +526,7 @@ def test_transient_head_probe_failure_marks_only_display_freshness_stale(
     async def drive() -> None:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             await client.get(f"/api/projects/{project_id}/cached/revision")
             for _ in range(100):
                 if project_id not in app.state.project_reconciliation_tasks:
@@ -539,7 +546,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
 
     initial = client.get(f"/api/projects/{project_id}")
@@ -584,7 +591,7 @@ def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     initial = client.get(f"/api/projects/{project_id}").json()
     cache_path = next((data_dir / "project-snapshots").iterdir())
@@ -616,7 +623,7 @@ def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
     # its offline copy.
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     client.get(f"/api/projects/{project_id}")
     cache_path = next((data_dir / "project-snapshots").iterdir())
@@ -656,7 +663,7 @@ def test_cached_project_serves_the_graph_a_fresh_replay_would(manifest, tmp_path
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     append_fixture_patch(app.state.service, seed_patch())
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     fresh = client.get(f"/api/projects/{project_id}").json()["graph"]
     cache_path = next((data_dir / "project-snapshots").iterdir())
@@ -678,7 +685,7 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     authoritative = client.get(f"/api/projects/{project_id}")
     assert authoritative.status_code == 200
@@ -742,7 +749,7 @@ def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
 
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     authoritative = client.get(f"/api/projects/{project_id}")
     assert authoritative.status_code == 200
@@ -787,7 +794,7 @@ def _write_stale_catalog_cache(client, data_dir, project_id) -> Path:
 def test_cached_snapshot_serves_the_running_release_skill_catalog(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     _write_stale_catalog_cache(client, data_dir, project_id)
 
@@ -800,7 +807,7 @@ def test_cached_snapshot_serves_the_running_release_skill_catalog(manifest, tmp_
 def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
     opened = app.state.catalog.store.project(project_id).last_opened_at
@@ -841,7 +848,7 @@ def test_failed_display_rebuild_keeps_the_offline_copy(
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
     before = cache_path.read_bytes()
@@ -857,7 +864,7 @@ def test_clearing_a_project_deleted_mid_rebuild_is_not_found(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
@@ -871,7 +878,7 @@ def test_clearing_a_project_deleted_mid_rebuild_is_not_found(
 def test_cached_snapshot_refills_only_undeclared_skill_defaults(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     cache_path = next((data_dir / "project-snapshots").iterdir())
@@ -892,7 +899,7 @@ def test_cached_snapshot_refills_only_undeclared_skill_defaults(manifest, tmp_pa
 def test_cache_predating_declared_defaults_rebuilds_once_in_background(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     cache_path = next((data_dir / "project-snapshots").iterdir())
@@ -915,7 +922,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     monkeypatch.setattr(
@@ -994,7 +1001,7 @@ def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     body = {
@@ -1082,7 +1089,7 @@ def test_stale_compute_refresh_does_not_overwrite_fresher_status(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
@@ -1166,7 +1173,7 @@ def test_cached_compute_readiness_does_not_wait_behind_a_slow_refresh(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
@@ -1240,7 +1247,7 @@ def test_project_settings_reject_too_many_compute_connections_before_persistence
     manifest, tmp_path
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     body = {
@@ -1267,7 +1274,7 @@ def test_unopened_compute_readiness_cache_survives_project_open(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     status = {"laptop": {}}
@@ -1288,7 +1295,7 @@ def test_unopened_compute_readiness_cache_survives_project_open(
 
 def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     assert before["default_auto_research_invocation_ceiling"] == 10
@@ -1399,7 +1406,7 @@ def test_project_settings_merge_partial_provider_paths_and_preserve_omitted_valu
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     profiles = {
@@ -1452,7 +1459,7 @@ def test_project_settings_persist_nonsecret_compute_metadata_without_moving_agen
     manifest, tmp_path
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     profiles = {
@@ -1504,7 +1511,7 @@ def test_project_settings_persist_nonsecret_compute_metadata_without_moving_agen
 
 def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     content = manifest.path.read_text(encoding="utf-8")
@@ -1530,7 +1537,7 @@ def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     append_fixture_patch(app.state.service, _experiment_fixture_patch())
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     calls: list[str | None] = []
 
@@ -1577,7 +1584,7 @@ def test_project_settings_reject_invalid_scope_without_changing_manifest(
     manifest, tmp_path
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     before = client.get(f"/api/projects/{project_id}").json()
     content = manifest.path.read_text(encoding="utf-8")
@@ -1626,7 +1633,7 @@ def test_project_usage_endpoint_returns_counted_and_excluded_records(manifest, t
     store.record_agent_usage("usage-operation", usage)
     store.record_agent_usage("usage-operation", usage)
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/usage")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/usage")
 
     assert response.status_code == 200
     payload = response.json()
@@ -1658,6 +1665,6 @@ def test_project_readiness_exposes_cached_state_transfer_engine(manifest, tmp_pa
             provider=provider, installed=False, authenticated=False
         ),
     )
-    response = TestClient(app).get(f"/api/projects/{app.state.default_project_id}/readiness")
+    response = signed_in_client(app).get(f"/api/projects/{app.state.default_project_id}/readiness")
     assert response.status_code == 200, response.text
     assert response.json()["state_transfers"] == {"worker": engine.as_dict()}
