@@ -310,8 +310,13 @@ class HostRuntime:
             ldd = self.run(["ldd", executable], check=False)
             if "not found" in ldd.stdout:
                 packages = missing_library_packages(ldd.stdout, release["VERSION_ID"])
+                missing = [
+                    line.split()[0] for line in ldd.stdout.splitlines() if "not found" in line
+                ]
                 return self.readiness_result(
-                    "system_libraries_missing", ldd.stdout.strip(), apt_install_command(packages)
+                    "system_libraries_missing",
+                    "Missing: " + ", ".join(missing),
+                    apt_install_command(packages),
                 )
         if not os.access(executable, os.X_OK):
             return self.readiness_result("not_installed", "RCP Chromium is not executable")
@@ -562,7 +567,7 @@ class HostRuntime:
                 "--no-fund",
             ]
         )
-        self.run([self.node, str(self.cli), "install-browser", "chromium"])
+        self.run([self.node, str(self.cli), "install-browser", "chromium", "--no-shell"])
         ready = self.readiness(require_verified=False)
         if ready["status"] != "ready":
             return ready
