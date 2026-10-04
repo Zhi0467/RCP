@@ -864,6 +864,14 @@ def test_waiting_admin_prompt_does_not_block_safety_passes(lid_machine):
     assert not safety.is_alive()
 
 
+def test_failed_demand_read_keeps_lid_mode(lid_machine):
+    lid_machine.activate()
+    lid_machine.controller.demand_reader = Mock(side_effect=OSError("store unavailable"))
+    lid_machine.controller.safety_pass()
+    assert lid_machine.controller.status()["lid_mode"]["active"] is True
+    assert power.read_record(lid_machine.root / "heartbeat")["desired"] == "on"
+
+
 def test_thermal_warning_latches_even_when_demand_read_fails(lid_machine):
     lid_machine.activate()
     lid_machine.profile.readings["thermal"] = True

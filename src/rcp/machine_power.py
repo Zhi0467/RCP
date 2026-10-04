@@ -306,7 +306,7 @@ class MachinePowerController:
                 self._drop()
             if self.lid is not None:
                 try:
-                    self._pass(demand_failed=demand_failed)
+                    self._pass()
                 except Exception:
                     logger.exception("Machine power safety pass failed")
                     try:
@@ -653,7 +653,7 @@ class MachinePowerController:
         finally:
             self._lid_active = False
 
-    def _pass(self, *, demand_failed=False):
+    def _pass(self):
         if self._uninstalling:
             return
         complete = self._consume_result()
@@ -682,9 +682,10 @@ class MachinePowerController:
                 return
 
         # Attempt each reading on every pass; one failure never silently defaults
-        # a battery, thermal, lid, or flag input to a safe value.
+        # a battery, thermal, lid, or flag input to a safe value. A failed demand
+        # read keeps the last demand: it is not evidence that work ended.
         readings = {}
-        failed = demand_failed
+        failed = False
         for name, reader in (
             ("battery", self.lid.read_battery),
             ("thermal", self.lid.read_thermal),
