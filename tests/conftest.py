@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -8,6 +12,26 @@ import pytest
 from rcp.config import Manifest, load_manifest
 
 from .helpers import isolate_host
+
+
+def _skip_xcrun_git_trampoline() -> None:
+    # macOS /usr/bin/git is an xcrun trampoline costing ~10 ms a call; put the
+    # binary it execs just ahead of /usr/bin so git-heavy tests skip the hop.
+    if sys.platform != "darwin" or shutil.which("git") != "/usr/bin/git":
+        return
+    found = subprocess.run(["xcrun", "-f", "git"], capture_output=True, text=True, check=False)
+    real = Path(found.stdout.strip())
+    if found.returncode or not real.is_absolute() or real.parent == Path("/usr/bin"):
+        return
+    if not os.access(real, os.X_OK):
+        return
+    entries = os.environ["PATH"].split(os.pathsep)
+    usr_bin = next(index for index, entry in enumerate(entries) if Path(entry) == Path("/usr/bin"))
+    entries.insert(usr_bin, str(real.parent))
+    os.environ["PATH"] = os.pathsep.join(entries)
+
+
+_skip_xcrun_git_trampoline()
 
 
 @pytest.fixture(autouse=True)
