@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from rcp.providers import ProviderSkill
+from rcp.storage.digest import rewrite_digest_project_links
 from rcp.storage.models import (
     _PROJECT_ID_TABLES,
     ProjectActiveTaskConflict,
@@ -322,6 +323,7 @@ class ProjectStoreMixin:
                         f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
                         (canonical_project_id, old_project_id),
                     )
+                rewrite_digest_project_links(connection, old_project_id, canonical_project_id)
                 self._rewrite_notification_project_links(
                     connection,
                     old_project_id,
@@ -671,6 +673,9 @@ class ProjectStoreMixin:
                     (project_id,),
                 ).rowcount
                 for table in (
+                    "digest_events",
+                    "digest_marks",
+                    "digest_heads",
                     "consolidation_schedules",
                     "consolidation_runs",
                     "consolidation_apply_receipts",
@@ -1061,6 +1066,9 @@ class ProjectStoreMixin:
             for table in (
                 "operational_lessons",
                 "lesson_command_receipts",
+                "digest_events",
+                "digest_marks",
+                "digest_heads",
                 "consolidation_schedules",
                 "consolidation_runs",
                 "consolidation_apply_receipts",
@@ -1075,6 +1083,7 @@ class ProjectStoreMixin:
                     (project_id, legacy_id),
                 )
                 connection.execute(f"DELETE FROM {table} WHERE project_id = ?", (legacy_id,))
+            rewrite_digest_project_links(connection, legacy_id, project_id)
             self._rewrite_notification_project_links(connection, legacy_id, project_id)
             connection.execute(
                 "UPDATE writing_sessions SET project_id = ? WHERE project_id = ?",

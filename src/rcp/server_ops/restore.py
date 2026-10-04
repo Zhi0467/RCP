@@ -45,6 +45,16 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Digest events, member marks, and independent projector heads.
+        "4476ad62d7b9f72885c509c5a416fc25dee597f99f748f9c19f6afbed21826c7",
+        "5be4107585e6fef5cf626672dabee72230befed1b7c844336c9a926d77132a80",
+        "34e76a842c4813b4de8dfa34c8f7557d8c696ef56a3cf3a67ecb4bd5ae275e2f",
+        "f16237cea40f1be5f71af9a47f03f466a30eeacddd611e704851387af08da9c8",
+        "1c9058dc2051fb75935f3684ad0b99ffbbd4ce858dfb13fef853973c85626d61",
+        "247fd9a03430abdfdfaf6ececac73f9d28393917f2215e7f3401843de44e2029",
+        "d75258d426380860d7f5ec55f1f29fd4190150aa940d9d0ca2b0f014a8790769",
+        "34b84afb041a2882786f3a880d18b437c43bc958c81c380525ac7963647435d3",
+        "53d569f9f23632029f4a2f027eb834be7f959bf95dbba829e899e745e5b8d9d2",
         # Operational lessons with graph consolidation, fresh, upgraded in place,
         # and both artifact-import storage boundaries.
         "c7649e1720f7f1b76c6a73079448a9ad3c589e329d9815f2ed9f477bd925feb7",

@@ -7,6 +7,13 @@ import uuid
 
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
+from rcp.storage.digest import (
+    append_digest_event,
+    append_episode_ended,
+    append_question_attention,
+    append_task_failed,
+    digest_link,
+)
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
@@ -723,6 +730,7 @@ class EpisodeStoreMixin:
             self.set_episode_chain_questions_withdrawn_in_connection(
                 connection, episode_id, withdrawn=True
             )
+            append_episode_ended(connection, episode_id, now)
 
     def episode_budget_meter(self, episode_id: str) -> EpisodeBudgetMeter:
         record = self.episode(episode_id)
@@ -766,17 +774,20 @@ class EpisodeStoreMixin:
         assert stopped is not None
         return stopped
 
-    @staticmethod
-    def _withdraw_episode_question_chain(connection: sqlite3.Connection, episode_id: str) -> None:
-        connection.execute(
+    def _withdraw_episode_question_chain(
+        self, connection: sqlite3.Connection, episode_id: str
+    ) -> None:
+        rows = connection.execute(
             """WITH RECURSIVE owners(episode_id) AS (
                 SELECT ? UNION ALL SELECT e.continues_episode_id FROM episodes e
                 JOIN owners o ON e.episode_id=o.episode_id
                 WHERE e.continues_episode_id IS NOT NULL
             ) UPDATE questions SET withdrawn_readonly=1
-            WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners)""",
+            WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners) RETURNING *""",
             (episode_id,),
-        )
+        ).fetchall()
+        for row in rows:
+            append_question_attention(connection, row, self.now())
 
     def _request_episode_stop_in_connection(
         self,
@@ -1125,6 +1136,7 @@ class EpisodeStoreMixin:
             self.set_episode_chain_questions_withdrawn_in_connection(
                 connection, episode_id, withdrawn=True
             )
+            append_episode_ended(connection, episode_id, now)
             self._terminalize_auto_research_child_experiment_with_notice(
                 connection,
                 child_episode_id=episode_id,
@@ -1209,6 +1221,7 @@ class EpisodeStoreMixin:
                     episode_id,
                 ),
             )
+            append_episode_ended(connection, episode_id, now)
             self._terminalize_auto_research_child_experiment_with_notice(
                 connection,
                 child_episode_id=episode_id,
@@ -1313,6 +1326,7 @@ class EpisodeStoreMixin:
             """,
             (now, now, diagnostic, now, now, episode_id),
         )
+        append_episode_ended(connection, episode_id, now)
         self._terminalize_auto_research_child_experiment_with_notice(
             connection,
             child_episode_id=episode_id,
@@ -1523,6 +1537,10 @@ class EpisodeStoreMixin:
                     """,
                     (diagnostic, diagnostic, now, now, operation_id, prior_status),
                 )
+                append_task_failed(
+                    connection, operation_id, now, previous_status=task_row["status"]
+                )
+                append_episode_ended(connection, episode_id, now)
                 self._terminalize_auto_research_child_experiment_with_notice(
                     connection,
                     child_episode_id=episode_id,
@@ -1704,6 +1722,8 @@ class EpisodeStoreMixin:
                 """,
                 (diagnostic, diagnostic, now, now, operation_id),
             )
+            append_task_failed(connection, operation_id, now, previous_status=task_row["status"])
+            append_episode_ended(connection, episode_id, now)
             self._terminalize_auto_research_child_experiment_with_notice(
                 connection,
                 child_episode_id=episode_id,
@@ -1885,6 +1905,10 @@ class EpisodeStoreMixin:
                     """,
                     (error, now, now, attempt_id),
                 )
+            task_status = connection.execute(
+                "SELECT status FROM graph_runs WHERE operation_id=?",
+                (row["allocation_operation_id"],),
+            ).fetchone()[0]
             if provider_auth:
                 connection.execute(
                     """
@@ -1894,6 +1918,9 @@ class EpisodeStoreMixin:
                     WHERE operation_id = ?
                     """,
                     (error, error, now, now, row["allocation_operation_id"]),
+                )
+                append_task_failed(
+                    connection, row["allocation_operation_id"], now, previous_status=task_status
                 )
             final = not provider_auth and (
                 force_final or int(row["attempt_number"]) >= _REPORT_ATTEMPT_LIMIT
@@ -1931,6 +1958,10 @@ class EpisodeStoreMixin:
                     """,
                     (error, error, now, now, row["allocation_operation_id"]),
                 )
+                append_task_failed(
+                    connection, row["allocation_operation_id"], now, previous_status=task_status
+                )
+                append_episode_ended(connection, episode_id, now)
                 self._terminalize_auto_research_child_experiment_with_notice(
                     connection,
                     child_episode_id=episode_id,
@@ -2068,6 +2099,7 @@ class EpisodeStoreMixin:
                 """,
                 (self._status_for_ending(report.ending), now, now, episode.episode_id),
             )
+            append_episode_ended(connection, episode.episode_id, now)
             self._terminalize_auto_research_child_experiment_with_notice(
                 connection,
                 child_episode_id=episode.episode_id,
@@ -2075,6 +2107,24 @@ class EpisodeStoreMixin:
                 ending=report.ending,
                 diagnostic=episode.ending_diagnostic,
                 created_at=now,
+            )
+            append_digest_event(
+                connection,
+                project_id=episode.project_id,
+                kind="episode_report",
+                target=episode.graph_target.key,
+                item_id=report.report_id,
+                created_at=now,
+                payload={
+                    "title": artifact.display_title or "Episode report",
+                    "status": "ready",
+                    "deep_link": digest_link(
+                        episode.project_id,
+                        episode.graph_target.model_dump(),
+                        "episode",
+                        episode.episode_id,
+                    ),
+                },
             )
         stored_episode = self.episode(report.episode_id)
         stored_report = self.episode_report(report.episode_id)

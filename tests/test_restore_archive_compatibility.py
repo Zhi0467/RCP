@@ -247,6 +247,9 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
         for table in (
+            "digest_events",
+            "digest_marks",
+            "digest_heads",
             "consolidation_schedules",
             "consolidation_runs",
             "consolidation_apply_receipts",

@@ -9,6 +9,7 @@ import uuid
 
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ASK_ANSWER_MAX_LENGTH
+from rcp.storage.digest import append_question_attention
 from rcp.storage.question_models import (
     QuestionArgumentConflict,
     QuestionOrigin,
@@ -128,6 +129,13 @@ class QuestionStoreMixin:
                     record.state,
                     record.created_at,
                 ),
+            )
+            append_question_attention(
+                connection,
+                connection.execute(
+                    "SELECT * FROM questions WHERE question_id=?", (record.question_id,)
+                ).fetchone(),
+                self.now(),
             )
         return record
 
@@ -272,11 +280,11 @@ class QuestionStoreMixin:
                     question_id,
                 ),
             )
-            return _question_record(
-                connection.execute(
-                    "SELECT * FROM questions WHERE question_id=?", (question_id,)
-                ).fetchone()
-            )
+            updated = connection.execute(
+                "SELECT * FROM questions WHERE question_id=?", (question_id,)
+            ).fetchone()
+            append_question_attention(connection, updated, self.now())
+            return _question_record(updated)
 
     def record_question_receipt(
         self,
@@ -467,11 +475,14 @@ class QuestionStoreMixin:
         never moves to a new episode and resolved cards never become pending.
         """
         with self.connection() as connection:
-            return connection.execute(
+            rows = connection.execute(
                 """UPDATE questions SET withdrawn_readonly=?
-                WHERE project_id=? AND owner_kind='episode' AND owner_id=?""",
+                WHERE project_id=? AND owner_kind='episode' AND owner_id=? RETURNING *""",
                 (withdrawn, project_id, episode_id),
-            ).rowcount
+            ).fetchall()
+            for row in rows:
+                append_question_attention(connection, row, self.now())
+            return len(rows)
 
     def episode_questions(self, project_id: str, episode_id: str) -> list[QuestionRecord]:
         """Read this continuation's questions without moving their original bindings."""
@@ -493,15 +504,17 @@ class QuestionStoreMixin:
         """Change answerability atomically with an ending or continuation creation."""
         if not connection.in_transaction:
             raise ValueError("episode question lifecycle requires an active transaction")
-        connection.execute(
+        rows = connection.execute(
             _EPISODE_ANCESTORS
             + """UPDATE questions SET withdrawn_readonly=?
                 WHERE owner_kind='episode' AND EXISTS (
                     SELECT 1 FROM ancestors WHERE ancestors.episode_id=questions.owner_id
                     AND ancestors.project_id=questions.project_id
-                )""",
+                ) RETURNING *""",
             (episode_id, withdrawn),
-        )
+        ).fetchall()
+        for row in rows:
+            append_question_attention(connection, row, self.now())
 
     def withdraw_episode_question_if_ended(self, question_id: str) -> bool:
         """Close a question whose creation raced its episode's ending fence.
@@ -510,14 +523,15 @@ class QuestionStoreMixin:
         ending sees the newly inserted question. Only this card is affected.
         """
         with self.connection() as connection:
-            return bool(
-                connection.execute(
-                    """UPDATE questions SET withdrawn_readonly=1
+            rows = connection.execute(
+                """UPDATE questions SET withdrawn_readonly=1
                 WHERE question_id=? AND owner_kind='episode' AND EXISTS (
                     SELECT 1 FROM episodes WHERE episodes.episode_id=questions.owner_id
                     AND episodes.project_id=questions.project_id
                     AND (status!='running' OR ending IS NOT NULL OR stop_requested_at IS NOT NULL)
-                )""",
-                    (question_id,),
-                ).rowcount
-            )
+                ) RETURNING *""",
+                (question_id,),
+            ).fetchall()
+            for row in rows:
+                append_question_attention(connection, row, self.now())
+            return bool(rows)

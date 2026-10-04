@@ -99,6 +99,9 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "notification_question_events",
         # Questions bind to source-machine sessions and turns.
         "questions",
+        "digest_events",
+        "digest_marks",
+        "digest_heads",
         "consolidation_schedules",
         "consolidation_runs",
         "consolidation_apply_receipts",
