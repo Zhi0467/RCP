@@ -67,6 +67,7 @@ class ConnectRequest(PurposesRequest, ServiceAddress):
     model_config = ConfigDict(extra="forbid", strict=True)
     model: str | None = Field(default=None, max_length=200)
     delegation_model: ModelId | None = None
+    live_model: ModelId | None = None
 
     def configuration(self) -> dict:
         address = self.address()
@@ -205,11 +206,10 @@ async def check_purposes(connection: dict, key: str, added: list[str]) -> dict:
         raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
     if "voice" in connection_purposes(connection):
         # Import locally: voice uses the shared bounded transport above.
-        from rcp.voice import check_voice_connection, require_openai
+        from rcp.voice import require_openai
 
+        # The voice models are checked by the route, with the key that will run them.
         require_openai(connection)
-        if "voice" in added:
-            await check_voice_connection(connection, key)
     result = {"formats": [], **connection}
     if "transcription" in added:
         result["formats"] = await check_transcription(connection, key)
@@ -243,11 +243,15 @@ async def check_transcription(connection: dict, key: str) -> list[str]:
 # Provider model lists carry ids but no capability flags, so names pick the
 # candidates; the connection check still decides whether a chosen id works.
 _TRANSCRIPTION_HINTS = ("transcribe", "whisper")
-_NOT_DELEGATION = ("transcribe", "tts", "audio", "realtime", "live", "image", "search")
+# Streaming-only and speaker-labelling models cannot answer one uploaded file.
+_NOT_DICTATION = ("diarize", "live", "realtime")
+_NOT_DELEGATION = ("transcribe", "tts", "audio", "realtime", "live", "image", "search", "instruct")
+# A dated snapshot repeats its alias, so only aliases are offered as thinking models.
+_DATED_SNAPSHOT = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
 
 async def list_models(connection: dict, key: str) -> dict[str, list[str]]:
-    """The provider's current model ids, split into dictation and delegation candidates."""
+    """The provider's current model ids, split into dictation, delegation, and live candidates."""
     base = checked_address(connection["base_url"])
     headers = {"Accept-Encoding": "identity"}
     gemini = connection["kind"] == "gemini"
@@ -285,15 +289,29 @@ async def list_models(connection: dict, key: str) -> dict[str, list[str]]:
             and not (key and key in item)
         }
     )
-    named = [i for i in ids if any(h in i for h in _TRANSCRIPTION_HINTS) and "diarize" not in i]
-    # Gemini and custom servers transcribe through general models too: named ones first.
-    open_list = gemini or connection["preset"] == "custom"
+    named = [
+        i
+        for i in ids
+        if any(h in i for h in _TRANSCRIPTION_HINTS) and not any(w in i for w in _NOT_DICTATION)
+    ]
+    # RCP sends audio without an instruction, which only transcribe models answer, so a
+    # known provider lists those; a custom server's names are unknown, so it lists all.
+    open_list = connection["preset"] == "custom"
     delegation = []
     if connection["preset"] == "openai":
+        # Newest first; gpt-3 models predate delegation.
         delegation = [
-            i for i in ids if re.match(r"gpt-\d", i) and not any(w in i for w in _NOT_DELEGATION)
+            i
+            for i in reversed(ids)
+            if re.match(r"gpt-[4-9]", i)
+            and not _DATED_SNAPSHOT.search(i)
+            and not any(w in i for w in _NOT_DELEGATION)
         ]
+    live = []
+    if connection["preset"] == "openai":
+        live = [i for i in reversed(ids) if i.startswith("gpt-live") and "transcribe" not in i]
     return {
         "transcription": named + [i for i in ids if i not in named] if open_list else named,
         "delegation": delegation,
+        "live": live,
     }

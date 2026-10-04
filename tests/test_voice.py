@@ -58,7 +58,7 @@ def test_session_requires_explicit_voice_purpose(voice_setup):
 def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
     _, private, client = voice_setup
     enable(private)
-    private.voice_settings(VoiceSettings(delegation_model="chosen-model"))
+    private.voice_settings(VoiceSettings(delegation_model="chosen-model", live_model="gpt-live-2"))
     before = {p: p.read_bytes() for p in private.root.rglob("*") if p.is_file()}
 
     def handler(request):
@@ -66,7 +66,7 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
         assert request.headers["authorization"] == f"Bearer {KEY}"
         payload = json.loads(request.content)
         assert payload["transport"] == {"type": "webrtc", "sdp": OFFER["sdp_offer"]}
-        assert payload["session"]["model"] == "gpt-live-1"
+        assert payload["session"]["model"] == "gpt-live-2"
         delegation = payload["session"]["delegation"]
         assert delegation["type"] == "responses"
         assert delegation["responses"]["model"] == "chosen-model"
@@ -290,6 +290,9 @@ def test_model_lists_filter_by_purpose_and_hide_retiring_ids(voice_setup, monkey
         {"id": "gpt-6-sol"},
         {"id": "gpt-live-1"},
         {"id": "gpt-old-transcribe", "shutdown_date": "2026-11-01"},
+        {"id": "gpt-live-transcribe"},
+        {"id": "gpt-6-sol-2026-08-01"},
+        {"id": "gpt-3.5-turbo-instruct"},
         {"id": "text-embedding-3"},
         {"id": f"gpt-6-{KEY}"},
     ]
@@ -309,9 +312,11 @@ def test_model_lists_filter_by_purpose_and_hide_retiring_ids(voice_setup, monkey
     mock_transport(monkeypatch, handler)
     openai = {"kind": "openai_compatible", "preset": "openai", "key": KEY}
     response = client.post("/api/service-connections/models", json=openai)
+    # Streaming-only, dated, and pre-delegation ids drop out; newest models come first.
     assert response.json() == {
         "transcription": ["gpt-transcribe", "whisper-1"],
-        "delegation": ["gpt-6-luna", "gpt-6-sol"],
+        "delegation": ["gpt-6-sol", "gpt-6-luna"],
+        "live": ["gpt-live-1"],
     }
     assert KEY not in response.text
     item = connection()
@@ -320,8 +325,9 @@ def test_model_lists_filter_by_purpose_and_hide_retiring_ids(voice_setup, monkey
     assert stored.json() == response.json()
     gemini = client.post("/api/service-connections/models", json={"kind": "gemini", "key": KEY})
     assert gemini.json() == {
-        "transcription": ["gemini-3.5-transcribe", "gemini-3.5-flash"],
+        "transcription": ["gemini-3.5-transcribe"],
         "delegation": [],
+        "live": [],
     }
 
 

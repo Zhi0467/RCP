@@ -762,9 +762,7 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
 }
 
 /** Send only the fields that changed; the backend keeps the rest. */
-export function saveVoiceSettings(
-  settings: Partial<Omit<VoiceSettings, "live_model">>,
-): Promise<VoiceSettings> {
+export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 

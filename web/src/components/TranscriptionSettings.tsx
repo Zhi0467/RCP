@@ -69,7 +69,7 @@ const SERVICES: Record<
 const MODEL_ROLES = {
   dictation: { label: "Dictation model", hint: "Turns your speech into text." },
   thinking: { label: "Thinking model", hint: "Does the work you ask the voice agent for." },
-  live: { label: "Live voice", hint: "The voice you talk to. RCP sets it." },
+  live: { label: "Live voice", hint: "The voice you talk to." },
 };
 
 function serviceChoice(connection: ServiceConnection): ServiceChoice {
@@ -426,6 +426,7 @@ function ServiceCard({
   const [key, setKey] = useState("");
   const [model, setModel] = useState(editing?.model ?? SERVICES.openai.model);
   const [delegation, setDelegation] = useState(voice?.delegation_model ?? "");
+  const [live, setLive] = useState(voice?.live_model ?? "");
   const [baseUrl, setBaseUrl] = useState(editing?.base_url ?? "");
   // The address as last left, so a half-typed host never receives the key.
   const [listUrl, setListUrl] = useState("");
@@ -443,7 +444,7 @@ function ServiceCard({
   const ready =
     Boolean(address) &&
     (!dictation || Boolean(model.trim())) &&
-    (!openai || Boolean(delegation.trim()));
+    (!openai || (Boolean(delegation.trim()) && Boolean(live.trim())));
   const destination = custom ? "the server at this address" : service.label;
   const close = () => {
     if (!busy) onClose();
@@ -485,12 +486,15 @@ function ServiceCard({
     setBusy(true);
     setError(null);
     try {
-      const delegationModel = openai ? delegation.trim() : undefined;
+      // The voice models are OpenAI account settings, sent with any OpenAI key.
+      const voiceModels = openai
+        ? { delegation_model: delegation.trim(), live_model: live.trim() }
+        : {};
       if (editing) {
         await updateServiceConnection(editing.id, {
           purposes: editing.purposes,
           model: dictation ? model.trim() : undefined,
-          delegation_model: delegationModel,
+          ...voiceModels,
         });
       } else {
         await connectServiceConnection({
@@ -500,7 +504,7 @@ function ServiceCard({
           model: model.trim(),
           key: key.trim(),
           purposes: ["transcription"],
-          delegation_model: delegationModel,
+          ...voiceModels,
         });
       }
       setKey("");
@@ -624,15 +628,13 @@ function ServiceCard({
                 listed={models?.delegation ?? null}
                 {...fieldState}
               />
-              {voice ? (
-                <div className="service-model-field">
-                  <label>
-                    {MODEL_ROLES.live.label}
-                    <input type="text" value={voice.live_model} readOnly disabled />
-                  </label>
-                  <p>{MODEL_ROLES.live.hint}</p>
-                </div>
-              ) : null}
+              <ModelField
+                role="live"
+                value={live}
+                onChange={setLive}
+                listed={models?.live ?? null}
+                {...fieldState}
+              />
             </>
           ) : null}
           {dictation ? (
@@ -650,7 +652,7 @@ function ServiceCard({
           ) : null}
           <p>
             {openai
-              ? "RCP checks dictation with two short test clips, and the thinking model with OpenAI, before saving. Pick what each service is used for after connecting."
+              ? "RCP checks dictation with two short test clips, and the voice models with OpenAI, before saving. Pick what each service is used for after connecting."
               : "RCP checks dictation with two short test clips before saving. Pick what each service is used for after connecting."}
           </p>
         </div>

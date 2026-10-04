@@ -3254,8 +3254,9 @@ export interface ServiceConnectionCreateRequest {
   model: string;
   key: string;
   purposes: ServiceConnectionPurpose[];
-  /** The voice agent's thinking model; sent only with the `voice` purpose. */
+  /** The voice agent's models; sent only for an OpenAI key. */
   delegation_model?: string;
+  live_model?: string;
 }
 
 /** A saved connection's uses and models; RCP rechecks only what changed. */
@@ -3263,6 +3264,7 @@ export interface ServiceConnectionUpdate {
   purposes: ServiceConnectionPurpose[];
   model?: string;
   delegation_model?: string;
+  live_model?: string;
 }
 
 /** Where a service lives and its key, before anything is saved. */
@@ -3275,6 +3277,7 @@ export type ServiceAddress = Pick<
 export interface ServiceModels {
   transcription: string[];
   delegation: string[];
+  live: string[];
 }
 
 export interface TranscriptionResult {
@@ -3285,7 +3288,7 @@ export interface TranscriptionResult {
 export interface VoiceSettings {
   delegation_model: string;
   confirm: "tap" | "none";
-  /** The voice the member talks to; fixed by RCP, shown read-only. */
+  /** The live voice model the member talks to. */
   live_model: string;
 }
 

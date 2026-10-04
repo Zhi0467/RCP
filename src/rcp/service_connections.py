@@ -35,7 +35,14 @@ class PurposesRequest(BaseModel):
 class VoiceSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     delegation_model: ModelId = "gpt-6-luna"
+    live_model: ModelId = "gpt-live-1"
     confirm: Literal["tap", "none"] = "tap"
+
+
+# Account-level voice models: the live voice and the model it hands work to.
+VOICE_MODELS = ("live_model", "delegation_model")
+# (each VOICE_MODELS value, voice connection id) as a check saw them.
+VoiceCheck = tuple[tuple[str, ...], str | None]
 
 
 def connection_purposes(connection: dict) -> list[str]:
@@ -144,34 +151,33 @@ class ServiceConnections:
         self,
         previous: dict,
         checked: dict,
-        delegation_model: str | None = None,
-        checked_delegation: tuple[str, str | None] | None = None,
+        voice_models: dict[str, str] | None = None,
+        voice_check: VoiceCheck | None = None,
     ) -> dict:
         with self.locked():
             if self._connection(previous["id"]) != previous:
                 raise ConnectionError("connection_changed", 409)
-            self._require_delegation(checked_delegation)
+            self._require_voice_check(voice_check)
             self._publish(checked)
-            self._write_delegation(delegation_model)
+            self._write_voice_models(voice_models)
             return checked
 
-    def _require_delegation(self, checked: tuple[str, str | None] | None) -> None:
-        # The thinking model was checked as (model, voice connection id); a concurrent
-        # change to either means the check no longer proves the saved setting works.
+    def _require_voice_check(self, checked: VoiceCheck | None) -> None:
+        # Voice models were checked against these values and this voice connection; a
+        # concurrent change to any of them means the check no longer proves they work.
         if checked is None:
             return
-        model = VoiceSettings.model_validate(self._settings().get("voice", {})).delegation_model
-        if (model, self._voice_connection_id()) != checked:
+        saved = VoiceSettings.model_validate(self._settings().get("voice", {}))
+        models = tuple(getattr(saved, name) for name in VOICE_MODELS)
+        if (models, self._voice_connection_id()) != checked:
             raise ConnectionError("connection_changed", 409)
 
     def _voice_connection_id(self) -> str | None:
         return next((c["id"] for c in self._connections() if "voice" in c["purposes"]), None)
 
-    def _write_delegation(self, model: str | None) -> None:
-        if model is not None:
-            self._write_setting(
-                "voice", {**self._settings().get("voice", {}), "delegation_model": model}
-            )
+    def _write_voice_models(self, models: dict[str, str] | None) -> None:
+        if models:
+            self._write_setting("voice", {**self._settings().get("voice", {}), **models})
 
     def summary(self) -> dict:
         with self.locked():
@@ -191,17 +197,17 @@ class ServiceConnections:
         self,
         connection: dict,
         key: str,
-        delegation_model: str | None = None,
-        checked_delegation: tuple[str, str | None] | None = None,
+        voice_models: dict[str, str] | None = None,
+        voice_check: VoiceCheck | None = None,
     ) -> None:
         with self.locked():
-            self._require_delegation(checked_delegation)
+            self._require_voice_check(voice_check)
             path = self.root / "connections" / _component(connection["id"])
             self._mkdir(path)
             _write_private(path / "key", key)
             # Publish the metadata last: incomplete writes are not usable connections.
             self._publish(connection)
-            self._write_delegation(delegation_model)
+            self._write_voice_models(voice_models)
 
     def select(self, connection_id: str) -> dict:
         with self.locked():

@@ -13,7 +13,14 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
 from rcp.api.dependencies import get_identity_access, get_store
-from rcp.service_connections import ConnectionError, ModelId, PurposesRequest, ServiceConnections
+from rcp.service_connections import (
+    VOICE_MODELS,
+    ConnectionError,
+    ModelId,
+    PurposesRequest,
+    ServiceConnections,
+    VoiceCheck,
+)
 from rcp.transcription import (
     FORMATS,
     ConnectRequest,
@@ -23,7 +30,7 @@ from rcp.transcription import (
     list_models,
     transcribe,
 )
-from rcp.voice import check_delegation_model
+from rcp.voice import check_voice_model
 
 
 class ServiceConnectionRoute(APIRoute):
@@ -81,36 +88,43 @@ async def connect(request: Request, body: ConnectRequest):
     with transcription_slot(store):
         connection = await check_connection(body)
         key = body.key.get_secret_value()
-        changed, saved = await checked_delegation(
-            store, connection, key, "voice" in body.purposes, body.delegation_model
+        requested = {name: getattr(body, name) for name in VOICE_MODELS}
+        changed, check = await checked_voice_models(
+            store, connection, key, "voice" in body.purposes, requested
         )
-        store.save(connection, key, changed, saved)
+        store.save(connection, key, changed, check)
     return connection
 
 
-async def checked_delegation(
-    store: ServiceConnections, connection: dict, key: str, voice_added: bool, requested: str | None
-) -> tuple[str | None, tuple[str, str | None] | None]:
-    """Check the thinking model where it runs.
+async def checked_voice_models(
+    store: ServiceConnections, connection: dict, key: str, voice_added: bool, requested: dict
+) -> tuple[dict[str, str], VoiceCheck | None]:
+    """Check the voice models where they run.
 
-    It is one member setting used by whichever connection runs voice: a new
-    voice connection must reach the current value, and a new value is checked
-    with the voice connection's key, or with this one when none runs voice.
-    Returns the new value or None, and the (model, voice connection id) the
-    check saw, which the save requires unchanged.
+    They are member settings used by whichever connection runs voice: a new
+    voice connection must reach every current value, and a new value is
+    checked with the voice connection's key, or with this one when none runs
+    voice. Returns the changed values and the (values, voice connection id)
+    the check saw, which the save requires unchanged.
     """
-    saved = store.voice_settings()["delegation_model"]
+    saved = store.voice_settings()
     payer, payer_key = None, None
     with suppress(ConnectionError):
         payer, payer_key = store.voice_credentials()
-    changed = requested if requested not in (None, saved) else None
+    changed = {
+        name: requested[name]
+        for name in VOICE_MODELS
+        if requested.get(name) not in (None, saved[name])
+    }
     if voice_added:
-        await check_delegation_model(connection, key, changed or saved)
-    elif changed is not None:
-        await check_delegation_model(payer or connection, payer_key or key, changed)
+        checker = (connection, key, {**{n: saved[n] for n in VOICE_MODELS}, **changed})
+    elif changed:
+        checker = (payer or connection, payer_key or key, changed)
     else:
-        return None, None
-    return changed, (saved, payer["id"] if payer else None)
+        return {}, None
+    for model in checker[2].values():
+        await check_voice_model(checker[0], checker[1], model)
+    return changed, (tuple(saved[n] for n in VOICE_MODELS), payer["id"] if payer else None)
 
 
 @router.post("/models")
@@ -148,6 +162,7 @@ def select(request: Request, body: SelectionRequest):
 class ConnectionUpdate(PurposesRequest):
     model: ModelId | None = None
     delegation_model: ModelId | None = None
+    live_model: ModelId | None = None
 
 
 @router.put("/{connection_id}")
@@ -162,10 +177,11 @@ async def update_connection(request: Request, connection_id: str, body: Connecti
             current["model"] = body.model
             added = list(dict.fromkeys([*added, "transcription"]))
         checked = await check_purposes(current, key, added)
-        changed, saved = await checked_delegation(
-            store, current, key, "voice" in added, body.delegation_model
+        requested = {name: getattr(body, name) for name in VOICE_MODELS}
+        changed, check = await checked_voice_models(
+            store, current, key, "voice" in added, requested
         )
-        return store.update_connection(previous, checked, changed, saved)
+        return store.update_connection(previous, checked, changed, check)
 
 
 async def read_audio(request: Request, formats: list[str]) -> tuple[bytes, str]:

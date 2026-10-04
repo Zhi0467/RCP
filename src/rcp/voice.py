@@ -13,7 +13,6 @@ from rcp import limits
 from rcp.service_connections import ConnectionError
 from rcp.transcription import PRESETS, service_request
 
-MODEL = "gpt-live-1"
 INSTRUCTIONS = (
     "You are RCP's voice assistant, acting as the authenticated member. "
     "Act only through the supplied tools; delegate actions to the tool backend. "
@@ -73,19 +72,8 @@ async def _request(connection: dict, key: str, method: str, path: str, **kwargs)
         ) from None
 
 
-async def check_voice_connection(connection: dict, key: str) -> None:
+async def check_voice_model(connection: dict, key: str, model: str) -> None:
     # An authenticated model lookup checks access without starting a paid session.
-    try:
-        body = await _request(connection, key, "GET", f"models/{MODEL}")
-        if body.get("id") != MODEL:
-            raise ConnectionError("voice_upstream_failed", 502)
-    except ConnectionError:
-        raise ConnectionError(
-            "connection_check_failed", 422, "The voice connection check failed."
-        ) from None
-
-
-async def check_delegation_model(connection: dict, key: str, model: str) -> None:
     if key and key in model:
         raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
     try:
@@ -94,11 +82,11 @@ async def check_delegation_model(connection: dict, key: str, model: str) -> None
             raise ConnectionError("voice_upstream_failed", 502)
     except ConnectionError:
         raise ConnectionError(
-            "connection_check_failed", 422, "OpenAI does not offer that thinking model to this key."
+            "connection_check_failed", 422, f"OpenAI does not offer {model} to this key."
         ) from None
 
 
-async def create_session(connection: dict, key: str, model: str, offer: SessionRequest) -> str:
+async def create_session(connection: dict, key: str, settings: dict, offer: SessionRequest) -> str:
     body = await _request(
         connection,
         key,
@@ -106,7 +94,7 @@ async def create_session(connection: dict, key: str, model: str, offer: SessionR
         "live/sessions",
         json={
             "session": {
-                "model": MODEL,
+                "model": settings["live_model"],
                 # MediaSessionConfig exposes no configurable duration limit.
                 # The page enforces VOICE_HARD_CAP_SECONDS and closes on hiding.
                 "store": False,
@@ -114,7 +102,7 @@ async def create_session(connection: dict, key: str, model: str, offer: SessionR
                 "delegation": {
                     "type": "responses",
                     "responses": {
-                        "model": model,
+                        "model": settings["delegation_model"],
                         "instructions": INSTRUCTIONS,
                         "parallel_tool_calls": False,
                         "tools": [tool.model_dump() for tool in offer.tools],
