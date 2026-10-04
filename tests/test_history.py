@@ -14,6 +14,7 @@ import rcp.config as config_module
 from rcp.config import load_manifest
 from rcp.core.models import GraphState, Patch, ValidationMessage
 from rcp.core.operations import operation_dict
+from rcp.core.research_md import render_research_md
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import GraphTransitionManager
 from rcp.history import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
@@ -738,6 +739,17 @@ def _supporting_edge(evidence_id: str) -> dict[str, object]:
 def test_agent_can_prune_evidence(manifest, operation) -> None:
     history = _seeded_history(manifest)
     history.append(
+        _approval_patch(
+            [
+                {
+                    "op": "set_standing",
+                    "node_id": "hyp/replanning-restores-plasticity",
+                    "standing": "accepted",
+                }
+            ]
+        )
+    )
+    history.append(
         _agent_patch(
             [
                 {
@@ -780,6 +792,10 @@ def test_agent_can_prune_evidence(manifest, operation) -> None:
         assert state.nodes["ev/duplicate"].validity == "superseded"
         assert f"ev/duplicate::{relation}::ev/canonical" in state.edges
     assert state.nodes["ev/canonical"].validity == "qualified"
+    # The research rendering drops retired Evidence and keeps its replacement.
+    research = render_research_md(state)
+    assert "Result ev/canonical" in research
+    assert "Result ev/duplicate" not in research
     replayed = HistoryManager(manifest).state()
     assert replayed.replay_status == "complete"
     assert replayed.nodes == state.nodes

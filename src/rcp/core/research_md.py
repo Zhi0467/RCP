@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from rcp.core.models import Decision, Evidence, GraphState, Hypothesis, ResearchQuestion, Standing
-from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
+from rcp.core.roles import BELIEF_OUTCOME_RELATIONS, RETIRED_VALUE, lifecycle_field
 
 
 def render_research_md(state: GraphState) -> str:
@@ -35,6 +35,7 @@ def render_research_md(state: GraphState) -> str:
         target = state.nodes.get(edge.target)
         if (
             not isinstance(source, Evidence)
+            or getattr(source, lifecycle_field(source.type)) == RETIRED_VALUE
             or not isinstance(target, Hypothesis)
             or target.standing != Standing.ACCEPTED
             or edge.relation not in BELIEF_OUTCOME_RELATIONS
