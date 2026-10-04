@@ -129,6 +129,7 @@ def close_chat_browser_owners(
     chat_id: str | None = None,
     *,
     delete_profile: bool,
+    unless_browser_on: bool = False,
 ) -> None:
     """Persist cleanup before attempting it; an active turn retains its admitted browser."""
     with store.connection() as connection:
@@ -137,6 +138,14 @@ def close_chat_browser_owners(
         if chat_id is not None:
             condition += " AND chat_id = ?"
             values += (chat_id,)
+        if unless_browser_on:
+            # Checked in the marking statement, so a concurrent re-enable wins.
+            condition += (
+                " AND NOT EXISTS (SELECT 1 FROM chat_browser_preferences AS preference "
+                "WHERE preference.project_id = browser_owners.project_id "
+                "AND preference.chat_id = browser_owners.chat_id "
+                "AND preference.browser_requested = 1)"
+            )
         connection.execute(
             "UPDATE browser_owners SET close_requested = 1, "
             "project_deletion_requested = MAX(project_deletion_requested, ?), "
@@ -239,13 +248,10 @@ def _record_browser_finish(store: AppStore, operation_id: str, status: BrowserTu
     store.record_agent_task_receipt(operation_id, "browser_status", status.model_dump(mode="json"))
     task = store.agent_task(operation_id)
     chat_id = task.request.get("chat_id") if task is not None else None
-    if (
-        task is not None
-        and task.episode_id is None
-        and chat_id is not None
-        and not store.chat_browser_requested(task.project_id, chat_id)
-    ):
-        close_chat_browser_owners(store, task.project_id, chat_id, delete_profile=True)
+    if task is not None and task.episode_id is None and chat_id is not None:
+        close_chat_browser_owners(
+            store, task.project_id, chat_id, delete_profile=True, unless_browser_on=True
+        )
     retry_browser_cleanup(store, finished_operation_id=operation_id)
 
 

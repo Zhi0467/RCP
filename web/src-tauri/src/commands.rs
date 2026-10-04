@@ -865,8 +865,9 @@ pub async fn desktop_owner_sign_in(
     if !is_personal_origin(&current, &status.base_url, cfg!(debug_assertions))? {
         return Err("owner sign-in requires the personal window".into());
     }
+    // Redeem installs its session; connecting again would mint a second one.
     crate::owner_session::redeem(&app, &status, &code).await?;
-    backend::connect(&app, &state, "Leave it running").await
+    refresh_personal_status(&state, status).await
 }
 
 #[tauri::command]

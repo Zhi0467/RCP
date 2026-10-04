@@ -209,6 +209,28 @@ def test_archive_cleanup_is_deferred_and_unreachable_cleanup_is_retained(
     assert store.browser_owners(task.project_id)[0]["close_requested"] == 1
 
 
+def test_off_cleanup_spares_a_browser_turned_back_on(tmp_path, monkeypatch):
+    from rcp.api.chats import _delete_browser_if_still_off
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    owner = BrowserOwnerKey(
+        space_id=store.space_id, project_id="project", stage_name="chat", host_key="local"
+    )
+    store.record_browser_owner(
+        owner,
+        execution_host="",
+        workspace_dir=str(tmp_path / "workspace"),
+        stage_root=str(tmp_path),
+        chat_id="chat",
+    )
+    store.set_chat_browser_requested("project", "chat", browser_requested=True)
+    # The off request read its preference before the re-enable committed.
+    monkeypatch.setattr(store, "chat_browser_requested", lambda *_args: False)
+    monkeypatch.setattr(browser_runtime_seam, "close_browser_owner", lambda *a, **kw: None)
+    _delete_browser_if_still_off(store, "project", "chat")
+    assert store.browser_owners("project")[0]["close_requested"] == 0
+
+
 def test_ssh_owner_identity_resolves_host_and_account(monkeypatch):
     monkeypatch.setattr(
         "rcp.runs.browser_lifecycle.subprocess.run",

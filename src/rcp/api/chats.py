@@ -167,8 +167,9 @@ def set_chat_browser(
 
 
 def _delete_browser_if_still_off(store: AppStore, project_id: str, chat_id: str) -> None:
-    if not store.chat_browser_requested(project_id, chat_id):
-        close_chat_browser_owners(store, project_id, chat_id, delete_profile=True)
+    close_chat_browser_owners(
+        store, project_id, chat_id, delete_profile=True, unless_browser_on=True
+    )
 
 
 @router.post(
