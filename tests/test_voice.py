@@ -412,3 +412,36 @@ def test_thinking_model_is_checked_with_the_voice_key_and_refuses_a_concurrent_c
     response = client.put(path, json={**body, "delegation_model": "gpt-6-nova"})
     assert response.status_code == 409, response.text
     assert private.voice_settings()["delegation_model"] == "gpt-6-luna"
+
+
+def test_model_only_save_keeps_uses_changed_elsewhere(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    stale = enable(private)
+    mock_transport(monkeypatch, lambda request: reply({"id": request.url.path.rsplit("/", 1)[1]}))
+    # Another tab moves voice to a second connection while this card is open.
+    moved = connection()
+    private.save(moved, "moved-test-secret-never-real")
+    current = private.update_connection(moved, {**moved, "purposes": ["voice"]})
+    assert private.credentials(stale["id"])[0]["purposes"] == []
+    path = f"/api/service-connections/{stale['id']}"
+    response = client.put(path, json={"delegation_model": "gpt-6-sol"})
+    assert response.status_code == 200, response.text
+    assert private.credentials(stale["id"])[0]["purposes"] == []
+    assert private.voice_credentials()[0]["id"] == current["id"]
+
+
+def test_edited_key_in_a_voice_model_is_refused_before_the_payer_checks_it(
+    voice_setup, monkeypatch
+):
+    _, private, client = voice_setup
+    enable(private)
+    other_key = "other-test-secret-never-real"
+    other = connection()
+    private.save(other, other_key)
+    seen = []
+    mock_transport(monkeypatch, lambda request: seen.append(request.url) or reply({}))
+    path = f"/api/service-connections/{other['id']}"
+    response = client.put(path, json={"delegation_model": f"gpt-{other_key}"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "connection_check_failed"
+    assert other_key not in response.text and seen == []

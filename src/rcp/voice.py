@@ -72,17 +72,22 @@ async def _request(connection: dict, key: str, method: str, path: str, **kwargs)
         ) from None
 
 
+def refuse_key_in_model(model: str, *keys: str) -> None:
+    # A key pasted into a model field must never reach a URL or an error message.
+    if any(key and key in model for key in keys):
+        raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
+
+
 async def check_voice_model(connection: dict, key: str, model: str) -> None:
     # An authenticated model lookup checks access without starting a paid session.
-    if key and key in model:
-        raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
+    refuse_key_in_model(model, key)
     try:
         body = await _request(connection, key, "GET", f"models/{quote(model, safe='')}")
         if body.get("id") != model:
             raise ConnectionError("voice_upstream_failed", 502)
     except ConnectionError:
         raise ConnectionError(
-            "connection_check_failed", 422, f"OpenAI does not offer {model} to this key."
+            "connection_check_failed", 422, "OpenAI does not offer this model to this key."
         ) from None
 
 

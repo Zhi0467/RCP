@@ -3261,7 +3261,8 @@ export interface ServiceConnectionCreateRequest {
 
 /** A saved connection's uses and models; RCP rechecks only what changed. */
 export interface ServiceConnectionUpdate {
-  purposes: ServiceConnectionPurpose[];
+  /** Omitted keeps the stored uses. */
+  purposes?: ServiceConnectionPurpose[];
   model?: string;
   delegation_model?: string;
   live_model?: string;

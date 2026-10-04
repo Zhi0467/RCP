@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import threading
 from contextlib import contextmanager, suppress
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp import limits
 from rcp.api.dependencies import get_identity_access, get_store
@@ -30,7 +31,7 @@ from rcp.transcription import (
     list_models,
     transcribe,
 )
-from rcp.voice import check_voice_model
+from rcp.voice import check_voice_model, refuse_key_in_model
 
 
 class ServiceConnectionRoute(APIRoute):
@@ -123,6 +124,8 @@ async def checked_voice_models(
     else:
         return {}, None
     for model in checker[2].values():
+        # The payer's key may check the value, but the edited key must not be in it either.
+        refuse_key_in_model(model, key)
         await check_voice_model(checker[0], checker[1], model)
     return changed, (tuple(saved[n] for n in VOICE_MODELS), payer["id"] if payer else None)
 
@@ -160,6 +163,8 @@ def select(request: Request, body: SelectionRequest):
 
 
 class ConnectionUpdate(PurposesRequest):
+    # Omitted keeps the stored uses, so a model-only save never replays stale ones.
+    purposes: list[Literal["transcription", "voice"]] | None = Field(default=None, max_length=2)
     model: ModelId | None = None
     delegation_model: ModelId | None = None
     live_model: ModelId | None = None
@@ -171,9 +176,10 @@ async def update_connection(request: Request, connection_id: str, body: Connecti
     store = connections(request)
     with transcription_slot(store):
         previous, key = store.credentials(connection_id)
-        current = {**previous, "purposes": body.purposes}
-        added = [purpose for purpose in body.purposes if purpose not in previous["purposes"]]
-        if "transcription" in body.purposes and body.model not in (None, previous["model"]):
+        purposes = previous["purposes"] if body.purposes is None else body.purposes
+        current = {**previous, "purposes": purposes}
+        added = [purpose for purpose in purposes if purpose not in previous["purposes"]]
+        if "transcription" in purposes and body.model not in (None, previous["model"]):
             current["model"] = body.model
             added = list(dict.fromkeys([*added, "transcription"]))
         checked = await check_purposes(current, key, added)

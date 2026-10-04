@@ -27,7 +27,7 @@ class PurposesRequest(BaseModel):
     @field_validator("purposes")
     @classmethod
     def unique_purposes(cls, value):
-        if len(set(value)) != len(value):
+        if value is not None and len(set(value)) != len(value):
             raise ValueError("Duplicate purpose")
         return value
 

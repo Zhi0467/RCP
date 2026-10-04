@@ -1530,7 +1530,10 @@ after a key is entered, never sends a key to another service, and lists a
 custom server only once its address field is left. `PUT /api/service-connections/{id}` takes
 `{purposes, model, live_model, delegation_model}` and checks only what changed
 with the stored key: a new dictation model reruns the clips, a new voice model
-reruns the lookup. The key cannot be edited; a new key means disconnecting and
+reruns the lookup. Omitting `purposes` keeps the stored uses, so a model-only
+save from the card never replays uses changed elsewhere. A voice model holding
+the edited connection's key or the voice payer's key is refused before any
+lookup. The key cannot be edited; a new key means disconnecting and
 connecting again. The voice models stay member voice settings, written under
 the same lock as the connection, because one connection holds `voice`; two
 OpenAI connections show and edit the same values.

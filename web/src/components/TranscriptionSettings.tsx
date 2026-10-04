@@ -497,8 +497,8 @@ function ServiceCard({
           }
         : {};
       if (editing) {
+        // Uses belong to Runs on; leaving them out keeps a change made elsewhere.
         await updateServiceConnection(editing.id, {
-          purposes: editing.purposes,
           model: dictation ? changed(model, editing.model) : undefined,
           ...voiceModels,
         });
