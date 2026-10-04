@@ -200,7 +200,7 @@ function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: Di
             Since you last looked
           </span>
           <h2>{digestSummary(digest)}</h2>
-          {digest.mark && <small>Since {formatDigestTime(digest.mark.marked_at)}</small>}
+          {digest.mark && <small>Last caught up {formatDigestTime(digest.mark.marked_at)}</small>}
         </div>
         <button
           className="button primary compact"

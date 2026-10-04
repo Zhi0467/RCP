@@ -89,6 +89,9 @@ deleting another project cannot invalidate a cursor already displayed.
 Events committed after the displayed cursor remain new. The acting member owns
 the mark across devices. This acknowledgment skips project work admission but
 retains global maintenance, membership, and request origin/JSON checks.
+The Overview card labels `marked_at` as the time the member last caught up, shown
+in the browser's time zone; for a new mark it is when the member first opened
+the digest.
 
 Needs you contains new, still-open Proposals, ready/revisit Decisions, open ask
 questions, and episodes needing human action. Changed on main groups accepted
