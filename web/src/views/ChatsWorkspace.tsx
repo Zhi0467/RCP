@@ -3,7 +3,7 @@ import {
   Circle,
   GitBranch,
   Ellipsis,
-  KanbanSquare,
+  Kanban,
   LoaderCircle,
   MessageCircle,
   PanelLeft,
@@ -910,7 +910,7 @@ export function ChatsWorkspace({
               title="Show the agents board"
               type="button"
             >
-              <KanbanSquare size={15} />
+              <Kanban size={15} />
             </button>
             <label className="agent-list-search">
               <Search size={13} aria-hidden="true" />

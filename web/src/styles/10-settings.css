@@ -3506,7 +3506,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
   flex: 1;
 }
 .agents-board-head .agent-list-search {
-  width: min(280px, 50vw);
+  flex: 0 1 auto;
+  width: min(440px, 50vw);
+}
+.agents-board-head .agent-list-search input {
+  font-size: var(--type-base);
+  height: 36px;
+  padding: 0 14px 0 34px;
+  width: 100%;
 }
 .agent-board {
   /* Columns share the tallest one's height, so a drop anywhere below a column lands in it. */
@@ -3632,9 +3639,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   position: relative;
   z-index: 1;
 }
+/* The menu's list drops over the card's own action button, which comes later. */
 .agent-card .agent-row-menu {
   right: auto;
   top: auto;
+  z-index: 2;
 }
 .agent-card-top {
   align-items: start;
