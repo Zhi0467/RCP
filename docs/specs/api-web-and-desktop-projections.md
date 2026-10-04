@@ -19,6 +19,25 @@ fragment. Project locator intent stays in the URL across sign-in. The human
 confirms it before registration. Display-name entry remains a separate action.
 Authenticated `/api/health/details` supplies runtime and project-creation data.
 
+## Agent browser Web consumers
+
+Chat headers read and update `/api/projects/{project_id}/chats/{chat_id}/browser`
+with the `browser_requested` preference. The strict PUT body contains only that
+boolean. The preference exists before the chat has messages. A failed write
+triggers a read to reconcile the server value before another change.
+
+Experiment launch requests and Auto-research episode starts send
+`browser_requested`. Episode responses expose the persisted preference.
+Chat transcript messages and episode tasks expose `browser_status`; the Web
+renders unavailable and lost status on the corresponding turn. Experiment
+Runs loads its exact episode alongside the timeline for those task statuses.
+
+Machine cards independently GET `/api/space/machines/{machine_id}/browser`.
+Their explicit Install action POSTs `{}` to that path's `/install` endpoint
+and replaces readiness with the response. These calls never block the machine
+list or the rest of a card. Unknown readiness and reason codes retain the
+server detail in a generic failure notice.
+
 ## Member terminal API
 
 The project-scoped terminal routes are:

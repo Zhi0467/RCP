@@ -857,3 +857,33 @@ test("a running turn the human did not type holds one progress line until it has
     false,
   );
 });
+
+test("browser status stays on one turn line, including a turn with no answer", () => {
+  const browser_status = { status: "lost", reason_code: "session_unreachable", detail: null };
+  const message = (message_id, operation_id, role, extra = {}) => ({
+    message_id,
+    operation_id,
+    role,
+    text: "",
+    browser_status,
+    ...extra,
+  });
+  const lines = reconcileChatHistoryArtifacts(
+    [
+      message("human", "turn-1", "user"),
+      message("steering", "turn-1", "user", { steering: { label: "delivered" } }),
+      message("answer", "turn-1", "assistant"),
+      message("answer-2", "turn-1", "assistant"),
+      message("failed", "turn-2", "user"),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    lines.filter((line) => line.browserStatus).map((line) => line.lineId),
+    ["message:answer", "message:failed"],
+  );
+  assert.equal(
+    lines.find((line) => line.lineId === "message:answer").browserStatus,
+    browser_status,
+  );
+});

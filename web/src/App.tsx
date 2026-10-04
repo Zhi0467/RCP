@@ -3398,6 +3398,7 @@ export default function App() {
       node: GraphNode,
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
+      browserRequested = false,
     ): Promise<AgentTask> => {
       if (!project || node.type !== "experiment") {
         throw new Error("The requested Experiment is not present in the open project.");
@@ -3432,6 +3433,7 @@ export default function App() {
               // backend then keeps the Experiment node's own limit.
               ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
               ...isolation,
+              browser_requested: browserRequested,
             }),
           },
         );
@@ -3478,9 +3480,14 @@ export default function App() {
     ],
   );
   const runExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number, isolation?: EpisodeIsolationChoice) => {
+    async (
+      node: GraphNode,
+      invocationCeiling?: number,
+      isolation?: EpisodeIsolationChoice,
+      browserRequested = false,
+    ) => {
       try {
-        await startExperiment(node, invocationCeiling, isolation);
+        await startExperiment(node, invocationCeiling, isolation, browserRequested);
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -3538,6 +3545,7 @@ export default function App() {
       invocationCeiling: number,
       startingInstruction: string | null,
       codeWorktree = true,
+      browserRequested = false,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3550,6 +3558,7 @@ export default function App() {
       try {
         const started = await startEpisode(apiBase, {
           mode: "auto_research",
+          browser_requested: browserRequested,
           invocation_ceiling: invocationCeiling,
           starting_instruction: startingInstruction,
           // Omitted, the server turns code isolation on only where it is eligible.
@@ -3589,10 +3598,16 @@ export default function App() {
     invocationCeiling: number,
     startingInstruction: string | null,
     codeWorktree = true,
+    browserRequested = false,
   ) => {
     reportAutoResearchStartError(null);
     try {
-      await startAutoResearch(invocationCeiling, startingInstruction, codeWorktree);
+      await startAutoResearch(
+        invocationCeiling,
+        startingInstruction,
+        codeWorktree,
+        browserRequested,
+      );
     } catch (error) {
       reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
     }
@@ -5190,8 +5205,8 @@ export default function App() {
                 }
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
-                onRunExperiment={(node, invocationCeiling) =>
-                  void runExperiment(node, invocationCeiling)
+                onRunExperiment={(node, invocationCeiling, browserRequested) =>
+                  void runExperiment(node, invocationCeiling, undefined, browserRequested)
                 }
                 onStopExperiment={(nodeId, episodeId) =>
                   void stopExperimentLoop(nodeId, episodeId ?? null)
@@ -5401,7 +5416,9 @@ export default function App() {
                 stageDecisionChoice(draft, graph, node.id, selectedOption),
               )
             }
-            onRunExperiment={(isolation) => void runExperiment(node, undefined, isolation)}
+            onRunExperiment={(isolation, browserRequested) =>
+              void runExperiment(node, undefined, isolation, browserRequested)
+            }
             inheritedIsolation={
               activeBranchEpisode
                 ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
@@ -5483,8 +5500,13 @@ export default function App() {
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
         onClose={closeAutoResearchDialog}
-        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree) =>
-          void authorizeAutoResearch(invocationCeiling, startingInstruction, codeWorktree)
+        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree, browserRequested) =>
+          void authorizeAutoResearch(
+            invocationCeiling,
+            startingInstruction,
+            codeWorktree,
+            browserRequested,
+          )
         }
       />
       {retryTask && retryConfig && (

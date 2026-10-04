@@ -162,6 +162,7 @@ import {
 import { profileRunConfig } from "./AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
+import { BrowserTurnNotice, ChatBrowserControl } from "./BrowserControls";
 import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {
@@ -1652,6 +1653,12 @@ export function NodeChat({
       ) : (
         contextControls(true)
       )}
+      <ChatBrowserControl
+        key={`${project.id}:${chatId}`}
+        apiBase={questionApiBase}
+        chatId={chatId}
+        disabled={readOnly}
+      />
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
           {watcherVisibility.error && <p role="alert">{watcherVisibility.error}</p>}
@@ -1744,6 +1751,7 @@ export function NodeChat({
           const expanded = expandedHumanMessageIds.has(messageId);
           return (
             <div className={`node-chat-line ${line.role}`} key={line.lineId}>
+              <BrowserTurnNotice status={line.browserStatus} />
               {line.role === "human" && line.mode && (
                 <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
               )}

@@ -447,6 +447,7 @@ export function AutoResearchEpisodeCard({
           )}
           {timeline?.episode_id === episode.episode_id && (
             <EpisodeTimeline
+              browserTasks={episode.tasks}
               response={timeline}
               projectId={episode.project_id}
               artifacts={runArtifacts.artifacts}

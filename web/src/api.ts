@@ -1,4 +1,6 @@
 import type {
+  ChatBrowserPreference,
+  MachineBrowserReadiness,
   AgentQuestion,
   AnswerQuestionRequest,
   UpdateNotice,
@@ -850,5 +852,31 @@ export function dismissQuestion(apiBase: string, questionId: string) {
   return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/dismiss`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+export function loadChatBrowser(apiBase: string, chatId: string): Promise<ChatBrowserPreference> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`);
+}
+
+export function setChatBrowser(
+  apiBase: string,
+  chatId: string,
+  browserRequested: boolean,
+): Promise<ChatBrowserPreference> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`, {
+    method: "PUT",
+    body: JSON.stringify({ browser_requested: browserRequested }),
+  });
+}
+
+export function loadMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/browser`);
+}
+
+export function installMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/browser/install`, {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }

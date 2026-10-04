@@ -2386,6 +2386,7 @@ export interface AgentTask {
 }
 
 export interface EpisodeTask extends AgentTask {
+  browser_status?: BrowserTurnStatus | null;
   role: "orchestrator" | "worker" | "wake";
   depth: number;
 }
@@ -2458,6 +2459,7 @@ export interface AutoResearchRecoverySummary {
 }
 
 export interface Episode {
+  browser_requested: boolean;
   code_worktree: boolean;
   graph_isolation: boolean;
   isolation_owner_episode_id: string | null;
@@ -2634,6 +2636,7 @@ export interface EpisodeMessage {
 }
 
 export interface StartEpisodeRequest {
+  browser_requested?: boolean;
   mode: "auto_research";
   code_worktree?: boolean | null;
   graph_isolation?: true;
@@ -2747,6 +2750,7 @@ export interface SteerRequest {
 }
 
 export interface ChatMessage {
+  browser_status?: BrowserTurnStatus | null;
   message_id: string;
   steering?: SteerReceipt | null;
   operation_id?: string | null;
@@ -3530,4 +3534,20 @@ export interface ProjectDigest {
   ran: ProjectDigestRan[];
   changed_node_ids: string[];
   count: number;
+}
+
+export interface ChatBrowserPreference {
+  browser_requested: boolean;
+}
+
+export interface BrowserTurnStatus {
+  status: "not_requested" | "granted" | "unavailable" | "lost";
+  reason_code: string | null;
+  detail: string | null;
+}
+
+export interface MachineBrowserReadiness {
+  status: string;
+  detail: string | null;
+  apt_command: string | null;
 }

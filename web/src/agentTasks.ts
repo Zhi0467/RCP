@@ -4,6 +4,7 @@ import type {
   AgentTask,
   AgentTaskKind,
   ChatMessage,
+  BrowserTurnStatus,
   ChatAttachmentDescriptor,
   ConversationMode,
   GraphUpdateResult,
@@ -12,6 +13,7 @@ import type {
 } from "./types";
 
 export interface TaskTranscriptLine {
+  browserStatus?: BrowserTurnStatus | null;
   lineId: string;
   role: "human" | "agent" | "error" | "meta";
   text: string;
@@ -175,6 +177,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     graphUpdate: message.graph_update,
     attachments: message.attachments,
     steering: message.steering,
+    browserStatus: message.steering ? null : message.browser_status,
   };
 }
 
@@ -183,6 +186,16 @@ export function reconcileChatHistoryArtifacts(
   tasks: AgentTask[],
 ): TaskTranscriptLine[] {
   const lines = messages.map(chatMessageTranscriptLine);
+  // Prefer the answer; a failed turn may only have its human request in history.
+  const browserLineByOperation = new Map<string, TaskTranscriptLine>();
+  for (const line of lines) {
+    if (!line.browserStatus) continue;
+    const previous = browserLineByOperation.get(line.taskId);
+    if (!previous || (previous.role === "human" && line.role === "agent")) {
+      if (previous) previous.browserStatus = null;
+      browserLineByOperation.set(line.taskId, line);
+    } else line.browserStatus = null;
+  }
   const answerLineByOperationId = new Map<string, number>();
   messages.forEach((message, index) => {
     if (

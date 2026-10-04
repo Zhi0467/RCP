@@ -4,6 +4,7 @@ import { createSpaceMachine, updateSpaceMachine } from "../api";
 import { errorMessage } from "../errors";
 import { createPathEditor, type WritablePathEdit } from "../spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../types";
+import { MachineBrowserRow } from "./MachineBrowserRow";
 import { PathPicker } from "./PathPicker";
 
 interface Props {
@@ -81,6 +82,13 @@ export function MachineCard({
         </p>
       )}
       {children}
+      {record && (
+        <MachineBrowserRow
+          key={`${record.machine_id}:${record.host}:${record.os_account}`}
+          machineId={record.machine_id}
+          disabled={writesDisabled}
+        />
+      )}
       <WritablePaths
         record={record}
         level={level}
