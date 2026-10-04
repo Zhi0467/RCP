@@ -146,7 +146,10 @@ pub async fn establish(
                     return Err("the backend startup sign-in code was refused".into());
                 }
             }
-            save_secret(status, secret)?;
+            // Rewriting an unchanged Keychain item can wait on a macOS prompt and stall startup.
+            if saved.is_none() {
+                save_secret(status, secret)?;
+            }
             return Ok(true);
         }
     }
