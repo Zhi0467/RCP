@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   chooseRecordingFormat,
   liveDictationSpan,
+  modelChoices,
   voiceConnectionUpdate,
 } from "../src/dictation.ts";
 import { MicrophoneBusyError, claimMicrophone } from "../src/microphone.ts";
@@ -59,4 +60,11 @@ test("the voice choice adds voice to the chosen connection and Off removes it fr
   });
   assert.equal(voiceConnectionUpdate(connections, "a"), null);
   assert.equal(voiceConnectionUpdate([connections[1]], "off"), null);
+});
+
+test("a model field keeps an id the provider list lacks, without duplicating listed ones", () => {
+  const listed = ["gpt-transcribe", "whisper-1"];
+  assert.deepEqual(modelChoices(listed, "whisper-1"), listed);
+  assert.deepEqual(modelChoices(listed, "my-model"), ["my-model", ...listed]);
+  assert.deepEqual(modelChoices(listed, ""), listed);
 });

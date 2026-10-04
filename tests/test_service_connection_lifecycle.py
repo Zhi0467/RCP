@@ -41,7 +41,7 @@ def test_removal_fences_late_member_writes_and_resumes_cleanup(tmp_path, monkeyp
         lambda: private.save(connection(), KEY),
         lambda: private.select(item["id"]),
         lambda: private.voice_settings(VoiceSettings()),
-        lambda: private.update_purposes(previous, {**previous, "purposes": ["voice"]}),
+        lambda: private.update_connection(previous, {**previous, "purposes": ["voice"]}),
     ):
         with pytest.raises(ConnectionError) as error:
             write()

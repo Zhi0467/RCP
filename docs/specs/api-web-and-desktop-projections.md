@@ -590,6 +590,11 @@ other card fields, and drops cards to fit the registry size limit. Server text
 never fails a connection. Sign-in responses likewise accept added fields; only
 identities and protocol are checked.
 
+HTML pages from the Web mount carry `Cache-Control: no-cache`, so every load
+revalidates by ETag and a server update reaches the next team-space entry or
+reload. Without it WebKit kept an old page fresh for a tenth of its age, hours
+after an update. Hashed `/assets` files keep default caching.
+
 Each space serves its own project index, so leaving a project returns to the
 index of the space that project is in, by the same control and shortcut in
 both. Leaving the space is a separate explicit action: the team index names the
@@ -942,12 +947,13 @@ returns `voice_not_connected` (409); an OpenAI failure returns
 `commentary_max_chars` from `limits.py`, and the page enforces them.
 
 `GET` and `PUT /api/voice/settings` hold `{delegation_model, confirm}` in the
-member's private settings file. `confirm` is `tap` (the default) or `none`. A
-`PUT` changes only the fields it sends. The panel's toggle sets `confirm`. In
-the Dictation and voice card, the **Standby voice agent** section picks the
-connection it **Runs on** (Off, or an OpenAI connection) and sets the
-delegation model. Choosing a connection gives it the `voice` purpose, which
-RCP checks against OpenAI before saving.
+member's private settings file, and both report the fixed `live_model`.
+`confirm` is `tap` (the default) or `none`. A `PUT` changes only the fields it
+sends. The panel's toggle sets `confirm`. In the Dictation and voice card, the
+**Standby voice agent** section picks the connection it **Runs on** (Off, or an
+OpenAI connection). Choosing a connection gives it the `voice` purpose, which
+RCP checks against OpenAI before saving. The delegation model is set on that
+connection's card (see Dictation below).
 
 The page runs each delegated function call through the shared catalog's
 `resolve`, as the member. It runs one call at a time, ignores a repeated
@@ -1479,9 +1485,31 @@ and atomically under one per-member lock that rechecks membership. Keys never
 appear in a response, a validation error, or a log. For dictation, Connect
 transcribes two bundled clips recorded from real `MediaRecorder` output
 (WebM/Opus and fragmented MP4/AAC) and saves the connection only if one passes,
-recording the accepted formats. The connect dialog asks an OpenAI key whether
+recording the accepted formats. The connect card asks an OpenAI key whether
 it is for dictation, the standby voice agent, or both; a voice-only key skips
 the clips and gets the voice check instead. A custom base URL must be `https`, or `http` to loopback.
+
+One card connects a service and later edits it. It holds every model the
+connection's uses need, each with what it does: the dictation model, and for
+voice the thinking (delegation) model and the read-only live model. Each model
+is a dropdown of the provider's current ids plus **Other…** to type one.
+`POST /api/service-connections/models` lists them for a key not yet saved, and
+`GET /api/service-connections/{id}/models` with a saved connection's key. Both
+return `{transcription, delegation}`, read live from the provider's `/models`
+list, which carries ids but no capabilities, so names choose the candidates:
+dictation ids contain `transcribe` or `whisper` (not `diarize`); delegation ids
+are OpenAI `gpt-<digit>` ids that are not transcription, speech, realtime,
+live, image, or search models. Ids with a `shutdown_date` are hidden. Gemini
+lists `generateContent` models and custom servers list every id, named ones
+first. A failed listing returns `model_list_failed` (502) and the card falls
+back to a text box with that reason. The save check stays the authority.
+Connect takes `delegation_model` with the `voice` purpose and checks it with
+`GET models/{id}`. `PUT /api/service-connections/{id}` takes
+`{purposes, model, delegation_model}` and checks only what changed with the
+stored key: a new dictation model reruns the clips, a new delegation model
+reruns the lookup. The key cannot be edited; a new key means disconnecting and
+connecting again. The delegation model stays a member voice setting, written
+under the same lock as the connection, because one connection holds `voice`.
 
 `POST /api/service-connections/{id}/transcribe` takes one raw audio body of an
 accepted format, bounded by `Content-Length`, the bytes actually received, a

@@ -13,8 +13,16 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
 from rcp.api.dependencies import get_identity_access, get_store
-from rcp.service_connections import ConnectionError, PurposesRequest, ServiceConnections
-from rcp.transcription import FORMATS, ConnectRequest, check_connection, check_purposes, transcribe
+from rcp.service_connections import ConnectionError, ModelId, PurposesRequest, ServiceConnections
+from rcp.transcription import (
+    FORMATS,
+    ConnectRequest,
+    ServiceAddress,
+    check_connection,
+    check_purposes,
+    list_models,
+    transcribe,
+)
 
 
 class ServiceConnectionRoute(APIRoute):
@@ -71,8 +79,25 @@ async def connect(request: Request, body: ConnectRequest):
     store.require_member()
     with transcription_slot(store):
         connection = await check_connection(body)
-        store.save(connection, body.key.get_secret_value())
+        delegation = body.delegation_model if "voice" in body.purposes else None
+        store.save(connection, body.key.get_secret_value(), delegation)
     return connection
+
+
+@router.post("/models")
+async def models_for_key(request: Request, body: ServiceAddress):
+    store = connections(request)
+    store.require_member()
+    with transcription_slot(store):
+        return await list_models(body.address(), body.key.get_secret_value())
+
+
+@router.get("/{connection_id}/models")
+async def models_for_connection(request: Request, connection_id: str):
+    store = connections(request)
+    with transcription_slot(store):
+        connection, key = store.credentials(connection_id)
+        return await list_models(connection, key)
 
 
 @router.delete("/{connection_id}", status_code=204)
@@ -91,14 +116,30 @@ def select(request: Request, body: SelectionRequest):
     return connections(request).select(body.dictation)
 
 
-@router.put("/{connection_id}/purposes")
-async def update_purposes(request: Request, connection_id: str, body: PurposesRequest):
+class ConnectionUpdate(PurposesRequest):
+    model: ModelId | None = None
+    delegation_model: ModelId | None = None
+
+
+@router.put("/{connection_id}")
+async def update_connection(request: Request, connection_id: str, body: ConnectionUpdate):
+    """Change uses and models; RCP checks only what changed, with the stored key."""
     store = connections(request)
     with transcription_slot(store):
         previous, key = store.credentials(connection_id)
+        current = {**previous, "purposes": body.purposes}
         added = [purpose for purpose in body.purposes if purpose not in previous["purposes"]]
-        checked = await check_purposes({**previous, "purposes": body.purposes}, key, added)
-        return store.update_purposes(previous, checked)
+        if "transcription" in body.purposes and body.model not in (None, previous["model"]):
+            current["model"] = body.model
+            added = list(dict.fromkeys([*added, "transcription"]))
+        delegation = None
+        if "voice" in body.purposes and body.delegation_model not in (
+            None,
+            store.voice_settings()["delegation_model"],
+        ):
+            delegation = body.delegation_model
+        checked = await check_purposes(current, key, added, delegation)
+        return store.update_connection(previous, checked, delegation)
 
 
 async def read_audio(request: Request, formats: list[str]) -> tuple[bytes, str]:

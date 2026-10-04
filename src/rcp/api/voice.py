@@ -7,19 +7,20 @@ from fastapi import APIRouter, Request
 from rcp import limits
 from rcp.api.service_connections import ServiceConnectionRoute, connections
 from rcp.service_connections import VoiceSettings
-from rcp.voice import SessionRequest, create_session
+from rcp.voice import MODEL, SessionRequest, create_session
 
 router = APIRouter(prefix="/api/voice", route_class=ServiceConnectionRoute)
 
 
+# The live model is fixed in code; settings report it so the page can show it.
 @router.get("/settings")
 def settings(request: Request):
-    return connections(request).voice_settings()
+    return {**connections(request).voice_settings(), "live_model": MODEL}
 
 
 @router.put("/settings")
 def update_settings(request: Request, body: VoiceSettings):
-    return connections(request).voice_settings(body)
+    return {**connections(request).voice_settings(body), "live_model": MODEL}
 
 
 @router.post("/sessions")

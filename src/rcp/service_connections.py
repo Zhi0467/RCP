@@ -7,7 +7,7 @@ import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -16,6 +16,7 @@ from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AppStore
 
 _MEMBER_LOCKS = KeyedLocks()
+ModelId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")]
 
 
 class PurposesRequest(BaseModel):
@@ -33,9 +34,7 @@ class PurposesRequest(BaseModel):
 
 class VoiceSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    delegation_model: str = Field(
-        default="gpt-6-luna", min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$"
-    )
+    delegation_model: ModelId = "gpt-6-luna"
     confirm: Literal["tap", "none"] = "tap"
 
 
@@ -141,12 +140,21 @@ class ServiceConnections:
         path = self.root / "connections" / _component(connection["id"]) / "connection.json"
         _write_private(path, json.dumps(connection))
 
-    def update_purposes(self, previous: dict, checked: dict) -> dict:
+    def update_connection(
+        self, previous: dict, checked: dict, delegation_model: str | None = None
+    ) -> dict:
         with self.locked():
             if self._connection(previous["id"]) != previous:
                 raise ConnectionError("connection_changed", 409)
             self._publish(checked)
+            self._write_delegation(delegation_model)
             return checked
+
+    def _write_delegation(self, model: str | None) -> None:
+        if model is not None:
+            self._write_setting(
+                "voice", {**self._settings().get("voice", {}), "delegation_model": model}
+            )
 
     def summary(self) -> dict:
         with self.locked():
@@ -162,13 +170,14 @@ class ServiceConnections:
             key = (self.root / "connections" / connection_id / "key").read_text()
             return connection, key
 
-    def save(self, connection: dict, key: str) -> None:
+    def save(self, connection: dict, key: str, delegation_model: str | None = None) -> None:
         with self.locked():
             path = self.root / "connections" / _component(connection["id"])
             self._mkdir(path)
             _write_private(path / "key", key)
             # Publish the metadata last: incomplete writes are not usable connections.
             self._publish(connection)
+            self._write_delegation(delegation_model)
 
     def select(self, connection_id: str) -> dict:
         with self.locked():

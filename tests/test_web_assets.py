@@ -159,3 +159,24 @@ def test_stop_process_group_force_kills_after_timeout(monkeypatch) -> None:
 
     assert signals == [(42, signal.SIGTERM), (42, signal.SIGKILL)]
     assert waits == [web_assets.WEB_BUILD_STOP_TIMEOUT_SECONDS, None]
+
+
+def test_served_pages_revalidate_but_hashed_assets_keep_default_caching(
+    tmp_path, monkeypatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from rcp.api.app import create_app
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<main>RCP</main>", encoding="utf-8")
+    (dist / "assets" / "index-abc.js").write_text("void 0", encoding="utf-8")
+    monkeypatch.setattr("rcp.api.app.web_dist_path", lambda: dist)
+    client = TestClient(create_app(data_dir=tmp_path / "data"))
+
+    page = client.get("/")
+    assert page.headers["cache-control"] == "no-cache"
+    # A revalidation still answers 304, so no-cache costs one round trip, not a download.
+    assert client.get("/", headers={"if-none-match": page.headers["etag"]}).status_code == 304
+    assert "cache-control" not in client.get("/assets/index-abc.js").headers

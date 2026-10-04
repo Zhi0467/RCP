@@ -15,10 +15,15 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from rcp import limits
-from rcp.service_connections import ConnectionError, PurposesRequest, connection_purposes
+from rcp.service_connections import (
+    ConnectionError,
+    ModelId,
+    PurposesRequest,
+    connection_purposes,
+)
 
 FORMATS = {"audio/webm;codecs=opus": "webm", "audio/mp4;codecs=mp4a.40.2": "mp4"}
 PRESETS = {
@@ -29,18 +34,16 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_MODEL = "gemini-3.5-transcribe"
 
 
-class ConnectRequest(PurposesRequest):
-    purposes: list[Literal["transcription", "voice"]] = Field(
-        default_factory=lambda: ["transcription"], min_length=1, max_length=2
-    )
+class ServiceAddress(BaseModel):
+    """Where a service lives and the key it takes, before anything is saved."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: str
     preset: str | None = None
     base_url: str | None = None
-    model: str | None = Field(default=None, max_length=200)
     key: SecretStr = Field(default=SecretStr(""), max_length=limits.TRANSCRIPTION_KEY_MAX_CHARS)
 
-    def configuration(self) -> dict:
+    def address(self) -> dict:
         key = self.key.get_secret_value()
         if self.kind == "gemini" and self.preset is None and self.base_url is None:
             base, model, label = GEMINI_URL, GEMINI_MODEL, "Gemini"
@@ -51,21 +54,27 @@ class ConnectRequest(PurposesRequest):
         else:
             raise ConnectionError("address_not_allowed", 422)
         base = checked_address(base)
-        model = self.model or model
-        if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model) or (not key and self.preset != "custom"):
-            raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
         # A secret must not be copied into public metadata or an HTTP request URL.
-        if key and any(key in value for value in (base, model, label)):
+        if (not key and self.preset != "custom") or (key and (key in base or key in label)):
             raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
-        return dict(
-            id=uuid.uuid4().hex,
-            kind=self.kind,
-            preset=self.preset,
-            base_url=base,
-            model=model,
-            label=label,
-            purposes=self.purposes,
-        )
+        return dict(kind=self.kind, preset=self.preset, base_url=base, model=model, label=label)
+
+
+class ConnectRequest(PurposesRequest, ServiceAddress):
+    purposes: list[Literal["transcription", "voice"]] = Field(
+        default_factory=lambda: ["transcription"], min_length=1, max_length=2
+    )
+    model_config = ConfigDict(extra="forbid", strict=True)
+    model: str | None = Field(default=None, max_length=200)
+    delegation_model: ModelId | None = None
+
+    def configuration(self) -> dict:
+        address = self.address()
+        model = self.model or address["model"]
+        key = self.key.get_secret_value()
+        if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model) or (key and key in model):
+            raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
+        return dict(id=uuid.uuid4().hex, **address, purposes=self.purposes) | {"model": model}
 
 
 def checked_address(base: str) -> str:
@@ -186,17 +195,25 @@ async def service_request(method: str, url: str, **kwargs) -> tuple[int, bytes]:
 
 async def check_connection(request: ConnectRequest) -> dict:
     connection = request.configuration()
-    return await check_purposes(connection, request.key.get_secret_value(), request.purposes)
+    return await check_purposes(
+        connection, request.key.get_secret_value(), request.purposes, request.delegation_model
+    )
 
 
-async def check_purposes(connection: dict, key: str, added: list[str]) -> dict:
+async def check_purposes(
+    connection: dict, key: str, added: list[str], delegation_model: str | None = None
+) -> dict:
+    if key and (key in connection["model"] or key in (delegation_model or "")):
+        raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
     if "voice" in connection_purposes(connection):
         # Import locally: voice uses the shared bounded transport above.
-        from rcp.voice import check_voice_connection, require_openai
+        from rcp.voice import check_delegation_model, check_voice_connection, require_openai
 
         require_openai(connection)
         if "voice" in added:
             await check_voice_connection(connection, key)
+        if delegation_model is not None:
+            await check_delegation_model(connection, key, delegation_model)
     result = {"formats": [], **connection}
     if "transcription" in added:
         result["formats"] = await check_transcription(connection, key)
@@ -221,3 +238,62 @@ async def check_transcription(connection: dict, key: str) -> list[str]:
     if not formats:
         raise ConnectionError("connection_check_failed", 422, sanitized(failure, key))
     return formats
+
+
+# Provider model lists carry ids but no capability flags, so names pick the
+# candidates; the connection check still decides whether a chosen id works.
+_TRANSCRIPTION_HINTS = ("transcribe", "whisper")
+_NOT_DELEGATION = ("transcribe", "tts", "audio", "realtime", "live", "image", "search")
+
+
+async def list_models(connection: dict, key: str) -> dict[str, list[str]]:
+    """The provider's current model ids, split into dictation and delegation candidates."""
+    base = checked_address(connection["base_url"])
+    headers = {"Accept-Encoding": "identity"}
+    gemini = connection["kind"] == "gemini"
+    if gemini:
+        headers["x-goog-api-key"] = key
+        url = f"{base}/models?pageSize=1000"
+    else:
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        url = f"{base}/models"
+    try:
+        status, data = await service_request("GET", url, headers=headers)
+        if not 200 <= status < 300:
+            raise ConnectionError("model_list_failed", 502, f"Service returned HTTP {status}.")
+        body = json.loads(data)
+        if gemini:
+            ids = [
+                entry["name"].removeprefix("models/")
+                for entry in body["models"]
+                if "generateContent" in entry.get("supportedGenerationMethods", [])
+            ]
+        else:
+            ids = [entry["id"] for entry in body["data"] if not entry.get("shutdown_date")]
+    except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
+        raise ConnectionError(
+            "model_list_failed", 502, "The service did not return a model list."
+        ) from None
+    ids = sorted(
+        {
+            item
+            for item in ids
+            if isinstance(item, str)
+            and len(item) <= 200
+            and re.fullmatch(r"[A-Za-z0-9._:/-]+", item)
+            and not (key and key in item)
+        }
+    )
+    named = [i for i in ids if any(h in i for h in _TRANSCRIPTION_HINTS) and "diarize" not in i]
+    # Gemini and custom servers transcribe through general models too: named ones first.
+    open_list = gemini or connection["preset"] == "custom"
+    delegation = []
+    if connection["preset"] == "openai":
+        delegation = [
+            i for i in ids if re.match(r"gpt-\d", i) and not any(w in i for w in _NOT_DELEGATION)
+        ]
+    return {
+        "transcription": named + [i for i in ids if i not in named] if open_list else named,
+        "delegation": delegation,
+    }

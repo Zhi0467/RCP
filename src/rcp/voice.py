@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -81,6 +82,17 @@ async def check_voice_connection(connection: dict, key: str) -> None:
     except ConnectionError:
         raise ConnectionError(
             "connection_check_failed", 422, "The voice connection check failed."
+        ) from None
+
+
+async def check_delegation_model(connection: dict, key: str, model: str) -> None:
+    try:
+        body = await _request(connection, key, "GET", f"models/{quote(model, safe='')}")
+        if body.get("id") != model:
+            raise ConnectionError("voice_upstream_failed", 502)
+    except ConnectionError:
+        raise ConnectionError(
+            "connection_check_failed", 422, "OpenAI does not offer that thinking model to this key."
         ) from None
 
 

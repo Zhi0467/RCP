@@ -33,6 +33,7 @@ const SERVICE_FAILURES: Record<string, string> = {
   transcription_busy: "Another transcription is still running; try again in a moment.",
   transcription_upstream_failed: "The transcription service failed.",
   address_not_allowed: "Use an https address, or http only on the RCP server itself.",
+  model_list_failed: "The service's model list could not be loaded.",
 };
 
 /**
@@ -65,4 +66,12 @@ export function voiceConnectionUpdate(
   const target = connections.find((connection) => connection.id === choice);
   if (!target || target.purposes.includes("voice")) return null;
   return { id: target.id, purposes: [...target.purposes, "voice"] };
+}
+
+/**
+ * Dropdown entries for a model field: the current value first when the
+ * provider's list lacks it, so a saved or typed id never disappears.
+ */
+export function modelChoices(listed: string[], value: string): string[] {
+  return value && !listed.includes(value) ? [value, ...listed] : listed;
 }

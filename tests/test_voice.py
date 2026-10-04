@@ -168,7 +168,7 @@ def test_purpose_update_checks_only_additions_and_preserves_key(voice_setup, mon
 
     monkeypatch.setattr(transcription, "transcribe", transcribe)
     mock_transport(monkeypatch, lambda _: probes.append("voice") or reply({"id": "gpt-live-1"}))
-    path = f"/api/service-connections/{item['id']}/purposes"
+    path = f"/api/service-connections/{item['id']}"
     for purposes in (["transcription", "voice"], ["transcription", "voice"], ["voice"]):
         assert client.put(path, json={"purposes": purposes}).status_code == 200
         assert private.credentials(item["id"])[0]["formats"] == item["formats"]
@@ -188,9 +188,7 @@ def test_failed_purpose_probe_leaves_selection_and_payer_unchanged(voice_setup, 
     private.save(item, KEY)
     private.select(item["id"])
     mock_transport(monkeypatch, lambda _: reply({"error": {"message": KEY}}, 403))
-    response = client.put(
-        f"/api/service-connections/{item['id']}/purposes", json={"purposes": ["voice"]}
-    )
+    response = client.put(f"/api/service-connections/{item['id']}", json={"purposes": ["voice"]})
     assert response.status_code == 422 and KEY not in response.text
     assert private.voice_credentials()[0]["id"] == old["id"]
     assert private.summary()["dictation"] == item["id"]
@@ -215,14 +213,15 @@ def test_voice_requires_openai_preset_before_transport(voice_setup, monkeypatch)
 def test_settings_default_roundtrip_and_preserve_dictation(voice_setup):
     _, private, client = voice_setup
     path = "/api/voice/settings"
-    assert client.get(path).json() == {"delegation_model": "gpt-6-luna", "confirm": "tap"}
+    live = {"live_model": "gpt-live-1"}
+    assert client.get(path).json() == {"delegation_model": "gpt-6-luna", "confirm": "tap", **live}
     value = {"delegation_model": "custom-model", "confirm": "none"}
-    assert client.put(path, json=value).json() == value
+    assert client.put(path, json=value).json() == {**value, **live}
     item = connection()
     private.save(item, KEY)
     private.select(item["id"])
-    assert client.get(path).json() == value
-    assert client.put(path, json={"confirm": "tap"}).json() == {**value, "confirm": "tap"}
+    assert client.get(path).json() == {**value, **live}
+    assert client.put(path, json={"confirm": "tap"}).json() == {**value, "confirm": "tap", **live}
     assert private.summary()["dictation"] == item["id"]
 
 
@@ -231,7 +230,7 @@ def test_voice_only_connection_cannot_be_used_for_dictation(voice_setup):
     item = connection()
     private.save(item, KEY)
     private.select(item["id"])
-    private.update_purposes(private.credentials(item["id"])[0], {**item, "purposes": ["voice"]})
+    private.update_connection(private.credentials(item["id"])[0], {**item, "purposes": ["voice"]})
     assert private.summary()["dictation"] == "system"
     assert (
         client.put("/api/service-connections/selection", json={"dictation": item["id"]}).status_code
@@ -269,7 +268,92 @@ def test_purpose_update_rechecks_connection_after_probe(voice_setup, monkeypatch
         return reply({"id": "gpt-live-1"})
 
     mock_transport(monkeypatch, handler)
-    response = client.put(
-        f"/api/service-connections/{item['id']}/purposes", json={"purposes": ["voice"]}
-    )
+    response = client.put(f"/api/service-connections/{item['id']}", json={"purposes": ["voice"]})
     assert response.status_code == 404 and private.summary()["connections"] == []
+
+
+def test_model_lists_filter_by_purpose_and_hide_retiring_ids(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    openai_ids = [
+        {"id": "gpt-transcribe"},
+        {"id": "whisper-1"},
+        {"id": "gpt-4o-transcribe-diarize"},
+        {"id": "gpt-6-luna"},
+        {"id": "gpt-6-sol"},
+        {"id": "gpt-live-1"},
+        {"id": "gpt-old-transcribe", "shutdown_date": "2026-11-01"},
+        {"id": "text-embedding-3"},
+        {"id": f"gpt-6-{KEY}"},
+    ]
+    gemini_models = [
+        {"name": "models/gemini-3.5-flash", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.5-transcribe", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/embedding-2", "supportedGenerationMethods": ["embedContent"]},
+    ]
+
+    def handler(request):
+        if request.url.host == "generativelanguage.googleapis.com":
+            assert request.headers["x-goog-api-key"] == KEY
+            return reply({"models": gemini_models})
+        assert request.url.path == "/v1/models"
+        return reply({"data": openai_ids})
+
+    mock_transport(monkeypatch, handler)
+    openai = {"kind": "openai_compatible", "preset": "openai", "key": KEY}
+    response = client.post("/api/service-connections/models", json=openai)
+    assert response.json() == {
+        "transcription": ["gpt-transcribe", "whisper-1"],
+        "delegation": ["gpt-6-luna", "gpt-6-sol"],
+    }
+    assert KEY not in response.text
+    item = connection()
+    private.save(item, KEY)
+    stored = client.get(f"/api/service-connections/{item['id']}/models")
+    assert stored.json() == response.json()
+    gemini = client.post("/api/service-connections/models", json={"kind": "gemini", "key": KEY})
+    assert gemini.json() == {
+        "transcription": ["gemini-3.5-transcribe", "gemini-3.5-flash"],
+        "delegation": [],
+    }
+
+
+def test_model_list_failure_is_reported_without_the_key(voice_setup, monkeypatch):
+    _, _, client = voice_setup
+    mock_transport(monkeypatch, lambda _: reply({"error": {"message": KEY}}, 401))
+    response = client.post(
+        "/api/service-connections/models",
+        json={"kind": "openai_compatible", "preset": "openai", "key": KEY},
+    )
+    assert response.status_code == 502 and KEY not in response.text
+    assert response.json()["detail"]["code"] == "model_list_failed"
+
+
+def test_edit_rechecks_only_changed_models_and_saves_delegation(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    item = {**connection(), "purposes": ["transcription", "voice"]}
+    private.save(item, KEY)
+    probes = []
+
+    async def transcribe(connection, *args):
+        probes.append(connection["model"])
+        return ""
+
+    def handler(request):
+        probes.append(request.url.path)
+        return reply({"id": request.url.path.rsplit("/", 1)[1]})
+
+    monkeypatch.setattr(transcription, "transcribe", transcribe)
+    mock_transport(monkeypatch, handler)
+    path = f"/api/service-connections/{item['id']}"
+    purposes = item["purposes"]
+    unchanged = {"purposes": purposes, "model": item["model"], "delegation_model": "gpt-6-luna"}
+    assert client.put(path, json=unchanged).status_code == 200 and probes == []
+    changed = {"purposes": purposes, "model": "whisper-1", "delegation_model": "gpt-6-sol"}
+    assert client.put(path, json=changed).status_code == 200
+    assert sorted(probes) == ["/v1/models/gpt-6-sol"] + ["whisper-1"] * len(transcription.FORMATS)
+    assert private.credentials(item["id"])[0]["model"] == "whisper-1"
+    assert private.voice_settings()["delegation_model"] == "gpt-6-sol"
+    mock_transport(monkeypatch, lambda _: reply({}, 404))
+    refused = {**changed, "delegation_model": "gpt-missing"}
+    assert client.put(path, json=refused).status_code == 422
+    assert private.voice_settings()["delegation_model"] == "gpt-6-sol"

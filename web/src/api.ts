@@ -32,9 +32,11 @@ import type {
   ProviderResumeSummary,
   ServerStatus,
   ServiceConnection,
+  ServiceAddress,
   ServiceConnectionCreateRequest,
-  ServiceConnectionPurpose,
   ServiceConnections,
+  ServiceConnectionUpdate,
+  ServiceModels,
   TranscriptionResult,
   SpaceMachine,
   SpaceMachineCreateRequest,
@@ -731,15 +733,28 @@ export function selectDictationService(dictation: string): Promise<unknown> {
   });
 }
 
-/** Add or remove purposes; RCP checks each newly added one with the stored key. */
-export function setServiceConnectionPurposes(
+/** Change uses and models; RCP checks each changed one with the stored key. */
+export function updateServiceConnection(
   connectionId: string,
-  purposes: ServiceConnectionPurpose[],
+  update: ServiceConnectionUpdate,
 ): Promise<ServiceConnection> {
-  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/purposes`, {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}`, {
     method: "PUT",
-    body: JSON.stringify({ purposes }),
+    body: JSON.stringify(update),
   });
+}
+
+/** The provider's models for a key not yet saved. */
+export function loadServiceModels(address: ServiceAddress): Promise<ServiceModels> {
+  return api("/api/service-connections/models", {
+    method: "POST",
+    body: JSON.stringify(address),
+  });
+}
+
+/** The provider's models, asked with a saved connection's key. */
+export function loadConnectionModels(connectionId: string): Promise<ServiceModels> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/models`);
 }
 
 export function loadVoiceSettings(): Promise<VoiceSettings> {
@@ -747,7 +762,9 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
 }
 
 /** Send only the fields that changed; the backend keeps the rest. */
-export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
+export function saveVoiceSettings(
+  settings: Partial<Omit<VoiceSettings, "live_model">>,
+): Promise<VoiceSettings> {
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
