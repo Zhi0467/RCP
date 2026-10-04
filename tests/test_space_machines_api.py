@@ -279,7 +279,7 @@ def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> N
         return BrowserReadiness(status="ready")
 
     monkeypatch.setattr("rcp.api.space_machines.install_browser", install)
-    client = TestClient(app)
+    client = signed_in_client(app)
     machine = _machine(client, "laptop")
     assert machine["browser"]["status"] == "not_installed"
     assert calls == []
