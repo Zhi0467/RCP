@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -173,3 +175,38 @@ def test_lost_ensure_reply_releases_exact_lease_before_profile_deletion(
     assert not (host.record_path("first").parent / "profile").exists()
     assert not list((tmp_path / "browser" / "pending").glob("*.json"))
     assert host.release()["reason_code"] == "lost"
+
+
+def test_old_close_reply_keeps_a_newer_delete_request(host, tmp_path, monkeypatch):
+    host.ensure()
+    host.release()
+    old_close_reached, finish_old_close = threading.Event(), threading.Event()
+    online = False
+
+    def invoke(request, **kwargs):
+        if not online or request["delete_profile"]:
+            return {"reason_code": "host_unreachable", "detail": "offline"}
+        host.request.update(request)
+        result = host.close()
+        old_close_reached.set()
+        assert finish_old_close.wait(5)
+        return result
+
+    monkeypatch.setattr(service, "_invoke", invoke)
+    remote = RemoteRunStage("host.example")
+    service.close_owner("first", execution=remote, delete_profile=False, data_dir=tmp_path)
+    online = True
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        retry = pool.submit(
+            service._retry_pending,
+            host=remote.host,
+            partition=None,
+            data_dir=tmp_path,
+            owner_token="first",
+        )
+        assert old_close_reached.wait(5)
+        service.close_owner("first", execution=remote, delete_profile=True, data_dir=tmp_path)
+        finish_old_close.set()
+        assert not retry.result(timeout=5)
+    [pending] = (tmp_path / "browser" / "pending").glob("*.json")
+    assert json.loads(pending.read_text())["request"]["delete_profile"] is True

@@ -158,16 +158,27 @@ def _read_pending(path: Path) -> dict:
     return pending
 
 
+def _queued(data_dir: Path, host: str) -> list[tuple[Path, dict]]:
+    # An acquisition's own journaled release is not cleanup until its reply is lost.
+    return [
+        (path, pending)
+        for path in (data_dir / "browser" / "pending").glob("*.json")
+        if path not in _INFLIGHT_ENSURES and (pending := _read_pending(path))["host"] == host
+    ]
+
+
+def _acknowledge(path: Path, request: dict) -> None:
+    """Drop a journal entry only if it still holds the request the host confirmed."""
+    with _PENDING_LOCK:
+        if path.exists() and _read_pending(path)["request"] == request:
+            path.unlink()
+
+
 def _retry_pending_checked(
     *, host: str, partition: str | None, data_dir: Path, owner_token: str | None
 ) -> bool:
     with _PENDING_LOCK:
-        # An acquisition's own journaled release is not cleanup until its reply is lost.
-        queued = [
-            (path, pending)
-            for path in (data_dir / "browser" / "pending").glob("*.json")
-            if path not in _INFLIGHT_ENSURES and (pending := _read_pending(path))["host"] == host
-        ]
+        queued = _queued(data_dir, host)
         # This owner's own cleanup goes first; a stuck entry of another owner never blocks it.
         queued.sort(key=lambda item: item[1]["request"]["owner_token"] != owner_token)
         claimed = next((item for item in queued if item[0] not in _INFLIGHT_RETRIES), None)
@@ -179,16 +190,15 @@ def _retry_pending_checked(
             result = _invoke(pending["request"], host=host, partition=partition, data_dir=data_dir)
             # One retry per call bounds cleanup latency even after a long outage.
             if result.get("reason_code") in (None, "lost"):
-                with _PENDING_LOCK:
-                    path.unlink(missing_ok=True)
-                queued.remove(claimed)
+                _acknowledge(path, pending["request"])
         finally:
             with _PENDING_LOCK:
                 _INFLIGHT_RETRIES.discard(path)
-    return not any(
-        owner_token is None or pending["request"]["owner_token"] == owner_token
-        for _path, pending in queued
-    )
+    with _PENDING_LOCK:
+        return not any(
+            owner_token is None or pending["request"]["owner_token"] == owner_token
+            for _path, pending in _queued(data_dir, host)
+        )
 
 
 def ensure_session(
@@ -206,13 +216,10 @@ def ensure_session(
             )
         lease_id = uuid.uuid4().hex
         path = _pending_path(data_dir, host, lease_id)
+        release = {"action": "release", "owner_token": owner_token, "lease_id": lease_id}
         # Journal the release first, so a lost reply cannot strand a busy lease.
         with _PENDING_LOCK:
-            _save_pending(
-                path,
-                host=host,
-                request={"action": "release", "owner_token": owner_token, "lease_id": lease_id},
-            )
+            _save_pending(path, host=host, request=release)
             _INFLIGHT_ENSURES.add(path)
         try:
             result = _invoke(
@@ -238,8 +245,7 @@ def ensure_session(
                     "data_dir": str(data_dir),
                 }
             )
-            with _PENDING_LOCK:
-                path.unlink(missing_ok=True)
+            _acknowledge(path, release)
             return lease
         finally:
             with _PENDING_LOCK:
@@ -298,16 +304,10 @@ def close_owner(
                     raise ValueError("Unexpected browser cleanup action")
                 request["delete_profile"] |= existing["delete_profile"]
             _save_pending(path, host=host, request=request)
-            _INFLIGHT_RETRIES.add(path)
-        try:
-            result = _invoke(request, host=host, partition=partition, data_dir=data_dir)
-            with _PENDING_LOCK:
-                # A concurrent close may have widened the entry to a delete meanwhile.
-                if not result.get("reason_code") and _read_pending(path)["request"] == request:
-                    path.unlink()
-        finally:
-            with _PENDING_LOCK:
-                _INFLIGHT_RETRIES.discard(path)
+        result = _invoke(request, host=host, partition=partition, data_dir=data_dir)
+        # A concurrent close may have widened the entry to a delete meanwhile.
+        if not result.get("reason_code"):
+            _acknowledge(path, request)
 
     except (OSError, ValueError) as exc:
         logger.error("Browser close could not be durably recorded; cleanup requires retry: %s", exc)
