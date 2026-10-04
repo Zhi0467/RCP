@@ -26,25 +26,25 @@ case "$generation" in ''|*[!0-9]*) exit 2 ;; esac
 bounded() {
     "$@" &
     child=$!
-    # The timer never writes. A TERM that lands before $sleeper is set orphans
-    # its sleep, which must not hold a caller's $(...) pipe open.
+    # The timer never writes. Killing it orphans the sleep in flight, which keeps
+    # the inherited owner lock open; no trap can reliably kill that sleep, because
+    # a signal between its fork and exec is lost. One-second steps bound the hold.
+    # It is killed with KILL: during release it inherits an ignored TERM.
     (
-        sleeper=
-        trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM INT
-        sleep "$command_timeout" &
-        sleeper=$!
-        wait "$sleeper"
+        left=$command_timeout
+        while [ "$left" -gt 0 ]; do
+            sleep 1
+            left=$((left - 1))
+        done
         # sudo forwards TERM to pmset; allow that cleanup before forcing the wrapper down.
         kill -TERM "$child" 2>/dev/null
-        sleep 1 &
-        sleeper=$!
-        wait "$sleeper"
+        sleep 1
         kill -KILL "$child" 2>/dev/null
     ) >/dev/null 2>&1 &
     timer=$!
     wait "$child"
     result=$?
-    kill "$timer" 2>/dev/null
+    kill -KILL "$timer" 2>/dev/null
     wait "$timer" 2>/dev/null
     return "$result"
 }
@@ -145,7 +145,7 @@ signal_release() {
     # A signal interrupts wait; finish the bounded command before clearing.
     [ -z "${child:-}" ] || wait "$child" 2>/dev/null
     if [ -n "${timer:-}" ]; then
-        kill "$timer" 2>/dev/null
+        kill -KILL "$timer" 2>/dev/null
         wait "$timer" 2>/dev/null
     fi
     release watchdog_lost
