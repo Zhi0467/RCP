@@ -32,7 +32,7 @@ from rcp.core.operations import (
     UpsertGlossaryOperation,
     WithdrawProposalsOperation,
 )
-from rcp.core.roles import is_protected_belief_type
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import AgentCapability
 
@@ -538,9 +538,9 @@ def operation_actions(
             MERGE_PROTECTED_EPISTEMIC,
         )
     if isinstance(operation, SetStandingOperation):
-        if is_existing_protected_node(state, operation.node_id) or is_protected_belief_type(
-            _created_node_type(patch, operation.node_id)
-        ):
+        if is_existing_protected_node(state, operation.node_id) or project_type_of(
+            state
+        ).is_protected_belief(_created_node_type(patch, operation.node_id)):
             return frozenset({UPDATE_PROTECTED_EPISTEMIC})
         return frozenset({SET_STANDING})
     if isinstance(operation, CreateAmbiguitiesOperation):
@@ -568,7 +568,7 @@ def is_existing_protected_node(state: GraphState, node_id: str) -> bool:
     """Whether ``node_id`` names a pre-Patch protected belief."""
 
     node = state.nodes.get(node_id)
-    return node is not None and is_protected_belief_type(node.type)
+    return node is not None and project_type_of(state).is_protected_belief(node.type)
 
 
 def permits(patch: Patch, action: GraphAction) -> bool:

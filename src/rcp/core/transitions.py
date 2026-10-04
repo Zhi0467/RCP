@@ -22,7 +22,7 @@ from rcp.core.operations import (
     NodeUpdate,
     UpdateNodesOperation,
 )
-from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import (
     ExperimentGuidanceValidity,
     GraphAttentionProjection,
@@ -894,7 +894,10 @@ def _experiment_dependency_signature(state: GraphState, experiment_id: str) -> t
     hypothesis_ids = {target for _edge_id, target in tests_relations}
     assessments: list[tuple[Any, ...]] = []
     for edge in state.edges.values():
-        if edge.target not in hypothesis_ids or edge.relation not in BELIEF_OUTCOME_RELATIONS:
+        if (
+            edge.target not in hypothesis_ids
+            or edge.relation not in project_type_of(state).belief_outcome_relations
+        ):
             continue
         source = state.nodes.get(edge.source)
         if not isinstance(source, Evidence):

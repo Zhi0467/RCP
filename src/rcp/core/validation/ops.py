@@ -59,7 +59,7 @@ from rcp.core.operations import (
     WithdrawProposalsOperation,
     strict_project_node,
 )
-from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
+from rcp.core.project_types import project_type_of
 from rcp.core.validation.constants import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     LEGACY_COMPATIBILITY_UPDATE_FIELDS,
@@ -77,7 +77,8 @@ from rcp.core.validation.nodes import (
 from rcp.core.validation.proposals import decision_transition_error, validate_proposal
 
 ASSESSMENT_REQUIRED_FOR = {
-    relation: frozenset({("evidence", "hypothesis")}) for relation in BELIEF_OUTCOME_RELATIONS
+    relation: frozenset({("evidence", "hypothesis")})
+    for relation in project_type_of().belief_outcome_relations
 }
 EXPECTATION_RELATIONS = frozenset({"produces"})
 
@@ -315,7 +316,7 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
         )
         if (
             ctx.mode == "admission"
-            and relation in BELIEF_OUTCOME_RELATIONS
+            and relation in project_type_of(ctx.state).belief_outcome_relations
             and source_type is not None
             and target_type is not None
             and not evidence_relation_endpoints_apply
@@ -983,7 +984,7 @@ def _validate_belief_cause(
     if (
         edge is None
         or edge.target != hypothesis_id
-        or edge.relation not in BELIEF_OUTCOME_RELATIONS
+        or edge.relation not in project_type_of(ctx.state).belief_outcome_relations
         or _node_type(ctx, edge.source) != "evidence"
     ):
         ctx.report.reject(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from rcp.core.models import Decision, Evidence, GraphState, Hypothesis, ResearchQuestion, Standing
-from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
+from rcp.core.project_types import project_type_of
 
 
 def render_research_md(state: GraphState) -> str:
@@ -37,7 +37,7 @@ def render_research_md(state: GraphState) -> str:
             not isinstance(source, Evidence)
             or not isinstance(target, Hypothesis)
             or target.standing != Standing.ACCEPTED
-            or edge.relation not in BELIEF_OUTCOME_RELATIONS
+            or edge.relation not in project_type_of(state).belief_outcome_relations
         ):
             continue
         if edge.assessment is None:

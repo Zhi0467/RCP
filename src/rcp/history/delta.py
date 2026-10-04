@@ -40,7 +40,7 @@ from rcp.core.operations import (
     UpsertGlossaryOperation,
     WithdrawProposalsOperation,
 )
-from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
+from rcp.core.project_types import project_type_of
 from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
 
 _MAX_TITLE_CHARS = 240
@@ -828,7 +828,7 @@ def _edge_assessment_sentence(
     source_node = state.nodes.get(edge.source) or previous_state.nodes.get(edge.source)
     target_node = state.nodes.get(edge.target) or previous_state.nodes.get(edge.target)
     is_evidence_hypothesis = (
-        edge.relation in BELIEF_OUTCOME_RELATIONS
+        edge.relation in project_type_of(state).belief_outcome_relations
         and source_node is not None
         and source_node.type == "evidence"
         and target_node is not None

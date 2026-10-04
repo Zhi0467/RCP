@@ -42,7 +42,7 @@ from rcp.core.operations import (
     WithdrawProposalsOperation,
     strict_project_node,
 )
-from rcp.core.roles import RETIRED_VALUE, lifecycle_field
+from rcp.core.project_types import project_type_of
 from rcp.core.validation import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     ValidationReport,
@@ -579,8 +579,9 @@ def _retire_node(
     preserve_standing: bool,
 ) -> None:
     node = state.nodes[node_id]
+    project_type = project_type_of(state)
     data: dict[str, Any] = node.model_dump(mode="python")
-    data[lifecycle_field(node.type)] = RETIRED_VALUE
+    data[project_type.lifecycle_field(node.type)] = project_type.retired_value
     data["updated_rev"] = revision
     data["standing"] = node.standing if preserve_standing else "asserted"
     state.nodes[node_id] = NODE_ADAPTER.validate_python(data)
