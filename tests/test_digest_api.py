@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from rcp.digest import ensure_digest_baseline
 from rcp.history.manager import HistoryManager
 from rcp.storage.digest import append_digest_event
 
@@ -18,6 +19,7 @@ def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeyp
     def no_history(*args, **kwargs):
         raise AssertionError("Landing counts must not read graph history")
 
+    ensure_digest_baseline(store, app.state.catalog, project_id)
     monkeypatch.setattr(app.state.catalog, "open", no_history)
     monkeypatch.setattr(HistoryManager, "accepted_patch_boundaries", no_history)
     assert client.get("/api/projects").json()[0]["digest_count"] == 0

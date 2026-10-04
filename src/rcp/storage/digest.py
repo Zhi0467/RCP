@@ -7,6 +7,8 @@ import sqlite3
 from collections.abc import Iterable
 from urllib.parse import quote
 
+from rcp.limits import DIGEST_LANDING_EVENT_LIMIT
+
 
 def migrate_digest(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE IF NOT EXISTS digest_events (
@@ -92,16 +94,36 @@ def digest_cursor(connection: sqlite3.Connection) -> int:
     return row[0] if row else 0
 
 
+def _require_head(connection, project_id):
+    if (
+        connection.execute(
+            "SELECT 1 FROM digest_heads WHERE project_id=? AND target='main'", (project_id,)
+        ).fetchone()
+        is None
+    ):
+        from rcp.transport import StateUnavailable
+
+        raise StateUnavailable("The project digest baseline is not available yet.")
+
+
 class DigestStoreMixin:
     def digest_snapshot(self, project_id: str, user_id: str) -> tuple[dict, int, list[dict]]:
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("BEGIN")
             _require_member(conn, project_id, user_id)
+            existing = conn.execute(
+                "SELECT 1 FROM digest_marks WHERE project_id=? AND user_id=?", (project_id, user_id)
+            ).fetchone()
+            if existing is None:
+                conn.rollback()
+                conn.execute("BEGIN IMMEDIATE")
+                _require_member(conn, project_id, user_id)
+                _require_head(conn, project_id)
+                conn.execute(
+                    "INSERT OR IGNORE INTO digest_marks(project_id,user_id,seq,marked_at) VALUES(?,?,?,?)",
+                    (project_id, user_id, digest_cursor(conn), self.now()),
+                )
             cursor = digest_cursor(conn)
-            conn.execute(
-                "INSERT OR IGNORE INTO digest_marks(project_id,user_id,seq,marked_at) VALUES(?,?,?,?)",
-                (project_id, user_id, cursor, self.now()),
-            )
             mark = dict(
                 conn.execute(
                     "SELECT seq,marked_at FROM digest_marks WHERE project_id=? AND user_id=?",
@@ -121,6 +143,7 @@ class DigestStoreMixin:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             _require_member(conn, project_id, user_id)
+            _require_head(conn, project_id)
             maximum = digest_cursor(conn)
             if seq < 0 or seq > maximum:
                 raise ValueError("digest cursor is ahead of the event log")
@@ -141,24 +164,28 @@ class DigestStoreMixin:
         if not project_ids:
             return {}
         with self.connection() as conn:
-            rows = conn.execute(
-                "SELECT m.project_id AS marked_project,m.seq AS mark_seq,m.marked_at,e.* "
-                "FROM digest_marks m LEFT JOIN digest_events e ON e.project_id=m.project_id "
-                "AND e.seq>m.seq WHERE m.user_id=? AND m.project_id IN ("
+            conn.execute("BEGIN")
+            marks = conn.execute(
+                "SELECT project_id,seq,marked_at FROM digest_marks WHERE user_id=? AND project_id IN ("
                 + ",".join("?" for _ in project_ids)
-                + ") ORDER BY e.seq",
+                + ")",
                 (user_id, *project_ids),
             ).fetchall()
-        result = {}
-        for row in rows:
-            project_id = row["marked_project"]
-            mark = {"seq": row["mark_seq"], "marked_at": row["marked_at"]}
-            entry = result.setdefault(project_id, (mark, mark["seq"], []))
-            if row["seq"] is not None:
-                event = dict(row)
-                for key in ("marked_project", "mark_seq", "marked_at"):
-                    event.pop(key)
-                entry[2].append(digest_event(event))
+            result = {}
+            for mark in marks:
+                events = [
+                    digest_event(row)
+                    for row in conn.execute(
+                        "SELECT * FROM digest_events WHERE project_id=? AND seq>? ORDER BY seq DESC LIMIT ?",
+                        (mark["project_id"], mark["seq"], DIGEST_LANDING_EVENT_LIMIT),
+                    )
+                ]
+                events.reverse()
+                result[mark["project_id"]] = (
+                    {"seq": mark["seq"], "marked_at": mark["marked_at"]},
+                    events[-1]["seq"] if events else mark["seq"],
+                    events,
+                )
         return result
 
 

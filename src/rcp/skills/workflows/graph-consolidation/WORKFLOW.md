@@ -66,8 +66,8 @@ in your graph rules.
   under Suggestions instead.
 - Make one concept use the same words across nodes.
 - Build the glossary: add an entry for each term that several nodes use
-  without defining it, sharpen entries that are vague or out of date, and
-  remove entries for terms the graph no longer uses.
+  without defining it and sharpen entries that are vague or out of date. List
+  glossary entries for terms the graph no longer uses under Suggestions.
 
 Put the Pass 2 and Pass 3 changes in one Patch. Validate, then `apply` with a
 key. Read the returned revision. If validation rejects the Patch, fix it or

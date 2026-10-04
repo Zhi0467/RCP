@@ -58,13 +58,8 @@ def attribution(store, project_id: str, patch: Patch) -> dict:
         result["deep_link"] = deep_link(project_id, "main", "episode", episode_id)
     else:
         operation_id = patch.source_operation_id or patch.task_id
-        consolidation = next(
-            (
-                run
-                for run in store.consolidation_runs(project_id)
-                if operation_id and run.operation_id == operation_id
-            ),
-            None,
+        consolidation = (
+            store.consolidation_run_for_operation(operation_id) if operation_id else None
         )
         if consolidation is not None:
             kind, key, label = "consolidation", consolidation.run_id, "Nightly consolidation"
@@ -148,6 +143,8 @@ def graph_event(
     payload = {
         "source_kind": source.pop("source_kind"),
         "edits": edits,
+        "non_node_edits": edits - len(delta.nodes),
+        "edited_node_ids": [item.node_id for item in delta.nodes],
         "report_artifact_id": source.pop("report_artifact_id"),
         "deep_link": source.pop("deep_link"),
         "attention": attention,
@@ -187,6 +184,7 @@ def assemble_digest(
 ) -> dict:
     """The sole rendered-line grouping function, also used by landing counts."""
     attention, latest_nodes, groups, branches, ran = {}, {}, {}, {}, {}
+    node_edits = {}
     merged = {}
     for event in events:
         if "merged_branch_revision" in event["payload"]:
@@ -223,10 +221,16 @@ def assemble_digest(
                     deep_link=payload.get("deep_link"),
                 ),
             )
-            group["edits"] += payload["edits"]
+            group["edits"] += payload.get(
+                "non_node_edits", max(0, payload["edits"] - len(event["node_ids"]))
+            )
+            for node_id in payload.get("edited_node_ids", event["node_ids"]):
+                node_edits[(key, node_id)] = node_edits.get((key, node_id), 0) + 1
             for node_id in event["node_ids"]:
                 latest_nodes[node_id] = key
         elif kind == "branch_change":
+            if event["actor_user_id"] == user_id and payload.get("source_kind") == "member":
+                continue
             episode_id = payload["episode_id"]
             if payload["edits"] and int(item_id) > merged.get(episode_id, -1):
                 branch = branches.setdefault(
@@ -265,23 +269,17 @@ def assemble_digest(
             )
     for node_id, key in sorted(latest_nodes.items()):
         groups[key]["node_ids"].append(node_id)
-    current = _attention(state) if state is not None else None
+        groups[key]["edits"] += node_edits.get((key, node_id), 0)
     needs = []
     for item in attention.values():
         if not item.pop("active"):
-            continue
-        if (
-            current is not None
-            and item["kind"] in {"proposal", "decision"}
-            and (item["kind"], item["item_id"]) not in current
-        ):
             continue
         needs.append(item)
     changed_ids = sorted(
         node_id for node_id in latest_nodes if state is None or node_id in state.nodes
     )
     changed, branch_lines, ran_lines = (
-        list(groups.values()),
+        [group for group in groups.values() if group["edits"] or group["node_ids"]],
         list(branches.values()),
         list(ran.values()),
     )
@@ -298,6 +296,7 @@ def assemble_digest(
 
 
 def read_digest(store, catalog, project_id: str, user_id: str) -> dict:
+    ensure_digest_baseline(store, catalog, project_id)
     mark, cursor, events = store.digest_snapshot(project_id, user_id)
     if not events:
         return assemble_digest(project_id, user_id, events, mark, cursor)
@@ -314,34 +313,63 @@ def read_digest(store, catalog, project_id: str, user_id: str) -> dict:
             if snapshot is None:
                 raise StateUnavailable("The project graph snapshot is not available yet.")
             state = GraphState.model_validate(snapshot["graph"])
+    return _assemble_current(store, project_id, user_id, events, mark, cursor, state)
+
+
+def ensure_digest_baseline(store, catalog, project_id):
+    with store.connection() as conn:
+        head = conn.execute(
+            "SELECT 1 FROM digest_heads WHERE project_id=? AND target='main'", (project_id,)
+        ).fetchone()
+    if head is None:
+        projector = DigestProjector(store, catalog, admission=None)
+        projector.reconcile_project(project_id)
+        projector._observe_episodes(project_id)
+
+
+def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None):
     result = assemble_digest(project_id, user_id, events, mark, cursor, state)
-    # The log defines newness; live operational rows only remove resolved entries.
+    question_ids = [item["item_id"] for item in result["needs_you"] if item["kind"] == "question"]
+    with store.connection() as conn:
+        open_questions = (
+            {
+                row[0]
+                for row in conn.execute(
+                    "SELECT question_id FROM questions WHERE state='pending' AND withdrawn_readonly=0 "
+                    "AND question_id IN (SELECT value FROM json_each(?))",
+                    (json.dumps(question_ids),),
+                )
+            }
+            if question_ids
+            else set()
+        )
+    episode_ids = [item["item_id"] for item in result["needs_you"] if item["kind"] == "episode"]
+    _, active = _episode_attention(store, project_id, episode_ids)
     result["needs_you"] = [
         item
         for item in result["needs_you"]
-        if item["kind"] != "question" or _question_open(store, item["item_id"])
-    ]
-    _, episode_attention = _episode_attention(store, project_id)
-    result["needs_you"] = [
-        item
-        for item in result["needs_you"]
-        if item["kind"] != "episode" or episode_attention.get(item["item_id"], False)
+        if (item["kind"] != "question" or item["item_id"] in open_questions)
+        and (item["kind"] != "episode" or active.get(item["item_id"], False))
     ]
     result["count"] = sum(len(result[key]) for key in ("needs_you", "changed", "branches", "ran"))
     return result
 
 
-def _question_open(store, item_id):
-    question = store.get_question(item_id)
-    return question is not None and question.state == "pending" and not question.withdrawn_readonly
-
-
 def digest_counts(store, project_ids: list[str], user_id: str) -> dict[str, int]:
     batches = store.digest_event_batches(project_ids, user_id)
     return {
-        project_id: assemble_digest(project_id, user_id, events, mark, cursor)["count"]
+        project_id: _assemble_current(store, project_id, user_id, events, mark, cursor)["count"]
         for project_id, (mark, cursor, events) in batches.items()
     }
+
+
+def _merged_revision(conn, project_id, target):
+    row = conn.execute(
+        "SELECT payload_json FROM digest_events WHERE project_id=? AND kind='graph_change' "
+        "AND source_key=? ORDER BY seq DESC LIMIT 1",
+        (project_id, "episode:" + target.removeprefix("branch:")),
+    ).fetchone()
+    return json.loads(row[0]).get("merged_branch_revision", -1) if row else -1
 
 
 class DigestProjector:
@@ -351,9 +379,8 @@ class DigestProjector:
         self._stop, self._wake = threading.Event(), threading.Event()
         self._lock = threading.RLock()
         self._dirty_lock = threading.Lock()
-        self._dirty: set[str] | None = None
+        self._dirty: set[tuple[str, str]] | None = None
         self._thread = None
-        self._signalled: dict[tuple[str, str], int] = {}
 
     def start(self):
         if self.is_running():
@@ -378,11 +405,8 @@ class DigestProjector:
 
     def signal_branch(self, project_id, target, revision):
         with self._dirty_lock:
-            if revision is not None:
-                key = (project_id, target)
-                self._signalled[key] = min(revision, self._signalled.get(key, revision))
             if self._dirty is not None:
-                self._dirty.add(project_id)
+                self._dirty.add((project_id, target))
         self._wake.set()
 
     def _run(self):
@@ -407,62 +431,88 @@ class DigestProjector:
             for project in self.store.projects():
                 if project.retired_at is not None:
                     continue
+                project_id = project.project_id
                 try:
-                    if (
-                        dirty is None
-                        or project.project_id in dirty
-                        or self._lagging(project.project_id)
-                    ):
-                        self.reconcile_project(project.project_id)
-                    self._observe_episodes(project.project_id)
+                    targets = (
+                        None
+                        if dirty is None
+                        else {target for pid, target in dirty if pid == project_id}
+                    )
+                    if targets is None or targets:
+                        self.reconcile_project(project_id, targets)
+                    else:
+                        lagging = self._lagging(project_id)
+                        if lagging:
+                            self.reconcile_project(project_id, lagging)
+                    self._observe_episodes(project_id)
                 except Exception:
-                    self.signal(project.project_id)
-                    _LOG.exception("Digest reconciliation failed for %s", project.project_id)
+                    self.signal(project_id)
+                    _LOG.exception("Digest reconciliation failed for %s", project_id)
+
+    def _branch_targets(self, project_id):
+        with self.store.connection() as conn:
+            return {
+                episode.graph_target.key: episode.graph_target.branch_id
+                for episode in self.store.episodes(project_id, limit=None)
+                if episode.graph_target.kind == "branch"
+                and (
+                    episode.status in {"queued", "running", "stopping", "wrapping_up"}
+                    or _merged_revision(conn, project_id, episode.graph_target.key) < 0
+                )
+            }
 
     def _lagging(self, project_id):
         service = self.catalog.loaded_service(project_id)
         if service is None:
-            return False
+            return set()
         with self.store.connection() as conn:
-            row = conn.execute(
-                "SELECT revision FROM digest_heads WHERE project_id=? AND target='main'",
-                (project_id,),
-            ).fetchone()
-        if row is None or service.history.current_accepted_revision() != row[0]:
-            return True
-        targets = {
-            episode.graph_target.key: episode.graph_target
-            for episode in self.store.episodes(project_id, limit=None)
-            if episode.graph_target.kind == "branch"
-        }
-        for target in targets.values():
-            path = service.history.root / "branches" / target.branch_id / "branch.json"
-            metadata = GraphBranchMetadata.model_validate_json(path.read_text())
-            revision = (
-                metadata.head.revision
-                if metadata.head.revision > metadata.base_head.revision
-                else 0
-            )
-            with self.store.connection() as conn:
-                row = conn.execute(
-                    "SELECT revision FROM digest_heads WHERE project_id=? AND target=?",
-                    (project_id, target.key),
-                ).fetchone()
-            if row is None or revision != row[0]:
-                return True
-        return False
+            heads = {
+                row["target"]: row["revision"]
+                for row in conn.execute(
+                    "SELECT target,revision FROM digest_heads WHERE project_id=?", (project_id,)
+                )
+            }
+        targets = set()
+        if service.history.current_accepted_revision() != heads.get("main"):
+            targets.add("main")
+        for target, branch_id in self._branch_targets(project_id).items():
+            try:
+                path = service.history.root / "branches" / branch_id / "branch.json"
+                metadata = GraphBranchMetadata.model_validate_json(path.read_text())
+                revision = (
+                    metadata.head.revision
+                    if metadata.head.revision > metadata.base_head.revision
+                    else 0
+                )
+                if revision != heads.get(target):
+                    targets.add(target)
+            except FileNotFoundError:
+                continue
+            except Exception:
+                _LOG.exception("Digest branch check failed for %s/%s", project_id, target)
+        return targets
 
-    def reconcile_project(self, project_id):
+    def reconcile_project(self, project_id, targets=None):
         with self._lock:
             history = self.catalog.open(project_id).history
-            targets = {
-                episode.graph_target.key: episode.graph_target.branch_id
-                for episode in self.store.episodes(project_id, limit=None)
-                if episode.graph_target.kind == "branch"
-            }
-            for target, branch_id in targets.items():
-                self._project_history(project_id, target, history.branch(branch_id))
-            self._project_history(project_id, "main", history)
+            if targets is None or "main" in targets:
+                self._project_history(project_id, "main", history)
+            branches = (
+                self._branch_targets(project_id)
+                if targets is None
+                else {
+                    target: target.removeprefix("branch:") for target in targets if target != "main"
+                }
+            )
+            for target, branch_id in branches.items():
+                try:
+                    if not (history.root / "branches" / branch_id / "branch.json").exists():
+                        continue
+                    self._project_history(
+                        project_id, target, history.branch(branch_id, initialize=False)
+                    )
+                except Exception:
+                    _LOG.exception("Digest branch projection failed for %s/%s", project_id, target)
 
     def _project_history(self, project_id, target, history):
         replay, boundaries = history.accepted_patch_boundaries()
@@ -474,13 +524,13 @@ class DigestProjector:
             prefix.update(patch.model_dump_json().encode())
             identities[patch.revision] = prefix.hexdigest()
         current_revision = max(identities, default=0)
-        with self._dirty_lock:
-            signalled = self._signalled.get((project_id, target))
         with self.store.connection() as conn:
             head = conn.execute(
                 "SELECT revision,patch_id FROM digest_heads WHERE project_id=? AND target=?",
                 (project_id, target),
             ).fetchone()
+        # A newly discovered branch belongs to an already observed project. Its
+        # first commit must survive a crash even if branch creation had no signal.
         discovered_branch = False
         merged_revision = -1
         if target != "main":
@@ -492,12 +542,7 @@ class DigestProjector:
                     ).fetchone()
                     is not None
                 )
-                merged = conn.execute(
-                    "SELECT payload_json FROM digest_events WHERE project_id=? AND kind='graph_change' AND source_key=? ORDER BY seq DESC LIMIT 1",
-                    (project_id, "episode:" + target.removeprefix("branch:")),
-                ).fetchone()
-            if merged:
-                merged_revision = json.loads(merged[0]).get("merged_branch_revision", -1)
+                merged_revision = _merged_revision(conn, project_id, target)
         reset = head is not None and (
             head["revision"] != 0 and identities.get(head["revision"]) != head["patch_id"]
         )
@@ -511,21 +556,28 @@ class DigestProjector:
                 and (
                     (head is not None and patch.revision > head["revision"])
                     or (head is None and discovered_branch)
-                    or (head is None and signalled is not None and patch.revision >= signalled)
                 )
             ]
         )
         with self.store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if (
+                conn.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone()
+                is None
+            ):
+                return
+            current_head = conn.execute(
+                "SELECT revision,patch_id FROM digest_heads WHERE project_id=? AND target=?",
+                (project_id, target),
+            ).fetchone()
+            if current_head != head:
+                return
             for event in events:
                 append_digest_event(conn, **event)
             conn.execute(
                 "INSERT INTO digest_heads(project_id,target,revision,patch_id) VALUES(?,?,?,?) ON CONFLICT(project_id,target) DO UPDATE SET revision=excluded.revision,patch_id=excluded.patch_id",
                 (project_id, target, current_revision, identities.get(current_revision, "")),
             )
-        with self._dirty_lock:
-            if self._signalled.get((project_id, target)) == signalled:
-                self._signalled.pop((project_id, target), None)
         if reset:
             _LOG.warning(
                 "Digest history %s/%s no longer contains its head; rebaselined", project_id, target
@@ -534,6 +586,12 @@ class DigestProjector:
     def _observe_episodes(self, project_id):
         episodes, active = _episode_attention(self.store, project_id)
         with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if (
+                conn.execute("SELECT 1 FROM projects WHERE project_id=?", (project_id,)).fetchone()
+                is None
+            ):
+                return
             initial = (
                 conn.execute(
                     "SELECT 1 FROM digest_heads WHERE project_id=? AND target='episodes'",
@@ -545,15 +603,15 @@ class DigestProjector:
                 "INSERT OR IGNORE INTO digest_heads(project_id,target,revision,patch_id) VALUES(?, 'episodes', 0, '')",
                 (project_id,),
             )
-        for episode in episodes:
-            key = "episode:" + episode.episode_id
-            with self.store.connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+            for episode in episodes:
+                key = "episode:" + episode.episode_id
                 previous = conn.execute(
                     "SELECT revision FROM digest_heads WHERE project_id=? AND target=?",
                     (project_id, key),
                 ).fetchone()
                 current = int(active[episode.episode_id])
+                if previous is not None and previous[0] == current:
+                    continue
                 conn.execute(
                     "INSERT INTO digest_heads(project_id,target,revision,patch_id) VALUES(?,?,?, '') "
                     "ON CONFLICT(project_id,target) DO UPDATE SET revision=excluded.revision",
@@ -565,9 +623,7 @@ class DigestProjector:
                     "SELECT 1 FROM digest_events WHERE project_id=? AND kind='branch_change' AND target=? LIMIT 1",
                     (project_id, episode.graph_target.key),
                 ).fetchone()
-                if (previous is None and (not current or (initial and not branch))) or (
-                    previous is not None and previous[0] == current
-                ):
+                if previous is None and (not current or (initial and not branch)):
                     continue
                 append_digest_event(
                     conn,
@@ -586,8 +642,12 @@ class DigestProjector:
                 )
 
 
-def _episode_attention(store, project_id):
-    episodes = store.episodes(project_id, limit=None)
+def _episode_attention(store, project_id, episode_ids=None):
+    episodes = (
+        store.episodes(project_id, limit=None)
+        if episode_ids is None
+        else list(store.episodes_by_ids(episode_ids).values())
+    )
     health = load_episode_health(store, episodes)
     active = {}
     with store.connection() as conn:
@@ -600,13 +660,7 @@ def _episode_attention(store, project_id):
                 "SELECT item_id,payload_json FROM digest_events WHERE project_id=? AND kind='branch_change' AND target=? ORDER BY seq DESC LIMIT 1",
                 (project_id, episode.graph_target.key),
             ).fetchone()
-            merged = conn.execute(
-                "SELECT payload_json FROM digest_events WHERE project_id=? AND kind='graph_change' AND source_key=? ORDER BY seq DESC LIMIT 1",
-                (project_id, "episode:" + episode.graph_target.branch_id),
-            ).fetchone()
-            merged_revision = (
-                json.loads(merged[0]).get("merged_branch_revision", -1) if merged else -1
-            )
+            merged_revision = _merged_revision(conn, project_id, episode.graph_target.key)
             if branch and int(branch[0]) > merged_revision:
                 active[episode.episode_id] |= bool(json.loads(branch[1]).get("needs_action"))
     return episodes, active

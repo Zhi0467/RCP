@@ -27,6 +27,8 @@ def digest_store(tmp_path):
     members = [store.preprovision_team_member(name).user_id for name in ("One", "Two")]
     for member in members:
         store.seat_project_member("project", member)
+    with store.connection() as conn:
+        conn.execute("INSERT INTO digest_heads VALUES(?,?,?,?)", ("project", "main", 0, ""))
     return store, members
 
 
@@ -94,7 +96,9 @@ def test_digest_storage_transfer_rewrite_and_delete(digest_store):
     displayed = event(store)
     store.digest_snapshot("project", one)
     with store.connection() as conn:
-        conn.execute("INSERT INTO digest_heads VALUES(?,?,?,?)", ("project", "main", 2, "head"))
+        conn.execute(
+            "UPDATE digest_heads SET revision=2,patch_id='head' WHERE project_id='project'"
+        )
     tables = {"digest_events", "digest_marks", "digest_heads"}
     assert tables <= TRANSFER_EXCLUDED_PROJECT_TABLES
     target = str(uuid.uuid4())
@@ -117,6 +121,8 @@ def test_digest_storage_transfer_rewrite_and_delete(digest_store):
             added_at=store.now(),
         )
     )
+    with store.connection() as conn:
+        conn.execute("INSERT INTO digest_heads VALUES(?,?,?,?)", ("remaining", "main", 0, ""))
     store.seat_project_member("remaining", one)
     mark, cursor, _ = store.digest_snapshot("remaining", one)
     assert cursor == mark["seq"] == displayed

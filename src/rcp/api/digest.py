@@ -15,7 +15,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
-from rcp.digest import read_digest
+from rcp.digest import ensure_digest_baseline, read_digest
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -125,6 +125,7 @@ def caught_up(
     project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
     try:
+        ensure_digest_baseline(store, catalog, project_id)
         mark = store.catch_up_digest(project_id, identity.acting_user(request).user_id, body.seq)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc

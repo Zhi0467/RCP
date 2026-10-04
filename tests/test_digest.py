@@ -5,10 +5,25 @@ from types import SimpleNamespace
 from rcp.core.models import Decision, Edge, GatedCard, GraphState, Patch, Proposal
 from rcp.digest import DigestProjector, assemble_digest, attribution, graph_event
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
-from rcp.storage import AppStore
+from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.digest import digest_event
 
 from .helpers import authorized_human
+
+
+def _project_store(tmp_path):
+    store = AppStore(tmp_path / "app.db")
+    store.upsert_project(
+        ProjectRecord(
+            project_id="p",
+            locator=str(tmp_path / "research.yaml"),
+            name="Project",
+            state_location=str(tmp_path / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    return store
 
 
 def _patch(revision=1, **kwargs):
@@ -29,7 +44,7 @@ def _events(store):
 
 
 def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path):
-    store = AppStore(tmp_path / "app.db")
+    store = _project_store(tmp_path)
     state = GraphState(revision=1)
     patch = _patch()
     boundaries = [(GraphState(), patch, state)]
@@ -59,20 +74,40 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
     assert len(_events(store)) == 1
 
 
-def test_projector_initial_signal_keeps_only_new_revisions(tmp_path):
-    store = AppStore(tmp_path / "app.db")
-    states = [GraphState(revision=i) for i in range(3)]
-    states[2].nodes["d/one"] = _decision(status="ready")
-    history = SimpleNamespace(
-        accepted_patch_boundaries=lambda: (
-            SimpleNamespace(state=states[2]),
-            [(states[i - 1], _patch(i), states[i]) for i in (1, 2)],
-        )
-    )
-    projector = DigestProjector(store, None, admission=RuntimeAdmissionGate())
-    projector.signal("p", 2)
-    projector._project_history("p", "main", history)
-    assert [event["item_id"] for event in _events(store)] == ["2"]
+def test_mark_checkpoints_main_before_commit_and_restart(manifest, tmp_path):
+    from rcp.digest import read_digest
+
+    from .helpers import append_fixture_patch, create_named_app, seed_patch
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store, catalog = app.state.background_tasks.store, app.state.catalog
+    project_id, user_id = app.state.default_project_id, store.local_owner.user_id
+    assert read_digest(store, catalog, project_id, user_id)["count"] == 0
+    append_fixture_patch(catalog.open(project_id), seed_patch())
+    # No projection after commit; restart must recover it from the durable head.
+    DigestProjector(store, catalog, admission=RuntimeAdmissionGate()).run_pass()
+    assert read_digest(store, catalog, project_id, user_id)["changed"]
+
+
+def test_missing_episode_branch_does_not_block_main(manifest, tmp_path):
+    from rcp.digest import read_digest
+
+    from .helpers import append_fixture_patch
+    from .test_branch_chats import _app_branch
+    from .test_branch_history import _branch_patch
+
+    app, main, episode, _ = _app_branch(manifest, tmp_path)
+    store, catalog = app.state.background_tasks.store, app.state.catalog
+    project_id, user_id = episode.project_id, store.local_owner.user_id
+    assert read_digest(store, catalog, project_id, user_id)["count"] == 0
+    branch_root = main.history.root / "branches" / episode.graph_target.branch_id
+    branch_root.rename(branch_root.with_name("absent-branch-fixture"))
+    append_fixture_patch(main, _branch_patch("ev/main-digest"))
+    projector = DigestProjector(store, catalog, admission=RuntimeAdmissionGate())
+    projector.run_pass()
+    assert read_digest(store, catalog, project_id, user_id)["changed"]
+    assert not branch_root.exists()
+    projector.run_pass()  # The periodic lag check also tolerates the missing branch.
 
 
 def test_semantic_touches_and_attention_boundaries(tmp_path):
@@ -132,9 +167,9 @@ def test_attribution_precedence_and_missing_task(tmp_path):
     task = SimpleNamespace(kind="project_chat", request={"chat_id": "chat", "mode": "work"})
     store.agent_task = lambda _: task
     assert attribution(store, "p", _patch(task_id="task"))["source_kind"] == "chat"
-    store.consolidation_runs = lambda _: [
-        SimpleNamespace(operation_id="task", run_id="run", report_artifact_id="report")
-    ]
+    store.consolidation_run_for_operation = lambda _: SimpleNamespace(
+        operation_id="task", run_id="run", report_artifact_id="report"
+    )
     assert attribution(store, "p", _patch(task_id="task"))["source_kind"] == "consolidation"
     merge = SimpleNamespace(episode_id="episode")
     assert (
@@ -162,7 +197,13 @@ def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_br
         event,
         seq=3,
         source_key="episode:episode",
-        payload=dict(event["payload"], source_kind="episode", merged_branch_revision=4),
+        payload=dict(
+            event["payload"],
+            source_kind="episode",
+            merged_branch_revision=4,
+            non_node_edits=1,
+            edited_node_ids=[],
+        ),
         node_ids=[],
     )
     branch = dict(
@@ -199,7 +240,6 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     branch.append(
         _branch_patch("ev/digest").model_copy(update={"source_operation_id": root.operation_id})
     )
-    assert (episode.project_id, episode.graph_target.key) in projector._signalled
     # A crash loses the signal, but must not silently baseline the new branch.
     projector = DigestProjector(store, app.state.catalog, admission=RuntimeAdmissionGate())
     projector.run_pass()

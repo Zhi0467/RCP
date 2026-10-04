@@ -8,7 +8,10 @@ served-app check. The backend now has the event log, transactional operational
 writers, independent graph projector, digest and Caught up routes, project-card
 counts, and migration/transfer/restore integration. Backend focused/regression
 checks and a seeded HTTP journey have passed. The Web slice is owned by a
-parallel implementation.
+parallel implementation. Review round 1 fixes isolate branch failures and target
+signals, checkpoint main before member marks, share card/count filtering, bound
+landing event reads, and batch episode observations. The integrated Web journey
+remains open.
 
 Decision: [the digest moves only when you say you caught up](../decisions/2026-10-03-digest-moves-only-on-caught-up.md).
 Current backend behavior is recorded in
@@ -121,8 +124,8 @@ below replaces both with one append-only event log in SQLite.
 - `GET /api/projects/{id}/digest` reads in one SQLite read transaction: the
   member's mark, events after it, and the maximum `seq`. It returns that
   maximum as the cursor.
-  - Needs you: attention entries whose latest event is an entry, still
-    present in the current graph snapshot; open questions (pending and not
+  - Needs you: attention entries whose latest event is an entry (graph
+    projection also records exits); open questions (pending and not
     withdrawn); episodes that currently need the human (the same pure health
     predicate the notification sender uses for `episode_needs_action`, which
     covers a ready Decision on an unmerged Auto-research branch).
@@ -136,15 +139,16 @@ below replaces both with one append-only event log in SQLite.
     graph, for the Research dots.
 - A member with no mark gets one at the current maximum `seq` with an
   atomic insert-if-absent inside the read path, rechecking project
-  membership. Listing projects never creates a mark.
+  membership. The initial main projector checkpoint must exist first.
+  Existing-mark reads do not take a write lock. Listing projects never creates a mark.
 - `POST /api/projects/{id}/digest/caught-up {seq}`: stores
   `max(stored, seq)`; refuses a `seq` above the current maximum. Uses
   `acting_user()`, skips the project work fence like the chat read marker,
   and keeps global maintenance admission and POST origin/JSON checks.
-- `ProjectCard.digest_count` on `GET /api/projects`: one batched SQL count of
-  rendered digest lines from the event log for the visible projects, with the
-  same grouping function the digest uses. No graph read, no replay. No mark
-  means zero.
+- `ProjectCard.digest_count` on `GET /api/projects`: read at most
+  `DIGEST_LANDING_EVENT_LIMIT` latest events per marked project, with the same
+  grouping and live operational filters as the digest. The count is a floor
+  when the window truncates a backlog. No graph read, no replay. No mark means zero.
 - The notification sender is not called and its observations are not read.
   Only pure helpers (attention membership, labels, deep links) are shared.
 

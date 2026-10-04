@@ -1557,9 +1557,6 @@ class AutoResearchStoreMixin:
                 (now, now, detail, now, now, episode_id),
             )
             append_episode_ended(connection, episode_id, now)
-            self.set_episode_chain_questions_withdrawn_in_connection(
-                connection, episode_id, withdrawn=True
-            )
 
     def auto_research_recovery(self, recovery_id: str) -> AutoResearchRecoveryRecord | None:
         with self.connection() as connection:

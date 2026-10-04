@@ -75,7 +75,8 @@ returns `cursor`, `mark`, `needs_you`, `changed`, `branches`, `ran`,
 `changed_node_ids`, and `count`. The count is the number of rendered lines across
 those four groups. Opening a project or reading its digest never advances an
 existing mark. A member without a mark starts at the event log's current cursor
-and sees an empty digest; listing project cards does not create marks.
+and sees an empty digest; listing project cards does not create marks. The initial
+main projector checkpoint is persisted before a member mark can be inserted.
 
 `POST /api/projects/{id}/digest/caught-up {"seq": ...}` acknowledges the cursor
 that was displayed. It returns `{"mark": {"seq": ..., "marked_at": ...}}`,
@@ -111,9 +112,12 @@ Its persisted per-target head detects non-prefix history after restore/reset;
 that target is rebaselined without inventing events. It shares semantic
 comparison with branch changes and does not consume notification sender state.
 
-`GET /api/projects` includes `digest_count` on each visible project card. One
-batched event query uses the digest's grouping function; it does not open or
-replay graph history. Unmarked projects have count zero. Digest events, marks,
+`GET /api/projects` includes `digest_count` on each visible project card. It uses
+the same grouping and live operational filters as the digest, reading at most
+`DIGEST_LANDING_EVENT_LIMIT` latest events per project. The integer count is a
+floor when that window truncates the backlog; the full digest remains exact.
+Neither landing counts nor existing-mark reads replay graph history. Unmarked
+projects have count zero. Digest events, marks,
 and projector heads are excluded from project transfer, removed with project
 control-plane data, and included in application backup/restore.
 
