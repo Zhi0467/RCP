@@ -1,5 +1,10 @@
 # Active decision records
 
+- [The kernel asks node-type questions](2026-10-04-the-kernel-asks-node-type-questions.md)
+  records why kernel code asks a project type which node types play which part,
+  why a type's own rules live in a listed research layer, why the project type
+  is not persisted yet, and why Auto-research workers may sit on any node.
+
 - [Nightly graph consolidation writes main](2026-10-03-nightly-consolidation-writes-main.md)
   records why a member may authorize a scheduled Work turn, why it writes main
   rather than a branch, why it applies inside the turn, and why its report sits

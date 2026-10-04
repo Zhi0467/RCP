@@ -1542,8 +1542,8 @@ def _worker_prompt(
         actor_request.instruction + "\n",
     )
     node = service.history.state().nodes.get(turn.binding.control_node_id or "")
-    if node is None or node.type not in {"experiment", "blocker"}:
-        raise ValueError("AutoResearch worker seat is no longer an Experiment or Blocker.")
+    if node is None:
+        raise ValueError("AutoResearch worker seat is no longer in the graph.")
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
@@ -1562,7 +1562,7 @@ def _worker_prompt(
     def render_master() -> str:
         return auto_research_worker_task_contract(
             project_name=context.project_name,
-            seat_node_type="Experiment" if node.type == "experiment" else "Blocker",
+            seat_node_type=node.extension_type or node.type,
             seat_node_id=node.id,
             seat_difficulty=json.dumps(node.model_dump(mode="json"), ensure_ascii=False, indent=2),
             instruction_path=instruction_path,

@@ -3,10 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from rcp.core.models import Decision, Evidence, GraphState, Hypothesis, ResearchQuestion, Standing
-
-EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
-    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-)
+from rcp.core.project_types import project_type_of
 
 
 def render_research_md(state: GraphState) -> str:
@@ -33,14 +30,17 @@ def render_research_md(state: GraphState) -> str:
                 line = f"- **{node.title}** — **Open:** {node.question}"
             sections["Decisions"].append(line)
 
+    project_type = project_type_of(state)
     for edge in sorted(state.edges.values(), key=lambda item: item.id):
         source = state.nodes.get(edge.source)
         target = state.nodes.get(edge.target)
         if (
             not isinstance(source, Evidence)
+            or getattr(source, project_type.lifecycle_field(source.type))
+            == project_type.retired_value
             or not isinstance(target, Hypothesis)
             or target.standing != Standing.ACCEPTED
-            or edge.relation not in EVIDENCE_HYPOTHESIS_RELATIONS
+            or edge.relation not in project_type.belief_outcome_relations
         ):
             continue
         if edge.assessment is None:

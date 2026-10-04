@@ -1,3 +1,5 @@
+import { FLOW_ORDER, STAGE_BY_TYPE } from "../researchType.ts";
+
 export interface TopologyNode {
   id: string;
 }
@@ -13,23 +15,8 @@ export interface TopologyLayout {
   rankById: Record<string, number>;
 }
 
-export const RESEARCH_STAGE_BY_NODE_TYPE = {
-  research_question: 0,
-  hypothesis: 1,
-  decision: 1,
-  experiment: 2,
-  blocker: 2,
-  evidence: 3,
-} as const;
-
-const RESEARCH_FLOW_NODE_TYPES = [
-  "research_question",
-  "hypothesis",
-  "decision",
-  "blocker",
-  "experiment",
-  "evidence",
-] as const;
+/** Left-to-right stage of each node type; the research layer owns the table. */
+export const RESEARCH_STAGE_BY_NODE_TYPE = STAGE_BY_TYPE;
 
 export interface SemanticLaneNode extends TopologyNode {
   type: keyof typeof RESEARCH_STAGE_BY_NODE_TYPE;
@@ -117,7 +104,7 @@ export function buildSemanticLaneLayout(
     });
   });
 
-  const lanes = RESEARCH_FLOW_NODE_TYPES.map((type) =>
+  const lanes = FLOW_ORDER.map((type) =>
     nodes.filter((node) => node.type === type).map((node) => node.id),
   );
   lanes.forEach((lane) =>

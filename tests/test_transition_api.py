@@ -41,7 +41,7 @@ def test_transition_manifest_names_the_ruleset_and_conservative_sync_triggers(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["ruleset_tag"] == "rcp.lifecycle.v2"
+    assert payload["ruleset_tag"] == "rcp.lifecycle.v3"
     triggers = {item["operation"]: item for item in payload["triggers"]}
     assert {
         "update_nodes",
@@ -93,7 +93,7 @@ def test_sync_preview_returns_the_complete_noncanonical_candidate_without_writin
     transition = payload["transition"]
     candidate = projection["graph"]
     assert projection["canonical"] is False
-    assert projection["ruleset_tag"] == transition["ruleset_tag"] == "rcp.lifecycle.v2"
+    assert projection["ruleset_tag"] == transition["ruleset_tag"] == "rcp.lifecycle.v3"
     assert transition["pre_head"]["revision"] == before.revision
     assert projection["head"]["revision"] == candidate["revision"] == before.revision + 1
     assert (
@@ -308,7 +308,7 @@ def test_sync_response_is_one_coherent_graph_control_and_head_projection(
     assert payload["edges"] == payload["graph"]["edges"]
     assert payload["head"]["transition_id"] == payload["transition_id"]
     assert payload["canonical"] is True
-    assert payload["ruleset_tag"] == "rcp.lifecycle.v2"
+    assert payload["ruleset_tag"] == "rcp.lifecycle.v3"
     assert set(payload["experiment_control"]) == {experiment.id}
     assert set(payload["guidance_validity"]) == {experiment.id}
     assert payload["graph"]["nodes"][experiment.id]["current_summary"] == (

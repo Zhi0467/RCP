@@ -281,8 +281,8 @@ def _reconcile_spawn(
         admission.episode_id,
         arguments.seat_node_id,
     )
-    if node_type is None or node_type.casefold() not in {"experiment", "blocker"}:
-        raise ValueError("Auto-research workers may be seated only on Experiments and Blockers.")
+    if node_type is None:
+        raise ValueError("Auto-research workers must be seated on an existing graph node.")
     if store.auto_research_child_work(admission.child_id) is not None:
         raise ValueError("The admitted Spawn already has an unreflected child route.")
     request = worker_request_factory(

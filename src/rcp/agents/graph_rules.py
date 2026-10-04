@@ -19,28 +19,17 @@ from pydantic.fields import FieldInfo
 from rcp.core.models import (
     RELATION_SPEC,
     BaseNode,
-    Blocker,
-    Decision,
     Edge,
-    Evidence,
     EvidenceAssessment,
-    Experiment,
     ExperimentProxy,
-    Hypothesis,
-    ResearchQuestion,
+    ProjectNode,
 )
 from rcp.core.ontology import type_pair_layer
 from rcp.core.validation.constants import NODE_PREFIXES
 from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR, EXPECTATION_RELATIONS
 
-_NODE_MODELS: tuple[type[BaseNode], ...] = (
-    ResearchQuestion,
-    Hypothesis,
-    Decision,
-    Experiment,
-    Evidence,
-    Blocker,
-)
+# The node models in the order the discriminated union declares them.
+_NODE_MODELS: tuple[type[BaseNode], ...] = get_args(get_args(ProjectNode)[0])
 _TYPE_NAMES = {
     get_args(model.model_fields["type"].annotation)[0]: model.__name__ for model in _NODE_MODELS
 }

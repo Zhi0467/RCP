@@ -1328,23 +1328,23 @@ def test_status_worker_id_is_normalized_and_bounded_before_durable_start(tmp_pat
     assert store.agent_command("7" * 32) is None
 
 
-def test_spawn_seat_is_bounded_but_worker_request_gets_no_mechanical_scope(tmp_path) -> None:
+def test_spawn_seat_must_exist_but_worker_request_gets_no_mechanical_scope(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
-    effects = _Effects(store, auto_research, root, seat_type="evidence")
+    effects = _Effects(store, auto_research, root, seat_type=None)
     dispatcher = _dispatcher(store, effects.bundle())
 
     refused = dispatcher.dispatch(
         root.operation_id,
-        _spawn_request("2" * 32, key="seat-evidence", seat_node_id="ev/result"),
+        _spawn_request("2" * 32, key="seat-missing", seat_node_id="ev/missing"),
     )
     assert refused.status == "invalid"
-    assert "Experiments and Blockers" in (refused.message or "")
+    assert "existing graph node" in (refused.message or "")
     assert effects.spawn_calls == []
 
-    effects.seat_type = "blocker"
+    effects.seat_type = "evidence"
     accepted = dispatcher.dispatch(
         root.operation_id,
-        _spawn_request("3" * 32, key="seat-blocker", seat_node_id="blocker/input"),
+        _spawn_request("3" * 32, key="seat-evidence", seat_node_id="ev/result"),
     )
     assert accepted.status == "ok"
     assert len(effects.spawn_calls) == 1
@@ -1354,7 +1354,7 @@ def test_spawn_seat_is_bounded_but_worker_request_gets_no_mechanical_scope(tmp_p
     assert worker.kind == "node_chat"
     assert worker.parent_operation_id is None
     assert worker.authorized_by == auto_research.authorized_by
-    assert worker.request["node_id"] == "blocker/input"
+    assert worker.request["node_id"] == "ev/result"
     assert worker.request["mode"] == "work"
     assert worker.request["trigger"] == "orchestrator"
     assert "scope" not in worker.request

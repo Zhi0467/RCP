@@ -163,6 +163,12 @@ stable. Current operation families are:
 - `set_project_truth_scope`; and
 - `set_ontology`.
 
+Supersede and merge retire a node by setting its lifecycle field to
+`superseded` (`validity` on Evidence, `status` on every other base type, as
+the project type names) and adding the `supersedes` or `duplicate_of` edge. They
+keep the retired node and its edges; `remove_nodes` deletes a node and every
+edge touching it. The research rendering leaves retired Evidence out.
+
 Historical `set_coverage` operations remain decodable but have no current graph
 effect. New admission rejects them. Reading reports are absent from graph and
 project snapshots, agent context, generated files, validation, and branch merge
@@ -240,7 +246,9 @@ A prepared transition contains:
 - ordered generated operations;
 - a stable rule id for every generated operation;
 - cause references to earlier actions or events;
-- ordered lifecycle events with stable event ids;
+- ordered lifecycle events with stable event ids, one per change to a node's
+  lifecycle field (from ruleset `rcp.lifecycle.v3`; earlier rulesets recorded
+  `status` alone, and replay recomputes events under the ruleset a trace names);
 - the ruleset tag;
 - the final state and head;
 - final graph-derived Experiment control;
@@ -298,8 +306,8 @@ stale text as current guidance.
 
 Invalidators include `blocked_by` changes, linked Blocker lifecycle changes,
 governing Decision or relevant pending-Proposal changes, and upstream
-Evidence-to-Hypothesis relation or assessment changes for a causally dependent
-Experiment. RCP uses the current control relations and graph causal paths; it
+Evidence-to-Hypothesis relation, assessment, or Evidence lifecycle changes for a
+causally dependent Experiment. RCP uses the current control relations and graph causal paths; it
 does not maintain a second authored dependency graph.
 
 ## Human preview and agent correction

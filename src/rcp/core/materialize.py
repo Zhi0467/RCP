@@ -12,7 +12,6 @@ from rcp.core.models import (
     Edge,
     GlossaryTerm,
     GraphState,
-    Hypothesis,
     Patch,
     ProjectNode,
     Proposal,
@@ -42,6 +41,7 @@ from rcp.core.operations import (
     WithdrawProposalsOperation,
     strict_project_node,
 )
+from rcp.core.project_types import project_type_of
 from rcp.core.validation import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     ValidationReport,
@@ -417,10 +417,9 @@ def _apply_patch(
         elif isinstance(op, SupersedeNodesOperation):
             for item in op.nodes:
                 previous = state.nodes[item.id]
-                _set_node_status(
+                _retire_node(
                     state,
                     item.id,
-                    "superseded",
                     revision,
                     preserve_standing=patch.kind == "approval",
                 )
@@ -447,10 +446,9 @@ def _apply_patch(
                 duplicate = item.duplicate
                 canonical = item.canonical
                 previous = state.nodes[duplicate]
-                _set_node_status(
+                _retire_node(
                     state,
                     duplicate,
-                    "superseded",
                     revision,
                     preserve_standing=patch.kind == "approval",
                 )
@@ -572,17 +570,17 @@ def _apply_patch(
         state.last_refresh_at = patch.created_at
 
 
-def _set_node_status(
+def _retire_node(
     state: GraphState,
     node_id: str,
-    status: str,
     revision: int,
     *,
     preserve_standing: bool,
 ) -> None:
     node = state.nodes[node_id]
+    project_type = project_type_of(state)
     data: dict[str, Any] = node.model_dump(mode="python")
-    data["status"] = status
+    data[project_type.lifecycle_field(node.type)] = project_type.retired_value
     data["updated_rev"] = revision
     data["standing"] = node.standing if preserve_standing else "asserted"
     state.nodes[node_id] = NODE_ADAPTER.validate_python(data)
@@ -595,9 +593,10 @@ def _record_belief_transition(
     revision: int,
     cause: BeliefCause | None,
 ) -> None:
+    project_type = project_type_of(state)
     if (
-        not isinstance(previous, Hypothesis)
-        or not isinstance(updated, Hypothesis)
+        not project_type.is_belief(previous.type)
+        or not project_type.is_belief(updated.type)
         or previous.status == updated.status
         or cause is None
     ):

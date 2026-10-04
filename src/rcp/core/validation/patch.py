@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from typing import Literal
 
 from rcp.core.authority import operation_actions, permits
-from rcp.core.models import Decision, ExperimentDecisionPin, GraphState, Patch
+from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import (
     CreateEdgesOperation,
     CreateNodesOperation,
@@ -25,6 +25,8 @@ from rcp.core.operations import (
     SupersedeNodesOperation,
     UpdateNodesOperation,
 )
+from rcp.core.project_types import project_type_of
+from rcp.core.research_rules import chooses_decision, reject_incomplete_decision_ballot
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.experiment_loop import validate_experiment_loop_authority
@@ -383,19 +385,7 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
         if isinstance(operation, SetStandingOperation)
     )
     for node_id in sorted(touched_ids):
-        node = ctx.state.nodes.get(node_id)
-        if (
-            isinstance(node, Decision)
-            and node.status in {"ready", "revisit"}
-            and len(set(node.options)) < 2
-        ):
-            ctx.report.reject(
-                "incomplete-decision-ballot",
-                f"Decision {node.id} must have at least two distinct options before it can be "
-                f"queued as {node.status}.",
-                ctx.revision,
-                related_node_ids=[node.id],
-            )
+        reject_incomplete_decision_ballot(ctx.state.nodes.get(node_id), ctx.report, ctx.revision)
 
 
 def _validate_authorship(ctx: OpContext) -> None:
@@ -610,22 +600,19 @@ def _validate_declared_agent_action(ctx: OpContext) -> None:
 
 
 def _has_declared_decision_outcome(ctx: OpContext) -> bool:
+    project_type = project_type_of(ctx.initial_state)
     decision_ids = {
-        node.id for node in ctx.initial_state.nodes.values() if isinstance(node, Decision)
+        node.id for node in ctx.initial_state.nodes.values() if project_type.is_chooser(node.type)
     }
     decision_ids.update(
         raw.id
         for operation in ctx.patch.ops
         if isinstance(operation, CreateNodesOperation)
         for raw in operation.nodes
-        if raw.type == "decision"
+        if project_type.is_chooser(raw.type)
     )
     return any(
-        update.id in decision_ids
-        and (
-            update.changes.get("status") == "decided"
-            or update.changes.get("selected_option") is not None
-        )
+        update.id in decision_ids and chooses_decision(update.changes)
         for operation in ctx.patch.ops
         if isinstance(operation, UpdateNodesOperation)
         for update in operation.nodes

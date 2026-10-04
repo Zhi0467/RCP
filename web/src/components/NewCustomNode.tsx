@@ -8,6 +8,7 @@ import {
   humanNodeId,
   normalizeSlug,
 } from "../ontologyEditing";
+import { carriesOrigin } from "../researchType";
 import type {
   ExtensionFieldValue,
   GraphNode,
@@ -69,7 +70,7 @@ export function NewCustomNode({
     primaryText.trim() &&
     requiredFieldsPresent &&
     !existingNodeIds.has(nodeId) &&
-    (definition.base_type !== "evidence" || origin),
+    (!carriesOrigin(definition.base_type) || origin),
   );
 
   const reset = () => {
@@ -186,7 +187,7 @@ export function NewCustomNode({
             />
           </label>
         )}
-        {definition?.base_type === "evidence" && (
+        {carriesOrigin(definition?.base_type) && (
           <label>
             <span>Origin</span>
             <select

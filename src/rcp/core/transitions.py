@@ -5,29 +5,34 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Sequence
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.control import ExperimentControlState, experiment_control_dependencies
+from rcp.control import ExperimentControlState
 from rcp.core.attention import project_counts, project_graph_attention, project_primary_question
+from rcp.core.experiment_guidance import (
+    GUIDANCE_RULE_ID,
+    GUIDANCE_RULE_IDS,
+    dependency_change_causes,
+    experiment_projections,
+    explicit_guidance_updates,
+    guidance_actions,
+    guidance_triggers,
+    validate_guidance_operation,
+)
 from rcp.core.materialize import (
     apply_transition_generated_operation,
     apply_valid_operation,
     apply_valid_patch,
 )
-from rcp.core.models import Evidence, Experiment, GraphState, Patch, ProjectNode, ReplayFailure
-from rcp.core.operations import (
-    GraphOperation,
-    NodeUpdate,
-    UpdateNodesOperation,
-)
+from rcp.core.models import GraphState, Patch, ProjectNode, ReplayFailure
+from rcp.core.operations import GraphOperation, UpdateNodesOperation
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import (
     ExperimentGuidanceValidity,
     GraphAttentionProjection,
     GraphHeadRef,
     GraphTargetRef,
-    GuidanceFieldValidity,
     ProjectCountsProjection,
     TransitionCauseRef,
     TransitionConflictDetail,
@@ -35,12 +40,14 @@ from rcp.core.transition_models import (
     TransitionGeneratedAction,
     TransitionInitiatingGroup,
     TransitionTrace,
-    TransitionTrigger,
     TransitionTriggerManifest,
 )
 
-TRANSITION_RULESET_TAG = "rcp.lifecycle.v2"
-GUIDANCE_RULE_ID = "experiment.guidance-validity.v1"
+TRANSITION_RULESET_TAG = "rcp.lifecycle.v3"
+# Rulesets whose lifecycle events follow each node's lifecycle field (Evidence
+# retires through ``validity``). Every earlier ruleset recorded only ``status``
+# changes, and replay recomputes events under the ruleset a trace names.
+_LIFECYCLE_FIELD_RULESETS = frozenset({TRANSITION_RULESET_TAG})
 STATUS_EVENT_RULE_ID = "lifecycle.status-events.v1"
 DEFAULT_MAX_RULE_FIRINGS = 128
 
@@ -118,61 +125,7 @@ def transition_trigger_manifest() -> TransitionTriggerManifest:
 
     return TransitionTriggerManifest(
         ruleset_tag=TRANSITION_RULESET_TAG,
-        triggers=[
-            TransitionTrigger(
-                operation="update_nodes",
-                node_types=["blocker", "decision", "experiment", "hypothesis"],
-                node_fields=[
-                    "status",
-                    "selected_option",
-                    # A Decision's recorded choice is presented against its
-                    # options, so editing them changes a backend-owned answer.
-                    # Routing the draft keeps the previewed graph and that answer
-                    # from disagreeing until Sync.
-                    "options",
-                    "current_summary",
-                    "next_action",
-                ],
-            ),
-            TransitionTrigger(
-                operation="create_edges",
-                relations=[
-                    "blocked_by",
-                    "governed_by",
-                    "tests",
-                    "supports",
-                    "weakens",
-                    "refutes",
-                    "inconclusive",
-                    "contradicts",
-                ],
-            ),
-            TransitionTrigger(
-                operation="remove_edges",
-                relations=[
-                    "blocked_by",
-                    "governed_by",
-                    "tests",
-                    "supports",
-                    "weakens",
-                    "refutes",
-                    "inconclusive",
-                    "contradicts",
-                ],
-            ),
-            TransitionTrigger(
-                operation="create_proposals",
-                node_types=["decision"],
-            ),
-            TransitionTrigger(
-                operation="resolve_proposals",
-                node_types=["decision"],
-            ),
-            TransitionTrigger(
-                operation="withdraw_proposals",
-                node_types=["decision"],
-            ),
-        ],
+        triggers=guidance_triggers(),
     )
 
 
@@ -227,9 +180,9 @@ class GraphTransitionManager:
             raise ValueError("a graph transition requires at least one semantic operation")
 
         timeline, initiating_state = self._apply_timeline(state, source_actions)
-        dependency_causes = self._dependency_change_causes(timeline)
-        explicit_guidance = self._explicit_guidance_updates(source_actions)
-        generated_operations = self._guidance_actions(
+        dependency_causes = dependency_change_causes(timeline)
+        explicit_guidance = explicit_guidance_updates(source_actions)
+        generated_operations = guidance_actions(
             initiating_state,
             dependency_causes,
             explicit_guidance,
@@ -301,6 +254,7 @@ class GraphTransitionManager:
             generated_timeline,
             generated_refs,
             expanded_operations,
+            ruleset_tag=ruleset_tag,
         )
         trace = TransitionTrace(
             transition_id=transition_id,
@@ -369,113 +323,34 @@ class GraphTransitionManager:
         return timeline, state
 
     @staticmethod
-    def _dependency_change_causes(
-        timeline: list[tuple[int, GraphState, GraphState]],
-    ) -> dict[str, int]:
-        causes: dict[str, int] = {}
-        for action_index, before, after in timeline:
-            experiment_ids = sorted(
-                node_id
-                for node_id, node in {**before.nodes, **after.nodes}.items()
-                if isinstance(node, Experiment) and node_id in after.nodes
-            )
-            for experiment_id in experiment_ids:
-                # Creating an Experiment establishes its initial guidance
-                # against the graph at that action.  Absence before creation is
-                # not itself a dependency change.  A later edge or governance
-                # mutation still observes the Experiment on both sides and
-                # invalidates that guidance normally.
-                if not isinstance(before.nodes.get(experiment_id), Experiment):
-                    continue
-                before_signature = _experiment_dependency_signature(before, experiment_id)
-                after_signature = _experiment_dependency_signature(after, experiment_id)
-                if before_signature != after_signature:
-                    causes.setdefault(experiment_id, action_index)
-        return causes
-
-    @staticmethod
-    def _explicit_guidance_updates(
-        actions: list[tuple[Patch, GraphOperation]],
-    ) -> dict[tuple[str, str], int]:
-        updates: dict[tuple[str, str], int] = {}
-        for action_index, (_patch, operation) in enumerate(actions):
-            if not isinstance(operation, UpdateNodesOperation):
-                continue
-            for update in operation.nodes:
-                for field in ("current_summary", "next_action"):
-                    if field in update.changes:
-                        updates[(update.id, field)] = action_index
-        return updates
-
-    @staticmethod
-    def _guidance_actions(
-        state: GraphState,
-        invalidation_causes: dict[str, int],
-        explicit_updates: dict[tuple[str, str], int],
-    ) -> list[tuple[UpdateNodesOperation, int]]:
-        generated: list[tuple[UpdateNodesOperation, int]] = []
-        experiment_ids = sorted(
-            node_id for node_id, node in state.nodes.items() if isinstance(node, Experiment)
-        )
-        for experiment_id in experiment_ids:
-            experiment = state.nodes[experiment_id]
-            assert isinstance(experiment, Experiment)
-            changes_by_cause: dict[int, dict[str, Any]] = {}
-            invalidation_cause = invalidation_causes.get(experiment_id)
-            for field, stale_field in (
-                ("current_summary", "current_summary_stale"),
-                ("next_action", "next_action_stale"),
-            ):
-                value = getattr(experiment, field)
-                stale = getattr(experiment, stale_field)
-                explicit_cause = explicit_updates.get((experiment_id, field))
-                if invalidation_cause is not None:
-                    desired = bool(value)
-                    cause = invalidation_cause
-                elif explicit_cause is not None:
-                    desired = False
-                    cause = explicit_cause
-                else:
-                    continue
-                if stale != desired:
-                    changes_by_cause.setdefault(cause, {})[stale_field] = desired
-            for cause in sorted(changes_by_cause):
-                generated.append(
-                    (
-                        UpdateNodesOperation(
-                            op="update_nodes",
-                            nodes=[
-                                NodeUpdate(
-                                    id=experiment_id,
-                                    changes=changes_by_cause[cause],
-                                )
-                            ],
-                        ),
-                        cause,
-                    )
-                )
-        return generated
-
-    @staticmethod
     def _lifecycle_events(
         transition_id: str,
         initiating_timeline: list[tuple[int, GraphState, GraphState]],
         generated_timeline: list[tuple[int, GraphState, GraphState]],
         generated: list[TransitionGeneratedAction],
         expanded_operations: list[GraphOperation],
+        *,
+        ruleset_tag: str,
     ) -> list[TransitionEvent]:
+        lifecycle_fields = ruleset_tag in _LIFECYCLE_FIELD_RULESETS
         pending: list[tuple[int, str, str, str | bool | None, str | bool | None, str]] = []
         for action_index, before, after in initiating_timeline:
+            project_type = project_type_of(after)
             for node_id in sorted(set(before.nodes).intersection(after.nodes)):
-                previous_status = getattr(before.nodes[node_id], "status", None)
-                current_status = getattr(after.nodes[node_id], "status", None)
+                field = (
+                    project_type.lifecycle_field(after.nodes[node_id].type)
+                    if lifecycle_fields
+                    else "status"
+                )
+                previous_status = getattr(before.nodes[node_id], field, None)
+                current_status = getattr(after.nodes[node_id], field, None)
                 if previous_status == current_status:
                     continue
                 pending.append(
                     (
                         action_index,
                         node_id,
-                        "status",
+                        field,
                         previous_status,
                         current_status,
                         "node_status_changed",
@@ -587,26 +462,7 @@ def _project_projection(
     invalidation_event_by_field: dict[tuple[str, str], str],
     base_head: GraphHeadRef | None = None,
 ) -> ProjectTransitionProjection:
-    from rcp.control import derive_experiment_control_state
-
-    controls: dict[str, ExperimentControlState] = {}
-    guidance: dict[str, ExperimentGuidanceValidity] = {}
-    for node_id, node in sorted(state.nodes.items()):
-        if not isinstance(node, Experiment):
-            continue
-        controls[node_id] = derive_experiment_control_state(state, node_id)
-        guidance[node_id] = ExperimentGuidanceValidity(
-            current_summary=_guidance_field_validity(
-                node.current_summary,
-                node.current_summary_stale,
-                invalidation_event_by_field.get((node_id, "current_summary_stale")),
-            ),
-            next_action=_guidance_field_validity(
-                node.next_action,
-                node.next_action_stale,
-                invalidation_event_by_field.get((node_id, "next_action_stale")),
-            ),
-        )
+    controls, guidance = experiment_projections(state, invalidation_event_by_field)
     attention = project_graph_attention(state)
     return ProjectTransitionProjection(
         head=head,
@@ -680,13 +536,13 @@ def validate_transition_trace(state: GraphState, patch: Patch) -> list[Patch]:
 
     known_events: set[str] = set()
     for item in trace.generated_actions:
-        if item.rule_id != GUIDANCE_RULE_ID:
+        if item.rule_id not in GUIDANCE_RULE_IDS:
             raise ValueError(f"unsupported generated transition rule {item.rule_id!r}")
         if item.cause.kind != "action" or item.cause.action_index is None:
             raise ValueError("generated actions must cite an earlier action")
         if item.cause.action_index >= item.operation_index:
             raise ValueError("generated action cause must precede the generated action")
-        _validate_guidance_operation(patch.ops[item.operation_index])
+        validate_guidance_operation(patch.ops[item.operation_index])
 
     try:
         initiating_timeline, replayed = GraphTransitionManager._apply_timeline(
@@ -713,6 +569,7 @@ def validate_transition_trace(state: GraphState, patch: Patch) -> list[Patch]:
         generated_timeline,
         list(trace.generated_actions),
         list(patch.ops),
+        ruleset_tag=trace.ruleset_tag,
     )
     if trace.lifecycle_events != expected_events:
         raise ValueError("transition lifecycle events do not match expanded operation effects")
@@ -779,17 +636,6 @@ def _source_patch_for_group(patch: Patch, group: TransitionInitiatingGroup) -> P
             "transition": None,
         }
     )
-
-
-def _validate_guidance_operation(operation: GraphOperation) -> None:
-    if not isinstance(operation, UpdateNodesOperation) or not operation.nodes:
-        raise ValueError("guidance-validity rule may generate only non-empty update_nodes")
-    allowed = {"current_summary_stale", "next_action_stale"}
-    for update in operation.nodes:
-        if not update.changes or not set(update.changes) <= allowed:
-            raise ValueError("guidance-validity action changes a non-system field")
-        if not all(isinstance(value, bool) for value in update.changes.values()):
-            raise ValueError("guidance-validity values must be booleans")
 
 
 def _combined_patch(
@@ -876,58 +722,3 @@ def _stable_union(values: Iterable[Iterable[str]]) -> list[str]:
                 seen.add(value)
                 result.append(value)
     return result
-
-
-def _experiment_dependency_signature(state: GraphState, experiment_id: str) -> tuple[Any, ...]:
-    node = state.nodes.get(experiment_id)
-    if not isinstance(node, Experiment):
-        return ()
-    control_dependencies = experiment_control_dependencies(state, experiment_id).model_dump(
-        mode="json"
-    )
-    tests_relations = {
-        (edge.id, edge.target)
-        for edge in state.edges.values()
-        if edge.source == experiment_id and edge.relation == "tests"
-    }
-    hypothesis_ids = {target for _edge_id, target in tests_relations}
-    assessments: list[tuple[Any, ...]] = []
-    epistemic_relations = {
-        "supports",
-        "weakens",
-        "refutes",
-        "inconclusive",
-        "contradicts",
-    }
-    for edge in state.edges.values():
-        if edge.target not in hypothesis_ids or edge.relation not in epistemic_relations:
-            continue
-        source = state.nodes.get(edge.source)
-        if not isinstance(source, Evidence):
-            continue
-        assessments.append(
-            (
-                edge.id,
-                edge.source,
-                edge.target,
-                edge.relation,
-                edge.assessment.model_dump(mode="json") if edge.assessment else None,
-            )
-        )
-    return (
-        control_dependencies,
-        tuple(sorted(tests_relations)),
-        tuple(sorted(assessments, key=lambda item: item[0])),
-    )
-
-
-def _guidance_field_validity(
-    value: str | None,
-    stale: bool,
-    event_id: str | None,
-) -> GuidanceFieldValidity:
-    if not value:
-        return GuidanceFieldValidity(status="empty")
-    if stale:
-        return GuidanceFieldValidity(status="stale", invalidated_by_event_id=event_id)
-    return GuidanceFieldValidity(status="current")

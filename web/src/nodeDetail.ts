@@ -1,3 +1,4 @@
+import { isOutcome } from "./researchType.ts";
 import type { BeliefTransition, Edge, GraphNode, ValidationMessage } from "./types";
 
 export function nodeBeliefTransitions(
@@ -30,7 +31,7 @@ export function beliefCausePresentation(
   if (kind === "evidence_edge") {
     const edge = edges.find((candidate) => candidate.id === refId);
     const evidenceId = edge
-      ? [edge.source, edge.target].find((nodeId) => nodes[nodeId]?.type === "evidence")
+      ? [edge.source, edge.target].find((nodeId) => isOutcome(nodes[nodeId]?.type))
       : undefined;
     return {
       label: evidenceId

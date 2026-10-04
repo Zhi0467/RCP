@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from rcp.core.authority import DECIDE_DECISION, permits
@@ -9,6 +10,7 @@ from rcp.core.models import (
     Decision,
     GraphState,
     Patch,
+    ProjectNode,
 )
 from rcp.core.operations import (
     CreateNodesOperation,
@@ -29,6 +31,59 @@ from rcp.core.validation.proposals import (
     proposal_updates_node,
 )
 from rcp.core.validation.report import ValidationReport
+
+# A direct human edit may queue a Decision with these statuses; only a direct
+# choice decides it.
+_HUMAN_QUEUE_DECISION_STATUSES = frozenset({"open", "ready", "revisit"})
+
+
+def is_decision_choice(changes: Mapping[str, Any]) -> bool:
+    """Whether Decision ``changes`` choose an outcome rather than edit or queue it."""
+
+    return "selected_option" in changes or changes.get("status") == "decided"
+
+
+def checked_human_decision_choice(node: ProjectNode, changes: Mapping[str, Any]) -> str | None:
+    """Check one human Sync edit to a Decision and return the option it chooses.
+
+    Returns ``None`` for an edit that chooses nothing, including any edit to a
+    node that is not a Decision. Raises ``ValueError`` with the refusal shown
+    to the human.
+    """
+
+    if not isinstance(node, Decision):
+        return None
+    is_choice = is_decision_choice(changes)
+    if (
+        "status" in changes
+        and not is_choice
+        and changes["status"] not in _HUMAN_QUEUE_DECISION_STATUSES
+    ):
+        raise ValueError(
+            f"Direct edits to {node.id} may queue it as open, ready, or revisit; "
+            "only the Decision choice control may decide it."
+        )
+    if not is_choice:
+        return None
+    if node.status == "superseded":
+        raise ValueError(f"Decision {node.id} is superseded and cannot be decided again.")
+    # Choosing the option a Decision already carries stages only the status
+    # move, so resolve the effective choice against the node the way the
+    # options list already is.
+    selected_option = changes.get("selected_option", node.selected_option)
+    effective_options = changes.get("options", node.options)
+    if changes.get("status") != "decided":
+        raise ValueError(f"Direct choice on {node.id} must set status exactly to decided.")
+    if (
+        not isinstance(selected_option, str)
+        or not selected_option.strip()
+        or not isinstance(effective_options, list)
+        or selected_option not in effective_options
+    ):
+        raise ValueError(
+            f"Direct choice on {node.id} must select one non-empty option from its current options."
+        )
+    return selected_option
 
 
 def validate_approval_shape(
@@ -384,8 +439,7 @@ def _validate_approved_decision_result(
 
 def _writes_decision_outcome(state: GraphState, operations: list[GraphOperation]) -> bool:
     return any(
-        isinstance(state.nodes.get(update.id), Decision)
-        and ("selected_option" in update.changes or update.changes.get("status") == "decided")
+        isinstance(state.nodes.get(update.id), Decision) and is_decision_choice(update.changes)
         for operation in operations
         if isinstance(operation, UpdateNodesOperation)
         for update in operation.nodes
@@ -491,11 +545,7 @@ def _validate_direct_node_edit(
             revision,
         )
         return
-    if (
-        mode == "admission"
-        and isinstance(node, Decision)
-        and ("selected_option" in changes or changes.get("status") == "decided")
-    ):
+    if mode == "admission" and isinstance(node, Decision) and is_decision_choice(changes):
         action = DECIDE_DECISION
         permitted = permits(patch, action)
         report.reject(

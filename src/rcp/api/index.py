@@ -33,7 +33,8 @@ from rcp.api.team_shell_protocol import (
     team_shell_protocol_mismatch,
 )
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
-from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, Experiment, GraphState
+from rcp.control import ExperimentNode, experiment_node
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
@@ -105,7 +106,7 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     graph_head: GraphHeadRef | None
     parent_episode_id: str | None
     parent_watching: bool
-    node: Experiment
+    node: ExperimentNode
     control: ExperimentControlResponse
     episode: EpisodeResponse
 
@@ -380,8 +381,8 @@ def _experiment_episode_entries(
                 )
                 node_id = episode.control_node_id
                 assert node_id is not None
-                node = state.nodes.get(node_id)
-                if not isinstance(node, Experiment):
+                node = experiment_node(state, node_id)
+                if node is None:
                     continue
                 route = store.auto_research_child_experiment(episode.episode_id)
                 parent_episode_id = route.auto_research_episode_id if route is not None else None
@@ -528,8 +529,8 @@ def space_runs(
                 (record.project_id, episode.graph_target.key, episode.control_node_id)
             )
             if title is None and episode.graph_target.kind == "main" and main_state is not None:
-                node = main_state.nodes.get(episode.control_node_id)
-                if isinstance(node, Experiment):
+                node = experiment_node(main_state, episode.control_node_id)
+                if node is not None:
                     title = node.title
             route = (
                 store.auto_research_child_experiment(episode.episode_id)

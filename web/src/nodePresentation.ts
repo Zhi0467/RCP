@@ -1,74 +1,20 @@
+import {
+  CHOOSER_CHOICE_FIELDS,
+  CONTEXT_FIELD_ORDER,
+  FIELD_LABELS,
+  isChooser,
+  primaryField,
+} from "./researchType.ts";
 import type { GraphNode } from "./types";
 
-const primaryKey: Record<GraphNode["type"], string> = {
-  research_question: "question",
-  hypothesis: "statement",
-  decision: "question",
-  experiment: "objective",
-  evidence: "observation",
-  blocker: "description",
-};
-
-export const humanFieldLabels: Record<string, string> = {
-  question: "Question",
-  statement: "Claim",
-  objective: "Objective",
-  observation: "What was observed",
-  description: "What is blocked",
-  motivation: "Why this matters",
-  rationale: "Reasoning",
-  interpretation: "What it means",
-  scope: "Scope",
-  design: "How it will be tested",
-  proxies: "What is measured in place of what",
-  limitations: "What the measurement misses",
-  current_summary: "Where things stand",
-  next_action: "Next action",
-  predictions: "What should happen if this is right",
-  expected_outcomes: "Expected outcomes",
-  interpretation_rules: "How results will be read",
-  completion_criteria: "What counts as complete",
-  options: "Options considered",
-  selected_option: "Selected option",
-  consequences: "What changes because of this",
-  role: "Evidence role",
-  legacy_strength: "Legacy strength (historical)",
-  validity: "Validity",
-  origin: "Origin",
-  status: "Status",
-  blocker_type: "Blocker type",
-  resolution_condition: "What would unblock this",
-  owner: "Owner",
-  artifact_refs: "Artifacts",
-};
-
-const contextOrder = [
-  "motivation",
-  "rationale",
-  "interpretation",
-  "role",
-  "legacy_strength",
-  "scope",
-  "design",
-  "proxies",
-  "limitations",
-  "current_summary",
-  "next_action",
-  "predictions",
-  "expected_outcomes",
-  "interpretation_rules",
-  "completion_criteria",
-  "options",
-  "selected_option",
-  "consequences",
-  "resolution_condition",
-];
+/** Reader-facing field labels; the research layer owns the table. */
+export const humanFieldLabels: Record<string, string> = FIELD_LABELS;
 
 export function presentNode(node: GraphNode) {
-  const key = primaryKey[node.type];
+  const key = primaryField(node.type);
   const value = readableValue(node[key]) ? node[key] : node.title;
-  const context = contextOrder.flatMap((field) => {
-    if (node.type === "decision" && (field === "options" || field === "selected_option")) {
+  const context = CONTEXT_FIELD_ORDER.flatMap((field) => {
+    if (isChooser(node.type) && CHOOSER_CHOICE_FIELDS.includes(field)) {
       return [];
     }
     const raw = field === "proxies" ? proxyLines(node.proxies) : node[field];

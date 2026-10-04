@@ -14,6 +14,7 @@ import {
   type ConversationTurnSubmission,
 } from "./chatWorkspace";
 import { episodeRunHash } from "./notificationLinks";
+import { isBelief, isBlocker, isControlNode, isOutcome } from "./researchType";
 import { filterSkillCatalogToDefaults } from "./skillPicker";
 import type {
   AgentRunConfig,
@@ -429,9 +430,12 @@ export function projectIndexToolDefinitions(
   ];
 }
 
-function recentNodes(project: ProjectSnapshot, type: GraphNode["type"]): GraphNode[] {
+function recentNodes(
+  project: ProjectSnapshot,
+  playsRole: (type: GraphNode["type"]) => boolean,
+): GraphNode[] {
   return Object.values(project.graph.nodes)
-    .filter((node) => node.type === type)
+    .filter((node) => playsRole(node.type))
     .sort((left, right) => right.updated_rev - left.updated_rev || left.id.localeCompare(right.id))
     .slice(0, OVERVIEW_LIST_LIMIT);
 }
@@ -455,10 +459,10 @@ export function projectOverview(
     primary_question: project.primary_question ? compactNode(project.primary_question) : null,
     counts: project.counts,
     recent: {
-      hypotheses: recentNodes(project, "hypothesis").map(compactNode),
-      experiments: recentNodes(project, "experiment").map(compactNode),
-      evidence: recentNodes(project, "evidence").map(compactNode),
-      blockers: recentNodes(project, "blocker").map(compactNode),
+      hypotheses: recentNodes(project, isBelief).map(compactNode),
+      experiments: recentNodes(project, isControlNode).map(compactNode),
+      evidence: recentNodes(project, isOutcome).map(compactNode),
+      blockers: recentNodes(project, isBlocker).map(compactNode),
     },
     suggested_node_ids: [...new Set(attentionIds)].slice(0, 6),
     // The agent configured for each role, as the Settings tab shows it.
@@ -608,7 +612,7 @@ export function inspectProjectNode(
   const node = project.graph.nodes[nodeId];
   if (!node) throw new Error(`Node ${nodeId} is not present in the current project graph.`);
   const bounded = boundJsonToBudget(node, WEBMCP_NODE_CONTENT_MAX_CHARS);
-  const control = node.type === "experiment" ? project.experiment_control[node.id] : undefined;
+  const control = isControlNode(node.type) ? project.experiment_control[node.id] : undefined;
   const allRelations = Object.values(project.graph.edges)
     .filter((edge) => edge.source === nodeId || edge.target === nodeId)
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -634,7 +638,7 @@ export function inspectProjectNode(
     relations,
     related_node_ids: relatedNodeIds.slice(0, NODE_RELATION_LIMIT),
     related_node_ids_truncated: relatedNodeIds.length > NODE_RELATION_LIMIT,
-    ...(node.type === "experiment"
+    ...(isControlNode(node.type)
       ? { experiment_control: control ? compactExperimentControl(control) : null }
       : {}),
   };
@@ -1711,7 +1715,7 @@ export function projectConversationSendToolDefinitions(
 function exactExperiment(project: ProjectSnapshot, input: Record<string, unknown>): GraphNode {
   const experimentId = requiredStringInput(input, "experiment_id");
   const node = project.graph.nodes[experimentId];
-  if (!node || node.type !== "experiment") {
+  if (!node || !isControlNode(node.type)) {
     throw new Error(`Experiment ${experimentId} is not present in the current project graph.`);
   }
   return node;
