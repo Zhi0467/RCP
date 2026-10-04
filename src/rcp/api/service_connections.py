@@ -90,22 +90,27 @@ async def connect(request: Request, body: ConnectRequest):
 
 async def checked_delegation(
     store: ServiceConnections, connection: dict, key: str, voice_added: bool, requested: str | None
-) -> tuple[str | None, str]:
-    """Check the thinking model where it runs; return (new value or None, value checked against).
+) -> tuple[str | None, tuple[str, str | None] | None]:
+    """Check the thinking model where it runs.
 
     It is one member setting used by whichever connection runs voice: a new
     voice connection must reach the current value, and a new value is checked
     with the voice connection's key, or with this one when none runs voice.
+    Returns the new value or None, and the (model, voice connection id) the
+    check saw, which the save requires unchanged.
     """
     saved = store.voice_settings()["delegation_model"]
+    payer, payer_key = None, None
+    with suppress(ConnectionError):
+        payer, payer_key = store.voice_credentials()
     changed = requested if requested not in (None, saved) else None
     if voice_added:
         await check_delegation_model(connection, key, changed or saved)
     elif changed is not None:
-        with suppress(ConnectionError):
-            connection, key = store.voice_credentials()
-        await check_delegation_model(connection, key, changed)
-    return changed, saved
+        await check_delegation_model(payer or connection, payer_key or key, changed)
+    else:
+        return None, None
+    return changed, (saved, payer["id"] if payer else None)
 
 
 @router.post("/models")

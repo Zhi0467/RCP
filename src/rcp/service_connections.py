@@ -145,7 +145,7 @@ class ServiceConnections:
         previous: dict,
         checked: dict,
         delegation_model: str | None = None,
-        checked_delegation: str | None = None,
+        checked_delegation: tuple[str, str | None] | None = None,
     ) -> dict:
         with self.locked():
             if self._connection(previous["id"]) != previous:
@@ -155,11 +155,17 @@ class ServiceConnections:
             self._write_delegation(delegation_model)
             return checked
 
-    def _require_delegation(self, checked: str | None) -> None:
-        # The thinking model was checked against this value; a concurrent change voids that.
-        current = VoiceSettings.model_validate(self._settings().get("voice", {}))
-        if checked is not None and current.delegation_model != checked:
+    def _require_delegation(self, checked: tuple[str, str | None] | None) -> None:
+        # The thinking model was checked as (model, voice connection id); a concurrent
+        # change to either means the check no longer proves the saved setting works.
+        if checked is None:
+            return
+        model = VoiceSettings.model_validate(self._settings().get("voice", {})).delegation_model
+        if (model, self._voice_connection_id()) != checked:
             raise ConnectionError("connection_changed", 409)
+
+    def _voice_connection_id(self) -> str | None:
+        return next((c["id"] for c in self._connections() if "voice" in c["purposes"]), None)
 
     def _write_delegation(self, model: str | None) -> None:
         if model is not None:
@@ -186,7 +192,7 @@ class ServiceConnections:
         connection: dict,
         key: str,
         delegation_model: str | None = None,
-        checked_delegation: str | None = None,
+        checked_delegation: tuple[str, str | None] | None = None,
     ) -> None:
         with self.locked():
             self._require_delegation(checked_delegation)

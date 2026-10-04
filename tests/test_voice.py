@@ -384,7 +384,7 @@ def test_thinking_model_is_checked_with_the_voice_key_and_refuses_a_concurrent_c
     def handler(request):
         seen.append(request.headers["authorization"])
         if race:
-            private.voice_settings(VoiceSettings(delegation_model="gpt-6-luna"))
+            race.pop()()
         return reply({"id": request.url.path.rsplit("/", 1)[1]})
 
     mock_transport(monkeypatch, handler)
@@ -394,7 +394,14 @@ def test_thinking_model_is_checked_with_the_voice_key_and_refuses_a_concurrent_c
     assert seen == [f"Bearer {KEY}"]
     assert private.credentials(payer["id"])[0]["purposes"] == ["voice"]
 
-    race.append(True)
+    # Another request changes the model, then moves voice, while each check runs.
+    race.append(lambda: private.voice_settings(VoiceSettings(delegation_model="gpt-6-luna")))
+    response = client.put(path, json={**body, "delegation_model": "gpt-6-nova"})
+    assert response.status_code == 409, response.text
+    assert private.voice_settings()["delegation_model"] == "gpt-6-luna"
+    third = connection()
+    private.save(third, "third-test-secret-never-real")
+    race.append(lambda: private.update_connection(third, {**third, "purposes": ["voice"]}))
     response = client.put(path, json={**body, "delegation_model": "gpt-6-nova"})
     assert response.status_code == 409, response.text
     assert private.voice_settings()["delegation_model"] == "gpt-6-luna"
