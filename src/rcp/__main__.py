@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import uvicorn
@@ -293,16 +293,17 @@ def _run_space_command(args: argparse.Namespace, data_dir: Path) -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    try:
-        database_path.chmod(0o600)
-    except OSError as exc:
-        raise SystemExit(
-            "Team-space initialization could not restrict the database to its owner."
-        ) from exc
-    action = "Recovered unclaimed" if recovering else "Initialized"
-    print(f"{action} team space {store.space_name!r} ({store.space_id}).")
-    print("One-time bootstrap code (shown once):")
-    print(bootstrap_code)
+    with closing(store):
+        try:
+            database_path.chmod(0o600)
+        except OSError as exc:
+            raise SystemExit(
+                "Team-space initialization could not restrict the database to its owner."
+            ) from exc
+        action = "Recovered unclaimed" if recovering else "Initialized"
+        print(f"{action} team space {store.space_name!r} ({store.space_id}).")
+        print("One-time bootstrap code (shown once):")
+        print(bootstrap_code)
 
 
 def _launch_automatically(args: argparse.Namespace, data_dir: Path) -> None:
@@ -377,11 +378,12 @@ def _require_team_bind_is_loopback(args: argparse.Namespace, data_dir: Path) -> 
     leave a healthy server running rather than shut it down and then refuse.
     """
     database_path = data_dir / "rcp.sqlite3"
-    if (
-        not database_path.exists()
-        or AppStore.open_read_only_snapshot(database_path).space_kind != "team"
-    ):
+    if not database_path.exists():
         return
+    # A running server keeps its connections open, so read through its WAL.
+    with closing(AppStore.open_read_only(database_path)) as store:
+        if store.space_kind != "team":
+            return
     host = getattr(args, "host", None)
     if host is None:
         return

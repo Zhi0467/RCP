@@ -28,6 +28,7 @@ from .test_auto_research_children_storage import (
 from .test_episode_storage import _episode
 
 repository = worktree_fixture.repository
+repository_template = worktree_fixture.repository_template
 
 
 def test_run_defaults_and_auto_graph_lock() -> None:
