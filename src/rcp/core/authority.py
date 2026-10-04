@@ -461,10 +461,16 @@ def _render_agent_graph_authority_body(project_type: ProjectType) -> str:
     def names(node_types: Iterable[str]) -> str:
         return project_type.label_list(node_types)
 
+    def one(node_types: Iterable[str]) -> str:
+        label = names(node_types)
+        return f"{'an' if label[:1].lower() in 'aeiou' else 'a'} {label}"
+
     chooser = names(project_type.chooser_types)
     belief = names(project_type.belief_types)
     outcome = names(project_type.outcome_types)
     control = names(project_type.control_node_types)
+    a_chooser = one(project_type.chooser_types)
+    a_control = one(project_type.control_node_types)
     protected = names(project_type.protected_belief_types)
     content_lifecycle = names(project_type.protected_belief_types - project_type.belief_types)
     protected_relations = project_type.protected_relations | _LIFECYCLE_RELATIONS
@@ -476,8 +482,8 @@ def _render_agent_graph_authority_body(project_type: ProjectType) -> str:
   changes below. Agents may create legal nodes, edit same-Patch nodes, and edit ordinary nodes.
 - Editing accepted ordinary-node content resets that node to asserted standing for review. Removing
   an asserted or contested ordinary node also removes its edges; never directly remove an accepted
-  node or an {control} with an active bounded-loop attempt.
-- Agents may create a {chooser} as `open` or `ready`, and may queue an existing {chooser} as `open`,
+  node or {a_control} with an active bounded-loop attempt.
+- Agents may create {a_chooser} as `open` or `ready`, and may queue an existing {chooser} as `open`,
   `ready`, or `revisit`. Agents never write `selected_option` or set `status="decided"`; every
   agent-created {belief} starts `status="proposed"`.
 - Legal edges are direct except {relations}
@@ -498,8 +504,8 @@ Human-only authority:
 - Agents never set `standing`, approve, or reject Proposals; they may withdraw any pending Proposal
   with `withdraw_proposals` when obsolete or duplicated. Withdrawal applies no semantic operations.
   Agents may not change project configuration or the ontology, and may neither apply nor propose
-  `set_ontology`. Agents may not authorize an {control} **Run**. Approval never
-  launches or resumes an {control}. Only the human pressing **Run** grants RCP permission to
+  `set_ontology`. Agents may not authorize {a_control} **Run**. Approval never
+  launches or resumes {a_control}. Only the human pressing **Run** grants RCP permission to
   launch. A human request cannot delegate these actions."""
 
 
