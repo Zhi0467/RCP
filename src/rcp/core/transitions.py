@@ -12,6 +12,7 @@ from rcp.control import ExperimentControlState
 from rcp.core.attention import project_counts, project_graph_attention, project_primary_question
 from rcp.core.experiment_guidance import (
     GUIDANCE_RULE_ID,
+    GUIDANCE_RULE_IDS,
     dependency_change_causes,
     experiment_projections,
     explicit_guidance_updates,
@@ -26,6 +27,7 @@ from rcp.core.materialize import (
 )
 from rcp.core.models import GraphState, Patch, ProjectNode, ReplayFailure
 from rcp.core.operations import GraphOperation, UpdateNodesOperation
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import (
     ExperimentGuidanceValidity,
     GraphAttentionProjection,
@@ -41,7 +43,11 @@ from rcp.core.transition_models import (
     TransitionTriggerManifest,
 )
 
-TRANSITION_RULESET_TAG = "rcp.lifecycle.v2"
+TRANSITION_RULESET_TAG = "rcp.lifecycle.v3"
+# Rulesets whose lifecycle events follow each node's lifecycle field (Evidence
+# retires through ``validity``). Every earlier ruleset recorded only ``status``
+# changes, and replay recomputes events under the ruleset a trace names.
+_LIFECYCLE_FIELD_RULESETS = frozenset({TRANSITION_RULESET_TAG})
 STATUS_EVENT_RULE_ID = "lifecycle.status-events.v1"
 DEFAULT_MAX_RULE_FIRINGS = 128
 
@@ -248,6 +254,7 @@ class GraphTransitionManager:
             generated_timeline,
             generated_refs,
             expanded_operations,
+            ruleset_tag=ruleset_tag,
         )
         trace = TransitionTrace(
             transition_id=transition_id,
@@ -322,19 +329,28 @@ class GraphTransitionManager:
         generated_timeline: list[tuple[int, GraphState, GraphState]],
         generated: list[TransitionGeneratedAction],
         expanded_operations: list[GraphOperation],
+        *,
+        ruleset_tag: str,
     ) -> list[TransitionEvent]:
+        lifecycle_fields = ruleset_tag in _LIFECYCLE_FIELD_RULESETS
         pending: list[tuple[int, str, str, str | bool | None, str | bool | None, str]] = []
         for action_index, before, after in initiating_timeline:
+            project_type = project_type_of(after)
             for node_id in sorted(set(before.nodes).intersection(after.nodes)):
-                previous_status = getattr(before.nodes[node_id], "status", None)
-                current_status = getattr(after.nodes[node_id], "status", None)
+                field = (
+                    project_type.lifecycle_field(after.nodes[node_id].type)
+                    if lifecycle_fields
+                    else "status"
+                )
+                previous_status = getattr(before.nodes[node_id], field, None)
+                current_status = getattr(after.nodes[node_id], field, None)
                 if previous_status == current_status:
                     continue
                 pending.append(
                     (
                         action_index,
                         node_id,
-                        "status",
+                        field,
                         previous_status,
                         current_status,
                         "node_status_changed",
@@ -520,7 +536,7 @@ def validate_transition_trace(state: GraphState, patch: Patch) -> list[Patch]:
 
     known_events: set[str] = set()
     for item in trace.generated_actions:
-        if item.rule_id != GUIDANCE_RULE_ID:
+        if item.rule_id not in GUIDANCE_RULE_IDS:
             raise ValueError(f"unsupported generated transition rule {item.rule_id!r}")
         if item.cause.kind != "action" or item.cause.action_index is None:
             raise ValueError("generated actions must cite an earlier action")
@@ -553,6 +569,7 @@ def validate_transition_trace(state: GraphState, patch: Patch) -> list[Patch]:
         generated_timeline,
         list(trace.generated_actions),
         list(patch.ops),
+        ruleset_tag=trace.ruleset_tag,
     )
     if trace.lifecycle_events != expected_events:
         raise ValueError("transition lifecycle events do not match expanded operation effects")

@@ -25,7 +25,11 @@ from rcp.core.transition_models import (
     TransitionTrigger,
 )
 
-GUIDANCE_RULE_ID = "experiment.guidance-validity.v1"
+GUIDANCE_RULE_ID = "experiment.guidance-validity.v2"
+# v2 also invalidates guidance when Evidence on a tested belief is retired.
+# Replay validates recorded traces and never reruns a rule, so traces that
+# recorded either version stay valid.
+GUIDANCE_RULE_IDS = frozenset({"experiment.guidance-validity.v1", GUIDANCE_RULE_ID})
 
 
 def guidance_triggers() -> list[TransitionTrigger]:
