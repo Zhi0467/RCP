@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -18,9 +19,9 @@ def git(root: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-@pytest.fixture
-def repository(tmp_path: Path) -> Path:
-    root = tmp_path / "shared checkout"
+@pytest.fixture(scope="module")
+def repository_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("template") / "shared checkout"
     root.mkdir()
     git(root, "init", "--initial-branch=research")
     git(root, "config", "user.email", "fixture@example.invalid")
@@ -32,6 +33,12 @@ def repository(tmp_path: Path) -> Path:
     git(root, "update-ref", "refs/remotes/origin/release", "HEAD")
     git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release")
     return root
+
+
+@pytest.fixture
+def repository(repository_template: Path, tmp_path: Path) -> Path:
+    # The template holds no absolute paths, so a copy equals a fresh build.
+    return Path(shutil.copytree(repository_template, tmp_path / "shared checkout", symlinks=True))
 
 
 def run(operation: str, **kwargs: object) -> dict:
