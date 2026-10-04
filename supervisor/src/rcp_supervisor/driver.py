@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import uuid
 from collections.abc import Callable
 from functools import wraps
@@ -16,6 +17,7 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.events import EventEmitter
 from rcp_supervisor.install import install_operator_console, install_supervisor
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
+from rcp_supervisor.limits import INSTALL_TIMEOUT_SECONDS
 from rcp_supervisor.operations import Coordinator, OperationBusy, OperationStore
 from rcp_supervisor.releases import VerifiedRelease, fetch_release
 from rcp_supervisor.retention import RetentionPlan, prune_retained
@@ -163,7 +165,8 @@ def release_receipt(release: VerifiedRelease, paths: Paths) -> dict:
 
 def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
     receipt = release_receipt(release, runtime.paths)
-    install_operator_console(release.directory, runtime.paths.supervisor)
+    operator = install_operator_console(release.directory, runtime.paths.supervisor)
+    install_browser_libraries(operator)
     inventory = runtime.paths.supervisor / "release-receipts"
     _root_directory(inventory, mode=0o755)
     sealed = inventory / f"{release.build}.json"
@@ -189,6 +192,19 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
             write_root_json(sealed, receipt)
     runtime.require_capability(receipt, extra_commands=("inventory",))
     return receipt
+
+
+def install_browser_libraries(operator: Path) -> None:
+    """Run the candidate's fixed dependency owner from root-verified code."""
+    try:
+        subprocess.run(
+            (str(operator / "bin/python"), "-I", "-m", "rcp.browser.libraries", "--install"),
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"},
+            timeout=INSTALL_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SupervisorError("Chromium system library installation failed.") from exc
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:

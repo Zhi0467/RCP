@@ -540,6 +540,8 @@ def rcp_owned_paths(
     """
 
     home = PurePosixPath(account_home)
+    # Browser profiles and installed tools are below these protected owners:
+    # remote ~/.rcp/{browser,tools}, local <data_dir>/{browser,tools}.
     paths = [str(home / ".rcp")]
     if command_socket_directory(account_home) != str(home / ".rcp" / "sockets"):
         paths.append(short_socket_root(account_home))
