@@ -377,6 +377,7 @@ def test_episode_uses_shared_worktree_lifecycle_and_fails_closed(repository: Pat
 
 @pytest.mark.parametrize("version,supported", [("2.37.9", False), ("2.38.0", True)])
 def test_episode_git_version_probe_runs_on_execution_host(monkeypatch, version, supported) -> None:
+    monkeypatch.setattr(conversation_worktree, "_GIT_VERSION", None)
     commands = []
 
     def probe(arguments, **kwargs):
@@ -572,6 +573,7 @@ def test_episode_old_git_refuses_merge_before_writes(repository, monkeypatch):
             return subprocess.CompletedProcess(arguments, 0, "git version 2.37.0\n", "")
         return original(arguments, **kwargs)
 
+    monkeypatch.setattr(conversation_worktree, "_GIT_VERSION", None)
     monkeypatch.setattr(conversation_worktree.subprocess, "run", old_git)
     with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
         run("commit_leftovers", binding=binding)

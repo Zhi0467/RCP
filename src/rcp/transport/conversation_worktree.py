@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+_GIT_VERSION: tuple[int, ...] | None = None
+
 
 def _git(root: Path, *arguments: str, timeout: float, optional: bool = False) -> str:
     result = subprocess.run(
@@ -121,9 +123,41 @@ def _bound_common_dir(root: Path, binding: dict, *, timeout: float) -> None:
         )
 
 
+def _checkout_common_dir(root: Path, *, timeout: float) -> str | ValueError:
+    result = subprocess.run(
+        [
+            "git",
+            "--no-optional-locks",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--show-toplevel",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    # Match the known root before splitting: checkout paths may contain newlines.
+    prefix = f"{root}\n"
+    if not result.stdout.startswith(prefix):
+        if result.returncode and not result.stdout:
+            raise ValueError(result.stderr.strip() or "Git rev-parse --show-toplevel failed")
+        raise ValueError(f"Registered repository must be a Git checkout root: {root}")
+    # Defer common-directory failures until after registration/branch validation,
+    # exactly where _bound_common_dir used to run.
+    if result.returncode:
+        return ValueError(
+            result.stderr.strip() or "Git rev-parse --path-format=absolute --git-common-dir failed"
+        )
+    return result.stdout[len(prefix) :].rstrip("\n")
+
+
 def _validate(
     binding: dict, *, timeout: float, require_owner: bool, allowed_branch: str | None = None
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, dict[str, dict[str, str]]]:
     shared = _directory(binding["shared_path"], require_owner=require_owner)
     worktree = _directory(binding["worktree_path"], require_owner=require_owner)
     expected_path, expected_branch = _names(shared, binding)
@@ -135,9 +169,9 @@ def _validate(
         raise ValueError("Bound repository or worktree is relocated")
     if binding["branch"] != expected_branch:
         raise ValueError("Worktree branch does not match its chat binding")
-    for root in (shared, worktree):
-        _checkout(root, timeout=timeout)
-    registration = _registered(shared, timeout=timeout).get(str(worktree))
+    common_dirs = [_checkout_common_dir(root, timeout=timeout) for root in (shared, worktree)]
+    registrations = _registered(shared, timeout=timeout)
+    registration = registrations.get(str(worktree))
     branches = {f"refs/heads/{binding['branch']}"}
     if allowed_branch is not None:
         _git(shared, "check-ref-format", f"refs/heads/{allowed_branch}", timeout=timeout)
@@ -151,8 +185,13 @@ def _validate(
         or actual_branch not in branches
     ):
         raise ValueError("Bound worktree is missing or its checked-out branch changed")
-    for root in (shared, worktree):
-        _bound_common_dir(root, binding, timeout=timeout)
+    for common_dir in common_dirs:
+        if isinstance(common_dir, ValueError):
+            raise common_dir
+        if str(Path(common_dir).resolve()) != binding["git_common_dir"]:
+            raise ValueError(
+                "Bound worktree Git metadata moved or belongs to a different Git repository"
+            )
     _git(
         worktree,
         "merge-base",
@@ -161,13 +200,13 @@ def _validate(
         f"refs/heads/{binding['branch']}",
         timeout=timeout,
     )
-    return shared, worktree
+    return shared, worktree, registrations
 
 
 def _inspect(
     binding: dict, *, timeout: float, require_owner: bool, allowed_branch: str | None = None
 ) -> dict:
-    shared, worktree = _validate(
+    shared, worktree, _registrations = _validate(
         binding, timeout=timeout, require_owner=require_owner, allowed_branch=allowed_branch
     )
     default_ref = _git(
@@ -226,28 +265,47 @@ class WorktreeValidationError(ValueError):
 
 
 def _ref_commit(root: Path, branch: str, timeout: float) -> str:
-    if not _branch_exists(root, branch, timeout=timeout):
+    _git(root, "check-ref-format", f"refs/heads/{branch}", timeout=timeout)
+    commit = _git(
+        root,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        f"refs/heads/{branch}",
+        timeout=timeout,
+        optional=True,
+    )
+    if not commit:
         raise WorktreeValidationError("target_missing", branch)
-    return _git(root, "rev-parse", f"refs/heads/{branch}", timeout=timeout)
+    return commit
 
 
 def _interrupted(root: Path, timeout: float) -> None:
-    for name in (
+    names = (
         "MERGE_HEAD",
         "rebase-merge",
         "rebase-apply",
         "CHERRY_PICK_HEAD",
         "REVERT_HEAD",
         "sequencer",
-    ):
-        path = _git(root, "rev-parse", "--git-path", name, timeout=timeout)
-        if (root / path).exists():
+    )
+    paths = _git(
+        root,
+        "rev-parse",
+        *(argument for name in names for argument in ("--git-path", name)),
+        timeout=timeout,
+    ).split("\n")
+    for index, name in enumerate(names):
+        if (root / paths[index]).exists():
             raise WorktreeValidationError("interrupted_git_state", name)
-    if _git(root, "ls-files", "--unmerged", timeout=timeout):
-        raise WorktreeValidationError("interrupted_git_state", "unmerged_index")
-    for line in _git(
+    status = _git(
         root, "status", "--porcelain=v2", "--ignore-submodules=none", timeout=timeout
-    ).splitlines():
+    ).splitlines()
+    # All unmerged index stages appear as u records. Check every record before
+    # dirty submodules, preserving the old ls-files --unmerged precedence.
+    if any(line.startswith("u ") for line in status):
+        raise WorktreeValidationError("interrupted_git_state", "unmerged_index")
+    for line in status:
         parts = line.split(" ")
         if parts[0] in {"1", "2"} and parts[2].startswith("S") and parts[2][2:] != "..":
             raise WorktreeValidationError("interrupted_git_state", "dirty_submodule")
@@ -279,18 +337,18 @@ def _merge_inputs(payload: dict, timeout: float, require_owner: bool) -> tuple[P
     binding = payload["binding"]
     if not execute({"operation": "git_version", "timeout_seconds": timeout})["supported"]:
         raise WorktreeValidationError("git_version_unsupported")
-    shared, worktree = _validate(binding, timeout=timeout, require_owner=require_owner)
+    shared, worktree, registrations = _validate(
+        binding, timeout=timeout, require_owner=require_owner
+    )
     _interrupted(worktree, timeout)
     target = payload.get("target_branch") or binding["starting_branch"]
     if target == binding["branch"]:
         raise WorktreeValidationError("target_is_episode_branch")
     target_commit = _ref_commit(shared, target, timeout)
-    registrations = [
-        entry
-        for entry in _registered(shared, timeout=timeout).values()
-        if entry.get("branch") == f"refs/heads/{target}"
+    target_registrations = [
+        entry for entry in registrations.values() if entry.get("branch") == f"refs/heads/{target}"
     ]
-    if any(Path(entry["worktree"]).resolve() != shared for entry in registrations):
+    if any(Path(entry["worktree"]).resolve() != shared for entry in target_registrations):
         raise WorktreeValidationError("target_checked_out_elsewhere")
     shared_branch = _git(
         shared, "symbolic-ref", "--quiet", "--short", "HEAD", timeout=timeout, optional=True
@@ -555,12 +613,28 @@ def _episode_operation(payload: dict, timeout: float, require_owner: bool) -> di
     return result
 
 
+def _preflight(binding: dict, facts: dict, target: str | None, timeout: float) -> dict:
+    if facts["dirty_worktree"]:
+        raise ValueError("Worktree has uncommitted changes:\n" + "\n".join(facts["dirty_worktree"]))
+    if target is not None:
+        if facts["dirty_shared"]:
+            raise ValueError(
+                "Shared checkout has uncommitted changes:\n" + "\n".join(facts["dirty_shared"])
+            )
+        if not _branch_exists(Path(binding["shared_path"]), target, timeout=timeout):
+            raise ValueError(f"Integration target branch does not exist: {target}")
+        return {**facts, "target_checked_out": facts["shared_branch"] == target}
+    return facts
+
+
 def execute(payload: dict) -> dict:
     """Run binding lifecycle operations and explicitly dispatched episode merges.
 
     ``timeout_seconds`` is supplied from the application's limits owner. Binding
     metadata (alias/machine/host) is owned and checked by the calling service.
     ``target_branch`` on preflight selects a local merge; its absence selects PR.
+    ``preflight_many`` inspects once and returns ordered facts/errors for
+    ``target_branches``, without sharing target-specific facts between results.
     """
     timeout = float(payload["timeout_seconds"])
     if timeout <= 0:
@@ -568,16 +642,18 @@ def execute(payload: dict) -> dict:
     require_owner = bool(payload.get("require_owner", False))
     operation = payload["operation"]
     if operation == "git_version":
-        result = subprocess.run(
-            ["git", "--version"], capture_output=True, text=True, timeout=timeout, check=False
-        )
-        if result.returncode:
-            raise ValueError(result.stderr.strip() or "Git version is unavailable")
-        match = re.search(r"git version (\d+)\.(\d+)(?:\.(\d+))?", result.stdout)
-        if match is None:
-            raise ValueError("Git version is unavailable")
-        version = [int(part or 0) for part in match.groups()]
-        return {"version": version, "supported": version >= [2, 38, 0]}
+        global _GIT_VERSION
+        if _GIT_VERSION is None:
+            result = subprocess.run(
+                ["git", "--version"], capture_output=True, text=True, timeout=timeout, check=False
+            )
+            if result.returncode:
+                raise ValueError(result.stderr.strip() or "Git version is unavailable")
+            match = re.search(r"git version (\d+)\.(\d+)(?:\.(\d+))?", result.stdout)
+            if match is None:
+                raise ValueError("Git version is unavailable")
+            _GIT_VERSION = tuple(int(part or 0) for part in match.groups())
+        return {"version": list(_GIT_VERSION), "supported": _GIT_VERSION >= (2, 38, 0)}
     if operation == "canonicalize":
         canonical = {}
         for value in payload["paths"]:
@@ -659,7 +735,9 @@ def execute(payload: dict) -> dict:
             )
         return _inspect(binding, timeout=timeout, require_owner=require_owner)
     if operation == "remote_branch":
-        shared, _worktree = _validate(binding, timeout=timeout, require_owner=require_owner)
+        shared, _worktree, _registrations = _validate(
+            binding, timeout=timeout, require_owner=require_owner
+        )
         try:
             result = subprocess.run(
                 [
@@ -696,7 +774,7 @@ def execute(payload: dict) -> dict:
         "delete_branch",
     }:
         return _episode_operation(payload, timeout, require_owner)
-    if operation not in {"inspect", "preflight", "remove"}:
+    if operation not in {"inspect", "preflight", "preflight_many", "remove"}:
         raise ValueError(f"Unknown conversation worktree operation: {operation}")
     if operation == "remove" and binding.get("status") == "removing":
         shared = _directory(binding["shared_path"], require_owner=require_owner)
@@ -730,20 +808,25 @@ def execute(payload: dict) -> dict:
         require_owner=require_owner,
         allowed_branch=allowed_branch if operation in {"inspect", "preflight"} else None,
     )
-    if operation in {"preflight", "remove"} and result["dirty_worktree"]:
+    if operation == "preflight":
+        return _preflight(binding, result, payload.get("target_branch"), timeout)
+    if operation == "preflight_many":
+        outcomes = []
+        for target in payload["target_branches"]:
+            try:
+                outcomes.append({"facts": _preflight(binding, result, target, timeout)})
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                outcomes.append(
+                    {
+                        "error": str(exc),
+                        "unavailable": isinstance(exc, (OSError, subprocess.TimeoutExpired)),
+                    }
+                )
+        return {"results": outcomes}
+    if operation == "remove" and result["dirty_worktree"]:
         raise ValueError(
             "Worktree has uncommitted changes:\n" + "\n".join(result["dirty_worktree"])
         )
-    if operation == "preflight":
-        target = payload.get("target_branch")
-        if target is not None:
-            if result["dirty_shared"]:
-                raise ValueError(
-                    "Shared checkout has uncommitted changes:\n" + "\n".join(result["dirty_shared"])
-                )
-            if not _branch_exists(Path(binding["shared_path"]), target, timeout=timeout):
-                raise ValueError(f"Integration target branch does not exist: {target}")
-            result["target_checked_out"] = result["shared_branch"] == target
     if operation == "remove":
         _git(
             Path(binding["shared_path"]),
