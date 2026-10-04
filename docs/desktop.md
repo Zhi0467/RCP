@@ -11,15 +11,18 @@ for the authoritative platform settings and `web/package.json` for the available
 
 The desktop keeps an owner secret in Keychain, keyed by data-directory identity.
 A fresh backend receives it on stdin and enrolls its hash while holding the data
-lock. Startup and adoption exchange it for an owner session before protected
-requests. Native downloads, PDF preview, transfer, notifications, and update
-notices use the same authenticated personal client.
+lock. An owned start redeems its captured startup code once with the saved
+secret, or the spawned secret if none is saved. Without a code, adoption
+exchanges the saved secret. Only a newly supplied secret is written to Keychain.
+Authentication completes before protected requests. Native downloads, PDF
+preview, transfer, notifications, and update notices use the same authenticated personal client.
 
 When adopting a terminal-started backend without a matching Keychain secret,
 paste the terminal's one-time sign-in code. An authentication failure leaves the
 adopted process running. Restarting a desktop-owned backend can recover a missing
-Keychain entry through the code captured from its stdout. Codes are redacted from
-desktop log capture.
+Keychain entry through the `owner_sign_in_code` field captured from its launch
+JSON on stdout. Machine-readable launch stdout is one JSON object; human launches
+print a sign-in URL. Codes are omitted from desktop diagnostics and logs.
 
 Verify fresh start, adoption, restart, reload, sign-out, and a reset Keychain entry
 with disposable data. Check the plain-HTTP WKWebView owner cookie in both source

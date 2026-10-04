@@ -120,53 +120,44 @@ pub async fn establish(
         .map_err(|_| "owner session is unavailable")?
         .remove(&status.base_url);
     let saved = saved_secret(status)?;
-    let secret = saved
-        .as_deref()
-        .map(String::as_str)
-        .or(spawned.map(|(secret, _)| secret));
-    if let Some(secret) = secret {
-        if authenticate(
-            app,
-            status,
-            "exchange",
-            &serde_json::json!({"secret": secret}),
-        )
-        .await?
-        {
-            // Consume the private stdout code even when the existing secret matched.
-            if let Some((_, Some(code))) = spawned {
-                if !authenticate(
-                    app,
-                    status,
-                    "redeem",
-                    &serde_json::json!({"code": code, "secret": secret}),
-                )
-                .await?
-                {
-                    return Err("the backend startup sign-in code was refused".into());
-                }
-            }
-            // Rewriting an unchanged Keychain item can wait on a macOS prompt and stall startup.
-            if saved.is_none() {
-                save_secret(status, secret)?;
-            }
-            return Ok(true);
-        }
-    }
-    if let Some((secret, Some(code))) = spawned {
-        if authenticate(
-            app,
-            status,
+    establish_session(
+        saved.as_deref().map(String::as_str),
+        spawned,
+        |route, body| async move { authenticate(app, status, route, &body).await },
+        |secret| save_secret(status, secret),
+    )
+    .await
+}
+
+async fn establish_session<F, Fut, S>(
+    saved: Option<&str>,
+    spawned: Option<(&str, Option<&str>)>,
+    mut authenticate: F,
+    mut save: S,
+) -> Result<bool, String>
+where
+    F: FnMut(&'static str, serde_json::Value) -> Fut,
+    Fut: std::future::Future<Output = Result<bool, String>>,
+    S: FnMut(&str) -> Result<(), String>,
+{
+    let Some(secret) = saved.or(spawned.map(|(secret, _)| secret)) else {
+        return Ok(false);
+    };
+    let (route, body) = match spawned.and_then(|(_, code)| code) {
+        Some(code) => (
             "redeem",
-            &serde_json::json!({"code": code, "secret": secret}),
-        )
-        .await?
-        {
-            save_secret(status, secret)?;
-            return Ok(true);
-        }
+            serde_json::json!({"code": code, "secret": secret}),
+        ),
+        None => ("exchange", serde_json::json!({"secret": secret})),
+    };
+    if !authenticate(route, body).await? {
+        return Ok(false);
     }
-    Ok(false)
+    // Rewriting an unchanged Keychain item can wait on a macOS prompt and stall startup.
+    if saved.is_none() {
+        save(secret)?;
+    }
+    Ok(true)
 }
 
 pub async fn redeem(app: &AppHandle, status: &DesktopStatus, code: &str) -> Result<(), String> {
@@ -272,6 +263,50 @@ fn validate_cookie(header: &str, origin: &str) -> Result<HeaderValue, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn startup_redeems_once_and_only_saves_a_new_secret() {
+        for saved in [Some("saved-secret"), None] {
+            for code in [Some("startup-code"), None] {
+                for accepted in [true, false] {
+                    let mut requests = Vec::new();
+                    let mut writes = Vec::new();
+                    let result = establish_session(
+                        saved,
+                        Some(("spawned-secret", code)),
+                        |route, body| {
+                            requests.push((route, body));
+                            std::future::ready(Ok(accepted))
+                        },
+                        |secret| {
+                            writes.push(secret.to_string());
+                            Ok(())
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    let secret = saved.unwrap_or("spawned-secret");
+                    let expected = match code {
+                        Some(code) => (
+                            "redeem",
+                            serde_json::json!({"code": code, "secret": secret}),
+                        ),
+                        None => ("exchange", serde_json::json!({"secret": secret})),
+                    };
+                    assert_eq!(requests, vec![expected]);
+                    assert_eq!(result, accepted);
+                    assert_eq!(
+                        writes,
+                        if accepted && saved.is_none() {
+                            vec![secret]
+                        } else {
+                            vec![]
+                        }
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn native_clients_send_owner_cookie_and_refuse_redirects() {
         use tokio::{

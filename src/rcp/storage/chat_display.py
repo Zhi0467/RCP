@@ -34,6 +34,18 @@ class ChatDisplayStoreMixin:
                 (project_id, chat_id, browser_requested),
             )
 
+            if browser_requested:
+                # Preference-off cleanup is reversible until it reaches the host.
+                # Archive and deleted-project cleanup retain their authority.
+                connection.execute(
+                    "UPDATE browser_owners SET close_requested = 0, delete_profile = 0 "
+                    "WHERE project_id = ? AND chat_id = ? AND project_deletion_requested = 0 "
+                    "AND EXISTS (SELECT 1 FROM projects WHERE project_id = ?) "
+                    "AND NOT EXISTS (SELECT 1 FROM chat_display "
+                    "WHERE project_id = ? AND chat_id = ? AND archived_at IS NOT NULL)",
+                    (project_id, chat_id, project_id, project_id, chat_id),
+                )
+
     def record_browser_owner(
         self,
         owner: BrowserOwnerKey,

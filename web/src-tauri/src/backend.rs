@@ -850,15 +850,12 @@ fn parse_launch_stdout(
         if text.is_empty() {
             continue;
         }
-        if let Some((_, code)) = text.split_once("#owner-code=") {
-            *owner_code = Some(Zeroizing::new(code.trim().to_string()));
-            continue;
-        }
-        if let Ok(outcome) = LaunchOutcome::parse(text) {
+        if let Ok(mut outcome) = LaunchOutcome::parse(text) {
+            *owner_code = outcome.owner_sign_in_code.take().map(Zeroizing::new);
             return Some(outcome);
         }
         diagnostics.extend_from_slice(b"[stdout] ");
-        diagnostics.extend_from_slice(text.as_bytes());
+        diagnostics.extend_from_slice(redact_owner_code(text.as_bytes()).as_bytes());
         diagnostics.push(b'\n');
     }
     None
@@ -868,6 +865,9 @@ fn redact_owner_code(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .lines()
         .map(|line| {
+            if line.contains("owner_sign_in_code") {
+                return "[owner sign-in launch output redacted]".to_string();
+            }
             line.split_once("#owner-code=").map_or_else(
                 || line.to_string(),
                 |(prefix, _)| format!("{prefix}#owner-code=[redacted]"),
@@ -1642,6 +1642,7 @@ mod tests {
             version: "0.3.0".into(),
             owned,
             reason: None,
+            owner_sign_in_code: None,
         }
     }
 
@@ -1722,16 +1723,31 @@ mod tests {
         let mut pending = Vec::new();
         let mut diagnostics = Vec::new();
         let mut code = None;
-        assert!(parse_launch_stdout(
+        let raw_outcome = LaunchOutcome::parse(
+            r#"{"outcome":"owned","base_url":"http://127.0.0.1:8691","instance_id":"instance","version":"test","owned":true,"owner_sign_in_code":"single-use"}"#,
+        ).unwrap();
+        assert!(!format!("{raw_outcome:?}").contains("single-use"));
+        assert!(!serde_json::to_string(&raw_outcome)
+            .unwrap()
+            .contains("single-use"));
+        let outcome = parse_launch_stdout(
             &mut pending,
             &mut diagnostics,
-            b"RCP sign-in: http://127.0.0.1:8611/#owner-code=single-use\n",
-            &mut code
-        )
-        .is_none());
+            b"{\"outcome\":\"owned\",\"base_url\":\"http://127.0.0.1:8691\",\"instance_id\":\"instance\",\"version\":\"test\",\"owned\":true,\"owner_sign_in_code\":\"single-use\"}\n",
+            &mut code,
+        ).unwrap();
         assert_eq!(code.as_deref().map(String::as_str), Some("single-use"));
         assert!(diagnostics.is_empty());
+        assert!(!format!("{outcome:?}").contains("single-use"));
+        assert!(!serde_json::to_string(&outcome)
+            .unwrap()
+            .contains("single-use"));
         assert!(!redact_owner_code(b"url/#owner-code=partial").contains("partial"));
+        let partial = b"{\"owner_sign_in_code\":\"partial";
+        assert!(!redact_owner_code(partial).contains("partial"));
+        assert!(parse_launch_stdout(&mut pending, &mut diagnostics, partial, &mut code).is_none());
+        assert!(parse_launch_stdout(&mut pending, &mut diagnostics, b"\n", &mut code).is_none());
+        assert!(!String::from_utf8(diagnostics).unwrap().contains("partial"));
     }
 
     #[test]

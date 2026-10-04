@@ -138,9 +138,10 @@ def close_chat_browser_owners(
             condition += " AND chat_id = ?"
             values += (chat_id,)
         connection.execute(
-            f"UPDATE browser_owners SET close_requested = 1, "
+            "UPDATE browser_owners SET close_requested = 1, "
+            "project_deletion_requested = MAX(project_deletion_requested, ?), "
             f"delete_profile = MAX(delete_profile, ?) WHERE {condition}",
-            (int(delete_profile), *values),
+            (int(chat_id is None and delete_profile), int(delete_profile), *values),
         )
     retry_browser_cleanup(store, project_id=project_id, chat_id=chat_id)
 

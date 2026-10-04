@@ -894,6 +894,7 @@ export default function App() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    authenticatedHealth,
     actorIdentity,
     actorIdentityError,
     actorIdentityChecked,
@@ -4183,22 +4184,21 @@ export default function App() {
 
   const movePersonalProjectToTeam =
     desktop &&
-    verifiedHealth?.space_kind === "personal" &&
-    verifiedHealth.project_creation.intents.some(
+    authenticatedHealth?.space_kind === "personal" &&
+    authenticatedHealth.project_creation.intents.some(
       (intent) => intent.intent === "move_personal_project_to_team" && intent.eligible,
     )
       ? openMoveProjectSetup
       : undefined;
   const updateHasActiveWork =
     Boolean(activeTask) ||
-    (desktopUpdate?.active_agent_tasks ?? verifiedHealth?.active_agent_tasks ?? 0) > 0;
+    (desktopUpdate?.active_agent_tasks ?? authenticatedHealth?.active_agent_tasks ?? 0) > 0;
   const applyUpdate = async () => {
     await applyDesktopShellUpdate(Boolean(activeTask), async () => {
       const identity = await reverifyIdentity("update-apply");
-      return {
-        ok: identity.ok,
-        activeAgentTasks: identity.health?.active_agent_tasks ?? 0,
-      };
+      if (!identity.ok) return { ok: false, activeAgentTasks: 0 };
+      const details = await api<Health>("/api/health/details");
+      return { ok: true, activeAgentTasks: details.active_agent_tasks };
     });
   };
 
@@ -4367,7 +4367,9 @@ export default function App() {
     return (
       <>
         <TeamLoginBoundary
-          spaceName={verifiedHealth?.space_name ?? null}
+          spaceName={
+            verifiedHealth && "space_name" in verifiedHealth ? verifiedHealth.space_name : null
+          }
           onAuthenticate={authenticateTeamSession}
           onPair={pairTeamDevice}
         />
@@ -4399,7 +4401,7 @@ export default function App() {
       <>
         <ProjectSetup
           key={projectSetupRouteKey(setupRoute)}
-          projectCreation={verifiedHealth!.project_creation}
+          projectCreation={authenticatedHealth!.project_creation}
           spaceKind={verifiedHealth!.space_kind}
           onCancel={returnToProjects}
           onCreated={openProject}
@@ -4454,7 +4456,7 @@ export default function App() {
           onOpenExperiment={openProject}
           onArchiveEpisode={requestEpisodeArchive}
           onCreate={openSetup}
-          projectCreation={verifiedHealth!.project_creation}
+          projectCreation={authenticatedHealth!.project_creation}
           onMovePersonalProjectToTeam={movePersonalProjectToTeam}
           onDelete={deleteProject}
           openProjectTabs={openProjectTabs}

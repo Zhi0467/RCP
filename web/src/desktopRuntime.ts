@@ -1,5 +1,5 @@
 import type {
-  Health,
+  PublicHealth,
   IdentityResponse,
   ProjectProvisioningStatus,
   ProjectTransferBundle,
@@ -139,7 +139,7 @@ export interface DesktopUpdate {
 
 export interface BackendIdentityResult {
   ok: boolean;
-  health: Health | null;
+  health: PublicHealth | null;
   message: string | null;
 }
 
@@ -770,7 +770,7 @@ async function runIdentityCheck(
 }
 
 async function checkBackendIdentity(replaceExpected: boolean): Promise<BackendIdentityResult> {
-  let health: Health;
+  let health: PublicHealth;
   try {
     health = await fetchHealth();
   } catch (error) {
@@ -814,10 +814,10 @@ async function checkBackendIdentity(replaceExpected: boolean): Promise<BackendId
   return mismatch ? { ok: false, health, message: mismatch } : { ok: true, health, message: null };
 }
 
-async function fetchHealth(): Promise<Health> {
+async function fetchHealth(): Promise<PublicHealth> {
   const response = await fetch("/api/health", { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`);
-  return response.json() as Promise<Health>;
+  return response.json() as Promise<PublicHealth>;
 }
 
 function toIdentity(value: BackendIdentity): BackendIdentity {

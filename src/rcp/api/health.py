@@ -93,7 +93,14 @@ async def health(
 
 
 @router.get("/api/health")
-async def public_health(composition: HealthCompositionDependency) -> dict[str, object]:
+async def public_health(
+    *,
+    composition: HealthCompositionDependency,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    if composition.space_kind == "team":
+        return await health(catalog=catalog, composition=composition, store=store)
     identity = build_identity()
     return {
         "status": "ok",

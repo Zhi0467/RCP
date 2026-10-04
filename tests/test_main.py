@@ -506,8 +506,9 @@ def test_drain_ends_the_process_only_while_a_request_thread_is_stuck(monkeypatch
         stuck.join(timeout=5)
 
 
+@pytest.mark.parametrize("machine_readable", [True, False])
 def test_owner_publishes_metadata_after_lock_and_reports_owned(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, machine_readable
 ) -> None:
     observed = {}
 
@@ -530,13 +531,17 @@ def test_owner_publishes_metadata_after_lock_and_reports_owned(
     monkeypatch.setattr("rcp.__main__._run_server", fake_run)
 
     with instance_lock(tmp_path):
-        _serve_as_owner(_serve_args(), tmp_path)
+        _serve_as_owner(_serve_args(machine_readable=machine_readable, port=8691), tmp_path)
 
-    lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 2
-    code = lines[0].split("#owner-code=", 1)[1]
+    stdout = capsys.readouterr().out
+    if not machine_readable:
+        assert len(stdout.splitlines()) == 1
+        code = stdout.strip().split("#owner-code=", 1)[1]
+        assert AppStore(tmp_path / "rcp.sqlite3").redeem_owner_sign_in_code(code)
+        return
+    output = json.loads(stdout)
+    code = output["owner_sign_in_code"]
     assert AppStore(tmp_path / "rcp.sqlite3").redeem_owner_sign_in_code(code)
-    output = json.loads(lines[1])
     assert output["outcome"] == "owned"
     assert output["owned"] is True
     assert output["version"] == __version__

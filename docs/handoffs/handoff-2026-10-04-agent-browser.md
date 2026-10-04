@@ -103,13 +103,17 @@ are kept with the implementation briefs, not here.
   the Keychain helper's 64-byte limit), keyed by data directory id. It spawns the
   backend and passes the secret on stdin. The backend enrolls the hash only while
   holding the data-directory ownership lock, and only if no owner secret exists.
-- **Start or adopt with a matching secret.** The desktop exchanges the secret for
-  a session and installs the cookie through the native WKWebView bridge before it
-  calls the UI ready. "Ready" includes the session, not just health.
+- **Start or adopt with a matching secret.** With a captured startup code, the
+  desktop redeems it once with the saved Keychain secret or the spawned secret;
+  without a code, it exchanges the secret. It writes the Keychain only when the
+  secret did not come from there. It installs the cookie through the native
+  WKWebView bridge before it calls the UI ready. "Ready" includes the session,
+  not just health.
 - **One-time sign-in code.** At start the backend prints a single-use code to its
   stdout: 10 minutes, hash stored only, never written to a log file. `rcp serve`
-  shows it as a sign-in URL. A desktop-spawned backend's stdout belongs to the
-  desktop, which redeems the code itself, so a missing or reset Keychain entry
+  shows it as a sign-in URL in human mode. Machine-readable stdout stays one JSON
+  object carrying `owner_sign_in_code`; native diagnostics exclude that field.
+  A desktop-spawned backend's stdout belongs to the desktop, which redeems the code itself, so a missing or reset Keychain entry
   recovers by restarting the backend. A backend started from a terminal and
   adopted by the desktop needs the human to paste that code into the desktop.
   Redeeming a code may enroll a new owner secret. An unauthenticated exchange can
@@ -193,8 +197,9 @@ the accidental and trivial paths.
 
 - Turning the toggle off closes the session and deletes the profile right after
   the response; a turn still running keeps its browser, and the deletion happens
-  when it ends. Archiving a chat closes it and keeps the profile. Removing a
-  project closes and deletes all of its owners' profiles. There is no chat
+  when it ends. Turning it back on before cleanup cancels that pending close and
+  deletion, except for archived chats or project deletion. Archiving a chat closes
+  it and keeps the profile. Removing a project closes and deletes all of its owners' profiles. There is no chat
   delete route, so there is no chat-delete hook.
 - The CLI's idle timeout closes unused sessions. It closes the browser
   gracefully; a smoke test proves cookies survive it.

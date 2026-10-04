@@ -422,6 +422,7 @@ def _serve_as_owner(
                 published_server_metadata(data_dir, metadata),
             ):
                 store = AppStore(data_dir / "rcp.sqlite3")
+                code = None
                 if store.space_kind == "personal":
                     if getattr(args, "owner_secret_stdin", False):
                         secret = sys.stdin.readline(66).rstrip("\r\n")
@@ -429,16 +430,17 @@ def _serve_as_owner(
                             raise SystemExit("Invalid owner secret on stdin.")
                         store.enroll_owner_secret(secret, ownership=ownership)
                     code = store.create_owner_sign_in_code()
-                    print(
-                        f"RCP sign-in: {_base_url(args.host, args.port)}/#owner-code={code}",
-                        flush=True,
-                    )
+                    if not getattr(args, "machine_readable", False):
+                        print(
+                            f"RCP sign-in: {_base_url(args.host, args.port)}/#owner-code={code}",
+                            flush=True,
+                        )
                 _run_server(
                     args,
                     metadata,
                     server_fd=server_socket.fileno(),
                     on_ready=lambda: _emit_launch_outcome(
-                        args, "owned", metadata=metadata, owned=True
+                        args, "owned", metadata=metadata, owned=True, owner_sign_in_code=code
                     ),
                 )
             _drain_worker_threads()
@@ -761,6 +763,7 @@ def _emit_launch_outcome(
     *,
     metadata: ServerMetadata,
     owned: bool,
+    owner_sign_in_code: str | None = None,
 ) -> None:
     if not getattr(args, "machine_readable", False):
         return
@@ -772,6 +775,7 @@ def _emit_launch_outcome(
                 "instance_id": metadata.instance_id,
                 "version": metadata.app_version,
                 "owned": owned,
+                **({"owner_sign_in_code": owner_sign_in_code} if owner_sign_in_code else {}),
             },
             sort_keys=True,
         ),

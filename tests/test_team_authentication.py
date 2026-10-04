@@ -689,7 +689,7 @@ def test_team_authentication_middleware_keeps_only_bootstrap_boundaries_public(t
 
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert "space_name" not in health.json()
+    assert health.json()["space_name"] == "Team Lab"
     assert client.get("/").status_code == 200
     assert client.get("/openapi.json").status_code == 200
     assert (

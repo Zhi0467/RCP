@@ -201,3 +201,53 @@ def test_deleted_workspace_does_not_block_other_owner(host, tmp_path, monkeypatc
         with pytest.raises(UnavailableError) as error:
             host.ensure()
         assert error.value.code in {"workspace_missing", "owner_unavailable"}
+
+
+@pytest.mark.parametrize("owner_state", ["stopped", "live", "unknown"])
+@pytest.mark.parametrize("broken_cli", ["missing", "corrupt"])
+def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
+    tmp_path, monkeypatch, owner_state, broken_cli
+):
+    import subprocess
+
+    runtime = HostRuntime(request(tmp_path, action="install"))
+    runtime.save(
+        {
+            "owner_token": "retained",
+            "session_name": "retained",
+            "handle": "retained",
+            "workspace_dir": str(tmp_path / "workspace"),
+            "leases": {},
+        }
+    )
+    if broken_cli == "corrupt":
+        runtime.core.mkdir(parents=True)
+        (runtime.core / "package.json").write_text("broken")
+    monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "readiness", lambda **kw: {"status": "ready"})
+    monkeypatch.setattr(runtime, "executable", lambda: "/owned/chromium")
+    monkeypatch.setattr(runtime, "start", lambda *a: None)
+    monkeypatch.setattr(runtime, "close_record", lambda *a, **kw: None)
+    installed = []
+    probe_run = runtime.run
+
+    def run(command, **kwargs):
+        if command[1] == "-e":
+            return probe_run(command, **kwargs)
+        installed.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def owner_status(record):
+        if owner_state == "unknown":
+            raise UnavailableError("owner_unavailable", "Cannot inspect process owner")
+        return owner_state == "live"
+
+    monkeypatch.setattr(runtime, "run", run)
+    monkeypatch.setattr(runtime, "owner_status", owner_status)
+    if owner_state == "unknown":
+        with pytest.raises(UnavailableError) as error:
+            runtime.install()
+        assert error.value.code == "owner_unavailable"
+    else:
+        assert runtime.install()["status"] == ("ready" if owner_state == "stopped" else "busy")
+    assert len(installed) == (2 if owner_state == "stopped" else 0)

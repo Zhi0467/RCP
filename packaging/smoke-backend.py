@@ -78,7 +78,7 @@ def _command(backend: Path, port: int) -> list[str]:
 
 
 def _launch_outcome(process: subprocess.Popen[str]) -> tuple[dict[str, Any], str]:
-    """Return the launch JSON and the one-time sign-in code printed before it."""
+    """Return the launch JSON and its one-time sign-in code."""
     assert process.stdout is not None
     lines: queue.Queue[str] = queue.Queue()
 
@@ -90,7 +90,6 @@ def _launch_outcome(process: subprocess.Popen[str]) -> tuple[dict[str, Any], str
 
     threading.Thread(target=read, daemon=True).start()
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
-    code = None
     while True:
         try:
             line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
@@ -100,17 +99,15 @@ def _launch_outcome(process: subprocess.Popen[str]) -> tuple[dict[str, Any], str
             raise RuntimeError(
                 f"The backend exited before reporting an outcome (status {process.poll()})."
             )
-        if line.startswith("RCP sign-in: "):
-            code = line.rstrip("\n").rpartition("#owner-code=")[2]
-            continue
         try:
             outcome = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"The backend emitted invalid launch JSON: {line!r}") from exc
+            raise RuntimeError("The backend emitted invalid launch JSON.") from exc
         if not isinstance(outcome, dict):
             raise RuntimeError("The backend launch outcome is not an object.")
-        if not code:
-            raise RuntimeError("The backend did not print a sign-in code before launching.")
+        code = outcome.pop("owner_sign_in_code", None)
+        if not isinstance(code, str) or not code:
+            raise RuntimeError("The backend launch outcome omitted its sign-in code.")
         return outcome, code
 
 
@@ -246,9 +243,9 @@ def main() -> None:
             try:
                 reused_outcome = json.loads(reused.stdout.strip())
             except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Second launch emitted invalid JSON: {reused.stdout!r}"
-                ) from exc
+                raise RuntimeError("Second launch emitted invalid JSON.") from exc
+            if isinstance(reused_outcome, dict) and "owner_sign_in_code" in reused_outcome:
+                raise RuntimeError("Second launch unexpectedly returned a sign-in code.")
             if reused_outcome != {**outcome, "outcome": "reused", "owned": False}:
                 raise RuntimeError(
                     f"Second launch did not reuse the exact running backend: {reused_outcome}"

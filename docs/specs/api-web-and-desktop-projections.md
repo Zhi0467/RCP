@@ -8,7 +8,9 @@ workspace and transition manager.
 ## Personal owner admission
 
 Personal API requests and terminal upgrades require an owner session. Public
-health exposes adoption identity only. The Web shell, auth exchange and code
+personal health exposes adoption identity only. Team public health retains its
+full runtime payload, including the space name and active-agent count required
+by desktop bootstrap. The Web shell, auth exchange and code
 redemption, and OPTIONS remain public. The separate phone listener is unchanged.
 The owner cookie is host-only, HttpOnly, and SameSite=Strict; HTTPS adds Secure.
 Team cookie policy remains separate.
@@ -18,6 +20,8 @@ sign-in boundary; a one-time code can be pasted or supplied in the sign-in URL's
 fragment. Project locator intent stays in the URL across sign-in. The human
 confirms it before registration. Display-name entry remains a separate action.
 Authenticated `/api/health/details` supplies runtime and project-creation data.
+The Web keeps public identity separate from authenticated details and reads
+project-creation controls only after authentication.
 During desktop status, an owner-session 401 clears the cached native session and
 returns the verified backend identity with `owner_authenticated=false`, allowing
 the ordinary sign-in boundary. Quit and update still require authenticated
@@ -827,8 +831,10 @@ filesystem inspection, or catalog mutation. The separately validated
 provisioning finalizer is the only team-project entrance into the existing
 setup/registration owners.
 
-The public backend health projection carries adoption identity. The protected
-health details projection carries runtime fields. `version` remains the full
+The personal public backend health projection carries adoption identity. Team
+public health keeps the full runtime and project-creation projection for its
+existing bootstrap consumers. The protected health details projection carries
+runtime fields in both spaces. `version` remains the full
 package `__version__` verbatim, and
 `running_commit` keeps its existing meaning as the commit recorded for the
 running installed process. It additionally publishes `build` as the integer

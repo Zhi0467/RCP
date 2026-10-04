@@ -579,8 +579,17 @@ class HostRuntime:
         prerequisite = self.prerequisites()
         if prerequisite:
             return prerequisite
-        if any(self.alive(record) for record in self.records()):
-            return self.readiness_result("busy", "Close RCP browser sessions before installing")
+        for record in self.records():
+            try:
+                alive = self.alive(record)
+            except UnavailableError as exc:
+                if exc.code != "command_failed":
+                    raise
+                # A broken CLI cannot inspect its registry. Only a proven-stopped
+                # OS owner permits replacing its tools; unknown owners still raise.
+                alive = self.owner_status(record)
+            if alive:
+                return self.readiness_result("busy", "Close RCP browser sessions before installing")
         self.tools.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.run(
             [

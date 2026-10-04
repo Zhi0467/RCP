@@ -802,7 +802,8 @@ class AppStoreBase:
                 stage_root TEXT NOT NULL,
                 chat_id TEXT, project_id TEXT NOT NULL,
                 close_requested INTEGER NOT NULL DEFAULT 0,
-                delete_profile INTEGER NOT NULL DEFAULT 0
+                delete_profile INTEGER NOT NULL DEFAULT 0,
+                project_deletion_requested INTEGER NOT NULL DEFAULT 0
             )
         """)
         connection.execute("""

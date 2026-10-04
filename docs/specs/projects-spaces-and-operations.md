@@ -36,9 +36,12 @@ Display-name selection follows authentication and grants no session by itself.
 
 The desktop keeps a 32-byte secret in Keychain, keyed by data-directory identity.
 A fresh backend enrolls its hash only under the data-directory ownership lock.
-Exchange never enrolls a credential. Each personal server start prints a
-single-use sign-in URL to stdout. Its code expires after ten minutes and locks
-after repeated incorrect guesses. Redemption may replace the desktop secret;
+Exchange never enrolls a credential. Each personal server start supplies a
+single-use sign-in code. Human mode prints its sign-in URL to stdout;
+`--machine-readable` emits only the launch outcome JSON, with the code in
+`owner_sign_in_code`. Reused and team outcomes omit that field.
+The code expires after ten minutes and locks after repeated incorrect guesses.
+Redemption may replace the desktop secret;
 replacement revokes previous owner sessions. No raw secret or code is persisted.
 
 Owner and team sessions share hashed token storage, expiry, and revocation.

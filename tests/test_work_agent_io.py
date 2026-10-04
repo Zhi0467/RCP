@@ -1703,3 +1703,68 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
         owner.settle()
     assert owner.closed and owner.staged.credential.expired
     assert secrets.load("first") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repair_module", [work_module, loop_module], ids=["work", "experiment"])
+async def test_graph_only_repair_never_acquires_browser(
+    manifest, tmp_path, monkeypatch, repair_module
+):
+    from rcp.providers.browser_grant import BrowserGrant
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    request = _request().model_copy(
+        update={"message": None, "session_id": "repair-session", "browser_requested": True}
+    )
+    request = work_module._resolve_work_execution(service, request, None).request
+    execution = _chat_task_execution(app, request, "browser-repair")
+    stage = tmp_path / "data" / "run-stage" / "chat-browser-repair"
+    (stage / "workspace").mkdir(parents=True)
+    execution.store.record_chat_stage_layout(
+        execution.operation_id, stage_root=str(stage), workspace_root=str(stage / "workspace")
+    )
+    execution.checkpoint_stage("", str(stage))
+    execution.store.checkpoint_agent_task(
+        execution.operation_id, native_session_id="repair-session"
+    )
+    execution.continuation = "graph_repair"
+
+    def forbidden_browser(*args, **kwargs):
+        pytest.fail("graph repair attempted browser acquisition")
+
+    monkeypatch.setattr(repair_module, "browser_turn", forbidden_browser)
+    monkeypatch.setattr(
+        repair_module,
+        "_rejected_graph_update_for_repair",
+        lambda _: work_module.GraphUpdateResult(status="rejected", repairable=True),
+    )
+    monkeypatch.setattr(
+        work_module, "_parent_task_contract_path", lambda *_: str(stage / "original.md")
+    )
+    if repair_module is loop_module:
+        monkeypatch.setattr(loop_module, "_experiment_master", lambda *a, **kw: None)
+        monkeypatch.setattr(loop_module, "_handoff_values", lambda *a: {})
+        monkeypatch.setattr(loop_module, "_changed_handoff_values", lambda *a: {})
+        monkeypatch.setattr(
+            loop_module,
+            "_record_continuation_prompt",
+            lambda *a, **kw: (str(stage / "repair.md"), "repair"),
+        )
+    grants = []
+
+    class Launcher:
+        async def stream(self, *args, browser_grant=None, **kwargs):
+            grants.append(browser_grant)
+            raise RuntimeError("repair provider reached")
+            yield
+
+    with pytest.raises(RuntimeError, match="repair provider reached"):
+        async for _ in repair_module._stream_work_graph_repair(
+            service, Launcher(), request, tmp_path / "data", execution=execution
+        ):
+            pass
+    assert grants == [BrowserGrant()]
+    assert request.browser_requested is True
+    assert execution.store.agent_task(execution.operation_id).request["browser_requested"] is True

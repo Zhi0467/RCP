@@ -41,16 +41,14 @@ export type AgentCapability =
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
 
-export interface Health {
+export interface PublicHealth {
   status: string;
   agent_mode: "provider" | "acceptance";
   version: string;
   build?: number | null;
   commit?: string | null;
-  schema_ledger_head?: number | null;
   space_id: string;
   space_kind: "personal" | "team";
-  space_name: string | null;
   instance_id: string;
   data_dir_id: string;
   owner_kind: string;
@@ -60,8 +58,13 @@ export interface Health {
     minimum: number;
     maximum: number;
   };
-  active_agent_tasks: number;
   pid: number;
+}
+
+export interface Health extends PublicHealth {
+  schema_ledger_head?: number | null;
+  space_name: string | null;
+  active_agent_tasks: number;
   projects?: number;
   project?: string | null;
   project_creation: ProjectCreationControl;

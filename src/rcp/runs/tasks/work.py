@@ -2668,35 +2668,6 @@ async def _stream_work_graph_repair(
     master_for: Callable[[WorkTurn, _StagedWorkInputs], tuple[Callable[[], str], dict[str, object]]]
     | None = None,
 ) -> AsyncIterator[str]:
-    async with (
-        AsyncExitStack() as browser_stack,
-        aclosing(
-            _stream_work_graph_repair_with_browser(
-                service,
-                launcher,
-                request,
-                data_dir,
-                execution=execution,
-                master_for=master_for,
-                browser_stack=browser_stack,
-            )
-        ) as stream,
-    ):
-        async for frame in stream:
-            yield frame
-
-
-async def _stream_work_graph_repair_with_browser(
-    service: ProjectService,
-    launcher: AgentLauncher,
-    request: RunRequest,
-    data_dir: Path,
-    *,
-    execution: AgentTaskExecution,
-    browser_stack: AsyncExitStack,
-    master_for: Callable[[WorkTurn, _StagedWorkInputs], tuple[Callable[[], str], dict[str, object]]]
-    | None = None,
-) -> AsyncIterator[str]:
     """Repair only a retained Work patch; never repeat the operational turn.
 
     ``master_for`` gives the owner's master renderer and values when the session's master
@@ -2813,16 +2784,7 @@ async def _stream_work_graph_repair_with_browser(
             validator_budget=validator_budget,
             outcome=outcome,
         )
-        browser_grant = await browser_stack.enter_async_context(
-            browser_turn(
-                request,
-                workspace=workspace,
-                execution_host=execution_host,
-                execution=execution,
-                remote_stage=remote_stage,
-                capability="work_auto",
-            )
-        )
+        browser_grant = BrowserGrant()
         previous = _rejected_graph_update_for_repair(execution)
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
         diagnostics_path = _stage_json_task_input(

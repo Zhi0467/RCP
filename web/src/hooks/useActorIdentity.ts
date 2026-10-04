@@ -20,12 +20,13 @@ import {
   verifyIdentityAfterMutationFailure,
   type BackendIdentityEventDetail,
 } from "../desktopRuntime";
-import type { Health, IdentityResponse } from "../types";
+import type { Health, PublicHealth, IdentityResponse } from "../types";
 
 export function useActorIdentity() {
   const [identityReady, setIdentityReady] = useState(false);
   const [identityIssue, setIdentityIssue] = useState<string | null>(null);
-  const [verifiedHealth, setVerifiedHealth] = useState<Health | null>(null);
+  const [verifiedHealth, setVerifiedHealth] = useState<PublicHealth | Health | null>(null);
+  const [authenticatedHealth, setAuthenticatedHealth] = useState<Health | null>(null);
   const [actorIdentity, setActorIdentity] = useState<IdentityResponse | null>(null);
   const [actorIdentityError, setActorIdentityError] = useState<string | null>(null);
   const [actorIdentityChecked, setActorIdentityChecked] = useState(false);
@@ -39,7 +40,7 @@ export function useActorIdentity() {
 
   const actorIdentityRef = useRef<IdentityResponse | null>(null);
   const actorNamePromptResolver = useRef<((saved: boolean) => void) | null>(null);
-  const verifiedHealthRef = useRef<Health | null>(null);
+  const verifiedHealthRef = useRef<PublicHealth | Health | null>(null);
   actorIdentityRef.current = actorIdentity;
 
   const requestActorName = useCallback((): Promise<boolean> => {
@@ -86,6 +87,9 @@ export function useActorIdentity() {
       setIdentityReady(true);
       setIdentityIssue(detail.ok ? null : detail.message || "RCP could not verify its backend.");
       if (detail.health) {
+        if (verifiedHealthRef.current?.instance_id !== detail.health.instance_id) {
+          setAuthenticatedHealth(null);
+        }
         const health =
           verifiedHealthRef.current?.instance_id === detail.health.instance_id
             ? { ...verifiedHealthRef.current, ...detail.health }
@@ -134,6 +138,7 @@ export function useActorIdentity() {
         if (stopped) return;
         verifiedHealthRef.current = details;
         setVerifiedHealth(details);
+        setAuthenticatedHealth(details);
         setOwnerSessionRequired(false);
         setActorIdentity(identity);
         setActorIdentityChecked(true);
@@ -141,6 +146,7 @@ export function useActorIdentity() {
       .catch((error) => {
         if (stopped) return;
         setActorIdentity(null);
+        setAuthenticatedHealth(null);
         if (
           verifiedHealth.space_kind === "team" &&
           error instanceof ApiError &&
@@ -161,6 +167,7 @@ export function useActorIdentity() {
     identityIssue,
     identityReady,
     identityRetry,
+    verifiedHealth?.instance_id,
     verifiedHealth?.space_id,
     verifiedHealth?.space_kind,
   ]);
@@ -170,6 +177,7 @@ export function useActorIdentity() {
       if (verifiedHealthRef.current?.space_kind === "team") return;
       setOwnerSessionRequired(true);
       setActorIdentity(null);
+      setAuthenticatedHealth(null);
     };
     window.addEventListener("rcp:session-required", expired);
     return () => window.removeEventListener("rcp:session-required", expired);
@@ -187,6 +195,7 @@ export function useActorIdentity() {
     const details = await api<Health>("/api/health/details");
     verifiedHealthRef.current = details;
     setVerifiedHealth(details);
+    setAuthenticatedHealth(details);
     setActorIdentity(identity);
     setActorIdentityError(null);
     setActorIdentityChecked(true);
@@ -210,10 +219,10 @@ export function useActorIdentity() {
 
   const reverifyIdentity = useCallback((reason: string) => reverifyBackendIdentity(reason), []);
 
-  const currentActiveAgentTasks = useCallback(
-    () => verifiedHealthRef.current?.active_agent_tasks ?? 0,
-    [],
-  );
+  const currentActiveAgentTasks = useCallback(() => {
+    const health = verifiedHealthRef.current;
+    return health && "active_agent_tasks" in health ? health.active_agent_tasks : 0;
+  }, []);
 
   const updateActorNameDraft = useCallback((value: string) => {
     setActorNameDraft(value);
@@ -224,6 +233,7 @@ export function useActorIdentity() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    authenticatedHealth,
     actorIdentity,
     actorIdentityError,
     actorIdentityChecked,

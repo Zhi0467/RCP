@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from rcp import __version__
 from rcp.api.team_shell_protocol import (
     TEAM_SHELL_PROTOCOL_HEADER,
@@ -192,3 +194,39 @@ def test_health_projects_team_creation_eligibility_without_member_authority(tmp_
     ]
     assert [intent["eligible"] for intent in control["intents"]] == [False, True, False]
     assert [intent["preselected"] for intent in control["intents"]] == [False, True, False]
+
+
+def test_public_team_health_preserves_bootstrap_and_runtime_payload(tmp_path) -> None:
+    data_dir = tmp_path / "team"
+    AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    app = create_app(data_dir=data_dir)
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["space_name"] == "Team Lab"
+    assert payload["active_agent_tasks"] == 0
+    assert payload["projects"] == 0
+    assert payload["schema_ledger_head"] == AppStore._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+    assert payload["project_creation"]["requires_authenticated_member"] is True
+    assert set(payload) == {
+        "status",
+        "version",
+        "build",
+        "commit",
+        "schema_ledger_head",
+        "space_id",
+        "space_kind",
+        "space_name",
+        "instance_id",
+        "pid",
+        "data_dir_id",
+        "owner_kind",
+        "running_commit",
+        "web_build_id",
+        "team_shell_protocol",
+        "active_agent_tasks",
+        "projects",
+        "agent_mode",
+        "project_creation",
+    }

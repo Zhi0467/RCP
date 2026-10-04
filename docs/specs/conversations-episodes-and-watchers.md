@@ -86,7 +86,10 @@ project the durable browser status of their turn, including unavailable and lost
 Archiving a chat closes its browser and retains its profile after active work ends.
 Turning the toggle off deletes the chat's browser profile, with its logins and
 cookies, right after the response; an active turn keeps its browser and the profile
-is deleted when that turn ends. A session hears its browser state when it starts
+is deleted when that turn ends. Turning Browser back on before cleanup cancels
+that pending close and deletion; archive and project-deletion cleanup remain in
+force. Pending project-deletion cleanup retains its origin even if the same
+project is registered again. A session hears its browser state when it starts
 with a browser and whenever the state changes, compared with its last committed turn.
 Project removal requests deletion for every retained owner. Failed cleanup stays
 pending and retries at later turn boundaries. The owner key names the stable stage,

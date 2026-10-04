@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct LaunchOutcome {
     pub outcome: String,
     pub base_url: String,
@@ -8,6 +8,21 @@ pub struct LaunchOutcome {
     pub version: String,
     pub owned: bool,
     pub reason: Option<String>,
+    #[serde(skip_serializing)]
+    pub owner_sign_in_code: Option<String>,
+}
+
+impl std::fmt::Debug for LaunchOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaunchOutcome")
+            .field("outcome", &self.outcome)
+            .field("base_url", &self.base_url)
+            .field("instance_id", &self.instance_id)
+            .field("version", &self.version)
+            .field("owned", &self.owned)
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LaunchOutcome {

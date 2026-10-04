@@ -1604,7 +1604,9 @@ contract requires that.
 `browser/` owns optional headless browser installation and sessions. It is
 separate from provider launches. The launch integration supplies a stable owner
 token and the stage workspace. The runtime exports ensure, release, and close;
-it never installs tools during ensure.
+it never installs tools during ensure. When a broken CLI cannot probe retained
+sessions during Install, only a proven-stopped OS owner permits repair; live or
+unknown owners block it.
 
 RCP pins Playwright CLI 0.1.22. Each owner has an explicit Chromium executable,
 headless configuration, persistent profile, and output directory. Ambient

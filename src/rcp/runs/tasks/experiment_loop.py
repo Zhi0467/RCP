@@ -2839,32 +2839,6 @@ async def _stream_work_graph_repair(
     *,
     execution: AgentTaskExecution,
 ) -> AsyncIterator[str]:
-    async with (
-        AsyncExitStack() as browser_stack,
-        aclosing(
-            _stream_work_graph_repair_with_browser_lifetime(
-                service,
-                launcher,
-                request,
-                data_dir,
-                execution=execution,
-                browser_stack=browser_stack,
-            )
-        ) as stream,
-    ):
-        async for frame in stream:
-            yield frame
-
-
-async def _stream_work_graph_repair_with_browser_lifetime(
-    service: ProjectService,
-    launcher: AgentLauncher,
-    request: RunRequest,
-    data_dir: Path,
-    *,
-    execution: AgentTaskExecution,
-    browser_stack: AsyncExitStack,
-) -> AsyncIterator[str]:
     """Repair only a retained Experiment-loop Patch; never repeat the operational turn."""
 
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
@@ -2967,16 +2941,7 @@ async def _stream_work_graph_repair_with_browser_lifetime(
             validator_budget=validator_budget,
             outcome=outcome,
         )
-        browser_grant = await browser_stack.enter_async_context(
-            browser_turn(
-                request,
-                workspace=workspace,
-                execution_host=execution_host,
-                execution=execution,
-                remote_stage=remote_stage,
-                capability="work_auto",
-            )
-        )
+        browser_grant = BrowserGrant()
         previous = _rejected_graph_update_for_repair(execution)
         if not request.session_id:
             raise ValueError("The graph repair has no native session to continue.")
