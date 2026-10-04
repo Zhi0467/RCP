@@ -1041,7 +1041,7 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
 
     turn("Now just answer something.", resume=True)
     second_delta = changed_values(launcher.prompts[1])
-    assert {key.split(".")[0] for key in second_delta} == {"patch"}
+    assert {key.split(".")[0] for key in second_delta} == {"patch", "browser"}
     assert "rcp-agent-client-" in second_delta["patch.command_client"]
 
     # A Sync by someone else still reaches the conversation.

@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from contextlib import aclosing, suppress
+from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -30,6 +31,7 @@ from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
+from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _append_chat_exchange,
     _chat_read_dirs,
@@ -106,6 +108,7 @@ def _prepare_discuss_chat_prompt(
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     ontology_extensions: bool,
+    browser_grant: BrowserGrant,
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
@@ -137,6 +140,8 @@ def _prepare_discuss_chat_prompt(
             contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
             values=stable_values,
         )
+    if node != "session_start":
+        context_delta = {**(context_delta or {}), "browser": browser_prompt_line(browser_grant)}
     prompt = PromptFactory.discuss_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
@@ -152,6 +157,8 @@ def _prepare_discuss_chat_prompt(
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
     )
+    if node == "session_start":
+        prompt += "\n\n" + browser_prompt_line(browser_grant)
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
@@ -501,6 +508,7 @@ async def stream_discuss_run(
     artifact_directory: Path | PurePosixPath | None = None
     patch_inputs = None
     outcome = _ProviderOutcome(session_id=request.session_id)
+    browser_stack = AsyncExitStack()
     try:
         try:
             context = service.assemble_chat(request)
@@ -562,6 +570,16 @@ async def stream_discuss_run(
                 )
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
+            browser_grant = await browser_stack.enter_async_context(
+                browser_turn(
+                    request,
+                    workspace=workspace,
+                    execution_host=execution_host,
+                    execution=execution,
+                    remote_stage=remote_stage,
+                    capability="discuss",
+                )
+            )
             if not reusing_checkpoint:
                 # A reused folder must not hand this turn any previous turn output.
                 _clear_stale_turn_handoffs(workspace, remote_stage)
@@ -690,7 +708,7 @@ async def stream_discuss_run(
                         f"task-{token}-human-request.txt",
                         request.message,
                     )
-                    return PromptFactory.discuss_task_contract(
+                    contract = PromptFactory.discuss_task_contract(
                         project_name=context.project_name,
                         ontology_path=f"{context.graph_path}#ontology",
                         ontology_extensions=context.ontology_extensions,
@@ -713,6 +731,7 @@ async def stream_discuss_run(
                         attachments=attachment_pointers,
                         compute_connections=compute_profiles,
                     )
+                    return contract + "\n\n" + browser_prompt_line(browser_grant)
 
                 if resuming or retrying:
                     assert execution is not None and request.session_id is not None
@@ -744,7 +763,10 @@ async def stream_discuss_run(
                             stage_lessons_pointer(execution, local_stage, remote_stage),
                         ],
                         master=master,
-                        delta=changed_since_master(master, current),
+                        delta={
+                            **(changed_since_master(master, current) or {}),
+                            "browser": browser_prompt_line(browser_grant),
+                        },
                     )
                     contract_path = record_inline_prompt(
                         execution,
@@ -827,6 +849,7 @@ async def stream_discuss_run(
                     artifact_path=str(artifact_directory),
                     master_context=master_context,
                     stable_values=stable_prompt_values,
+                    browser_grant=browser_grant,
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,
                     ontology_extensions=context.ontology_extensions,
@@ -884,6 +907,7 @@ async def stream_discuss_run(
                     execution=execution,
                     remote_stage=remote_stage,
                     capability="discuss",
+                    browser_grant=browser_grant,
                     outcome=outcome,
                     binary=provider_binary,
                     supervise_remote=bool(execution_host),
@@ -907,9 +931,12 @@ async def stream_discuss_run(
     finally:
         # There is no per-turn source cleanup; the reusable native-session stage
         # remains available to the normal stage sweeper.
-        if patch_inputs is not None:
-            await asyncio.to_thread(
-                cleanup_patch_validation_mailbox,
-                staged=patch_inputs.validator_staged,
-                execution=execution,
-            )
+        try:
+            if patch_inputs is not None:
+                await asyncio.to_thread(
+                    cleanup_patch_validation_mailbox,
+                    staged=patch_inputs.validator_staged,
+                    execution=execution,
+                )
+        finally:
+            await browser_stack.aclose()

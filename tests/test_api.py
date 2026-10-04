@@ -295,7 +295,7 @@ class FakeLauncher:
         self.last_args = ()
         self.last_kwargs = {}
 
-    async def stream(self, *args, **kwargs):
+    async def stream(self, *args, browser_grant=None, **kwargs):
         self.calls += 1
         self.last_args = args
         self.last_kwargs = kwargs
@@ -641,7 +641,7 @@ class ScriptedLauncher:
     def calls(self) -> int:
         return len(self.prompts)
 
-    async def stream(self, _provider, prompt, **kwargs):
+    async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
         turn = self.turns[min(self.calls, len(self.turns) - 1)]
         self.prompts.append(prompt)
         self.resumed_sessions.append(kwargs.get("session_id"))
@@ -1634,8 +1634,8 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
     acquired_lease: list[RunLockLease] = []
 
     class PausingLauncher(ScriptedLauncher):
-        async def stream(self, *args, **kwargs):
-            async for event in super().stream(*args, **kwargs):
+        async def stream(self, *args, browser_grant=None, **kwargs):
+            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
                 if event.event == "done":
                     provider_started.set()
                     await async_wait_until(release_provider.is_set)
@@ -2854,7 +2854,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             inputs = workspace / "inputs"
             self.calls.append(
@@ -3004,7 +3004,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.calls.append(
                 {
@@ -3089,7 +3089,7 @@ def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.calls.append(
                 {
@@ -3193,7 +3193,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(app, tmp_path) -> None:
         def __init__(self) -> None:
             self.workspaces: list[str] = []
 
-        async def stream(self, _provider, _prompt, **kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.workspaces.append(str(workspace))
             if not self.workspaces[:-1]:
@@ -3262,7 +3262,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, mon
             self.prompts: list[str] = []
             self.sessions: list[str | None] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
@@ -3316,7 +3316,7 @@ def test_provider_exit_receipt_survives_terminal_error(app, tmp_path) -> None:
     service = app.state.service
 
     class ExitLauncher:
-        async def stream(self, _provider, _prompt, **_kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
             yield AgentEvent(event="session", session_id="failed-session")
             yield AgentEvent(
                 event="provider_exit",
@@ -3364,7 +3364,7 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(app, tmp_path) -
         def __init__(self) -> None:
             self.calls = 0
 
-        async def stream(self, _provider, _prompt, **_kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
             self.calls += 1
             yield AgentEvent(event="session", session_id="moved-context-session")
             yield AgentEvent(event="error", text="provider connection dropped")
@@ -3600,7 +3600,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     png_source = b"\x89PNG\r\n\x1a\npreview-bytes"
 
     class ArtifactLauncher(FakeLauncher):
-        async def stream(self, *args, **kwargs):
+        async def stream(self, *args, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             artifact_directory = next((workspace / "turns").glob("*/artifacts"))
             artifact_directory.joinpath("preview.html").write_bytes(html_source)
@@ -3616,7 +3616,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             workspace.joinpath("patch.json").write_text(agent_patch_json(refresh_patch()))
             artifact_template = str(workspace / "turns")
             assert artifact_template in _local_task_contract(args[1])
-            async for event in super().stream(*args, **kwargs):
+            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
                 yield event
 
     launcher = ArtifactLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
@@ -3930,9 +3930,9 @@ async def test_chat_does_not_assemble_or_project_transcripts(
     )
 
     class InspectingLauncher(FakeLauncher):
-        async def stream(self, *args, **kwargs):
+        async def stream(self, *args, browser_grant=None, **kwargs):
             self.read_dirs = list(kwargs["read_dirs"])
-            async for event in super().stream(*args, **kwargs):
+            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
                 yield event
 
     launcher = InspectingLauncher(
@@ -4148,13 +4148,15 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     patch = refresh_patch("rq/artifact-backed-change").model_copy(update={"kind": "work"})
 
     class ArtifactPatchLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             artifact_directory = next((workspace / "turns").glob("*/artifacts"))
             artifact_directory.joinpath("change.html").write_text(
                 "<!doctype html><p>Graph change preview</p>", encoding="utf-8"
             )
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = ArtifactPatchLauncher(
@@ -4188,7 +4190,7 @@ async def test_chat_launch_exception_keeps_workspace_without_transcript_projecti
     app, service = _seeded_project(manifest, tmp_path)
 
     class ExplodingLauncher:
-        async def stream(self, *_args, **kwargs):
+        async def stream(self, *_args, browser_grant=None, **kwargs):
             self.workspace = Path(kwargs["cwd"])
             self.projection = self.workspace / "inputs" / "conversations"
             assert not self.projection.exists()
@@ -4378,7 +4380,7 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, 
             self.sessions: list[str | None] = []
             self.masters: list[tuple[Path, str]] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
             path = launch_contract_path(prompt)
@@ -4435,7 +4437,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
             self.calls = 0
             self.sessions: list[str | None] = []
 
-        async def stream(self, *_args, **kwargs):
+        async def stream(self, *_args, browser_grant=None, **kwargs):
             self.calls += 1
             self.sessions.append(kwargs.get("session_id"))
             if self.calls == 1:
@@ -4799,10 +4801,12 @@ async def test_work_patch_is_applied_to_live_state_without_correction(
     patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "work"})
 
     class RacingLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             # A refresh lands between context assembly and the patch being applied.
             append_fixture_patch(service, refresh_patch("rq/landed-first"))
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = RacingLauncher([{"patch.json": agent_patch_json(patch)}], message=answer)
@@ -4856,7 +4860,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
             self.workspaces: list[Path] = []
             self.prompts: list[str] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             self.sessions.append(kwargs.get("session_id"))
             self.capabilities.append(kwargs["capability"])
             self.workspaces.append(Path(kwargs["cwd"]))
@@ -4937,7 +4941,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
             self.calls = 0
             self.workspaces: list[Path] = []
 
-        async def stream(self, *_args, **kwargs):
+        async def stream(self, *_args, browser_grant=None, **kwargs):
             self.calls += 1
             self.workspaces.append(Path(kwargs["cwd"]))
             if self.calls == 1:
@@ -5592,7 +5596,7 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
             )
             self.operational_effects = 0
 
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             if self.calls == 0:
                 self.operational_effects += 1
                 self.message = "The experiment was submitted once."
@@ -5603,7 +5607,9 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
             workspace = Path(kwargs["cwd"])
             artifact_directory = next((workspace / "turns").glob("*/artifacts"))
             artifact_directory.joinpath("correction.html").write_bytes(artifact)
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = WorkLauncher()
@@ -5693,9 +5699,11 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
 
     class UnreadableCorrectionLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             launch = self.calls
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
             if launch > 0:
                 (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
@@ -5810,10 +5818,12 @@ async def test_work_apply_rechecks_authority_after_human_removes_proposal_target
     effect_path = Path(manifest.repository_map["repo-a"].path) / "s100-effect.txt"
 
     class HeldWorkLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             if self.calls == 0:
                 effect_path.write_text("completed before Apply\n", encoding="utf-8")
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = HeldWorkLauncher(
@@ -7785,9 +7795,11 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
     execution = _chat_task_execution(app, request, "experiment-unreadable-correction")
 
     class UnreadableLoopCorrectionLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             launch = self.calls
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
             if launch > 0:
                 (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
@@ -8247,14 +8259,16 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
     observed: dict[str, object] = {}
 
     class InspectingLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             # A succeeded run reclaims its scratch folder, so read it in place.
             bundle = next((Path(kwargs["cwd"]) / "inputs").glob("rcp-skills-*"))
             observed["contract"] = _local_task_contract(prompt)
             observed["staged"] = sorted(
                 str(item.relative_to(bundle)) for item in bundle.rglob("*.md")
             )
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = InspectingLauncher([{"patch.json": agent_patch_json(seed_patch())}])

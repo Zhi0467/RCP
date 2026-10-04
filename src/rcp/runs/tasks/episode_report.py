@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
@@ -609,7 +610,12 @@ def _stage_attempt_contract(
     so it is reused rather than refused.
     """
 
-    prompt = compose(classify(phase), parts=[contract], master=None, delta=None)
+    prompt = compose(
+        classify(phase),
+        parts=[contract, browser_prompt_line(BrowserGrant())],
+        master=None,
+        delta=None,
+    )
     role = f"episode_report_attempt_{attempt_number}"
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     execution.store.record_agent_task_contract(

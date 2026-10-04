@@ -2385,6 +2385,7 @@ def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRe
     )
     return RunRequest(
         provider=continuation.provider,
+        browser_requested=continuation.browser_requested,
         model=continuation.model,
         reasoning=continuation.reasoning,
         run_on=continuation.run_on,

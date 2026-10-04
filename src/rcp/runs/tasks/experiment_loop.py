@@ -5,7 +5,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, suppress
+from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -20,6 +20,7 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -58,6 +59,7 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _append_chat_graph_receipt,
     _chat_read_dirs,
@@ -948,6 +950,7 @@ def _record_continuation_prompt(
     report_ended: bool,
     label: str,
     role: str,
+    browser_grant: BrowserGrant | None = None,
 ) -> tuple[str, str]:
     """Compose one continuation inline, record it for recovery, and return its path and text.
 
@@ -961,6 +964,8 @@ def _record_continuation_prompt(
     if question_part:
         parts = [*parts, question_part]
     parts = [*parts, stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)]
+    if browser_grant is not None:
+        delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
     contract_path = record_inline_prompt(
         turn.execution,
@@ -1037,6 +1042,7 @@ def _compose_continuation(
     *,
     label: str,
     role: str,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedExperimentPrompt:
     """Send this continuation's own parts, then the values that changed from its master."""
 
@@ -1051,12 +1057,14 @@ def _compose_continuation(
         report_ended=_report_rebootstrap_pending(turn),
         label=label,
         role=role,
+        browser_grant=browser_grant,
     )
     return _ComposedExperimentPrompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=master.path,
         values=values,
+        browser_grant=browser_grant,
     )
 
 
@@ -1065,6 +1073,7 @@ def _compose_recovery_prompt(
     staged: _StagedWorkInputs,
     prepared: _WorkPromptContext,
     mode: Literal["resume", "retry"],
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedExperimentPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged) if mode == "retry" else None
@@ -1081,6 +1090,7 @@ def _compose_recovery_prompt(
         [*parts, *_turn_invocations(turn, staged)],
         label=f"task-{staged.token}-{mode}.md",
         role="work_resume" if mode == "resume" else "work_retry",
+        browser_grant=browser_grant,
     )
 
 
@@ -1088,6 +1098,7 @@ def _compose_wake_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
     prepared: _WorkPromptContext,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedExperimentPrompt:
     if (
         prepared.wake_episode is None
@@ -1099,7 +1110,9 @@ def _compose_wake_prompt(
     ):
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
     if turn.continuation == "message_wake":
-        return _compose_human_turn_prompt(turn, staged, prepared, retry_diagnostics_path=None)
+        return _compose_human_turn_prompt(
+            turn, staged, prepared, retry_diagnostics_path=None, browser_grant=browser_grant
+        )
     parts = experiment_loop_wake_message(
         focused_experiment_id=turn.request.control_node_id,
         invocation=turn.request.control_invocation,
@@ -1116,6 +1129,7 @@ def _compose_wake_prompt(
         [*parts, *_turn_invocations(turn, staged)],
         label=f"task-{staged.token}-watcher-wake.md",
         role="experiment_loop_wake",
+        browser_grant=browser_grant,
     )
 
 
@@ -1125,6 +1139,7 @@ def _compose_human_turn_prompt(
     prepared: _WorkPromptContext,
     *,
     retry_diagnostics_path: str | None,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedExperimentPrompt:
     """Continue an ended episode's session with the human's new turns, never its full contract."""
 
@@ -1152,6 +1167,7 @@ def _compose_human_turn_prompt(
         [opening, *_turn_invocations(turn, staged), human_message],
         label=f"task-{staged.token}-turn.md",
         role="experiment_loop_turn",
+        browser_grant=browser_grant,
     )
 
 
@@ -1231,11 +1247,16 @@ def _compose_fresh_prompt(
     prepared: _WorkPromptContext,
     *,
     retry_diagnostics_path: str | None = None,
+    browser_grant: BrowserGrant | None = None,
 ) -> _ComposedExperimentPrompt:
     assert turn.request.message is not None
     if turn.request.session_id is not None:
         return _compose_human_turn_prompt(
-            turn, staged, prepared, retry_diagnostics_path=retry_diagnostics_path
+            turn,
+            staged,
+            prepared,
+            retry_diagnostics_path=retry_diagnostics_path,
+            browser_grant=browser_grant,
         )
     contract = _experiment_start_contract(
         turn,
@@ -1246,6 +1267,8 @@ def _compose_fresh_prompt(
         retry_diagnostics_path=retry_diagnostics_path,
     )
     question_part = _question_snapshot_part(turn)
+    if browser_grant is not None:
+        contract += "\n\n" + browser_prompt_line(browser_grant)
     launch_contract = contract + ("\n\n" + question_part if question_part else "")
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
@@ -1279,6 +1302,7 @@ def _compose_fresh_prompt(
         prompt=prompt,
         base_contract_path=master_path,
         values=values,
+        browser_grant=browser_grant,
     )
 
 
@@ -1551,6 +1575,7 @@ def _correction_prompt(
         report_ended=False,
         label=label,
         role=role,
+        browser_grant=composed.browser_grant,
     )
 
 
@@ -1724,6 +1749,7 @@ async def _settle_watch_deliverable(
                 session_id=settled.native_session_id,
                 required_session_id=settled.native_session_id,
                 outcome=correction_outcome,
+                browser_grant=composed.browser_grant,
                 validator_staged=correction_validator,
                 validator_lifecycle=correction_lifecycle,
                 supervise_remote=launch_turn.supervise_remote,
@@ -2020,6 +2046,7 @@ async def _apply_experiment_loop_turn(
                     session_id=applied.native_session_id,
                     required_session_id=applied.native_session_id,
                     outcome=correction_outcome,
+                    browser_grant=composed.browser_grant,
                     validator_staged=loop_validator,
                     validator_lifecycle=loop_validator_lifecycle,
                     supervise_remote=launch_turn.supervise_remote,
@@ -2399,6 +2426,7 @@ async def _launch_and_stream_work_turn(
     required_session_id: str | None = None,
     *,
     supervise_remote: bool = False,
+    browser_grant: BrowserGrant | None = None,
 ) -> AsyncIterator[str]:
     turn.supervise_remote = supervise_remote
     try:
@@ -2452,6 +2480,7 @@ async def _launch_and_stream_work_turn(
                         )
                     ),
                     outcome=turn.outcome,
+                    browser_grant=browser_grant,
                     supervise_remote=supervise_remote,
                 )
             ) as stream:
@@ -2564,6 +2593,32 @@ async def stream_experiment_loop_task(
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
 ) -> AsyncIterator[str]:
+    async with (
+        AsyncExitStack() as browser_stack,
+        aclosing(
+            _stream_experiment_loop_task_with_browser_lifetime(
+                service,
+                launcher,
+                request,
+                data_dir,
+                execution=execution,
+                browser_stack=browser_stack,
+            )
+        ) as stream,
+    ):
+        async for frame in stream:
+            yield frame
+
+
+async def _stream_experiment_loop_task_with_browser_lifetime(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    execution: AgentTaskExecution | None = None,
+    *,
+    browser_stack: AsyncExitStack,
+) -> AsyncIterator[str]:
     """Run one already-admitted Experiment-loop invocation end to end."""
 
     if request.mode != "work" or request.patch_kind != "experiment_loop":
@@ -2602,6 +2657,16 @@ async def stream_experiment_loop_task(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
+        browser_grant = await browser_stack.enter_async_context(
+            browser_turn(
+                turn.request,
+                workspace=turn.workspace,
+                execution_host=turn.execution_host,
+                execution=turn.execution,
+                remote_stage=turn.remote_stage,
+                capability="work_auto",
+            )
+        )
         resuming = turn.resuming
         # An Experiment-loop watcher wake resumes the episode's native session, but it
         # is a new turn at the next invocation -- never task Resume, never a retry, and
@@ -2610,12 +2675,18 @@ async def stream_experiment_loop_task(
         prompt_context = await _prepare_work_prompt_context(turn, staged)
         wake_episode = prompt_context.wake_episode
         if resuming:
-            composed_prompt = _compose_recovery_prompt(turn, staged, prompt_context, "resume")
+            composed_prompt = _compose_recovery_prompt(
+                turn, staged, prompt_context, "resume", browser_grant=browser_grant
+            )
         elif waking:
-            composed_prompt = _compose_wake_prompt(turn, staged, prompt_context)
+            composed_prompt = _compose_wake_prompt(
+                turn, staged, prompt_context, browser_grant=browser_grant
+            )
         else:
             if turn.retrying:
-                composed_prompt = _compose_recovery_prompt(turn, staged, prompt_context, "retry")
+                composed_prompt = _compose_recovery_prompt(
+                    turn, staged, prompt_context, "retry", browser_grant=browser_grant
+                )
             else:
                 retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
                 composed_prompt = _compose_fresh_prompt(
@@ -2623,6 +2694,7 @@ async def stream_experiment_loop_task(
                     staged,
                     prompt_context,
                     retry_diagnostics_path=retry_diagnostics_path,
+                    browser_grant=browser_grant,
                 )
         contract_path = composed_prompt.contract_path
         prompt = composed_prompt.prompt
@@ -2673,6 +2745,7 @@ async def stream_experiment_loop_task(
             wake_episode,
             required_session_id=required_session_id,
             supervise_remote=bool(turn.execution_host),
+            browser_grant=browser_grant,
         )
     ) as stream:
         async for frame in stream:
@@ -2764,6 +2837,32 @@ async def _stream_work_graph_repair(
     data_dir: Path,
     *,
     execution: AgentTaskExecution,
+) -> AsyncIterator[str]:
+    async with (
+        AsyncExitStack() as browser_stack,
+        aclosing(
+            _stream_work_graph_repair_with_browser_lifetime(
+                service,
+                launcher,
+                request,
+                data_dir,
+                execution=execution,
+                browser_stack=browser_stack,
+            )
+        ) as stream,
+    ):
+        async for frame in stream:
+            yield frame
+
+
+async def _stream_work_graph_repair_with_browser_lifetime(
+    service: ProjectService,
+    launcher: AgentLauncher,
+    request: RunRequest,
+    data_dir: Path,
+    *,
+    execution: AgentTaskExecution,
+    browser_stack: AsyncExitStack,
 ) -> AsyncIterator[str]:
     """Repair only a retained Experiment-loop Patch; never repeat the operational turn."""
 
@@ -2867,6 +2966,16 @@ async def _stream_work_graph_repair(
             validator_budget=validator_budget,
             outcome=outcome,
         )
+        browser_grant = await browser_stack.enter_async_context(
+            browser_turn(
+                request,
+                workspace=workspace,
+                execution_host=execution_host,
+                execution=execution,
+                remote_stage=remote_stage,
+                capability="work_auto",
+            )
+        )
         previous = _rejected_graph_update_for_repair(execution)
         if not request.session_id:
             raise ValueError("The graph repair has no native session to continue.")
@@ -2903,6 +3012,7 @@ async def _stream_work_graph_repair(
             report_ended=report_rebootstrap_pending(execution, request.session_id),
             label=f"task-{token}-manual-graph-repair.md",
             role="work_patch_repair",
+            browser_grant=browser_grant,
         )
     except BaseException as exc:
         if validator_lifecycle is not None:
@@ -2953,6 +3063,7 @@ async def _stream_work_graph_repair(
             session_id=request.session_id,
             required_session_id=request.session_id,
             outcome=outcome,
+            browser_grant=browser_grant,
         )
     ) as stream:
         async for frame in stream:

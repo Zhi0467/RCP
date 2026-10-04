@@ -651,6 +651,7 @@ _LAUNCH_ONLY_RECEIPTS = frozenset(
     {
         "agent_launch",
         "agent_prompt",
+        "browser_status",
         "chat_context",
         "chat_context_assembled",
         "chat_master_context",
