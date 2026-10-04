@@ -68,6 +68,55 @@ Per-machine capability and canonical-path refusal are owned by
 session expiry and metadata are owned by
 [Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).
 
+## Since you last looked
+
+The pull-only digest is per member and project. `GET /api/projects/{id}/digest`
+returns `cursor`, `mark`, `needs_you`, `changed`, `branches`, `ran`,
+`changed_node_ids`, and `count`. The count is the number of rendered lines across
+those four groups. Opening a project or reading its digest never advances an
+existing mark. A member without a mark starts at the event log's current cursor
+and sees an empty digest; listing project cards does not create marks.
+
+`POST /api/projects/{id}/digest/caught-up {"seq": ...}` acknowledges the cursor
+that was displayed. It returns `{"mark": {"seq": ..., "marked_at": ...}}`,
+never decreases the mark, and rejects a cursor ahead of the committed event
+sequence with 409. The sequence high-water survives project deletion, so
+deleting another project cannot invalidate a cursor already displayed.
+Events committed after the displayed cursor remain new. The acting member owns
+the mark across devices. This acknowledgment skips project work admission but
+retains global maintenance, membership, and request origin/JSON checks.
+
+Needs you contains new, still-open Proposals, ready/revisit Decisions, open ask
+questions, and episodes needing human action. Changed on main groups accepted
+semantic changes by their attributed source. Each touched node belongs to its
+latest eligible source; the viewer's direct human edits are excluded before
+that assignment, so an earlier agent touch remains visible. Removed nodes and
+changed edge endpoints participate in grouping, while `changed_node_ids`
+contains only nodes still present on main. Branch revisions aggregate into one
+line per episode. Ran contains ended episodes and compute jobs, failed
+non-conversation tasks, and consolidation and episode reports. Lessons and chat
+messages or turns as such are excluded.
+
+Attribution is fixed when graph events are projected: episode merge,
+consolidation, identified human, ingestion, captured conversation Work, other
+agent, system, then legacy unattributed human. Source keys are stable; titles
+are display labels. Missing task enrichment does not discard a graph event.
+
+SQLite owns a commit-ordered append-only event sequence and member marks.
+Operational writers append events in the same transaction as their source
+writes, so an older external completion timestamp cannot hide a newly recorded
+job. An independent background projector follows accepted main and branch
+history, catches up after missed signals, and never writes canonical state.
+Its persisted per-target head detects non-prefix history after restore/reset;
+that target is rebaselined without inventing events. It shares semantic
+comparison with branch changes and does not consume notification sender state.
+
+`GET /api/projects` includes `digest_count` on each visible project card. One
+batched event query uses the digest's grouping function; it does not open or
+replay graph history. Unmarked projects have count zero. Digest events, marks,
+and projector heads are excluded from project transfer, removed with project
+control-plane data, and included in application backup/restore.
+
 ## Desktop notification delivery
 
 The backend exposes a desktop delivery target through

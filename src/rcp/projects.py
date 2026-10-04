@@ -764,6 +764,7 @@ class ProjectCatalog:
         self.launcher = launcher
         self.provider_skills = provider_skills
         self.on_accepted_transition: Callable[[str, int], None] | None = None
+        self.on_accepted_branch_transition: Callable[[str, str, int], None] | None = None
         self._services: dict[str, ProjectService] = {}
         self._services_lock = threading.Lock()
         self._opening: dict[str, Future[tuple[ProjectService, MaterializationResult]]] = {}
@@ -1219,12 +1220,27 @@ class ProjectCatalog:
             project_membership_check=(
                 self.store.is_project_member if project_id is not None else None
             ),
+            on_accepted_branch_transition=(
+                (
+                    lambda target, revision: self._notify_accepted_branch_transition(
+                        project_id, target, revision
+                    )
+                )
+                if project_id is not None
+                else None
+            ),
             on_accepted_transition=(
                 (lambda revision: self._notify_accepted_transition(project_id, revision))
                 if project_id is not None
                 else None
             ),
         )
+
+    def _notify_accepted_branch_transition(
+        self, project_id: str, target: str, revision: int
+    ) -> None:
+        if self.on_accepted_branch_transition is not None:
+            self.on_accepted_branch_transition(project_id, target, revision)
 
     def _notify_accepted_transition(self, project_id: str, revision: int) -> None:
         if self.on_accepted_transition is not None:

@@ -4,12 +4,16 @@ Date: 2026-10-03
 Status: design settled with the human on 2026-10-03 in a grilling session,
 and revised after an astra design review the same day. The human asked for
 implementation with Codex astra and Claude subagents, with review rounds and a
-served-app check. Nothing is implemented yet.
+served-app check. The backend now has the event log, transactional operational
+writers, independent graph projector, digest and Caught up routes, project-card
+counts, and migration/transfer/restore integration. Backend focused/regression
+checks and a seeded HTTP journey have passed. The Web slice is owned by a
+parallel implementation.
 
 Decision: [the digest moves only when you say you caught up](../decisions/2026-10-03-digest-moves-only-on-caught-up.md).
-When this lands, current behavior moves into
-[API, Web, and desktop projections](../specs/api-web-and-desktop-projections.md)
-and this file is deleted.
+Current backend behavior is recorded in
+[API, Web, and desktop projections](../specs/api-web-and-desktop-projections.md).
+Delete this file after the parallel Web slice and integrated journey are complete.
 
 ## Why
 
@@ -187,4 +191,12 @@ below replaces both with one append-only event log in SQLite.
 
 ## Remaining
 
-Everything above.
+- Complete and verify the parallel Web slice: card, dots, landing count, and
+  response-generation handling.
+- Drive the combined browser journey with consolidation, episode merge, branch
+  progress, and a finished job. The backend HTTP journey passed on disposable
+  data: Caught up retained a later event and did not move a second member's mark.
+- Delete this handoff once the integrated journey and review are complete.
+
+The backend behavior is recorded in
+[API, Web, and desktop projections](../specs/api-web-and-desktop-projections.md#since-you-last-looked).

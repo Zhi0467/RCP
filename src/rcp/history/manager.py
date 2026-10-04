@@ -413,6 +413,7 @@ class HistoryManager:
         agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
         project_membership_check: ProjectMembershipCheck | None = None,
         on_accepted_transition: Callable[[int], None] | None = None,
+        on_accepted_branch_transition: Callable[[str, int], None] | None = None,
     ) -> None:
         if expected_space_id is not None:
             parsed = uuid.UUID(expected_space_id)
@@ -434,6 +435,7 @@ class HistoryManager:
         self.agent_authority_resolver = agent_authority_resolver
         self.project_membership_check = project_membership_check
         self.on_accepted_transition = on_accepted_transition
+        self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
 
     def initialize(self) -> MaterializationResult:
