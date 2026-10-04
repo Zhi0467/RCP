@@ -478,9 +478,8 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
         conversation_worktrees.validate_worktree_binding(service, request, binding, harness.store)
 
 
-@pytest.mark.parametrize("recovery", ["resume", "retry", "repair-graph-update"])
 @pytest.mark.parametrize("change", ["shared", "worktree", "missing_target"])
-def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch, recovery, change):
+def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch, change):
     chat = str(uuid.uuid4())
     harness.turn(chat, worktree=True)
     result = harness.turn(chat, worktree_integration="default_branch")
@@ -498,19 +497,22 @@ def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch
     def forbidden_recovery(*_args, **_kwargs):
         raise AssertionError("recovery must refuse before task admission")
 
-    method = "repair_graph_update" if recovery == "repair-graph-update" else recovery
-    monkeypatch.setattr(harness.app.state.background_tasks, method, forbidden_recovery)
-    response = harness.client.post(
-        f"/api/projects/{harness.project_id}/tasks/{result['operation_id']}/{recovery}", json={}
-    )
-    assert response.status_code == 409, response.text
     expected = (
         "target branch does not exist" if change == "missing_target" else "uncommitted changes"
     )
-    assert expected in response.text
-    assert Path(binding.worktree_path).is_dir()
-    if change != "missing_target":
-        assert (root / "late-edit.txt").read_text() == "preserve this edit\n"
+    # Each refusal precedes admission and changes nothing, so one setup serves all routes.
+    for recovery in ("resume", "retry", "repair-graph-update"):
+        method = "repair_graph_update" if recovery == "repair-graph-update" else recovery
+        monkeypatch.setattr(harness.app.state.background_tasks, method, forbidden_recovery)
+        response = harness.client.post(
+            f"/api/projects/{harness.project_id}/tasks/{result['operation_id']}/{recovery}",
+            json={},
+        )
+        assert response.status_code == 409, (recovery, response.text)
+        assert expected in response.text, recovery
+        assert Path(binding.worktree_path).is_dir(), recovery
+        if change != "missing_target":
+            assert (root / "late-edit.txt").read_text() == "preserve this edit\n", recovery
 
 
 @pytest.mark.parametrize("change", ["shared", "worktree", "missing_target"])
