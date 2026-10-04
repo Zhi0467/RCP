@@ -120,6 +120,9 @@ def test_contract_sentences_follow_the_project_type(renamed: None) -> None:
         write_scope=_work_write_scope(),
     )
     assert "without changing an existing Goal or Design" in _flat(orchestrator)
+    # The orchestrator holds `apply`, so it is told to refresh guidance its own
+    # changes left stale, naming the control node through the project type.
+    assert "left a Change's `current_summary_stale`" in _flat(orchestrator)
 
     merge = _flat(
         branch_merge_task_contract(

@@ -419,11 +419,20 @@ class Experiment(BaseNode):
     )
     current_summary_stale: bool = Field(
         default=False,
-        description="True when a later graph change may have outdated `current_summary`.",
+        description=(
+            "Set by RCP, never in a Patch: true once something `current_summary` rests on "
+            "changes, such as a governing Decision or Blocker, a tested Hypothesis, or Evidence "
+            "bearing on it. Rewriting `current_summary` in a later Patch clears it; a rewrite in "
+            "the same Patch as that change stays stale."
+        ),
     )
     next_action_stale: bool = Field(
         default=False,
-        description="True when a later graph change may have outdated `next_action`.",
+        description=(
+            "Set by RCP, never in a Patch: true once something `next_action` rests on changes. "
+            "Rewriting `next_action` in a later Patch clears it; a rewrite in the same Patch as "
+            "that change stays stale."
+        ),
     )
 
     @model_validator(mode="before")

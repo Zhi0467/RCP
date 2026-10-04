@@ -119,6 +119,19 @@ def _orchestrator_ask_contract() -> str:
     )
 
 
+def _orchestrator_stale_guidance() -> str:
+    if "apply" not in auto_research_allowed_verbs("orchestrator"):
+        return ""
+    project_type = project_type_of()
+    control = project_type.label_list(project_type.control_node_types)
+    article = "an" if control[:1].lower() in "aeiou" else "a"
+    return f"""Stale guidance:
+- After an `apply`, re-read the graph. When a change you applied left {article} {control}'s
+  `current_summary_stale` or `next_action_stale` set, rewrite that field from what the graph now
+  shows in a later `apply`; a rewrite inside the same Patch as the change stays stale.
+"""
+
+
 def _orchestration_progress() -> str:
     return """Research progress and completion:
 - Settled children are a prerequisite for finish, not a reason to finish. A remaining Blocker or
@@ -427,7 +440,7 @@ Worker coordination:
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client)}
 {_orchestrator_ask_contract()}
-{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
+{_orchestrator_stale_guidance()}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}
 {REPLY_STYLE}
 Finish each turn with that reply, including the next useful continuation. Do not claim that RCP
@@ -563,7 +576,7 @@ for this continuation.
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_packages(skill_pointers)}{_command_invocations(command_client)}
 {_orchestrator_ask_contract()}
-The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
+{_orchestrator_stale_guidance()}The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
 the saved allocation; if RCP returns `resume_unavailable`, use the named fresh replacement command
 with a new key. Other completed effects retain their original idempotency keys: retry an unknown
 or `unavailable` result with the exact same call and key, never a new submission. For example,

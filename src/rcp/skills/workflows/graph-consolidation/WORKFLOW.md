@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.2.0
+version: 1.3.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.4.0
@@ -73,6 +73,12 @@ in your graph rules.
 Put the Pass 2 and Pass 3 changes in one Patch. Validate, then `apply` with a
 key. Read the returned revision. If validation rejects the Patch, fix it or
 drop the offending operation; never broaden the change to make it pass.
+
+Then re-read the graph. A merge, supersession, or new relation can leave an
+Experiment's `current_summary_stale` or `next_action_stale` set, and a rewrite
+inside the same Patch stays stale. Rewrite each such field from what the graph
+now shows and `apply` that as one more validated Patch. When you cannot tell
+what is now true, leave the field and list the Experiment under Suggestions.
 
 ## Pass 4: lessons
 
