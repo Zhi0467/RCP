@@ -1,48 +1,48 @@
 # Agents use a headless browser through Playwright CLI
 
 Date: 2026-10-04
-Status: design settled with the human on 2026-10-04. Not started. Implementation
-waits for an explicit start. Nothing below is implemented.
+Status: design settled with the human on 2026-10-04 and reviewed once by an
+xhigh design pass the same night. The human said start. Implementation runs on
+this PR; nothing below is implemented yet.
 
-Two parts ship in this order:
+Two parts ship together, part 1 first:
 
 1. **The personal backend requires an owner session.** Today any process on the
-   machine can call it, and that includes an agent's shell and an agent's browser.
-   This part is a prerequisite, not an afterthought.
+   machine can call it, including an agent's shell and an agent's browser.
 2. **A per-chat headless browser.** Agents run Microsoft's `@playwright/cli` in
    their own shell. RCP installs it, starts each chat's browser, and keeps it.
 
-Why a CLI and not MCP, a relay through the command channel, or the providers' own
-browsers: [decision](../decisions/2026-10-04-agents-browse-with-playwright-cli.md).
+Why a CLI and not MCP, a command-channel relay, or the providers' own browsers:
+[decision](../decisions/2026-10-04-agents-browse-with-playwright-cli.md).
 Why the personal backend stops trusting loopback:
 [decision](../decisions/2026-10-04-the-personal-backend-requires-an-owner-session.md).
 
 ## Settled decisions
 
-- **Browser use, not computer use.** The browser is headless. No agent moves a
-  real mouse or sees a real screen.
+- **Browser use, not computer use.** The browser is headless.
 - **One CLI, every feature.** Agents call `playwright-cli` directly, including
   `run-code`. RCP does not relay, filter, or rewrite browser commands.
 - **No MCP in agent launches.** RCP adds no MCP server and offers no UI to add
-  one. Every launch keeps stripping the member's own MCP configuration, as today.
-  Skills are unchanged: provider-native skills plus the fixed official packages.
-  The page-scoped WebMCP surface for agents a member runs in their own page is a
-  separate thing and stays.
+  one. Every launch strips the member's own MCP configuration; Claude Discuss
+  gains the strict empty MCP flags it lacks today. Skills are unchanged. The
+  page-scoped WebMCP surface for agents a member runs in their own page stays.
 - **A Browser toggle per chat, off by default.** Continuations inherit it.
   Experiment and Auto-research launch dialogs carry the same toggle, and an
-  orchestrator's children inherit it from their episode.
+  orchestrator's children inherit the episode's grant.
 - **Work, orchestrate, and Discuss** can use the browser. Paper coach,
-  ingestion, and scratch-patch correction cannot.
+  ingestion, scratch-patch correction, and recorded-turn replay cannot.
 - **The toggle is the human's decision.** Browser commands run outside the
-  provider sandbox and can write files outside the chat's write roots. RCP
-  records that gap and does not hide the feature behind it.
-- **The browser runs where the agent runs.** On a remote GPU host, the agent's
-  browser reaches services the agent started on that host's localhost. No port
-  forwarding is needed.
-- **The execution host needs Node.js 18 or newer.** RCP installs a pinned
+  provider sandbox and can write outside the chat's write roots.
+- **The browser runs where the agent runs.** A remote GPU host's localhost is
+  reachable from that host's browser. No port forwarding.
+- **The execution host needs Node.js 18 or newer and npm.** RCP installs a pinned
   `@playwright/cli` and its headless Chromium into RCP's own folder there.
-- **A browser failure never fails a turn.** The turn runs without the browser,
-  and the chat shows why.
+- **A browser failure never fails a turn.** The turn runs without the browser and
+  the chat shows why. The agent may still be unable to finish browser work.
+- **Toggle changes apply at the next turn.** A running turn keeps what it was
+  launched with. The control says so.
+- **Personal non-loopback binds keep working.** They use the same owner session.
+  That is strictly better than today's no authentication.
 
 ## Evidence
 
@@ -52,186 +52,302 @@ Headless Shell 155.
 
 | Check | Result |
 | --- | --- |
-| Agent starts Chromium itself inside Codex's macOS Work sandbox | Fails: the sandbox denies Chromium's Mach port registration (WebKit fails too) |
-| `playwright-cli` keeps one browser across separate invocations | Yes |
-| RCP-side `open` outside the sandbox, then `goto` and `eval` from inside Codex's Work sandbox | Works on macOS and on the Linux team host |
-| Codex's Linux sandbox still blocks a direct write outside the workspace | Yes |
-| `state-save` and `screenshot --filename` to a path outside the workspace, from inside Codex's sandbox | Both wrote the file. The daemon writes for the agent |
-| Turn off Playwright's file checks or `run-code` by config | Not possible: CLI mode hard-codes `skillMode: true`, and `run-code` is a core command |
-| Claude `Bash(playwright-cli:*)` and OpenCode `{"*":"deny","playwright-cli *":"allow"}` | Bare calls run; `&&`, `;`, and `$(…)` chaining are refused |
-| Persistent profile across browser restarts | localStorage survives; cookies survive a graceful close (`SIGTERM` or close) |
+| Agent starts Chromium itself inside Codex's macOS Work sandbox | Fails: Mach port registration is denied (WebKit fails too) |
+| One browser across separate `playwright-cli` invocations | Yes |
+| RCP-side `open` outside the sandbox, then `goto` and `eval` inside Codex's Work sandbox | Works on macOS and on the Linux team host |
+| `state-save` and `screenshot --filename` outside the workspace, from inside Codex's sandbox | Both wrote the file |
+| Turn Playwright's file checks back on, or remove `run-code`, by config | Not possible: CLI mode hard-codes `skillMode: true`; `run-code` is core |
+| Claude `Bash(playwright-cli:*)`; OpenCode `{"*":"deny","playwright-cli *":"allow"}` | Bare calls run; `&&`, `;`, `$(…)` chaining refused |
+| Persistent profile across browser restarts | localStorage survives; cookies survive a graceful close |
+| `playwright-cli open` on a live session | Stops it first (tabs lost). Check liveness before `open` |
+| Session registry | Keyed by the nearest ancestor of the cwd that holds `.playwright`, else the CLI install root |
 | Codex Work sandbox calls the running personal backend | `GET /api/health` and `GET /api/projects` return 200 with no credential |
-| Linux host without `libasound2` | Chromium refuses to start until the library is present |
+| Linux host without `libasound2` | Chromium refuses to start |
+
+The xhigh review's evidence lines (paths and line numbers for every point below)
+are kept with the implementation briefs, not here.
 
 ## Part 1: the personal backend requires an owner session
 
-### Problem
+### Admission
 
-A personal backend listens on a fixed loopback port and has no session. It
-refuses only cross-site simple-content POSTs. Any local process can call it with
-JSON, and agents are local processes. A Codex Work turn read the project list
-from inside its sandbox. The same route lets an agent approve a Proposal, which
-invariant 3 forbids. A browser makes this one click easier, but the shell already
-reaches it.
+- Personal identity resolution requires an owner session for every HTTP route and
+  for the terminal WebSocket upgrade. Terminal sockets keep their existing
+  periodic revocation checks.
+- **Public without a session:** `/api/health` (trimmed to adoption identity:
+  version, instance, data directory id; no space name, project names, or counts),
+  the static Web shell and sign-in assets, the owner exchange and one-time code
+  redemption routes, and `OPTIONS`. The phone-pairing listener stays separate and
+  unchanged. Team enrollment and pairing stay team policy.
+- New public routes share the bounded auth-body handling of team exchange.
 
-### Requirement
+### Storage and cookie
 
-Every personal `/api` request carries an owner session, except `/api/health` and
-the phone-pairing listener's own routes. No agent launch receives an owner
-credential.
+- Reuse the session storage primitives (hashed token, lifetime, revoke) through
+  shared mint, resolve, and revoke operations. Owner admission and team-member
+  admission stay separate policies. No table renames.
+- The owner secret is stored only as a hash. Owner sessions expire, log out, and
+  revoke like team sessions. A restore requires signing in again, as provider
+  logins do. Authentication stays separate from the display-name prompt.
+- **Cookie:** a separate host-only, HttpOnly, `SameSite=Strict` owner cookie.
+  `Secure` only on HTTPS origins. The team `__Host-` cookie and the native team
+  cookie validator do not change.
 
-### Approach
+### How the human's clients sign in
 
-Reuse the team session machinery: a session row, a hashed token, a cookie, and an
-exchange route.
+- **Fresh desktop start.** The desktop creates a 32-byte secret (base64url, within
+  the Keychain helper's 64-byte limit), keyed by data directory id. It spawns the
+  backend and passes the secret on stdin. The backend enrolls the hash only while
+  holding the data-directory ownership lock, and only if no owner secret exists.
+- **Start or adopt with a matching secret.** The desktop exchanges the secret for
+  a session and installs the cookie through the native WKWebView bridge before it
+  calls the UI ready. "Ready" includes the session, not just health.
+- **One-time sign-in code.** At start the backend prints a single-use code to its
+  stdout: 10 minutes, hash stored only, never written to a log file. `rcp serve`
+  shows it as a sign-in URL. A desktop-spawned backend's stdout belongs to the
+  desktop, which redeems the code itself, so a missing or reset Keychain entry
+  recovers by restarting the backend. A backend started from a terminal and
+  adopted by the desktop needs the human to paste that code into the desktop.
+  Redeeming a code may enroll a new owner secret. An unauthenticated exchange can
+  never register or replace one.
+- **Authentication failure never stops or replaces an adopted backend.**
+- **`rcp open` and the other project-opening CLI paths** stop calling the API.
+  They open the UI at a route that carries the project locator, preserved across
+  sign-in, and the human confirms there. Fresh startup that passes a project to
+  `create_app` keeps working.
 
-- **Desktop app.** The app keeps an owner secret in its Keychain, as it keeps team
-  member tokens. The backend stores only the secret's hash in its data directory.
-  The app exchanges the secret for a session cookie when it starts or adopts the
-  backend. The first desktop start creates the secret and hands it to the backend
-  it spawns over stdin, never argv or the environment.
-- **Plain browser.** `rcp serve` prints a one-time sign-in URL to its own
-  terminal. The code is single use, expires in ten minutes, and the server keeps
-  only its hash, like device pairing codes.
-- **`rcp` CLI commands that open a project.** They stop calling the API. They open
-  the signed-in UI at a route that names the project, and the human confirms
-  there.
-- **Agents.** Launch environments never carry the secret or a cookie. Agent
-  browser profiles start empty, so the agent's browser is signed out of RCP.
+### Every client that must carry the session
+
+| Client | Change |
+| --- | --- |
+| Web UI, polling, uploads, provider and service settings, transcription | Same-origin cookie. A personal 401 opens the sign-in boundary before protected boot requests |
+| Tauri WebView | Native exchange installs the cookie for the verified personal origin |
+| Native downloads and PDF preview | One shared native authenticated personal client |
+| Native project transfer and archive streaming | The same client, through every step; keep bounded streaming and instance pinning |
+| Native desktop notifications | The same client; personal devices stay owner-bound |
+| Native update notice | The same client; a 401 is no longer silent |
+| Artifact viewer, previews, reports, images, PDFs, downloads | Same-origin cookie on the outer viewer and content routes; agent HTML keeps its opaque sandbox and never receives credentials |
+| Terminals, including voice terminals | Cookie on the WebSocket upgrade |
+| Page WebMCP and voice | The page's cookie through existing API owners; never sent to a model |
+| Health probes, doctor, control socket | Unchanged |
+
+There is no public SSE route. The native archive download is the one streaming
+response.
+
+### Tests
+
+A signed-in client factory in `tests/helpers.py` mints and exchanges credentials
+through production session code against each test's disposable app. Async
+clients get the matching cookie helper. Negative tests keep a raw client. No
+autouse fixture bypasses authentication. Served-app tests sign in on their own
+disposable ports.
+
+### Codex read deny
+
+Codex profiles gain a read-deny list separate from write protection, because
+protected write paths render as `"read"`. It denies the desktop's web storage
+folders for each bundle identifier, for Work and Discuss profile shapes. A real
+shell read proves the denial.
 
 ### What it does not close
 
-Agents run as the same OS account. A Claude or OpenCode Work shell is unbounded,
-so an agent that deliberately reads the desktop's cookie store from disk could
-still act as the owner. Part 1 closes the accidental and the trivial path: plain
-`curl`, and opening RCP in the agent's browser. Slice 1 also denies Codex reads of
-the desktop's web storage folder, where the profile shape allows it.
+Claude and OpenCode Work shells are unbounded. An agent that deliberately reads
+the desktop's cookie store from disk could still act as the owner. Part 1 closes
+the accidental and trivial paths.
 
 ## Part 2: the per-chat browser
 
-### A turn with the Browser toggle on
+### Owner and session
 
-1. **Readiness.** The launch reads the execution host's browser readiness. Not
-   ready: the turn launches without the browser, the prompt omits it, and the
-   chat shows the reason.
-2. **Ensure the session.** Outside any provider sandbox, RCP runs
-   `playwright-cli open` for the chat's session with `--persistent` and the chat's
-   profile folder. A session that is already running is reused. Local hosts use a
-   subprocess; remote hosts use the existing SSH transport. A failure here is the
-   same as step 1: no browser, visible reason, the turn still runs.
-3. **Launch.** The provider gets `PLAYWRIGHT_CLI_SESSION` set to the session id
-   and RCP's tools folder first on `PATH`. The prompt gains one line, rendered from
-   the same resolved browser grant the launch uses.
-4. **Use.** The agent runs `playwright-cli` as it likes. Snapshots and screenshots
-   default to `.playwright-cli/` under its working folder.
-5. **Turn end.** The session stays up. The next turn finds the same tabs, page,
-   cookies, and logins.
-6. **Close.** The CLI's idle timeout closes an unused session. Toggle off, chat
-   archive, and chat delete close it. Chat delete also deletes the profile.
+- **Browser owner = the stable run stage** the native session already uses: the
+  chat's stage, an Experiment lineage's stage, an Auto-research root's stage.
+  Episode ids change across continuations; stages do not. Each RCP-managed child
+  has its own stage and owner, kept across its retries and wakes. Owners are
+  namespaced by space, project, and execution host and account; a repointed
+  machine alias never adopts or deletes another host's profile.
+- **Registry.** RCP starts the session from the owner's stage workspace, and the
+  agent starts in that folder, so both resolve the same registry. The prompt line
+  tells the agent to run `playwright-cli` from its starting folder. RCP adds no
+  `.playwright` marker.
+- **Ensure, never reopen.** RCP checks the session's liveness first and runs
+  `open` only when it is absent or dead.
+- **Pinned configuration.** RCP writes an owner config file and passes it to
+  `open`. It names RCP's installed Chromium executable, headless, the owner
+  profile as user data dir, and the output dir, and it explicitly overrides every
+  ambient key that could attach an extension, a CDP endpoint, storage state, or a
+  headed browser. A test runs it against a hostile global config. Readiness and
+  launch resolve the same executable and config.
+- **Process owner.** The daemon starts under the OS owner primitives the compute
+  launch helper uses (a systemd user unit on Linux, a launchd job on macOS),
+  without compute authorization, so a service restart or SSH logout does not kill
+  it. RCP keeps a durable handle, adopts live sessions after its own restart, and
+  closes with `playwright-cli close`. Liveness is checked outside any provider
+  PID namespace. Where that owner is unavailable, the browser is unavailable with
+  a visible reason.
 
-### Sessions and profiles
+### Lifecycle
 
-- **Session id.** The stable chat id, or the episode id for Experiment and
-  Auto-research owners. Each child Work or worker gets its own.
-- **Profile folder.** RCP-owned storage on the execution host, keyed by session
-  id, outside backups because it holds logins. On a remote host it lives under
-  RCP's remote state root.
-- **Concurrency.** A host keeps at most `BROWSER_MAX_SESSIONS_PER_HOST` sessions.
-  Starting one more closes the least recently used idle session first. Its profile
-  stays, so only its open tabs are lost.
-- **Shared account.** On a team server every agent runs as the service account. An
-  agent can address another chat's session by name. This matches the existing
-  trust in that account, recorded in the transcription-key decision.
+- When a turn ends after the toggle went off, RCP closes the session and deletes
+  the profile. Archiving a chat closes it and keeps the profile. Removing a
+  project closes and deletes all of its owners' profiles. There is no chat
+  delete route, so there is no chat-delete hook.
+- The CLI's idle timeout closes unused sessions. It closes the browser
+  gracefully; a smoke test proves cookies survive it.
+- A host keeps at most `BROWSER_MAX_SESSIONS_PER_HOST` RCP-managed sessions. Idle
+  means no active invocation uses it. Ensure, close, and eviction are serialized
+  per owner. A new session evicts the least recently used idle one; if all are
+  busy, the new turn runs without the browser and says why.
+- A remote cleanup that cannot reach its host stays pending and retries.
 
-### Install and readiness
+### Storage
 
-- The machine card and doctor gain a **Browser** row: ready, Node missing or too
-  old, not installed (with **Install**), or system libraries missing.
-- **Install** runs on the execution host: `npm install` of the pinned
-  `@playwright/cli` into RCP's tools folder, then
-  `playwright-cli install-browser chromium` (about 120 MB to download, 270 MB on
-  disk). The pin lives in code. Nothing runs `@latest` at launch.
-- **Linux system libraries.** Readiness runs `ldd` on the headless shell and names
-  the missing packages. A team server installs them through its root-run install
-  and update path. A personal SSH host without root shows the exact `apt` command
-  for its administrator.
+- Local and team hosts: `<data_dir>/browser/`, explicitly excluded from backups.
+- SSH hosts: `~/.rcp/browser/`, mode 0700.
+- Tools (Node package and Chromium) live in a sibling `tools` folder, outside
+  backups. Write-scope protection covers both as RCP-owned storage.
+- Playwright keeps its registry and sockets in its default cache folder, which
+  Codex's sandbox can read.
 
-### Provider launch changes
+### Intent, grant, and propagation
+
+- **Chat preference** lives in app-local chat settings beside chat display state.
+  Existing chats default to off. Toggling never rewrites transcript records.
+- **Turn admission** snapshots the preference as a requested value. Launch
+  resolution produces one immutable grant (session id, invocation folder, or the
+  unavailable reason) before the prompt renders. The grant travels through the
+  launcher into `ProviderTurnRequest`. Stage objects do not carry it.
+- **Episodes** persist the launch preference on the generic episode, through SQL,
+  row conversion, Experiment projections, the API, and Web types, as one field.
+- **Auto-research children** inherit the human's episode grant during admission.
+  The agent's route payload never grants it.
+- **Every continuation path** carries it: retry, human Continue, watcher wakes,
+  queued follow-ups, child wakes, and bounded Experiment turns. Strict request
+  models and continuation snapshots are updated deliberately.
+- **Prompt continuation** sends an explicit off or unavailable value when an
+  earlier turn of the native session had the browser, because the continuation
+  delta only visits current keys.
+- Transfer and replay may carry the preference, never live handles or profiles.
+  Imported history needs the human to turn the toggle on again.
+
+### Provider changes
 
 | Capability | Codex | Claude | OpenCode |
 | --- | --- | --- | --- |
-| Work, orchestrate | env and `PATH` only; shell exists | env and `PATH` only; `Bash` is allowed | env and `PATH` only; shell exists |
-| Discuss | env and `PATH` only; workspace-write shell exists | add `Bash(playwright-cli:*)` to the allowed tools | allow `playwright-cli *` after `*` deny in the RCP agent's bash rules |
+| Work, orchestrate | env and `PATH` | env and `PATH` | env and `PATH` |
+| Discuss | env and `PATH` | add `Bash(playwright-cli:*)`; add strict empty MCP | bash rules `*` deny then `playwright-cli *` allow, generated once for both the command and the environment |
 
-The Discuss rules are the only shell Discuss gains, and only while the toggle is
-on.
+- Local launches merge the environment. SSH launches prefix the remote `PATH` on
+  the host after login-shell initialization; the controller's `PATH` never
+  substitutes for the remote one.
+- Codex keeps `shell_environment_policy={}`. Its default inherits the environment;
+  a real shell check proves it per version.
+- The grant is threaded through both launcher methods, provider request
+  construction, legacy profile commands, and the acceptance launcher. Test doubles
+  get it explicitly, without `getattr` fallbacks.
+
+### Notices
+
+Each turn records a durable browser status: not requested, granted, or
+unavailable with a reason. RCP checks session liveness after the turn and at the
+next ensure, so a daemon killed mid-turn shows on that turn. RCP never intercepts
+CLI commands to observe them.
+
+### Readiness and install
+
+- One readiness service feeds the machine card and doctor. It resolves Node, npm,
+  the pinned CLI, Chromium, and permissions in the same environment the execution
+  account uses, since a GUI or service `PATH` differs from a login shell.
+- States: host unreachable, Node missing or too old, npm missing, not installed,
+  unsupported platform, system libraries missing, ready.
+- Install is explicit, bounded, serialized, and never part of turn startup:
+  pinned `npm install` into the tools folder, then
+  `playwright-cli install-browser chromium`, then a headless smoke launch.
+- Linux libraries: map `ldd` misses to packages for the supported Ubuntu releases.
+  A team server installs that fixed package set through its root install and
+  update path. This is a deliberate change to the server contract that
+  installation adds no OS software. A personal SSH host without root shows the
+  exact `apt` command.
+- RCP starts without Node when no chat uses the browser.
 
 ### Containment
 
 Browser commands run in an RCP-started process outside the provider sandbox. The
 CLI turns off Playwright's own file-path checks, and `run-code` runs any
-Playwright code. A turn with the browser on can therefore write files anywhere the
-RCP account can, and reach any address its execution host can. Graph authority is
-unchanged: `patch.json` stays the only graph-change channel. The toggle is the
-consent, and its control says so in plain words.
+Playwright code. A turn with the browser on can write anywhere the RCP account
+can and reach any address its host can. Graph authority is unchanged:
+`patch.json` stays the only graph-change channel.
 
 ### UI
 
-- The chat header gets a **Browser** toggle with one sentence: the agent can use a
-  headless browser, and browser actions can run agent-written code and write
-  files outside this chat's folders.
-- A turn that wanted the browser and did not get it shows a notice with the reason.
-- The Experiment and Auto-research launch dialogs carry the same toggle.
+- The chat header gets a **Browser** toggle. Its consent sentence is primary
+  content, not a muted subtitle: the agent can use a headless browser, and
+  browser actions can run agent-written code and write files outside this chat's
+  folders. It also says changes apply from the next turn.
+- A turn that wanted the browser and did not get it shows the reason.
+- Experiment and Auto-research launch dialogs carry the same toggle.
+- The machine card shows the Browser readiness row with **Install**.
 
 ### Limits
 
-New entries in `limits.py`: `BROWSER_SESSION_IDLE_SECONDS` (proposed 1800),
-`BROWSER_SESSION_START_TIMEOUT_SECONDS` (proposed 60), and
-`BROWSER_MAX_SESSIONS_PER_HOST` (proposed 8).
+In `limits.py`, in seconds, converted to milliseconds at the CLI boundary:
+`BROWSER_SESSION_IDLE_SECONDS` (1800), `BROWSER_SESSION_START_TIMEOUT_SECONDS`
+(60), `BROWSER_SESSION_CLOSE_TIMEOUT_SECONDS` (30),
+`BROWSER_READINESS_TIMEOUT_SECONDS` (60), `BROWSER_INSTALL_TIMEOUT_SECONDS` (900),
+and `BROWSER_MAX_SESSIONS_PER_HOST` (8).
 
 ## Slices
 
-1. **Owner session.** Backend sessions for the personal space, the desktop
-   exchange, the `rcp serve` sign-in URL, the CLI hand-off, the Codex read deny, and
-   a shared test fixture that signs in. Ships first.
-2. **Install and readiness.** Tools folder, pinned install, `ldd` check, machine
-   card row, doctor output, and the team server's root install path.
-3. **Session manager.** Ensure, reuse, idle close, eviction, toggle-off and delete
-   close, and profile storage, on local and SSH hosts.
-4. **Launch wiring.** Toggle state on chat and episode records, the launch request
-   field, env and `PATH`, the Discuss rules, the prompt line, and turn notices.
-5. **Web and docs.** The toggle, launch dialogs, and notices. Update
-   `providers-and-containment.md`, `api-web-and-desktop-projections.md`,
-   `server-and-machine-operations.md`, invariant 4 in `AGENTS.md`, and the
-   decision index.
+Three runs start in parallel worktrees, then integrate, then the Web slice. The
+integrator owns `storage/models.py`, `storage/base.py`, `limits.py`,
+`web/src/types.ts`, `web/src/api.ts`, and `web/src/App.tsx` at merge time; a run
+that must touch them keeps its hunks small and reports them. Each run takes the
+next free migration number in its worktree; the integrator renumbers at merge, so
+no test hard-codes a migration number. Each run updates the current-behavior
+docs for what it changes.
+
+1. **A: owner session.** Backend admission, storage, cookie, exchange, codes,
+   health trim, terminals; Tauri spawn, adopt, exchange, cookie bridge, shared
+   native client and every native caller; Web sign-in boundary; `rcp open`
+   locator route; the signed-in test factory and test migration; Codex read deny.
+2. **B: host runtime.** A new `src/rcp/browser/` package: install, readiness,
+   pinned config, the process owner, ensure, close, eviction, cleanup, storage
+   and backup exclusion, doctor and machine-card API rows, server install path.
+   Unreachable from launches until integration.
+3. **C: intent, grant, and providers.** Chat preference storage and API, episode
+   field, request snapshots, every continuation path, the grant through launcher
+   and providers, the three provider adapters, the prompt line and off delta,
+   notices, and capability admission. It reaches the runtime through one seam
+   function that integration wires to B.
+4. **Integration.** Merge A, B, and C; wire the seam; run the affected suites.
+5. **D: Web controls.** The toggle, launch dialogs, notices, and the machine-card
+   Browser row and Install.
 
 ## Implementation checks still open
 
-- Whether the CLI's idle shutdown closes Chromium gracefully. Cookies persist
-  only on a graceful close.
-- That a session started over SSH survives the SSH session ending and an RCP
-  restart. A session survived separate SSH logins on the Linux team host.
-- That Codex's shell passes `PLAYWRIGHT_CLI_SESSION` and `PATH` to commands under
-  RCP's environment-policy override.
-- That RCP's real OpenCode agent rules accept the `playwright-cli *` pattern, not
-  only the plain config probed here.
-- Which cookie the owner session uses on the plain-HTTP personal origin, since a
-  `Secure` cookie is lost there. Decide in slice 1 with the existing loopback
-  origin probes.
+- That a session survives an SSH disconnect and an installed-service restart under
+  the chosen OS owner.
+- That Codex's shell passes `PLAYWRIGHT_CLI_SESSION` and `PATH` under RCP's
+  environment-policy override, per deployed Codex version.
+- That RCP's real resumed OpenCode agent accepts the `playwright-cli *` rule.
+- That cookies survive the CLI's idle close.
+- That the owner cookie works in the WKWebView on the plain-HTTP personal origin,
+  using the existing loopback origin probes.
 
 ## Close criteria
 
 Close this handoff when all of these hold:
 
 - An unauthenticated request to the personal API from a Codex Work sandbox gets
-  401. The desktop app, a plain browser through the sign-in URL, and the `rcp`
-  open flow all still work.
+  401. The source and frozen desktop apps (fresh, adopt, restart, reload), a plain
+  browser through the sign-in URL, native PDF, transfer, and notifications, the
+  terminals, and the `rcp open` flow all still work.
 - On each provider, a Work turn uses the browser on a real page, and the next turn
   in that chat finds the same page and login.
 - On each provider, a Discuss turn uses the browser, and chained shell commands
   are still refused.
 - A Codex Work turn on a Linux team server and on an SSH GPU host uses the browser
-  and opens a localhost service the agent started there.
+  and opens a localhost service the agent started there; the session survives an
+  SSH disconnect and a service restart.
 - A missing browser and a daemon killed mid-turn each leave the turn complete with
   a visible notice.
-- Toggle off and chat delete close the session, and delete removes the profile.
+- Toggle off deletes the profile after the turn; archive closes the session.
