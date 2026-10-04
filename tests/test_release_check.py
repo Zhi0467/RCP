@@ -12,13 +12,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 import uvicorn
-from fastapi.testclient import TestClient
 
 from rcp import limits, release_check
 from rcp.api.app import create_app
 from rcp.release_check import ReleaseCheck
 from rcp.storage import AppStore
-from tests.helpers import wait_until
+from tests.helpers import signed_in_client, wait_until
 
 COMMIT = "a" * 40
 
@@ -218,7 +217,7 @@ def test_team_pin_and_cache_only_authenticated_routes(github, tmp_path, monkeypa
     checker = app.state.services.release_check
     assert checker.check().status == "pinned"
     assert checker.snapshot().update_command is None
-    client = TestClient(app, base_url="https://team.test")
+    client = signed_in_client(app, base_url="https://team.test")
     assert client.get("/api/update-notice").status_code == 401
     app = create_app(
         data_dir=tmp_path,
@@ -227,7 +226,7 @@ def test_team_pin_and_cache_only_authenticated_routes(github, tmp_path, monkeypa
     checker = app.state.services.release_check
     expected = checker.check().model_dump(mode="json")
     before = list(github[1])
-    client = TestClient(app, base_url="https://team.test")
+    client = signed_in_client(app, base_url="https://team.test")
     assert client.get("/api/update-notice").json() == expected
     assert github[1] == before
 
@@ -241,7 +240,7 @@ def test_poller_lifespan_and_personal_endpoint(github, tmp_path, monkeypatch):
     app = create_app(data_dir=tmp_path)
     checker = app.state.services.release_check
     assert checker.snapshot().status == "unchecked"
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         wait_until(lambda: checker.snapshot().status == "update_available")
         notice = client.get("/api/update-notice").json()
         assert set(notice) == {
@@ -298,7 +297,11 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
         try:
             wait_until(lambda: server.started)
             wait_until(lambda: checker.snapshot().status == "update_available")
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+            base_url = f"http://127.0.0.1:{port}"
+            authenticated = signed_in_client(app, base_url=base_url)
+            with httpx.Client(
+                base_url=base_url, cookies=authenticated.cookies, trust_env=False
+            ) as client:
                 before = list(github[1])
                 response = client.get("/api/update-notice")
                 assert response.status_code == 200

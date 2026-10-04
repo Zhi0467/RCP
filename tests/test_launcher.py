@@ -22,6 +22,7 @@ from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
+from rcp.providers.codex.profile import CODEX_READ_DENY_PATHS, _codex_read_denials
 
 
 def _command(
@@ -903,12 +904,20 @@ def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scrat
         capability=capability,
     )
     assert command[:3] == ["codex", "exec", "--json"]
-    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    if capability == "discuss":
+        # A named profile carries Discuss's read denials into exec and app-server alike.
+        assert "--sandbox" not in command
+        assert 'default_permissions="rcp_discuss"' in command
+        profile = next(item for item in command if item.startswith("permissions={"))
+        assert f'workspace_roots={{"{scratch}"=true}}' in profile
+        assert "network={enabled=true}" in profile
+    else:
+        assert command[command.index("--sandbox") + 1] == "workspace-write"
+        assert "sandbox_workspace_write.network_access=true" in command
     assert command[command.index("--cd") + 1] == scratch
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
     assert 'web_search="live"' in command
-    assert "sandbox_workspace_write.network_access=true" in command
     assert 'approval_policy="never"' in command
     assert "--output-schema" not in command
     assert command[-1] == "-"
@@ -973,7 +982,7 @@ def test_codex_work_uses_exact_project_permission_profile(
         'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
         '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
         '{"."="write",".git"="write",".research"="read"},'
-        '"/project/repo-a/.research"="read"},network={enabled=true}}}'
+        '"/project/repo-a/.research"="read",' + _codex_read_denials() + "},network={enabled=true}}}"
     ) in command
     if session_id:
         assert command[:4] == ["codex", "exec", "resume", "--json"]
@@ -1016,7 +1025,8 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
     assert '".git"="write"' in permission_profile
     assert '".research"="read"' in permission_profile
     assert all(f'"{path}"="read"' in permission_profile for path in scope.protected_write_paths)
-    assert "deny" not in permission_profile
+    # Only the desktop app's own storage is unreadable.
+    assert permission_profile.count('"deny"') == len(CODEX_READ_DENY_PATHS)
 
 
 def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:

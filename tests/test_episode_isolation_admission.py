@@ -4,7 +4,6 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from rcp.agents.write_scope import ProjectWriteScope
@@ -17,6 +16,7 @@ from rcp.runs.auto_research_admission import reserve_auto_research
 from rcp.runs.episodes.isolation import validate_episode_admission, validate_episode_launch
 from rcp.service import RunRequest
 from rcp.storage import AppStore, ProjectRecord
+from tests.helpers import signed_in_client
 
 from . import test_conversation_worktree_git as worktree_fixture
 from .helpers import create_named_app, fabricated_authorizer
@@ -108,7 +108,7 @@ def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeyp
             name="local", host="", os_account=""
         )
         store.update_space_machine(card.machine_id, writable_paths=[str(tmp_path)])
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{app.state.default_project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 1},
     )

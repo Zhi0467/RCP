@@ -6,11 +6,11 @@ from datetime import datetime, timedelta
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.artifacts import classify_artifact_bytes, descriptor_for
 from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.storage import AgentTaskRecord, Artifact, AutoResearchChildExperimentRecord, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_project_membership import _create_project, _team_app
@@ -19,7 +19,7 @@ from .test_project_membership import _create_project, _team_app
 @pytest.fixture
 def viewer_app(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    return app, TestClient(app), app.state.background_tasks.store
+    return app, signed_in_client(app), app.state.background_tasks.store
 
 
 def _task(store, project_id, *, request=None, **fields):

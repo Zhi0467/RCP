@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import pytest
+from fastapi.testclient import TestClient
+from httpx import AsyncClient
 from pydantic import TypeAdapter
 
 from rcp.agents.continuation_prompt import SECTIONS
@@ -119,6 +121,30 @@ def assert_frozen_backend_ships(*resources: str) -> None:
     inventory = _frozen_backend_inventory()
     for resource in resources:
         assert f"rcp/{resource}" in inventory, f"{resource} is not packaged"
+
+
+def signed_in_client(app: Any, **kwargs: Any) -> TestClient:
+    """Get a personal owner cookie through the production redemption endpoint.
+
+    Team fixtures supply their own member admission. Use TestClient directly
+    for negative authentication tests and public-route checks.
+    """
+
+    client = TestClient(app, **kwargs)
+    if app.state.space_kind == "personal":
+        code = _store_of(app).create_owner_sign_in_code()
+        response = client.post("/api/owner/redeem", json={"code": code})
+        assert response.status_code == 200, response.text
+    return client
+
+
+async def sign_in_async_client(client: AsyncClient, app: Any) -> None:
+    """Install a production owner cookie on an async disposable-app client."""
+
+    if app.state.space_kind == "personal":
+        code = _store_of(app).create_owner_sign_in_code()
+        response = await client.post("/api/owner/redeem", json={"code": code})
+        assert response.status_code == 200, response.text
 
 
 def create_named_app(*args: Any, **kwargs: Any):

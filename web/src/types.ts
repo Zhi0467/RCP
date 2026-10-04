@@ -41,16 +41,14 @@ export type AgentCapability =
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
 
-export interface Health {
+export interface PublicHealth {
   status: string;
   agent_mode: "provider" | "acceptance";
   version: string;
   build?: number | null;
   commit?: string | null;
-  schema_ledger_head?: number | null;
   space_id: string;
   space_kind: "personal" | "team";
-  space_name: string | null;
   instance_id: string;
   data_dir_id: string;
   owner_kind: string;
@@ -60,8 +58,13 @@ export interface Health {
     minimum: number;
     maximum: number;
   };
-  active_agent_tasks: number;
   pid: number;
+}
+
+export interface Health extends PublicHealth {
+  schema_ledger_head?: number | null;
+  space_name: string | null;
+  active_agent_tasks: number;
   projects?: number;
   project?: string | null;
   project_creation: ProjectCreationControl;
@@ -2386,6 +2389,7 @@ export interface AgentTask {
 }
 
 export interface EpisodeTask extends AgentTask {
+  browser_status?: BrowserTurnStatus | null;
   role: "orchestrator" | "worker" | "wake";
   depth: number;
 }
@@ -2458,6 +2462,7 @@ export interface AutoResearchRecoverySummary {
 }
 
 export interface Episode {
+  browser_requested: boolean;
   code_worktree: boolean;
   graph_isolation: boolean;
   isolation_owner_episode_id: string | null;
@@ -2634,6 +2639,7 @@ export interface EpisodeMessage {
 }
 
 export interface StartEpisodeRequest {
+  browser_requested?: boolean;
   mode: "auto_research";
   code_worktree?: boolean | null;
   graph_isolation?: true;
@@ -2747,6 +2753,7 @@ export interface SteerRequest {
 }
 
 export interface ChatMessage {
+  browser_status?: BrowserTurnStatus | null;
   message_id: string;
   steering?: SteerReceipt | null;
   operation_id?: string | null;
@@ -3530,4 +3537,20 @@ export interface ProjectDigest {
   ran: ProjectDigestRan[];
   changed_node_ids: string[];
   count: number;
+}
+
+export interface ChatBrowserPreference {
+  browser_requested: boolean;
+}
+
+export interface BrowserTurnStatus {
+  status: "not_requested" | "granted" | "unavailable" | "lost";
+  reason_code: string | null;
+  detail: string | null;
+}
+
+export interface MachineBrowserReadiness {
+  status: string;
+  detail: string | null;
+  apt_command: string | null;
 }

@@ -6,13 +6,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api.episode_timeline import build_episode_timeline
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import EPISODE_TIMELINE_ERROR_MAX_LENGTH, EPISODE_TIMELINE_HEADLINE_MAX_LENGTH
 from rcp.storage import AgentTaskRecord, AppStore, AutoResearchStateRecord, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import authorized_human, create_named_app
 
@@ -219,12 +219,19 @@ def seed_episode_timeline(store: AppStore, project_id: str) -> EpisodeRecord:
     return result
 
 
+def _dump_without_session_touch(connection):
+    # Every authenticated request extends its session; the timeline itself must not write.
+    return [
+        line for line in connection.iterdump() if not line.startswith('INSERT INTO "team_sessions"')
+    ]
+
+
 @pytest.fixture
 def timeline(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     episode = seed_episode_timeline(store, app.state.default_project_id)
-    return store, episode, TestClient(app)
+    return store, episode, signed_in_client(app)
 
 
 def test_actor_kinds_and_recorded_links(timeline):
@@ -256,7 +263,7 @@ def test_actor_kinds_and_recorded_links(timeline):
                 episode.updated_at,
             ),
         )
-        before = list(connection.iterdump())
+        before = _dump_without_session_touch(connection)
     response = client.get(f"/api/projects/{episode.project_id}/episodes/{prefix}/timeline")
     assert response.status_code == 200
     data = response.json()
@@ -283,7 +290,7 @@ def test_actor_kinds_and_recorded_links(timeline):
     assert stop["by_span_id"] is None
     assert not data["truncated"]
     with store.connection() as connection:
-        assert list(connection.iterdump()) == before
+        assert _dump_without_session_touch(connection) == before
     assert client.get(f"/api/projects/foreign/episodes/{prefix}/timeline").status_code == 404
 
 

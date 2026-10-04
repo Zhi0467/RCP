@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.artifacts import AgentArtifactDescriptor
@@ -42,6 +41,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.provisioning import project_provisioning_review_digest
+from tests.helpers import signed_in_client
 
 from .legacy_artifacts import insert_legacy_candidate
 
@@ -578,7 +578,7 @@ def test_installed_control_socket_publishes_only_the_small_capture_receipt(
         metadata = _metadata(data_dir, control_socket=control_root / "control.sock")
         app = create_app(data_dir=data_dir, instance_metadata=metadata)
 
-        with published_server_metadata(data_dir, metadata), TestClient(app):
+        with published_server_metadata(data_dir, metadata), signed_in_client(app):
             result = ServerControlClient.from_data_dir(
                 data_dir,
                 expected_server_uid=os.geteuid(),

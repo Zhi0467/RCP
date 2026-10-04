@@ -236,13 +236,16 @@ async fn request(
     let response = match space {
         Space::Personal => {
             let status = app.state::<BackendState>().status()?;
-            let mut builder = reqwest::Client::new()
-                .request(method, format!("{}{path}", status.base_url))
-                .timeout(PERSONAL_REQUEST_TIMEOUT);
+            let mut builder =
+                crate::owner_session::client(&status.base_url, Some(PERSONAL_REQUEST_TIMEOUT))?
+                    .request(method, format!("{}{path}", status.base_url))
+                    .timeout(PERSONAL_REQUEST_TIMEOUT);
             if let Some(body) = body {
                 builder = builder.json(body);
             }
-            builder.send().await.map_err(|error| error.to_string())?
+            let response = builder.send().await.map_err(|error| error.to_string())?;
+            crate::backend::reverify_identity(app.state::<BackendState>().inner(), &status).await?;
+            response
         }
         Space::Team(connection_id) => {
             app.state::<TeamSessionState>()

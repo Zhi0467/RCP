@@ -14,7 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.storage.base as storage_base_module
 import rcp.storage.models as storage_models
@@ -23,6 +22,7 @@ from rcp.config import load_manifest
 from rcp.history import HistoryManager
 from rcp.server_ops.deployment import UPDATE_SOURCE_FLOOR
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from . import server_upgrade_harness
 from .server_upgrade_harness import (
@@ -123,6 +123,8 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (36,),
             (37,),
             (38,),
+            (39,),
+            (40,),
         ]
 
         plan = connection.execute(
@@ -345,7 +347,7 @@ def _exercise_candidate_upgrade(
             acceptance_agent=True,
             trusted_principal_resolver=lambda _request, opened: opened.space_user(user_id),
         )
-        with TestClient(app) as client:
+        with signed_in_client(app) as client:
             health = client.get("/api/health")
             assert health.status_code == 200
             health_payload = health.json()
@@ -354,8 +356,6 @@ def _exercise_candidate_upgrade(
                 "space_id": space_id,
                 "space_kind": "team",
                 "agent_mode": "acceptance",
-                "projects": 1,
-                "active_agent_tasks": 0,
             }
             assert {name: health_payload[name] for name in expected_health} == expected_health
 

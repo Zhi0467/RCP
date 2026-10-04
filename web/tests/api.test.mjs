@@ -651,3 +651,70 @@ test("structured API failures expose their message and retain the error code", a
     globalThis.fetch = originalFetch;
   }
 });
+
+test("an unauthorized request signals the sign-in boundary", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const target = new EventTarget();
+  globalThis.window = target;
+  let required = 0;
+  target.addEventListener("rcp:session-required", () => required++);
+  globalThis.fetch = async () => new Response("{}", { status: 401 });
+  try {
+    await assert.rejects(api("/api/projects"), (error) => error.status === 401);
+    assert.equal(required, 1);
+    await assert.rejects(
+      api("/api/owner/redeem", { method: "POST" }),
+      (error) => error.status === 401,
+    );
+    assert.equal(required, 1);
+    await assert.rejects(api("/api/owner/sessions"), (error) => error.status === 401);
+    assert.equal(required, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+  }
+});
+
+test("browser clients encode owners and send strict preference and install bodies", async () => {
+  const {
+    loadChatBrowser,
+    setChatBrowser,
+    loadMachineBrowser,
+    installMachineBrowser,
+    startEpisode,
+  } = await import("../src/api.ts");
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push([path, init?.method ?? "GET", init?.body ? JSON.parse(init.body) : null]);
+    return new Response(JSON.stringify({ browser_requested: true }), { status: 200 });
+  };
+  try {
+    const base = "/api/projects/project%2F1";
+    assert.deepEqual(await loadChatBrowser(base, "chat/1"), { browser_requested: true });
+    await setChatBrowser(base, "chat/1", true);
+    await setChatBrowser(base, "chat/1", false);
+    await loadMachineBrowser("host/1");
+    await installMachineBrowser("host/1");
+    await startEpisode(base, {
+      mode: "auto_research",
+      invocation_ceiling: 2,
+      browser_requested: true,
+    });
+    assert.deepEqual(calls, [
+      [`${base}/chats/chat%2F1/browser`, "GET", null],
+      [`${base}/chats/chat%2F1/browser`, "PUT", { browser_requested: true }],
+      [`${base}/chats/chat%2F1/browser`, "PUT", { browser_requested: false }],
+      ["/api/space/machines/host%2F1/browser", "GET", null],
+      ["/api/space/machines/host%2F1/browser/install", "POST", {}],
+      [
+        `${base}/episodes`,
+        "POST",
+        { mode: "auto_research", invocation_ceiling: 2, browser_requested: true },
+      ],
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -7,12 +7,12 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import launcher as launcher_module
 from rcp.agents.launcher import AgentLauncher, AgentProcessControl
 from rcp.config import Manifest
 from rcp.providers import PROVIDER_IDS
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_until
 
@@ -51,7 +51,7 @@ def test_a_real_dispatch_without_a_lifespan_stages_no_provider_process(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",

@@ -64,6 +64,7 @@ from rcp.api.index import router as index_router
 from rcp.api.lessons import router as lessons_router
 from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
+from rcp.api.owner import router as owner_router
 from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
@@ -246,6 +247,8 @@ class TeamPublicAuthBodyLimit:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope.get("path") not in {
+            "/api/owner/exchange",
+            "/api/owner/redeem",
             "/api/team/enroll",
             "/api/team/session/exchange",
             "/api/team/devices/pair",
@@ -2072,8 +2075,7 @@ def create_app(
     app.state.maintenance_coordinator = maintenance_coordinator
     app.state.runtime_admission_gate = runtime_admission_gate
     app.state.background_admission_gate = background_admission_gate
-    if space_kind == "team":
-        app.add_middleware(TeamPublicAuthBodyLimit)
+    app.add_middleware(TeamPublicAuthBodyLimit)
 
     @app.middleware("http")
     async def enforce_update_maintenance(request: Request, call_next):
@@ -2130,6 +2132,34 @@ def create_app(
                 or (request.method == "POST" and path_parts[6:] == ["cleanup-acknowledgment"])
             )
         )
+        public_owner_route = (request.method in {"GET", "HEAD"} and path == "/api/health") or (
+            request.method == "POST" and path in {"/api/owner/exchange", "/api/owner/redeem"}
+        )
+        if (
+            space_kind == "personal"
+            and request.method != "OPTIONS"
+            and (
+                path == "/api"
+                or path.startswith("/api/")
+                or path in {"/docs", "/redoc", "/openapi.json"}
+            )
+            and not public_owner_route
+        ):
+            try:
+                await asyncio.to_thread(
+                    identity_access.resolve_owner_user,
+                    request,
+                    touch_session=not notification_delivery,
+                )
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            if request.method not in {"GET", "HEAD"}:
+                origin = request.headers.get("origin")
+                if origin is not None and not _team_mutation_origin_matches(request, origin):
+                    return JSONResponse(
+                        status_code=403, content={"detail": {"code": "owner_origin_invalid"}}
+                    )
+
         if (
             space_kind == "team"
             and request.method != "OPTIONS"
@@ -2204,8 +2234,7 @@ def create_app(
             and request.method == "POST"
             and (path == "/api" or path.startswith("/api/"))
         ):
-            # The personal backend listens on a predictable loopback port with no
-            # session. A cross-site page can send a POST without a CORS preflight
+            # A cross-site page can send a POST without a CORS preflight
             # only with a simple content type (PUT, PATCH, and DELETE always
             # preflight), so refuse those; the bounded chat attachment upload is
             # the one multipart route, as in a team space.
@@ -2255,6 +2284,15 @@ def create_app(
                     set_team_session_cookie(response, session)
                 return response
         response = await call_next(request)
+        owner_session = getattr(request.state, "owner_session", None)
+        if (
+            isinstance(owner_session, str)
+            and path != "/api/owner/logout"
+            and not notification_delivery
+        ):
+            identity_access.set_owner_session_cookie(
+                response, owner_session, secure=request.url.scheme == "https"
+            )
         session = getattr(request.state, "team_session", None)
         if (
             isinstance(session, str)
@@ -2311,6 +2349,9 @@ def create_app(
             "device_pairing_code_consumed": 409,
             "device_pairing_code_expired": 410,
             "device_pairing_code_locked": 429,
+            "owner_code_consumed": 409,
+            "owner_code_expired": 410,
+            "owner_code_locked": 429,
         }
         return JSONResponse(
             status_code=status_by_code.get(exc.code, 401),
@@ -2328,6 +2369,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(server_status_router)
     app.include_router(update_notice_router)
+    app.include_router(owner_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
     app.include_router(digest_router)
@@ -2388,6 +2430,7 @@ def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRe
     )
     return RunRequest(
         provider=continuation.provider,
+        browser_requested=continuation.browser_requested,
         model=continuation.model,
         reasoning=continuation.reasoning,
         run_on=continuation.run_on,

@@ -114,6 +114,21 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
     assert binding["continuation"] == "message_wake"
 
 
+@pytest.mark.parametrize("browser_requested", [True, False])
+def test_answer_turn_takes_the_chat_browser_choice_at_admission(tmp_path, browser_requested):
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = json_set(request_json, "
+            "'$.browser_requested', json(?)) WHERE operation_id = 'origin'",
+            ("false" if browser_requested else "true",),
+        )
+    store.set_chat_browser_requested("project", "chat", browser_requested=browser_requested)
+    task = store.admit_chat_question_followup(question.question_id)
+    assert task.request["browser_requested"] is browser_requested
+
+
 def test_answer_claim_is_atomic_under_duplicate_and_restart_admission(tmp_path):
     store = AppStore(tmp_path / "store.sqlite3")
     question = _answered(store)

@@ -8,7 +8,6 @@ from contextlib import suppress
 from datetime import UTC, datetime
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from rcp.core.materialize import apply_valid_patch
@@ -26,7 +25,7 @@ from rcp.core.validation import validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest, RunRequest
 from rcp.storage import AgentTaskRecord
-from tests.helpers import append_fixture_patch, seed_patch
+from tests.helpers import append_fixture_patch, seed_patch, signed_in_client
 from tests.helpers import create_named_app as create_app
 
 from .helpers import authorized_human
@@ -40,7 +39,9 @@ def app(manifest, tmp_path):
 
 
 def _sync(app, **payload):
-    return TestClient(app).post(f"/api/projects/{app.state.default_project_id}/sync", json=payload)
+    return signed_in_client(app).post(
+        f"/api/projects/{app.state.default_project_id}/sync", json=payload
+    )
 
 
 def ontology_payload() -> dict[str, object]:

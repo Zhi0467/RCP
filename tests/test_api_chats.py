@@ -6,11 +6,11 @@ import uuid
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.runs.chat import _append_chat_exchange
 from rcp.service import RunRequest
 from rcp.transport import StateUnavailable
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -76,7 +76,7 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     chat_dir = manifest.research_dir / "chat"
     chat_dir.mkdir(exist_ok=True)
@@ -190,7 +190,7 @@ def test_chat_history_reports_remote_refresh_failure_as_unavailable(
     monkeypatch.setattr(service.history.workspace, "refresh", fail_refresh)
     request_thread = threading.get_ident()
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/chats")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/chats")
 
     assert response.status_code == 503
     assert response.json()["detail"] == "remote transcript refresh failed"
@@ -210,7 +210,7 @@ def test_non_main_project_route_does_not_build_project_snapshot(
         ),
     )
 
-    response = TestClient(app).get(f"/api/projects/{project_id}/chats")
+    response = signed_in_client(app).get(f"/api/projects/{project_id}/chats")
 
     assert response.status_code == 200
     assert response.json()["items"] == []
@@ -218,7 +218,7 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
 def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{app.state.default_project_id}"
     first, second = str(uuid.uuid4()), str(uuid.uuid4())
 
@@ -260,7 +260,7 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
 
 def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{app.state.default_project_id}"
     chat_id = str(uuid.uuid4())
 
@@ -284,3 +284,138 @@ def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
         client.post(f"{url}/chats/not-a-uuid/read", json={"read_through": later}).status_code == 422
     )
     assert client.get(f"{url}/chat-reads").json()["baseline"] == initial["baseline"]
+
+
+def test_browser_preference_is_local_and_snapshotted_at_admission(manifest, tmp_path):
+    from rcp.runs.chat_admission import admit_fresh_chat_turn
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    url = f"/api/projects/{project_id}/chats/{chat_id}/browser"
+    request = RunRequest(
+        chat_id=chat_id, chat_scope="project", message="hello", browser_requested=True
+    )
+    _append_chat_exchange(app.state.service, request, "answer", None, None)
+    before = app.state.service.chat_transcript(chat_id)
+    assert client.get(url).json() == {"browser_requested": False}
+    with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
+        assert not admitted.browser_requested
+    assert client.put(url, json={"browser_requested": True}).status_code == 200
+    with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
+        assert admitted.browser_requested
+        assert client.put(url, json={"browser_requested": False}).status_code == 200
+        assert admitted.browser_requested
+    assert app.state.service.chat_transcript(chat_id) == before
+    assert client.get(url).json() == {"browser_requested": False}
+    assert client.put(url, json={"browser_requested": True, "env": {}}).status_code == 422
+
+
+def test_turning_the_browser_off_deletes_the_chat_profile_without_a_turn(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.providers.browser_grant import BrowserOwnerKey
+    from rcp.runs import browser_runtime_seam
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    owner = BrowserOwnerKey(
+        space_id=store.space_id, project_id=project_id, stage_name="stage", host_key="local"
+    )
+    store.record_browser_owner(
+        owner,
+        execution_host="",
+        workspace_dir="/stage/workspace",
+        stage_root="/stage",
+        chat_id=chat_id,
+    )
+    closed = []
+    monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda host: "local")
+    monkeypatch.setattr(
+        browser_runtime_seam, "close_browser_owner", lambda owner, **kw: closed.append(kw)
+    )
+    url = f"/api/projects/{project_id}/chats/{chat_id}/browser"
+    assert client.put(url, json={"browser_requested": True}).status_code == 200
+    assert closed == []
+    assert client.put(url, json={"browser_requested": False}).status_code == 200
+    assert closed == [
+        {
+            "execution": None,
+            "delete_profile": True,
+            "data_dir": tmp_path / "data",
+            "retained_lease_ids": [],
+        }
+    ]
+    assert store.browser_owners(project_id) == []
+
+
+@pytest.mark.parametrize("archived", [False, True])
+def test_reenabling_browser_cancels_deferred_delete_unless_archived(
+    manifest, tmp_path, monkeypatch, archived
+):
+    from rcp.providers.browser_grant import BrowserOwnerKey
+    from rcp.runs import browser_runtime_seam
+    from rcp.runs.browser_lifecycle import retry_browser_cleanup
+
+    from .test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    execution = _chat_task_execution(
+        app, RunRequest(chat_id=chat_id, chat_scope="project", message="hello"), "browser-toggle"
+    )
+    stage = tmp_path / "data" / "run-stage" / "stage"
+    execution.checkpoint_stage("", str(stage))
+    owner = BrowserOwnerKey(
+        space_id=store.space_id, project_id=project_id, stage_name="stage", host_key="local"
+    )
+    store.record_browser_owner(
+        owner,
+        execution_host="",
+        workspace_dir=str(stage / "workspace"),
+        stage_root=str(stage),
+        chat_id=chat_id,
+    )
+    closed = []
+    monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda host: "local")
+    monkeypatch.setattr(
+        browser_runtime_seam, "close_browser_owner", lambda owner, **kw: closed.append(kw)
+    )
+    url = f"/api/projects/{project_id}/chats/{chat_id}"
+    assert client.put(f"{url}/browser", json={"browser_requested": True}).status_code == 200
+    assert client.put(f"{url}/browser", json={"browser_requested": False}).status_code == 200
+    assert store.browser_owners(project_id)[0]["delete_profile"] == 1
+    if archived:
+        assert client.post(f"{url}/archive", json={"archived": True}).status_code == 200
+    assert client.put(f"{url}/browser", json={"browser_requested": True}).status_code == 200
+    assert closed == []
+    retry_browser_cleanup(store, finished_operation_id=execution.operation_id)
+    assert len(closed) == int(archived)
+    if not archived:
+        retained = store.browser_owners(project_id)[0]
+        assert (retained["close_requested"], retained["delete_profile"]) == (0, 0)
+        # Project deletion cleanup survives even a stale preference write.
+        store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
+
+        def unreachable(*args, **kwargs):
+            raise OSError("host unreachable")
+
+        monkeypatch.setattr(browser_runtime_seam, "close_browser_owner", unreachable)
+        assert client.delete(f"/api/projects/{project_id}").status_code == 200
+        store.set_chat_browser_requested(project_id, chat_id, browser_requested=True)
+        pending = store.browser_owners(project_id)[0]
+        assert (pending["close_requested"], pending["delete_profile"]) == (1, 1)
+        assert pending["project_deletion_requested"] == 1
+        registered = app.state.catalog.register(str(manifest.path))
+        assert registered.project_id == project_id
+        assert client.put(f"{url}/browser", json={"browser_requested": True}).status_code == 200
+        pending = store.browser_owners(project_id)[0]
+        assert (pending["close_requested"], pending["delete_profile"]) == (1, 1)

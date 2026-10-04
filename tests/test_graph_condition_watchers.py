@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -54,6 +53,7 @@ from rcp.watchers import (
     graph_condition_result,
     ready_graph_watcher_groups,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, async_wait_until, wait_until
 from .helpers import create_named_app as create_app
@@ -715,7 +715,7 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
 
     app.state.background_tasks.stream = settle_wake
     blocker = service.history.state().nodes["blk/foo"]
-    client = TestClient(app)
+    client = signed_in_client(app)
     try:
         response = client.post(
             f"/api/projects/{project_id}/sync",
@@ -818,6 +818,35 @@ def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
     stored = store.watcher("agent-boundary")
     assert isinstance(stored, GraphWatcherRecord)
     assert stored.status == "completed"
+    app.state.background_tasks.shutdown()
+
+
+def test_chat_wake_reads_browser_choice_at_delivery(manifest, tmp_path, monkeypatch) -> None:
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
+    origin = _completed_origin(store, project_id, "browser-origin")
+    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
+    store.create_watchers(
+        [
+            _graph_record(
+                "browser-wake",
+                condition,
+                continuation=_continuation().model_copy(update={"browser_requested": True}),
+                status="completed",
+                project_id=project_id,
+                origin=origin.operation_id,
+            )
+        ]
+    )
+    store.set_chat_browser_requested(project_id, "chat", browser_requested=False)
+    delivered: list[RunRequest] = []
+    monkeypatch.setattr(
+        "rcp.api.app.start_watcher_notification",
+        lambda _tasks, _project_id, _kind, request, *_args, **_kwargs: delivered.append(request),
+    )
+
+    app.state.services.watcher_delivery.deliver_watcher_group([store.watcher("browser-wake")])
+
+    assert [request.browser_requested for request in delivered] == [False]
     app.state.background_tasks.shutdown()
 
 
@@ -1716,7 +1745,7 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
         )
 
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
-    with TestClient(reopened) as client:
+    with signed_in_client(reopened) as client:
         assert client.get("/api/health").status_code == 200
         wait_until(
             lambda: deliveries if deliveries else None,
@@ -1790,7 +1819,7 @@ def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
 
     def serve():
-        with TestClient(reopened) as client:
+        with signed_in_client(reopened) as client:
             health = client.get("/api/health")
             serving.set()
             assert release.wait(10), "test did not finish checking startup"

@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from rcp.providers.browser_grant import BrowserGrant
+
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.provider_auth import ProviderAuthentication
@@ -120,6 +122,7 @@ class ProviderTurnRequest:
     write_scope: ProjectWriteScope | None
     capability: AgentCapability
     provider_version: str | None
+    browser_grant: BrowserGrant | None = None
     legacy_command: list[str] | None = None
 
 
@@ -238,6 +241,7 @@ class _JsonlProviderTurn(ProviderTurn):
             write_scope=request.write_scope,
             capability=request.capability,
             provider_version=request.provider_version,
+            browser_grant=request.browser_grant,
         )
 
     def initial_input(self) -> bytes:
@@ -479,6 +483,7 @@ class ProviderProfile:
         write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
+        browser_grant: BrowserGrant | None = None,
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError

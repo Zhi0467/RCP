@@ -891,3 +891,25 @@ def test_probe_error_preserves_unicode_line_separators(profile):
     line = json.dumps(payload, ensure_ascii=False)
     evidence = profile.probe_failure_evidence(_result(line + "\r\n"))
     assert json.loads(evidence) == payload
+
+
+def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
+    import tomllib
+
+    from rcp.providers.codex.profile import (
+        CODEX_READ_DENY_PATHS,
+        _codex_discuss_permission_profile,
+        _codex_permission_profile,
+    )
+
+    for rendered in (
+        _codex_permission_profile(_granted_scope()),
+        _codex_discuss_permission_profile(tmp_path),
+    ):
+        profile = next(iter(tomllib.loads(rendered)["permissions"].values()))
+        filesystem = profile["filesystem"]
+        assert all(filesystem[path] == "deny" for path in CODEX_READ_DENY_PATHS)
+        for config in ("tauri.conf.json", "tauri.dev-bundle.conf.json"):
+            identifier = json.loads((Path("web/src-tauri") / config).read_text())["identifier"]
+            assert filesystem[f"~/Library/WebKit/{identifier}"] == "deny"
+        assert filesystem[":root"] == "read"

@@ -27,6 +27,7 @@ from rcp.config import AgentSurface
 from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import Patch
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import (
@@ -326,6 +327,7 @@ class ComposedWorkPrompt:
     #: The stable values this launch was composed with; a later correction in the
     #: same turn sends what differs from its master's values.
     prompt_values: dict[str, object] | None = None
+    browser_grant: BrowserGrant | None = None
 
 
 @dataclass(frozen=True)
@@ -456,6 +458,7 @@ async def stream_turn_agent_events(
     validator_staged: StagedCommandMailbox | None = None,
     validator_lifecycle: WorkValidatorMailboxLifecycle | None = None,
     supervise_remote: bool = False,
+    browser_grant: BrowserGrant | None = None,
 ) -> AsyncIterator[str]:
     """Stream one provider continuation from a staged Work execution context."""
 
@@ -485,6 +488,7 @@ async def stream_turn_agent_events(
             ),
             required_session_id=required_session_id,
             supervise_remote=supervise_remote,
+            browser_grant=browser_grant,
         )
     ) as stream:
         async for frame in stream:
@@ -514,6 +518,7 @@ async def stream_work_agent_events(
     validator_lifecycle: WorkValidatorMailboxLifecycle,
     required_session_id: str | None = None,
     supervise_remote: bool = False,
+    browser_grant: BrowserGrant | None = None,
 ) -> AsyncIterator[str]:
     primary_error: BaseException | None = None
     try:
@@ -536,6 +541,7 @@ async def stream_work_agent_events(
                 invocation_gate=validator_staged.invocation_gate,
                 required_session_id=required_session_id,
                 supervise_remote=supervise_remote,
+                browser_grant=browser_grant,
             )
         ) as stream:
             async for frame in stream:

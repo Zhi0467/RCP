@@ -20,6 +20,7 @@ from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -609,7 +610,12 @@ def _stage_attempt_contract(
     so it is reused rather than refused.
     """
 
-    prompt = compose(classify(phase), parts=[contract], master=None, delta=None)
+    prompt = compose(
+        classify(phase),
+        parts=[contract, browser_prompt_line(BrowserGrant())],
+        master=None,
+        delta=None,
+    )
     role = f"episode_report_attempt_{attempt_number}"
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     execution.store.record_agent_task_contract(

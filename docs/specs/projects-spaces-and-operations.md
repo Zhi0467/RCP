@@ -23,9 +23,32 @@ path-derived `data_dir_id`. `/api/health` reports all three lifecycles
 separately. Copying/restoring the complete control plane also copies the authority
 id; an operator must ensure an old restored copy cannot keep serving.
 
-A personal space has one durable local owner and no team credential. A team
+A personal space has one durable local owner and a separate owner credential. A team
 space authenticates every human request and gives equal product authority to its
 members; RCP defines no administrator product role.
+
+### Personal sign-in
+
+Every personal API request and terminal WebSocket requires an owner session.
+The static Web shell, adoption health, owner credential exchange and code
+redemption, and OPTIONS remain public. The phone-pairing listener is separate.
+Display-name selection follows authentication and grants no session by itself.
+
+The desktop keeps a 32-byte secret in Keychain, keyed by data-directory identity.
+A fresh backend enrolls its hash only under the data-directory ownership lock.
+Exchange never enrolls a credential. Each personal server start supplies a
+single-use sign-in code. Human mode prints its sign-in URL to stdout;
+`--machine-readable` emits only the launch outcome JSON, with the code in
+`owner_sign_in_code`. Reused and team outcomes omit that field.
+The code expires after ten minutes and locks after repeated incorrect guesses.
+Redemption may replace the desktop secret;
+replacement revokes previous owner sessions. No raw secret or code is persisted.
+
+Owner and team sessions share hashed token storage, expiry, and revocation.
+Their admission policies and cookies are separate. The owner cookie is host-only,
+HttpOnly, SameSite=Strict, and Secure on HTTPS. Owner credentials, codes, and
+sessions are excluded from database snapshots and invalidated on restore.
+A restored personal backend requires a new sign-in.
 
 ### Space machines
 

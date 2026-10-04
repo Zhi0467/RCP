@@ -961,6 +961,15 @@ class WatcherDelivery:
 
         assert authorized_by is not None
         request = self._generic_request(group)
+        if first.episode_id is None and first.chat_id is not None:
+            # A chat wake follows the chat's Browser choice now, not at watch time.
+            request = request.model_copy(
+                update={
+                    "browser_requested": self._store.chat_browser_requested(
+                        first.project_id, first.chat_id
+                    )
+                }
+            )
         with self._experiment_admission(first.project_id, service, request):
             self._start_watcher_notification(
                 first.project_id,

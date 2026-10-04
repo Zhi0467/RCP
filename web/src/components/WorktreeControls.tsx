@@ -84,9 +84,7 @@ export function useConversationWorktree(
 interface Props {
   state: ConversationWorktreeState | null;
   error: string | null;
-  chosen: boolean;
   disabled: boolean;
-  onChoose: (selected: boolean) => void;
   onIntegrate: (option: WorktreeIntegrationOption) => Promise<void>;
   onRemove: () => Promise<void>;
   onPreviewRemove: () => Promise<void>;
@@ -96,9 +94,7 @@ interface Props {
 export function WorktreeControls({
   state,
   error,
-  chosen,
   disabled,
-  onChoose,
   onIntegrate,
   onRemove,
   onPreviewRemove,
@@ -242,20 +238,36 @@ export function WorktreeControls({
             </div>
           )}
         </>
-      ) : state.show_chooser ? (
-        <>
-          <label>
-            <input
-              type="checkbox"
-              checked={chosen}
-              disabled={disabled || !state.can_choose}
-              onChange={(event) => onChoose(event.target.checked)}
-            />
-            Work in a worktree
-          </label>
-          {state.unavailable_reason && <span>{state.unavailable_reason}</span>}
-        </>
       ) : null}
     </section>
+  );
+}
+
+/** The opt-in lives with the other per-turn toggles; a bound worktree shows above. */
+export function WorktreeChooser({
+  state,
+  chosen,
+  disabled,
+  onChoose,
+}: {
+  state: ConversationWorktreeState | null;
+  chosen: boolean;
+  disabled: boolean;
+  onChoose: (selected: boolean) => void;
+}) {
+  if (!state?.show_chooser || state.binding) return null;
+  return (
+    <div className="chat-option">
+      <label>
+        <input
+          type="checkbox"
+          checked={chosen}
+          disabled={disabled || !state.can_choose}
+          onChange={(event) => onChoose(event.target.checked)}
+        />
+        Work in a worktree
+      </label>
+      {state.unavailable_reason && <p>{state.unavailable_reason}</p>}
+    </div>
   );
 }

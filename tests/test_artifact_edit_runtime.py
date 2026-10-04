@@ -12,6 +12,7 @@ from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
 from rcp.transport import StateUnavailable
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, fabricated_authorizer
 from .test_unified_artifacts import _publish_artifact, _stored_artifact
@@ -273,15 +274,13 @@ async def test_failed_edit_keeps_staged_bytes_and_retry_reuses_them(manifest, tm
 
 def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest, tmp_path):
 
-    from fastapi.testclient import TestClient
-
     app, _request, execution, source, _workspace = _setup(manifest, tmp_path)
     record_session_master(
         execution.store,
         "origin",
         "Operational master",
     )
-    client = TestClient(app)
+    client = signed_in_client(app)
     path = f"/api/projects/{app.state.default_project_id}/artifacts/{source.artifact_id}"
     refused = client.post(path + "/comments", json={"comments": [{"text": "Change this chart"}]})
     assert refused.status_code == 409

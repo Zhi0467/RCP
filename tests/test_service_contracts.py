@@ -280,6 +280,7 @@ def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph(
         "mode": "work",
         "code_worktree": False,
         "graph_isolation": False,
+        "browser_requested": False,
         "isolation_owner_episode_id": None,
         "trigger": "human",
         "patch_kind": "work",

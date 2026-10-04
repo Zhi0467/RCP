@@ -6,7 +6,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.__main__ import build_parser
 from rcp.api.app import create_app
@@ -16,6 +15,7 @@ from rcp.server_ops.compute import prepare_compute_probe_command
 from rcp.server_ops.control import ServerControlClient, ServerControlComputeProbeResult
 from rcp.server_runtime import ServerMetadata, published_server_metadata
 from rcp.storage import AppStore, ProjectRecord
+from tests.helpers import signed_in_client
 from tests.test_server_install import _temporary_layout
 
 PROJECT_ID = "123e4567-e89b-42d3-b456-426614174001"
@@ -94,7 +94,7 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
             return envelope
 
         monkeypatch.setattr(ServerControlClient, "_exchange", observe_exchange)
-        with published_server_metadata(data_dir, metadata), TestClient(app):
+        with published_server_metadata(data_dir, metadata), signed_in_client(app):
             # The CLI must use the running service's existing store.
             monkeypatch.setattr(
                 AppStore, "__init__", lambda *_args, **_kwargs: pytest.fail("second AppStore")

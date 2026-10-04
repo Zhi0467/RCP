@@ -91,3 +91,11 @@ stands in for it. Run one on disposable data, then delete its line here.
   Experiment and Auto-research episode; run one terminal command; repeat from a
   team member's phone web app; a forgotten session ends at the idle limit, and
   closing or suspending the page ends the paid session.
+- Agent browser: a Codex Work turn with Browser on, on a disposable team
+  server, opens a localhost service the agent started there, and the session
+  survives a service restart; a real OpenCode Work turn reuses a page and
+  login across turns; killing the browser mid-turn leaves the turn complete
+  with a lost notice.
+- Personal sign-in: in the desktop app, native PDF preview, project transfer,
+  and terminals through the owner session, and adopting a terminal-started
+  backend by pasting its one-time code.

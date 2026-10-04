@@ -46,6 +46,9 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Owner sign-in and browser grants, fresh and upgraded in place.
+        "2bcc3922f9e1a8f78e901fd526ab04da3680b10715e920095d6ae9f73be1887b",
+        "35fdc7eb7816e1f73d9670c2ce9c5e711e7c98def769aefe0c21139f81dc05d9",
         # Digest events, member marks, and independent projector heads.
         "4476ad62d7b9f72885c509c5a416fc25dee597f99f748f9c19f6afbed21826c7",
         "5be4107585e6fef5cf626672dabee72230befed1b7c844336c9a926d77132a80",

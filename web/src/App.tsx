@@ -187,6 +187,8 @@ import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
 import { ProjectDock } from "./components/ProjectDock";
 import { RunDialog } from "./components/RunDialog";
+import { initialOwnerCode } from "./pairingLink";
+import { ProjectLocatorBoundary } from "./components/ProjectLocatorBoundary";
 import { TeamLoginBoundary } from "./components/TeamLoginBoundary";
 import {
   applyHumanDraft,
@@ -893,10 +895,13 @@ export default function App() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    authenticatedHealth,
     actorIdentity,
     actorIdentityError,
     actorIdentityChecked,
     teamSessionRequired,
+    ownerSessionRequired,
+    authenticateOwnerSession,
     actorNamePromptOpen,
     actorNameDraft,
     actorNameSaving,
@@ -914,7 +919,12 @@ export default function App() {
   // Every backend-facing surface, including the WebMCP inventory, waits for the
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
-    identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;
+    identityReady &&
+    !identityIssue &&
+    actorIdentityChecked &&
+    !!actorIdentity &&
+    !teamSessionRequired &&
+    !ownerSessionRequired;
   const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
@@ -1697,7 +1707,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
+    if (!backendSessionReady) return;
     const runHeartbeat = (id: string) => {
       void heartbeatProjectCache(id).catch(() => {
         // Heartbeat failures leave the last usable display cache intact.
@@ -1729,6 +1739,7 @@ export default function App() {
     getActiveProjectId,
     projectIdsForHeartbeat,
     teamSessionRequired,
+    backendSessionReady,
   ]);
 
   const settleTeamSignIn = useCallback(() => {
@@ -2107,7 +2118,7 @@ export default function App() {
   }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
   useLayoutEffect(() => {
-    if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
+    if (!backendSessionReady) return;
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
@@ -2247,6 +2258,7 @@ export default function App() {
     selectChat,
     setupOpen,
     teamSessionRequired,
+    backendSessionReady,
   ]);
 
   useEffect(() => {
@@ -3388,6 +3400,7 @@ export default function App() {
       node: GraphNode,
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
+      browserRequested = false,
     ): Promise<AgentTask> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
@@ -3422,6 +3435,7 @@ export default function App() {
               // backend then keeps the Experiment node's own limit.
               ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
               ...isolation,
+              browser_requested: browserRequested,
             }),
           },
         );
@@ -3468,9 +3482,14 @@ export default function App() {
     ],
   );
   const runExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number, isolation?: EpisodeIsolationChoice) => {
+    async (
+      node: GraphNode,
+      invocationCeiling?: number,
+      isolation?: EpisodeIsolationChoice,
+      browserRequested = false,
+    ) => {
       try {
-        await startExperiment(node, invocationCeiling, isolation);
+        await startExperiment(node, invocationCeiling, isolation, browserRequested);
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -3528,6 +3547,7 @@ export default function App() {
       invocationCeiling: number,
       startingInstruction: string | null,
       codeWorktree = true,
+      browserRequested = false,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3540,6 +3560,7 @@ export default function App() {
       try {
         const started = await startEpisode(apiBase, {
           mode: "auto_research",
+          browser_requested: browserRequested,
           invocation_ceiling: invocationCeiling,
           starting_instruction: startingInstruction,
           // Omitted, the server turns code isolation on only where it is eligible.
@@ -3579,10 +3600,16 @@ export default function App() {
     invocationCeiling: number,
     startingInstruction: string | null,
     codeWorktree = true,
+    browserRequested = false,
   ) => {
     reportAutoResearchStartError(null);
     try {
-      await startAutoResearch(invocationCeiling, startingInstruction, codeWorktree);
+      await startAutoResearch(
+        invocationCeiling,
+        startingInstruction,
+        codeWorktree,
+        browserRequested,
+      );
     } catch (error) {
       reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
     }
@@ -4158,22 +4185,21 @@ export default function App() {
 
   const movePersonalProjectToTeam =
     desktop &&
-    verifiedHealth?.space_kind === "personal" &&
-    verifiedHealth.project_creation.intents.some(
+    authenticatedHealth?.space_kind === "personal" &&
+    authenticatedHealth.project_creation.intents.some(
       (intent) => intent.intent === "move_personal_project_to_team" && intent.eligible,
     )
       ? openMoveProjectSetup
       : undefined;
   const updateHasActiveWork =
     Boolean(activeTask) ||
-    (desktopUpdate?.active_agent_tasks ?? verifiedHealth?.active_agent_tasks ?? 0) > 0;
+    (desktopUpdate?.active_agent_tasks ?? authenticatedHealth?.active_agent_tasks ?? 0) > 0;
   const applyUpdate = async () => {
     await applyDesktopShellUpdate(Boolean(activeTask), async () => {
       const identity = await reverifyIdentity("update-apply");
-      return {
-        ok: identity.ok,
-        activeAgentTasks: identity.health?.active_agent_tasks ?? 0,
-      };
+      if (!identity.ok) return { ok: false, activeAgentTasks: 0 };
+      const details = await api<Health>("/api/health/details");
+      return { ok: true, activeAgentTasks: details.active_agent_tasks };
     });
   };
 
@@ -4328,17 +4354,37 @@ export default function App() {
         {acceptanceAgentSurface}
       </div>
     );
+  if (ownerSessionRequired)
+    return (
+      <TeamLoginBoundary
+        personal
+        spaceName={null}
+        initialCode={initialOwnerCode}
+        onAuthenticate={authenticateOwnerSession}
+        onPair={async () => {}}
+      />
+    );
   if (teamSessionRequired)
     return (
       <>
         <TeamLoginBoundary
-          spaceName={verifiedHealth?.space_name ?? null}
+          spaceName={
+            verifiedHealth && "space_name" in verifiedHealth ? verifiedHealth.space_name : null
+          }
           onAuthenticate={authenticateTeamSession}
           onPair={pairTeamDevice}
         />
         {acceptanceAgentSurface}
       </>
     );
+  if (actorIdentity && new URLSearchParams(window.location.search).has("project-locator")) {
+    return (
+      <>
+        <ProjectLocatorBoundary />
+        {actorNameSurface}
+      </>
+    );
+  }
   if (loading)
     return (
       <div className="app-loading">
@@ -4356,7 +4402,7 @@ export default function App() {
       <>
         <ProjectSetup
           key={projectSetupRouteKey(setupRoute)}
-          projectCreation={verifiedHealth!.project_creation}
+          projectCreation={authenticatedHealth!.project_creation}
           spaceKind={verifiedHealth!.space_kind}
           onCancel={returnToProjects}
           onCreated={openProject}
@@ -4411,7 +4457,7 @@ export default function App() {
           onOpenExperiment={openProject}
           onArchiveEpisode={requestEpisodeArchive}
           onCreate={openSetup}
-          projectCreation={verifiedHealth!.project_creation}
+          projectCreation={authenticatedHealth!.project_creation}
           onMovePersonalProjectToTeam={movePersonalProjectToTeam}
           onDelete={deleteProject}
           openProjectTabs={openProjectTabs}
@@ -5162,8 +5208,8 @@ export default function App() {
                 }
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
-                onRunExperiment={(node, invocationCeiling) =>
-                  void runExperiment(node, invocationCeiling)
+                onRunExperiment={(node, invocationCeiling, browserRequested) =>
+                  void runExperiment(node, invocationCeiling, undefined, browserRequested)
                 }
                 onStopExperiment={(nodeId, episodeId) =>
                   void stopExperimentLoop(nodeId, episodeId ?? null)
@@ -5373,7 +5419,9 @@ export default function App() {
                 stageDecisionChoice(draft, graph, node.id, selectedOption),
               )
             }
-            onRunExperiment={(isolation) => void runExperiment(node, undefined, isolation)}
+            onRunExperiment={(isolation, browserRequested) =>
+              void runExperiment(node, undefined, isolation, browserRequested)
+            }
             inheritedIsolation={
               activeBranchEpisode
                 ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
@@ -5455,8 +5503,13 @@ export default function App() {
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
         onClose={closeAutoResearchDialog}
-        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree) =>
-          void authorizeAutoResearch(invocationCeiling, startingInstruction, codeWorktree)
+        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree, browserRequested) =>
+          void authorizeAutoResearch(
+            invocationCeiling,
+            startingInstruction,
+            codeWorktree,
+            browserRequested,
+          )
         }
       />
       {retryTask && retryConfig && (

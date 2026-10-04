@@ -1559,6 +1559,7 @@ class WatcherStoreMixin:
         if continuation.patch_kind != "experiment_loop":
             return WatcherStoreMixin._watcher_delivery_policy(continuation)
         policy = {
+            "browser_requested": continuation.browser_requested,
             "patch_kind": continuation.patch_kind,
             "control_node_id": continuation.control_node_id,
             "active_compute_ids": continuation.active_compute_ids,

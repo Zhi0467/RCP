@@ -1,5 +1,5 @@
 import type {
-  Health,
+  PublicHealth,
   IdentityResponse,
   ProjectProvisioningStatus,
   ProjectTransferBundle,
@@ -28,6 +28,7 @@ export interface DesktopBuildIdentity {
 }
 
 export interface DesktopStatus {
+  owner_authenticated?: boolean;
   desktop: boolean;
   version: string;
   base_url: string;
@@ -138,7 +139,7 @@ export interface DesktopUpdate {
 
 export interface BackendIdentityResult {
   ok: boolean;
-  health: Health | null;
+  health: PublicHealth | null;
   message: string | null;
 }
 
@@ -769,7 +770,7 @@ async function runIdentityCheck(
 }
 
 async function checkBackendIdentity(replaceExpected: boolean): Promise<BackendIdentityResult> {
-  let health: Health;
+  let health: PublicHealth;
   try {
     health = await fetchHealth();
   } catch (error) {
@@ -813,10 +814,10 @@ async function checkBackendIdentity(replaceExpected: boolean): Promise<BackendId
   return mismatch ? { ok: false, health, message: mismatch } : { ok: true, health, message: null };
 }
 
-async function fetchHealth(): Promise<Health> {
+async function fetchHealth(): Promise<PublicHealth> {
   const response = await fetch("/api/health", { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`);
-  return response.json() as Promise<Health>;
+  return response.json() as Promise<PublicHealth>;
 }
 
 function toIdentity(value: BackendIdentity): BackendIdentity {
@@ -837,4 +838,8 @@ function dispatchIdentityResult(detail: BackendIdentityEventDetail): void {
 async function invokeDesktop<T>(command: string, args?: object): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(command, args as Record<string, unknown> | undefined);
+}
+
+export async function signInDesktopOwner(code: string): Promise<void> {
+  await invokeDesktop("desktop_owner_sign_in", { code });
 }

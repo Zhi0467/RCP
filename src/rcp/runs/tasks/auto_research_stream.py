@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import aclosing, asynccontextmanager, suppress
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
@@ -48,6 +48,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
 from rcp.providers import classify_terminal_error
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -72,6 +73,7 @@ from rcp.runs.auto_research_questions import (
     auto_research_question_snapshot,
     mark_auto_research_question_snapshot_delivered,
 )
+from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _chat_read_dirs,
     _clear_stale_turn_handoffs,
@@ -200,6 +202,7 @@ async def stream_auto_research_orchestrator_run(
 ) -> AsyncIterator[str]:
     """Run one paid turn of the sole project-owned auto_research orchestrator."""
 
+    browser_stack = AsyncExitStack()
     try:
         turn = _canonical_orchestrator_turn(execution, request)
         if command_dispatcher.store is not execution.store:
@@ -207,6 +210,16 @@ async def stream_auto_research_orchestrator_run(
                 "auto_research orchestrator stream and command dispatcher must share one store"
             )
         stage = _open_orchestrator_stage(service, data_dir, execution, turn)
+        browser_grant = await browser_stack.enter_async_context(
+            browser_turn(
+                turn.request,
+                workspace=stage.workspace,
+                execution_host=stage.execution_host,
+                execution=execution,
+                remote_stage=stage.remote,
+                capability="orchestrate",
+            )
+        )
         command_files = RunStageMailbox.for_stage(
             local_stage=stage.local,
             remote_stage=stage.remote,
@@ -299,6 +312,7 @@ async def stream_auto_research_orchestrator_run(
                 lifecycle_path=lifecycle_path,
                 skill_pointers=orchestrator_skill_pointers,
                 write_scope=write_scope,
+                browser_grant=browser_grant,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -349,6 +363,7 @@ async def stream_auto_research_orchestrator_run(
                     execution=execution,
                     remote_stage=stage.remote,
                     capability="orchestrate",
+                    browser_grant=browser_grant,
                     outcome=outcome,
                     binary=stage.provider_binary,
                     invocation_gate=staged_commands.invocation_gate,
@@ -439,6 +454,8 @@ async def stream_auto_research_orchestrator_run(
         yield _sse(AgentEvent(event="done"))
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
+    finally:
+        await browser_stack.aclose()
 
 
 def _ordered_orchestrator_graph_updates(
@@ -476,6 +493,7 @@ async def stream_auto_research_worker_run(
 ) -> AsyncIterator[str]:
     """Run one ordinary auto_research worker on its canonical actor-owned stage."""
 
+    browser_stack = AsyncExitStack()
     try:
         turn = _canonical_worker_turn(execution, request)
         if command_dispatcher.store is not execution.store:
@@ -483,6 +501,16 @@ async def stream_auto_research_worker_run(
                 "auto_research worker stream and command dispatcher must share one store"
             )
         stage = _open_worker_stage(service, data_dir, execution, turn)
+        browser_grant = await browser_stack.enter_async_context(
+            browser_turn(
+                turn.request,
+                workspace=stage.workspace,
+                execution_host=stage.execution_host,
+                execution=execution,
+                remote_stage=stage.remote,
+                capability="work_auto",
+            )
+        )
         context = _auto_research_context(service, turn.request, stage)
         _prepare_turn_handoffs(execution, turn, stage)
 
@@ -544,6 +572,7 @@ async def stream_auto_research_worker_run(
                 reply_key=_worker_reply_key(turn),
                 messages_path=messages_path,
                 write_scope=write_scope,
+                browser_grant=browser_grant,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -596,6 +625,7 @@ async def stream_auto_research_worker_run(
                     execution=execution,
                     remote_stage=stage.remote,
                     capability="work_auto",
+                    browser_grant=browser_grant,
                     outcome=outcome,
                     binary=stage.provider_binary,
                     invocation_gate=staged_commands.invocation_gate,
@@ -666,6 +696,8 @@ async def stream_auto_research_worker_run(
         yield _sse(AgentEvent(event="done"))
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
+    finally:
+        await browser_stack.aclose()
 
 
 def _canonical_worker_turn(
@@ -1304,6 +1336,7 @@ def _retry_diagnostics_path(
 def _actor_launch_prompt(
     execution: AgentTaskExecution,
     *,
+    browser_grant: BrowserGrant,
     session_id: str | None,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
@@ -1326,13 +1359,17 @@ def _actor_launch_prompt(
     holds none under the current key. The returned master is the one the session now holds.
     """
 
+    browser_line = browser_prompt_line(browser_grant)
+    values["browser"] = browser_grant.model_dump(
+        include={"status", "reason_code", "session_name", "invocation_dir"}
+    )
     fresh_parts = (*fresh_parts, stage_lessons_pointer(execution, local_stage, remote_stage))
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
     )
     if node == "session_start":
-        contract = start_contract()
+        contract = start_contract() + "\n\n" + browser_line
         contract_path, prompt = _stage_task_contract(
             local_stage, remote_stage, label, contract, execution=execution, role=role
         )
@@ -1340,7 +1377,7 @@ def _actor_launch_prompt(
         record_session_master(execution.store, execution.operation_id, contract, key, values)
         return contract_path, prompt, MasterRef(path=contract_path, bootstrap=False, values=values)
     assert session_id is not None
-    parts = [*continuation_parts(), *fresh_parts]
+    parts = [*continuation_parts(), *fresh_parts, browser_line]
     after_report = report_pending(session_id)
     master = continuation_session_master(
         execution,
@@ -1349,7 +1386,7 @@ def _actor_launch_prompt(
         native_session_id=session_id,
         label_prefix=master_label_prefix,
         key=key,
-        render=render_master,
+        render=lambda: render_master() + "\n\n" + browser_line,
         values=values,
         force_bootstrap=after_report,
     )
@@ -1383,6 +1420,7 @@ def _orchestrator_prompt(
     lifecycle_path: str | None,
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
+    browser_grant: BrowserGrant,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
@@ -1486,6 +1524,7 @@ def _orchestrator_prompt(
 
     contract_path, prompt, master = _actor_launch_prompt(
         execution,
+        browser_grant=browser_grant,
         values=values,
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
@@ -1527,6 +1566,7 @@ def _worker_prompt(
     reply_key: str,
     messages_path: str | None,
     write_scope: ProjectWriteScope,
+    browser_grant: BrowserGrant,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
     actor = execution.store.agent_task(turn.binding.actor_operation_id)
     if actor is None:
@@ -1590,6 +1630,7 @@ def _worker_prompt(
 
     contract_path, prompt, master = _actor_launch_prompt(
         execution,
+        browser_grant=browser_grant,
         values=values,
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
@@ -1993,7 +2034,14 @@ async def _settle_worker_patch(
         ):
             # This operation's own launch staged or restored the session's master moments ago,
             # so the correction points to it rather than looking up a settled record.
-            correction_values = {**values, "command_prefix": correction_mailbox.client_command()}
+            correction_grant = BrowserGrant()
+            correction_values = {
+                **values,
+                "command_prefix": correction_mailbox.client_command(),
+                "browser": correction_grant.model_dump(
+                    include={"status", "reason_code", "session_name", "invocation_dir"}
+                ),
+            }
             correction_prompt = compose(
                 classify(LaunchPhase(session_id=native_session_id, phase="correction")),
                 parts=[
@@ -2002,6 +2050,7 @@ async def _settle_worker_patch(
                         diagnostics_path=diagnostics_path,
                     ),
                     stage_lessons_pointer(execution, stage.local, stage.remote),
+                    browser_prompt_line(correction_grant),
                 ],
                 master=master,
                 delta=changed_since_master(master, correction_values),
@@ -2052,6 +2101,7 @@ async def _settle_worker_patch(
                     execution=execution,
                     remote_stage=stage.remote,
                     capability=_capability,
+                    browser_grant=correction_grant,
                     outcome=correction_outcome,
                     binary=provider_binary,
                     invocation_gate=correction_mailbox.invocation_gate,

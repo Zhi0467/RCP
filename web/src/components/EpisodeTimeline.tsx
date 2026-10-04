@@ -1,3 +1,4 @@
+import { BrowserTurnNotice } from "./BrowserControls";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { RunArtifacts } from "./RunArtifacts";
@@ -18,6 +19,7 @@ import {
 } from "../timeline";
 import type {
   RunArtifactEntry,
+  EpisodeTask,
   EpisodeTimelineResponse,
   EpisodeTimelineSpan,
   ExperimentLoopIndexEntry,
@@ -54,6 +56,7 @@ const tone = (s: string | null) =>
 
 export function EpisodeTimeline({
   response: data,
+  browserTasks = [],
   projectId,
   graphTarget,
   artifacts = [],
@@ -64,6 +67,7 @@ export function EpisodeTimeline({
   onOpenExperimentEntry,
 }: {
   response: EpisodeTimelineResponse;
+  browserTasks?: readonly EpisodeTask[];
   projectId?: string;
   artifacts?: readonly RunArtifactEntry[];
   apiBase: string;
@@ -930,6 +934,12 @@ export function EpisodeTimeline({
                           {refButton(s.span_id)} · {stamp(s.started_at)} · {s.status} ·{" "}
                           {duration(s)}
                           {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
+                          <BrowserTurnNotice
+                            status={
+                              browserTasks.find((task) => task.operation_id === s.task_id)
+                                ?.browser_status
+                            }
+                          />
                           {s.headline && <p>{s.headline}</p>}
                           {s.error && <p className="roster-error">{s.error}</p>}
                           {projectId && selectedActor.kind === "worker" && (
@@ -1003,6 +1013,12 @@ export function EpisodeTimeline({
                     ) : (
                       <p>{selectedSpan.cause}</p>
                     )}
+                    <BrowserTurnNotice
+                      status={
+                        browserTasks.find((task) => task.operation_id === selectedSpan.task_id)
+                          ?.browser_status
+                      }
+                    />
                     {selectedSpan.headline && <blockquote>{selectedSpan.headline}</blockquote>}
                     {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
                     {child && onOpenExperimentEntry && (

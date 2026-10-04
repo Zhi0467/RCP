@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi.testclient import TestClient
-
 from rcp.storage import Artifact
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -26,7 +25,7 @@ def test_legacy_urls_use_artifact_storage_and_routes(manifest, tmp_path):
         data=b"<h1>Retained result</h1>",
     )
     base = f"/api/projects/{project_id}"
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         legacy = client.get(
             f"{base}/result-views/{artifact.artifact_id}/preview", follow_redirects=False
         )

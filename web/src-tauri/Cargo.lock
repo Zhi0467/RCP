@@ -2987,6 +2987,7 @@ dependencies = [
 name = "rcp-desktop"
 version = "0.4.11"
 dependencies = [
+ "base64 0.22.1",
  "cc",
  "libc",
  "plist",

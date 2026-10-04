@@ -8,7 +8,6 @@ from pathlib import Path
 from threading import Event
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.task_requests import _resolved_graph_request
@@ -33,6 +32,7 @@ from rcp.storage import (
 from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
+from tests.helpers import signed_in_client
 
 from .episode_report_helpers import stored_report
 from .helpers import (
@@ -108,7 +108,7 @@ class _Loop:
         self.project_id = app.state.default_project_id
         self.store: AppStore = app.state.background_tasks.store
         self.authorizer = authorized_human(self.store)
-        self.client = TestClient(app)
+        self.client = signed_in_client(app)
         self.chat_id = str(uuid.uuid4())
         self.episode_id = str(uuid.uuid4())
         self.invocation_ceiling = invocation_ceiling

@@ -6,14 +6,14 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from rcp.agents import AgentEvent
 from rcp.api.episodes import episode_on_branch
 from rcp.background import AgentTaskExecution
+from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.service import RunRequest
 from rcp.transport import StateUnavailable
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_for_task
 from .test_episode_api import _sse, create_terminal_auto_episode
@@ -57,6 +57,15 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         starting_instruction="Resolve the disputed interpretation.",
         report_error="The report output was invalid.",
     )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET browser_requested = 1 WHERE episode_id = ?",
+            (original.episode_id,),
+        )
+    store.set_browser_turn_status(
+        original_root.operation_id,
+        BrowserTurnStatus(status="lost", reason_code="session_lost"),
+    )
     assert original.status == "needs_action"
     assert original_root.native_session_id and original_root.stage_root
     seen: list[tuple[str | None, str | None]] = []
@@ -68,9 +77,14 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     )
     request_id = str(uuid.uuid4())
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         before = client.get(f"/api/projects/{project_id}/episodes").json()[0]
         assert before["episode_id"] == original.episode_id
+        root_turn = next(
+            item for item in before["tasks"] if item["operation_id"] == original_root.operation_id
+        )
+        assert root_turn["browser_status"]["status"] == "lost"
+        assert root_turn["browser_status"]["reason_code"] == "session_lost"
         assert before["can_continue"] is True
         assert before["continues_episode_id"] is None
         assert before["continued_by_episode_id"] is None
@@ -89,6 +103,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         assert response.status_code == 202, response.text
         payload = response.json()
         continuation_id = payload["episode_id"]
+        assert payload["browser_requested"] is True
         continuation_root_id = payload["root_operation_id"]
         assert continuation_id != original.episode_id
         assert continuation_root_id != original_root.operation_id
@@ -218,7 +233,7 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
                 " VALUES (?, ?, 'watcher', ?, 'completed', 'pending', '{}', ?)",
                 (f"extra-{index:04}", continuation_id, f"extra-{index}", store.now()),
             )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.get(f"/api/projects/{project_id}/episodes/{continuation_id}/timeline")
     assert response.status_code == 200
     assert response.json()["truncated"] is True
@@ -254,7 +269,7 @@ def test_continuation_preflight_failure_leaves_the_source_unchanged(
         "rcp.runs.auto_research_admission.resolved_dispatch_authority", reject_authority
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/episodes/{original.episode_id}/continue",
             json={"invocation_ceiling": 4, "request_id": str(uuid.uuid4())},
@@ -286,7 +301,7 @@ def test_continuation_refuses_a_stage_frozen_on_another_machine(manifest, tmp_pa
     episodes_before = [item.model_dump(mode="json") for item in store.episodes(project_id)]
     tasks_before = [item.model_dump(mode="json") for item in store.agent_tasks(project_id)]
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/episodes/{original.episode_id}/continue",
             json={"invocation_ceiling": 4, "request_id": str(uuid.uuid4())},
@@ -304,7 +319,7 @@ def test_continue_refuses_a_live_or_unbound_episode(manifest, tmp_path) -> None:
     store = app.state.background_tasks.store
     loop = _Loop(app)
     loop.start_episode(status="running")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         base = f"/api/projects/{project_id}/episodes/{loop.episode_id}"
         live = client.post(
             f"{base}/continue", json={"invocation_ceiling": 2, "request_id": str(uuid.uuid4())}
@@ -354,7 +369,7 @@ def test_experiment_continuation_refuses_a_stage_frozen_on_another_machine(
     store = app.state.background_tasks.store
     episodes_before = [item.model_dump(mode="json") for item in store.episodes(loop.project_id)]
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{loop.project_id}/episodes/{loop.episode_id}/continue",
             json={"invocation_ceiling": 3, "request_id": str(uuid.uuid4())},
@@ -376,6 +391,11 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
     stage = tmp_path / "loop-stage"
     loop.bind_session(stage, native_session_id="native-session-abc")
     loop.settle_exhausted_ending()
+    with app.state.background_tasks.store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET browser_requested = 1 WHERE episode_id = ?",
+            (loop.episode_id,),
+        )
     tasks = app.state.background_tasks
     store = tasks.store
     seen: list[tuple[str | None, str | None]] = []
@@ -384,7 +404,7 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
     )
     request_id = str(uuid.uuid4())
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         base = f"/api/projects/{loop.project_id}/episodes/{loop.episode_id}"
         source = client.get(f"/api/projects/{loop.project_id}/episodes?mode=experiment_loop").json()
         assert source[0]["episode_id"] == loop.episode_id
@@ -396,6 +416,7 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
         assert response.status_code == 202, response.text
         payload = response.json()
         continuation_id = payload["episode_id"]
+        assert payload["browser_requested"] is True
         assert continuation_id != loop.episode_id
         assert payload["mode"] == "experiment_loop"
         assert payload["control_node_id"] == EXPERIMENT_ID

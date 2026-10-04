@@ -6,12 +6,12 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.core.models import Patch
 from rcp.notifications import NotificationSender
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import ProjectRecord
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, authorized_human, create_named_app
 from .test_episode_api_serialization import _auto_episode
@@ -641,7 +641,7 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
     monkeypatch.setattr(app.state.catalog, "open", slow_open)
 
     def serve():
-        with TestClient(app) as client:
+        with signed_in_client(app) as client:
             health = client.get("/api/health")
             pending = client.get(f"/api/notifications/devices/{device['device_id']}/pending")
             serving.set()

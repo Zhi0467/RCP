@@ -9,7 +9,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.artifacts import html_document_title
@@ -32,6 +31,7 @@ from rcp.storage import (
     EpisodeRecord,
     EpisodeReportRecord,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import authorized_human, create_named_app, wait_for_task, wait_until
 
@@ -343,7 +343,7 @@ def test_the_episode_wire_carries_a_setting_the_turn_provider_ignored(manifest, 
     tasks.stream = settling_auto_research_stream(stage)
     note = "Claude ignored the requested reasoning effort 'ultra' and ran at its own default."
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/episodes",
             json={
@@ -380,7 +380,7 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
     stage.mkdir()
     tasks.stream = settling_auto_research_stream(stage)
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert client.get(f"/api/projects/{project_id}/episodes").json() == []
 
         started = client.post(
@@ -478,7 +478,7 @@ def test_stopping_episode_recovery_controls_execute_exact_allocation(
         ),
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             service.history,
@@ -545,7 +545,7 @@ def test_stopping_episode_remote_outage_preserves_recovery(
         lambda _stage, _root: None,
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             app.state.catalog.open(project_id).history,
@@ -611,7 +611,7 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
             lambda _stage, _root: False,
         )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             app.state.catalog.open(project_id).history,
@@ -668,7 +668,7 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
     stage = tmp_path / "remote-session-limit-stage"
     stage.mkdir()
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             service.history,
@@ -747,7 +747,7 @@ def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
         missing_remote_stage,
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             app.state.catalog.open(project_id).history,
@@ -815,7 +815,7 @@ def test_clean_retry_stop_during_final_admission_abandons_and_settles(
         ),
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             service.history,
@@ -866,7 +866,7 @@ def test_episode_pause_endpoint_obeys_the_atomic_stop_ordering(
     stage = tmp_path / "pause-order-stage"
     stage.mkdir()
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
             app.state.catalog.open(project_id).history,
@@ -936,7 +936,7 @@ def test_exact_episode_query_reaches_a_parent_beyond_the_interleaved_list_bound(
             [(*row, row[-1]) for row in rows],
         )
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     bounded = client.get(f"/api/projects/{project_id}/episodes")
     exact = client.get(
         f"/api/projects/{project_id}/episodes",
@@ -980,7 +980,7 @@ def test_episode_mail_is_durable_when_immediate_delivery_fails(
     ):
         monkeypatch.setattr(binding, delivery_is_temporarily_unavailable)
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = client.post(
             f"/api/projects/{project_id}/episodes",
             json={"mode": "auto_research", "invocation_ceiling": 3},
@@ -1031,7 +1031,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/content"
     legacy_preview_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/preview"
     viewer_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/viewer"
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         listed = client.get(f"/api/projects/{project_id}/episodes")
         assert listed.status_code == 200
         payload = listed.json()[0]
@@ -1078,7 +1078,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
     assert url in legacy_preview.text
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert client.head(legacy_preview_url).content == b""
 
 
@@ -1093,7 +1093,7 @@ def test_report_save_is_retired_without_repository_writes(manifest, tmp_path) ->
         episode_id="retired-save",
         report_html="<h1>Retrospective</h1>",
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert (
             client.post(
                 f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save", json={}

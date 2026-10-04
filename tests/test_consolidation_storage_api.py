@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 from threading import Event
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import Artifact
+from tests.helpers import signed_in_client
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app
 from .test_storage import _project
@@ -20,7 +20,7 @@ from .test_storage import _project
 def setup(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
-    return TestClient(app), store, app.state.default_project_id
+    return signed_in_client(app), store, app.state.default_project_id
 
 
 def _due(store, project_id):

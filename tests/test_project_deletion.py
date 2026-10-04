@@ -22,6 +22,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.transport import RemoteRunStage
+from tests.helpers import signed_in_client
 
 
 def _tree_digest(root: Path) -> str:
@@ -480,7 +481,6 @@ def test_registration_waits_until_project_deletion_cleanup_finishes(
 def test_delete_compute_jobs_preserves_running_work_and_job_directories(
     manifest, tmp_path, monkeypatch, status
 ):
-    from fastapi.testclient import TestClient
 
     from rcp.api.app import create_app
     from rcp.compute_jobs.backends import COMPUTE_BACKENDS
@@ -519,7 +519,7 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
     )
     store.record_compute_backend_probe(project_id, probe, "helper")
     store.record_compute_backend_probe("other-project", probe, "helper")
-    client = TestClient(app)
+    client = signed_in_client(app)
     # Deletion reconciles running rows first; the fence applies to work still alive.
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
     if status == "running":
@@ -547,7 +547,6 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
 def test_delete_reconciles_finished_helper_jobs_before_the_running_fence(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    from fastapi.testclient import TestClient
 
     from rcp.api.app import create_app
     from rcp.compute_jobs.backends import COMPUTE_BACKENDS
@@ -572,7 +571,7 @@ def test_delete_reconciles_finished_helper_jobs_before_the_running_fence(
     # The helper finished after the last refresh; only its watcher observed that.
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: False)
 
-    response = TestClient(app).delete(f"/api/projects/{project_id}")
+    response = signed_in_client(app).delete(f"/api/projects/{project_id}")
 
     assert response.status_code == 200, response.text
     assert response.json()["database_records"]["compute_jobs"] == 1

@@ -78,6 +78,25 @@ The answer and graph outcome remain independently visible. A stray Patch left by
 Discuss is retained as a receipt and discarded; a file cannot grant its author a
 different mode.
 
+Browser consent is an app-local per-chat preference, off by default. The browser
+preference API reads and sets it without rewriting transcripts. Admission of every
+chat turn, including a watcher wake and a question answer, snapshots it into
+`browser_requested`; changing the toggle affects the next turn.
+Imported history does not import consent or browser profiles. Chat transcript messages
+project the durable browser status of their turn, including unavailable and lost.
+Archiving a chat closes its browser and retains its profile after active work ends.
+Turning the toggle off deletes the chat's browser profile, with its logins and
+cookies, right after the response; an active turn keeps its browser and the profile
+is deleted when that turn ends. Turning Browser back on before cleanup cancels
+that pending close and deletion; archive and project-deletion cleanup remain in
+force. Pending project-deletion cleanup retains its origin even if the same
+project is registered again. A session hears its browser state when it starts
+with a browser and whenever the state changes, compared with its last committed turn.
+Project removal requests deletion for every retained owner. Failed cleanup stays
+pending and retries at later turn boundaries. The owner key names the stable stage,
+space, project, and resolved execution host and account; a repointed SSH alias
+cannot clean up the old host through its new target.
+
 ## Native chat context
 
 Chat is not transcript ingestion. Canonical chat history exists for display,
@@ -858,3 +877,14 @@ The experiment detail retains exact target, episode history, pinned budgets,
 current next-episode limit, current guidance validity, watcher provenance and
 groups, session continuity, diagnostics, and report. Ordinary conversations and
 Paper coaching remain outside Runs.
+
+### Episode browser preference
+
+Each bounded episode stores one `browser_requested` launch preference. Its
+Experiment projection and API response carry that value. Human Continue keeps
+the source episode's preference. Retry, watcher wakes, queued follow-ups, and
+bounded Experiment turns preserve the admitted preference and stable stage.
+Watcher continuation policy includes the preference.
+
+Each turn exposes a durable browser status: `not_requested`, `granted`,
+`unavailable`, or `lost`. A browser failure does not fail the provider task.

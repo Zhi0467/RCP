@@ -120,6 +120,9 @@ def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
     assert str(shared.resolve()) in scope.writable_roots
     assert str((shared / "app-data").resolve()) in scope.granted_protected_paths
     assert str((shared / "app-data").resolve()) in scope.protected_write_paths
+    for name in ("browser", "tools"):
+        protected = shared / "app-data" / name
+        assert any(protected.is_relative_to(root) for root in scope.protected_write_paths)
     # Grants are machine settings: changing them keeps an open chat resumable.
     assert scope.fingerprint == _resolve_local(manifest, tmp_path).fingerprint
 

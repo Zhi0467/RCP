@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 import rcp.server_ops.application_validation as rehearsal_module
 from rcp.__main__ import instance_lock
@@ -19,6 +18,7 @@ from rcp.projects import (
     TEAM_PROJECT_DELETE_CONFIRMATION,
     TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
 )
+from rcp.providers.browser_grant import BrowserOwnerKey
 from rcp.server_ops.application_validation import (
     CandidateRehearsalRefused,
     RehearsalOverlay,
@@ -39,6 +39,7 @@ from rcp.storage import (
     AppStore,
     ProjectRecord,
 )
+from tests.helpers import signed_in_client
 
 BASE_COMMIT = "a" * 40
 CANDIDATE_COMMIT = "b" * 40
@@ -290,7 +291,7 @@ def test_fenced_startup_only_plans_recovery_and_rejects_effect_entrypoints(
         startup_effect_fence=fence,
     )
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.get("/api/health")
         assert response.status_code == 200
         assert not app.state.notification_sender.is_running()
@@ -324,7 +325,7 @@ def test_releasing_the_same_startup_fence_starts_the_deferred_runtime(tmp_path: 
         startup_effect_fence=fence,
     )
 
-    with TestClient(app):
+    with signed_in_client(app):
         assert not app.state.startup_effect_runtime_started
         assert not app.state.notification_sender.is_running()
         fence.release()
@@ -580,3 +581,34 @@ def test_consolidation_receipt_bytes_survive_rehearsal(tmp_path):
             "SELECT patch_text FROM consolidation_apply_receipts"
         ).fetchone()
         assert receipt["patch_text"] == "{}"
+
+
+def test_rehearsal_rebinds_local_browser_paths_and_preserves_remote_owners(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "source.sqlite3")
+    for host in ("", "worker.example.test"):
+        owner = BrowserOwnerKey(
+            space_id="space", project_id="project", stage_name="chat", host_key=host
+        )
+        store.record_browser_owner(
+            owner,
+            execution_host=host,
+            workspace_dir="/source/stage/workspace",
+            stage_root="/source/stage",
+            chat_id="chat",
+        )
+    remote_before = next(row for row in store.browser_owners("project") if row["execution_host"])
+    overlay = tmp_path / "overlay"
+    absent = overlay / "absent"
+    with store.connection() as connection:
+        rehearsal_module._validate_path_column_inventory(connection)
+        with pytest.raises(CandidateRehearsalRefused):
+            rehearsal_module._validate_rebound_paths(connection, root=overlay, projects=[])
+        rehearsal_module._rebind_local_stage_paths(connection, absent)
+        rehearsal_module._validate_rebound_paths(connection, root=overlay, projects=[])
+    for row in store.browser_owners("project"):
+        if row["execution_host"]:
+            assert row == remote_before
+        else:
+            for field in ("stage_root", "workspace_dir"):
+                assert Path(row[field]).is_relative_to(absent)
+                assert not Path(row[field]).exists()

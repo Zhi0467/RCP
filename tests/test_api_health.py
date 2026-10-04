@@ -15,6 +15,7 @@ from rcp.api.team_shell_protocol import (
 )
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 
@@ -27,14 +28,14 @@ def test_health_separates_durable_space_process_and_data_directory_identity(tmp_
         original_dir.resolve(), host="127.0.0.1", port=8421, owner_kind="embedded"
     )
     first_app = create_named_app(data_dir=original_dir, instance_metadata=first_metadata)
-    with TestClient(first_app) as client:
+    with signed_in_client(first_app) as client:
         first = client.get("/api/health").json()
 
     restarted_metadata = ServerMetadata.create(
         original_dir.resolve(), host="127.0.0.2", port=9443, owner_kind="embedded"
     )
     restarted_app = create_named_app(data_dir=original_dir, instance_metadata=restarted_metadata)
-    with TestClient(restarted_app) as client:
+    with signed_in_client(restarted_app) as client:
         restarted = client.get("/api/health").json()
 
     assert restarted["space_id"] == first["space_id"] == first_app.state.space_id
@@ -48,7 +49,7 @@ def test_health_separates_durable_space_process_and_data_directory_identity(tmp_
         relocated_dir.resolve(), host="127.0.0.1", port=8421, owner_kind="embedded"
     )
     relocated_app = create_named_app(data_dir=relocated_dir, instance_metadata=relocated_metadata)
-    with TestClient(relocated_app) as client:
+    with signed_in_client(relocated_app) as client:
         relocated = client.get("/api/health").json()
 
     assert relocated["space_id"] == first["space_id"]
@@ -66,8 +67,8 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
     )
     app = create_app(data_dir=data_dir, instance_metadata=metadata)
 
-    with TestClient(app) as client:
-        response = client.get("/api/health")
+    with signed_in_client(app) as client:
+        response = client.get("/api/health/details")
 
     assert response.status_code == 200
     payload = response.json()
@@ -139,7 +140,7 @@ def test_team_shell_protocol_one_fixture_remains_supported(tmp_path) -> None:
     )
     app = create_app(data_dir=tmp_path)
 
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         advertised = client.get("/api/health").json()[fixture["health_field"]]
 
     assert fixture["schema_version"] == fixture["protocol_version"] == 1
@@ -164,7 +165,7 @@ def test_team_shell_protocol_four_fixture_matches_server_range(tmp_path) -> None
     fixture = json.loads(
         (Path(__file__).parent / "fixtures" / "team_shell_protocol_v4.json").read_text()
     )
-    with TestClient(create_app(data_dir=tmp_path)) as client:
+    with signed_in_client(create_app(data_dir=tmp_path)) as client:
         assert client.get("/api/health").json()["team_shell_protocol"] == fixture["server_range"]
     assert fixture["schema_version"] == 1
     assert fixture["protocol_version"] == TEAM_SHELL_PROTOCOL_MAXIMUM
@@ -180,8 +181,8 @@ def test_health_projects_team_creation_eligibility_without_member_authority(tmp_
         trusted_principal_resolver=lambda _request, opened: opened.space_user(member.user_id),
     )
 
-    with TestClient(app) as client:
-        response = client.get("/api/health")
+    with signed_in_client(app) as client:
+        response = client.get("/api/health/details")
 
     assert response.status_code == 200
     control = response.json()["project_creation"]
@@ -193,3 +194,39 @@ def test_health_projects_team_creation_eligibility_without_member_authority(tmp_
     ]
     assert [intent["eligible"] for intent in control["intents"]] == [False, True, False]
     assert [intent["preselected"] for intent in control["intents"]] == [False, True, False]
+
+
+def test_public_team_health_preserves_bootstrap_and_runtime_payload(tmp_path) -> None:
+    data_dir = tmp_path / "team"
+    AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    app = create_app(data_dir=data_dir)
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["space_name"] == "Team Lab"
+    assert payload["active_agent_tasks"] == 0
+    assert payload["projects"] == 0
+    assert payload["schema_ledger_head"] == AppStore._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+    assert payload["project_creation"]["requires_authenticated_member"] is True
+    assert set(payload) == {
+        "status",
+        "version",
+        "build",
+        "commit",
+        "schema_ledger_head",
+        "space_id",
+        "space_kind",
+        "space_name",
+        "instance_id",
+        "pid",
+        "data_dir_id",
+        "owner_kind",
+        "running_commit",
+        "web_build_id",
+        "team_shell_protocol",
+        "active_agent_tasks",
+        "projects",
+        "agent_mode",
+        "project_creation",
+    }

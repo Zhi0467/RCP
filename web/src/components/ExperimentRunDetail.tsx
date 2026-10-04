@@ -1,9 +1,10 @@
+import { BrowserToggle } from "./BrowserControls";
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { fetchEpisodeTimeline } from "../api";
+import { fetchEpisodeTimeline, loadEpisodes } from "../api";
 import { useRunArtifacts } from "../hooks/useRunArtifacts";
 import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
@@ -19,7 +20,12 @@ import {
   watcherLastObservedAt,
 } from "../runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
-import type { EpisodeTimelineResponse, ExperimentLoopHealth, WatcherRecord } from "../types";
+import type {
+  EpisodeTask,
+  EpisodeTimelineResponse,
+  ExperimentLoopHealth,
+  WatcherRecord,
+} from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
@@ -75,7 +81,7 @@ interface Props {
   allowStart?: boolean;
   startDisabled?: boolean;
   onInspectTask?: (operationId: string) => void;
-  onRun: (invocationCeiling?: number) => void;
+  onRun: (invocationCeiling?: number, browserRequested?: boolean) => void;
   /** Add turns to the ended episode in its own session; absent where no episode can continue. */
   onContinue?: (episodeId: string, invocationCeiling: number) => void;
   onStopLoop: () => void;
@@ -110,6 +116,8 @@ export function ExperimentRunDetail({
   onStopWatcher,
   episodeReportHref,
 }: Props) {
+  const [browserRequested, setBrowserRequested] = useState(false);
+  useEffect(() => setBrowserRequested(false), [run.node.id]);
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
   // Untouched, the field follows the node's own limit, which the human sees as
@@ -120,6 +128,7 @@ export function ExperimentRunDetail({
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
+  const [browserTasks, setBrowserTasks] = useState<EpisodeTask[]>([]);
   const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const runArtifacts = useRunArtifacts(
@@ -134,10 +143,16 @@ export function ExperimentRunDetail({
   useEffect(() => {
     if (!episode) return;
     let cancelled = false;
-    void fetchEpisodeTimeline(apiBase, episode.episode_id).then(
-      (response) => {
+    void Promise.all([
+      fetchEpisodeTimeline(apiBase, episode.episode_id),
+      loadEpisodes(apiBase, "experiment_loop", episode.episode_id),
+    ]).then(
+      ([response, episodes]) => {
         if (!cancelled) {
           setTimeline(response);
+          setBrowserTasks(
+            episodes.find((item) => item.episode_id === episode.episode_id)?.tasks ?? [],
+          );
           setTimelineError(null);
         }
       },
@@ -318,7 +333,12 @@ export function ExperimentRunDetail({
                 !control.can_start ||
                 (reauthorizing && authorizedCeiling === null)
               }
-              onClick={() => onRun(reauthorizing ? (authorizedCeiling ?? undefined) : undefined)}
+              onClick={() =>
+                onRun(
+                  reauthorizing ? (authorizedCeiling ?? undefined) : undefined,
+                  browserRequested,
+                )
+              }
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
               <FlaskConical size={14} aria-hidden="true" />{" "}
@@ -327,6 +347,15 @@ export function ExperimentRunDetail({
           )}
         </div>
       </div>
+
+      {allowStart && !control.node_closed && (
+        <BrowserToggle
+          subject="run"
+          checked={browserRequested}
+          disabled={runDisabled || startDisabled || runBusy}
+          onChange={setBrowserRequested}
+        />
+      )}
 
       {episode && (
         <EpisodeQuestions
@@ -357,6 +386,7 @@ export function ExperimentRunDetail({
       )}
       {episode && timeline?.episode_id === episode.episode_id && (
         <EpisodeTimeline
+          browserTasks={browserTasks}
           response={timeline}
           projectId={episode.project_id}
           artifacts={runArtifacts.artifacts}

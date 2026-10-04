@@ -1823,6 +1823,9 @@ class ProjectCatalog:
                 _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
                 _validate_optional_regular_app_file(paper_snapshot, "project paper snapshot")
 
+                from rcp.runs.browser_lifecycle import close_chat_browser_owners
+
+                close_chat_browser_owners(self.store, project_id, delete_profile=True)
                 database_records = self.store.delete_project_records(project_id)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)

@@ -4,9 +4,8 @@ import json
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi.testclient import TestClient
-
 from rcp.live_artifact_runtime import resolve_artifact_live_version
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_saved_artifacts_api import create_saved_artifact
@@ -36,7 +35,7 @@ def test_live_endpoint_pins_version_and_rechecks_project(manifest, tmp_path):
     )
     base = f"/api/projects/{project_id}/artifacts/{artifact.artifact_id}"
     live_url = f"{base}/versions/{quote(version.version_id, safe='')}/live"
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         result = client.get(live_url)
         assert result.status_code == 200
         assert result.headers["cache-control"] == "no-store"
@@ -77,7 +76,7 @@ def test_invalid_live_tag_is_visible_static_reason(manifest, tmp_path):
         store, app.state.catalog.open(project_id), artifact.artifact_id, version.version_id
     )
     url = f"/api/projects/{project_id}/artifacts/{artifact.artifact_id}/versions/{quote(version.version_id, safe='')}/live"
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.get(url)
         assert response.status_code == 200
         assert response.json()["static"] is True

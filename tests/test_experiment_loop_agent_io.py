@@ -15,6 +15,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
@@ -381,8 +382,10 @@ class _LoopLauncher:
         self.workspaces: list[Path] = []
         self.write_scopes: list[ProjectWriteScope] = []
         self.read_dirs: list[list[Path]] = []
+        self.browser_grants: list[BrowserGrant | None] = []
 
-    async def stream(self, _provider, prompt, **kwargs):
+    async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
+        self.browser_grants.append(browser_grant)
         self.contracts.append(_launch_text(prompt))
         self.sessions.append(kwargs.get("session_id"))
         workspace = Path(kwargs["cwd"])
@@ -1035,10 +1038,31 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("browser_requested", [False, True])
 async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handoff(
     manifest,
     tmp_path: Path,
+    monkeypatch,
+    browser_requested,
 ) -> None:
+    acquired = []
+
+    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+        acquired.append(owner)
+        return BrowserGrant(
+            requested=True,
+            status="granted",
+            owner=owner,
+            session_name=owner.token(),
+            invocation_dir=workspace_dir,
+            lease_id=f"browser-test-lease-{len(acquired)}",
+        )
+
+    monkeypatch.setattr("rcp.runs.browser_runtime_seam.acquire_browser_grant", acquire)
+    monkeypatch.setattr(
+        "rcp.runs.browser_runtime_seam.finish_browser_grant",
+        lambda grant, *, execution, data_dir: BrowserTurnStatus(status=grant.status),
+    )
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -1056,6 +1080,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         invocation=1,
         control_revision=service.history.state().revision,
     )
+    initial_request.browser_requested = browser_requested
     initial_execution = _execution(
         store,
         project_id,
@@ -1126,6 +1151,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         watcher_ids=[delivered_id],
         control_revision=initial_request.control_revision or 0,
     )
+    wake_request.browser_requested = browser_requested
     wake_execution = _execution(
         store,
         project_id,
@@ -1179,7 +1205,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     # Only this turn's own inputs and commands changed from the master; unchanged graph,
     # research, schema, write roots, repositories, and skills do not travel again.
     changed = _changed_values(wake_contract)
-    assert set(changed) == _TURN_VALUES
+    # Only an episode that asked for the browser hears about it.
+    assert set(changed) == _TURN_VALUES | ({"browser"} if browser_requested else set())
     assert "task-loop-wake-experiment-control-watcher_wake.json" in changed["paths.loop_control"]
     assert "task-loop-wake-experiment-watchers.json" in changed["paths.watcher_state"]
     assert str(service.manifest.research_dir / "graph.json") not in wake_contract
@@ -1191,9 +1218,10 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 
     assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
     assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
-    # The in-session Patch correction already holds the wake's values; only its own
-    # validator is new.
-    assert set(_changed_values(launcher.contracts[2])) == {"commands.validate"}
+    # The correction repeats its browser state and replaces its validator.
+    assert set(_changed_values(launcher.contracts[2])) == {"commands.validate"} | (
+        {"browser"} if browser_requested else set()
+    )
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None
@@ -1205,6 +1233,14 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert committed.context_baseline == initial_baseline
     assert len(committed.last_watcher_ids) == 1
     store.complete_agent_task("loop-wake", applied_revision=None, result={})
+
+    assert all(grant.requested is browser_requested for grant in launcher.browser_grants)
+    assert len(acquired) == (2 if browser_requested else 0)
+    if acquired:
+        assert acquired[0] == acquired[1]
+    assert store.browser_turn_status(wake_execution.operation_id).status == (
+        "granted" if browser_requested else "not_requested"
+    )
 
     # A later provider answer with no valid joint handoff gets its in-session
     # correction, but it cannot advance the episode binding or context baseline.
@@ -1224,6 +1260,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         watcher_ids=[failed_delivered_id],
         control_revision=initial_request.control_revision or 0,
     )
+    failed_request.browser_requested = browser_requested
     failed_execution = _execution(
         store,
         project_id,

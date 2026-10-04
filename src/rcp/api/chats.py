@@ -3,7 +3,17 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import (
@@ -26,6 +36,7 @@ from rcp.conversation_worktrees import (
 )
 from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT, CHAT_TITLE_MAX_CHARS
 from rcp.projects import ProjectCatalog
+from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import ChatSummaryPage, ChatTranscript, RunRequest
 from rcp.storage import AppStore
@@ -42,6 +53,12 @@ class ChatArchiveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     archived: bool
+
+
+class ChatBrowserPreference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    browser_requested: bool
 
 
 class ChatPinBody(BaseModel):
@@ -106,6 +123,55 @@ def chat_display(
     return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 
+@router.get(
+    "/api/projects/{project_id}/chats/{chat_id}/browser",
+    response_model=ChatBrowserPreference,
+)
+def chat_browser(
+    project_id: str,
+    chat_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> ChatBrowserPreference:
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    return ChatBrowserPreference(
+        browser_requested=store.chat_browser_requested(project_id, chat_id)
+    )
+
+
+@router.put(
+    "/api/projects/{project_id}/chats/{chat_id}/browser",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatBrowserPreference,
+)
+def set_chat_browser(
+    project_id: str,
+    chat_id: str,
+    body: ChatBrowserPreference,
+    background_tasks: BackgroundTasks,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> ChatBrowserPreference:
+    """Takes effect at the next turn; turning it off deletes the chat's browser profile."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    store.set_chat_browser_requested(project_id, chat_id, browser_requested=body.browser_requested)
+    if not body.browser_requested:
+        # Cleanup reaches the execution host, so it runs after the response. An
+        # active turn keeps its browser; its owner is closed when the turn ends.
+        background_tasks.add_task(_delete_browser_if_still_off, store, project_id, chat_id)
+    return body
+
+
+def _delete_browser_if_still_off(store: AppStore, project_id: str, chat_id: str) -> None:
+    close_chat_browser_owners(
+        store, project_id, chat_id, delete_profile=True, unless_browser_on=True
+    )
+
+
 @router.post(
     "/api/projects/{project_id}/chats/{chat_id}/archive",
     dependencies=[Depends(require_project_write_admission)],
@@ -116,6 +182,7 @@ def archive_chat(
     chat_id: str,
     body: ChatArchiveBody,
     request: Request,
+    background_tasks: BackgroundTasks,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -126,6 +193,10 @@ def archive_chat(
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
+    if body.archived:
+        background_tasks.add_task(
+            close_chat_browser_owners, store, project_id, chat_id, delete_profile=False
+        )
     return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 
@@ -302,6 +373,7 @@ def chat(
     chat_id: str,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     branch_id: str | None = None,
 ) -> ChatTranscript:
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
@@ -311,6 +383,9 @@ def chat(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if transcript is None:
         raise HTTPException(status_code=404, detail="Chat not found")
+    for message in transcript.messages:
+        if message.operation_id is not None:
+            message.browser_status = store.browser_turn_status(message.operation_id).public()
     return transcript
 
 

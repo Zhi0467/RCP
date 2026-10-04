@@ -1,7 +1,8 @@
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
+
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
@@ -32,7 +33,7 @@ from .helpers import create_named_app as create_app
 )
 def test_reference_refused_routes(manifest, tmp_path, route, body):
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{app.state.default_project_id}/{route}",
             json={**body, "references": [{"kind": "paper"}]},
@@ -67,7 +68,7 @@ def test_admission_retains_reference_bytes_after_source_edit_and_expiry(manifest
         ),
         data=b"frozen report",
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",
             json={

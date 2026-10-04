@@ -383,6 +383,13 @@ def _prepare_chat_prompt_state(
                 "path": master_context_path,
             },
         }
+    # The browser grant is also compared with the last committed turn: the human
+    # toggles it between turns, so the session hears it only when it changes.
+    browser = values.get("browser")
+    if delta is not None:
+        delta = {key: value for key, value in delta.items() if key != "browser"} or None
+    if browser is not None and previous is not None and previous.values.get("browser") != browser:
+        delta = {**(delta or {}), "browser": browser}
 
     snapshot = _ChatMasterSnapshot(
         master_context_version=CHAT_MASTER_CONTEXT_VERSION,

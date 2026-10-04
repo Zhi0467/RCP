@@ -10,7 +10,6 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.__main__ import build_parser
 from rcp.agents.launcher import (
@@ -43,6 +42,7 @@ from rcp.storage import (
     ProjectProvisioningRepositoryIntent,
     ProjectRecord,
 )
+from tests.helpers import signed_in_client
 
 
 class _FakeLauncher:
@@ -619,7 +619,7 @@ def test_cli_control_app_and_storage_share_one_request_bound_flow(
     )
 
     try:
-        with published_server_metadata(store.path.parent, metadata), TestClient(app):
+        with published_server_metadata(store.path.parent, metadata), signed_in_client(app):
             client = ServerControlClient.from_data_dir(
                 store.path.parent,
                 expected_server_uid=os.geteuid(),

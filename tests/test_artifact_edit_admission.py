@@ -7,13 +7,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 
 from rcp.runs.artifact_edit_admission import admit_artifact_edit, artifact_edit_availability
 from rcp.runs.session_master import record_session_master
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_artifact_viewer_state import _task
@@ -100,7 +100,7 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
         store, app.state.service, store.artifact(artifact.artifact_id)
     )
     assert availability.can_comment and availability.fresh_session_required
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
         json={"comments": [{"text": "Update"}]},
     )
@@ -187,7 +187,7 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report)
         episode_id if mode == "auto_research" else None
     )
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.get(f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/state")
     assert response.status_code == 200
     state = response.json()
@@ -244,7 +244,7 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
 def test_viewer_session_collision_matches_comment_admission(edit_origin):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    client = TestClient(app)
+    client = signed_in_client(app)
     url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}"
     assert client.get(url + "/state").json()["can_comment"]
     active = task.model_copy(
@@ -329,7 +329,9 @@ def test_pending_import_is_transient(edit_origin, monkeypatch, state, expected):
             "reason": None,
         },
     )
-    response = TestClient(app).get(f"/api/projects/{task.project_id}/artifacts/{'a' * 24}/download")
+    response = signed_in_client(app).get(
+        f"/api/projects/{task.project_id}/artifacts/{'a' * 24}/download"
+    )
     assert response.status_code == expected
 
 
@@ -355,7 +357,7 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
         "elements": [{"path": "p", "label": "", "text": "Score"}],
     }
     url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
-    client = TestClient(app)
+    client = signed_in_client(app)
     # A box with only its own comment is a complete request, sent at once.
     response = client.post(
         url,

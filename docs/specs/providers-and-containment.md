@@ -375,12 +375,50 @@ root is refused as a write and kept readable, because RCP stages its `graph.json
 and `research.md` as required run context; Codex treats a denied path as
 unreadable rather than unwritable.
 
+Work, orchestrate, and Discuss also deny reads of the desktop app's WebKit,
+application support, cache, HTTP storage, and cookie paths for both release and Dev
+bundle identifiers. These rules are separate from protected write paths.
+Home-relative paths resolve on the execution host. Discuss uses a named native
+permission profile so the same denial applies in exec and app-server; the
+app-server checks the activated profile before starting a turn.
+
+### Browser grants
+
+The per-chat browser preference is a human grant of a code-defined tool
+([decision](../decisions/2026-10-04-agents-browse-with-playwright-cli.md)).
+Admission resolves one immutable grant before rendering the prompt. The launcher
+passes it explicitly through provider requests and legacy command construction.
+Work, orchestrate, and Discuss admit grants. Paper coach, ingestion, scratch-only
+correction, and recorded replay do not. Prompts render the resolved session and
+invocation directory, say the session is already open, and tell the agent to
+start with `goto`: the CLI's `open`, `close`, `close-all`, and `kill-all` end
+RCP's session for the rest of the turn, and `delete-data` also erases its logins. Continuations send explicit off or unavailable values.
+The owner releases the grant in a finally block, including prompt preparation
+failures. A detached remote turn retains the same lease until remote-result
+reconciliation proves its provider stopped. Its lease identity stays in the
+existing turn status record; settlement releases it and records the final browser
+status before deferred cleanup, without acquiring another grant. A controller
+restart preserves leases whose remote result is still pending and reconstructs
+release routing from the durable task and browser owner. Host epoch cleanup
+adopts those leases while pruning the others. Settled paused tasks do not block
+cleanup.
+Granted turns merge its environment and prefix its tool directory to PATH.
+SSH launches prefix the execution host's PATH after login-shell initialization;
+they never copy the controller's PATH. Codex retains `shell_environment_policy={}`.
+
+Browser actions execute in an RCP-started process outside the provider sandbox.
+The CLI permits agent-written Playwright code and writes outside the chat's write
+roots. It can reach any address available to its execution account. The human's
+grant accepts this boundary; `patch.json` remains the only graph-change channel.
+
 ### Claude
 
 Work and orchestrate use Claude's supported unattended `dontAsk` mode with an
 RCP-authored strict settings allow-list for the exact workspace and admitted
 repository roots. They never use `bypassPermissions`. RCP suppresses user
-settings and unrelated MCP configuration for this enforced launch. Public
+settings for this enforced launch. Every Claude launch passes strict empty MCP
+configuration; supported skills remain available. A granted Discuss turn adds only
+`Bash(playwright-cli:*)` to its pre-authorized tools. Public
 WebSearch and WebFetch remain available under the provider contract.
 
 Claude's OS sandbox is off. Its Linux backend always unshares the network
@@ -426,7 +464,10 @@ path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages are outside Git. The paper coach runs
 inside the project and denies every edit and the shell outright, so it needs no
 path rules. Discuss and ingestion may edit only their workspace and their own
-write folders, and have no shell.
+write folders. Ingestion has no shell. Discuss has no shell unless the human
+granted the browser; then its ordered bash rules deny `*` and allow
+`playwright-cli *`. Command selection and launch configuration derive the same
+rules, including on resumed sessions.
 
 Work keeps the shell. Like Claude's rules, these bound every file-editing tool
 and do not bound the shell, so the same accepted accidental-write gap applies.
@@ -1559,3 +1600,49 @@ and Paper surface retains its provider-native public-web behavior as defined by
 its contract. Exact project write roots do not add a new network restriction.
 Generic scratch-only Patch correction remains offline where its retained
 contract requires that.
+
+## Host browser runtime
+
+`browser/` owns optional headless browser installation and sessions. It is
+separate from provider launches. The launch integration supplies a stable owner
+token and the stage workspace. The runtime exports ensure, release, and close;
+it never installs tools during ensure. When a broken CLI cannot probe retained
+sessions during Install, only a proven-stopped OS owner permits repair; live or
+unknown owners block it.
+
+RCP pins Playwright CLI 0.1.22. Each owner has an explicit Chromium executable,
+headless configuration, persistent profile, and output directory. Ambient
+attachment, headed, profile, and storage-state settings are overridden. Launch
+environment overrides are removed. The pinned daemon entry point runs directly
+under launchd or a lingering systemd user manager, so the OS owns the daemon
+rather than its short-lived CLI launcher. A missing process owner makes the
+browser unavailable.
+
+Ensure probes the CLI registry from the stage workspace before starting a
+session. It creates no `.playwright` marker and never reopens a live session.
+Release checks liveness and ends the active lease. File locks serialize host
+operations. The host cap counts managed live sessions; the least recently used
+owner without active leases is closed first. A full busy host reports capacity.
+Controller restart adopts live sessions and the leases of remote turns still
+awaiting settlement. Ensure and close carry those retained lease ids to the host,
+which moves them to the current controller epoch and prunes its other old leases.
+Normal and recovered turns release through the same durable owner, host, stage,
+and lease routing. Recorded-result settlement, Pause, and a proven-stopped remote
+provider pass finish retained leases before deferred cleanup; cleanup retries
+probe unresolved passes of inactive tasks and stay pending until they stop.
+
+Close uses the CLI's graceful close before removing an explicitly requested
+profile together with that owner's page snapshots and logs. A confirmed profile deletion retires the runtime record. A removed
+workspace is retired, with its profile, only after its OS owner is proven
+stopped, because a new stage gets a new owner; a live or unknown owner remains
+fenced without blocking other owners' acquisition. A partly written install
+reads as not installed, so Install can repair it.
+Closing an active owner waits for its last lease to finish. Idle timeout
+is passed in milliseconds from the seconds-based limit. Failed remote cleanup
+and release remain durable and retry on later ensure or install calls, one
+queued operation per call. Replayed close requests do not prune old epochs from
+stale retention snapshots; a fresh ensure or close owns that pruning. Before
+acquisition contacts the host, the controller
+journals a release for the exact new lease; handing back a validated grant clears
+that recovery request. A lost or invalid reply leaves it for retry, and releasing
+an unknown lease is a no-op. Readiness does not run queued cleanup.

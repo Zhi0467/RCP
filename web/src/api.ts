@@ -1,4 +1,6 @@
 import type {
+  ChatBrowserPreference,
+  MachineBrowserReadiness,
   AgentQuestion,
   AnswerQuestionRequest,
   UpdateNotice,
@@ -116,6 +118,14 @@ export async function api<T>(
     throw error;
   }
   if (!response.ok) {
+    if (
+      typeof window !== "undefined" &&
+      response.status === 401 &&
+      path !== "/api/owner/exchange" &&
+      path !== "/api/owner/redeem"
+    ) {
+      window.dispatchEvent(new Event("rcp:session-required"));
+    }
     if (!mutation && (response.status === 401 || response.status === 403)) accessLossHandler?.();
     const body = await readErrorBody(response);
     if (
@@ -842,5 +852,31 @@ export function dismissQuestion(apiBase: string, questionId: string) {
   return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/dismiss`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+export function loadChatBrowser(apiBase: string, chatId: string): Promise<ChatBrowserPreference> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`);
+}
+
+export function setChatBrowser(
+  apiBase: string,
+  chatId: string,
+  browserRequested: boolean,
+): Promise<ChatBrowserPreference> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`, {
+    method: "PUT",
+    body: JSON.stringify({ browser_requested: browserRequested }),
+  });
+}
+
+export function loadMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/browser`);
+}
+
+export function installMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/browser/install`, {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }

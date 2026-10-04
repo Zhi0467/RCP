@@ -7,6 +7,7 @@ type SignInMode = "pair" | "token";
 
 interface Props {
   spaceName: string | null;
+  personal?: boolean;
   onAuthenticate: (token: string) => Promise<void>;
   onPair: (code: string, label: string) => Promise<void>;
   initialMode?: SignInMode;
@@ -15,18 +16,21 @@ interface Props {
 
 export function TeamLoginBoundary({
   spaceName,
+  personal = false,
   onAuthenticate,
   onPair,
   initialMode = "pair",
   initialCode = initialPairingCode,
 }: Props) {
-  const [mode, setMode] = useState<SignInMode>(initialCode ? "pair" : initialMode);
-  const [token, setToken] = useState("");
+  const [mode, setMode] = useState<SignInMode>(
+    personal ? "token" : initialCode ? "pair" : initialMode,
+  );
+  const [token, setToken] = useState(personal ? (initialCode ?? "") : "");
   const [code, setCode] = useState(initialCode ?? "");
   const [label, setLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const resolvedSpaceName = spaceName?.trim() || "Team space";
+  const resolvedSpaceName = spaceName?.trim() || (personal ? "your personal space" : "Team space");
 
   const switchMode = (next: SignInMode) => {
     setMode(next);
@@ -43,7 +47,11 @@ export function TeamLoginBoundary({
       setToken("");
     } catch (caught) {
       setToken("");
-      setError(teamLoginFailureMessage(caught));
+      setError(
+        personal
+          ? "The sign-in code was not accepted. Use a current code from the terminal running RCP."
+          : teamLoginFailureMessage(caught),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -77,7 +85,9 @@ export function TeamLoginBoundary({
           <span className="team-login-mark" aria-hidden="true">
             RCP
           </span>
-          <span className="team-login-space-kind">Team space</span>
+          <span className="team-login-space-kind">
+            {personal ? "Personal space" : "Team space"}
+          </span>
         </header>
         <div className="team-login-card-body">
           {mode === "pair" ? (
@@ -159,13 +169,15 @@ export function TeamLoginBoundary({
                   void authenticate();
                 }}
               >
-                <label htmlFor="team-login-token">Personal team token</label>
+                <label htmlFor="team-login-token">
+                  {personal ? "One-time sign-in code" : "Personal team token"}
+                </label>
                 <input
                   id="team-login-token"
-                  name="team-token"
-                  type="password"
-                  autoComplete="off"
-                  autoCapitalize="none"
+                  name={personal ? "owner-code" : "team-token"}
+                  type={personal ? "text" : "password"}
+                  autoComplete={personal ? "one-time-code" : "off"}
+                  autoCapitalize={personal ? "characters" : "none"}
                   autoCorrect="off"
                   spellCheck={false}
                   value={token}
@@ -189,13 +201,15 @@ export function TeamLoginBoundary({
                   {submitting ? "Signing in" : "Sign in"}
                 </button>
               </form>
-              <button
-                className="team-login-switch"
-                type="button"
-                onClick={() => switchMode("pair")}
-              >
-                Connect with a device code instead
-              </button>
+              {!personal && (
+                <button
+                  className="team-login-switch"
+                  type="button"
+                  onClick={() => switchMode("pair")}
+                >
+                  Connect with a device code instead
+                </button>
+              )}
             </>
           )}
         </div>

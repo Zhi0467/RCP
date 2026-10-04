@@ -23,6 +23,7 @@ from rcp.providers.base import (
     _usage_dedupe_key,
     _usage_int,
 )
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.codex.remote import AppServerTurnFence, CodexSessionFormat
 from rcp.providers.turn_fence import TurnFence
 
@@ -256,6 +257,7 @@ class CodexProfile(ProviderProfile):
         write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
+        browser_grant: BrowserGrant | None = None,
     ) -> list[str]:
         del prompt, read_dirs
         command = [binary, "exec"]
@@ -290,12 +292,22 @@ class CodexProfile(ProviderProfile):
             if write_scope is not None:
                 raise ValueError(f"capability {capability!r} cannot carry a project write scope")
             command.extend(["--config", 'approval_policy="never"'])
+            if capability == "discuss":
+                command.extend(
+                    [
+                        "--config",
+                        'default_permissions="rcp_discuss"',
+                        "--config",
+                        _codex_discuss_permission_profile(cwd),
+                    ]
+                )
             sandbox = "read-only" if capability == "paper_readonly" else "workspace-write"
-            if session_id:
-                command.extend(["--config", f'sandbox_mode="{sandbox}"'])
-            else:
-                command.extend(["--sandbox", sandbox])
-            if capability != "paper_readonly":
+            if capability != "discuss":
+                if session_id:
+                    command.extend(["--config", f'sandbox_mode="{sandbox}"'])
+                else:
+                    command.extend(["--sandbox", sandbox])
+            if capability not in {"paper_readonly", "discuss"}:
                 command.extend(["--config", "sandbox_workspace_write.network_access=true"])
         if not session_id:
             command.extend(["--cd", str(cwd)])
@@ -385,5 +397,39 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
         + '},filesystem={":root"="read",":workspace_roots"={"."="write",'
         '".git"="write",".research"="read"}'
         + ("," + protected if protected else "")
+        + ","
+        + _codex_read_denials()
+        + "},network={enabled=true}}}"
+    )
+
+
+# Home-relative rules resolve on the execution host, including SSH launches.
+# These are WKWebView storage owners for the release and development identifiers
+# in the Tauri configs, independent of repository write protection.
+CODEX_READ_DENY_PATHS = tuple(
+    f"~/Library/{directory}/{bundle}{suffix}"
+    for bundle in ("app.researchcontrolpanel.rcp", "app.researchcontrolpanel.rcp.dev")
+    for directory, suffix in (
+        ("WebKit", ""),
+        ("Application Support", ""),
+        ("HTTPStorages", ""),
+        ("HTTPStorages", ".binarycookies"),
+        ("Caches", ""),
+        ("Cookies", ".binarycookies"),
+    )
+)
+
+
+def _codex_read_denials() -> str:
+    return ",".join(f'{json.dumps(path)}="deny"' for path in CODEX_READ_DENY_PATHS)
+
+
+def _codex_discuss_permission_profile(cwd: Path) -> str:
+    return (
+        "permissions={rcp_discuss={workspace_roots={"
+        + json.dumps(str(cwd))
+        + '=true},filesystem={":root"="read",'
+        '":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write",'
+        + _codex_read_denials()
         + "},network={enabled=true}}}"
     )

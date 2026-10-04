@@ -190,38 +190,37 @@ impl TeamSessionState {
                     range.minimum > TEAM_SHELL_PROTOCOL_MAXIMUM && range.minimum <= range.maximum
                 }) =>
             {
-                let notice = self.personal_update_notice().await;
-                Err(format!(
-                    "{error} {}",
-                    desktop_update_action(backend::desktop_build_kind(), notice.as_ref())
-                ))
+                match self.personal_update_notice().await {
+                    Ok(notice) => Err(format!(
+                        "{error} {}",
+                        desktop_update_action(backend::desktop_build_kind(), Some(&notice))
+                    )),
+                    Err(notice_error) => Err(format!("{error} {notice_error}")),
+                }
             }
             result => result,
         }
     }
 
-    async fn personal_update_notice(&self) -> Option<DesktopUpdateNotice> {
-        let status = self.personal.status().ok()?;
-        let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .ok()?;
-        let notice = client
-            .get(endpoint(&status.base_url, "/api/update-notice").ok()?)
+    async fn personal_update_notice(&self) -> Result<DesktopUpdateNotice, String> {
+        let status = self.personal.status()?;
+        let client = crate::owner_session::client(&status.base_url, Some(REQUEST_TIMEOUT))?;
+        let response = client
+            .get(endpoint(&status.base_url, "/api/update-notice")?)
             .send()
             .await
-            .ok()?
+            .map_err(|error| format!("personal update notice is unavailable: {error}"))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err("Sign in to the personal space to check desktop updates.".into());
+        }
+        let notice = response
             .error_for_status()
-            .ok()?
+            .map_err(|error| format!("personal update notice failed: {error}"))?
             .json::<DesktopUpdateNotice>()
             .await
-            .ok()?;
-        backend::reverify_identity(&self.personal, &status)
-            .await
-            .ok()?;
-        Some(notice)
+            .map_err(|error| format!("personal update notice was invalid: {error}"))?;
+        backend::reverify_identity(&self.personal, &status).await?;
+        Ok(notice)
     }
 
     pub fn status_for_origin(&self, origin: &Url) -> Result<Option<DesktopStatus>, String> {
@@ -1731,6 +1730,7 @@ fn request_cookie(set_cookie: &str) -> Result<Zeroizing<String>, String> {
 fn desktop_status(origin: &str, health: &TeamHealth) -> DesktopStatus {
     DesktopStatus {
         desktop: true,
+        owner_authenticated: true,
         version: health.version.clone(),
         base_url: origin.to_string(),
         instance_id: health.instance_id.clone(),

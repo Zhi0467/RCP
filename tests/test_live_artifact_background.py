@@ -4,11 +4,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import app as app_module
 from rcp.server_runtime import ServerMetadata
-from tests.helpers import create_named_app
+from tests.helpers import create_named_app, signed_in_client
 
 
 @pytest.mark.parametrize("owner", ["startup", "watcher"])
@@ -35,7 +34,7 @@ def test_shutdown_drains_active_live_capture(manifest, tmp_path, monkeypatch, ow
     data_dir = tmp_path / "data"
     metadata = ServerMetadata.create(data_dir, host="127.0.0.1", port=18423, owner_kind="embedded")
     app = create_named_app(str(manifest.path), data_dir=data_dir, instance_metadata=metadata)
-    client = TestClient(app, base_url="http://testserver:18423")
+    client = signed_in_client(app, base_url="http://testserver:18423")
     client.__enter__()
     with ThreadPoolExecutor(max_workers=2) as executor:
         poll = None

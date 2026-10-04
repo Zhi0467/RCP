@@ -25,6 +25,7 @@ and `sys.executable`, which starts RCP's own Python runtime.
 | --- | --- | --- | --- | --- | --- |
 | `age` | team server | `server_ops/backup.py`, `server_ops/install.py`, `server_ops/doctor.py` | Upstream 1.x; native X25519 archive encryption | PATH existence at install; `--version` at install, doctor and backup | Refuse incompatible/missing encryption tool; no fallback |
 | `age-keygen` | team server | `server_ops/backup_identity.py`, `server_ops/backup_config.py`, `server_ops/install.py` | Native X25519 identity creation and `-y` public recipient derivation | PATH existence at install; validate operation output; no independent version probe | Refuse identity creation/readback; never replace an unreadable retained identity |
+| `apt-get` | team server | `browser/libraries.py` | Install the fixed Chromium system packages on supported Ubuntu releases | Root and Ubuntu release checked before invocation | Warn on installation failure; browser readiness reports missing libraries |
 | `bash` | desktop / execution host / team server | `agents/launcher.py`, `transport/watcher_process.py`, `terminals/pty_shell.py`, `transport/remote_terminal_probe.py` | Login shell for provider discovery/watchers; interactive terminal shell | Terminal checks executable `/bin/bash`; no watcher/discovery version probe | Terminal unavailable when missing; watcher/provider launch reports failure |
 | `cat` | execution host | `setup.py`, `transport/run_stage.py` | Read a remote file to stdout | No probe today | Setup or stage read fails |
 | `curl` | team server | `server_ops/provider_update.py`, `server_ops/install.py` | HTTPS installer download with `-fsSL` | PATH existence at install; no feature/version probe for the absolute update executable | Provider update refuses failed download |
@@ -34,6 +35,7 @@ and `sys.executable`, which starts RCP's own Python runtime.
 | `git` | desktop / execution host / team server | `git_identity.py`, `git_access.py`, `transport/conversation_worktree.py`, `transport/remote_transfer_git.py`, `transport/remote_backup_checkout.py`, `server_ops/git_credentials.py`, `server_ops/project_checkout.py` | Worktrees require >=2.38; repository, bundle and credential operations require Git CLI | Worktree `--version` gate; identity feature check; install/doctor executable/version probes; checkout operation readbacks | Refuse unsupported worktree or failed repository operation; no replacement VCS |
 | `id` | desktop / execution host / team server | `compute_jobs/backend_context.py` | Numeric effective uid from `-u` | Invocation output validated as decimal | Compute context refuses invalid uid |
 | `launchctl` | desktop / execution host | `compute_jobs/backends/launchd.py`, `transport/compute_process_owner.py` | Launchd GUI domain bootstrap, print and bootout | `print gui/<uid>` facility probe | Backend unavailable; failed cancellation remains explicit |
+| `ldd` | Linux execution host / team server | `browser/host.py` | Inspect Chromium shared-library dependencies | Invocation during browser readiness on supported Ubuntu releases | Browser unavailable when libraries or inspection are unavailable |
 | `loginctl` | team server | `server_ops/install.py`, `server_ops/doctor.py` | Enable and inspect execution-account linger | PATH existence at install; `show-user` readback and doctor | Refuse install or report unhealthy service account |
 | `mkdir` | execution host | `transport/state.py`, `transport/run_stage.py` | `-p` stage/root creation | No probe today | Refuse preparation/publication on command failure |
 | `npm` | desktop / team server | `web_assets.py` | Run the repository's Web build and watch scripts | No independent version probe today | Source Web build fails visibly; packaged prebuilt Web mode does not invoke npm |
@@ -107,10 +109,17 @@ sudo or supplemental privileged group membership.
 
 Supported servers are Ubuntu 22.04 LTS and Ubuntu 24.04 LTS on x86-64 with
 systemd. CI builds Web assets with Node.js 24; installed servers need no Node.js
-or npm. Application Python 3.12 is managed through `uv`; Git, OpenSSH, system-wide `uv`, and the upstream `age`
+or npm unless the optional agent browser is used. Application Python 3.12 is
+managed through `uv`; Git, OpenSSH, system-wide `uv`, and the upstream `age`
 CLI in the range `>=1.0.0,<2.0.0` are prerequisites. Installation validates
-those system tools but does not install general OS software or modify apt
-repositories. After creating the service account, it uses system-wide `uv` as
+those system tools. Root install and release update also install the fixed
+Chromium library package set for the supported Ubuntu release through apt-get.
+This step is best effort: a release that predates the browser skips it, and an
+apt failure is reported as a warning field, never a failed install or update.
+They do not modify apt repositories. Ubuntu 24.04 uses the corresponding t64
+packages. Browser readiness maps missing shared libraries to an exact apt-get
+command; ordinary browser install never elevates or installs OS packages.
+After creating the service account, it uses system-wide `uv` as
 `rcp` to install and revalidate that account's managed Python 3.12 before any
 release installation. The operator does not provision files inside a
 not-yet-existing account. The operator guide supplies tested prerequisite
@@ -1769,3 +1778,17 @@ unified wizard and desktop operator bridge, live restore and member removal,
 transfer, and protected backup have not been driven live against a source-built
 team service. Current RCP must not simulate those journeys or describe
 **ready for review** as an existing project.
+
+## Agent browser host runtime
+
+Browser installation is explicit. The execution account needs Node.js 18 or
+newer and npm; RCP itself still starts without them. Doctor and machine cards
+use the same readiness service. Doctor probes the installed service account,
+including its login environment, rather than root's tools. Browser readiness is
+optional and does not make the core server dependency check fail.
+
+RCP installs a pinned Playwright CLI and Chromium into its tools directory.
+Profiles, configurations and owner state live in the sibling browser directory.
+Both roots are excluded from protected backups and remain RCP-owned protected
+storage under ordinary agent write scopes. SSH hosts use the private account
+RCP root. Browser cookies and live process handles are never restored.

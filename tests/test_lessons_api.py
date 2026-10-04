@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from rcp.api import create_app
 from rcp.limits import LESSON_TEXT_MAX_CHARS
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_project_membership import _create_project
@@ -11,7 +10,7 @@ from .test_project_membership import _create_project
 
 def test_lessons_crud_shapes_and_project_scope(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     url = f"/api/projects/{project_id}/lessons"
     assert client.get(url).json() == {"lessons": []}
@@ -58,7 +57,7 @@ def test_lessons_crud_shapes_and_project_scope(manifest, tmp_path) -> None:
 
 def test_lessons_require_membership_for_every_route(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     url = f"/api/projects/{project_id}/lessons"
@@ -77,7 +76,7 @@ def test_lessons_require_membership_for_every_route(manifest, tmp_path) -> None:
 
 def test_lessons_mutations_require_named_identity_and_write_admission(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     url = f"/api/projects/{project_id}/lessons"

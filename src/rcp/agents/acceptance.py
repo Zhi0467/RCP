@@ -28,6 +28,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
+from rcp.providers.browser_grant import BrowserGrant
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
 ACCEPTANCE_CAMPAIGN_FINISH_MARKER = "[RCP acceptance: campaign finish]"
@@ -172,6 +173,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         supervisor_path: str | None = None,
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
+        browser_grant: BrowserGrant | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -197,6 +199,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     supervise_remote=supervise_remote,
                     supervisor_path=supervisor_path,
                     operation_id=operation_id,
+                    git_access=git_access,
+                    browser_grant=browser_grant,
                 ):
                     yield event
             return

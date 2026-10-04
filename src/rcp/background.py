@@ -1168,6 +1168,7 @@ class BackgroundAgentTasks:
                 )
         # The provider may have finished between the probe and the stop signal.
         # Preserve a completed or temporarily unreadable journal for its owner.
+        from rcp.runs.browser_lifecycle import finish_recorded_browser
         from rcp.runs.remote_reconciliation import reconcile_remote_pass
 
         result = reconcile_remote_pass(self.store, record, stopped=lambda *_: True)
@@ -1176,6 +1177,7 @@ class BackgroundAgentTasks:
                 "The remote provider stopped; RCP will reconcile its recorded result before Pause."
             )
         self._settle_detached_mailbox(record.operation_id)
+        finish_recorded_browser(self.store, record.operation_id)
         self.store.request_agent_task_pause(record.operation_id)
         self.store.finish_remote_provider_pass(record.operation_id, pid_file)
         self.store.pause_agent_task(
@@ -2379,6 +2381,7 @@ class BackgroundAgentTasks:
 
         # Import lazily: the owner table imports Work, whose runtime types import
         # this module. Background owns scheduling, not owner registration.
+        from rcp.runs.browser_lifecycle import finish_recorded_browser
         from rcp.runs.remote_finalization import plan_remote_reconciliation
 
         # Later passes retry what this one could not finish.
@@ -2471,6 +2474,7 @@ class BackgroundAgentTasks:
                 assert execution is not None
                 # No admission or handler may race Apply or watcher settlement.
                 self._settle_detached_mailbox(record.operation_id)
+                finish_recorded_browser(self.store, record.operation_id)
                 pid_file = decision.pid_file
                 assert pid_file is not None
                 if decision.action == "fail":

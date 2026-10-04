@@ -114,10 +114,7 @@ impl<'a> ResourceAccess<'a> {
     ) -> Result<Response, String> {
         match self.target {
             ResourceTarget::Personal(status) => {
-                let response = reqwest::Client::builder()
-                    .timeout(timeout)
-                    .build()
-                    .map_err(|error| error.to_string())?
+                let response = crate::owner_session::client(&status.base_url, Some(timeout))?
                     .request(method, url)
                     .send()
                     .await
@@ -857,6 +854,23 @@ pub async fn desktop_test_notification(app: AppHandle) -> &'static str {
 }
 
 #[tauri::command]
+pub async fn desktop_owner_sign_in(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, BackendState>,
+    code: String,
+) -> Result<DesktopStatus, String> {
+    let status = state.status()?;
+    let current = window.url().map_err(|error| error.to_string())?;
+    if !is_personal_origin(&current, &status.base_url, cfg!(debug_assertions))? {
+        return Err("owner sign-in requires the personal window".into());
+    }
+    // Redeem installs its session; connecting again would mint a second one.
+    crate::owner_session::redeem(&app, &status, &code).await?;
+    refresh_personal_status(&state, status).await
+}
+
+#[tauri::command]
 pub async fn desktop_status(
     window: WebviewWindow,
     state: State<'_, BackendState>,
@@ -866,7 +880,7 @@ pub async fn desktop_status(
     let current = window
         .url()
         .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
-    let mut status = state.status()?;
+    let status = state.status()?;
     if !is_personal_origin(&current, &status.base_url, cfg!(debug_assertions))? {
         if let Some(team_status) = sessions.status_for_origin(&current)? {
             return Ok(team_status);
@@ -878,13 +892,21 @@ pub async fn desktop_status(
             Err("the displayed desktop origin is not a saved RCP space".into())
         };
     }
-    if let Ok(health) = backend::health(&status).await {
-        if status.matches_health(&health) {
+    refresh_personal_status(&state, status).await
+}
+
+pub(crate) async fn refresh_personal_status(
+    state: &BackendState,
+    mut status: DesktopStatus,
+) -> Result<DesktopStatus, String> {
+    if crate::owner_session::has_session(&status) {
+        if let Some(health) = backend::status_health(&status).await? {
             state.update_health(&health);
             status.active_agent_tasks = health.active_agent_tasks;
             status.owner_kind = health.owner_kind;
         }
     }
+    status.owner_authenticated = crate::owner_session::has_session(&status);
     Ok(status)
 }
 
@@ -1219,6 +1241,7 @@ mod tests {
     fn desktop_status(base_url: &str) -> DesktopStatus {
         DesktopStatus {
             desktop: true,
+            owner_authenticated: true,
             version: "0.3.2".into(),
             base_url: base_url.into(),
             instance_id: "instance".into(),

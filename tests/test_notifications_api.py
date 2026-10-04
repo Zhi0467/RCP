@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 
 import httpx
 import uvicorn
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
@@ -16,13 +15,14 @@ from rcp.limits import (
     TEAM_SESSION_IDLE_DAYS,
 )
 from rcp.storage import AppStore, EpisodeRecord
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_until
 
 
 def test_personal_preferences_and_device_registration(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     preferences_url = f"/api/projects/{project_id}/notifications"
     preferences = client.get(preferences_url)
@@ -57,7 +57,7 @@ def test_team_device_session_ownership_expiry_and_no_delivery_refresh(
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
     member, token = store.enroll_team_member(bootstrap, "Member")
     app = create_app(data_dir=tmp_path)
-    clients = [TestClient(app, base_url="https://testserver") for _ in range(2)]
+    clients = [signed_in_client(app, base_url="https://testserver") for _ in range(2)]
     for client in clients:
         assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
     first, second = clients
@@ -91,7 +91,7 @@ def test_logout_and_revocation_detach_team_devices(tmp_path) -> None:
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
     member, token = store.enroll_team_member(bootstrap, "Member")
     app = create_app(data_dir=tmp_path)
-    first, second = [TestClient(app, base_url="https://testserver") for _ in range(2)]
+    first, second = [signed_in_client(app, base_url="https://testserver") for _ in range(2)]
     for client in (first, second):
         client.post("/api/team/session/exchange", json={"token": token})
     devices = [
@@ -113,7 +113,7 @@ def test_desktop_retry_partial_success_ttl_resolution_and_toggle(
     member, token = store.enroll_team_member(bootstrap, "Member")
     app = create_app(str(manifest.path), data_dir=tmp_path)
     project_id = app.state.default_project_id
-    clients = [TestClient(app, base_url="https://testserver") for _ in range(2)]
+    clients = [signed_in_client(app, base_url="https://testserver") for _ in range(2)]
     devices = []
     for client in clients:
         client.post("/api/team/session/exchange", json={"token": token})
@@ -200,6 +200,10 @@ def test_served_desktop_register_attention_pull_and_ack(manifest, tmp_path, capl
             wait_until(lambda: app.state.startup_effect_runtime_event.is_set())
             wait_until(lambda: store.notification_graph_marker(project_id))
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+                response = client.post(
+                    "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                )
+                assert response.status_code == 200
                 registered = client.post("/api/notifications/devices/desktop", json={})
                 assert registered.status_code == 200
                 device_id = registered.json()["device_id"]

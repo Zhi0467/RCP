@@ -97,6 +97,7 @@ from rcp.transport import (
     StateUnreachable,
 )
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
+from tests.helpers import sign_in_async_client, signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -295,7 +296,7 @@ class FakeLauncher:
         self.last_args = ()
         self.last_kwargs = {}
 
-    async def stream(self, *args, **kwargs):
+    async def stream(self, *args, browser_grant=None, **kwargs):
         self.calls += 1
         self.last_args = args
         self.last_kwargs = kwargs
@@ -338,10 +339,10 @@ def test_provider_warmup_starts_after_health_is_available(app, monkeypatch) -> N
         )
 
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         try:
             wait_for_entry(entered)
-            assert client.get("/api/health").status_code == 200
+            assert client.get("/api/health/details").status_code == 200
             assert calls == [("codex", "", "/opt/agents/codex")]
         finally:
             release.set()
@@ -353,8 +354,8 @@ def test_lifespan_shutdown_fences_canonical_lock_waits(manifest, tmp_path) -> No
     import rcp.transport.state as state_module
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    with TestClient(app) as client:
-        assert client.get("/api/health").status_code == 200
+    with signed_in_client(app) as client:
+        assert client.get("/api/health/details").status_code == 200
         assert state_module._CANONICAL_LOCK_WAIT_FENCE.is_set() is False
     assert state_module._CANONICAL_LOCK_WAIT_FENCE.is_set() is True
 
@@ -393,8 +394,8 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypat
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
     monkeypatch.setattr(app.state.provider_skills, "refresh", refresh)
 
-    with TestClient(app) as client:
-        assert client.get("/api/health").status_code == 200
+    with signed_in_client(app) as client:
+        assert client.get("/api/health/details").status_code == 200
         assert completed.wait(timeout=2)
 
     assert calls[:2] == [
@@ -492,10 +493,10 @@ def test_remote_stage_sweep_starts_after_health_is_available(
     monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: [])
 
     assert not entered.is_set()
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         try:
             wait_for_entry(entered)
-            assert client.get("/api/health").status_code == 200
+            assert client.get("/api/health/details").status_code == 200
         finally:
             release.set()
 
@@ -516,7 +517,7 @@ def test_personal_post_refuses_requests_a_cross_site_page_can_send(
 ) -> None:
     """A page can POST to the loopback port without a preflight only with a simple type."""
 
-    response = TestClient(app).post("/api/no-such-route", headers=headers, content=content)
+    response = signed_in_client(app).post("/api/no-such-route", headers=headers, content=content)
     if refused:
         assert response.status_code == 415
         assert response.json()["detail"]["code"] == "personal_simple_request_refused"
@@ -526,7 +527,7 @@ def test_personal_post_refuses_requests_a_cross_site_page_can_send(
 
 
 def test_stale_instance_guard_rejects_mutation_before_side_effect(app) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app, base_url="http://127.0.0.1:5173")
     project_id = app.state.default_project_id
 
     rejected = client.delete(
@@ -641,7 +642,7 @@ class ScriptedLauncher:
     def calls(self) -> int:
         return len(self.prompts)
 
-    async def stream(self, _provider, prompt, **kwargs):
+    async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
         turn = self.turns[min(self.calls, len(self.turns) - 1)]
         self.prompts.append(prompt)
         self.resumed_sessions.append(kwargs.get("session_id"))
@@ -754,9 +755,9 @@ def _graph_update(frames: list[str]) -> dict[str, object] | None:
 
 
 def test_project_endpoints(app) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
 
-    health = client.get("/api/health")
+    health = client.get("/api/health/details")
     assert health.status_code == 200
     assert health.json()["project"] == "test-paper"
 
@@ -806,7 +807,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     raw = json.loads(patch_path.read_text(encoding="utf-8"))
     raw["ops"][0]["nodes"][0]["type"] = "not-a-node-type"
     patch_path.write_text(json.dumps(raw), encoding="utf-8")
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     graph = client.get(f"/api/projects/{project_id}/graph")
 
@@ -869,7 +870,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
 
 
 def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     initialize = HistoryManager.initialize
@@ -904,7 +905,7 @@ def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reco
     app, manifest, monkeypatch
 ) -> None:
     project_id = app.state.default_project_id
-    initial = TestClient(app).get(f"/api/projects/{project_id}").json()
+    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     assert initial["revision"] == 1
 
     append_fixture_patch(app.state.service, seed_patch())
@@ -935,7 +936,7 @@ def test_cached_project_survives_restart_without_opening_history(
     data_dir = tmp_path / "data"
     first_app = create_named_app(str(manifest.path), data_dir=data_dir)
     project_id = first_app.state.default_project_id
-    authoritative = TestClient(first_app).get(f"/api/projects/{project_id}")
+    authoritative = signed_in_client(first_app).get(f"/api/projects/{project_id}")
     assert authoritative.status_code == 200
 
     restarted = create_named_app(data_dir=data_dir)
@@ -953,7 +954,7 @@ def test_cached_project_survives_restart_without_opening_history(
             AssertionError("display and task history reads must not materialize history")
         ),
     )
-    client = TestClient(restarted)
+    client = signed_in_client(restarted)
 
     cached = client.get(f"/api/projects/{project_id}/cached")
     tasks = client.get(f"/api/projects/{project_id}/tasks")
@@ -973,7 +974,7 @@ def test_normal_launch_exposes_health_and_cache_without_opening_canonical_state(
     data_dir = tmp_path / "data"
     first_app = create_named_app(str(manifest.path), data_dir=data_dir)
     project_id = first_app.state.default_project_id
-    authoritative = TestClient(first_app).get(f"/api/projects/{project_id}")
+    authoritative = signed_in_client(first_app).get(f"/api/projects/{project_id}")
     assert authoritative.status_code == 200
 
     app = create_named_app(str(manifest.path), data_dir=data_dir)
@@ -987,11 +988,14 @@ def test_normal_launch_exposes_health_and_cache_without_opening_canonical_state(
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             project = await asyncio.wait_for(
                 client.get(f"/api/projects/{project_id}"),
                 timeout=TASK_SETTLE_TIMEOUT,
             )
-            health = await asyncio.wait_for(client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT)
+            health = await asyncio.wait_for(
+                client.get("/api/health/details"), timeout=TASK_SETTLE_TIMEOUT
+            )
             cached = await asyncio.wait_for(
                 client.get(f"/api/projects/{project_id}/cached"),
                 timeout=TASK_SETTLE_TIMEOUT,
@@ -1028,6 +1032,7 @@ def test_slow_project_open_does_not_block_concurrent_task_history(app, monkeypat
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             authoritative = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             task_response = None
             try:
@@ -1069,11 +1074,12 @@ def test_blocking_project_source_read_does_not_stall_health(app, monkeypatch) ->
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             sources = asyncio.create_task(client.get(f"/api/projects/{project_id}/sources"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
                 health = await asyncio.wait_for(
-                    client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT
+                    client.get("/api/health/details"), timeout=TASK_SETTLE_TIMEOUT
                 )
                 # Ordering, not latency: health answered while the source read
                 # was still parked in the patched snapshot call.
@@ -1111,12 +1117,13 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             chats = asyncio.create_task(client.get(f"/api/projects/{project_id}/chats"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
                 project = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
                 health = await asyncio.wait_for(
-                    client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT
+                    client.get("/api/health/details"), timeout=TASK_SETTLE_TIMEOUT
                 )
                 # Ordering, not latency: health answered while the shared first
                 # open was still parked.
@@ -1177,6 +1184,7 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             opening = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             await asyncio.to_thread(wait_for_entry, entered)
             deleting = asyncio.create_task(client.delete(f"/api/projects/{project_id}"))
@@ -1195,7 +1203,7 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
     assert cached.status_code == 404
     assert project_id not in catalog._services
     assert not catalog._cached_snapshot_path(project_id).exists()
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 404
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
@@ -1203,7 +1211,7 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
 def test_delete_serializes_against_display_snapshot_replacement(app, monkeypatch) -> None:
     catalog = app.state.catalog
     project_id = app.state.default_project_id
-    snapshot = TestClient(app).get(f"/api/projects/{project_id}").json()
+    snapshot = signed_in_client(app).get(f"/api/projects/{project_id}").json()
     cache_path = catalog._cached_snapshot_path(project_id)
     entered = threading.Event()
     release = threading.Event()
@@ -1224,6 +1232,7 @@ def test_delete_serializes_against_display_snapshot_replacement(app, monkeypatch
         await asyncio.to_thread(wait_for_entry, entered)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             deleting = asyncio.create_task(client.delete(f"/api/projects/{project_id}"))
             await async_wait_until(
                 lambda: project_id in catalog._deleting,
@@ -1239,7 +1248,7 @@ def test_delete_serializes_against_display_snapshot_replacement(app, monkeypatch
     assert not cache_path.exists()
     assert catalog.cached_snapshot(project_id) is None
     assert project_id not in catalog._services
-    client = TestClient(app)
+    client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 404
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
@@ -1361,7 +1370,7 @@ def test_cached_catalog_open_returns_service_without_building_snapshot(app, monk
 
 
 def test_legacy_direct_human_write_endpoints_are_not_exposed(app) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     append_fixture_patch(app.state.service, seed_patch())
     node_path = "hyp/replanning-restores-plasticity"
@@ -1388,7 +1397,7 @@ def test_legacy_direct_human_write_endpoints_are_not_exposed(app) -> None:
 def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     source_root, slice_root = project_cache_roots(data_dir, project_id)
     assert app.state.service.indexer.cache_root == source_root
@@ -1512,10 +1521,10 @@ def test_project_registry_survives_hub_restart(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     registered = create_named_app(str(manifest.path), data_dir=data_dir)
     project_id = registered.state.default_project_id
-    assert TestClient(registered).get(f"/api/projects/{project_id}").status_code == 200
+    assert signed_in_client(registered).get(f"/api/projects/{project_id}").status_code == 200
 
     hub = create_named_app(data_dir=data_dir)
-    client = TestClient(hub)
+    client = signed_in_client(hub)
     cards = client.get("/api/projects")
 
     assert cards.status_code == 200
@@ -1534,14 +1543,14 @@ def test_seed_runs_in_background_and_keeps_api_responsive(app) -> None:
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
     )
 
     assert started.status_code == 202
-    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/health/details").status_code == 200
     operation_id = started.json()["operation_id"]
     completed = _wait_for_run(client, project_id, operation_id)
     assert completed["status"] == "succeeded"
@@ -1568,7 +1577,7 @@ def test_seed_waits_for_live_canonical_owner_without_failing(app, monkeypatch) -
 
     monkeypatch.setattr(workspace, "run_lock", contended_lock)
     monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
@@ -1608,7 +1617,7 @@ def test_seed_can_pause_while_waiting_for_canonical_owner(app, monkeypatch) -> N
         yield  # pragma: no cover - makes this function a context manager
 
     monkeypatch.setattr(workspace, "run_lock", contended_lock)
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
@@ -1634,8 +1643,8 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
     acquired_lease: list[RunLockLease] = []
 
     class PausingLauncher(ScriptedLauncher):
-        async def stream(self, *args, **kwargs):
-            async for event in super().stream(*args, **kwargs):
+        async def stream(self, *args, browser_grant=None, **kwargs):
+            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
                 if event.event == "done":
                     provider_started.set()
                     await async_wait_until(release_provider.is_set)
@@ -1651,7 +1660,7 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
     launcher = PausingLauncher([{"patch.json": agent_patch_json(seed_patch())}])
     monkeypatch.setattr(workspace, "run_lock", observable_lock)
     monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
@@ -1676,7 +1685,7 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
 
 @pytest.mark.parametrize("kind", ["seed", "refresh"])
 def test_seed_and_refresh_reject_caller_supplied_sessions(app, kind) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     session_id = str(uuid.uuid4())
 
@@ -1697,7 +1706,7 @@ def test_task_validation_status_does_not_depend_on_exception_wording(app, monkey
 
     monkeypatch.setattr("rcp.api.tasks._validated_task_request", reject_validation)
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
     )
@@ -1823,7 +1832,7 @@ def test_legacy_run_with_caller_session_cannot_resume(app) -> None:
         )
     )
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/tasks/{legacy.operation_id}/resume", json={}
     )
 
@@ -1843,7 +1852,7 @@ def test_background_seed_persists_exact_failure(app) -> None:
         )
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
@@ -1888,7 +1897,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path)
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/refresh",
         json={
@@ -2231,7 +2240,7 @@ def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
     # ...and the backend, not the browser, decides what a surface shows. Both the
     # list a human scans and the detail they open must answer without reading it.
     project_id = store.projects()[0].project_id
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         listed = client.get(f"/api/projects/{project_id}/tasks")
         detail = client.get(f"/api/projects/{project_id}/tasks/degraded-operation")
     assert listed.status_code == 200
@@ -2521,7 +2530,7 @@ def test_background_seed_can_pause_inspect_and_resume(app) -> None:
         yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
 
     app.state.background_tasks.stream = pausable_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
@@ -2572,7 +2581,7 @@ def test_background_shutdown_requests_pause_with_shutdown_authority(app, monkeyp
         yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
 
     app.state.background_tasks.stream = pausable_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     operation_id = started.json()["operation_id"]
     _wait_for_status(client, project_id, operation_id, {"running"})
@@ -2677,7 +2686,7 @@ def test_failed_background_seed_can_retry_without_native_session(app) -> None:
         yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
 
     app.state.background_tasks.stream = failed_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert failed["can_resume"] is False
@@ -2723,7 +2732,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(app, tmp_path) -> None:
         yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
 
     app.state.background_tasks.stream = failed_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "codex"})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
@@ -2777,7 +2786,7 @@ def test_same_provider_unusable_session_retry_starts_clean(
         yield _event_frame(AgentEvent(event="error", text=error))
 
     app.state.background_tasks.stream = failed_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": provider})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
@@ -2854,7 +2863,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             inputs = workspace / "inputs"
             self.calls.append(
@@ -2911,7 +2920,7 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"provider": "claude", "run_truth_scope": ["repo-a"]},
@@ -3004,7 +3013,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.calls.append(
                 {
@@ -3032,7 +3041,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     retried = client.post(
@@ -3089,7 +3098,7 @@ def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.calls.append(
                 {
@@ -3128,7 +3137,7 @@ def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"provider": "codex", "run_truth_scope": ["repo-a"]},
@@ -3193,7 +3202,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(app, tmp_path) -> None:
         def __init__(self) -> None:
             self.workspaces: list[str] = []
 
-        async def stream(self, _provider, _prompt, **kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.workspaces.append(str(workspace))
             if not self.workspaces[:-1]:
@@ -3218,7 +3227,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(app, tmp_path) -> None:
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"provider": "codex", "run_truth_scope": ["repo-a"]},
@@ -3262,7 +3271,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, mon
             self.prompts: list[str] = []
             self.sessions: list[str | None] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
@@ -3288,7 +3297,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, mon
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     paused = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert paused["status"] == "paused"
@@ -3316,7 +3325,7 @@ def test_provider_exit_receipt_survives_terminal_error(app, tmp_path) -> None:
     service = app.state.service
 
     class ExitLauncher:
-        async def stream(self, _provider, _prompt, **_kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
             yield AgentEvent(event="session", session_id="failed-session")
             yield AgentEvent(
                 event="provider_exit",
@@ -3342,7 +3351,7 @@ def test_provider_exit_receipt_survives_terminal_error(app, tmp_path) -> None:
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
@@ -3364,7 +3373,7 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(app, tmp_path) -
         def __init__(self) -> None:
             self.calls = 0
 
-        async def stream(self, _provider, _prompt, **_kwargs):
+        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
             self.calls += 1
             yield AgentEvent(event="session", session_id="moved-context-session")
             yield AgentEvent(event="error", text="provider connection dropped")
@@ -3383,7 +3392,7 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(app, tmp_path) -
             yield frame
 
     app.state.background_tasks.stream = graph_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     append_fixture_patch(service, seed_patch())
@@ -3429,7 +3438,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_pa
         yield _event_frame(AgentEvent(event="error", text="graph change was rejected"))
 
     app.state.background_tasks.stream = failed_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
@@ -3467,7 +3476,7 @@ def test_server_shutdown_pauses_live_background_seed(app) -> None:
         yield _event_frame(AgentEvent(event="paused"))
 
     app.state.background_tasks.stream = pausable_stream
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
         operation_id = started.json()["operation_id"]
         _wait_for_status(client, project_id, operation_id, {"running"})
@@ -3512,7 +3521,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{app.state.default_project_id}/tasks/node_chat",
         json={
@@ -3528,7 +3537,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
     operation_id = started.json()["operation_id"]
     active = client.get(f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}").json()
     assert active["status"] in {"queued", "running"}
-    assert client.get("/api/health").status_code == 200
+    assert client.get("/api/health/details").status_code == 200
 
     release_worker.set()
     completed = _wait_for_run(client, app.state.default_project_id, operation_id)
@@ -3575,7 +3584,7 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
         )
     )
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={"chat_id": chat_id, "message": "start another turn"},
     )
@@ -3600,7 +3609,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     png_source = b"\x89PNG\r\n\x1a\npreview-bytes"
 
     class ArtifactLauncher(FakeLauncher):
-        async def stream(self, *args, **kwargs):
+        async def stream(self, *args, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             artifact_directory = next((workspace / "turns").glob("*/artifacts"))
             artifact_directory.joinpath("preview.html").write_bytes(html_source)
@@ -3616,7 +3625,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             workspace.joinpath("patch.json").write_text(agent_patch_json(refresh_patch()))
             artifact_template = str(workspace / "turns")
             assert artifact_template in _local_task_contract(args[1])
-            async for event in super().stream(*args, **kwargs):
+            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
                 yield event
 
     launcher = ArtifactLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
@@ -3628,7 +3637,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -3930,9 +3939,9 @@ async def test_chat_does_not_assemble_or_project_transcripts(
     )
 
     class InspectingLauncher(FakeLauncher):
-        async def stream(self, *args, **kwargs):
+        async def stream(self, *args, browser_grant=None, **kwargs):
             self.read_dirs = list(kwargs["read_dirs"])
-            async for event in super().stream(*args, **kwargs):
+            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
                 yield event
 
     launcher = InspectingLauncher(
@@ -4148,13 +4157,15 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     patch = refresh_patch("rq/artifact-backed-change").model_copy(update={"kind": "work"})
 
     class ArtifactPatchLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             workspace = Path(kwargs["cwd"])
             artifact_directory = next((workspace / "turns").glob("*/artifacts"))
             artifact_directory.joinpath("change.html").write_text(
                 "<!doctype html><p>Graph change preview</p>", encoding="utf-8"
             )
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = ArtifactPatchLauncher(
@@ -4188,7 +4199,7 @@ async def test_chat_launch_exception_keeps_workspace_without_transcript_projecti
     app, service = _seeded_project(manifest, tmp_path)
 
     class ExplodingLauncher:
-        async def stream(self, *_args, **kwargs):
+        async def stream(self, *_args, browser_grant=None, **kwargs):
             self.workspace = Path(kwargs["cwd"])
             self.projection = self.workspace / "inputs" / "conversations"
             assert not self.projection.exists()
@@ -4296,7 +4307,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(app) -> None:
         yield _sse(AgentEvent(event="error", text="The correction could not be staged."))
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{app.state.default_project_id}/tasks/node_chat",
         json={
@@ -4341,7 +4352,7 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> 
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{app.state.default_project_id}/tasks/paper_coach",
         json={"message": "Review the argument."},
@@ -4378,7 +4389,7 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, 
             self.sessions: list[str | None] = []
             self.masters: list[tuple[Path, str]] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
             path = launch_contract_path(prompt)
@@ -4396,7 +4407,7 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, 
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     turns = []
     for body in (
@@ -4435,7 +4446,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
             self.calls = 0
             self.sessions: list[str | None] = []
 
-        async def stream(self, *_args, **kwargs):
+        async def stream(self, *_args, browser_grant=None, **kwargs):
             self.calls += 1
             self.sessions.append(kwargs.get("session_id"))
             if self.calls == 1:
@@ -4463,7 +4474,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{app.state.default_project_id}/tasks/paper_coach",
         json={"message": "Review the framing."},
@@ -4799,10 +4810,12 @@ async def test_work_patch_is_applied_to_live_state_without_correction(
     patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "work"})
 
     class RacingLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             # A refresh lands between context assembly and the patch being applied.
             append_fixture_patch(service, refresh_patch("rq/landed-first"))
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = RacingLauncher([{"patch.json": agent_patch_json(patch)}], message=answer)
@@ -4856,7 +4869,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
             self.workspaces: list[Path] = []
             self.prompts: list[str] = []
 
-        async def stream(self, _provider, prompt, **kwargs):
+        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             self.sessions.append(kwargs.get("session_id"))
             self.capabilities.append(kwargs["capability"])
             self.workspaces.append(Path(kwargs["cwd"]))
@@ -4883,7 +4896,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/node_chat",
@@ -4937,7 +4950,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
             self.calls = 0
             self.workspaces: list[Path] = []
 
-        async def stream(self, *_args, **kwargs):
+        async def stream(self, *_args, browser_grant=None, **kwargs):
             self.calls += 1
             self.workspaces.append(Path(kwargs["cwd"]))
             if self.calls == 1:
@@ -4955,7 +4968,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -5360,7 +5373,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     first_message = "First  Work request.\nKeep this line."
     first_response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -5392,6 +5405,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "patch",
         "workspace",
         "work",
+        "browser",
     }
     assert isinstance(prompt_values["current"]["graph_revision"], int)
     assert prompt_values["compute"] == {"active": []}
@@ -5485,7 +5499,7 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -5592,7 +5606,7 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
             )
             self.operational_effects = 0
 
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             if self.calls == 0:
                 self.operational_effects += 1
                 self.message = "The experiment was submitted once."
@@ -5603,7 +5617,9 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
             workspace = Path(kwargs["cwd"])
             artifact_directory = next((workspace / "turns").glob("*/artifacts"))
             artifact_directory.joinpath("correction.html").write_bytes(artifact)
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = WorkLauncher()
@@ -5693,9 +5709,11 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
 
     class UnreadableCorrectionLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             launch = self.calls
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
             if launch > 0:
                 (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
@@ -5810,10 +5828,12 @@ async def test_work_apply_rechecks_authority_after_human_removes_proposal_target
     effect_path = Path(manifest.repository_map["repo-a"].path) / "s100-effect.txt"
 
     class HeldWorkLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             if self.calls == 0:
                 effect_path.write_text("completed before Apply\n", encoding="utf-8")
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = HeldWorkLauncher(
@@ -6120,7 +6140,7 @@ def test_background_work_can_pause_while_waiting_for_canonical_state(
 
     monkeypatch.setattr(workspace, "run_lock", contended_lock)
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -6175,7 +6195,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
     started = client.post(
@@ -6284,7 +6304,7 @@ def _work_turn_whose_apply_loses_canonical_state(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -6851,7 +6871,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     response = client.post(
         f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
@@ -6925,7 +6945,7 @@ def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     response = client.post(
         f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
@@ -6945,7 +6965,7 @@ def test_run_endpoint_refuses_a_chat_that_already_has_turns(manifest, tmp_path) 
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
     turn = client.post(
@@ -6975,7 +6995,7 @@ def test_experiment_admission_conflict_status_uses_exception_type(
     monkeypatch.setattr(app.state.background_tasks, "start", reject_admission)
     project_id = app.state.default_project_id
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
         json={"chat_id": str(uuid.uuid4())},
     )
@@ -6995,7 +7015,7 @@ def test_experiment_validation_status_does_not_depend_on_exception_wording(
     monkeypatch.setattr("rcp.api.experiments.fresh_experiment_run_request", reject_validation)
     project_id = app.state.default_project_id
 
-    response = TestClient(app).post(
+    response = signed_in_client(app).post(
         f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
         json={"chat_id": str(uuid.uuid4())},
     )
@@ -7078,7 +7098,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         ]
     )
 
-    client = TestClient(app)
+    client = signed_in_client(app)
     still_running = client.post(
         f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
         json={"chat_id": str(uuid.uuid4())},
@@ -7216,6 +7236,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
     async def drive_race():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             removal = asyncio.create_task(
                 client.post(
                     f"/api/projects/{project_id}/sync",
@@ -7270,6 +7291,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
     async def drive_race():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await sign_in_async_client(client, app)
             admission = asyncio.create_task(
                 client.post(
                     f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
@@ -7333,7 +7355,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
 ) -> None:
     app, service = _experiment_project(manifest, tmp_path)
     project_id = app.state.default_project_id
-    client = TestClient(app)
+    client = signed_in_client(app)
     removed = client.post(
         f"/api/projects/{project_id}/sync",
         json={"base_revision": 3, "removed_node_ids": ["exp/bounded-loop"]},
@@ -7785,9 +7807,11 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
     execution = _chat_task_execution(app, request, "experiment-unreadable-correction")
 
     class UnreadableLoopCorrectionLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             launch = self.calls
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
             if launch > 0:
                 (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
@@ -8189,7 +8213,7 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(app) -> None:
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     append_fixture_patch(service, _stuck_experiment_patch())
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     control = client.get(f"/api/projects/{project_id}").json()["experiment_control"]["exp/stuck"]
     assert control["active"] is False
@@ -8247,19 +8271,21 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
     observed: dict[str, object] = {}
 
     class InspectingLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             # A succeeded run reclaims its scratch folder, so read it in place.
             bundle = next((Path(kwargs["cwd"]) / "inputs").glob("rcp-skills-*"))
             observed["contract"] = _local_task_contract(prompt)
             observed["staged"] = sorted(
                 str(item.relative_to(bundle)) for item in bundle.rglob("*.md")
             )
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = InspectingLauncher([{"patch.json": agent_patch_json(seed_patch())}])
     monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
@@ -8333,7 +8359,7 @@ def test_retrying_a_failed_seed_records_the_selection_it_will_stage(app, monkeyp
 
     ordinary_stream = app.state.background_tasks.stream
     app.state.background_tasks.stream = failing_stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     started = client.post(
         f"/api/projects/{project_id}/tasks/seed",
         json={"run_truth_scope": ["repo-a"]},
@@ -8393,7 +8419,7 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     )
     launcher = ScriptedLauncher([{}], message="Answered.", usage=usage)
     app.state.catalog.launcher.stream = launcher.stream
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.agents import AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
@@ -21,6 +20,7 @@ from rcp.runs.tasks.work import _apply_work_patch, stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
 from rcp.transport.workspace_mailbox import RunStageMailbox
+from tests.helpers import signed_in_client
 
 from .helpers import (
     agent_patch_json,
@@ -308,7 +308,7 @@ def test_consolidation_continuations_cannot_escape_the_bound_operation(
                 execution.operation_id,
             ),
         )
-    client = TestClient(app)
+    client = signed_in_client(app)
     response = client.get(
         f"/api/projects/{app.state.default_project_id}/tasks/{execution.operation_id}"
     )

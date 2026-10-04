@@ -37,6 +37,7 @@ TRANSFER_APP_DATA_CONTROL_ROOTS = frozenset({"transfer-exports", "transfer-inbox
 TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
     {
         "bootstrap-manifests",
+        "browser",
         "chat-attachments",
         "jobs",
         "paper-snapshots",
@@ -44,6 +45,7 @@ TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
         "project-snapshots",
         "providers",
         "service-connections",
+        "tools",
         "rcp-server.json",
         "rcp.lock",
         "rcp.sqlite3-journal",
@@ -93,6 +95,8 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "team_invitations",
         "team_member_tokens",
         "team_sessions",
+        "owner_credentials",
+        "owner_sign_in_codes",
     }
 )
 _LEGACY_PROJECT_ARCHIVE_TABLES = frozenset(

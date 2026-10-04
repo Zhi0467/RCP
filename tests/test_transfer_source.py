@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.project_transfer import capture_project_transfer_source
@@ -18,6 +17,7 @@ from rcp.transfer.source import (
     read_transfer_archive,
     source_transfer_export_path,
 )
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_episode_storage import _episode
@@ -244,7 +244,7 @@ def test_desktop_decisions_resume_an_interrupted_source_release(
             patch.setattr(source, "bind_project_transfer_archive", fail_binding)
             with pytest.raises(ValueError, match="simulated archive receipt"):
                 advance_source_project_transfer(source, app.state.catalog, request.request_id)
-    with TestClient(app, base_url="https://personal.test") as client:
+    with signed_in_client(app, base_url="https://personal.test") as client:
         projected = client.get(f"/api/project-transfers/requests/{request.request_id}").json()
         assert projected["phase"] == boundary
         assert projected["can_release"] is True

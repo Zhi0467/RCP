@@ -560,3 +560,14 @@ DIGEST_STOP_TIMEOUT_SECONDS = 10.0
 
 # Landing counts are a lower bound when this latest-event window is full.
 DIGEST_LANDING_EVENT_LIMIT = 1000
+
+# Personal sign-in capabilities expire even if the backend remains running.
+OWNER_SIGN_IN_TTL_MINUTES = 10
+
+# Host browser lifecycle; CLI idle values convert to milliseconds at launch.
+BROWSER_SESSION_IDLE_SECONDS = 1800
+BROWSER_SESSION_START_TIMEOUT_SECONDS = 60
+BROWSER_SESSION_CLOSE_TIMEOUT_SECONDS = 30
+BROWSER_READINESS_TIMEOUT_SECONDS = 60
+BROWSER_INSTALL_TIMEOUT_SECONDS = 900
+BROWSER_MAX_SESSIONS_PER_HOST = 8

@@ -8,14 +8,13 @@ from unittest.mock import Mock
 import httpx
 import pytest
 import uvicorn
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.background import StartupEffectFence
 from rcp.machine_power import MachinePowerController
 from rcp.machine_power_macos import InstallStatus
 from rcp.storage import AppStore
-from tests.helpers import wait_until
+from tests.helpers import signed_in_client, wait_until
 from tests.test_machine_power import FakeMacOSProfile
 
 
@@ -51,7 +50,7 @@ def mac_power(tmp_path, monkeypatch):
 
 def test_personal_power_status_and_preferences(tmp_path, mac_power):
     app = create_app(data_dir=tmp_path)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         assert app.state.machine_power._thread.is_alive()
         response = client.get("/api/machine-power")
         assert response.status_code == 200
@@ -103,7 +102,7 @@ def test_team_power_endpoints_are_absent(tmp_path, method, path):
         data_dir=tmp_path,
         trusted_principal_resolver=lambda _request, current: current.space_user(member.user_id),
     )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.request(method, path, json={})
         assert response.status_code == 404
     assert app.state.machine_power is None
@@ -124,7 +123,7 @@ def test_power_follows_deferred_startup_and_outlasts_worker_shutdown(tmp_path, m
         return original_shutdown(*args, **kwargs)
 
     monkeypatch.setattr(app.state.background_tasks, "shutdown", shutdown)
-    with TestClient(app):
+    with signed_in_client(app):
         assert order == []
         fence.release()
         assert app.state.startup_effect_runtime_event.wait(timeout=5)
@@ -139,7 +138,7 @@ def test_failed_startup_stops_power(tmp_path, monkeypatch):
     monkeypatch.setattr(
         app.state.background_tasks, "recover_at_startup", Mock(side_effect=RuntimeError("boom"))
     )
-    with pytest.raises(RuntimeError, match="boom"), TestClient(app):
+    with pytest.raises(RuntimeError, match="boom"), signed_in_client(app):
         pass
     controller.start.assert_called_once()
     controller.stop.assert_called_once()
@@ -148,7 +147,7 @@ def test_failed_startup_stops_power(tmp_path, monkeypatch):
 @pytest.mark.parametrize("action", ["install", "uninstall"])
 def test_cancelled_admin_prompt_preserves_status(tmp_path, mac_power, action):
     app = create_app(data_dir=tmp_path / "data")
-    with TestClient(app, raise_server_exceptions=True) as client:
+    with signed_in_client(app, raise_server_exceptions=True) as client:
         assert client.put("/api/machine-power", json={"lid_mode": True}).status_code == 200
         before = client.get("/api/machine-power").json()
         # A cross-site HTML form cannot send JSON, so it never reaches the prompt.
@@ -173,7 +172,11 @@ def test_served_macos_power_preferences(tmp_path, mac_power, caplog):
         worker.start()
         try:
             wait_until(lambda: server.started, timeout=10)
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+            base_url = f"http://127.0.0.1:{port}"
+            authenticated = signed_in_client(app, base_url=base_url)
+            with httpx.Client(
+                base_url=base_url, cookies=authenticated.cookies, trust_env=False
+            ) as client:
                 before = client.get("/api/machine-power")
                 assert before.status_code == 200
                 assert before.json()["supported"] is True

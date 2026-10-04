@@ -18,6 +18,7 @@ from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
+from tests.helpers import signed_in_client
 
 from .helpers import (
     agent_patch_json,
@@ -212,7 +213,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     _, retried = _retry_task(
         client,
@@ -275,7 +276,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
 
     def make_legacy(_failed: dict[str, object]) -> None:
@@ -393,7 +394,7 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     body = {"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"], "mode": "work"}
     first = client.post(
@@ -469,7 +470,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     started = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
@@ -536,7 +537,7 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
 
@@ -627,7 +628,7 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
             yield frame
 
     app.state.background_tasks.stream = stream
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     _, retried = _retry_task(
         client,
@@ -703,7 +704,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
             run_truth_scope=["repo-a"],
             mode="discuss",
         )
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         response = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
         assert response.status_code == 202
         first = wait_for_task_response(
@@ -750,3 +751,155 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
         launcher.input_snapshots[1][f"task-{completed['operation_id']}-human-request.txt"]
         == objective
     )
+
+
+@pytest.mark.parametrize("mode", ["discuss", "work"])
+@pytest.mark.parametrize("browser_status", ["granted", "unavailable"])
+def test_browser_grant_precedes_persisted_prompt_and_turns_off(
+    manifest, tmp_path, monkeypatch, mode, browser_status
+):
+    from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.runs import browser_runtime_seam
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    acquired, finished, grants = [], [], []
+    native_session_id = str(uuid.uuid4())
+
+    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+        acquired.append(owner)
+        return BrowserGrant(
+            requested=True,
+            status=browser_status,
+            reason_code="runtime_not_wired" if browser_status == "unavailable" else None,
+            owner=owner,
+            lease_id="test-lease" if browser_status == "granted" else None,
+            session_name="test-session",
+            invocation_dir=str(workspace_dir),
+            path_prefix=str(tmp_path / "tools"),
+            env={"PLAYWRIGHT_CLI_SESSION": "test-session"},
+        )
+
+    def finish(grant, **kwargs):
+        finished.append(grant)
+        return BrowserTurnStatus(status=grant.status)
+
+    monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire)
+    monkeypatch.setattr(browser_runtime_seam, "finish_browser_grant", finish)
+
+    class Launcher:
+        async def stream(self, provider, prompt, *, browser_grant, **kwargs):
+            grants.append(browser_grant)
+            assert store.agent_task_contract(active[0].operation_id, "chat_turn") == prompt
+            if len(grants) > 1:
+                assert kwargs["session_id"] == native_session_id
+            yield AgentEvent(event="session", session_id=native_session_id)
+            yield AgentEvent(event="answer", text="done")
+            yield AgentEvent(event="done")
+
+    active = []
+
+    async def stream(project_id, kind, request, execution):
+        active[:] = [execution]
+        run = stream_discuss_run if mode == "discuss" else stream_work_run
+        async for frame in run(
+            app.state.service, Launcher(), request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = signed_in_client(app)
+    changed_fields = []
+    for requested in (True, False, False):
+        assert (
+            client.put(
+                f"/api/projects/{project_id}/chats/{chat_id}/browser",
+                json={"browser_requested": requested},
+            ).status_code
+            == 200
+        )
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={"chat_id": chat_id, "message": "Continue", "mode": mode},
+        )
+        assert response.status_code == 202
+        operation_id = response.json()["operation_id"]
+        wait_for_task_response(client, project_id, operation_id, expect="succeeded")
+        assert store.browser_turn_status(operation_id).status == (
+            browser_status if requested else "not_requested"
+        )
+        receipt = next(
+            receipt
+            for receipt in store.agent_task_receipts(operation_id)
+            if receipt.category == "chat_master_context"
+        )
+        changed_fields.append("browser" in receipt.payload["changed_fields"])
+    assert len(acquired) == 1
+    assert [grant.status for grant in grants] == [browser_status, "not_requested", "not_requested"]
+    assert [grant.lease_id for grant in finished] == (
+        ["test-lease"] if browser_status == "granted" else []
+    )
+    # The session hears the browser state when it changes, not on every turn.
+    assert changed_fields == [False, True, False]
+
+
+@pytest.mark.asyncio
+async def test_work_browser_lease_finishes_when_prompt_rendering_fails(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.runs import browser_runtime_seam
+    from rcp.runs.tasks import work
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    finished = []
+
+    def acquire(owner, **kwargs):
+        return BrowserGrant(
+            requested=True,
+            status="granted",
+            owner=owner,
+            lease_id="render-failure",
+            session_name="render-failure",
+        )
+
+    monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire)
+
+    def finish(value, **kwargs):
+        finished.append(value)
+        return BrowserTurnStatus(status=value.status)
+
+    def fail_render(*args, **kwargs):
+        raise ValueError("render_failed")
+
+    monkeypatch.setattr(browser_runtime_seam, "finish_browser_grant", finish)
+    monkeypatch.setattr(work, "_compose_fresh_prompt", fail_render)
+    launcher = _FailThenSucceedLauncher("unused")
+    from .test_api import _chat_task_execution
+
+    request = RunRequest(
+        chat_scope="project",
+        run_truth_scope=["repo-a"],
+        chat_id=str(uuid.uuid4()),
+        message="run",
+        mode="work",
+        browser_requested=True,
+    )
+    execution = _chat_task_execution(app, request, "render-failure")
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            app.state.service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+    assert frames
+    assert launcher.prompts == []
+    assert [grant.lease_id for grant in finished] == ["render-failure"]

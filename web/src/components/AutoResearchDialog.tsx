@@ -1,3 +1,4 @@
+import { BrowserToggle } from "./BrowserControls";
 import { LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -84,6 +85,7 @@ interface Props {
     invocationCeiling: number,
     startingInstruction: string | null,
     codeWorktree: boolean,
+    browserRequested: boolean,
   ) => void;
 }
 
@@ -100,6 +102,7 @@ export function AutoResearchDialog({
   const budgetInput = useRef<HTMLInputElement>(null);
   const [budget, setBudget] = useState(String(initialInvocationCeiling));
   const [instruction, setInstruction] = useState("");
+  const [browserRequested, setBrowserRequested] = useState(false);
   const [codeWorktree, setCodeWorktree] = useState(true);
 
   useEffect(() => {
@@ -107,6 +110,7 @@ export function AutoResearchDialog({
     setBudget(String(initialInvocationCeiling));
     setInstruction("");
     setCodeWorktree(true);
+    setBrowserRequested(false);
     const returnFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const restoreBackground = dialog.current
@@ -153,7 +157,12 @@ export function AutoResearchDialog({
         onSubmit={(event) => {
           event.preventDefault();
           if (!budgetIsValid || busy) return;
-          onAuthorize(invocationCeiling, instruction.trim() || null, codeWorktree);
+          onAuthorize(
+            invocationCeiling,
+            instruction.trim() || null,
+            codeWorktree,
+            browserRequested,
+          );
         }}
       >
         <header>
@@ -194,6 +203,12 @@ export function AutoResearchDialog({
               onChange={(event) => setInstruction(event.target.value)}
             />
           </label>
+          <BrowserToggle
+            subject="run"
+            checked={browserRequested}
+            disabled={busy}
+            onChange={setBrowserRequested}
+          />
           <div className="campaign-isolation" role="group" aria-label="Isolation">
             <label>
               <input type="checkbox" checked disabled />

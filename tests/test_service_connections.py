@@ -7,17 +7,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from rcp import limits, transcription
+from rcp.api import create_app
 from rcp.api import service_connections as routes
-from rcp.api.dependencies import get_store
-from rcp.api.identity import IdentityAccess
 from rcp.service_connections import ConnectionError, ServiceConnections
-from rcp.storage import AppStore
 from rcp.transcription import ConnectRequest
+from tests.helpers import signed_in_client
 
 KEY = "test-secret-never-real"
 MIME = "audio/webm;codecs=opus"
@@ -32,19 +29,12 @@ def connection():
 
 
 @pytest.fixture
-def setup(tmp_path, monkeypatch):
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def setup(tmp_path):
+    app = create_app(data_dir=tmp_path)
+    store = app.state.background_tasks.store
     member = store.local_owner.user_id
     private = ServiceConnections(store, member)
-    app = FastAPI()
-    app.include_router(routes.router)
-    app.dependency_overrides[get_store] = lambda: store
-    monkeypatch.setattr(routes, "get_store", lambda _: store)
-    identity = IdentityAccess(
-        store, space_id=store.space_id, space_kind="personal", trusted_principal_resolver=None
-    )
-    monkeypatch.setattr(routes, "get_identity_access", lambda _: identity)
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         yield store, private, client
 
 

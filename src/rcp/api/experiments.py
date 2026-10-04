@@ -144,6 +144,7 @@ def run_experiment(
             experiment_request = experiment_request.model_copy(
                 update={
                     "run_truth_scope": supplied.run_truth_scope,
+                    "browser_requested": supplied.browser_requested,
                     "code_worktree": supplied.code_worktree,
                     "graph_isolation": supplied.graph_isolation,
                     "chat_scope": "node",
@@ -367,6 +368,7 @@ def continue_experiment_episode(
                 f"Continue the bounded Experiment-loop for {node_id} in this same session "
                 "with the additional turns the human authorized."
             ),
+            "browser_requested": source.browser_requested,
             "session_id": experiment.native_session_id,
             "chat_id": experiment.chat_id,
             "trigger": "experiment_run",

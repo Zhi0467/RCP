@@ -349,6 +349,7 @@ def experiment_watcher_delivery_request(
     ):
         raise ValueError("An Experiment watcher has an invalid origin invocation binding.")
     return RunRequest(
+        browser_requested=continuation.browser_requested,
         provider=continuation.provider,
         # Older persisted watcher envelopes used null for the provider default.
         # Make it explicit before profile resolution so a later Settings change
@@ -1543,6 +1544,7 @@ def commit_experiment_episode_handoff(
         or binding.node_id != request.node_id
         or binding.episode_id != request.control_episode_id
         or binding.execution_host != execution_host
+        or continuation.browser_requested != request.browser_requested
         or continuation.provider != request.provider
         or continuation.run_on != request.run_on
         or continuation.patch_kind != request.patch_kind

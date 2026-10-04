@@ -213,7 +213,13 @@ def _programs(source: str) -> set[str]:
                     if words and words[0] == "exec":
                         words = words[1:]
                     if words:
-                        found.add(Path(words[0]).name)
+                        program = words[0]
+                        # A configured shell is dynamic, but its literal fallback
+                        # still belongs in the external-program inventory.
+                        default = re.fullmatch(r"\$\{[A-Za-z_][A-Za-z_0-9]*:-([^${}]+)\}", program)
+                        if default:
+                            program = default[1]
+                        found.add(Path(program).name)
 
         def bind(target: ast.expr, value: ast.expr) -> None:
             if isinstance(target, ast.Name):
@@ -300,6 +306,7 @@ subprocess.check_output(("tuple-tool",))
 asyncio.create_subprocess_exec("async-tool", "--version")
 asyncio.create_subprocess_exec(*["starred-tool", "--version"])
 ssh_arguments(host, "remote-tool --version")
+ssh_arguments(host, 'exec "${SHELL:-/bin/sh}" -lc command')
 self._ssh(["remote-list-tool", "--version"])
 _ssh(host, ("remote-tuple-tool", "--version"))
 self._ssh_bytes("remote-string-tool --version")
@@ -320,6 +327,7 @@ unrelated(["ordinary-data"])
         "async-tool",
         "starred-tool",
         "ssh",
+        "sh",
         "remote-tool",
         "remote-list-tool",
         "remote-tuple-tool",

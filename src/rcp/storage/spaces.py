@@ -721,11 +721,6 @@ class SpaceStoreMixin:
                 "team_token_invalid", "The member token is invalid or revoked."
             )
         token_hash = _sha256(token)
-        now = self.now()
-        expires_at = (
-            datetime.fromisoformat(now) + timedelta(days=TEAM_SESSION_IDLE_DAYS)
-        ).isoformat()
-        session, session_hash = _new_session_token()
         member: SpaceUserRecord | None = None
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -740,14 +735,7 @@ class SpaceStoreMixin:
             ).fetchone()
             if row is not None and hmac.compare_digest(row["token_hash"], token_hash):
                 member = self._require_team_member_from_connection(connection, row["user_id"])
-                connection.execute(
-                    """
-                    INSERT INTO team_sessions (
-                        session_hash, session_id, label, user_id, created_at, last_seen_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (session_hash, str(uuid.uuid4()), label, member.user_id, now, now, expires_at),
-                )
+                session = self._mint_session(connection, member, label=label)
         if member is None:
             raise TeamAuthenticationError(
                 "team_token_invalid", "The member token is invalid or revoked."
@@ -988,8 +976,28 @@ class SpaceStoreMixin:
             )
         return member
 
+    def _mint_session(
+        self, connection: sqlite3.Connection, user: SpaceUserRecord, *, label: str
+    ) -> str:
+        now = self.now()
+        expires = (datetime.fromisoformat(now) + timedelta(days=TEAM_SESSION_IDLE_DAYS)).isoformat()
+        session, session_hash = _new_session_token()
+        connection.execute(
+            "INSERT INTO team_sessions (session_hash, session_id, label, user_id, "
+            "created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_hash, str(uuid.uuid4()), label, user.user_id, now, now, expires),
+        )
+        return session
+
     def resolve_team_session(
         self, session: str | None, *, touch: bool = True
+    ) -> SpaceUserRecord | None:
+        if self.space_kind != "team":
+            return None
+        return self._resolve_session(session, identity_kind="team_member", touch=touch)
+
+    def _resolve_session(
+        self, session: str | None, *, identity_kind: str, touch: bool = True
     ) -> SpaceUserRecord | None:
         if (
             not session
@@ -1018,7 +1026,7 @@ class SpaceStoreMixin:
             member = self._space_user_from_connection(connection, row["user_id"])
             if (
                 member is None
-                or member.identity_kind != "team_member"
+                or member.identity_kind != identity_kind
                 or member.removal_started_at is not None
                 or member.removed_at is not None
             ):
@@ -1096,6 +1104,8 @@ class SpaceStoreMixin:
             raise ValueError("restored space authentication detachment requires a transaction")
         _required_timestamp(now)
         connection.execute("DELETE FROM team_sessions")
+        connection.execute("DELETE FROM owner_credentials")
+        connection.execute("DELETE FROM owner_sign_in_codes")
         connection.execute(
             """
             UPDATE team_bootstrap_codes

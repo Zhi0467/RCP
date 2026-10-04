@@ -318,6 +318,9 @@ class AgentTaskStoreMixin:
             self._require_project_accepts_new_work(connection, origin.project_id)
             request = RunRequest.model_validate(task.request).model_copy(
                 update={
+                    "browser_requested": self._chat_browser_requested(
+                        connection, origin.project_id, origin.owner_id
+                    ),
                     "session_id": origin.native_session_id,
                     "message": question.answer or "\n".join(question.chosen_choices),
                     "trigger": "human",

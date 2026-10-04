@@ -5,6 +5,47 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Personal owner admission
+
+Personal API requests and terminal upgrades require an owner session. Public
+personal health exposes adoption identity only. Team public health retains its
+full runtime payload, including the space name and active-agent count required
+by desktop bootstrap. The Web shell, auth exchange and code
+redemption, and OPTIONS remain public. The separate phone listener is unchanged.
+The owner cookie is host-only, HttpOnly, and SameSite=Strict; HTTPS adds Secure.
+Team cookie policy remains separate.
+
+The Web reads identity before protected boot data. A personal 401 opens the
+sign-in boundary; a one-time code can be pasted or supplied in the sign-in URL's
+fragment. Project locator intent stays in the URL across sign-in. The human
+confirms it before registration. Display-name entry remains a separate action.
+Authenticated `/api/health/details` supplies runtime and project-creation data.
+The Web keeps public identity separate from authenticated details and reads
+project-creation controls only after authentication.
+During desktop status, an owner-session 401 clears the cached native session and
+returns the verified backend identity with `owner_authenticated=false`, allowing
+the ordinary sign-in boundary. Quit and update still require authenticated
+health details before using active-work counts.
+
+## Agent browser Web consumers
+
+The chat Options menu reads and updates `/api/projects/{project_id}/chats/{chat_id}/browser`
+with the `browser_requested` preference. The strict PUT body contains only that
+boolean. The preference exists before the chat has messages. A failed write
+triggers a read to reconcile the server value before another change.
+
+Experiment launch requests and Auto-research episode starts send
+`browser_requested`. Episode responses expose the persisted preference.
+Chat transcript messages and episode tasks expose `browser_status`; the Web
+renders unavailable and lost status on the corresponding turn. Experiment
+Runs loads its exact episode alongside the timeline for those task statuses.
+
+Machine cards independently GET `/api/space/machines/{machine_id}/browser`.
+Their explicit Install action POSTs `{}` to that path's `/install` endpoint
+and replaces readiness with the response. These calls never block the machine
+list or the rest of a card. Unknown readiness and reason codes retain the
+server detail in a generic failure notice.
+
 ## Member terminal API
 
 The project-scoped terminal routes are:
@@ -686,8 +727,8 @@ accept any other HTTP-to-HTTPS origin substitution. This keeps browser mutation
 protection aligned with the desktop TLS terminator instead of rejecting the
 desktop's own invitation and team-control requests.
 
-A personal backend has no session, and it listens on a predictable loopback
-port, so any web page can aim requests at it. Browsers send a cross-site POST
+A personal backend listens on a predictable loopback port, so any web page can
+aim requests at it, and its owner cookie is the session those requests would ride. Browsers send a cross-site POST
 without a CORS preflight only when it has no content type or a simple one
 (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`).
 The personal backend refuses those POSTs with 415
@@ -790,16 +831,20 @@ filesystem inspection, or catalog mutation. The separately validated
 provisioning finalizer is the only team-project entrance into the existing
 setup/registration owners.
 
-The backend health projection preserves its existing identity and runtime
-fields. `version` remains the full package `__version__` verbatim, and
+The personal public backend health projection carries adoption identity. Team
+public health keeps the full runtime and project-creation projection for its
+existing bootstrap consumers. The protected health details projection carries
+runtime fields in both spaces. `version` remains the full
+package `__version__` verbatim, and
 `running_commit` keeps its existing meaning as the commit recorded for the
 running installed process. It additionally publishes `build` as the integer
 package build number or null for a source checkout, `commit` as the package
-build's 7-to-40-character hexadecimal commit or null, and
+build's 7-to-40-character hexadecimal commit or null. Protected details expose
 `schema_ledger_head` as the newest applied storage-migration number read from
 the data directory's ledger.
 
-The health projection also carries one `project_creation` control with all three
+The protected health details projection also carries one `project_creation`
+control with all three
 intent identities, per-intent eligibility and preselection, primary action
 label, required fields, pinned source identity when one exists, and an explicit
 unavailable reason. The durable provisioning response similarly publishes the
@@ -1427,7 +1472,10 @@ path on its machine: absolute, an existing directory, no `:` or `$` or control
 characters, not `/`, and not inside RCP's own storage.
 `/api/space/machines/{id}/directories` lists one directory level on the machine,
 filtered then paged, marking protected entries; project setup's folder browser
-uses the same endpoint. `POST /api/projects/{id}/machines` appends a machine
+uses the same endpoint. `GET /api/space/machines/{id}/browser` reports that
+machine's agent-browser readiness, reaching the host, so cards load it one
+machine at a time rather than with the list; `POST .../browser/install` is the
+explicit, bounded install. `POST /api/projects/{id}/machines` appends a machine
 alias to the project manifest through the state workspace. Existing projects
 fill the machine list at startup and on registration. Project
 snapshots expose non-secret compute metadata; readiness exposes a backend-owned

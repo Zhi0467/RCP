@@ -214,6 +214,7 @@ def _setup_auto_research(
     episode_id: str = "auto_research",
     graph_base_head: GraphHeadRef | None = None,
     code_worktree: bool = False,
+    browser_requested: bool = False,
 ) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord, AgentTaskRecord]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     store = AppStore(tmp_path / "app.sqlite3")
@@ -235,6 +236,7 @@ def _setup_auto_research(
         episode_id=episode_id,
         role="orchestrator",
         code_worktree=code_worktree,
+        browser_requested=browser_requested,
         actor_operation_id="root",
         provider="codex",
         model="",
@@ -257,6 +259,7 @@ def _setup_auto_research(
             project_id="project",
             mode="auto_research",
             code_worktree=code_worktree,
+            browser_requested=browser_requested,
             graph_isolation=True,
             graph_target=graph_target,
             graph_base_head=graph_base_head,
@@ -301,6 +304,7 @@ def _setup_auto_research(
         episode_id=episode_id,
         role="worker",
         code_worktree=code_worktree,
+        browser_requested=browser_requested,
         actor_operation_id="worker",
         provider="codex",
         model="",
@@ -502,7 +506,7 @@ class _WorkerLauncher:
         self.write_scopes = []
         self.invocation_gates: list[ProviderInvocationGate | None] = []
 
-    async def stream(self, _provider, prompt, **kwargs):
+    async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
         self.calls += 1
         self.requested_session_ids.append(kwargs["session_id"])
         self.read_dirs.append(list(kwargs["read_dirs"]))
@@ -1053,10 +1057,12 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         (workspace / "patch.json").write_text(fallback_candidate, encoding="utf-8")
 
     class Launcher(_WorkerLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             observed["capability"] = kwargs["capability"]
             observed["session_id"] = kwargs["session_id"]
-            async for event in super().stream(provider, prompt, **kwargs):
+            async for event in super().stream(
+                provider, prompt, browser_grant=browser_grant, **kwargs
+            ):
                 yield event
 
     launcher = Launcher(session_id="orchestrator-session", writer=writer)
@@ -1955,7 +1961,29 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, _auto_research, _root, worker = _setup_auto_research(tmp_path)
+    store, _auto_research, _root, worker = _setup_auto_research(tmp_path, browser_requested=True)
+    from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
+    from rcp.runs import browser_runtime_seam
+
+    grant_events = []
+
+    def acquire_grant(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+        grant_events.append("acquired")
+        return BrowserGrant(
+            requested=True,
+            status="granted",
+            owner=owner,
+            session_name="browser-test-session",
+            lease_id="browser-test-lease",
+        )
+
+    def finish_grant(finished_grant, *, execution, data_dir):
+        assert finished_grant.lease_id == "browser-test-lease"
+        grant_events.append("finished")
+        return BrowserTurnStatus(status="granted")
+
+    monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire_grant)
+    monkeypatch.setattr(browser_runtime_seam, "finish_browser_grant", finish_grant)
     staged_mailboxes = []
     started: list[str] = []
     finished: list[str] = []
@@ -1988,6 +2016,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
 
     assert events[-1].event == "error"
     assert events[-1].text == "prompt failed after command mailbox staging"
+    assert grant_events == ["acquired", "finished"]
     assert started == finished == [f"{worker.operation_id}:worker"]
     assert len(staged_mailboxes) == 1
     staged = staged_mailboxes[0]
@@ -2594,7 +2623,7 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
     observed: dict[str, object] = {}
 
     class Launcher(_WorkerLauncher):
-        async def stream(self, provider, prompt, **kwargs):
+        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
             observed["host"] = kwargs["host"]
             observed["capability"] = kwargs["capability"]
             contract = _contract(prompt)

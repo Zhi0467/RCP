@@ -10,6 +10,7 @@
     "core:default",
     "core:webview:allow-set-webview-zoom",
     "allow-desktop-status",
+    "allow-desktop-owner-sign-in",
     "allow-desktop-reconnect-backend",
     "allow-desktop-show-ready",
     "allow-desktop-build-identity",

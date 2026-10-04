@@ -15,7 +15,6 @@ from shutil import rmtree
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.compute_jobs.probe import _result
@@ -51,7 +50,7 @@ from rcp.server_runtime import (
 )
 from rcp.storage import AppStore
 from rcp.transfer.target import upload_target_transfer_archive
-from tests.helpers import TASK_SETTLE_TIMEOUT
+from tests.helpers import TASK_SETTLE_TIMEOUT, signed_in_client
 from tests.test_project_transfer_request_storage import _archive_bound_pair
 from tests.test_transfer_import import _archive_fixture
 
@@ -88,7 +87,7 @@ def test_team_lifespan_publishes_private_socket_without_opening_a_second_store(
     data_dir, metadata, app = _team_app(tmp_path, control_root)
     socket_path = Path(metadata.control_socket or "")
 
-    with published_server_metadata(data_dir, metadata), TestClient(app):
+    with published_server_metadata(data_dir, metadata), signed_in_client(app):
         info = socket_path.lstat()
         assert stat.S_ISSOCK(info.st_mode)
         assert stat.S_IMODE(info.st_mode) == SERVER_CONTROL_SOCKET_MODE
@@ -295,7 +294,7 @@ def test_running_team_service_owns_the_upload_lease_and_completion(
     )
     app = create_app(data_dir=data_dir, instance_metadata=metadata)
 
-    with published_server_metadata(data_dir, metadata), TestClient(app):
+    with published_server_metadata(data_dir, metadata), signed_in_client(app):
         client = ServerControlClient.from_data_dir(
             data_dir,
             expected_server_uid=os.geteuid(),
@@ -349,7 +348,7 @@ def test_running_team_service_imports_and_compound_activates_the_uploaded_archiv
     app = create_app(data_dir=data_dir, instance_metadata=metadata)
     request_id = fixture["archive"].target_request_id
 
-    with published_server_metadata(data_dir, metadata), TestClient(app):
+    with published_server_metadata(data_dir, metadata), signed_in_client(app):
         client = ServerControlClient.from_data_dir(
             data_dir,
             expected_server_uid=os.geteuid(),
@@ -535,9 +534,8 @@ def test_update_maintenance_blocks_new_machine_operations(
 
 def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path / "data")
-    app.state.runtime_admission_gate.close_and_wait(timeout=1)
-
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
+        app.state.runtime_admission_gate.close_and_wait(timeout=1)
         response = client.get(
             "/api/health",
             headers={"Origin": "http://localhost:5173"},
@@ -636,7 +634,7 @@ def test_maintenance_enter_release_and_open_status_over_control_socket(
     maintenance_id = str(uuid.uuid4())
     boundary_sha256 = "a" * 64
 
-    with published_server_metadata(data_dir, metadata), TestClient(app):
+    with published_server_metadata(data_dir, metadata), signed_in_client(app):
         client = ServerControlClient.from_data_dir(data_dir, expected_server_uid=os.geteuid())
         entered = client.maintenance(
             "maintenance_enter",

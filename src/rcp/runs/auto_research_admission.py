@@ -181,6 +181,7 @@ def continue_auto_research(
     run_request = previous_root.model_copy(
         update={
             "episode_id": episode_id,
+            "browser_requested": source.browser_requested,
             "code_worktree": source.code_worktree,
             "graph_isolation": source.graph_isolation,
             "role": "orchestrator",
@@ -218,6 +219,7 @@ def continue_auto_research(
         updated_at=now,
         continues_episode_id=source.episode_id,
         continuation_request_id=request_id,
+        browser_requested=source.browser_requested,
         code_worktree=source.code_worktree,
         graph_isolation=source.graph_isolation,
         isolation_owner_episode_id=source.isolation_owner_episode_id or source.episode_id,
@@ -319,6 +321,7 @@ def reserve_auto_research(
         graph_base_head=graph_base_head,
         status="queued",
         invocation_ceiling=request.invocation_ceiling,
+        browser_requested=request.browser_requested,
         code_worktree=request.code_worktree,
         graph_isolation=request.graph_isolation,
         isolation_owner_episode_id=episode_id,
@@ -458,6 +461,7 @@ def start_auto_research_turn(
     """Admit one operational actor turn from the episode invocation budget."""
 
     episode = auto_research_for_request(tasks, episode_id, request)
+    request = request.model_copy(update={"browser_requested": episode.browser_requested})
     if request.role == "worker":
         request = request.model_copy(
             update={
@@ -874,6 +878,7 @@ def start_auto_research_child_work(
     request = request.model_copy(
         update={
             "isolation_owner_episode_id": episode.isolation_owner_episode_id or episode.episode_id,
+            "browser_requested": episode.browser_requested,
             "code_worktree": episode.code_worktree,
             "graph_isolation": episode.graph_isolation,
         }
@@ -2349,6 +2354,7 @@ def _validate_existing_child_work_wake(
         item.operation_id for item in tasks.store.episode_invocations(episode_id)
     }
     pinned_request_fields = (
+        "browser_requested",
         "provider",
         "model",
         "reasoning",
@@ -2389,7 +2395,8 @@ def _validate_existing_child_work_wake(
         or (not watcher_wake and (request.message is not None or request.watcher_ids))
         or (watcher_wake and (not request.message or not watchers))
         or any(
-            existing.request.get(field) != parent.request.get(field)
+            existing.request.get(field, False if field == "browser_requested" else None)
+            != parent.request.get(field, False if field == "browser_requested" else None)
             for field in pinned_request_fields
             if not watcher_wake or field not in {"model", "reasoning"}
         )

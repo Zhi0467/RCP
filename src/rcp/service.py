@@ -112,6 +112,7 @@ from rcp.providers import (
     configured_runtime,
     profile_for,
 )
+from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
@@ -324,6 +325,9 @@ class ChatMessage(BaseModel):
 
     message_id: str
     operation_id: str | None = None
+    browser_status: BrowserTurnStatus = Field(
+        default_factory=lambda: BrowserTurnStatus(status="not_requested")
+    )
     role: Literal["user", "assistant"]
     text: str
     timestamp: str
@@ -898,6 +902,8 @@ class ArtifactEditAdmission(BaseModel):
 
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
+
+    browser_requested: bool = False
 
     provider: ProviderId | None = None
     run_truth_scope: list[str] | None = None

@@ -80,6 +80,7 @@ class AutoResearchStartRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    browser_requested: bool = False
     code_worktree: bool = False
     graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
@@ -121,6 +122,7 @@ class AutoResearchRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     episode_id: str = Field(min_length=1)
+    browser_requested: bool = False
     code_worktree: bool = False
     graph_isolation: Literal[True] = True
     role: AutoResearchActorRole

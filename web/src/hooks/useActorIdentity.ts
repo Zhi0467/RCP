@@ -11,6 +11,8 @@ import {
 } from "../api";
 import {
   BACKEND_IDENTITY_EVENT,
+  isDesktopRuntime,
+  signInDesktopOwner,
   establishBackendIdentity,
   recoverTeamTransport,
   reverifyBackendIdentity,
@@ -18,16 +20,18 @@ import {
   verifyIdentityAfterMutationFailure,
   type BackendIdentityEventDetail,
 } from "../desktopRuntime";
-import type { Health, IdentityResponse } from "../types";
+import type { Health, PublicHealth, IdentityResponse } from "../types";
 
 export function useActorIdentity() {
   const [identityReady, setIdentityReady] = useState(false);
   const [identityIssue, setIdentityIssue] = useState<string | null>(null);
-  const [verifiedHealth, setVerifiedHealth] = useState<Health | null>(null);
+  const [verifiedHealth, setVerifiedHealth] = useState<PublicHealth | Health | null>(null);
+  const [authenticatedHealth, setAuthenticatedHealth] = useState<Health | null>(null);
   const [actorIdentity, setActorIdentity] = useState<IdentityResponse | null>(null);
   const [actorIdentityError, setActorIdentityError] = useState<string | null>(null);
   const [actorIdentityChecked, setActorIdentityChecked] = useState(false);
   const [identityRetry, setIdentityRetry] = useState(0);
+  const [ownerSessionRequired, setOwnerSessionRequired] = useState(false);
   const [teamSessionRequired, setTeamSessionRequired] = useState(false);
   const [actorNamePromptOpen, setActorNamePromptOpen] = useState(false);
   const [actorNameDraft, setActorNameDraft] = useState("");
@@ -36,7 +40,7 @@ export function useActorIdentity() {
 
   const actorIdentityRef = useRef<IdentityResponse | null>(null);
   const actorNamePromptResolver = useRef<((saved: boolean) => void) | null>(null);
-  const verifiedHealthRef = useRef<Health | null>(null);
+  const verifiedHealthRef = useRef<PublicHealth | Health | null>(null);
   actorIdentityRef.current = actorIdentity;
 
   const requestActorName = useCallback((): Promise<boolean> => {
@@ -83,8 +87,15 @@ export function useActorIdentity() {
       setIdentityReady(true);
       setIdentityIssue(detail.ok ? null : detail.message || "RCP could not verify its backend.");
       if (detail.health) {
-        verifiedHealthRef.current = detail.health;
-        setVerifiedHealth(detail.health);
+        if (verifiedHealthRef.current?.instance_id !== detail.health.instance_id) {
+          setAuthenticatedHealth(null);
+        }
+        const health =
+          verifiedHealthRef.current?.instance_id === detail.health.instance_id
+            ? { ...verifiedHealthRef.current, ...detail.health }
+            : detail.health;
+        verifiedHealthRef.current = health;
+        setVerifiedHealth(health);
         if (detail.ok) pinApiInstance(detail.health.instance_id);
       }
       // An identity read the dropped tunnel failed is not retried by anything else.
@@ -122,20 +133,28 @@ export function useActorIdentity() {
     setTeamSessionRequired(false);
     setActorIdentityError(null);
     void api<IdentityResponse>("/api/identity")
-      .then((identity) => {
+      .then(async (identity) => {
+        const details = await api<Health>("/api/health/details");
         if (stopped) return;
+        verifiedHealthRef.current = details;
+        setVerifiedHealth(details);
+        setAuthenticatedHealth(details);
+        setOwnerSessionRequired(false);
         setActorIdentity(identity);
         setActorIdentityChecked(true);
       })
       .catch((error) => {
         if (stopped) return;
         setActorIdentity(null);
+        setAuthenticatedHealth(null);
         if (
           verifiedHealth.space_kind === "team" &&
           error instanceof ApiError &&
           error.status === 401
         ) {
           setTeamSessionRequired(true);
+        } else if (error instanceof ApiError && error.status === 401) {
+          setOwnerSessionRequired(true);
         } else {
           setActorIdentityError(error instanceof Error ? error.message : String(error));
         }
@@ -148,11 +167,35 @@ export function useActorIdentity() {
     identityIssue,
     identityReady,
     identityRetry,
+    verifiedHealth?.instance_id,
     verifiedHealth?.space_id,
     verifiedHealth?.space_kind,
   ]);
 
-  const adoptTeamIdentity = useCallback((identity: IdentityResponse) => {
+  useEffect(() => {
+    const expired = () => {
+      if (verifiedHealthRef.current?.space_kind === "team") return;
+      setOwnerSessionRequired(true);
+      setActorIdentity(null);
+      setAuthenticatedHealth(null);
+    };
+    window.addEventListener("rcp:session-required", expired);
+    return () => window.removeEventListener("rcp:session-required", expired);
+  }, []);
+
+  const authenticateOwnerSession = useCallback(async (code: string) => {
+    if (isDesktopRuntime()) await signInDesktopOwner(code);
+    else await api("/api/owner/redeem", { method: "POST", body: JSON.stringify({ code }) });
+    setOwnerSessionRequired(false);
+    setActorIdentityChecked(false);
+    setIdentityRetry((count) => count + 1);
+  }, []);
+
+  const adoptTeamIdentity = useCallback(async (identity: IdentityResponse) => {
+    const details = await api<Health>("/api/health/details");
+    verifiedHealthRef.current = details;
+    setVerifiedHealth(details);
+    setAuthenticatedHealth(details);
     setActorIdentity(identity);
     setActorIdentityError(null);
     setActorIdentityChecked(true);
@@ -176,10 +219,10 @@ export function useActorIdentity() {
 
   const reverifyIdentity = useCallback((reason: string) => reverifyBackendIdentity(reason), []);
 
-  const currentActiveAgentTasks = useCallback(
-    () => verifiedHealthRef.current?.active_agent_tasks ?? 0,
-    [],
-  );
+  const currentActiveAgentTasks = useCallback(() => {
+    const health = verifiedHealthRef.current;
+    return health && "active_agent_tasks" in health ? health.active_agent_tasks : 0;
+  }, []);
 
   const updateActorNameDraft = useCallback((value: string) => {
     setActorNameDraft(value);
@@ -190,10 +233,13 @@ export function useActorIdentity() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    authenticatedHealth,
     actorIdentity,
     actorIdentityError,
     actorIdentityChecked,
     teamSessionRequired,
+    ownerSessionRequired,
+    authenticateOwnerSession,
     actorNamePromptOpen,
     actorNameDraft,
     actorNameSaving,

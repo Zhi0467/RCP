@@ -4,9 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, call
 
 import pytest
-from fastapi.testclient import TestClient
 
 from rcp.storage.question_models import QuestionOrigin
+from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_episode_storage import _episode
@@ -16,7 +16,12 @@ from .test_episode_storage import _episode
 def questions_api(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     app.state.reconcile_question_answers = Mock()
-    return app, TestClient(app), app.state.background_tasks.store, app.state.default_project_id
+    return (
+        app,
+        signed_in_client(app),
+        app.state.background_tasks.store,
+        app.state.default_project_id,
+    )
 
 
 def _question(store, project_id, *, owner_kind="chat", owner_id="chat", key="ask"):
@@ -208,7 +213,7 @@ def test_legacy_project_alias_reaches_canonical_questions(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     app.state.reconcile_question_answers = Mock()
     base = "/api/projects/legacy-project-url"
-    with TestClient(app) as client:
+    with signed_in_client(app) as client:
         listed = client.get(f"{base}/chats/chat/questions")
         assert [item["question_id"] for item in listed.json()] == [question.question_id]
         answered = client.post(

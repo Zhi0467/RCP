@@ -10,10 +10,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
 from rcp.projects import fill_space_machines
-from tests.helpers import create_named_app
+from tests.helpers import create_named_app, signed_in_client
 from tests.test_project_membership import _create_project, _team_app
+
+
+@pytest.fixture(autouse=True)
+def browser_probe(monkeypatch):
+    monkeypatch.setattr(
+        "rcp.api.space_machines.readiness",
+        lambda **kwargs: BrowserReadiness(status="not_installed"),
+    )
 
 
 @pytest.fixture
@@ -31,7 +40,7 @@ def _machine(client: TestClient, name: str) -> dict[str, object]:
 
 
 def test_registered_machines_fill_the_list_and_a_used_machine_cannot_be_deleted(app) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     laptop = _machine(client, "laptop")
     assert laptop["host"] == "" and laptop["in_use"] is True
@@ -59,7 +68,7 @@ def test_projects_naming_two_accounts_for_one_host_leave_its_card_with_none(app)
 
 
 def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     body = {"name": "GPU", "host": "alice@gpu.example", "os_account": "alice"}
     created = client.post("/api/space/machines", json=body)
     assert created.status_code == 200, created.text
@@ -84,7 +93,7 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
 
 
 def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest, tmp_path) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     shared = tmp_path / "shared"
     shared.mkdir()
     path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}"
@@ -128,7 +137,7 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
 def test_remote_writable_paths_are_checked_over_ssh_against_the_remote_home(
     app, monkeypatch
 ) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     machine = client.post(
         "/api/space/machines",
         json={"name": "GPU", "host": "alice@gpu.example", "os_account": "alice"},
@@ -154,7 +163,7 @@ def test_remote_writable_paths_are_checked_over_ssh_against_the_remote_home(
 
 
 def test_directories_filter_before_paging_and_lock_rcp_storage(app, tmp_path, monkeypatch) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     browse = tmp_path / "browse"
     for name in ("alpha", "Beta", "gamma"):
         (browse / name).mkdir(parents=True)
@@ -185,7 +194,7 @@ def test_directories_filter_before_paging_and_lock_rcp_storage(app, tmp_path, mo
 
 
 def test_adding_a_space_machine_to_a_project_appends_it_to_the_manifest(app, manifest) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
     machine = client.post(
         "/api/space/machines",
@@ -242,7 +251,7 @@ def test_a_project_machine_finds_its_card_by_host(app) -> None:
 
 
 def test_the_picker_locks_repository_state(app, manifest, tmp_path) -> None:
-    client = TestClient(app)
+    client = signed_in_client(app)
     repository = Path(load_manifest(manifest.path).repositories[0].path)
     path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}/directories"
 
@@ -260,3 +269,28 @@ def test_the_picker_locks_repository_state(app, manifest, tmp_path) -> None:
     entries = client.post(path, json={"path": str(elsewhere)}).json()["entries"]
     locked = {entry["name"]: entry["protected"] for entry in entries}
     assert locked == {"state": True, "ordinary": False}
+
+
+def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> None:
+    calls = []
+
+    def install(**kwargs):
+        calls.append(kwargs)
+        return BrowserReadiness(status="ready")
+
+    monkeypatch.setattr("rcp.api.space_machines.install_browser", install)
+    client = signed_in_client(app)
+    machine = _machine(client, "laptop")
+    assert "browser" not in machine
+    browser = client.get(f"/api/space/machines/{machine['machine_id']}/browser")
+    assert browser.json()["status"] == "not_installed"
+    assert calls == []
+    response = client.post(f"/api/space/machines/{machine['machine_id']}/browser/install", json={})
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert len(calls) == 1
+    assert calls[0]["host"] == machine["host"]
+    assert calls[0]["os_account"] == machine["os_account"]
+    assert calls[0]["data_dir"] == tmp_path / "data"
+    assert client.post("/api/space/machines/absent/browser/install", json={}).status_code == 404
+    assert len(calls) == 1

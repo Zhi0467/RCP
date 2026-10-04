@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from rcp.core.models import Patch
+from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, create_named_app, seed_patch
 
@@ -12,7 +11,7 @@ from .helpers import append_fixture_patch, create_named_app, seed_patch
 def _seeded_api(manifest, tmp_path: Path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
-    return app, TestClient(app), app.state.default_project_id
+    return app, signed_in_client(app), app.state.default_project_id
 
 
 def _decision_ontology() -> dict[str, object]:
@@ -35,7 +34,7 @@ def test_transition_manifest_names_the_ruleset_and_conservative_sync_triggers(
     manifest, tmp_path: Path
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = TestClient(app)
+    client = signed_in_client(app)
 
     response = client.get(f"/api/projects/{app.state.default_project_id}/transition-manifest")
 

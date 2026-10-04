@@ -2287,6 +2287,7 @@ class EpisodeRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    browser_requested: bool = False
     episode_id: str
     project_id: str
     mode: EpisodeMode
@@ -2924,6 +2925,7 @@ class ExperimentEpisodeRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    browser_requested: bool = False
     episode_id: str
     project_id: str
     control_node_id: str
@@ -2962,6 +2964,7 @@ class ExperimentEpisodeRecord(BaseModel):
 class ExperimentLoopRuntime(BaseModel):
     """Operational state of the newest bounded episode for one Experiment."""
 
+    browser_requested: bool = False
     episode_id: str | None = None
     invocations_used: int = Field(default=0, ge=0)
     invocation_ceiling: int | None = Field(default=None, ge=1)
@@ -3113,6 +3116,7 @@ class WatcherContinuation(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    browser_requested: bool = False
     provider: str
     model: str | None = None
     reasoning: str | None = None
@@ -3340,6 +3344,7 @@ def watcher_next_check_at(
 
 
 _EXPERIMENT_EPISODE_PINNED_FIELDS = (
+    "browser_requested",
     "code_worktree",
     "graph_isolation",
     "run_on",
@@ -3356,7 +3361,7 @@ _EXPERIMENT_EPISODE_PINNED_FIELDS = (
 
 def _experiment_pinned_value(request: dict[str, object], field: str) -> object:
     value = request.get(field)
-    if field in {"code_worktree", "graph_isolation"}:
+    if field in {"code_worktree", "graph_isolation", "browser_requested"}:
         return bool(value)
     if field == "run_truth_scope" and isinstance(value, list):
         return sorted({str(item) for item in value})

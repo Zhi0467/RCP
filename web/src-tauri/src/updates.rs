@@ -172,7 +172,7 @@ fn exit_after_failed_recovery(app: &AppHandle) {
 
 async fn refresh_active_tasks(state: &BackendState) -> Result<u64, String> {
     let status = state.status()?;
-    let health = backend::health(&status).await?;
+    let health = backend::health_details(&status).await?;
     if health.instance_id != status.instance_id || health.data_dir_id != status.data_dir_id {
         return Err("backend identity changed while checking active work".into());
     }

@@ -52,6 +52,8 @@ BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
+        "browser",
+        "tools",
         # Member terminal scratch is per-session and must never be restored;
         # leaving it unclassified would mark every capture partial.
         "terminals",

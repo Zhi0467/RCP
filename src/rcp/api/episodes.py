@@ -28,6 +28,7 @@ from rcp.episode_health import (
     project_episode_health,
 )
 from rcp.projects import ProjectCatalog
+from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.storage import (
     AgentFailureKind,
     AgentTaskRecord,
@@ -81,6 +82,7 @@ class StartEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["auto_research"]
+    browser_requested: bool = False
     code_worktree: bool | None = None
     graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
@@ -150,6 +152,7 @@ class EpisodeTaskResponse(BaseModel):
     status_message: str
     error: str | None = None
     failure_kind: AgentFailureKind | None
+    browser_status: BrowserTurnStatus | None = None
     degradation: str | None = None
     applied_revision: int | None = None
     result: dict[str, object] | None = None
@@ -226,6 +229,7 @@ class EpisodeResponse(BaseModel):
     episode_id: str
     project_id: str
     mode: EpisodeMode
+    browser_requested: bool = False
     code_worktree: bool
     graph_isolation: bool
     isolation_owner_episode_id: str | None
@@ -341,6 +345,7 @@ def serialize_episode(
     tasks = [
         _serialize_task(
             task,
+            store=store,
             episode=episode,
             role=task_metadata[task.operation_id][0],
             depth=task_metadata[task.operation_id][1],
@@ -404,6 +409,7 @@ def serialize_episode(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         mode=episode.mode,
+        browser_requested=episode.browser_requested,
         code_worktree=episode.code_worktree,
         graph_isolation=episode.graph_isolation,
         isolation_owner_episode_id=episode.isolation_owner_episode_id,
@@ -448,6 +454,7 @@ def serialize_episode(
         + [
             _serialize_task(
                 task,
+                store=store,
                 episode=episode,
                 role="orchestrator"
                 if task.request["artifact_edit"].get("reply_episode_id")
@@ -664,6 +671,7 @@ def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
 def _serialize_task(
     task: AgentTaskRecord,
     *,
+    store: AppStore,
     episode: _EpisodeProjectionParent,
     role: Literal["orchestrator", "worker", "wake"],
     depth: int,
@@ -671,7 +679,12 @@ def _serialize_task(
 ) -> EpisodeTaskResponse:
     public_fields = EpisodeTaskResponse.model_fields.keys()
     values = task.model_dump(include=public_fields)
-    values.update(role=role, depth=depth, degradation=degradation)
+    values.update(
+        role=role,
+        depth=depth,
+        degradation=degradation,
+        browser_status=store.browser_turn_status(task.operation_id).public(),
+    )
     if not isinstance(task.request.get("artifact_edit"), dict):
         values.update(_episode_task_controls(episode, task))
     return EpisodeTaskResponse.model_validate(values)

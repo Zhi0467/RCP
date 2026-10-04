@@ -32,6 +32,7 @@ from rcp.providers.base import (
     _usage_dedupe_key,
     _usage_int,
 )
+from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.claude.remote import (
     ClaudeSessionFormat,
     ClaudeStreamTurnFence,
@@ -414,6 +415,7 @@ class ClaudeProfile(ProviderProfile):
         write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
+        browser_grant: BrowserGrant | None = None,
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
@@ -455,13 +457,17 @@ class ClaudeProfile(ProviderProfile):
                     "",
                     "--settings",
                     json.dumps(_claude_write_settings(scope), separators=(",", ":")),
-                    "--strict-mcp-config",
-                    "--mcp-config",
-                    '{"mcpServers":{}}',
                 ]
             )
         else:
             command.extend(["--allowedTools", "WebSearch", "WebFetch"])
+            if (
+                capability == "discuss"
+                and browser_grant is not None
+                and browser_grant.status == "granted"
+            ):
+                command.append("Bash(playwright-cli:*)")
+        command.extend(["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'])
         if session_id:
             command.extend(["--resume", session_id])
         # Deduplicate while preserving first-seen order: one --add-dir per source

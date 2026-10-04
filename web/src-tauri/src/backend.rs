@@ -14,6 +14,8 @@ use tauri_plugin_shell::{
 use tokio::{sync::Notify, time};
 
 use crate::lifecycle::{DesktopStatus, Health, LaunchOutcome};
+use crate::owner_session;
+use zeroize::Zeroizing;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 // A failed launch is reported in a modal dialog. The launcher's output can run
@@ -83,7 +85,7 @@ pub enum QuitRequest {
 }
 
 impl BackendState {
-    fn set_ready(&self, status: DesktopStatus, process: BackendProcess) -> bool {
+    fn set_connection(&self, status: DesktopStatus, process: BackendProcess) -> bool {
         let mut inner = self.inner.lock().expect("backend state poisoned");
         if inner.terminal != TerminalState::Idle {
             return false;
@@ -527,6 +529,11 @@ pub async fn connect(
     if let Ok(mut status) = state.status() {
         if let Ok(current) = health(&status).await {
             if status.matches_health(&current) {
+                // Keep a session the backend still accepts; exchanging again would orphan it.
+                let kept = owner_session::has_session(&status)
+                    && matches!(optional_health_details(&status).await, Ok(Some(_)));
+                status.owner_authenticated =
+                    kept || owner_session::establish(app, &status, None).await?;
                 state.update_health(&current);
                 status.active_agent_tasks = current.active_agent_tasks;
                 status.owner_kind = current.owner_kind;
@@ -573,7 +580,7 @@ pub async fn connect(
         }
     };
     let status = started.status.clone();
-    if state.set_ready(started.status.clone(), started.process.clone()) {
+    if state.set_connection(started.status.clone(), started.process.clone()) {
         Ok(status)
     } else {
         stop_unpublished_backend(state, &started).await;
@@ -606,7 +613,8 @@ async fn stop_unpublished_backend(state: &BackendState, started: &StartedBackend
 }
 
 async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFailure> {
-    let (mut events, child) = backend_command(app, force)
+    let secret = owner_session::new_secret().map_err(StartFailure::confirmed)?;
+    let (mut events, mut child) = backend_command(app, force)
         .map_err(StartFailure::confirmed)?
         .spawn()
         .map_err(|error| {
@@ -616,6 +624,10 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
         pid: child.pid(),
         exit: Arc::new(ProcessExit::default()),
     };
+    let input = Zeroizing::new(format!("{}\n", secret.as_str()));
+    child
+        .write(input.as_bytes())
+        .map_err(|_| StartFailure::confirmed("could not provide owner secret to backend"))?;
     drop(child);
 
     let (startup_tx, mut startup_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -643,12 +655,14 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
 
     let mut stderr = Vec::new();
     let mut stdout_pending = Vec::new();
+    let mut owner_code = None;
     let launch_deadline = time::Instant::now() + LAUNCH_RESULT_TIMEOUT;
     let outcome = match wait_for_launch_outcome(
         &mut startup_rx,
         &mut stderr,
         &mut stdout_pending,
         launch_deadline,
+        &mut owner_code,
     )
     .await
     {
@@ -660,7 +674,7 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
                     // it belongs in both the message and the saved log.
                     if !stdout_pending.is_empty() {
                         stderr.extend_from_slice(b"[stdout] ");
-                        stderr.extend_from_slice(&stdout_pending);
+                        stderr.extend_from_slice(redact_owner_code(&stdout_pending).as_bytes());
                         stderr.push(b'\n');
                     }
                     let mut error =
@@ -727,7 +741,7 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
             ));
         }
     };
-    let status = match DesktopStatus::from_ready(&outcome, &health) {
+    let mut status = match DesktopStatus::from_ready(&outcome, &health) {
         Ok(status) => status,
         Err(error) => {
             let child = UnconfirmedChild {
@@ -747,6 +761,19 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
             ));
         }
     };
+    // Authentication failures never grant authority to stop an adopted backend.
+    status.owner_authenticated = owner_session::establish(
+        app,
+        &status,
+        status
+            .owned
+            .then_some((secret.as_str(), owner_code.as_deref().map(String::as_str))),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        eprintln!("[rcp] owner sign-in required: {error}");
+        false
+    });
     Ok(StartedBackend { status, process })
 }
 
@@ -785,6 +812,7 @@ async fn wait_for_launch_outcome(
     stderr: &mut Vec<u8>,
     stdout_pending: &mut Vec<u8>,
     deadline: time::Instant,
+    owner_code: &mut Option<Zeroizing<String>>,
 ) -> Result<LaunchOutcome, LaunchWaitFailure> {
     loop {
         // Check before polling the channel so a continuously ready stream cannot
@@ -799,7 +827,9 @@ async fn wait_for_launch_outcome(
         };
         match event {
             CommandEvent::Stdout(bytes) => {
-                if let Some(outcome) = parse_launch_stdout(stdout_pending, stderr, &bytes) {
+                if let Some(outcome) =
+                    parse_launch_stdout(stdout_pending, stderr, &bytes, owner_code)
+                {
                     return Ok(outcome);
                 }
             }
@@ -814,6 +844,7 @@ fn parse_launch_stdout(
     pending: &mut Vec<u8>,
     diagnostics: &mut Vec<u8>,
     bytes: &[u8],
+    owner_code: &mut Option<Zeroizing<String>>,
 ) -> Option<LaunchOutcome> {
     pending.extend_from_slice(bytes);
     while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
@@ -823,14 +854,31 @@ fn parse_launch_stdout(
         if text.is_empty() {
             continue;
         }
-        if let Ok(outcome) = LaunchOutcome::parse(text) {
+        if let Ok(mut outcome) = LaunchOutcome::parse(text) {
+            *owner_code = outcome.owner_sign_in_code.take().map(Zeroizing::new);
             return Some(outcome);
         }
         diagnostics.extend_from_slice(b"[stdout] ");
-        diagnostics.extend_from_slice(text.as_bytes());
+        diagnostics.extend_from_slice(redact_owner_code(text.as_bytes()).as_bytes());
         diagnostics.push(b'\n');
     }
     None
+}
+
+fn redact_owner_code(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| {
+            if line.contains("owner_sign_in_code") {
+                return "[owner sign-in launch output redacted]".to_string();
+            }
+            line.split_once("#owner-code=").map_or_else(
+                || line.to_string(),
+                |(prefix, _)| format!("{prefix}#owner-code=[redacted]"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn backend_command(
@@ -859,6 +907,7 @@ fn backend_command(
 
     let mut args = vec![
         "--machine-readable",
+        "--owner-secret-stdin",
         "--owner",
         "desktop",
         "--web-assets",
@@ -1059,6 +1108,46 @@ async fn wait_for_health(outcome: &LaunchOutcome) -> Result<Health, String> {
 
 pub async fn health(status: &DesktopStatus) -> Result<Health, String> {
     health_at(&status.base_url).await
+}
+
+pub async fn status_health(status: &DesktopStatus) -> Result<Option<Health>, String> {
+    let details = optional_health_details(status).await?;
+    if details.is_none() && !status.matches_health(&health(status).await?) {
+        return Err("backend identity changed while checking desktop status".into());
+    }
+    Ok(details)
+}
+
+/// Operational counts are protected; callers that gate updates must never use public health.
+pub async fn health_details(status: &DesktopStatus) -> Result<Health, String> {
+    optional_health_details(status)
+        .await?
+        .ok_or_else(|| "owner session expired; sign in before checking active work".into())
+}
+
+async fn optional_health_details(status: &DesktopStatus) -> Result<Option<Health>, String> {
+    if !owner_session::has_session(status) {
+        return Err("owner sign-in required before checking active work".into());
+    }
+    let response = owner_session::client(&status.base_url, Some(Duration::from_secs(3)))?
+        .get(format!("{}/api/health/details", status.base_url))
+        .send()
+        .await
+        .map_err(|error| format!("backend details are unavailable: {error}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        owner_session::forget(status)?;
+        return Ok(None);
+    }
+    let current = response
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json::<Health>()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !status.matches_health(&current) {
+        return Err("backend identity changed while checking active work".into());
+    }
+    Ok(Some(current))
 }
 
 async fn health_at(base_url: &str) -> Result<Health, String> {
@@ -1488,7 +1577,7 @@ fn save_launch_output(app: &AppHandle, output: &[u8]) -> Option<PathBuf> {
     let directory = app.path().app_log_dir().ok()?;
     std::fs::create_dir_all(&directory).ok()?;
     let path = directory.join(LAUNCH_OUTPUT_FILENAME);
-    std::fs::write(&path, output).ok()?;
+    std::fs::write(&path, redact_owner_code(output)).ok()?;
     Some(path)
 }
 
@@ -1557,6 +1646,7 @@ mod tests {
             version: "0.3.0".into(),
             owned,
             reason: None,
+            owner_sign_in_code: None,
         }
     }
 
@@ -1575,6 +1665,7 @@ mod tests {
     fn ready_status(instance_id: &str, owned: bool) -> DesktopStatus {
         DesktopStatus {
             desktop: true,
+            owner_authenticated: true,
             version: "0.3.0".into(),
             base_url: "http://127.0.0.1:8421".into(),
             instance_id: instance_id.into(),
@@ -1632,16 +1723,49 @@ mod tests {
     }
 
     #[test]
+    fn sign_in_code_is_captured_without_entering_diagnostics() {
+        let mut pending = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut code = None;
+        let raw_outcome = LaunchOutcome::parse(
+            r#"{"outcome":"owned","base_url":"http://127.0.0.1:8691","instance_id":"instance","version":"test","owned":true,"owner_sign_in_code":"single-use"}"#,
+        ).unwrap();
+        assert!(!format!("{raw_outcome:?}").contains("single-use"));
+        assert!(!serde_json::to_string(&raw_outcome)
+            .unwrap()
+            .contains("single-use"));
+        let outcome = parse_launch_stdout(
+            &mut pending,
+            &mut diagnostics,
+            b"{\"outcome\":\"owned\",\"base_url\":\"http://127.0.0.1:8691\",\"instance_id\":\"instance\",\"version\":\"test\",\"owned\":true,\"owner_sign_in_code\":\"single-use\"}\n",
+            &mut code,
+        ).unwrap();
+        assert_eq!(code.as_deref().map(String::as_str), Some("single-use"));
+        assert!(diagnostics.is_empty());
+        assert!(!format!("{outcome:?}").contains("single-use"));
+        assert!(!serde_json::to_string(&outcome)
+            .unwrap()
+            .contains("single-use"));
+        assert!(!redact_owner_code(b"url/#owner-code=partial").contains("partial"));
+        let partial = b"{\"owner_sign_in_code\":\"partial";
+        assert!(!redact_owner_code(partial).contains("partial"));
+        assert!(parse_launch_stdout(&mut pending, &mut diagnostics, partial, &mut code).is_none());
+        assert!(parse_launch_stdout(&mut pending, &mut diagnostics, b"\n", &mut code).is_none());
+        assert!(!String::from_utf8(diagnostics).unwrap().contains("partial"));
+    }
+
+    #[test]
     fn launch_stdout_skips_build_output_before_the_machine_result() {
         let mut pending = Vec::new();
         let mut diagnostics = Vec::new();
         let first = b"Building frontend...\n{\"outcome\":\"owned\",\"base_url\":\"http://127.0.0.1:8421\",\"instance_id\":\"instance-a\",\"version\":\"0.3.0\",";
-        assert!(parse_launch_stdout(&mut pending, &mut diagnostics, first).is_none());
+        assert!(parse_launch_stdout(&mut pending, &mut diagnostics, first, &mut None).is_none());
 
         let outcome = parse_launch_stdout(
             &mut pending,
             &mut diagnostics,
             b"\"owned\":true,\"reason\":null}\n",
+            &mut None,
         )
         .expect("machine result should be parsed after the build output");
 
@@ -1749,6 +1873,7 @@ mod tests {
                 &mut stderr,
                 &mut stdout_pending,
                 deadline,
+                &mut None,
             )
             .await;
 
@@ -1861,7 +1986,7 @@ mod tests {
     #[test]
     fn quit_ownership_is_rederived_from_the_live_instance_id() {
         let state = BackendState::default();
-        assert!(state.set_ready(ready_status("instance-a", true), backend_process(4114)));
+        assert!(state.set_connection(ready_status("instance-a", true), backend_process(4114)));
 
         let owned = state
             .owned_backend()
@@ -1874,7 +1999,7 @@ mod tests {
     #[test]
     fn live_ownership_is_only_the_recorded_instance_id_comparison() {
         let state = BackendState::default();
-        assert!(state.set_ready(ready_status("instance-a", true), backend_process(4114)));
+        assert!(state.set_connection(ready_status("instance-a", true), backend_process(4114)));
         let owned = state.owned_backend().unwrap().unwrap();
         let mut current = ready_health(4114);
 
@@ -1886,10 +2011,10 @@ mod tests {
     #[test]
     fn same_instance_reuse_preserves_the_exact_owned_receipt() {
         let state = BackendState::default();
-        assert!(state.set_ready(ready_status("instance-a", true), backend_process(4114)));
+        assert!(state.set_connection(ready_status("instance-a", true), backend_process(4114)));
         let mut reused = ready_status("instance-a", false);
         reused.base_url = "http://127.0.0.1:9000".into();
-        assert!(state.set_ready(reused, backend_process(5225)));
+        assert!(state.set_connection(reused, backend_process(5225)));
 
         let owned = state.owned_backend().unwrap().unwrap();
         assert_eq!(owned.instance_id, "instance-a");
@@ -1900,10 +2025,10 @@ mod tests {
     #[test]
     fn reuse_transitions_preserve_only_the_matching_owned_receipt() {
         let state = BackendState::default();
-        assert!(state.set_ready(ready_status("instance-a", false), backend_process(4114)));
+        assert!(state.set_connection(ready_status("instance-a", false), backend_process(4114)));
         assert!(state.owned_backend().unwrap().is_none());
 
-        assert!(state.set_ready(ready_status("instance-b", true), backend_process(5225)));
+        assert!(state.set_connection(ready_status("instance-b", true), backend_process(5225)));
         assert_eq!(
             state
                 .owned_backend()
@@ -1914,7 +2039,7 @@ mod tests {
             5225
         );
 
-        assert!(state.set_ready(ready_status("instance-c", false), backend_process(6336)));
+        assert!(state.set_connection(ready_status("instance-c", false), backend_process(6336)));
         assert!(state.owned_backend().unwrap().is_none());
     }
 
@@ -1939,11 +2064,11 @@ mod tests {
     #[test]
     fn quit_is_terminal_single_flight_and_blocks_late_publication() {
         let state = BackendState::default();
-        assert!(state.set_ready(ready_status("instance-a", true), backend_process(4114)));
+        assert!(state.set_connection(ready_status("instance-a", true), backend_process(4114)));
         assert_eq!(state.begin_quit().unwrap(), QuitRequest::Started);
         assert_eq!(state.begin_quit().unwrap(), QuitRequest::AlreadyQuitting);
         assert!(state.is_quitting());
-        assert!(!state.set_ready(ready_status("instance-b", true), backend_process(5225)));
+        assert!(!state.set_connection(ready_status("instance-b", true), backend_process(5225)));
         assert_eq!(state.status().unwrap().instance_id, "instance-a");
         assert_eq!(state.owned_backend().unwrap().unwrap().process.pid(), 4114);
     }
@@ -2096,7 +2221,7 @@ mod tests {
         assert!(state.is_terminal());
         assert!(!state.is_quitting());
         assert_eq!(state.begin_quit().unwrap(), QuitRequest::Updating);
-        assert!(!state.set_ready(ready_status("instance-a", true), backend_process(4114)));
+        assert!(!state.set_connection(ready_status("instance-a", true), backend_process(4114)));
         assert!(state.coordinator.try_lock().is_err());
 
         drop(guard);
@@ -2109,7 +2234,7 @@ mod tests {
     #[test]
     fn update_recovery_discards_cached_status_and_ownership() {
         let state = BackendState::default();
-        assert!(state.set_ready(ready_status("instance-a", true), backend_process(4114)));
+        assert!(state.set_connection(ready_status("instance-a", true), backend_process(4114)));
 
         state.reset_connection_for_recovery().unwrap();
 

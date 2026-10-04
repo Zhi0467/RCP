@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi.testclient import TestClient
-
 from rcp.api.app import create_app
 from rcp.api.server_status import project_server_status
 from rcp.release_check import UpdateNotice
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunRefused
 from rcp.server_ops.doctor import ServerDoctorReport
 from rcp.storage import AppStore
+from tests.helpers import signed_in_client
 
 COMMIT = "a" * 40
 UPSTREAM = "b" * 40
@@ -108,7 +107,7 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
         server_status_clock=lambda: NOW,
     )
 
-    with TestClient(app, base_url="https://team.test") as client:
+    with signed_in_client(app, base_url="https://team.test") as client:
         response = client.get("/api/server-status")
         refused = client.post("/api/server-status", json={})
 
@@ -161,7 +160,7 @@ def test_server_status_is_team_only_and_fails_loudly_on_unsafe_read(tmp_path) ->
         server_restore_completed_at_reader=lambda: None,
         server_status_clock=lambda: NOW,
     )
-    with TestClient(personal) as client:
+    with signed_in_client(personal) as client:
         assert client.get("/api/server-status").status_code == 404
 
     team_dir = tmp_path / "team"
@@ -178,7 +177,7 @@ def test_server_status_is_team_only_and_fails_loudly_on_unsafe_read(tmp_path) ->
         server_restore_completed_at_reader=lambda: None,
         server_status_clock=lambda: NOW,
     )
-    with TestClient(team, base_url="https://team.test") as client:
+    with signed_in_client(team, base_url="https://team.test") as client:
         response = client.get("/api/server-status")
 
     assert response.status_code == 503
@@ -193,7 +192,7 @@ def test_server_status_is_team_only_and_fails_loudly_on_unsafe_read(tmp_path) ->
         server_restore_completed_at_reader=lambda: None,
         server_status_clock=lambda: NOW,
     )
-    with TestClient(unsafe_receipt, base_url="https://team.test") as client:
+    with signed_in_client(unsafe_receipt, base_url="https://team.test") as client:
         receipt_response = client.get("/api/server-status")
     assert receipt_response.status_code == 503
     assert receipt_response.json()["detail"] == response.json()["detail"]
@@ -210,7 +209,9 @@ def test_server_status_default_restore_reader_keeps_team_settings_available(tmp_
         server_status_clock=lambda: NOW,
     )
 
-    with TestClient(app, base_url="https://team.test", raise_server_exceptions=False) as client:
+    with signed_in_client(
+        app, base_url="https://team.test", raise_server_exceptions=False
+    ) as client:
         response = client.get("/api/server-status")
 
     assert response.status_code == 200, response.text
