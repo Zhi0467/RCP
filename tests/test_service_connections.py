@@ -219,7 +219,7 @@ async def test_connect_records_only_passing_formats_and_never_saves_failure(
     async def probe(_, key, audio, mime):
         if mime != MIME:
             raise ConnectionError("transcription_upstream_failed", 502)
-        return ""
+        return "RCP dictation check."
 
     monkeypatch.setattr(transcription, "transcribe", probe)
     payload = {"kind": "openai_compatible", "preset": "openai", "key": KEY}
@@ -231,6 +231,13 @@ async def test_connect_records_only_passing_formats_and_never_saves_failure(
         raise ConnectionError("transcription_upstream_failed", 502)
 
     monkeypatch.setattr(transcription, "transcribe", fail)
+    assert client.post("/api/service-connections", json=payload).status_code == 422
+
+    async def silent(*_):
+        return " "
+
+    # A model that answers with no words cannot dictate, even when the request succeeds.
+    monkeypatch.setattr(transcription, "transcribe", silent)
     assert client.post("/api/service-connections", json=payload).status_code == 422
     assert len(private.summary()["connections"]) == 1
 

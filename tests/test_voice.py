@@ -165,7 +165,7 @@ def test_purpose_update_checks_only_additions_and_preserves_key(voice_setup, mon
 
     async def transcribe(*args):
         probes.append("transcription")
-        return ""
+        return "RCP dictation check."
 
     monkeypatch.setattr(transcription, "transcribe", transcribe)
 
@@ -345,7 +345,7 @@ def test_edit_rechecks_only_changed_models_and_saves_delegation(voice_setup, mon
 
     async def transcribe(connection, *args):
         probes.append(connection["model"])
-        return ""
+        return "RCP dictation check."
 
     def handler(request):
         probes.append(request.url.path)

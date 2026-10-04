@@ -226,9 +226,13 @@ async def check_transcription(connection: dict, key: str) -> list[str]:
         if not clip.is_file():
             continue
         try:
-            await transcribe(connection, key, clip.read_bytes(), mime)
+            text = await transcribe(connection, key, clip.read_bytes(), mime)
         except ConnectionError as exc:
             failure = exc.message
+            continue
+        # The clips are speech, so a working model returns words; empty means it cannot dictate.
+        if not text.strip():
+            failure = "The service returned no text for a spoken test clip. Check the model."
             continue
         formats.append(mime)
     if not formats:

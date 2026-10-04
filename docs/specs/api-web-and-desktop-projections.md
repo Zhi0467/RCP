@@ -1484,8 +1484,10 @@ or Gemini. Each member's connections, keys, and selection live in
 and atomically under one per-member lock that rechecks membership. Keys never
 appear in a response, a validation error, or a log. For dictation, Connect
 transcribes two bundled clips recorded from real `MediaRecorder` output
-(WebM/Opus and fragmented MP4/AAC) and saves the connection only if one passes,
-recording the accepted formats. The connect card does not ask what a service
+(WebM/Opus and fragmented MP4/AAC) of a short spoken phrase, and saves the
+connection only if one returns a non-empty transcript, recording the accepted
+formats. An empty transcript fails the check, because a model that cannot read
+the reply or the audio looks the same as silence. The connect card does not ask what a service
 is for: the Web connects with the `transcription` purpose, and the member picks
 uses afterwards under **Dictate with** and **Runs on**. Picking an OpenAI
 connection under **Runs on** adds `voice` and runs the voice check then. The
