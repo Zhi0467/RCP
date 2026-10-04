@@ -2,8 +2,9 @@
 
 Date: 2026-10-04
 Status: design settled with the human on 2026-10-04 and reviewed once by an
-xhigh design pass the same night. The human said start. Implementation runs on
-this PR; nothing below is implemented yet.
+xhigh design pass the same night. Implemented on this PR: part 1, the host
+runtime, launch grants, and their wiring. The Web controls are in progress. The
+live checks still open are listed under "Implementation checks still open".
 
 Two parts ship together, part 1 first:
 
@@ -41,6 +42,9 @@ Why the personal backend stops trusting loopback:
   the chat shows why. The agent may still be unable to finish browser work.
 - **Toggle changes apply at the next turn.** A running turn keeps what it was
   launched with. The control says so.
+- **Turning the toggle off deletes the chat's browser logins and cookies.**
+- **A team server installs Chromium's system libraries** through its root install
+  and update path, best effort: a failure is a warning and never blocks an update.
 - **Personal non-loopback binds keep working.** They use the same owner session.
   That is strictly better than today's no authentication.
 
@@ -57,7 +61,7 @@ Headless Shell 155.
 | RCP-side `open` outside the sandbox, then `goto` and `eval` inside Codex's Work sandbox | Works on macOS and on the Linux team host |
 | `state-save` and `screenshot --filename` outside the workspace, from inside Codex's sandbox | Both wrote the file |
 | Turn Playwright's file checks back on, or remove `run-code`, by config | Not possible: CLI mode hard-codes `skillMode: true`; `run-code` is core |
-| Claude `Bash(playwright-cli:*)`; OpenCode `{"*":"deny","playwright-cli *":"allow"}` | Bare calls run; `&&`, `;`, `$(…)` chaining refused |
+| Claude `Bash(playwright-cli:*)`; OpenCode `{"*":"deny","playwright-cli *":"allow"}` | Bare calls run; chaining into other programs refused. Claude's own safe-command rule still allows chaining harmless commands such as `echo` |
 | Persistent profile across browser restarts | localStorage survives; cookies survive a graceful close |
 | `playwright-cli open` on a live session | Stops it first (tabs lost). Check liveness before `open` |
 | Session registry | Keyed by the nearest ancestor of the cwd that holds `.playwright`, else the CLI install root |
@@ -187,8 +191,9 @@ the accidental and trivial paths.
 
 ### Lifecycle
 
-- When a turn ends after the toggle went off, RCP closes the session and deletes
-  the profile. Archiving a chat closes it and keeps the profile. Removing a
+- Turning the toggle off closes the session and deletes the profile right after
+  the response; a turn still running keeps its browser, and the deletion happens
+  when it ends. Archiving a chat closes it and keeps the profile. Removing a
   project closes and deletes all of its owners' profiles. There is no chat
   delete route, so there is no chat-delete hook.
 - The CLI's idle timeout closes unused sessions. It closes the browser
@@ -223,9 +228,10 @@ the accidental and trivial paths.
 - **Every continuation path** carries it: retry, human Continue, watcher wakes,
   queued follow-ups, child wakes, and bounded Experiment turns. Strict request
   models and continuation snapshots are updated deliberately.
-- **Prompt continuation** sends an explicit off or unavailable value when an
-  earlier turn of the native session had the browser, because the continuation
-  delta only visits current keys.
+- **Prompt continuation** sends the browser value when it differs from the
+  session's last committed turn, so a session hears "off" after the toggle went
+  off and nothing while it stays the same. A fresh session or episode mentions
+  the browser only when a human asked for it.
 - Transfer and replay may carry the preference, never live handles or profiles.
   Imported history needs the human to turn the toggle on again.
 
@@ -261,7 +267,9 @@ CLI commands to observe them.
   unsupported platform, system libraries missing, ready.
 - Install is explicit, bounded, serialized, and never part of turn startup:
   pinned `npm install` into the tools folder, then
-  `playwright-cli install-browser chromium`, then a headless smoke launch.
+  `playwright-cli install-browser chromium --no-shell` (RCP launches full
+  Chromium headless, so the separate headless shell is not downloaded), then a
+  headless smoke launch.
 - Linux libraries: map `ldd` misses to packages for the supported Ubuntu releases.
   A team server installs that fixed package set through its root install and
   update path. This is a deliberate change to the server contract that
@@ -324,14 +332,28 @@ docs for what it changes.
 
 ## Implementation checks still open
 
-- That a session survives an SSH disconnect and an installed-service restart under
-  the chosen OS owner.
-- That Codex's shell passes `PLAYWRIGHT_CLI_SESSION` and `PATH` under RCP's
-  environment-policy override, per deployed Codex version.
-- That RCP's real resumed OpenCode agent accepts the `playwright-cli *` rule.
-- That cookies survive the CLI's idle close.
-- That the owner cookie works in the WKWebView on the plain-HTTP personal origin,
-  using the existing loopback origin probes.
+Proven on 2026-10-04: on macOS, a served branch backend ran real Codex 0.160.0
+Work turns with the browser on. The sandboxed shell saw `PLAYWRIGHT_CLI_SESSION`
+and the CLI on `PATH`, loaded a page, and the next turn found the same page and
+cookie. Toggling off deleted the profile within seconds. Cookies survived the
+CLI's idle close. A real `codex sandbox` refused reads of the desktop app's
+storage. Run C drove real Claude and OpenCode Discuss launches with a granted
+shim (OpenCode including a resumed session). Over SSH, remote readiness and
+install ran on the Linux GPU host under a member account and reported the
+missing `libasound2` with its `apt` command.
+
+Still open:
+
+- A Linux execution account with linger: a session that survives an SSH
+  disconnect and an installed-service restart, and a Work turn that opens a
+  localhost service the agent started there. The member account used had no
+  linger, so ensure correctly refused.
+- Claude Work and Discuss turns with a real grant through a served backend that
+  holds a Claude sign-in.
+- The desktop app with the owner session: fresh start, adopt, restart, and
+  reload, the WKWebView cookie on the plain-HTTP origin, native PDF, transfer,
+  and notifications, from a source build and from a frozen candidate. These need
+  the human's running app to be quit.
 
 ## Close criteria
 
@@ -350,4 +372,4 @@ Close this handoff when all of these hold:
   SSH disconnect and a service restart.
 - A missing browser and a daemon killed mid-turn each leave the turn complete with
   a visible notice.
-- Toggle off deletes the profile after the turn; archive closes the session.
+- Toggle off deletes the profile; archive closes the session.
