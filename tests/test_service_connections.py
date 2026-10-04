@@ -117,6 +117,20 @@ async def test_adapter_request_and_empty_success(monkeypatch, kind):
 
 
 @pytest.mark.asyncio
+async def test_gemini_reads_both_general_and_transcribe_model_replies(monkeypatch):
+    request = ConnectRequest(kind="gemini", key=KEY)
+    # The shape gemini-3.5-transcribe returned to a live probe, beside a general model's.
+    parts = [{"audioTranscription": {"text": "Testing dictation"}}, {"text": " here."}]
+    reply = {"candidates": [{"content": {"parts": parts, "role": "model"}}]}
+    mock_transport(
+        monkeypatch,
+        lambda _: httpx.Response(200, stream=httpx.ByteStream(json.dumps(reply).encode())),
+    )
+    text = await transcription.transcribe(request.configuration(), KEY, b"audio", MIME)
+    assert text == "Testing dictation here."
+
+
+@pytest.mark.asyncio
 async def test_upstream_errors_do_not_leak_keys_or_follow_redirects(monkeypatch, caplog):
     caplog.set_level("DEBUG")
     calls = []
@@ -205,7 +219,7 @@ async def test_connect_records_only_passing_formats_and_never_saves_failure(
     async def probe(_, key, audio, mime):
         if mime != MIME:
             raise ConnectionError("transcription_upstream_failed", 502)
-        return ""
+        return "RCP dictation check."
 
     monkeypatch.setattr(transcription, "transcribe", probe)
     payload = {"kind": "openai_compatible", "preset": "openai", "key": KEY}
@@ -217,6 +231,13 @@ async def test_connect_records_only_passing_formats_and_never_saves_failure(
         raise ConnectionError("transcription_upstream_failed", 502)
 
     monkeypatch.setattr(transcription, "transcribe", fail)
+    assert client.post("/api/service-connections", json=payload).status_code == 422
+
+    async def silent(*_):
+        return " "
+
+    # A model that answers with no words cannot dictate, even when the request succeeds.
+    monkeypatch.setattr(transcription, "transcribe", silent)
     assert client.post("/api/service-connections", json=payload).status_code == 422
     assert len(private.summary()["connections"]) == 1
 

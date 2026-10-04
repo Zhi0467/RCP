@@ -2,7 +2,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  CheckCircle2,
   FileCode2,
   FolderGit2,
   FolderOpen,
@@ -12,7 +11,7 @@ import {
   ShieldCheck,
   Trash2,
   TriangleAlert,
-  XCircle,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -481,7 +480,7 @@ function PersonalProjectSetup({
                 }
               }}
             >
-              <span>{index < step ? <Check size={13} /> : number}</span>
+              <span>{index < step ? <Check size={14} /> : number}</span>
               <strong>{label}</strong>
             </button>
           ))}
@@ -668,7 +667,7 @@ function PersonalProjectSetup({
                         <label className={id === "paper_coach" ? undefined : "agent-machine-fixed"}>
                           Run on{" "}
                           {id === "paper_coach" ? null : (
-                            <LockKeyhole size={10} aria-hidden="true" />
+                            <LockKeyhole size={12} aria-hidden="true" />
                           )}
                           <select
                             value={machineValue}
@@ -693,7 +692,7 @@ function PersonalProjectSetup({
                         </label>
                       </div>
                       <div className="role-contract">
-                        <LockKeyhole size={13} />{" "}
+                        <LockKeyhole size={14} />{" "}
                         {id === "paper_coach"
                           ? "Introduction and project inputs are read-only · no writes"
                           : id === "orchestrator"
@@ -719,7 +718,7 @@ function PersonalProjectSetup({
               />
               {preview.action === "connect" && (
                 <div className="existing-manifest">
-                  <FileCode2 size={19} />
+                  <FileCode2 size={20} />
                   <span>
                     Existing manifest: <strong>{preview.existing_project_name}</strong> · choose
                     whether to open it or archive it intact
@@ -732,9 +731,9 @@ function PersonalProjectSetup({
                     className={`preflight-check ${check.status}`}
                     key={`${check.label}-${index}`}
                   >
-                    {check.status === "pass" && <CheckCircle2 size={17} />}
-                    {check.status === "warn" && <TriangleAlert size={17} />}
-                    {check.status === "fail" && <XCircle size={17} />}
+                    {check.status === "pass" && <Check size={16} />}
+                    {check.status === "warn" && <TriangleAlert size={16} />}
+                    {check.status === "fail" && <X size={16} />}
                     <strong>{check.label}</strong>
                     <span className="preflight-check-detail">{check.detail}</span>
                   </div>
@@ -742,7 +741,7 @@ function PersonalProjectSetup({
               </div>
               <details className="manifest-preview">
                 <summary>
-                  <FileCode2 size={15} /> Manifest{" "}
+                  <FileCode2 size={16} /> Manifest{" "}
                   {preview.action === "connect" ? "to connect" : "preview"}
                 </summary>
                 <pre>{preview.manifest_preview}</pre>
@@ -781,7 +780,7 @@ function PersonalProjectSetup({
           )}
           <footer className="setup-actions">
             <button className="button secondary" onClick={goBack}>
-              <ArrowLeft size={15} /> Back
+              <ArrowLeft size={16} /> Back
             </button>
             {step < 3 && (
               <button
@@ -790,16 +789,16 @@ function PersonalProjectSetup({
                 onClick={() => void advance()}
               >
                 {busy === "preflight" ? (
-                  <LoaderCircle className="spin" size={15} />
+                  <LoaderCircle className="spin" size={16} />
                 ) : step === 2 ? (
-                  <ShieldCheck size={15} />
+                  <ShieldCheck size={16} />
                 ) : null}
                 {busy === "preflight"
                   ? "Checking"
                   : step === 2
                     ? "Run read-only preflight"
                     : "Continue"}
-                {!busy && step < 2 && <ArrowRight size={15} />}
+                {!busy && step < 2 && <ArrowRight size={16} />}
               </button>
             )}
             {step === 3 &&
@@ -810,7 +809,7 @@ function PersonalProjectSetup({
                   disabled={busy !== null}
                   onClick={() => setExistingResearchOpen(true)}
                 >
-                  <ShieldCheck size={15} /> Choose how to continue
+                  <ShieldCheck size={16} /> Choose how to continue
                 </button>
               ) : (
                 <button
@@ -819,9 +818,9 @@ function PersonalProjectSetup({
                   onClick={() => void create()}
                 >
                   {busy === "create" ? (
-                    <LoaderCircle className="spin" size={15} />
+                    <LoaderCircle className="spin" size={16} />
                   ) : (
-                    <Check size={15} />
+                    <Check size={16} />
                   )}
                   {busy === "create" ? "Opening project" : "Create and open"}
                 </button>
@@ -884,11 +883,11 @@ function SetupRouteFailure({ message, onCancel }: { message: string; onCancel: (
     <main className="setup-layout setup-route-failure-layout">
       <section className="setup-sheet">
         <div className="setup-section setup-route-failure" role="alert">
-          <TriangleAlert size={21} aria-hidden="true" />
+          <TriangleAlert size={20} aria-hidden="true" />
           <SectionHeading eyebrow="Project setup" title="This setup route cannot continue." />
           <p>{message}</p>
           <button className="button secondary" type="button" onClick={onCancel}>
-            <ArrowLeft size={15} /> Return to projects
+            <ArrowLeft size={16} /> Return to projects
           </button>
         </div>
       </section>
@@ -1187,15 +1186,17 @@ export function RepositoryEditor({
             placeholder="research-code"
           />
         </label>
-        <div className="location-toggle" aria-label="Repository location">
+        <div className="segmented location-toggle" role="group" aria-label="Repository location">
           <button
-            className={repository.location === "local" ? "active" : ""}
+            type="button"
+            aria-pressed={repository.location === "local"}
             onClick={() => changeRepository({ location: "local" })}
           >
             Local
           </button>
           <button
-            className={repository.location === "ssh" ? "active" : ""}
+            type="button"
+            aria-pressed={repository.location === "ssh"}
             onClick={() => changeRepository({ location: "ssh" })}
           >
             SSH

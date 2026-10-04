@@ -653,6 +653,11 @@ other card fields, and drops cards to fit the registry size limit. Server text
 never fails a connection. Sign-in responses likewise accept added fields; only
 identities and protocol are checked.
 
+HTML pages from the Web mount carry `Cache-Control: no-cache`, so every load
+revalidates by ETag and a server update reaches the next team-space entry or
+reload. Without it WebKit kept an old page fresh for a tenth of its age, hours
+after an update. Hashed `/assets` files keep default caching.
+
 Each space serves its own project index, so leaving a project returns to the
 index of the space that project is in, by the same control and shortcut in
 both. Leaving the space is a separate explicit action: the team index names the
@@ -1004,13 +1009,16 @@ returns `voice_not_connected` (409); an OpenAI failure returns
 `idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`, and
 `commentary_max_chars` from `limits.py`, and the page enforces them.
 
-`GET` and `PUT /api/voice/settings` hold `{delegation_model, confirm}` in the
-member's private settings file. `confirm` is `tap` (the default) or `none`. A
-`PUT` changes only the fields it sends. The panel's toggle sets `confirm`. In
-the Dictation and voice card, the **Standby voice agent** section picks the
-connection it **Runs on** (Off, or an OpenAI connection) and sets the
-delegation model. Choosing a connection gives it the `voice` purpose, which
-RCP checks against OpenAI before saving.
+`GET /api/voice/settings` returns `{live_model, delegation_model, confirm}`
+from the member's private settings file; a session uses the saved `live_model`
+(default `gpt-live-1`) and `delegation_model`. `PUT` takes only `{confirm}`:
+the voice models change only through the checked connection update below, and
+the card sends only the models the member changed.
+`confirm` is `tap` (the default) or `none`; the panel's toggle sets it. In the Dictation and voice card, the
+**Standby voice agent** section picks the connection it **Runs on** (Off, or an
+OpenAI connection). Choosing a connection gives it the `voice` purpose, which
+RCP checks against OpenAI before saving. The voice models are set on that
+connection's card (see Dictation below).
 
 The page runs each delegated function call through the shared catalog's
 `resolve`, as the member. It runs one call at a time, ignores a repeated
@@ -1549,10 +1557,49 @@ or Gemini. Each member's connections, keys, and selection live in
 and atomically under one per-member lock that rechecks membership. Keys never
 appear in a response, a validation error, or a log. For dictation, Connect
 transcribes two bundled clips recorded from real `MediaRecorder` output
-(WebM/Opus and fragmented MP4/AAC) and saves the connection only if one passes,
-recording the accepted formats. The connect dialog asks an OpenAI key whether
-it is for dictation, the standby voice agent, or both; a voice-only key skips
-the clips and gets the voice check instead. A custom base URL must be `https`, or `http` to loopback.
+(WebM/Opus and fragmented MP4/AAC) of a short spoken phrase, and saves the
+connection only if one returns a non-empty transcript, recording the accepted
+formats. An empty transcript fails the check, because a model that cannot read
+the reply or the audio looks the same as silence. The connect card does not ask what a service
+is for: the Web connects with the `transcription` purpose, and the member picks
+uses afterwards under **Dictate with** and **Runs on**. Picking an OpenAI
+connection under **Runs on** adds `voice` and runs the voice check then. The
+API still accepts `voice` at Connect, where a voice-only key skips the clips.
+A custom base URL must be `https`, or `http` to loopback.
+
+One card connects a service and later edits it. It holds every model the
+service has, each with what it does: the dictation model, and for an OpenAI
+key the live voice model and the thinking (delegation) model. Each model
+is a dropdown of the provider's current ids plus **Other…** to type one.
+`POST /api/service-connections/models` lists them for a key not yet saved, and
+`GET /api/service-connections/{id}/models` with a saved connection's key. Both
+return `{transcription, delegation, live}`, read live from the provider's `/models`
+list, which carries ids but no capabilities, so names choose the candidates:
+dictation ids contain `transcribe` or `whisper` and are not `diarize`, `live`,
+or `realtime` streaming models; delegation ids are OpenAI `gpt-4` and later,
+newest first, without dated snapshots or transcription, speech, realtime, live,
+image, search, or instruct models; live ids start with `gpt-live` and are not
+transcription models. Ids with a `shutdown_date` are hidden. Gemini lists only
+its `generateContent` transcribe models, because RCP sends audio without an
+instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502) and the card falls
+back to a text box with that reason. The save check stays the authority.
+Connect takes `live_model` and `delegation_model` for an OpenAI key, with or
+without `voice`, and checks each changed one with `GET models/{id}` using the
+key of the connection that runs voice, or its own key when none does. Giving a
+connection `voice` checks both current values with that connection's key. A
+value or voice connection changed by another request during a check returns
+`connection_changed` (409). The card lists models only
+after a key is entered, never sends a key to another service, and lists a
+custom server only once its address field is left. `PUT /api/service-connections/{id}` takes
+`{purposes, model, live_model, delegation_model}` and checks only what changed
+with the stored key: a new dictation model reruns the clips, a new voice model
+reruns the lookup. Omitting `purposes` keeps the stored uses, so a model-only
+save from the card never replays uses changed elsewhere. A voice model holding
+the edited connection's key or the voice payer's key is refused before any
+lookup. The key cannot be edited; a new key means disconnecting and
+connecting again. The voice models stay member voice settings, written under
+the same lock as the connection, because one connection holds `voice`; two
+OpenAI connections show and edit the same values.
 
 `POST /api/service-connections/{id}/transcribe` takes one raw audio body of an
 accepted format, bounded by `Content-Length`, the bytes actually received, a

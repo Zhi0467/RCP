@@ -244,6 +244,53 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.service-connection-uses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 2 / -1;
+  justify-content: flex-end;
+}
+.service-connection-models {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.service-connection-models > div {
+  align-items: baseline;
+  display: grid;
+  gap: 2px 12px;
+  grid-template-columns: minmax(124px, auto) minmax(0, 1fr);
+}
+.service-connection-models dt {
+  color: var(--muted);
+  font: 750 var(--type-3xs) var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.service-connection-models dd {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin: 0;
+  min-width: 0;
+}
+.service-connection-models code {
+  font: var(--type-xs) var(--mono);
+  overflow-wrap: anywhere;
+}
+.service-connection-models dd span {
+  color: var(--muted);
+  font-size: var(--type-xs);
+}
+.service-model-field {
+  display: grid;
+  gap: 6px;
+}
+.transcription-note {
+  padding: 8px 16px 0;
+}
 .provider-login-detail {
   color: var(--muted);
   font-size: var(--type-sm);

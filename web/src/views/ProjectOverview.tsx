@@ -1,12 +1,11 @@
 import {
-  ArrowUpRight,
   Check,
-  CircleAlert,
-  CircleCheck,
+  ExternalLink,
   FileText,
   GitBranch,
   GitCommitHorizontal,
   Sparkles,
+  TriangleAlert,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { currentExperimentGuidance } from "../experimentGuidance";
@@ -163,7 +162,7 @@ export function ProjectOverview({
               <strong>{row.answer}</strong>
             </span>
             <span className="overview-detail">{row.detail}</span>
-            <ArrowUpRight size={18} />
+            <ExternalLink size={20} />
           </button>
         ))}
       </div>
@@ -217,7 +216,7 @@ function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: Di
         {digest.needs_you.length > 0 && (
           <DigestGroup
             tone="attention"
-            icon={<CircleAlert size={15} />}
+            icon={<TriangleAlert size={16} />}
             title="Needs you"
             count={digest.needs_you.length}
           >
@@ -232,7 +231,7 @@ function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: Di
         {changes > 0 && (
           <DigestGroup
             tone="change"
-            icon={<GitCommitHorizontal size={15} />}
+            icon={<GitCommitHorizontal size={16} />}
             title="Changed on main"
             count={changes}
           >
@@ -247,7 +246,7 @@ function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: Di
                       type="button"
                       onClick={() => onOpenArtifact(change.report_artifact_id!)}
                     >
-                      <FileText size={13} />
+                      <FileText size={14} />
                       Report
                     </button>
                   )}
@@ -268,12 +267,7 @@ function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: Di
           </DigestGroup>
         )}
         {digest.ran.length > 0 && (
-          <DigestGroup
-            tone="ran"
-            icon={<CircleCheck size={15} />}
-            title="Ran"
-            count={digest.ran.length}
-          >
+          <DigestGroup tone="ran" icon={<Check size={16} />} title="Ran" count={digest.ran.length}>
             {digest.ran.map((item) => (
               <li className="digest-row" key={`${item.kind}:${item.item_id}`}>
                 <span className="digest-kind">{ranKindLabel(item)}</span>

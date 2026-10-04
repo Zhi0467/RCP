@@ -2,7 +2,7 @@ import { EpisodeQuestions } from "./EpisodeQuestions";
 import { graphViewHash } from "../graphTarget";
 import {
   ChevronDown,
-  CirclePause,
+  Pause,
   LoaderCircle,
   Network,
   Play,
@@ -221,7 +221,7 @@ export function AutoResearchEpisodeCard({
             disabled={anotherActionBusy}
             onArchive={onArchive}
           />
-          <ChevronDown size={15} aria-hidden="true" />
+          <ChevronDown size={16} aria-hidden="true" />
         </span>
       </div>
       {expanded && (
@@ -278,7 +278,7 @@ export function AutoResearchEpisodeCard({
                   branch_id: episode.graph_branch.branch_id,
                 })}
               >
-                <Network size={13} /> Open graph
+                <Network size={14} /> Open graph
               </a>
             )}
             {taskControl && (
@@ -293,7 +293,7 @@ export function AutoResearchEpisodeCard({
                 {controlTaskBusy ? (
                   <LoaderCircle className="spin" size={12} />
                 ) : taskControl.kind === "pause" ? (
-                  <CirclePause size={12} />
+                  <Pause size={12} />
                 ) : taskControl.kind === "resume" ? (
                   <Play size={12} />
                 ) : (
@@ -358,7 +358,7 @@ export function AutoResearchEpisodeCard({
                   });
                 }}
               >
-                {stopBusy ? <LoaderCircle className="spin" size={12} /> : <Square size={11} />}
+                {stopBusy ? <LoaderCircle className="spin" size={12} /> : <Square size={12} />}
                 {stopBusy ? "Stopping…" : "Stop"}
               </button>
             )}

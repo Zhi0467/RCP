@@ -5,13 +5,13 @@ import { loadProviderLogins } from "../api";
 import {
   Check,
   Copy,
-  TriangleAlert,
+  Ellipsis,
   LogOut,
   Mail,
-  MoreHorizontal,
   Server,
   Settings,
   Trash2,
+  TriangleAlert,
   WifiOff,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
@@ -119,7 +119,7 @@ export function ProjectActionsMenu({
           role="menuitem"
           onClick={onMoveToTeam}
         >
-          <Server size={13} aria-hidden="true" />
+          <Server size={14} aria-hidden="true" />
           Move to team space
         </button>
       )}
@@ -130,7 +130,7 @@ export function ProjectActionsMenu({
           role="menuitem"
           onClick={onDelete}
         >
-          <Trash2 size={13} aria-hidden="true" />
+          <Trash2 size={14} aria-hidden="true" />
           Delete project
         </button>
       )}
@@ -168,7 +168,7 @@ export function ProjectDeleteDialog({
         aria-describedby="project-delete-warning"
       >
         <header>
-          <Trash2 size={18} aria-hidden="true" />
+          <Trash2 size={20} aria-hidden="true" />
           <h2 id="project-delete-title">Delete {project.name}?</h2>
         </header>
         <p id="project-delete-warning">{project.delete_confirmation}</p>
@@ -367,7 +367,7 @@ export function ProjectLanding({
             <h1 className="space-group-title">{identity.space_name || "Team space"}</h1>
             {onExitTeamSpace && (
               <button className="team-space-exit" type="button" onClick={onExitTeamSpace}>
-                <LogOut size={13} aria-hidden="true" />
+                <LogOut size={14} aria-hidden="true" />
                 Exit team space
               </button>
             )}
@@ -421,7 +421,7 @@ export function ProjectLanding({
                     setOpenMenuProject((current) => (current === project.id ? null : project.id))
                   }
                 >
-                  <MoreHorizontal size={14} aria-hidden="true" />
+                  <Ellipsis size={14} aria-hidden="true" />
                 </button>
                 {openMenuProject === project.id && (
                   <ProjectActionsMenu
@@ -576,7 +576,7 @@ function MachinePowerWarning({
   if (!latch && !cleanup) return null;
   return (
     <aside className="machine-power-warning" role="alert">
-      <TriangleAlert size={18} aria-hidden="true" />
+      <TriangleAlert size={20} aria-hidden="true" />
       {latch && (
         <span>
           Lid-closed mode is latched off after {latch.replaceAll("_", " ")}. Re-enable it in
@@ -605,7 +605,7 @@ function MachinePowerWarning({
               }
             }}
           >
-            {copied === cleanup.command ? <Check size={13} /> : <Copy size={13} />} Copy command
+            {copied === cleanup.command ? <Check size={14} /> : <Copy size={14} />} Copy command
           </button>
           {copyError && <span>Could not copy command</span>}
         </>

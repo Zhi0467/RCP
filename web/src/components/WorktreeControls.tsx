@@ -1,4 +1,4 @@
-import { AlertTriangle } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { errorMessage } from "../errors";
@@ -143,7 +143,7 @@ export function WorktreeControls({
       {error ? (
         <>
           <span className="worktree-failure" role="alert">
-            <AlertTriangle size={13} aria-hidden="true" />
+            <TriangleAlert size={14} aria-hidden="true" />
             This conversation&rsquo;s worktree could not be checked. {error}
           </span>
           <button className="button compact" type="button" onClick={onRefresh}>

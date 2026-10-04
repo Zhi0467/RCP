@@ -5,7 +5,7 @@ const KIND_LABEL = { artifact: "Artifact", node: "Node", paper: "Paper" } as con
 
 export function ReferenceIcon({ kind }: { kind: DraftReference["selector"]["kind"] }) {
   const Icon = kind === "node" ? Network : kind === "paper" ? BookOpen : File;
-  return <Icon size={13} aria-hidden="true" />;
+  return <Icon size={14} aria-hidden="true" />;
 }
 
 /** One reference, in the composer (removable) or in a sent turn (frozen version). */

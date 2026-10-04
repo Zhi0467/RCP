@@ -1,7 +1,7 @@
 import { CopyReferenceButton } from "./CopyReferenceButton";
 import { graphTargetFromHash } from "../graphTarget";
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, PanelRightClose, X } from "lucide-react";
+import { MessageCircle, PanelRight, X } from "lucide-react";
 import { api, ApiError } from "../api";
 import {
   closeArtifactViewer,
@@ -263,7 +263,7 @@ export function ArtifactViewer() {
             aria-label="Open reply thread"
             title="Open reply thread"
           >
-            <MessageSquare size={16} />
+            <MessageCircle size={16} />
           </a>
         )}
         <button
@@ -272,7 +272,7 @@ export function ArtifactViewer() {
           aria-label="Dock viewer"
           title="Dock viewer"
         >
-          <PanelRightClose size={16} />
+          <PanelRight size={16} />
         </button>
         <button
           className="artifact-viewer-control"

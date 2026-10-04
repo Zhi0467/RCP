@@ -115,10 +115,10 @@ export function ProjectReferencePicker({
       <div className="chat-reference-picker-heading">
         {folder ? (
           <button type="button" aria-label="Back to RCP" onClick={back}>
-            <ArrowLeft size={13} />
+            <ArrowLeft size={14} />
           </button>
         ) : (
-          <Search size={13} aria-hidden="true" />
+          <Search size={14} aria-hidden="true" />
         )}
         <input
           autoFocus
@@ -133,7 +133,7 @@ export function ProjectReferencePicker({
           }}
         />
         <button type="button" aria-label="Close" onClick={onClose}>
-          <X size={13} />
+          <X size={14} />
         </button>
       </div>
       {folder && <div className="chat-reference-path">RCP / {FOLDER_LABEL[folder]}</div>}
@@ -145,10 +145,10 @@ export function ProjectReferencePicker({
           folders.map(({ id, count }) => (
             <li key={id}>
               <button type="button" disabled={count === 0} onClick={() => setFolder(id)}>
-                <Folder size={13} aria-hidden="true" />
+                <Folder size={14} aria-hidden="true" />
                 <span>{FOLDER_LABEL[id]}</span>
                 <small>{count}</small>
-                <ChevronRight size={13} aria-hidden="true" />
+                <ChevronRight size={14} aria-hidden="true" />
               </button>
             </li>
           ))}
@@ -160,7 +160,7 @@ export function ProjectReferencePicker({
                 <ReferenceIcon kind={reference.selector.kind} />
                 <span>{reference.label}</span>
                 {added ? (
-                  <Check size={13} aria-label="Added" />
+                  <Check size={14} aria-label="Added" />
                 ) : (
                   searching && !folder && entryFolder && <small>{FOLDER_LABEL[entryFolder]}</small>
                 )}

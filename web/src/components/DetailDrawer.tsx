@@ -3,7 +3,7 @@ import { MAIN_GRAPH } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../types";
-import { Check, FlaskConical, MessageCircle, Minus, PencilLine, Trash2, X } from "lucide-react";
+import { Check, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../experimentGuidance";
@@ -384,10 +384,10 @@ export function DetailDrawer({
               title="Dock node window"
               onClick={onDock}
             >
-              <Minus size={18} />
+              <Minus size={20} />
             </button>
             <button className="icon-button" aria-label="Close detail" onClick={close}>
-              <X size={18} />
+              <X size={20} />
             </button>
           </div>
         </header>
@@ -558,7 +558,7 @@ export function DetailDrawer({
                             </span>
                             {selected && (
                               <span className="decision-choice-option-state">
-                                <Check size={13} />
+                                <Check size={14} />
                                 {decisionChoiceStaged ? "Staged selection" : "Selected"}
                               </span>
                             )}
@@ -619,7 +619,7 @@ export function DetailDrawer({
                       }
                       onClick={() => onRunExperiment(inheritedIsolation ?? isolation)}
                     >
-                      <FlaskConical size={13} />{" "}
+                      <FlaskConical size={14} />{" "}
                       {experimentRunBusy
                         ? "Starting"
                         : experimentControl.episode_id
@@ -815,7 +815,7 @@ export function DetailDrawer({
           ) : (
             <>
               <button className="button ghost" disabled={historical} onClick={onOpenChat}>
-                <MessageCircle size={15} /> Ask about this node
+                <MessageCircle size={16} /> Ask about this node
               </button>
               <div className="node-detail-actions">
                 <div className="node-judgment-actions">
@@ -824,7 +824,7 @@ export function DetailDrawer({
                     disabled={nodeMutationDisabled}
                     onClick={beginEditing}
                   >
-                    <PencilLine size={14} /> Edit node
+                    <Pencil size={14} /> Edit node
                   </button>
                   <button
                     className={`button judgment node-standing-toggle contest${node.standing === "contested" ? " selected disagree" : ""}`}

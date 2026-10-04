@@ -143,7 +143,7 @@ export function WritablePaths({
               setPicking(true);
             }}
           >
-            <FolderPlus size={13} /> Add path
+            <FolderPlus size={14} /> Add path
           </button>
         )}
       </header>
@@ -168,9 +168,9 @@ export function WritablePaths({
                 onClick={() => void remove(path)}
               >
                 {pending?.kind === "remove" && pending.path === path ? (
-                  <LoaderCircle className="spin" size={13} />
+                  <LoaderCircle className="spin" size={14} />
                 ) : (
-                  <X size={13} />
+                  <X size={14} />
                 )}
               </button>
             </li>
@@ -221,7 +221,7 @@ function MachineName({
           disabled={writesDisabled}
           onClick={() => setDraft(record.name)}
         >
-          <Pencil size={13} />
+          <Pencil size={14} />
         </button>
       </>
     );
@@ -260,7 +260,7 @@ function MachineName({
         disabled={writesDisabled || saving || !name}
         onClick={() => void save()}
       >
-        {saving ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
+        {saving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
       </button>
       <button
         className="icon-button"
@@ -269,7 +269,7 @@ function MachineName({
         disabled={saving}
         onClick={() => setDraft(null)}
       >
-        <X size={13} />
+        <X size={14} />
       </button>
       {error && <em role="alert">{error}</em>}
     </span>
@@ -354,7 +354,7 @@ export function NewMachineForm({
             })()
           }
         >
-          {saving ? <LoaderCircle className="spin" size={13} /> : null}
+          {saving ? <LoaderCircle className="spin" size={14} /> : null}
           Create machine
         </button>
         <button className="button secondary compact" type="button" onClick={onCancel}>

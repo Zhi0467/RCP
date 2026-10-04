@@ -2,13 +2,13 @@ import { CopyReferenceButton } from "../components/CopyReferenceButton";
 import { MAIN_GRAPH } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import {
-  AlertTriangle,
+  TriangleAlert,
   Check,
   ChevronRight,
-  FilePenLine,
+  Pencil,
   History,
   LoaderCircle,
-  MessageSquarePlus,
+  MessageCirclePlus,
   Send,
   WifiOff,
 } from "lucide-react";
@@ -137,7 +137,7 @@ export function LoadedPaperWorkspace(props: Omit<Props, "initialPaper">) {
           </>
         ) : (
           <span>
-            <LoaderCircle className="spin" size={15} /> Opening introduction…
+            <LoaderCircle className="spin" size={16} /> Opening introduction…
           </span>
         )}
       </div>
@@ -494,7 +494,7 @@ export function PaperWorkspace({
             </div>
           )}
           <button className="button primary" disabled={creating} onClick={() => void create()}>
-            <FilePenLine size={15} /> {creating ? "Opening editor…" : "Create introduction"}
+            <Pencil size={16} /> {creating ? "Opening editor…" : "Create introduction"}
           </button>
         </div>
       </section>
@@ -519,7 +519,7 @@ export function PaperWorkspace({
                 reference={{ kind: "paper" }}
               />
             )}
-            <div className="paper-view-toggle" role="group" aria-label="Paper view">
+            <div className="segmented" role="group" aria-label="Paper view">
               {(["write", "preview"] as const).map((view) => (
                 <button
                   aria-pressed={paperView === view}
@@ -555,9 +555,9 @@ export function PaperWorkspace({
           <div className="paper-status">
             <span>{wordCount} words</span>
             <span className={`sync-state ${saveError ? "save-error" : paper.sync_state}`}>
-              {!saveError && paper.sync_state === "synced" && <Check size={13} />}
-              {!saveError && paper.sync_state === "unsynced" && <WifiOff size={13} />}
-              {(saveError || paper.sync_state === "behind") && <AlertTriangle size={13} />}
+              {!saveError && paper.sync_state === "synced" && <Check size={14} />}
+              {!saveError && paper.sync_state === "unsynced" && <WifiOff size={14} />}
+              {(saveError || paper.sync_state === "behind") && <TriangleAlert size={14} />}
               {saveError
                 ? "save failed"
                 : saving
@@ -570,7 +570,7 @@ export function PaperWorkspace({
         </header>
         {saveError && (
           <div className="paper-save-error" role="alert">
-            <AlertTriangle size={16} />
+            <TriangleAlert size={16} />
             <span>
               <strong>Your text is still in this editor.</strong> {saveError}
             </span>
@@ -654,7 +654,7 @@ export function PaperWorkspace({
               setSubmitError(null);
             }}
           >
-            <MessageSquarePlus size={14} /> New chat
+            <MessageCirclePlus size={14} /> New chat
           </button>
         </header>
         <details className="session-history">
@@ -682,7 +682,7 @@ export function PaperWorkspace({
                     {session.provider_label || session.provider} · rev{" "}
                     {session.graph_revision_examined}
                   </span>
-                  <ChevronRight size={13} />
+                  <ChevronRight size={14} />
                 </button>
               ))
             )}
@@ -701,7 +701,7 @@ export function PaperWorkspace({
         </div>
         {reviewStale && (
           <div className="stale-review">
-            <AlertTriangle size={14} /> Project understanding changed since this session reviewed
+            <TriangleAlert size={14} /> Project understanding changed since this session reviewed
             the draft.
           </div>
         )}

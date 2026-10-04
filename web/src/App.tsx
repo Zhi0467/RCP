@@ -14,7 +14,7 @@ import {
 } from "./graphTarget";
 import type { GraphEditingProps } from "./components/GraphEditingControls";
 import {
-  AlertTriangle,
+  TriangleAlert,
   ArrowLeft,
   CloudUpload,
   ChevronDown,
@@ -33,9 +33,8 @@ import {
   RefreshCw,
   RotateCcw,
   Settings,
-  Settings2,
   Telescope,
-  TerminalSquare,
+  SquareTerminal,
   X,
 } from "lucide-react";
 import {
@@ -488,9 +487,9 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
   // Paper is a sub-panel of Artifacts; its route stays `paper`.
   { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
-  { view: "terminals", label: "Terminals", icon: <TerminalSquare size={14} /> },
+  { view: "terminals", label: "Terminals", icon: <SquareTerminal size={14} /> },
   { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
-  { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
+  { view: "settings", label: "Settings", icon: <Settings size={14} /> },
 ];
 
 /** A tab stays highlighted while one of its sub-views is open. */
@@ -525,7 +524,7 @@ function ArtifactsSubnav({
           aria-pressed={view === target}
           onClick={() => onChange(target)}
         >
-          {target === "paper" ? <FileText size={13} /> : <Files size={13} />}
+          {target === "paper" ? <FileText size={14} /> : <Files size={14} />}
           {label}
           {target === "paper" && paperUnsynced && <small>1</small>}
         </button>
@@ -4202,7 +4201,7 @@ export default function App() {
         aria-describedby="desktop-access-warning"
       >
         <header>
-          <FolderLock size={19} aria-hidden="true" />
+          <FolderLock size={20} aria-hidden="true" />
           <h2 id="desktop-access-title">Project folder access</h2>
         </header>
         <p id="desktop-access-warning">
@@ -4305,7 +4304,7 @@ export default function App() {
   if (identityIssue)
     return (
       <div className="fatal-state reconnect-state">
-        <AlertTriangle />
+        <TriangleAlert />
         <h1>Reconnect to RCP</h1>
         <p>{identityIssue}</p>
         <button
@@ -4313,7 +4312,7 @@ export default function App() {
           disabled={reconnecting}
           onClick={() => void reconnectBackend()}
         >
-          {reconnecting ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}{" "}
+          {reconnecting ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}{" "}
           {backendReconnectLabel(desktop)}
         </button>
         {updateSurface}
@@ -4452,11 +4451,11 @@ export default function App() {
   if (!project || !paper)
     return (
       <div className="fatal-state">
-        <AlertTriangle />
+        <TriangleAlert />
         <h1>Project could not be opened</h1>
         <p>{notice?.text || "The API returned no project state."}</p>
         <button className="button secondary" onClick={returnToProjects}>
-          <ArrowLeft size={15} /> All projects
+          <ArrowLeft size={16} /> All projects
         </button>
         {updateSurface}
         {desktopAccessSurface}
@@ -4582,7 +4581,7 @@ export default function App() {
                 role="status"
                 aria-label="Refreshing project state"
               >
-                <LoaderCircle className="spin" size={13} aria-hidden="true" />
+                <LoaderCircle className="spin" size={14} aria-hidden="true" />
               </span>
             )}
           </div>
@@ -4641,7 +4640,7 @@ export default function App() {
                   {syncingDraft || draftPreviewPending ? (
                     <LoaderCircle className="spin" size={14} />
                   ) : ontologyDraftIsStale || draftPreviewConflict ? (
-                    <AlertTriangle size={14} />
+                    <TriangleAlert size={14} />
                   ) : (
                     <CloudUpload size={14} />
                   )}
@@ -4688,7 +4687,7 @@ export default function App() {
                 aria-label={activeTask ? "Project history, task in progress" : "Project history"}
                 onClick={openProjectHistory}
               >
-                <History size={15} />
+                <History size={16} />
                 {activeTask ? <span className="activity-pulse" /> : null}
               </button>
               <button
@@ -4702,7 +4701,7 @@ export default function App() {
                 aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
                 onClick={openRunDialog}
               >
-                <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
+                <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
               </button>
               <VoiceButton voice={voice} className="icon-button" />
               <button
@@ -4711,7 +4710,7 @@ export default function App() {
                 title="Space settings"
                 onClick={() => setSpaceSettingsOpen(true)}
               >
-                <Settings size={15} />
+                <Settings size={16} />
               </button>
               <LandingIdentityMenu
                 compact
@@ -4750,7 +4749,7 @@ export default function App() {
           title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
           onClick={toggleProjectHeader}
         >
-          {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+          {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
         </button>
         {projectHeaderCollapsed && (
           <ProjectDock
@@ -4883,7 +4882,7 @@ export default function App() {
         {updateSurface}
         {draftPreviewPending && (
           <div className="coverage-banner" role="status">
-            <LoaderCircle className="spin" size={15} aria-hidden="true" />
+            <LoaderCircle className="spin" size={16} aria-hidden="true" />
             <span>
               <strong>Preparing staged transition preview.</strong>
             </span>
@@ -4891,7 +4890,7 @@ export default function App() {
         )}
         {draftPreviewConflict && (
           <div className="coverage-banner validation-rejected" role="alert">
-            <AlertTriangle size={15} aria-hidden="true" />
+            <TriangleAlert size={16} aria-hidden="true" />
             <span>
               <strong>Staged transition conflict.</strong> {draftPreviewConflict} Your staged input
               is kept;{" "}
@@ -4906,7 +4905,7 @@ export default function App() {
           draftTransitionProjection &&
           draftTransitionProjection.head.revision !== graph.revision && (
             <div className="coverage-banner" role="status">
-              <GitBranch size={15} aria-hidden="true" />
+              <GitBranch size={16} aria-hidden="true" />
               <span>
                 <strong>Staged transition preview.</strong> Candidate revision{" "}
                 {draftTransitionProjection.head.revision}; canonical state remains revision{" "}
@@ -4916,13 +4915,13 @@ export default function App() {
           )}
         {episodeRefreshError && (
           <div className="coverage-banner replay-degraded" role="alert">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>{episodeRefreshError}</span>
           </div>
         )}
         {!project.canonical_state.reachable && (
           <div className="coverage-banner state-offline">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>
               <strong>Canonical state is offline.</strong> Sync is unavailable.
             </span>
@@ -4930,7 +4929,7 @@ export default function App() {
         )}
         {replayWarning && (
           <div className="coverage-banner replay-degraded" role="alert">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>
               <strong>Replay degraded.</strong> {replayWarning}
             </span>
@@ -4938,7 +4937,7 @@ export default function App() {
         )}
         {rejectedPatches.length > 0 && view === "attention" && (
           <div className="coverage-banner validation-rejected" role="status">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>
               <strong>
                 History note: {rejectedPatches.length} operation
@@ -4981,7 +4980,7 @@ export default function App() {
                 className={view === "scientific" ? "active" : ""}
                 onClick={() => changeView("scientific")}
               >
-                <GitBranch size={13} /> Research
+                <GitBranch size={14} /> Research
               </button>
               <button
                 type="button"
@@ -4990,7 +4989,7 @@ export default function App() {
                 className={view === "dag" ? "active" : ""}
                 onClick={() => changeView("dag")}
               >
-                <Network size={13} /> DAG
+                <Network size={14} /> DAG
               </button>
             </div>
           )}

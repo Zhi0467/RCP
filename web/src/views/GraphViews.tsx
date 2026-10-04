@@ -727,11 +727,10 @@ export function DagView({
       />
       {branchChanges && (
         <div className="branch-graph-controls">
-          <div className="dag-layout-switch" role="group" aria-label="Branch graph lens">
+          <div className="segmented" role="group" aria-label="Branch graph lens">
             <button
               type="button"
               aria-pressed={expandedContext !== null}
-              className={expandedContext !== null ? "is-active" : ""}
               onClick={() => setExpandedContext(new Set())}
             >
               Changes + context
@@ -739,7 +738,6 @@ export function DagView({
             <button
               type="button"
               aria-pressed={expandedContext === null}
-              className={expandedContext === null ? "is-active" : ""}
               onClick={() => setExpandedContext(null)}
             >
               Full graph
@@ -799,13 +797,13 @@ export function DagView({
       />
       {relationFocusNodeId && graph.nodes[relationFocusNodeId] && (
         <div className="dag-relation-focus" role="status">
-          <Focus size={15} />
+          <Focus size={16} />
           <span>
             <strong>Relation focus:</strong> {graph.nodes[relationFocusNodeId].title}. This node and
             its directly connected neighbors stay bright; all other graph context is dimmed.
           </span>
           <button className="button compact secondary" onClick={onClearRelationFocus}>
-            <X size={13} /> Clear focus
+            <X size={14} /> Clear focus
           </button>
         </div>
       )}
@@ -849,33 +847,30 @@ export function DagView({
                 <span className="dag-control-label">
                   <GitBranch size={14} /> Layout
                 </span>
-                <div className="dag-layout-switch" role="group" aria-label="DAG layout">
+                <div className="segmented" role="group" aria-label="DAG layout">
                   <button
-                    className={layoutMode === "force" ? "is-active" : ""}
                     type="button"
                     aria-pressed={layoutMode === "force"}
                     onClick={() => setLayoutMode("force")}
                   >
-                    <Orbit size={13} /> Force-directed
+                    <Orbit size={14} /> Force-directed
                   </button>
                   <button
-                    className={layoutMode === "flow" ? "is-active" : ""}
                     type="button"
                     aria-pressed={layoutMode === "flow"}
                     onClick={() => setLayoutMode("flow")}
                   >
-                    <Workflow size={13} /> Research flow
+                    <Workflow size={14} /> Research flow
                   </button>
                 </div>
                 <span className="dag-control-label dag-projection-label">Projection</span>
                 <div
-                  className="dag-layout-switch dag-projection-switch"
+                  className="segmented dag-projection-switch"
                   role="group"
                   aria-label="DAG ontology projection"
                 >
                   {(["all", "belief", "action"] as const).map((item) => (
                     <button
-                      className={ontologyProjection === item ? "is-active" : ""}
                       type="button"
                       aria-pressed={ontologyProjection === item}
                       onClick={() => setOntologyProjection(item)}
@@ -915,7 +910,7 @@ export function DagView({
                   disabled={allBright}
                   onClick={() => setBrightTypes(new Set(dagTypes))}
                 >
-                  <Eye size={13} /> Brighten all
+                  <Eye size={14} /> Brighten all
                 </button>
                 <button
                   className="dag-tool-button"
@@ -923,7 +918,7 @@ export function DagView({
                   disabled={allDim}
                   onClick={() => setBrightTypes(new Set())}
                 >
-                  <EyeOff size={13} /> Dim all
+                  <EyeOff size={14} /> Dim all
                 </button>
               </div>
               <div className="dag-physics-controls">
@@ -950,7 +945,7 @@ export function DagView({
                   disabled={layout.pinCount === 0}
                   onClick={layout.releasePins}
                 >
-                  <PinOff size={13} /> Release all pins
+                  <PinOff size={14} /> Release all pins
                 </button>
                 <button
                   className="dag-tool-button"
@@ -960,10 +955,10 @@ export function DagView({
                     layout.resetLayout();
                   }}
                 >
-                  <RotateCcw size={13} /> Reset layout
+                  <RotateCcw size={14} /> Reset layout
                 </button>
                 <button className="dag-tool-button" type="button" onClick={fitToView}>
-                  <Scan size={13} /> Fit
+                  <Scan size={14} /> Fit
                 </button>
                 {fullscreenSupported && (
                   <button
@@ -973,7 +968,7 @@ export function DagView({
                     type="button"
                     onClick={toggleFullscreen}
                   >
-                    {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                     {isFullscreen ? "Exit full screen" : "Full screen"}
                   </button>
                 )}
@@ -1120,7 +1115,7 @@ export function DagView({
                           }}
                           onPointerDown={(event) => event.stopPropagation()}
                         >
-                          <Pin size={9} /> pinned
+                          <Pin size={12} /> pinned
                         </button>
                       )}
                     </div>
@@ -1780,7 +1775,7 @@ function ExperimentEpisodeCard({
             disabled={archiveDisabled}
             onArchive={onArchive}
           />
-          <ChevronDown size={15} aria-hidden="true" />
+          <ChevronDown size={16} aria-hidden="true" />
         </span>
       </div>
       {expanded && (
@@ -1879,22 +1874,22 @@ export function AttentionOverview({
       <h3 className="section-label">Recommended next action</h3>
       {proposals[0] ? (
         <div className="recommended-action">
-          <CircleDot size={17} />
+          <CircleDot size={16} />
           <strong>Understand and decide “{proposals[0].title}”</strong>
         </div>
       ) : decisions[0] ? (
         <button className="recommended-action" onClick={() => onSelectNode(decisions[0])}>
-          <CircleDot size={17} />
+          <CircleDot size={16} />
           <strong>Choose “{decisions[0].title}”</strong>
         </button>
       ) : blockers[0] ? (
         <button className="recommended-action" onClick={() => onSelectNode(blockers[0])}>
-          <CircleDot size={17} />
+          <CircleDot size={16} />
           <strong>Inspect “{blockers[0].title}”</strong>
         </button>
       ) : (
         <div className="quiet-empty compact">
-          <CircleDot size={17} />
+          <CircleDot size={16} />
           <strong>No judgment queued</strong>
         </div>
       )}

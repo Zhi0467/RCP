@@ -158,7 +158,7 @@ export function AutoResearchDialog({
       >
         <header>
           <span className="campaign-dialog-mark" aria-hidden="true">
-            <Telescope size={19} />
+            <Telescope size={20} />
           </span>
           <h2 id={titleId}>Authorize auto-research</h2>
           <button
@@ -168,7 +168,7 @@ export function AutoResearchDialog({
             disabled={busy}
             aria-label="Close"
           >
-            <X size={17} />
+            <X size={16} />
           </button>
         </header>
         <div className="campaign-dialog-fields">

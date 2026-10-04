@@ -41,6 +41,10 @@
   --aqua-highlight: rgb(255 255 255 / 90%);
   --aqua-sheen: rgb(255 255 255 / 46%);
   --aqua-glow: rgb(255 255 255 / 80%);
+  --segmented-track: var(--aqua-field);
+  --segmented-track-shadow: var(--aqua-inset);
+  --segmented-selected: var(--aqua-surface);
+  --segmented-selected-shadow: var(--aqua-raised);
   --aqua-hover:
     inset 1px 1px 0 var(--aqua-highlight), 4px 5px 10px rgb(var(--shadow-rgb) / 25%),
     -2px -2px 5px var(--aqua-glow);
@@ -175,15 +179,7 @@
   margin-bottom: 0;
 }
 
-:root[data-theme="aqua"] :is(.dag-layout-switch, .paper-view-toggle) {
-  background: var(--paper-deep);
-  border-radius: 9px;
-  box-shadow: var(--aqua-inset);
-  padding: 3px;
-}
-
-:root[data-theme="aqua"]
-  :is(.dag-layout-switch button, .paper-view-toggle button, .research-subpanel > button) {
+:root[data-theme="aqua"] .research-subpanel > button {
   border-radius: 6px;
 }
 
@@ -191,8 +187,6 @@
   :is(
     .project-tabs > button.active,
     .project-tabs > button:active,
-    .dag-layout-switch button.is-active,
-    .paper-view-toggle button[aria-pressed="true"],
     .research-subpanel > button.active,
     .conversation-list [role="option"].active
   ) {

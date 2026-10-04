@@ -78,6 +78,10 @@ stands in for it. Run one on disposable data, then delete its line here.
   on-device through SpeechAnalyzer, including the first-use model download;
   `RCP Candidate.app` connects a service (proving the bundled check clips ship)
   and dictates on macOS 13, 14, or 15 through the old recognizer.
+- Service model cards: with a real Groq key its dictation list loads and a
+  connection saves (OpenAI and Gemini were checked live on 2026-10-04); in the
+  desktop app, entering a team space right after a server update shows the new
+  page without quitting.
 - Standby voice agent: with a real OpenAI key in a rebuilt desktop app (the
   microphone usage string changed), open a session, ask about a project and
   hear a correct answer, and have it open a node; by voice, send a Work

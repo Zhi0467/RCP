@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Link2, RotateCcw, Trash2, X } from "lucide-react";
+import { TriangleAlert, Check, Link2, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { errorMessage } from "../errors";
@@ -181,7 +181,7 @@ export const GraphEditingControls = memo(function GraphEditingControls({
       />
       {error && (
         <p className="inline-failure" role="alert">
-          <AlertTriangle size={13} aria-hidden="true" />
+          <TriangleAlert size={14} aria-hidden="true" />
           <span>
             Connections and node prefixes are unavailable, so connecting nodes and creating new ones
             stay unavailable until this loads. {error}

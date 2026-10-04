@@ -50,6 +50,11 @@
   /* Text and glyphs printed on a solid accent fill. The accent brightens in
      dark mode, so what reads on it inverts with the theme. */
   --accent-ink: #fffaf0;
+  /* Segmented toggles: a recessed track with the chosen option raised. */
+  --segmented-track: color-mix(in srgb, var(--sheet) 55%, var(--paper-deep));
+  --segmented-track-shadow: none;
+  --segmented-selected: var(--sheet);
+  --segmented-selected-shadow: 0 1px 3px rgb(var(--shadow-rgb) / 16%);
   /* Type scale. Phone mode overrides these in one place. */
   --type-4xs: 8px;
   --type-3xs: 9px;
@@ -294,4 +299,43 @@ button:disabled {
   height: 34px;
   padding: 0;
   width: 34px;
+}
+.segmented {
+  align-items: center;
+  background: var(--segmented-track);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  box-shadow: var(--segmented-track-shadow);
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+}
+.segmented button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--ink-soft);
+  display: inline-flex;
+  font-size: var(--type-2xs);
+  font-weight: 700;
+  gap: 6px;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 11px;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.segmented button:hover:not(:disabled) {
+  color: var(--ink);
+}
+.segmented button:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 1px;
+}
+.segmented button[aria-pressed="true"] {
+  background: var(--segmented-selected);
+  box-shadow: var(--segmented-selected-shadow);
+  color: var(--ink);
 }

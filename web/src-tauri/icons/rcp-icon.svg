@@ -1,7 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="220" fill="#651f2a"/>
-  <path d="M180 150h664c31 0 56 25 56 56v612c0 31-25 56-56 56H180c-31 0-56-25-56-56V206c0-31 25-56 56-56Z" fill="#f2e7d4"/>
-  <path d="M208 198h608v628H208c-20 0-36-16-36-36V234c0-20 16-36 36-36Z" fill="none" stroke="#8f7059" stroke-width="18"/>
-  <path d="M764 198v628" stroke="#651f2a" stroke-width="18" opacity=".8"/>
-  <text x="480" y="590" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="250" font-weight="700" letter-spacing="-20" fill="#651f2a">RCP</text>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#46525f"/><stop offset=".5" stop-color="#262d36"/><stop offset="1" stop-color="#14181e"/></linearGradient>
+    <linearGradient id="gel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".42"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <clipPath id="tc"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14"/></filter>
+    <linearGradient id="beamIn" gradientUnits="userSpaceOnUse" x1="100" y1="620" x2="383" y2="523"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".35" stop-color="#fff"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <linearGradient id="b1" gradientUnits="userSpaceOnUse" x1="606" y1="448" x2="930" y2="268"><stop offset="0" stop-color="#a9d4ff"/><stop offset=".75" stop-color="#6aa9e8"/><stop offset="1" stop-color="#6aa9e8" stop-opacity="0"/></linearGradient>
+    <linearGradient id="b2" gradientUnits="userSpaceOnUse" x1="637" y1="514" x2="940" y2="530"><stop offset="0" stop-color="#b3f0ea"/><stop offset=".75" stop-color="#66c2bb"/><stop offset="1" stop-color="#66c2bb" stop-opacity="0"/></linearGradient>
+    <linearGradient id="b3" gradientUnits="userSpaceOnUse" x1="668" y1="580" x2="910" y2="780"><stop offset="0" stop-color="#ffe6a6"/><stop offset=".75" stop-color="#e2b75a"/><stop offset="1" stop-color="#e2b75a" stop-opacity="0"/></linearGradient>
+    <linearGradient id="faceL" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".55"/><stop offset="1" stop-color="#9cc9f2" stop-opacity=".22"/></linearGradient>
+    <linearGradient id="faceR" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfe6fb" stop-opacity=".3"/><stop offset="1" stop-color="#3d6f9f" stop-opacity=".35"/></linearGradient>
+    <linearGradient id="faceB" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8fbde6" stop-opacity=".35"/><stop offset="1" stop-color="#1b3a5c" stop-opacity=".55"/></linearGradient>
+    <linearGradient id="wedge" gradientUnits="userSpaceOnUse" x1="383" y1="523" x2="660" y2="514"><stop offset="0" stop-color="#fff" stop-opacity=".85"/><stop offset="1" stop-color="#cfe6fb" stop-opacity=".35"/></linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".5"/><stop offset=".55" stop-color="#9cc9f2" stop-opacity=".25"/><stop offset="1" stop-color="#2a5a8a" stop-opacity=".5"/></linearGradient>
+    <radialGradient id="spot" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <g clip-path="url(#tc)">
+    <g filter="url(#glow)" opacity=".85">
+      <path d="M100 620L383 523" stroke="#fff" stroke-width="34"/>
+      <path d="M606 448L930 268" stroke="#6aa9e8" stroke-width="36"/>
+      <path d="M637 514L940 530" stroke="#66c2bb" stroke-width="36"/>
+      <path d="M668 580L910 780" stroke="#e2b75a" stroke-width="36"/>
+    </g>
+    <path d="M100 620L383 523" stroke="url(#beamIn)" stroke-width="16" stroke-linecap="round"/>
+    <g stroke-width="20" stroke-linecap="round">
+      <path d="M606 448L930 268" stroke="url(#b1)"/>
+      <path d="M637 514L940 530" stroke="url(#b2)"/>
+      <path d="M668 580L910 780" stroke="url(#b3)"/>
+    </g>
+  </g>
+  <!-- glass body: three faces of a beveled prism -->
+  <path d="M512 236L292 700H732Z" fill="#cfe6fb" fill-opacity=".1"/>
+  <path d="M512 236L292 700H732Z" fill="url(#body)"/>
+  <path d="M512 273L318 681H706Z" fill="none" stroke="#ffffff" stroke-opacity=".28" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M383 523L606 448L668 580Z" fill="url(#wedge)"/>
+  <path d="M512 236L292 700H732Z" fill="none" stroke="#e8f3ff" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M498 286L338 628" stroke="#fff" stroke-width="14" stroke-linecap="round" opacity=".8"/>
+  <ellipse cx="383" cy="523" rx="34" ry="34" fill="url(#spot)"/>
+  <path d="M285 108h454c96 0 170 70 177 160C760 340 620 372 512 372S264 340 108 268c7-90 81-160 177-160Z" fill="url(#gel)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#0b0e12" stroke-opacity=".5" stroke-width="4"/>
 </svg>

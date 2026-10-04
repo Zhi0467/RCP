@@ -4,17 +4,34 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp import limits
 from rcp.api.dependencies import get_identity_access, get_store
-from rcp.service_connections import ConnectionError, PurposesRequest, ServiceConnections
-from rcp.transcription import FORMATS, ConnectRequest, check_connection, check_purposes, transcribe
+from rcp.service_connections import (
+    VOICE_MODELS,
+    ConnectionError,
+    ModelId,
+    PurposesRequest,
+    ServiceConnections,
+    VoiceCheck,
+)
+from rcp.transcription import (
+    FORMATS,
+    ConnectRequest,
+    ServiceAddress,
+    check_connection,
+    check_purposes,
+    list_models,
+    transcribe,
+)
+from rcp.voice import check_voice_model, refuse_key_in_model
 
 
 class ServiceConnectionRoute(APIRoute):
@@ -71,8 +88,62 @@ async def connect(request: Request, body: ConnectRequest):
     store.require_member()
     with transcription_slot(store):
         connection = await check_connection(body)
-        store.save(connection, body.key.get_secret_value())
+        key = body.key.get_secret_value()
+        requested = {name: getattr(body, name) for name in VOICE_MODELS}
+        changed, check = await checked_voice_models(
+            store, connection, key, "voice" in body.purposes, requested
+        )
+        store.save(connection, key, changed, check)
     return connection
+
+
+async def checked_voice_models(
+    store: ServiceConnections, connection: dict, key: str, voice_added: bool, requested: dict
+) -> tuple[dict[str, str], VoiceCheck | None]:
+    """Check the voice models where they run.
+
+    They are member settings used by whichever connection runs voice: a new
+    voice connection must reach every current value, and a new value is
+    checked with the voice connection's key, or with this one when none runs
+    voice. Returns the changed values and the (values, voice connection id)
+    the check saw, which the save requires unchanged.
+    """
+    saved = store.voice_settings()
+    payer, payer_key = None, None
+    with suppress(ConnectionError):
+        payer, payer_key = store.voice_credentials()
+    changed = {
+        name: requested[name]
+        for name in VOICE_MODELS
+        if requested.get(name) not in (None, saved[name])
+    }
+    if voice_added:
+        checker = (connection, key, {**{n: saved[n] for n in VOICE_MODELS}, **changed})
+    elif changed:
+        checker = (payer or connection, payer_key or key, changed)
+    else:
+        return {}, None
+    for model in checker[2].values():
+        # The payer's key may check the value, but the edited key must not be in it either.
+        refuse_key_in_model(model, key)
+        await check_voice_model(checker[0], checker[1], model)
+    return changed, (tuple(saved[n] for n in VOICE_MODELS), payer["id"] if payer else None)
+
+
+@router.post("/models")
+async def models_for_key(request: Request, body: ServiceAddress):
+    store = connections(request)
+    store.require_member()
+    with transcription_slot(store):
+        return await list_models(body.address(), body.key.get_secret_value())
+
+
+@router.get("/{connection_id}/models")
+async def models_for_connection(request: Request, connection_id: str):
+    store = connections(request)
+    with transcription_slot(store):
+        connection, key = store.credentials(connection_id)
+        return await list_models(connection, key)
 
 
 @router.delete("/{connection_id}", status_code=204)
@@ -91,14 +162,32 @@ def select(request: Request, body: SelectionRequest):
     return connections(request).select(body.dictation)
 
 
-@router.put("/{connection_id}/purposes")
-async def update_purposes(request: Request, connection_id: str, body: PurposesRequest):
+class ConnectionUpdate(PurposesRequest):
+    # Omitted keeps the stored uses, so a model-only save never replays stale ones.
+    purposes: list[Literal["transcription", "voice"]] | None = Field(default=None, max_length=2)
+    model: ModelId | None = None
+    delegation_model: ModelId | None = None
+    live_model: ModelId | None = None
+
+
+@router.put("/{connection_id}")
+async def update_connection(request: Request, connection_id: str, body: ConnectionUpdate):
+    """Change uses and models; RCP checks only what changed, with the stored key."""
     store = connections(request)
     with transcription_slot(store):
         previous, key = store.credentials(connection_id)
-        added = [purpose for purpose in body.purposes if purpose not in previous["purposes"]]
-        checked = await check_purposes({**previous, "purposes": body.purposes}, key, added)
-        return store.update_purposes(previous, checked)
+        purposes = previous["purposes"] if body.purposes is None else body.purposes
+        current = {**previous, "purposes": purposes}
+        added = [purpose for purpose in purposes if purpose not in previous["purposes"]]
+        if "transcription" in purposes and body.model not in (None, previous["model"]):
+            current["model"] = body.model
+            added = list(dict.fromkeys([*added, "transcription"]))
+        checked = await check_purposes(current, key, added)
+        requested = {name: getattr(body, name) for name in VOICE_MODELS}
+        changed, check = await checked_voice_models(
+            store, current, key, "voice" in added, requested
+        )
+        return store.update_connection(previous, checked, changed, check)
 
 
 async def read_audio(request: Request, formats: list[str]) -> tuple[bytes, str]:

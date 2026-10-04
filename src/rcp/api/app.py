@@ -19,7 +19,7 @@ from fastapi import (
     Request,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -2353,9 +2353,23 @@ def create_app(
 
     web_dist = web_dist_path()
     if web_dist.exists():
-        app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
+        app.mount("/", _WebPages(directory=web_dist, html=True), name="web")
 
     return app
+
+
+class _WebPages(StaticFiles):
+    """Pages revalidate on every load so an updated server is never hidden.
+
+    Without Cache-Control, WebKit keeps an old index.html "fresh" for 10% of its
+    age, hours after an update. Hashed assets keep their default caching.
+    """
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRequest:
