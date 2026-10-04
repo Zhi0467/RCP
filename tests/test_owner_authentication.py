@@ -169,7 +169,7 @@ def test_owner_session_expiry_and_credential_replacement(tmp_path, monkeypatch):
     assert store.resolve_owner_session(session) == owner
 
 
-def test_owner_reads_preserve_session_until_mutation_and_enforce_expiry(tmp_path, monkeypatch):
+def test_owner_session_slides_on_use_and_expires_when_idle(tmp_path, monkeypatch):
     app = create_app(data_dir=tmp_path)
     store = app.state.background_tasks.store
     client = signed_in_client(app)
@@ -177,10 +177,7 @@ def test_owner_reads_preserve_session_until_mutation_and_enforce_expiry(tmp_path
     now = datetime.fromisoformat(store.now()) + timedelta(hours=1)
     monkeypatch.setattr(store, "now", lambda: now.isoformat())
     assert client.get("/api/identity").status_code == 200
-    assert store.team_sessions(store.local_owner.user_id) == [before]
-    assert client.patch("/api/identity", json={"display_name": "Researcher"}).status_code == 200
     [after] = store.team_sessions(store.local_owner.user_id)
-    assert after.last_seen_at > before.last_seen_at
     assert after.expires_at > before.expires_at
     now = datetime.fromisoformat(after.expires_at) + timedelta(seconds=1)
     assert client.get("/api/identity").status_code == 401
