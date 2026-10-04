@@ -77,6 +77,9 @@ those four groups. Opening a project or reading its digest never advances an
 existing mark. A member without a mark starts at the event log's current cursor
 and sees an empty digest; listing project cards does not create marks. The initial
 main projector checkpoint is persisted before a member mark can be inserted.
+Before that checkpoint, GET signals the application projector and returns an
+empty digest with `mark: null` and `cursor: 0`, without creating a mark;
+Caught up returns 409 and landing counts are zero. Requests never project history.
 
 `POST /api/projects/{id}/digest/caught-up {"seq": ...}` acknowledges the cursor
 that was displayed. It returns `{"mark": {"seq": ..., "marked_at": ...}}`,
@@ -109,14 +112,17 @@ writes, so an older external completion timestamp cannot hide a newly recorded
 job. An independent background projector follows accepted main and branch
 history, catches up after missed signals, and never writes canonical state.
 Its persisted per-target head detects non-prefix history after restore/reset;
-that target is rebaselined without inventing events. It shares semantic
-comparison with branch changes and does not consume notification sender state.
+that target is rebaselined with one `reset` event in the checkpoint transaction.
+Shared card/count assembly ignores that target's attention entries and
+`graph_change` rows at or before its latest reset; operational events remain.
+It shares semantic comparison with branch changes and does not consume
+notification sender state.
 
 `GET /api/projects` includes `digest_count` on each visible project card. It uses
 the same grouping and live operational filters as the digest, reading at most
 `DIGEST_LANDING_EVENT_LIMIT` latest events per project. The integer count is a
 floor when that window truncates the backlog; the full digest remains exact.
-Neither landing counts nor existing-mark reads replay graph history. Unmarked
+Neither landing counts nor digest requests replay graph history. Unmarked
 projects have count zero. Digest events, marks,
 and projector heads are excluded from project transfer, removed with project
 control-plane data, and included in application backup/restore.

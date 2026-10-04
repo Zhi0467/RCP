@@ -21,6 +21,8 @@ export function useProjectDigest(
   const [catchingUp, setCatchingUp] = useState(false);
   const fence = useRef(createDigestRequestFence());
   const inFlight = useRef(0);
+  const activeProject = useRef(projectId);
+  activeProject.current = projectId;
 
   const load = useCallback(async (id: string) => {
     const generation = fence.current.begin(id);
@@ -67,14 +69,22 @@ export function useProjectDigest(
     // A read issued before the mark moves must not repaint the acknowledged lines.
     fence.current.invalidate();
     try {
-      await catchUpProjectDigest(projectId, digest, { mark: markDigestCaughtUp, reload });
+      // After the POST, read again only if this project is still the open one;
+      // a late reload must not move the fence back from another project.
+      const reloadIfOpen = async () => {
+        if (activeProject.current === projectId) await load(projectId);
+      };
+      await catchUpProjectDigest(projectId, digest, {
+        mark: markDigestCaughtUp,
+        reload: reloadIfOpen,
+      });
       onCaughtUp?.();
     } catch (reason) {
       setError({ projectId, message: errorMessage(reason) });
     } finally {
       setCatchingUp(false);
     }
-  }, [digest, onCaughtUp, projectId, reload]);
+  }, [digest, load, onCaughtUp, projectId]);
 
   return {
     digest,

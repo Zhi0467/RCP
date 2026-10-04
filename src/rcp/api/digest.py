@@ -15,7 +15,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
-from rcp.digest import ensure_digest_baseline, read_digest
+from rcp.digest import read_digest
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -76,7 +76,7 @@ class DigestRun(BaseModel):
 
 class DigestResponse(BaseModel):
     cursor: int
-    mark: DigestMark
+    mark: DigestMark | None
     needs_you: list[DigestAttention]
     changed: list[DigestChange]
     branches: list[DigestBranch]
@@ -106,7 +106,10 @@ def digest(
     project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
     try:
-        return read_digest(store, catalog, project_id, identity.acting_user(request).user_id)
+        result = read_digest(store, catalog, project_id, identity.acting_user(request).user_id)
+        if result["mark"] is None:
+            request.app.state.digest_projector.signal(project_id)
+        return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
 
@@ -125,7 +128,6 @@ def caught_up(
     project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
     try:
-        ensure_digest_baseline(store, catalog, project_id)
         mark = store.catch_up_digest(project_id, identity.acting_user(request).user_id, body.seq)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc

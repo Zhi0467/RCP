@@ -178,11 +178,21 @@ def assemble_digest(
     project_id: str,
     user_id: str,
     events: list[dict],
-    mark: dict,
+    mark: dict | None,
     cursor: int,
     state: GraphState | None = None,
 ) -> dict:
     """The sole rendered-line grouping function, also used by landing counts."""
+    resets = {}
+    for event in events:
+        if event["kind"] == "reset":
+            resets[event["target"]] = max(resets.get(event["target"], 0), event["seq"])
+    events = [
+        event
+        for event in events
+        if event["kind"] not in {"graph_change", "question_attention", "episode_attention"}
+        or event["seq"] > resets.get(event["target"], 0)
+    ]
     attention, latest_nodes, groups, branches, ran = {}, {}, {}, {}, {}
     node_edits = {}
     merged = {}
@@ -296,7 +306,6 @@ def assemble_digest(
 
 
 def read_digest(store, catalog, project_id: str, user_id: str) -> dict:
-    ensure_digest_baseline(store, catalog, project_id)
     mark, cursor, events = store.digest_snapshot(project_id, user_id)
     if not events:
         return assemble_digest(project_id, user_id, events, mark, cursor)
@@ -314,17 +323,6 @@ def read_digest(store, catalog, project_id: str, user_id: str) -> dict:
                 raise StateUnavailable("The project graph snapshot is not available yet.")
             state = GraphState.model_validate(snapshot["graph"])
     return _assemble_current(store, project_id, user_id, events, mark, cursor, state)
-
-
-def ensure_digest_baseline(store, catalog, project_id):
-    with store.connection() as conn:
-        head = conn.execute(
-            "SELECT 1 FROM digest_heads WHERE project_id=? AND target='main'", (project_id,)
-        ).fetchone()
-    if head is None:
-        projector = DigestProjector(store, catalog, admission=None)
-        projector.reconcile_project(project_id)
-        projector._observe_episodes(project_id)
 
 
 def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None):
@@ -357,10 +355,14 @@ def _assemble_current(store, project_id, user_id, events, mark, cursor, state=No
 
 def digest_counts(store, project_ids: list[str], user_id: str) -> dict[str, int]:
     batches = store.digest_event_batches(project_ids, user_id)
-    return {
-        project_id: _assemble_current(store, project_id, user_id, events, mark, cursor)["count"]
-        for project_id, (mark, cursor, events) in batches.items()
-    }
+    counts = dict.fromkeys(project_ids, 0)
+    counts.update(
+        {
+            project_id: _assemble_current(store, project_id, user_id, events, mark, cursor)["count"]
+            for project_id, (mark, cursor, events) in batches.items()
+        }
+    )
+    return counts
 
 
 def _merged_revision(conn, project_id, target):
@@ -515,6 +517,11 @@ class DigestProjector:
                     _LOG.exception("Digest branch projection failed for %s/%s", project_id, target)
 
     def _project_history(self, project_id, target, history):
+        with self.store.connection() as conn:
+            head = conn.execute(
+                "SELECT revision,patch_id FROM digest_heads WHERE project_id=? AND target=?",
+                (project_id, target),
+            ).fetchone()
         replay, boundaries = history.accepted_patch_boundaries()
         if replay.state.replay_status != "complete":
             raise ValueError("digest requires a complete accepted history")
@@ -524,11 +531,6 @@ class DigestProjector:
             prefix.update(patch.model_dump_json().encode())
             identities[patch.revision] = prefix.hexdigest()
         current_revision = max(identities, default=0)
-        with self.store.connection() as conn:
-            head = conn.execute(
-                "SELECT revision,patch_id FROM digest_heads WHERE project_id=? AND target=?",
-                (project_id, target),
-            ).fetchone()
         # A newly discovered branch belongs to an already observed project. Its
         # first commit must survive a crash even if branch creation had no signal.
         discovered_branch = False
@@ -572,6 +574,15 @@ class DigestProjector:
             ).fetchone()
             if current_head != head:
                 return
+            if reset:
+                append_digest_event(
+                    conn,
+                    project_id=project_id,
+                    target=target,
+                    kind="reset",
+                    item_id=str(current_revision),
+                    created_at=self.store.now(),
+                )
             for event in events:
                 append_digest_event(conn, **event)
             conn.execute(

@@ -94,23 +94,22 @@ def digest_cursor(connection: sqlite3.Connection) -> int:
     return row[0] if row else 0
 
 
-def _require_head(connection, project_id):
-    if (
+def _has_head(connection, project_id):
+    return (
         connection.execute(
             "SELECT 1 FROM digest_heads WHERE project_id=? AND target='main'", (project_id,)
         ).fetchone()
-        is None
-    ):
-        from rcp.transport import StateUnavailable
-
-        raise StateUnavailable("The project digest baseline is not available yet.")
+        is not None
+    )
 
 
 class DigestStoreMixin:
-    def digest_snapshot(self, project_id: str, user_id: str) -> tuple[dict, int, list[dict]]:
+    def digest_snapshot(self, project_id: str, user_id: str) -> tuple[dict | None, int, list[dict]]:
         with self.connection() as conn:
             conn.execute("BEGIN")
             _require_member(conn, project_id, user_id)
+            if not _has_head(conn, project_id):
+                return None, 0, []
             existing = conn.execute(
                 "SELECT 1 FROM digest_marks WHERE project_id=? AND user_id=?", (project_id, user_id)
             ).fetchone()
@@ -118,7 +117,8 @@ class DigestStoreMixin:
                 conn.rollback()
                 conn.execute("BEGIN IMMEDIATE")
                 _require_member(conn, project_id, user_id)
-                _require_head(conn, project_id)
+                if not _has_head(conn, project_id):
+                    return None, 0, []
                 conn.execute(
                     "INSERT OR IGNORE INTO digest_marks(project_id,user_id,seq,marked_at) VALUES(?,?,?,?)",
                     (project_id, user_id, digest_cursor(conn), self.now()),
@@ -143,7 +143,8 @@ class DigestStoreMixin:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             _require_member(conn, project_id, user_id)
-            _require_head(conn, project_id)
+            if not _has_head(conn, project_id):
+                raise ValueError("The project digest baseline is not available yet.")
             maximum = digest_cursor(conn)
             if seq < 0 or seq > maximum:
                 raise ValueError("digest cursor is ahead of the event log")
@@ -168,7 +169,8 @@ class DigestStoreMixin:
             marks = conn.execute(
                 "SELECT project_id,seq,marked_at FROM digest_marks WHERE user_id=? AND project_id IN ("
                 + ",".join("?" for _ in project_ids)
-                + ")",
+                + ") AND EXISTS (SELECT 1 FROM digest_heads h "
+                "WHERE h.project_id=digest_marks.project_id AND h.target='main')",
                 (user_id, *project_ids),
             ).fetchall()
             result = {}

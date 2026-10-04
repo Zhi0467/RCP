@@ -108,7 +108,9 @@ below replaces both with one append-only event log in SQLite.
     at the branch append point.
   - If the stored projector head is not a prefix of the current history
     (restore or reset), the projector moves its head to the current head,
-    writes no events, and logs it.
+    appends one `reset` event in the same transaction, and logs it. Card/count
+    assembly ignores that target's attention entries and `graph_change` rows
+    at or before the latest reset; operational events remain.
   - Replay cost stays where the notification sender already pays it: only on
     a signalled or lagging project, never in a request.
 - **Attribution** is decided once, at projection time, by precedence: branch
@@ -139,7 +141,10 @@ below replaces both with one append-only event log in SQLite.
     graph, for the Research dots.
 - A member with no mark gets one at the current maximum `seq` with an
   atomic insert-if-absent inside the read path, rechecking project
-  membership. The initial main projector checkpoint must exist first.
+  membership. The initial main projector checkpoint must exist first. Until
+  then, GET signals the application projector, creates no mark, and returns an
+  empty digest with `mark: null` and `cursor: 0`; Caught up returns 409 and
+  landing counts are zero.
   Existing-mark reads do not take a write lock. Listing projects never creates a mark.
 - `POST /api/projects/{id}/digest/caught-up {seq}`: stores
   `max(stored, seq)`; refuses a `seq` above the current maximum. Uses

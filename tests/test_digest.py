@@ -54,7 +54,7 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
     projector = DigestProjector(store, None, admission=RuntimeAdmissionGate())
     projector._project_history("p", "main", history)
     assert _events(store) == []
-    next_state = GraphState(revision=2, nodes={"d/one": _decision()})
+    next_state = GraphState(revision=2, nodes={"d/one": _decision(status="ready")})
     boundaries.append((state, _patch(2), next_state))
     state = next_state
     # Restart catch-up needs no surviving in-memory signal.
@@ -62,16 +62,50 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
         "p", "main", history
     )
     assert len(_events(store)) == 1
-    # Prefix modification is detected even if the final Patch is byte-identical.
-    boundaries[0] = (
-        GraphState(),
-        patch.model_copy(update={"summary": "Restored"}),
-        GraphState(revision=1),
+    mark = {"seq": 0, "marked_at": store.now()}
+    assert assemble_digest("p", "me", _events(store), mark, 1)["needs_you"]
+    # A restored history removes the previously projected ready Decision.
+    state = GraphState(revision=1)
+    boundaries[:] = [(GraphState(), patch.model_copy(update={"summary": "Restored"}), state)]
+    projector._project_history("p", "main", history)
+    assert [event["kind"] for event in _events(store)] == ["graph_change", "reset"]
+    result = assemble_digest("p", "me", _events(store), mark, 2)
+    assert result["needs_you"] == result["changed"] == []
+    projector._project_history("p", "main", history)
+    assert len(_events(store)) == 2
+
+
+def test_slower_projection_cannot_move_checkpoint_backward(tmp_path):
+    store = _project_store(tmp_path)
+    initial, first, second = GraphState(), GraphState(revision=1), GraphState(revision=2)
+    boundaries = [(initial, _patch(), first)]
+    history = SimpleNamespace(
+        accepted_patch_boundaries=lambda: (SimpleNamespace(state=first), list(boundaries))
     )
-    projector._project_history("p", "main", history)
-    assert len(_events(store)) == 1
-    projector._project_history("p", "main", history)
-    assert len(_events(store)) == 1
+    fast = DigestProjector(store, None, admission=RuntimeAdmissionGate())
+    slow = DigestProjector(store, None, admission=RuntimeAdmissionGate())
+    fast._project_history("p", "main", history)
+    newer_head = None
+
+    def delayed_replay():
+        nonlocal newer_head
+        stale = history.accepted_patch_boundaries()
+        boundaries.append((first, _patch(2), second))
+        fast._project_history("p", "main", history)
+        with store.connection() as conn:
+            newer_head = tuple(
+                conn.execute("SELECT revision,patch_id FROM digest_heads").fetchone()
+            )
+        return stale
+
+    slow._project_history("p", "main", SimpleNamespace(accepted_patch_boundaries=delayed_replay))
+    with store.connection() as conn:
+        assert (
+            tuple(conn.execute("SELECT revision,patch_id FROM digest_heads").fetchone())
+            == newer_head
+        )
+    assert newer_head[0] == 2
+    assert [event["kind"] for event in _events(store)] == ["graph_change"]
 
 
 def test_mark_checkpoints_main_before_commit_and_restart(manifest, tmp_path):
@@ -82,6 +116,7 @@ def test_mark_checkpoints_main_before_commit_and_restart(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store, catalog = app.state.background_tasks.store, app.state.catalog
     project_id, user_id = app.state.default_project_id, store.local_owner.user_id
+    app.state.digest_projector.run_pass()
     assert read_digest(store, catalog, project_id, user_id)["count"] == 0
     append_fixture_patch(catalog.open(project_id), seed_patch())
     # No projection after commit; restart must recover it from the durable head.
@@ -99,6 +134,7 @@ def test_missing_episode_branch_does_not_block_main(manifest, tmp_path):
     app, main, episode, _ = _app_branch(manifest, tmp_path)
     store, catalog = app.state.background_tasks.store, app.state.catalog
     project_id, user_id = episode.project_id, store.local_owner.user_id
+    app.state.digest_projector.run_pass()
     assert read_digest(store, catalog, project_id, user_id)["count"] == 0
     branch_root = main.history.root / "branches" / episode.graph_target.branch_id
     branch_root.rename(branch_root.with_name("absent-branch-fixture"))
