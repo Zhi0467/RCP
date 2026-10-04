@@ -258,15 +258,20 @@ def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_br
     assert len(result["changed"]) == 2
 
 
-def test_branch_reset_drops_changes_from_the_replaced_history(tmp_path):
+def test_branch_reset_drops_replaced_history_but_keeps_operational_attention(tmp_path):
     store = AppStore(tmp_path / "app.db")
     live = GraphState(nodes={"d/one": _decision()})
     branch = graph_event(store, "p", "branch:b", GraphState(), _patch(), live)
     branch.update(seq=1, item_id="1", payload=dict(episode_id="e", title="E", edits=1))
-    reset = dict(branch, seq=2, kind="reset", payload={})
+    waiting = dict(
+        branch, seq=2, kind="episode_attention", item_id="e", payload=dict(active=True, title="E")
+    )
+    reset = dict(branch, seq=3, kind="reset", payload={})
     mark = {"seq": 0, "marked_at": "now"}
     assert len(assemble_digest("p", "me", [branch], mark, 1, live)["branches"]) == 1
-    assert assemble_digest("p", "me", [branch, reset], mark, 2, live)["branches"] == []
+    result = assemble_digest("p", "me", [branch, waiting, reset], mark, 3, live)
+    assert result["branches"] == []
+    assert [item["item_id"] for item in result["needs_you"]] == ["e"]
 
 
 def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):

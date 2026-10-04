@@ -187,11 +187,12 @@ def assemble_digest(
     for event in events:
         if event["kind"] == "reset":
             resets[event["target"]] = max(resets.get(event["target"], 0), event["seq"])
+    # A reset replaces graph history only; question and episode attention live in
+    # SQLite and stay current across it.
     events = [
         event
         for event in events
-        if event["kind"]
-        not in {"graph_change", "branch_change", "question_attention", "episode_attention"}
+        if event["kind"] not in {"graph_change", "branch_change"}
         or event["seq"] > resets.get(event["target"], 0)
     ]
     attention, latest_nodes, groups, branches, ran = {}, {}, {}, {}, {}

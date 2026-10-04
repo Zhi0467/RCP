@@ -63,7 +63,8 @@ in your graph rules.
 - Rewrite the title and prose of nodes that fall short, keeping every claim,
   scope, qualification, and relation. Rewrite only `asserted` nodes: editing an
   accepted node returns it to `asserted`, so list accepted nodes that need it
-  under Suggestions instead.
+  under Suggestions instead. ResearchQuestions and Hypotheses are protected
+  beliefs: carry their rewrites in a Proposal, never a direct edit.
 - Make one concept use the same words across nodes.
 - Build the glossary: add an entry for each term that several nodes use
   without defining it and sharpen entries that are vague or out of date. List

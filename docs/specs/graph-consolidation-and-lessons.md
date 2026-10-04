@@ -89,7 +89,9 @@ Besides consolidating, the workflow keeps the graph readable. It rewrites
 `asserted` nodes that fall short of the "Writing for a reader" rules in the
 graph rules every graph-writing launch receives, and it builds the glossary
 from terms several nodes use without defining. It only suggests rewrites of
-accepted nodes, because an edit would return them to `asserted`.
+accepted nodes, because an edit would return them to `asserted`. A rewrite of
+an existing ResearchQuestion or Hypothesis goes through a Proposal, like any
+other change to a protected belief.
 
 The workflow ends by writing `consolidation-report.html` in the turn's artifact
 root, captured by ordinary turn-artifact discovery.
