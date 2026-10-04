@@ -871,7 +871,7 @@
 }
 .digest-row {
   align-items: center;
-  background: color-mix(in srgb, var(--surface-cool) 55%, var(--surface));
+  background: color-mix(in srgb, var(--ink) 6%, var(--surface));
   border-radius: 6px;
   display: grid;
   gap: 2px 10px;
