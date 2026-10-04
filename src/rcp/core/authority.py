@@ -10,9 +10,7 @@ from rcp.core.models import (
     AuthorizedHuman,
     Decision,
     GraphState,
-    Hypothesis,
     Patch,
-    ResearchQuestion,
 )
 from rcp.core.operations import (
     CreateAmbiguitiesOperation,
@@ -34,6 +32,7 @@ from rcp.core.operations import (
     UpsertGlossaryOperation,
     WithdrawProposalsOperation,
 )
+from rcp.core.roles import is_protected_belief_type
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import AgentCapability
 
@@ -334,7 +333,6 @@ def require_apply(
 
 HYPOTHESIS_PROPOSAL_FIELDS = frozenset({"status"})
 EVIDENCE_EDGE_CAUSE_KIND = "evidence_edge"
-EVIDENCE_RELATIONS = frozenset({"supports", "weakens", "refutes", "inconclusive", "contradicts"})
 PROTECTED_EPISTEMIC_RELATIONS = frozenset(
     {"has_subquestion", "has_hypothesis", "supersedes", "duplicate_of"}
 )
@@ -540,9 +538,9 @@ def operation_actions(
             MERGE_PROTECTED_EPISTEMIC,
         )
     if isinstance(operation, SetStandingOperation):
-        if is_existing_protected_node(state, operation.node_id) or _created_node_type(
-            patch, operation.node_id
-        ) in {"research_question", "hypothesis"}:
+        if is_existing_protected_node(state, operation.node_id) or is_protected_belief_type(
+            _created_node_type(patch, operation.node_id)
+        ):
             return frozenset({UPDATE_PROTECTED_EPISTEMIC})
         return frozenset({SET_STANDING})
     if isinstance(operation, CreateAmbiguitiesOperation):
@@ -567,9 +565,10 @@ def operation_actions(
 
 
 def is_existing_protected_node(state: GraphState, node_id: str) -> bool:
-    """Whether ``node_id`` names a pre-Patch ResearchQuestion or Hypothesis."""
+    """Whether ``node_id`` names a pre-Patch protected belief."""
 
-    return isinstance(state.nodes.get(node_id), (ResearchQuestion, Hypothesis))
+    node = state.nodes.get(node_id)
+    return node is not None and is_protected_belief_type(node.type)
 
 
 def permits(patch: Patch, action: GraphAction) -> bool:

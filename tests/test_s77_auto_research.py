@@ -528,17 +528,13 @@ def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path
     )
 
     for index, (node_type, node_id) in enumerate(
-        (("decision", "dec/route"), ("research_question", "rq/existing")), start=1
-    ):
-        effects.seat_type = node_type
-        response = dispatcher.dispatch(
-            root.operation_id,
-            _spawn_request(str(index) * 32, key=f"refuse-{node_type}", seat_node_id=node_id),
-        )
-        assert response.status == "invalid"
-
-    for index, (node_type, node_id) in enumerate(
-        (("experiment", "exp/evaluate"), ("blocker", "blk/input")), start=3
+        (
+            ("decision", "dec/route"),
+            ("research_question", "rq/existing"),
+            ("experiment", "exp/evaluate"),
+            ("blocker", "blk/input"),
+        ),
+        start=1,
     ):
         effects.seat_type = node_type
         response = dispatcher.dispatch(

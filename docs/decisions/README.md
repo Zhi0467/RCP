@@ -1,5 +1,10 @@
 # Active decision records
 
+- [The kernel asks node-type questions](2026-10-04-the-kernel-asks-node-type-questions.md)
+  records why code outside the ontology asks `core/roles.py` instead of naming
+  node types, why a counter holds that coupling to a falling baseline, and why
+  Auto-research workers may sit on any node.
+
 - [Nightly graph consolidation writes main](2026-10-03-nightly-consolidation-writes-main.md)
   records why a member may authorize a scheduled Work turn, why it writes main
   rather than a branch, why it applies inside the turn, and why its report sits

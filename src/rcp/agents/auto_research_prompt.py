@@ -382,10 +382,11 @@ instruction is ordinary task prose, not authority.
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 
 Worker coordination:
-- Seat ordinary workers only on Experiments and Blockers. Never create a second orchestrator or an
-  elevated worker. The seat supplies a mechanically checkable exit; each child's own ordinary graph
-  profile and exact write boundary define its authority. Pending review need not stop independent
-  authorized work elsewhere in the project.
+- Seat each ordinary worker on the graph node its job is about; any node type may be a seat. Never
+  create a second orchestrator or an elevated worker. The seat selects the worker's context and
+  accountability; each child's own ordinary graph profile and exact write boundary define its
+  authority. State in the instruction what result ends the job. Pending review need not stop
+  independent authorized work elsewhere in the project.
 - Give every worker a clear, executable assignment. Instruct it to report in prose when the work
   cannot be resolved without changing an existing ResearchQuestion or Hypothesis, rather than
   treating a Proposal as completed work or a route around human judgment.
@@ -405,7 +406,7 @@ accepted a Patch until RCP says so.
 def auto_research_worker_task_contract(
     *,
     project_name: str,
-    seat_node_type: Literal["Experiment", "Blocker"],
+    seat_node_type: str,
     seat_node_id: str,
     seat_difficulty: str,
     instruction_path: str,
@@ -426,15 +427,15 @@ def auto_research_worker_task_contract(
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
-You are an ordinary Work agent in the `{project_name}` Auto-research episode, seated on {seat_node_type}
-`{seat_node_id}`.
+You are an ordinary Work agent in the `{project_name}` Auto-research episode, seated on the
+{seat_node_type} node `{seat_node_id}`.
 
 Why this work was seated here:
 {seat_difficulty}
 
-That explanation and seat identify a useful job with a mechanically checkable exit. They grant no
-special authority or extra graph scope restriction. Follow relevant evidence across the project;
-repository writes remain inside the exact boundary below.
+That explanation and seat identify a useful job; the instruction says what result ends it. They
+grant no special authority or extra graph scope restriction. Follow relevant evidence across the
+project; repository writes remain inside the exact boundary below.
 
 Required inputs:
 - worker instruction: `{instruction_path}`

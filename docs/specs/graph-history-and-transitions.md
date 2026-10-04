@@ -163,6 +163,12 @@ stable. Current operation families are:
 - `set_project_truth_scope`; and
 - `set_ontology`.
 
+Supersede and merge retire a node by setting its lifecycle field to
+`superseded` (`validity` on Evidence, `status` on every other base type, as
+`core/roles.py` names) and adding the `supersedes` or `duplicate_of` edge. They
+keep the retired node and its edges; `remove_nodes` deletes a node and every
+edge touching it.
+
 Historical `set_coverage` operations remain decodable but have no current graph
 effect. New admission rejects them. Reading reports are absent from graph and
 project snapshots, agent context, generated files, validation, and branch merge

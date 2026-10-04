@@ -42,6 +42,7 @@ from rcp.core.operations import (
     WithdrawProposalsOperation,
     strict_project_node,
 )
+from rcp.core.roles import RETIRED_VALUE, lifecycle_field
 from rcp.core.validation import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     ValidationReport,
@@ -417,10 +418,9 @@ def _apply_patch(
         elif isinstance(op, SupersedeNodesOperation):
             for item in op.nodes:
                 previous = state.nodes[item.id]
-                _set_node_status(
+                _retire_node(
                     state,
                     item.id,
-                    "superseded",
                     revision,
                     preserve_standing=patch.kind == "approval",
                 )
@@ -447,10 +447,9 @@ def _apply_patch(
                 duplicate = item.duplicate
                 canonical = item.canonical
                 previous = state.nodes[duplicate]
-                _set_node_status(
+                _retire_node(
                     state,
                     duplicate,
-                    "superseded",
                     revision,
                     preserve_standing=patch.kind == "approval",
                 )
@@ -572,17 +571,16 @@ def _apply_patch(
         state.last_refresh_at = patch.created_at
 
 
-def _set_node_status(
+def _retire_node(
     state: GraphState,
     node_id: str,
-    status: str,
     revision: int,
     *,
     preserve_standing: bool,
 ) -> None:
     node = state.nodes[node_id]
     data: dict[str, Any] = node.model_dump(mode="python")
-    data["status"] = status
+    data[lifecycle_field(node.type)] = RETIRED_VALUE
     data["updated_rev"] = revision
     data["standing"] = node.standing if preserve_standing else "asserted"
     state.nodes[node_id] = NODE_ADAPTER.validate_python(data)

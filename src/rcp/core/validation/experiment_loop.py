@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from rcp.core.authority import EVIDENCE_RELATIONS
 from rcp.core.models import (
     RELATION_SPEC,
     Decision,
@@ -29,6 +28,7 @@ from rcp.core.operations import (
     UpdateNodesOperation,
     UpsertGlossaryOperation,
 )
+from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
 from rcp.core.validation.constants import LEGACY_COMPATIBILITY_UPDATE_FIELDS
 from rcp.core.validation.report import ValidationReport
 
@@ -431,7 +431,7 @@ def _grounding_edge_ids(
             source_type = (
                 existing_source.type if existing_source is not None else created_types.get(source)
             )
-            if edge.relation in EVIDENCE_RELATIONS and source_type == "evidence":
+            if edge.relation in BELIEF_OUTCOME_RELATIONS and source_type == "evidence":
                 edge_id = edge.id or f"{source}::{edge.relation}::{target}"
                 grounded.setdefault(target, set()).add(edge_id)
     return grounded

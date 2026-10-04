@@ -40,6 +40,7 @@ from rcp.core.operations import (
     UpsertGlossaryOperation,
     WithdrawProposalsOperation,
 )
+from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
 from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
 
 _MAX_TITLE_CHARS = 240
@@ -66,9 +67,6 @@ _OPERATION_LABELS = {
     "set_project_truth_scope": "updated the project truth scope",
     "set_ontology": "updated the project ontology",
 }
-_EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
-    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-)
 
 
 class RevisionSummary(BaseModel):
@@ -830,7 +828,7 @@ def _edge_assessment_sentence(
     source_node = state.nodes.get(edge.source) or previous_state.nodes.get(edge.source)
     target_node = state.nodes.get(edge.target) or previous_state.nodes.get(edge.target)
     is_evidence_hypothesis = (
-        edge.relation in _EVIDENCE_HYPOTHESIS_RELATIONS
+        edge.relation in BELIEF_OUTCOME_RELATIONS
         and source_node is not None
         and source_node.type == "evidence"
         and target_node is not None

@@ -3,10 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from rcp.core.models import Decision, Evidence, GraphState, Hypothesis, ResearchQuestion, Standing
-
-EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
-    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-)
+from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
 
 
 def render_research_md(state: GraphState) -> str:
@@ -40,7 +37,7 @@ def render_research_md(state: GraphState) -> str:
             not isinstance(source, Evidence)
             or not isinstance(target, Hypothesis)
             or target.standing != Standing.ACCEPTED
-            or edge.relation not in EVIDENCE_HYPOTHESIS_RELATIONS
+            or edge.relation not in BELIEF_OUTCOME_RELATIONS
         ):
             continue
         if edge.assessment is None:

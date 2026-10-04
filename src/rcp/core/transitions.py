@@ -22,6 +22,7 @@ from rcp.core.operations import (
     NodeUpdate,
     UpdateNodesOperation,
 )
+from rcp.core.roles import BELIEF_OUTCOME_RELATIONS
 from rcp.core.transition_models import (
     ExperimentGuidanceValidity,
     GraphAttentionProjection,
@@ -892,15 +893,8 @@ def _experiment_dependency_signature(state: GraphState, experiment_id: str) -> t
     }
     hypothesis_ids = {target for _edge_id, target in tests_relations}
     assessments: list[tuple[Any, ...]] = []
-    epistemic_relations = {
-        "supports",
-        "weakens",
-        "refutes",
-        "inconclusive",
-        "contradicts",
-    }
     for edge in state.edges.values():
-        if edge.target not in hypothesis_ids or edge.relation not in epistemic_relations:
+        if edge.target not in hypothesis_ids or edge.relation not in BELIEF_OUTCOME_RELATIONS:
             continue
         source = state.nodes.get(edge.source)
         if not isinstance(source, Evidence):

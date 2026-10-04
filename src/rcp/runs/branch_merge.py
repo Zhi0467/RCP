@@ -79,6 +79,7 @@ from rcp.core.operations import (
     UpdateNodesOperation,
     graph_operations_from_proposal,
 )
+from rcp.core.roles import is_protected_belief_type
 from rcp.core.transition_models import (
     GraphHeadRef,
     TransitionConflictDetail,
@@ -827,7 +828,7 @@ def _node_path_residue_reason(
 
     if node is None or current is None:
         return "node_absent"
-    if node.type in {"research_question", "hypothesis"}:
+    if is_protected_belief_type(node.type):
         return "protected_node"
     # An agent edit resets standing, which is ordinary.  What is not ordinary is
     # a human moving standing on main after the fork: carrying the branch edit

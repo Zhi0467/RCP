@@ -58,9 +58,9 @@ the orchestrator.
 
 ## Workers and child Experiments
 
-The orchestrator may seat an ordinary Work worker only on an Experiment or
-Blocker, both of which have mechanically recognizable operational exits. Seating
-selects context and accountability, not a second graph-authority subtree. The
+The orchestrator may seat an ordinary Work worker on any existing graph node; its
+instruction states what result ends the job. Seating selects context and
+accountability, not a second graph-authority subtree. The
 worker's repository scope is the exact child run scope and its graph target is
 the parent Auto-research branch. Child Work follows the selected execution
 route: direct Slurm submission or the generic `launch` helper. The helper binds
