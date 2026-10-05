@@ -645,7 +645,7 @@ def test_hidden_scope_reaches_host_and_effective_status_returns_to_grant(
         "browser_unwrapped_macos" if system == "Darwin" else "userns_blocked",
     )
     assert grant.env["PLAYWRIGHT_CLI_SESSION"] == grant.session_name
-    assert grant.path_prefix == str(host.tools / "node_modules" / ".bin")
+    assert grant.path_prefix == str(host.tools / "bin")
     assert (
         BrowserGrant.model_validate_json(grant.model_dump_json()).hidden_read_enforcement
         == grant.hidden_read_enforcement

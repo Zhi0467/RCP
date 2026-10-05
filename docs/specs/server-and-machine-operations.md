@@ -1813,13 +1813,16 @@ team service. Current RCP must not simulate those journeys or describe
 
 ## Agent browser host runtime
 
-Browser installation is explicit. The execution account needs Node.js 18 or
+Browser installation is explicit. The execution account needs Node.js 20 or
 newer and npm; RCP itself still starts without them. Doctor and machine cards
 use the same readiness service. Doctor probes the installed service account,
 including its login environment, rather than root's tools. Browser readiness is
 optional and does not make the core server dependency check fail.
 
-RCP installs a pinned Playwright CLI and Chromium into its tools directory.
+RCP installs a pinned Playwright CLI and Chromium into its tools directory. Agents
+reach it through an RCP-owned `playwright-cli` launcher in `tools/bin` that runs
+the Node readiness checked, never whichever `node` comes first on the shell's
+`PATH`; the pinned Playwright refuses Node older than 20.
 Profiles, configurations and owner state live in the sibling browser directory.
 Both roots are excluded from protected backups and remain RCP-owned protected
 storage under ordinary agent write scopes. SSH hosts use the private account

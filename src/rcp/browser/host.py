@@ -86,6 +86,10 @@ class UnavailableError(RuntimeError):
         self.code = code
 
 
+# @playwright/cli declares Node 18, but the Playwright it runs refuses anything below 20.
+MIN_NODE_MAJOR = 20
+
+
 def atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".browser-")
@@ -360,7 +364,7 @@ class HostRuntime:
         if not self.node:
             return self.readiness_result("node_missing")
         version = self.run([self.node, "--version"]).stdout.strip()
-        if int(version.lstrip("v").split(".")[0]) < 18:
+        if int(version.lstrip("v").split(".")[0]) < MIN_NODE_MAJOR:
             return self.readiness_result("node_too_old", version)
         if not self.npm:
             return self.readiness_result("npm_missing")
@@ -652,12 +656,21 @@ class HostRuntime:
             "hidden_read_enforcement": record.get("hidden_read_enforcement"),
             "session_name": record["session_name"],
             "invocation_dir": record["workspace_dir"],
-            "path_prefix": str(self.tools / "node_modules" / ".bin"),
+            "path_prefix": self.cli_launcher(),
             "env": {
                 "PLAYWRIGHT_CLI_SESSION": record["session_name"],
                 "PLAYWRIGHT_BROWSERS_PATH": str(self.tools / "browsers"),
             },
         }
+
+    def cli_launcher(self) -> str:
+        """Agents run the CLI with the Node readiness checked, never whichever is first on PATH."""
+        if not self.node:
+            raise UnavailableError("node_missing", "Node is missing from the execution account")
+        launcher = self.tools / "bin" / "playwright-cli"
+        atomic_write(launcher, f'#!/bin/sh\nexec {shlex.join([self.node, str(self.cli)])} "$@"\n')
+        launcher.chmod(0o700)
+        return str(launcher.parent)
 
     def release(self) -> dict:
         path = self.record_path(self.request["owner_token"])

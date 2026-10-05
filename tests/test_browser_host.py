@@ -463,3 +463,24 @@ def test_missing_linger_is_its_own_reason_and_the_member_can_enable_it(
     else:
         assert result["status"] == "linger_disabled"
         assert shlex.split(result["admin_command"])[:3] == ["sudo", "loginctl", "enable-linger"]
+
+
+def test_agent_cli_runs_with_the_checked_node_not_the_first_on_path(tmp_path, monkeypatch):
+    runtime = HostRuntime(request(tmp_path))
+    checked = tmp_path / "checked-node"
+    checked.write_text('#!/bin/sh\necho checked "$@"\n')
+    checked.chmod(0o700)
+    runtime.node = str(checked)
+    stale = tmp_path / "stale-bin"
+    stale.mkdir()
+    (stale / "node").write_text("#!/bin/sh\necho stale\n")
+    (stale / "node").chmod(0o700)
+    prefix = runtime.cli_launcher()
+    result = subprocess.run(
+        [str(Path(prefix) / "playwright-cli"), "snapshot"],
+        env={"PATH": f"{stale}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.split() == ["checked", str(runtime.cli), "snapshot"]

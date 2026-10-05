@@ -187,7 +187,7 @@ turns add no notice.
 Each saved machine card loads its Browser row independently after mounting;
 readiness never delays the rest of the card. The row shows status and diagnostic
 detail, offers **Install** when the browser is absent, and tells the human to
-install Node 18+ and npm first when either is missing or too old. Missing system
+install Node 20+ and npm first when either is missing or too old. Missing system
 libraries show a selectable command and **Copy command**. An account whose
 background processes stop at logout (`linger_disabled`) offers **Allow
 background processes**, which runs `loginctl enable-linger` as that account;
