@@ -5,5 +5,5 @@
   "notificationLinks.ts": 2,
   "timeline.ts": 4,
   "views/OperatorActionPanel.tsx": 2,
-  "voiceExecutor.ts": 3
+  "voice/voiceExecutor.ts": 3
 }
