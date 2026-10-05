@@ -355,11 +355,86 @@ async def builder(service, chat_id):
     assert _flagged_lines(source, _references_transcript_reader) == [5, 6, 7]
 
 
-def _resolves_transcript_path(node: ast.AST, aliases: dict[str, str]) -> bool:
+def _resolves_transcript_path(
+    node: ast.AST, aliases: dict[str, str], resolvers: set[str] = frozenset()
+) -> bool:
     if not isinstance(node, ast.Call):
         return False
     name, _ = _call_name(node, aliases)
-    return name in TRANSCRIPT_PATH_RESOLVERS or name.endswith(".chat_path")
+    return name in TRANSCRIPT_PATH_RESOLVERS or name in resolvers or name.endswith(".chat_path")
+
+
+def _module_dotted(module: Path | None) -> str:
+    return ".".join([*_module_package(module), module.stem]) if module is not None else ""
+
+
+def _returns_transcript_path(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    aliases: dict[str, str],
+    resolvers: set[str],
+) -> bool:
+    """A function whose return value is a resolver result, direct or via a local name."""
+    holders: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign) and _resolves_transcript_path(
+            node.value, aliases, resolvers
+        ):
+            holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        if _resolves_transcript_path(node.value, aliases, resolvers):
+            return True
+        if isinstance(node.value, ast.Name) and node.value.id in holders:
+            return True
+    return False
+
+
+def _resolver_wrappers(modules: list[tuple[Path, ast.AST, dict[str, str]]]) -> set[str]:
+    """Every function across the task runtime that returns a transcript path,
+    by bare and module-qualified name, closed under wrapping."""
+    wrappers: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for path, tree, aliases in modules:
+            dotted = _module_dotted(path)
+            for function in ast.walk(tree):
+                if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                qualified = f"{dotted}.{function.name}"
+                if qualified in wrappers:
+                    continue
+                if _returns_transcript_path(function, aliases, wrappers):
+                    wrappers.update({function.name, qualified})
+                    changed = True
+    return wrappers
+
+
+def test_transcript_resolver_wrappers_are_tracked() -> None:
+    source = """
+def locate(service, request):
+    return _chat_path(service, request)
+
+def locate_again(service, request):
+    path = locate(service, request)
+    return path
+
+def builder(service, request):
+    return locate_again(service, request).read_text()
+"""
+    tree = ast.parse(source)
+    module = SOURCE / "runs" / "prompts.py"
+    aliases = _import_aliases(tree, module)
+    wrappers = _resolver_wrappers([(module, tree, aliases)])
+    assert wrappers == {
+        "locate",
+        "rcp.runs.prompts.locate",
+        "locate_again",
+        "rcp.runs.prompts.locate_again",
+    }
+    builder = [node for node in tree.body if isinstance(node, ast.FunctionDef)][2]
+    assert any(_resolves_transcript_path(node, aliases, wrappers) for node in ast.walk(builder))
 
 
 def test_transcript_read_detection_sees_builtin_open() -> None:
@@ -417,18 +492,22 @@ APPROVED_PATH_SINKS = {
 
 
 def _transcript_path_escapes(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, aliases: dict[str, str]
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    aliases: dict[str, str],
+    resolvers: set[str] = frozenset(),
 ) -> list[int]:
     """Lines where a resolver result, direct or via a local name, is passed to
     a callee outside `APPROVED_PATH_SINKS`."""
     holders: set[str] = set()
     for node in ast.walk(function):
-        if isinstance(node, ast.Assign) and _resolves_transcript_path(node.value, aliases):
+        if isinstance(node, ast.Assign) and _resolves_transcript_path(
+            node.value, aliases, resolvers
+        ):
             holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
         elif (
             isinstance(node, ast.AnnAssign)
             and node.value is not None
-            and _resolves_transcript_path(node.value, aliases)
+            and _resolves_transcript_path(node.value, aliases, resolvers)
             and isinstance(node.target, ast.Name)
         ):
             holders.add(node.target.id)
@@ -437,12 +516,12 @@ def _transcript_path_escapes(
         if not isinstance(node, ast.Call):
             continue
         name, _ = _call_name(node, aliases)
-        if name in APPROVED_PATH_SINKS or _resolves_transcript_path(node, aliases):
+        if name in APPROVED_PATH_SINKS or _resolves_transcript_path(node, aliases, resolvers):
             continue
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
         for argument in arguments:
             carries_path = (isinstance(argument, ast.Name) and argument.id in holders) or (
-                _resolves_transcript_path(argument, aliases)
+                _resolves_transcript_path(argument, aliases, resolvers)
             )
             if carries_path:
                 escapes.append(node.lineno)
@@ -503,18 +582,28 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
         ("runs/chat.py", "_append_chat_records"),
         ("runs/steering.py", "begin_chat_steer"),
     }
-    readers_in_path_holders: list[str] = []
+    parsed: list[tuple[Path, ast.AST, dict[str, str]]] = []
     for package in TASK_RUNTIME:
         for path in _python_files(SOURCE / package):
-            module = path.relative_to(SOURCE).as_posix()
             tree = ast.parse(path.read_text(encoding="utf-8"))
-            aliases = _import_aliases(tree, path)
+            parsed.append((path, tree, _import_aliases(tree, path)))
+    # A helper that returns a resolver result is itself a resolver, so a
+    # caller that reads what the helper returned is a path holder too.
+    wrappers = _resolver_wrappers(parsed)
+    assert "rcp.runs.chat._chat_path" in wrappers
+    readers_in_path_holders: list[str] = []
+    for path, tree, aliases in parsed:
+        module = path.relative_to(SOURCE).as_posix()
+        if True:
             for function in ast.walk(tree):
                 if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
                 if (module, function.name) in identity_only:
                     continue
-                if not any(_resolves_transcript_path(node, aliases) for node in ast.walk(function)):
+                if not any(
+                    _resolves_transcript_path(node, aliases, wrappers)
+                    for node in ast.walk(function)
+                ):
                     continue
                 for node in ast.walk(function):
                     if not _reads_a_file(node, aliases):
@@ -522,7 +611,7 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
                     entry = f"{module}::{function.name}:{node.lineno}"
                     if entry not in readers_in_path_holders:
                         readers_in_path_holders.append(entry)
-                for line in _transcript_path_escapes(function, aliases):
+                for line in _transcript_path_escapes(function, aliases, wrappers):
                     readers_in_path_holders.append(f"{module}::{function.name}:{line} (escape)")
     assert readers_in_path_holders == [], (
         "a task runtime function reads a file, or hands the transcript path to an "
