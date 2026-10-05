@@ -996,12 +996,12 @@ def test_remote_backup_export_is_filtered_lock_free_and_root_stable(
         ],
         separators=(",", ":"),
         sort_keys=True,
-    ).encode()
+    )
     remote_calls: list[list[str]] = []
 
     def remote(arguments: list[str], *, timeout: float = 30):
         remote_calls.append(arguments)
-        return subprocess.CompletedProcess(arguments, 0, inventory, b"")
+        return subprocess.CompletedProcess(arguments, 0, inventory, "")
 
     rsync_calls: list[list[str]] = []
 
@@ -1040,7 +1040,7 @@ def test_remote_backup_export_treats_a_proven_missing_root_as_empty(
 
     def remote(arguments: list[str], *, timeout: float = 30):
         remote_calls.append(arguments)
-        return subprocess.CompletedProcess(arguments, 0, b"[]", b"")
+        return subprocess.CompletedProcess(arguments, 0, "[]", "")
 
     monkeypatch.setattr(workspace, "_ssh", remote)
     monkeypatch.setattr(
@@ -1066,7 +1066,7 @@ def test_remote_backup_export_rejects_an_unknown_direct_root_before_rsync(
         "research.example",
         "/srv/rcp/project/repositories/paper",
     )
-    inventory = b'[{"kind":"directory","name":"future-durable-data"}]'
+    inventory = '[{"kind":"directory","name":"future-durable-data"}]'
     monkeypatch.setattr(
         workspace,
         "_ssh",
@@ -1074,7 +1074,7 @@ def test_remote_backup_export_rejects_an_unknown_direct_root_before_rsync(
             arguments,
             0,
             inventory,
-            b"",
+            "",
         ),
     )
 
@@ -1084,6 +1084,35 @@ def test_remote_backup_export_rejects_an_unknown_direct_root_before_rsync(
     monkeypatch.setattr(state_module.subprocess, "run", unexpected_rsync)
     with pytest.raises(StateUnavailable):
         workspace.backup_source_root(destination)
+
+
+def test_remote_backup_export_reports_an_unreachable_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "export"
+    destination.mkdir(mode=0o700)
+    workspace = SSHStateWorkspace(
+        tmp_path / "cache" / ".research",
+        "research.example",
+        "/srv/rcp/project/repositories/paper",
+    )
+    stderr = "ssh: connect to host research.example port 22: Connection refused"
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda arguments, timeout=30: subprocess.CompletedProcess(arguments, 255, "", stderr),
+    )
+    monkeypatch.setattr(
+        state_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("an unreachable host must not invoke rsync"),
+    )
+
+    with pytest.raises(StateUnavailable):
+        workspace.backup_source_root(destination)
+    assert workspace.reachable is False
+    assert workspace.error == stderr
 
 
 def test_deterministic_uuid5_task_identities_stay_capturable(tmp_path: Path) -> None:

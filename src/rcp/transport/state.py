@@ -2085,11 +2085,11 @@ class SSHStateWorkspace(StateWorkspace):
             or len(result.stdout) > 256 * 1024
             or len(result.stderr) > 256 * 1024
         ):
-            self._mark_unreachable(result.stderr.decode(errors="replace"))
+            self._mark_unreachable(result.stderr)
             raise StateUnavailable("The remote backup root could not be classified.")
         try:
             document = json.loads(result.stdout)
-        except (UnicodeError, json.JSONDecodeError) as exc:
+        except json.JSONDecodeError as exc:
             self._mark_unreachable("remote backup root returned an invalid inventory")
             raise StateUnavailable("The remote backup root inventory is invalid.") from exc
         if not isinstance(document, list) or len(document) > BACKUP_INVENTORY_MAX_ENTRIES:
