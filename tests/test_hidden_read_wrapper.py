@@ -114,6 +114,18 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
     ]
 
 
+def test_missing_credential_parent_is_masked_at_home_only_for_the_daemon(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "work").mkdir(parents=True)
+    policy = {"hidden_files": [str(home / ".codex" / "auth.json")], "account_home": str(home)}
+    home = Path(os.path.realpath(home))
+    # A shell never empties the home; the next command rechecks.
+    assert "--tmpfs" not in bwrap_argv(policy, "true")
+    daemon = bwrap_argv(policy, "true", persistent=True)
+    assert daemon[4:6] == ["--tmpfs", str(home)]
+    assert ["--bind", str(home / "work"), str(home / "work")] == daemon[6:9]
+
+
 @pytest.mark.parametrize(
     "available,returncode,reason",
     [(False, 0, "wrapper_unavailable"), (True, 1, "userns_blocked"), (True, 0, None)],
@@ -130,11 +142,22 @@ def test_probe_reports_tool_and_namespace_readiness(monkeypatch, available, retu
     assert result["reason"] == reason
 
 
-def test_fallback_executes_with_clean_env_and_visible_reason(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("launch_reasons", [("userns_blocked",), ()])
+def test_unavailable_wrapper_runs_known_fallback_silently_and_refuses_lost_enforcement(
+    tmp_path, monkeypatch, capsys, launch_reasons
+):
     from rcp.agents import staged_hidden_read
 
     policy = tmp_path / "policy.json"
-    policy.write_text(json.dumps({"env_deny_list": ["*SECRET*"]}))
+    status = "unhidden" if launch_reasons else "enforced"
+    policy.write_text(
+        json.dumps(
+            {
+                "env_deny_list": ["*SECRET*"],
+                "enforcement": {"status": status, "reasons": list(launch_reasons)},
+            }
+        )
+    )
     monkeypatch.setattr(os, "environ", {"HOME": "/home/research", "lab_secret": "value"})
     monkeypatch.setattr(
         staged_hidden_read,
@@ -151,10 +174,17 @@ def test_fallback_executes_with_clean_env_and_visible_reason(tmp_path, monkeypat
         raise Executed
 
     monkeypatch.setattr(os, "execve", execute)
-    with pytest.raises(Executed):
-        main(["--policy", str(policy), "-lc", "exit 29"])
-    assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": "/home/research"})]
-    assert capsys.readouterr().err
+    if launch_reasons:
+        # A launch already known to be unhidden runs quietly with a clean environment.
+        with pytest.raises(Executed):
+            main(["--policy", str(policy), "-lc", "exit 29"])
+        assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": "/home/research"})]
+        assert not capsys.readouterr().err
+    else:
+        # Hiding that was enforced at launch never degrades to an unwrapped shell.
+        assert main(["--policy", str(policy), "-lc", "exit 29"]) == 126
+        assert calls == []
+        assert capsys.readouterr().err
 
 
 @pytest.mark.parametrize("shell_option", ["-c", "-lc"])

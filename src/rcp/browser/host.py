@@ -210,7 +210,9 @@ class HostRuntime:
                     if executable is None:
                         reason = "wrapper_unavailable"
                     else:
-                        self.hidden_read_command = bwrap_argv(scope, "", executable=executable)[:-1]
+                        self.hidden_read_command = bwrap_argv(
+                            scope, "", executable=executable, persistent=True
+                        )[:-1]
                 else:
                     reason = readiness["reason"] or "wrapper_unavailable"
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):

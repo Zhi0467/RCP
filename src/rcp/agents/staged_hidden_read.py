@@ -177,7 +177,7 @@ def split_glob(pattern):
     return re.sub(r"\[([*?[])\]", r"\1", parent) or "/", name
 
 
-def bwrap_argv(policy, command, *, executable="bwrap"):
+def bwrap_argv(policy, command, *, executable="bwrap", persistent=False):
     # Each glob parent becomes an empty tmpfs with its other existing entries
     # bound back, so a match created later never appears inside.
     names = {}
@@ -188,18 +188,23 @@ def bwrap_argv(policy, command, *, executable="bwrap"):
     directories = {os.path.realpath(path) for path in policy.get("hidden_directories", ())}
     files = {os.path.realpath(path) for path in policy.get("hidden_files", ())}
     hidden = directories | files
-    # A literal that does not exist yet is hidden the same way under its parent.
-    # The account home is never emptied: that would discard new files written
-    # there. Deeper missing paths are rechecked at each command and browser start.
+    # A literal that does not exist yet is hidden the same way: its first missing
+    # component is masked under the nearest existing folder. A shell command never
+    # empties the account home or a folder above its immediate parent, which would
+    # discard new files written there; deeper misses are rechecked at the next
+    # command. A persistent browser daemon also masks at the home, so a credential
+    # folder created mid-session never appears to it.
     home = os.path.realpath(policy.get("account_home") or os.path.expanduser("~"))
     for path in hidden:
-        parent = os.path.dirname(path)
-        if (
-            not os.path.lexists(path)
-            and os.path.isdir(parent)
-            and not (home == parent or home.startswith(parent.rstrip("/") + "/"))
-        ):
-            names.setdefault(parent, []).append(glob.escape(os.path.basename(path)))
+        if os.path.lexists(path):
+            continue
+        missing, ancestor = path, os.path.dirname(path)
+        while ancestor != "/" and not os.path.lexists(ancestor):
+            missing, ancestor = ancestor, os.path.dirname(ancestor)
+        above_home = ancestor == "/" or home.startswith(ancestor.rstrip("/") + "/")
+        immediate = missing == path and ancestor != home
+        if os.path.isdir(ancestor) and not above_home and (immediate or persistent):
+            names.setdefault(ancestor, []).append(glob.escape(os.path.basename(missing)))
     argv = [executable, "--dev-bind", "/", "/"]
     covered = []  # Roots already empty inside the sandbox.
     for parent in sorted(names, key=lambda path: (path.count("/"), path)):
@@ -294,8 +299,20 @@ def main(argv=None):
     env = clean_environment(policy, os.environ)
     readiness = probe_hidden_read_wrapper()
     if not readiness["ready"]:
-        print("RCP hidden-read fallback: " + readiness["reason"], file=sys.stderr)
-        os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
+        launch_reasons = set(policy.get("enforcement", {}).get("reasons", ()))
+        if launch_reasons & {"wrapper_unavailable", "userns_blocked"}:
+            # A known unhidden launch: Settings, doctor and the prompt carry the
+            # status, so the command runs without a per-call trace.
+            os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
+        # Enforcement was available at launch and is gone: never run unhidden
+        # under a policy that still reports hiding.
+        print(
+            "RCP refused this command: secret hiding became unavailable ("
+            + (readiness["reason"] or "wrapper_unavailable")
+            + "). Start a new turn.",
+            file=sys.stderr,
+        )
+        return 126
     if sys.platform == "darwin":
         # An inline profile leaves no per-command file; exec preserves streams,
         # cwd, signals and exit status.

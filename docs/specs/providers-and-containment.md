@@ -401,10 +401,15 @@ Hidden globs vary only their last path component. On Linux the wrapper empties
 each glob's parent and binds its other existing entries back, so a match created
 after a shell or browser daemon starts, such as a WAL file or a backup, stays
 hidden. A hidden literal that does not exist yet is hidden the same way under its
-existing parent, except directly in the account home, which is never emptied;
-deeper missing paths are rechecked at each command and browser start, and a
-changed mask set restarts the browser daemon. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>` on
-the execution host, outside every write root and inside the hidden set.
+existing parent. A shell command never empties the account home or a folder
+above that parent, so deeper misses are rechecked at the next command; the
+persistent browser daemon also masks at the home, so a credential folder created
+mid-session never appears to it. A changed mask set restarts the daemon at its
+next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
+on the execution host, outside every write root and inside the hidden set. A
+launch already resolved unhidden runs its commands silently; if hiding was
+enforced at launch and the sandbox later becomes unavailable, the wrapper
+refuses the command rather than run it unhidden.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine and host.
