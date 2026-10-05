@@ -272,8 +272,16 @@ def _validated_hidden_folders(
 ) -> list[str]:
     from rcp.agents.hidden_read import SYSTEM_RUNTIME_ROOTS, validate_machine_hidden_folders
 
+    # Launches refuse a folder covering a configured provider binary; refuse it at save too.
+    provider_roots = tuple(
+        str(PurePosixPath(path).parent)
+        for _provider, host, path in catalog.provider_targets()
+        if host == machine.host and path
+    )
     # The policy owner checks syntax and bounds before any host request.
-    paths = validate_machine_hidden_folders(requested, protected_roots=SYSTEM_RUNTIME_ROOTS)
+    paths = validate_machine_hidden_folders(
+        requested, protected_roots=(*SYSTEM_RUNTIME_ROOTS, *provider_roots)
+    )
     if not paths:
         return []
     checkouts = [
@@ -307,6 +315,7 @@ def _validated_hidden_folders(
         str(PurePosixPath(home) / ".ssh/known_hosts"),
         str(PurePosixPath(home) / ".local/share/rcp/credentials"),
         *SYSTEM_RUNTIME_ROOTS,
+        *provider_roots,
     ]
     if not machine.host:
         protected.extend(str(catalog.data_dir / name) for name in ("run-stage", "tools", "browser"))

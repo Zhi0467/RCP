@@ -333,8 +333,15 @@ def hidden_policy(monkeypatch):
 
 
 def test_machine_hidden_folders_round_trip_and_atomic_refusal(
-    app, manifest, tmp_path, hidden_policy
+    app, manifest, tmp_path, hidden_policy, monkeypatch
 ) -> None:
+    from rcp.projects import ProjectCatalog
+
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(
+        ProjectCatalog, "provider_targets", lambda self: [("claude", "", str(agents / "claude"))]
+    )
     client = signed_in_client(app)
     machine = _machine(client, "laptop")
     machine_id = machine["machine_id"]
@@ -350,7 +357,8 @@ def test_machine_hidden_folders_round_trip_and_atomic_refusal(
     ]
 
     checkout = Path(load_manifest(manifest.path).repositories[0].path)
-    for folder in (checkout, checkout / ".research", checkout.parent):
+    # A configured provider binary's folder is refused at save, as launch would refuse it.
+    for folder in (checkout, checkout / ".research", checkout.parent, agents):
         refused = client.patch(url, json={"name": "Not saved", "hidden_folders": [str(folder)]})
         assert refused.status_code == 422
         assert refused.json()["detail"]["code"] == "protected_overlap"
