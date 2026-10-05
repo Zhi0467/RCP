@@ -23,10 +23,22 @@ targeted poisoning of RCP content; egress filtering.
 
 - No separate OS account, no egress filtering, no RCP-managed full sandbox.
   Agents keep network, Slurm, GPUs, SSH, systemd/launchctl, and the browser.
-- Browser and Git capability and boundaries do not shrink. The browser daemon
-  and Git transport (`core.sshCommand` with the deploy key) stay exactly as they
-  are; browser file operations, including `upload`, remain unhidden on every OS
-  and the turn says so. Deploy keys stay readable.
+- Browser and Git capability never shrinks. A change may remove only the
+  ability to read a hidden secret; everything a task legitimately does with the
+  browser or Git keeps working.
+- Browser: on Linux the host starts the daemon and Chromium inside the same
+  hidden-path policy (Chromium's own sandbox is already off there), so an
+  `upload` of a hidden file fails while every other upload and download works.
+  On macOS the daemon stays unwrapped, because Chromium's sandbox cannot nest
+  inside Seatbelt; browser file operations stay unhidden there and the turn
+  says so.
+- Git: the backend owns one long-lived `ssh-agent` per account at a stable
+  socket path, loaded with that account's deploy keys and restarted with the
+  backend. `core.sshCommand` keeps its transport and adds
+  `-o IdentityAgent=<stable path>`. A deploy key is hidden only when that agent
+  is confirmed to hold it at launch; otherwise the key stays readable for that
+  turn with a visible warning, so Git always works. Local keys first; remote
+  execution machines follow the same rule if their agent ownership stays small.
 - `~/.ssh/id_*` files are hidden only when that key is loaded in the account's
   `ssh-agent`, so SSH keeps signing through the agent; keys not in an agent stay
   readable.
@@ -58,7 +70,8 @@ targeted poisoning of RCP content; egress filtering.
    sockets agents need.
    Defaults: `rcp.sqlite3*` and backup or checkpoint copies (including
    `run-stage/backup-*`), provider credential stores under the data directory,
-   service-connection keys, the remote Claude setup token
+   service-connection keys, deploy keys held by RCP's agent, the remote Claude
+   setup token
    (`~/.config/rcp/claude-setup-token`), the control-socket directory,
    `~/.ssh/id_*` keys loaded in `ssh-agent` (never `known_hosts`, `config`, or
    `.pub`), resolved provider login files,
@@ -80,12 +93,17 @@ targeted poisoning of RCP content; egress filtering.
      `shell_environment_policy` set to the allow list (`app_server` currently
      resets it to `{}`).
    - OpenCode: `SHELL` set to the wrapper acting as a shell.
-5. The wrapped tool calls keep the browser CLI socket, its path prefix and
-   session variable, Git variables, and `SSH_AUTH_SOCK`, so browser and Git
-   behave exactly as today.
-6. Prompt text renders the effective scope, including any fallback and the
-   unhidden browser.
-7. Docs: `providers-and-containment.md` (cooperative model, provider and
+5. Browser (Linux): `browser/host.py` starts the daemon through the wrapper,
+   records the policy fingerprint, and restarts a live daemon when it changes.
+   Wrapped tool calls keep the browser CLI socket, path prefix, and session
+   variable.
+6. Git: a backend-owned `ssh-agent` with a stable socket loads deploy keys;
+   `git_access.py` adds `IdentityAgent`; the scope hides a deploy key only after
+   confirming the agent holds it. Wrapped tool calls keep `SSH_AUTH_SOCK` and
+   RCP's Git variables.
+7. Prompt text renders the effective scope, including any fallback and the
+   unhidden macOS browser.
+8. Docs: `providers-and-containment.md` (cooperative model, provider and
    browser sections; network behavior unchanged), Settings in the interface spec,
    and a decision record for the threat model.
 
@@ -123,4 +141,7 @@ on an Ubuntu 22.04 host (kernel 5.15, bwrap 0.6.1); OpenCode 1.18.30 on macOS.
 - A full Work turn under the wrapper: command broker `launch`, `patch.json`,
   watcher, and Apply, local and over SSH.
 - The team server's service account under the real unit (`PrivateTmp`).
-- Browser grant and deploy-key Git push from a wrapped tool call, unchanged.
+- Browser grant from a wrapped tool call; Linux daemon restart on a policy
+  change.
+- Deploy-key Git push through the backend agent, and the readable-key fallback
+  when the agent is missing.
