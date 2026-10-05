@@ -290,10 +290,8 @@ class OpenCodeProfile(ProviderProfile):
         }
 
         if request.hidden_read_scope is not None and request.hidden_read_scope.env_allow_list:
-            wrapper = request.cwd / "rcp-hidden-read.py"
-            environment.update(
-                SHELL=str(wrapper), RCP_HIDDEN_READ_POLICY=str(wrapper) + ".policy.json"
-            )
+            wrapper = request.hidden_read_scope.wrapper_path()
+            environment.update(SHELL=wrapper, RCP_HIDDEN_READ_POLICY=wrapper + ".policy.json")
         return environment
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
@@ -394,6 +392,10 @@ def _permission(
         if any(PurePosixPath(item) in PurePosixPath(path).parents for item in denied):
             edit.pop(_root_pattern(path))
             edit[_root_pattern(path)] = "allow"
+    if hidden_read_scope is not None and hidden_read_scope.env_allow_list:
+        # Last match wins: a granted root may contain the wrapper's home.
+        wrapper_root = str(PurePosixPath(hidden_read_scope.wrapper_path()).parent)
+        edit[_root_pattern(wrapper_root)] = "deny"
     base["edit"] = edit
     if scope is not None:
         # Work has an unbounded shell. Other capabilities keep their narrow

@@ -56,6 +56,8 @@ def _absolute_hidden_read_path(value: str) -> str:
     return value
 
 
+# Outside every write root; tool calls can neither read nor rewrite the policy.
+HIDDEN_READ_WRAPPER_ROOT = ".rcp/hidden-read"
 HiddenReadPath = Annotated[
     str,
     Field(strict=True, min_length=1, max_length=HIDDEN_READ_PATH_MAX_LENGTH),
@@ -137,6 +139,8 @@ class HiddenReadScope(BaseModel):
     execution_machine: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
     execution_host: str = Field(max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
     os_account: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
+    # Canonical execution-account home; it locates the staged tool wrapper.
+    account_home: HiddenReadPath | None = None
     hidden_directories: tuple[HiddenReadPath, ...] = Field(
         default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
     )
@@ -205,6 +209,14 @@ class HiddenReadScope(BaseModel):
             raise ValueError("hidden-read fingerprint does not match the effective policy")
         object.__setattr__(self, "fingerprint", expected)
         return self
+
+    def wrapper_path(self) -> str:
+        """The RCP-owned wrapper copy; its directory is hidden from tool calls."""
+        if self.account_home is None:
+            raise ValueError("hidden-read scope has no execution-account home")
+        return (
+            f"{self.account_home}/{HIDDEN_READ_WRAPPER_ROOT}/{self.fingerprint}/rcp-hidden-read.py"
+        )
 
 
 class MachineHiddenReadProjection(BaseModel):

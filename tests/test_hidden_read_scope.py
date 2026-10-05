@@ -44,6 +44,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         "/provider/auth.json",
         "/control/socket",
         "/home/research/.config/rcp/claude-setup-token",
+        "/home/research/.rcp/hidden-read/policy/rcp-hidden-read.py.policy.json",
     ):
         assert hidden(path)
     for path in (
@@ -143,6 +144,13 @@ def test_adding_folder_changes_fingerprint(manifest: Manifest, tmp_path: Path, m
     assert first.fingerprint != second.fingerprint
     assert str(tmp_path / "private") in second.hidden_directories
     assert second.enforcement.status == "enforced"
+
+
+def test_tool_wrapper_lives_in_a_hidden_folder(manifest, tmp_path, monkeypatch) -> None:
+    scope = _resolve(manifest, tmp_path, monkeypatch)
+    wrapper = Path(scope.wrapper_path())
+    assert wrapper.is_relative_to(tmp_path / "home")
+    assert any(wrapper.is_relative_to(root) for root in scope.hidden_directories)
 
 
 @pytest.mark.parametrize(

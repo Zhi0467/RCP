@@ -425,12 +425,15 @@ for (const status of ["unhidden", "enforced", null]) {
             ? null
             : {
                 status,
-                reasons: status === "unhidden" ? [
-                  "wrapper_unavailable",
-                  "browser_unwrapped_macos",
-                  "deploy_key_agent_unconfirmed",
-                  "ssh_key_agent_unconfirmed",
-                ] : [],
+                reasons:
+                  status === "unhidden"
+                    ? [
+                        "wrapper_unavailable",
+                        "browser_unwrapped_macos",
+                        "deploy_key_agent_unconfirmed",
+                        "ssh_key_agent_unconfirmed",
+                      ]
+                    : [],
               },
       },
     };

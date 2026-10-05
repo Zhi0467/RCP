@@ -117,6 +117,7 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
         "execution_machine": "local",
         "execution_host": "",
         "os_account": "research",
+        "account_home": str(tmp_path / "home"),
         "enforcement": HiddenReadStatus(status="enforced"),
     }
     empty = HiddenReadScope(**identity, env_allow_list=tuple(sorted(allowed)))
@@ -171,7 +172,12 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
     )
     baseline = _render(provider, request)
     hidden_request = replace(request, hidden_read_scope=populated)
-    hidden = _render(provider, hidden_request)
+    # The wrapper lives in a folder named by the policy fingerprint.
+    hidden = json.loads(
+        json.dumps(_render(provider, hidden_request)).replace(
+            populated.fingerprint, empty.fingerprint
+        )
+    )
     _remove_only_added_denies(provider, hidden, empty, populated)
     # Full structural equality catches removed tools, write grants, Git access,
     # network/sandbox changes, and altered browser permissions or command flags.

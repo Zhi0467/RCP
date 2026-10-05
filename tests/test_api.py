@@ -5297,7 +5297,6 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     workspace = launcher.last_kwargs["cwd"]
     assert workspace.name == "workspace"
     assert workspace.is_relative_to(tmp_path / "data")
-    assert (workspace / "rcp-hidden-read.py").is_file()
     assert any("Review the claim boundary." in item for item in events)
     assert paper.sessions()[0].native_session_id == session_id
 

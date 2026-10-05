@@ -220,6 +220,7 @@ def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability
         execution_machine="local",
         execution_host="",
         os_account="tester",
+        account_home="/home/tester",
         hidden_directories=("/secrets",),
         hidden_files=("/token",),
         hidden_globs=("/backup-*",),
@@ -232,7 +233,7 @@ def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability
     request = replace(_request(capability, scope=write_scope), hidden_read_scope=scope)
     turn = OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(request)
     _, permission = _launch(request)
-    assert turn.environment["SHELL"] == str(request.cwd / "rcp-hidden-read.py")
+    assert turn.environment["SHELL"] == scope.wrapper_path()
     assert turn.environment["RCP_HIDDEN_READ_POLICY"] == turn.environment["SHELL"] + ".policy.json"
     assert permission["read"] == {
         "*": "allow",

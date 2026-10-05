@@ -3036,6 +3036,8 @@ export interface HiddenReadScope {
   /** Empty denotes the backend host. */
   readonly execution_host: string;
   readonly os_account: string;
+  /** Canonical execution-account home; locates the staged tool wrapper. */
+  readonly account_home: string | null;
   readonly hidden_directories: readonly string[];
   readonly hidden_files: readonly string[];
   readonly hidden_globs: readonly string[];

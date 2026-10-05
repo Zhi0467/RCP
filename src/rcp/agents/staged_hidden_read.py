@@ -14,6 +14,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -171,6 +172,30 @@ def bwrap_argv(policy, command, *, executable="bwrap"):
     return [*argv, "--", "/bin/bash", "-c", command]
 
 
+def install(directory, files):
+    """Atomically place read-only launch files in a private RCP-owned directory."""
+    target = Path(directory)
+    # `parents=True` would give new parents, such as `~/.rcp`, the umask's mode.
+    for path in (*reversed(target.parents), target):
+        if not path.exists():
+            path.mkdir(mode=0o700, exist_ok=True)
+    # `~/.rcp` must not be writable by others; its two private levels are 0700.
+    for path, open_bits in ((target.parent.parent, 0o022), (target.parent, 0o077), (target, 0o077)):
+        info = path.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & open_bits
+        ):
+            raise ValueError("hidden-read wrapper directory must be a private owned folder")
+    for name, content in files.items():
+        descriptor, temporary = tempfile.mkstemp(prefix="." + name + ".", dir=str(target))
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        os.chmod(temporary, 0o400)
+        os.replace(temporary, target / name)
+
+
 def clean_environment(policy, environ):
     return {name: environ[name] for name in policy["env_allow_list"] if name in environ}
 
@@ -181,6 +206,7 @@ def main(argv=None):
     parser.add_argument("--policy")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--host-facts")
+    parser.add_argument("--install")
     # argparse interprets -lc as clustered short flags unless normalized.
     arguments = ["-c" if value == "-lc" else value for value in arguments]
     parser.add_argument("-c", dest="command")
@@ -190,6 +216,9 @@ def main(argv=None):
         return 0
     if args.host_facts is not None:
         print(json.dumps(host_facts(json.loads(args.host_facts))))
+        return 0
+    if args.install is not None:
+        install(args.install, json.load(sys.stdin))
         return 0
     if args.command is None:
         parser.error("-c requires a command")
@@ -204,16 +233,18 @@ def main(argv=None):
         print("RCP hidden-read fallback: " + readiness["reason"], file=sys.stderr)
         os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
     if sys.platform == "darwin":
-        # The launcher stages policies in its retained stage. Keep the generated
-        # profile there too; exec preserves streams, cwd, signals and exit status.
-        descriptor, profile = tempfile.mkstemp(
-            prefix="hidden-read-", suffix=".sb", dir=str(Path(policy_path).resolve().parent)
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(render_sandbox_profile(policy))
+        # An inline profile leaves no per-command file; exec preserves streams,
+        # cwd, signals and exit status.
         os.execve(
             "/usr/bin/sandbox-exec",
-            ["/usr/bin/sandbox-exec", "-f", profile, "/bin/bash", "-c", args.command],
+            [
+                "/usr/bin/sandbox-exec",
+                "-p",
+                render_sandbox_profile(policy),
+                "/bin/bash",
+                "-c",
+                args.command,
+            ],
             env,
         )
     else:

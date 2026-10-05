@@ -72,7 +72,9 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
         if request.hidden_read_scope is not None and request.hidden_read_scope.env_allow_list:
-            self.environment = {"CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(request.cwd)}
+            self.environment = {
+                "CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(request.hidden_read_scope.wrapper_path())
+            }
         self.command.extend(["--input-format", "stream-json", "--replay-user-messages"])
         # Claude has no native per-turn precondition. This token identifies only
         # this fresh process's initial input, never a resumable provider session.
@@ -490,7 +492,7 @@ class ClaudeProfile(ProviderProfile):
                     [
                         "--settings",
                         json.dumps(
-                            _claude_hidden_read_settings(hidden_read_scope, cwd),
+                            _claude_hidden_read_settings(hidden_read_scope),
                             separators=(",", ":"),
                         ),
                     ]
@@ -618,26 +620,31 @@ def _claude_write_settings(
     }
 
     if hidden_read_scope is not None:
-        hidden = _claude_hidden_read_settings(hidden_read_scope, cwd)
+        hidden = _claude_hidden_read_settings(hidden_read_scope)
         settings["env"] = hidden["env"]
         settings["permissions"]["deny"].extend(hidden["permissions"]["deny"])
     return settings
 
 
-def _shell_prefix(cwd: Path) -> str:
-    wrapper = cwd / "rcp-hidden-read.py"
-    return shlex.join(["python3", str(wrapper), "--policy", str(wrapper) + ".policy.json"])
+def _shell_prefix(wrapper: str) -> str:
+    return shlex.join(["python3", wrapper, "--policy", wrapper + ".policy.json"])
 
 
-def _claude_hidden_read_settings(scope: HiddenReadScope, cwd: Path) -> dict[str, object]:
+def _claude_hidden_read_settings(scope: HiddenReadScope) -> dict[str, object]:
     patterns = [
         *(_claude_absolute_pattern(path) for path in scope.hidden_directories),
         *(_claude_absolute_pattern(path, directory=False) for path in scope.hidden_files),
         *(_claude_absolute_pattern(path, directory=False) for path in scope.hidden_globs),
     ]
+    deny = [f"Read({pattern})" for pattern in patterns]
+    if not scope.env_allow_list:
+        return {"env": {}, "permissions": {"deny": deny}}
+    wrapper = scope.wrapper_path()
+    # A granted root may contain the wrapper's home; its policy stays uneditable.
+    deny.append(f"Edit({_claude_absolute_pattern(str(PurePosixPath(wrapper).parent))})")
     return {
-        "env": {"CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(cwd)} if scope.env_allow_list else {},
-        "permissions": {"deny": [f"Read({pattern})" for pattern in patterns]},
+        "env": {"CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(wrapper)},
+        "permissions": {"deny": deny},
     }
 
 

@@ -10,7 +10,7 @@ import shlex
 import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -252,10 +252,13 @@ def prepare_hidden_read_launch(
     import logging
 
     from rcp.agents.hidden_read import resolve_hidden_read_scope, staged_hidden_read_source
+    from rcp.agents.staged_hidden_read import install as install_hidden_read_files
     from rcp.agents.write_scope import installed_server_storage
-    from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope, HiddenReadStatus
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
+    from rcp.limits import HIDDEN_READ_STAGE_TIMEOUT_SECONDS
     from rcp.ssh_agent import (
         confirm_key_evidence,
+        confirm_remote_key_evidence,
         running_agent_socket,
         user_ssh_identity_candidates,
     )
@@ -282,41 +285,13 @@ def prepare_hidden_read_launch(
                 agent_socket=running_agent_socket(),
             )
         else:
-            # Inspect names on the execution host; never confirm against the local agent.
+            # Confirm on the execution account, never against the local agents.
+            # A transport failure before inventory raises into the unhidden fallback.
             home_result = remote_stage._ssh(["printenv", "HOME"])
             home = home_result.stdout.strip()
             if home_result.returncode or not home.startswith("/"):
                 raise OSError("execution-host home could not be resolved")
-            keys_result = remote_stage._ssh(
-                [
-                    "find",
-                    "-L",
-                    home + "/.ssh",
-                    "-maxdepth",
-                    "1",
-                    "-type",
-                    "f",
-                    "-name",
-                    "id_*",
-                    "!",
-                    "-name",
-                    "*.pub",
-                ]
-            )
-            evidence = tuple(
-                HiddenReadKeyEvidence(
-                    path=path, kind=kind, agent_confirmed=False, visibility="readable"
-                )
-                for path, kind in dict.fromkeys(
-                    [
-                        *((path, "ssh_identity") for path in keys_result.stdout.splitlines()),
-                        *[
-                            (home + key[1:] if key.startswith("~/") else key, "deploy_key")
-                            for _, key in (git_access.checkouts if git_access is not None else ())
-                        ],
-                    ]
-                )
-            )
+            evidence = confirm_remote_key_evidence(remote_stage=remote_stage, home=home)
         scope = resolve_hidden_read_scope(
             manifest=manifest,
             execution_machine=execution_machine,
@@ -332,10 +307,6 @@ def prepare_hidden_read_launch(
             browser_enabled=browser_enabled,
         )
         reasons = set(scope.enforcement.reasons)
-        if remote_stage is not None:
-            reasons.add("ssh_key_agent_unconfirmed")
-            if git_access is not None and git_access.checkouts:
-                reasons.add("deploy_key_agent_unconfirmed")
         if provider == "opencode":
             # grep/glob permissions match search patterns, not filesystem paths.
             reasons.add("provider_native_tools_uncovered")
@@ -348,20 +319,25 @@ def prepare_hidden_read_launch(
                     ),
                 }
             )
-        wrapper_name = "rcp-hidden-read.py"
-        policy_name = wrapper_name + ".policy.json"
-        policy = json.dumps(scope.model_dump(mode="json"), sort_keys=True)
+        # Staged outside every write root and hidden by the scope itself, so a
+        # tool call can neither read nor rewrite the policy it runs under.
+        wrapper = PurePosixPath(scope.wrapper_path())
+        files = {
+            wrapper.name: staged_hidden_read_source(),
+            wrapper.name + ".policy.json": json.dumps(
+                scope.model_dump(mode="json"), sort_keys=True
+            ),
+        }
         if remote_stage is not None:
-            remote_stage.write_workspace_text(wrapper_name, staged_hidden_read_source())
-            remote_stage.write_workspace_text(policy_name, policy)
-            result = remote_stage._ssh(["chmod", "700", str(remote_stage.workspace / wrapper_name)])
+            result = remote_stage._ssh_bytes(
+                ["python3", "-c", staged_hidden_read_source(), "--install", str(wrapper.parent)],
+                input_data=json.dumps(files).encode(),
+                timeout_seconds=HIDDEN_READ_STAGE_TIMEOUT_SECONDS,
+            )
             if result.returncode:
-                raise OSError("hidden-read wrapper could not be made executable")
+                raise OSError("hidden-read wrapper could not be staged")
         else:
-            workspace = Path(workspace_root)
-            _write_private(workspace / wrapper_name, staged_hidden_read_source())
-            (workspace / wrapper_name).chmod(0o700)
-            _write_private(workspace / policy_name, policy)
+            install_hidden_read_files(str(wrapper.parent), files)
         return scope
     except Exception:
         logging.getLogger(__name__).exception(

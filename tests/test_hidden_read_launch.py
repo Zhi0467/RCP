@@ -9,21 +9,22 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
-from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST
+from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST, staged_hidden_read_source
 from rcp.agents.provider_environment import prepare_hidden_read_launch
 from rcp.agents.write_scope import ProjectWriteScope
-from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope, HiddenReadStatus
 from rcp.providers import profile_for
 from rcp.providers.browser_grant import BrowserGrant
 
 CAPABILITIES = ("discuss", "work_auto", "orchestrate", "scratch_patch", "paper_readonly")
 
 
-def _scope() -> HiddenReadScope:
+def _scope(home: str = "/home/research") -> HiddenReadScope:
     return HiddenReadScope(
         execution_machine="local",
         execution_host="",
         os_account="research",
+        account_home=home,
         hidden_directories=("/secret/folder",),
         hidden_files=("/secret/file",),
         hidden_globs=("/secret/db*",),
@@ -67,7 +68,9 @@ def test_claude_all_capabilities_render_scope(capability, tmp_path):
     assert {"Read(//secret/folder/**)", "Read(//secret/file)", "Read(//secret/db*)"} <= set(
         settings["permissions"]["deny"]
     )
-    assert str(tmp_path / "rcp-hidden-read.py") in settings["env"]["CLAUDE_CODE_SHELL_PREFIX"]
+    assert scope.wrapper_path() in settings["env"]["CLAUDE_CODE_SHELL_PREFIX"]
+    wrapper_root = str(Path(scope.wrapper_path()).parent)
+    assert f"Edit(/{wrapper_root}/**)" in settings["permissions"]["deny"]
 
 
 @pytest.mark.parametrize("provider", ("claude", "codex", "opencode"))
@@ -162,36 +165,45 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
         order.append(kwargs)
         return ()
 
+    remote_evidence = (
+        HiddenReadKeyEvidence(
+            path="/home/research/.ssh/id_ed25519",
+            kind="ssh_identity",
+            public_key_fingerprint="SHA256:" + "A" * 43,
+            agent_confirmed=True,
+            visibility="hidden",
+        ),
+    )
+
+    def confirm_remote(*, remote_stage, home):
+        order.append({"remote": home})
+        return remote_evidence
+
     def resolve(**kwargs):
-        assert len(order) == (0 if remote else 2)
+        assert len(order) == (1 if remote else 2)
         if remote:
-            assert {(key.path, key.kind, key.visibility) for key in kwargs["key_evidence"]} == {
-                ("/home/research/.ssh/id_ed25519", "ssh_identity", "readable"),
-                ("/deploy/key", "deploy_key", "readable"),
-            }
+            assert kwargs["key_evidence"] == remote_evidence
         assert kwargs["machine_hidden_folders"] == ["/custom"]
         if failed:
             raise OSError("host unavailable")
-        return _scope()
+        return _scope(str(tmp_path / "home"))
 
     monkeypatch.setattr(ssh_agent, "confirm_key_evidence", confirm)
+    monkeypatch.setattr(ssh_agent, "confirm_remote_key_evidence", confirm_remote)
     monkeypatch.setattr(hidden_read, "resolve_hidden_read_scope", resolve)
 
     class Stage:
-        workspace = tmp_path
-
         def __init__(self):
-            self.files = {}
+            self.installed = {}
 
         def _ssh(self, command):
-            output = {
-                "printenv": "/home/research\n",
-                "find": "/home/research/.ssh/id_ed25519\n",
-            }.get(command[0], "")
+            output = "/home/research\n" if command[0] == "printenv" else ""
             return subprocess.CompletedProcess(command, 0, output, "")
 
-        def write_workspace_text(self, name, content):
-            self.files[name] = content
+        def _ssh_bytes(self, command, *, input_data, timeout_seconds):
+            assert command[:2] == ["python3", "-c"] and command[3] == "--install"
+            self.installed[command[4]] = json.loads(input_data)
+            return subprocess.CompletedProcess(command, 0, b"", b"")
 
     stage = Stage() if remote else None
     scope = prepare_hidden_read_launch(
@@ -206,20 +218,30 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
         machine_hidden_folders=["/custom"],
         git_access=SimpleNamespace(checkouts=(("/repo", "/deploy/key"),)),
     )
-    assert [item["agent_socket"] for item in order] == (
-        [] if remote else ["/user/socket", "/deploy/socket"]
+    assert order == (
+        [{"remote": "/home/research"}]
+        if remote
+        else [
+            {**order[0], "agent_socket": "/user/socket"},
+            {**order[1], "agent_socket": "/deploy/socket"},
+        ]
     )
     if failed:
         assert scope.enforcement.status == "unhidden"
         assert scope.enforcement.reasons
+        return
+    wrapper = Path(scope.wrapper_path())
+    # Staged outside the writable workspace, inside a folder the scope hides.
+    assert not wrapper.is_relative_to(tmp_path / "workspace")
+    if remote:
+        files = stage.installed[str(wrapper.parent)]
     else:
-        policy_name = "rcp-hidden-read.py.policy.json"
-        policy = stage.files[policy_name] if stage else (tmp_path / policy_name).read_text()
-        assert HiddenReadScope.model_validate_json(policy) == scope
-        if not remote:
-            assert (tmp_path / "rcp-hidden-read.py").stat().st_mode & 0o100
-        if provider == "opencode":
-            assert "provider_native_tools_uncovered" in scope.enforcement.reasons
+        files = {path.name: path.read_text() for path in wrapper.parent.iterdir()}
+        assert all(path.stat().st_mode & 0o222 == 0 for path in wrapper.parent.iterdir())
+    assert HiddenReadScope.model_validate_json(files[wrapper.name + ".policy.json"]) == scope
+    assert files[wrapper.name] == staged_hidden_read_source()
+    if provider == "opencode":
+        assert "provider_native_tools_uncovered" in scope.enforcement.reasons
 
 
 def _browser_admission_calls():

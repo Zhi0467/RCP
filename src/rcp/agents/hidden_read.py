@@ -14,7 +14,12 @@ from rcp.agents.staged_hidden_read import glob_path_regex, host_facts
 from rcp.agents.staged_hidden_read import probe_hidden_read_wrapper as probe_hidden_read_wrapper
 from rcp.agents.write_scope import RegisteredRepositoryRoot, installed_server_storage
 from rcp.config import Manifest
-from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope, HiddenReadStatus
+from rcp.core.models import (
+    HIDDEN_READ_WRAPPER_ROOT,
+    HiddenReadKeyEvidence,
+    HiddenReadScope,
+    HiddenReadStatus,
+)
 from rcp.limits import (
     HIDDEN_READ_PATH_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
@@ -98,6 +103,7 @@ def hidden_read_defaults(
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Credential roots name provider stores, never a deploy-key parent."""
     directories = list(credential_roots)
+    directories.append(home + "/" + HIDDEN_READ_WRAPPER_ROOT)
     files = [*provider_login_files, home + "/.config/rcp/claude-setup-token"]
     globs = []
     for path in WEBKIT_READ_DENY_PATHS:
@@ -331,6 +337,7 @@ def resolve_hidden_read_scope(
         execution_machine=execution_machine,
         execution_host=machine.host,
         os_account=facts["os_account"],
+        account_home=home,
         hidden_directories=filtered_dirs,
         hidden_files=filtered_files,
         hidden_globs=filtered_globs,
