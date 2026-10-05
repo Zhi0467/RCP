@@ -42,6 +42,11 @@ const reasons: Record<string, { label: string; reason: string; fix?: string }> =
     label: "Storage unavailable",
     reason: "The browser's storage is unavailable.",
   },
+  linger_disabled: {
+    label: "Stops at logout",
+    reason: "Background processes on this machine stop when its account logs out.",
+    fix: "Allow background processes on the machine card in Settings.",
+  },
   owner_unavailable: {
     label: "Process owner unavailable",
     reason: "The machine cannot keep a managed browser process running.",

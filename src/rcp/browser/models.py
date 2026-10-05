@@ -58,3 +58,4 @@ class BrowserReadiness(BaseModel):
     status: str
     detail: str | None = None
     apt_command: str | None = None
+    admin_command: str | None = None

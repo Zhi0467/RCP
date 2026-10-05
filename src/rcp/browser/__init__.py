@@ -3,6 +3,7 @@
 from rcp.browser.models import BrowserReadiness, SessionCheck, SessionLease, Unavailable
 from rcp.browser.service import (
     close_owner,
+    enable_linger,
     ensure_session,
     install_browser,
     readiness,
@@ -15,6 +16,7 @@ __all__ = [
     "SessionLease",
     "Unavailable",
     "close_owner",
+    "enable_linger",
     "ensure_session",
     "install_browser",
     "readiness",

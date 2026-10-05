@@ -1688,7 +1688,8 @@ attachment, headed, profile, and storage-state settings are overridden. Launch
 environment overrides are removed. The pinned daemon entry point runs directly
 under launchd or a lingering systemd user manager, so the OS owns the daemon
 rather than its short-lived CLI launcher. A missing process owner makes the
-browser unavailable.
+browser unavailable; a systemd account without linger reports `linger_disabled`
+before an install is offered.
 
 Ensure probes the CLI registry from the stage workspace before starting a
 session. It creates no `.playwright` marker and never reopens a live session.

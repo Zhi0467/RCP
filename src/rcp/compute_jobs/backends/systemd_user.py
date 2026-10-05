@@ -124,9 +124,31 @@ class SystemdUserBackend:
         require_cancel_success(self.id, result)
 
     def probe(self, context: BackendContext) -> ComputeBackendProbe:
-        return facility_probe(
+        facility = facility_probe(
             self,
             context,
             self.command(context, "systemctl", "show-environment"),
             "enable the execution account's systemd user manager and linger",
+        )
+        if not facility.ready:
+            return facility
+        # Without linger the user manager stops ten seconds after the account's
+        # last session ends, and every job it owns stops with it.
+        try:
+            linger = context.run(
+                ["loginctl", "show-user", context.target_uid(), "-p", "Linger", "--value"]
+            )
+            if linger.returncode == 0 and linger.stdout.strip() == "yes":
+                return facility
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            pass
+        return facility.model_copy(
+            update={
+                "state": "failed",
+                "ready": False,
+                "diagnostic": "Jobs stop when this account's last login session ends.",
+                "required_action": "Allow background processes on this machine's card in Settings.",
+                "status_label": "Failed",
+                "status_tone": "error",
+            }
         )

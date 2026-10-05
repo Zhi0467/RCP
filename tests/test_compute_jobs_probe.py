@@ -32,6 +32,7 @@ class ProbeRunner:
         self.polls = 0
         self.reject_mirrored = False
         self.reject_cancel = False
+        self.linger = "yes"
 
     def __call__(self, command, **kwargs):
         self.commands.append(command)
@@ -40,6 +41,8 @@ class ProbeRunner:
             out = self.os_name
         elif command == ["id", "-u"]:
             out = "501"
+        elif command[:2] == ["loginctl", "show-user"]:
+            out = self.linger + "\n"
         elif command[:2] == ["launchctl", "bootstrap"]:
             self.root = Path(command[-1]).parent
             self.polls = 0
@@ -328,6 +331,16 @@ def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path, j
     assert result.required_action
     assert len(commands) == 3
     assert not (tmp_path / "jobs").exists()
+
+
+def test_linux_helper_probe_refuses_without_linger(manifest, tmp_path, fake_linux_cgroup):
+    runner = ProbeRunner(os_name="Linux")
+    runner.linger = "no"
+    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    assert not result.ready
+    assert result.required_action
+    # Refused before any job is launched.
+    assert not any("systemd-run" in command for command in runner.commands)
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])

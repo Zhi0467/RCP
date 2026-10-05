@@ -882,3 +882,10 @@ export function installMachineBrowser(machineId: string): Promise<MachineBrowser
     body: JSON.stringify({}),
   });
 }
+
+export function enableMachineLinger(machineId: string): Promise<MachineBrowserReadiness> {
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/linger`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}

@@ -3604,4 +3604,5 @@ export interface MachineBrowserReadiness {
   status: string;
   detail: string | null;
   apt_command: string | null;
+  admin_command: string | null;
 }

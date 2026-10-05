@@ -298,6 +298,13 @@ def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> N
     assert calls[0]["data_dir"] == tmp_path / "data"
     assert client.post("/api/space/machines/absent/browser/install", json={}).status_code == 404
     assert len(calls) == 1
+    # Enabling linger is a separate explicit request on that machine's account.
+    monkeypatch.setattr("rcp.api.space_machines.enable_linger", install)
+    assert (
+        client.post(f"/api/space/machines/{machine['machine_id']}/linger", json={}).status_code
+        == 200
+    )
+    assert calls[1] == calls[0]
 
 
 @pytest.fixture

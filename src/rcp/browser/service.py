@@ -62,7 +62,9 @@ def _invoke(request: dict, *, host: str, partition: str | None, data_dir: Path) 
         "controller_id": hashlib.sha256(str(data_dir).encode()).hexdigest(),
         "controller_epoch": _EPOCH,
     }
-    timeout_key = {"ensure": "start", "release": "close"}.get(request["action"], request["action"])
+    timeout_key = {"ensure": "start", "release": "close", "enable_linger": "readiness"}.get(
+        request["action"], request["action"]
+    )
     timeout = request["limits"][timeout_key]
     # Let the worker finish cancellation and return its diagnostic before its transport ends.
     request["limits"][timeout_key] = max(0.1, timeout - 1)
@@ -382,3 +384,7 @@ def readiness(*, host: str = "", os_account: str = "", data_dir: Path) -> Browse
 
 def install_browser(*, host: str = "", os_account: str = "", data_dir: Path) -> BrowserReadiness:
     return _host_status("install", host=host, os_account=os_account, data_dir=data_dir)
+
+
+def enable_linger(*, host: str = "", os_account: str = "", data_dir: Path) -> BrowserReadiness:
+    return _host_status("enable_linger", host=host, os_account=os_account, data_dir=data_dir)

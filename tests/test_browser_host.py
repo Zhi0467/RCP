@@ -213,6 +213,7 @@ def test_interrupted_install_reads_as_installable(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True)
     path.write_text('{"version": "0.1')
     monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "owner_ready", lambda: None)
     assert runtime.readiness()["status"] == "not_installed"
 
 
@@ -237,6 +238,7 @@ def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
         runtime.core.mkdir(parents=True)
         (runtime.core / "package.json").write_text("broken")
     monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "owner_ready", lambda: None)
     monkeypatch.setattr(runtime, "readiness", lambda **kw: {"status": "ready"})
     monkeypatch.setattr(runtime, "executable", lambda: "/owned/chromium")
     monkeypatch.setattr(runtime, "start", lambda *a: None)
@@ -426,3 +428,38 @@ def test_enforcement_failure_admits_unhidden_browser(host, monkeypatch, failure)
     }
     assert attempts == ([False] if failure == "probe" else [True, False])
     assert host.release()["alive"]
+
+
+@pytest.mark.parametrize("permitted", [True, False])
+def test_missing_linger_is_its_own_reason_and_the_member_can_enable_it(
+    tmp_path, monkeypatch, permitted
+):
+    runtime = HostRuntime(request(tmp_path, action="enable_linger"))
+    runtime.backend = "systemd_user"
+    linger = {"value": "no"}
+    calls = []
+
+    def run(argv, check=True):
+        calls.append(argv)
+        if argv[:2] == ["loginctl", "enable-linger"]:
+            if not permitted:
+                return subprocess.CompletedProcess(argv, 1, "", "Access denied")
+            linger["value"] = "yes"
+        out = linger["value"] + "\n" if argv[:2] == ["loginctl", "show-user"] else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(runtime, "run", run)
+    monkeypatch.setattr(shutil, "which", lambda tool, path=None: f"/usr/bin/{tool}")
+    with pytest.raises(UnavailableError) as error:
+        runtime.owner_ready()
+    assert error.value.code == "linger_disabled"
+
+    monkeypatch.setattr(runtime, "readiness", lambda: runtime.owner_ready() or {"status": "ready"})
+    result = runtime.enable_linger()
+    # The account enables its own linger; nothing is run as another user.
+    assert ["loginctl", "enable-linger"] in calls
+    if permitted:
+        assert result["status"] == "ready"
+    else:
+        assert result["status"] == "linger_disabled"
+        assert shlex.split(result["admin_command"])[:3] == ["sudo", "loginctl", "enable-linger"]

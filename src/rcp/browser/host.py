@@ -166,9 +166,12 @@ class HostRuntime:
         self.deadline = (
             time.monotonic()
             + self.limits[
-                {"ensure": "start", "release": "close", "close": "close"}.get(
-                    request["action"], request["action"]
-                )
+                {
+                    "ensure": "start",
+                    "release": "close",
+                    "close": "close",
+                    "enable_linger": "readiness",
+                }.get(request["action"], request["action"])
             ]
         )
         self.env = {
@@ -338,8 +341,8 @@ class HostRuntime:
                 )
                 if linger.returncode or linger.stdout.strip() != "yes":
                     raise UnavailableError(
-                        "owner_unavailable",
-                        "Enable the execution account's systemd user manager and linger",
+                        "linger_disabled",
+                        "Background processes stop when this account's last session ends",
                     )
         if result.returncode:
             raise UnavailableError(
@@ -364,13 +367,26 @@ class HostRuntime:
         return None
 
     @staticmethod
-    def readiness_result(status: str, detail: str | None = None, apt_command: str | None = None):
-        return {"status": status, "detail": detail, "apt_command": apt_command}
+    def readiness_result(
+        status: str,
+        detail: str | None = None,
+        apt_command: str | None = None,
+        admin_command: str | None = None,
+    ):
+        return {
+            "status": status,
+            "detail": detail,
+            "apt_command": apt_command,
+            "admin_command": admin_command,
+        }
 
     def executable(self) -> str:
         return self.run([self.node, "-e", _EXECUTABLE_PROBE, str(self.core)]).stdout.strip()
 
     def readiness(self, *, require_verified: bool = True) -> dict:
+        # Ownership is the account's, not the browser's: report it before any
+        # browser prerequisite, so a machine card always offers its fix.
+        self.owner_ready()
         prerequisite = self.prerequisites()
         if prerequisite:
             return prerequisite
@@ -408,7 +424,6 @@ class HostRuntime:
                 )
         if not os.access(executable, os.X_OK):
             return self.readiness_result("not_installed", "RCP Chromium is not executable")
-        self.owner_ready()
         verified = self.tools / "verified.json"
         if require_verified and (
             not verified.is_file() or json.loads(verified.read_text()).get("version") != CLI_VERSION
@@ -675,7 +690,21 @@ class HostRuntime:
                 self.close_record(record, delete=self.request["delete_profile"])
         return {}
 
+    def enable_linger(self) -> dict:
+        """Let this account's user manager outlive its sessions, as the member asked."""
+        if self.backend == "systemd_user":
+            result = self.run(["loginctl", "enable-linger"], check=False)
+            if result.returncode:
+                account = pwd.getpwuid(os.getuid()).pw_name
+                return self.readiness_result(
+                    "linger_disabled",
+                    (result.stderr or result.stdout).strip() or None,
+                    admin_command=shlex.join(["sudo", "loginctl", "enable-linger", account]),
+                )
+        return self.readiness()
+
     def install(self) -> dict:
+        self.owner_ready()
         prerequisite = self.prerequisites()
         if prerequisite:
             return prerequisite
@@ -738,7 +767,7 @@ def dispatch(request: dict) -> dict:
             return getattr(runtime, action)()
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, UnavailableError) else "runtime_error"
-        if action in {"readiness", "install"}:
+        if action in {"readiness", "install", "enable_linger"}:
             return {"status": code, "detail": str(exc), "apt_command": None}
         if action == "release":
             return {"alive": False, "reason_code": code, "detail": str(exc)}

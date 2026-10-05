@@ -16,7 +16,7 @@ from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_def
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.browser import install_browser, readiness
+from rcp.browser import enable_linger, install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
@@ -539,5 +539,22 @@ def install_machine_browser(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     return install_browser(
+        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+    ).model_dump()
+
+
+@router.post("/api/space/machines/{machine_id}/linger")
+def enable_machine_linger(
+    machine_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    """The member's explicit consent to keep this account's background processes running."""
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    return enable_linger(
         host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
     ).model_dump()
