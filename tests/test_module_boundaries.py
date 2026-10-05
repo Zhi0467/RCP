@@ -224,6 +224,40 @@ TRANSCRIPT_READERS = (
 TASK_RUNTIME = ("runs", "agents", "providers")
 
 
+def _reads_a_file(node: ast.AST) -> bool:
+    """Any way of getting a file's bytes: Path methods, builtin `open`, or a
+    qualified builtin-style opener such as `io.open`."""
+    if isinstance(node, ast.Attribute):
+        if node.attr in {"read_text", "read_bytes", "open"}:
+            return True
+    if isinstance(node, ast.Call):
+        function = node.func
+        if isinstance(function, ast.Name) and function.id == "open":
+            return True
+        if (
+            isinstance(function, ast.Attribute)
+            and function.attr == "open"
+            and isinstance(function.value, ast.Name)
+            and function.value.id in BUILTIN_SIGNATURE_OPENERS
+        ):
+            return True
+    return False
+
+
+def test_transcript_read_detection_sees_builtin_open() -> None:
+    source = """
+def holder(service, request):
+    path = _chat_path(service, request)
+    json.load(open(path))
+    io.open(path).read()
+    path.read_text()
+"""
+    flagged = sorted(
+        node.lineno for node in ast.walk(ast.parse(source)) if _reads_a_file(node)
+    )
+    assert flagged == [4, 5, 6]
+
+
 def test_task_runtime_never_reads_chat_transcripts() -> None:
     """Discuss and Work do not consume prior RCP chat transcripts.
 
@@ -262,7 +296,7 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
         if not resolves_transcript_path:
             continue
         for node in ast.walk(function):
-            if isinstance(node, ast.Attribute) and node.attr in {"read_text", "read_bytes", "open"}:
+            if _reads_a_file(node):
                 readers_in_path_holders.append(f"{function.name}:{node.lineno}")
     assert readers_in_path_holders == [], (
         "runs/chat.py reads a file in a function that holds the transcript path: "
