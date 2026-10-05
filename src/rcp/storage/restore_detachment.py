@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _required_timestamp
 
 
-class RestoreDetachmentStoreMixin:
+class RestoreDetachmentStoreMixin(StoreMixinBase):
     """Compose concrete lifecycle owners at the pre-startup restore boundary."""
 
     def detach_restored_lifecycle(

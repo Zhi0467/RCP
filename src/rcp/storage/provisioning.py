@@ -22,6 +22,7 @@ from rcp.server_ops.models import (
     MessageText,
     ServerStep,
 )
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ProjectMemberRecord,
     ProjectProvisioningCancellationDisposition,
@@ -206,7 +207,7 @@ def _verify_project_provisioning_review_digest(
     return record
 
 
-class ProjectProvisioningStoreMixin:
+class ProjectProvisioningStoreMixin(StoreMixinBase):
     """One transactional state machine for every team-project preparation."""
 
     def require_project_accepts_new_work(self, project_id: str) -> None:

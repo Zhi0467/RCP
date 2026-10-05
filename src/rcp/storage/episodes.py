@@ -15,6 +15,7 @@ from rcp.storage.digest import (
     append_task_failed,
     digest_link,
 )
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
@@ -42,7 +43,7 @@ _LIVE_EPISODE_STATUSES = ("queued", "running", "stopping", "wrapping_up")
 _REPORT_ATTEMPT_LIMIT = 3
 
 
-class EpisodeStoreMixin:
+class EpisodeStoreMixin(StoreMixinBase):
     """Mode-neutral episode lifecycle, operational budget, and report ledger."""
 
     def create_episode(self, record: EpisodeRecord) -> EpisodeRecord:

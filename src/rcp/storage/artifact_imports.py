@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.limits import ARTIFACT_IMPORT_MAX_RETRY_SECONDS, ARTIFACT_IMPORT_RETRY_SECONDS
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord, ArtifactRevisionCandidateRecord
 
 
@@ -20,7 +21,7 @@ def migrate_artifact_imports(connection: sqlite3.Connection) -> None:
     )
 
 
-class ArtifactImportStoreMixin:
+class ArtifactImportStoreMixin(StoreMixinBase):
     def legacy_artifact_candidates(
         self, project_id: str
     ) -> tuple[ArtifactRevisionCandidateRecord, ...]:

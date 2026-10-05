@@ -10,6 +10,7 @@ import uuid
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ASK_ANSWER_MAX_LENGTH
 from rcp.storage.digest import append_question_attention
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.question_models import (
     QuestionArgumentConflict,
     QuestionOrigin,
@@ -77,7 +78,7 @@ def _question_record(row: sqlite3.Row) -> QuestionRecord:
     return QuestionRecord.model_validate(data)
 
 
-class QuestionStoreMixin:
+class QuestionStoreMixin(StoreMixinBase):
     def create_or_get_question(
         self,
         *,

@@ -5,6 +5,7 @@ import sqlite3
 
 from rcp.providers import ProviderSkill
 from rcp.storage.digest import rewrite_digest_project_links
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     _PROJECT_ID_TABLES,
     ProjectActiveTaskConflict,
@@ -15,7 +16,7 @@ from rcp.storage.models import (
 )
 
 
-class ProjectStoreMixin:
+class ProjectStoreMixin(StoreMixinBase):
     """The project catalog, identity migration, and provider skill inventory."""
 
     def provider_skill_inventory(

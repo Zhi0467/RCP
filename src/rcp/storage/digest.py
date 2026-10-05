@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from urllib.parse import quote
 
 from rcp.limits import DIGEST_LANDING_EVENT_LIMIT
+from rcp.storage.mixin_base import StoreMixinBase
 
 
 def migrate_digest(connection: sqlite3.Connection) -> None:
@@ -103,7 +104,7 @@ def _has_head(connection, project_id):
     )
 
 
-class DigestStoreMixin:
+class DigestStoreMixin(StoreMixinBase):
     def digest_snapshot(self, project_id: str, user_id: str) -> tuple[dict | None, int, list[dict]]:
         with self.connection() as conn:
             conn.execute("BEGIN")

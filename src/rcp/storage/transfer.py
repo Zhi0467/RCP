@@ -15,6 +15,7 @@ from rcp.artifacts import html_document_title
 from rcp.core.models import EpisodeIsolation, EpisodeIsolationState
 from rcp.storage.artifact_models import Artifact, ArtifactVersion
 from rcp.storage.artifacts import insert_artifact, write_artifact_file
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import ProjectTransferImportRecord
 from rcp.transfer.archive import (
     TransferArchiveAttribution,
@@ -185,7 +186,7 @@ def _attribution_fields(
     return actor.space_id, actor.user_id, actor.display_name
 
 
-class ProjectTransferStoreMixin:
+class ProjectTransferStoreMixin(StoreMixinBase):
     """Confirmed settlement, read-only export, and atomic import of project history."""
 
     def settle_source_transfer_tasks(self, request_id: str) -> None:

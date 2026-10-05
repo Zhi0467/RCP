@@ -15,6 +15,7 @@ from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
 )
 from rcp.providers import classify_terminal_error
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AgentCommandInvocationRecord,
@@ -176,7 +177,7 @@ def _bounded_auto_research_lifecycle_notice(
     raise ValueError("a lifecycle notice exceeds the durable command response limit")
 
 
-class AutoResearchChildrenStoreMixin:
+class AutoResearchChildrenStoreMixin(StoreMixinBase):
     """Storage policy for ordinary children controlled by an Auto-research parent."""
 
     def record_auto_research_child_admission(

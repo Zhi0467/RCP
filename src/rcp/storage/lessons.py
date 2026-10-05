@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from rcp.limits import LESSON_TEXT_MAX_CHARS, LESSONS_LIST_PAGE_SIZE, LESSONS_PER_PROJECT_MAX
+from rcp.storage.mixin_base import StoreMixinBase
 
 
 class LessonError(ValueError):
@@ -172,7 +173,7 @@ def _mutate(
     }
 
 
-class LessonStoreMixin:
+class LessonStoreMixin(StoreMixinBase):
     def list_lessons(self, project_id: str) -> list[dict[str, Any]]:
         with self.connection() as connection:
             return [

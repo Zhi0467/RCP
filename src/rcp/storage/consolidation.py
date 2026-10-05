@@ -19,6 +19,7 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.storage.digest import append_digest_event, digest_link
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 
 
@@ -110,7 +111,7 @@ def _record(model, row):
     return model.model_validate(values)
 
 
-class ConsolidationStoreMixin:
+class ConsolidationStoreMixin(StoreMixinBase):
     def consolidation_schedule(self, project_id: str) -> ConsolidationSchedule | None:
         with self.connection() as conn:
             return _record(

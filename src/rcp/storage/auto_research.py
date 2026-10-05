@@ -16,6 +16,7 @@ from rcp.limits import (
 )
 from rcp.storage.digest import append_episode_ended
 from rcp.storage.episodes import compact_episode_receipt
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AgentCommandInvocationRecord,
@@ -51,7 +52,7 @@ _LEGACY_AUTO_RESEARCH_TABLES: tuple[tuple[str, str], ...] = (
 )
 
 
-class AutoResearchStoreMixin:
+class AutoResearchStoreMixin(StoreMixinBase):
     """Auto-research policy state attached to the generic episode ledger."""
 
     def create_auto_research_episode_with_root_task(

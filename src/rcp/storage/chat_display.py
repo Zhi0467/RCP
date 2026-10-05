@@ -11,9 +11,10 @@ from typing import Any
 
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
+from rcp.storage.mixin_base import StoreMixinBase
 
 
-class ChatDisplayStoreMixin:
+class ChatDisplayStoreMixin(StoreMixinBase):
     def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
         with self.connection() as connection:
             return self._chat_browser_requested(connection, project_id, chat_id)
