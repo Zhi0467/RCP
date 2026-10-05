@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from rcp.api.host_guard import HostGuard
+from rcp.api.host_guard import HostGuard, HostGuardConfig
 
 
 def _app(*, team_access_url: str | None = None) -> FastAPI:
@@ -79,10 +79,46 @@ def test_rebound_websocket_cannot_bypass_host_guard() -> None:
     assert refused.value.code == 1008
 
 
-@pytest.mark.parametrize("host,expected", [("127.0.0.1:8421", 200), ("rebound.example:8421", 421)])
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("127.0.0.1:8421", 200),
+        ("rcp-" + "a" * 32 + ".rcp.localhost:19421", 200),
+        ("rebound.example:8421", 421),
+    ],
+)
 def test_guard_is_wired_before_public_health(tmp_path, host, expected):
     from rcp.api.app import create_app
 
-    app = create_app(data_dir=tmp_path)
+    app = create_app(data_dir=tmp_path, request_host_guard=HostGuardConfig(port=8421))
     with TestClient(app, base_url=f"http://{host}") as client:
-        assert client.get("/api/health").status_code == expected
+        response = client.get("/api/health")
+        assert response.status_code == expected
+        if expected == 421:
+            assert response.json()["detail"]["code"] == "host_invalid"
+
+
+def test_serve_passes_bound_host_guard(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    from rcp import __main__ as cli
+    from rcp.server_runtime import ServerMetadata
+
+    captured = {}
+    monkeypatch.setattr(cli, "prepared_web_assets", lambda **kwargs: nullcontext())
+    monkeypatch.setattr(cli, "team_access_url", lambda: "https://team.example")
+    monkeypatch.setattr(cli, "create_app", lambda *args, **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
+    args = cli.build_parser().parse_args(["serve", "--port", "9345"])
+    metadata = ServerMetadata.create(tmp_path, host=args.host, port=args.port, owner_kind="cli")
+    cli._run_server(args, metadata)
+    assert captured["request_host_guard"] == HostGuardConfig(
+        port=9345, team_access_url="https://team.example"
+    )
+
+
+def test_plain_app_has_no_listener_host_policy(tmp_path):
+    from rcp.api.app import create_app
+
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        assert client.get("/api/health").status_code == 200

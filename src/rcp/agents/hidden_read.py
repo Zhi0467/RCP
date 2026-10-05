@@ -7,6 +7,8 @@ import importlib.resources
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path, PurePosixPath
 
 from rcp.agents.staged_hidden_read import glob_path_regex, host_facts
@@ -14,7 +16,11 @@ from rcp.agents.staged_hidden_read import probe_hidden_read_wrapper as probe_hid
 from rcp.agents.write_scope import RegisteredRepositoryRoot, installed_server_storage
 from rcp.config import Manifest
 from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope, HiddenReadStatus
-from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT, HIDDEN_READ_PATH_MAX_LENGTH
+from rcp.limits import (
+    HIDDEN_READ_PATH_MAX_COUNT,
+    HIDDEN_READ_PATH_MAX_LENGTH,
+    HIDDEN_READ_READINESS_TTL_SECONDS,
+)
 from rcp.providers import AgentCapability, ProviderId
 from rcp.rcp_home import command_socket_directory
 from rcp.transport.run_stage import RemoteRunStage
@@ -54,6 +60,25 @@ WEBKIT_READ_DENY_PATHS = tuple(
         ("Cookies", ".binarycookies"),
     )
 )
+
+
+_readiness_cache: tuple[float, HiddenReadStatus] | None = None
+_readiness_lock = threading.Lock()
+
+
+def cached_hidden_read_readiness() -> HiddenReadStatus:
+    """Settings checks wrapper availability, never a launch's effective scope."""
+    global _readiness_cache
+    with _readiness_lock:
+        if _readiness_cache is not None and time.monotonic() < _readiness_cache[0]:
+            return _readiness_cache[1]
+        result = probe_hidden_read_wrapper()
+        status = HiddenReadStatus(
+            status="enforced" if result["ready"] else "unhidden",
+            reasons=() if result["ready"] else (result["reason"] or "wrapper_unavailable",),
+        )
+        _readiness_cache = (time.monotonic() + HIDDEN_READ_READINESS_TTL_SECONDS, status)
+        return status
 
 
 def staged_hidden_read_source() -> str:

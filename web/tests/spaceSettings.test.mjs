@@ -413,34 +413,36 @@ test("hidden folders serialize edits without changing defaults or writable paths
   ]);
 });
 
-test("hidden-folder defaults cannot be removed and effective status is visible", () => {
-  const record = {
-    ...gpu,
-    hidden_read: {
-      default_directories: ["/default-secret"],
-      default_files: [],
-      default_globs: [],
-      effective_scope: {
-        enforcement: {
-          status: "unhidden",
-          reasons: ["wrapper_unavailable"],
-        },
+for (const status of ["unhidden", "enforced", null]) {
+  test(`hidden-folder defaults are read-only with readiness ${status}`, () => {
+    const record = {
+      ...gpu,
+      hidden_read: {
+        default_paths: ["~/default-secret"],
+        user_folders: gpu.hidden_folders,
+        readiness:
+          status === null
+            ? null
+            : {
+                status,
+                reasons: status === "unhidden" ? ["wrapper_unavailable"] : [],
+              },
       },
-    },
-  };
-  const html = renderToStaticMarkup(
-    React.createElement(MachineCard, {
-      title: "GPU",
-      hostLabel: "GPU",
-      osAccount: "worker",
-      record,
-      level: "space",
-      onRecordChange() {},
-    }),
-  );
-  assert.match(html, /data-hidden-read-status="unhidden"/);
-  const defaultRow = html.match(/<li[^>]*data-hidden-default=""[^>]*>(.*?)<\/li>/)?.[1];
-  assert.ok(defaultRow);
-  assert.doesNotMatch(defaultRow, /<button/);
-  assert.equal((html.match(/data-machine-action="remove-hidden-folder"/g) ?? []).length, 1);
-});
+    };
+    const html = renderToStaticMarkup(
+      React.createElement(MachineCard, {
+        title: "GPU",
+        hostLabel: "GPU",
+        osAccount: "worker",
+        record,
+        level: "space",
+        onRecordChange() {},
+      }),
+    );
+    assert.ok(html.includes(`data-hidden-read-status="${status ?? "unchecked"}"`));
+    const defaultRow = html.match(/<li[^>]*data-hidden-default=""[^>]*>(.*?)<\/li>/)?.[1];
+    assert.ok(defaultRow);
+    assert.doesNotMatch(defaultRow, /<button/);
+    assert.equal((html.match(/data-machine-action="remove-hidden-folder"/g) ?? []).length, 1);
+  });
+}

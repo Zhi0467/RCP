@@ -2,11 +2,7 @@ import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react
 import { useRef, useState, type ReactNode } from "react";
 import { createSpaceMachine, updateSpaceMachine } from "../api";
 import { errorMessage } from "../errors";
-import {
-  createPathEditor,
-  type MachineSettingsRecord,
-  type WritablePathEdit,
-} from "../spaceMachines";
+import { createPathEditor, type WritablePathEdit } from "../spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../types";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { PathPicker } from "./PathPicker";
@@ -220,7 +216,7 @@ export function HiddenFolders({
   writesDisabled,
   onRecordChange,
 }: {
-  record: MachineSettingsRecord;
+  record: SpaceMachine;
   writesDisabled: boolean;
   onRecordChange: (machine: SpaceMachine) => void;
 }) {
@@ -230,10 +226,8 @@ export function HiddenFolders({
   const editor = useRef(createPathEditor(updateSpaceMachine, "hidden_folders")).current;
   editor.sync(record);
   const projection = record.hidden_read;
-  const defaults = projection
-    ? [...projection.default_directories, ...projection.default_files, ...projection.default_globs]
-    : [];
-  const status = projection?.effective_scope.enforcement;
+  const defaults = projection?.default_paths ?? [];
+  const status = projection?.readiness;
   const edit = async (change: WritablePathEdit) => {
     setPending(true);
     setError(null);
@@ -269,7 +263,9 @@ export function HiddenFolders({
           )}
         </div>
       ) : (
-        <p role="status">Hidden-folder status unavailable.</p>
+        <p role="status" data-hidden-read-status="unchecked">
+          Checked at launch
+        </p>
       )}
       {defaults.length > 0 && (
         <ul aria-label="Default hidden paths">

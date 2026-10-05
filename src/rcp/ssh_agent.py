@@ -23,14 +23,15 @@ from pathlib import Path
 from typing import Literal
 
 from rcp.core.models import HiddenReadKeyEvidence
+from rcp.limits import (
+    AGENT_COMMAND_TIMEOUT_SECONDS,
+    AGENT_POLL_SECONDS,
+    AGENT_SOCKET_PATH_MAX_BYTES,
+    AGENT_WORKER_DRAIN_POLL_SECONDS,
+)
 from rcp.rcp_home import private_directory, rcp_home
 from rcp.server_ops.remote_git_credentials import _public_material
 
-# Slice C cannot change the frozen limits module.
-AGENT_COMMAND_TIMEOUT_SECONDS = 5.0
-AGENT_SOCKET_PATH_MAX_BYTES = 100
-AGENT_POLL_SECONDS = 0.05
-AGENT_WORKER_DRAIN_POLL_SECONDS = 1.0
 logger = logging.getLogger(__name__)
 
 

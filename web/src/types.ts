@@ -3047,10 +3047,9 @@ export interface HiddenReadScope {
 
 /** Computed Settings output; not a writable machine setting. */
 export interface MachineHiddenReadProjection {
-  readonly default_directories: readonly string[];
-  readonly default_files: readonly string[];
-  readonly default_globs: readonly string[];
-  readonly effective_scope: HiddenReadScope;
+  readonly default_paths: readonly string[];
+  readonly user_folders: readonly string[];
+  readonly readiness: HiddenReadStatus | null;
 }
 
 /** One execution account in the space, shared by every project that uses it. */
@@ -3062,6 +3061,7 @@ export interface SpaceMachine {
   os_account: string;
   writable_paths: string[];
   hidden_folders: string[];
+  hidden_read: MachineHiddenReadProjection;
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
   in_use: boolean | null;

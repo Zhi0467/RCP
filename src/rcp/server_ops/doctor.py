@@ -19,6 +19,7 @@ from typing import BinaryIO, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from rcp.agents.staged_hidden_read import WrapperReadiness
 from rcp.core.models import HiddenReadStatus
 from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS, SERVER_SUPERVISOR_PROJECTION_MAX_BYTES
 from rcp.release_check import ReleaseCheck, ReleaseStatus
@@ -328,23 +329,21 @@ class AgentSecurityReadiness(_StrictModel):
 
 
 def probe_agent_security(
-    *, hidden_read_probe: Callable[[], HiddenReadStatus] | None = None
+    *, hidden_read_probe: Callable[[], WrapperReadiness] | None = None
 ) -> AgentSecurityReadiness:
     """Read the calling account; used under runuser by installed-server doctor."""
     from rcp.ssh_agent import agent_status
 
     status = agent_status()
-    if hidden_read_probe is None:
-        try:
-            from rcp.agents.hidden_read import probe_hidden_read_readiness
-        except ImportError:
-            hidden_read_probe = None
-        else:
-            hidden_read_probe = probe_hidden_read_readiness
+    from rcp.agents.hidden_read import probe_hidden_read_wrapper
+
     readiness = HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",))
-    if hidden_read_probe is not None:
-        with suppress(OSError, subprocess.SubprocessError):
-            readiness = hidden_read_probe()
+    with suppress(OSError, subprocess.SubprocessError):
+        result = (hidden_read_probe or probe_hidden_read_wrapper)()
+        readiness = HiddenReadStatus(
+            status="enforced" if result["ready"] else "unhidden",
+            reasons=() if result["ready"] else (result["reason"] or "wrapper_unavailable",),
+        )
     return AgentSecurityReadiness(ssh_agent_status=status, hidden_read=readiness)
 
 

@@ -1,12 +1,6 @@
-import type {
-  Machine,
-  MachineHiddenReadProjection,
-  SpaceMachine,
-  SpaceMachineUpdateRequest,
-} from "./types";
+import type { Machine, SpaceMachine, SpaceMachineUpdateRequest } from "./types";
 
-/** Computed response fields are not writable machine settings. */
-export type MachineSettingsRecord = SpaceMachine & { hidden_read?: MachineHiddenReadProjection };
+export type MachineSettingsRecord = SpaceMachine;
 
 export type WritablePathEdit = { kind: "add"; path: string } | { kind: "remove"; path: string };
 

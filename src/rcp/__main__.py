@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from rcp import __version__
 from rcp.api import create_app
 from rcp.api.app import default_data_dir
+from rcp.api.host_guard import HostGuardConfig
 from rcp.limits import (
     BROWSER_OPEN_DELAY_SECONDS,
     SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
@@ -51,6 +52,7 @@ from rcp.server_runtime import (
 )
 from rcp.source_checkout import source_checkout_lock
 from rcp.storage import AppStore
+from rcp.team_access import team_access_url
 from rcp.web_assets import WebBuildError, prepared_web_assets
 
 RELOAD_PROJECT_ENV = "RCP_RELOAD_PROJECT"
@@ -202,6 +204,9 @@ def reload_app() -> FastAPI:
     return create_app(
         os.environ.get(RELOAD_PROJECT_ENV) or None,
         instance_metadata=metadata,
+        request_host_guard=HostGuardConfig(
+            port=metadata.port if metadata else 8421, team_access_url=team_access_url()
+        ),
         acceptance_agent=os.environ.get(RELOAD_ACCEPTANCE_AGENT_ENV) == "1",
     )
 
@@ -548,6 +553,9 @@ def _run_server(
             app = create_app(
                 args.project,
                 instance_metadata=metadata,
+                request_host_guard=HostGuardConfig(
+                    port=metadata.port, team_access_url=team_access_url()
+                ),
                 acceptance_agent=getattr(args, "acceptance_agent", False),
                 maintenance_identity=(
                     MaintenanceIdentity(args.maintenance_id, args.maintenance_boundary)

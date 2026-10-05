@@ -427,3 +427,60 @@ def test_machine_hidden_folders_upgrade_preserves_existing_card(app) -> None:
     upgraded.update_space_machine(machine.machine_id, hidden_folders=["/private"])
     upgraded = AppStore(store.path)
     assert upgraded.space_machine(machine.machine_id).hidden_folders == ["/private"]
+
+
+@pytest.mark.parametrize("host", ["", "remote.example"])
+@pytest.mark.parametrize("ready", [False, True])
+def test_settings_projects_defaults_and_only_local_readiness(app, monkeypatch, host, ready):
+    from rcp.core.models import HiddenReadStatus
+
+    status = HiddenReadStatus(
+        status="enforced" if ready else "unhidden",
+        reasons=() if ready else ("wrapper_unavailable",),
+    )
+    calls = []
+
+    def probe():
+        calls.append(True)
+        return status
+
+    monkeypatch.setattr("rcp.api.space_machines.cached_hidden_read_readiness", probe)
+    machine = next((card for card in _store(app).space_machines() if card.host == host), None)
+    if machine is None:
+        machine = _store(app).create_space_machine(
+            name="Projection", host=host, os_account="worker"
+        )
+    _store(app).update_space_machine(machine.machine_id, hidden_folders=["/private-secret"])
+    record = _machine(signed_in_client(app), machine.name)
+    projection = record["hidden_read"]
+    assert projection["user_folders"] == record["hidden_folders"] == ["/private-secret"]
+    assert "~/.config/rcp/claude-setup-token" in projection["default_paths"]
+    assert "effective_scope" not in projection
+    assert projection["readiness"] == (None if host else status.model_dump(mode="json"))
+    calls.clear()
+    from rcp.api.space_machines import _hidden_read_projection
+
+    _hidden_read_projection(machine, _store(app).path.parent)
+    assert len(calls) == (0 if host else 1)
+
+
+def test_local_wrapper_readiness_cache_expires(monkeypatch):
+    from rcp.agents import hidden_read
+    from rcp.limits import HIDDEN_READ_READINESS_TTL_SECONDS
+
+    clock = [0.0]
+    calls = []
+    monkeypatch.setattr(hidden_read, "_readiness_cache", None)
+    monkeypatch.setattr(hidden_read.time, "monotonic", lambda: clock[0])
+
+    def probe():
+        calls.append(True)
+        return {"ready": len(calls) == 1, "reason": "wrapper_unavailable"}
+
+    monkeypatch.setattr(hidden_read, "probe_hidden_read_wrapper", probe)
+    assert hidden_read.cached_hidden_read_readiness().status == "enforced"
+    assert hidden_read.cached_hidden_read_readiness().status == "enforced"
+    assert len(calls) == 1
+    clock[0] += HIDDEN_READ_READINESS_TTL_SECONDS
+    assert hidden_read.cached_hidden_read_readiness().status == "unhidden"
+    assert len(calls) == 2
