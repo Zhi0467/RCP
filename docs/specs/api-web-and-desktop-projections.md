@@ -30,11 +30,13 @@ health details before using active-work counts.
 ## Machine hidden folders
 
 The machine payload includes persisted `hidden_folders` and computed `hidden_read`
-shaped as `MachineHiddenReadProjection`: `default_directories`, `default_files`,
-`default_globs`, and `effective_scope`. The scope carries the host/account,
-resolved paths, environment allow list, key evidence, fingerprint, and
-`enforcement` (`enforced` or `unhidden` with stable reason codes). Defaults and
-effective status are read-only projections, not writable settings.
+shaped as `MachineHiddenReadProjection`: `default_paths` (code-owned defaults; a
+remote machine's paths are `~/` display templates), `user_folders`, and
+`readiness`. `readiness` is a `HiddenReadStatus` (`enforced` or `unhidden` with
+stable reason codes, including key and browser gaps) for the backend's own
+machine, and `null` for a remote machine, whose status is checked at launch.
+The resolved per-launch `HiddenReadScope` is not projected. Defaults and status
+are read-only projections, not writable settings.
 
 The existing `PATCH /api/space/machines/{machine_id}` accepts `hidden_folders`
 as a whole replacement list. Omission preserves the list; an empty list clears

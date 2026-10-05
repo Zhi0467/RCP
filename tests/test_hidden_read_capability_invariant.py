@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import tomllib
@@ -130,7 +131,9 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
     )
     assert clean_environment(empty.model_dump(), environment) == environment
     assert clean_environment(populated.model_dump(), environment) == {
-        name: value for name, value in environment.items() if name in populated.env_allow_list
+        name: value
+        for name, value in environment.items()
+        if any(fnmatch.fnmatchcase(name, pattern) for pattern in populated.env_allow_list)
     }
     write_scope = None
     if capability in {"work_auto", "orchestrate"}:

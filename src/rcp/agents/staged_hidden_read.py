@@ -242,7 +242,12 @@ def install(directory, files):
 
 
 def clean_environment(policy, environ):
-    return {name: environ[name] for name in policy["env_allow_list"] if name in environ}
+    allowed = policy["env_allow_list"]
+    exact = {name for name in allowed if not name.endswith("*")}
+    prefixes = tuple(name[:-1] for name in allowed if name.endswith("*"))
+    return {
+        name: value for name, value in environ.items() if name in exact or name.startswith(prefixes)
+    }
 
 
 def main(argv=None):

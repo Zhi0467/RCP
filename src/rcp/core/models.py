@@ -157,7 +157,8 @@ class HiddenReadScope(BaseModel):
             Field(
                 min_length=1,
                 max_length=HIDDEN_READ_ENV_NAME_MAX_LENGTH,
-                pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+                # A trailing `*` admits a name prefix, as Codex's policy does.
+                pattern=r"^[A-Za-z_][A-Za-z0-9_]*\*?$",
             ),
         ],
         ...,

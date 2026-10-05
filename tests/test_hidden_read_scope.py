@@ -14,6 +14,7 @@ from rcp.agents.hidden_read import (
     resolve_hidden_read_scope,
     validate_machine_hidden_folders,
 )
+from rcp.agents.staged_hidden_read import clean_environment
 from rcp.config import Manifest
 from rcp.core.models import HiddenReadKeyEvidence
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT, HIDDEN_READ_PATH_MAX_LENGTH
@@ -59,15 +60,30 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         "/home/research/.netrc",
     ):
         assert not hidden(path)
-    assert {
-        "SSH_AUTH_SOCK",
-        "GIT_CONFIG_SYSTEM",
-        "PLAYWRIGHT_CLI_SESSION",
-        "PLAYWRIGHT_BROWSERS_PATH",
-    } <= set(HIDDEN_READ_ENV_ALLOW_LIST)
-    assert not {"CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "GH_TOKEN", "BASH_ENV"} & set(
-        HIDDEN_READ_ENV_ALLOW_LIST
-    )
+    environment = {
+        name: "value"
+        for name in (
+            "SSH_AUTH_SOCK",
+            "GIT_CONFIG_SYSTEM",
+            "PLAYWRIGHT_CLI_SESSION",
+            "HTTPS_PROXY",
+            "SSL_CERT_FILE",
+            "SLURM_JOB_ID",
+            "CUDA_VISIBLE_DEVICES",
+            "CONDA_PREFIX",
+            "LD_LIBRARY_PATH",
+            "LC_TIME",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "GH_TOKEN",
+            "BASH_ENV",
+            "AWS_SECRET_ACCESS_KEY",
+            "PIP_INDEX_URL",
+        )
+    }
+    kept = clean_environment({"env_allow_list": HIDDEN_READ_ENV_ALLOW_LIST}, environment)
+    # Operational variables pass; credential-bearing ones never do.
+    assert set(kept) == set(list(environment)[:10])
 
 
 @pytest.mark.parametrize("folder", ["/protected", "/protected/child", "/"])
