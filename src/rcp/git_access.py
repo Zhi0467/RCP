@@ -9,16 +9,31 @@ import sys
 from pathlib import Path
 
 
-def deploy_key_ssh_command(key: str, account_home: str) -> str:
+def deploy_key_ssh_command(key: str, account_home: str, *, timeout: float | None = None) -> str:
     """Pin Git transport to one repository key and the execution account's trust."""
     agent_options: tuple[str, ...] = ()
-    # The shipped helper is stdlib-only; remote accounts have no RCP agent yet.
+    # The shipped helper probes the execution account, never the client socket.
     if __package__:
         from rcp.ssh_agent import running_agent_socket
 
         socket = running_agent_socket()
         if socket is not None and Path(account_home) == Path.home():
             agent_options = ("-o", f"IdentityAgent={socket}")
+    elif timeout is not None:
+        socket = str(Path(account_home) / ".rcp" / "ssh-agent" / "agent.sock")
+        try:
+            probe = subprocess.run(
+                ["ssh-add", "-l"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=dict(os.environ, SSH_AUTH_SOCK=socket, SSH_ASKPASS_REQUIRE="never"),
+                timeout=timeout,
+            )
+            if probe.returncode in (0, 1):
+                agent_options = ("-o", f"IdentityAgent={socket}")
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     return shlex.join(
         (
             "ssh",
@@ -59,7 +74,7 @@ def ensure_checkout_git_access(
         key = home / key
     if not key.is_file():
         return None
-    command = deploy_key_ssh_command(str(key), str(home))
+    command = deploy_key_ssh_command(str(key), str(home), timeout=timeout)
     environment = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
     arguments = [
         "git",

@@ -17,19 +17,29 @@ by an account lock even when backends use different data directories. Its privat
 stable socket directory lives under `~/.rcp`, outside `/tmp`, so the service's
 `PrivateTmp` does not split the transport. Startup opens the effect fence, starts
 the agent, and then admits recovery launches; shutdown drains workers before
-stopping it. The user's `SSH_AUTH_SOCK` remains separate.
+stopping it. The user's `SSH_AUTH_SOCK` remains separate. Provisioning, restore,
+and rotation load deploy keys immediately after writing them when the local
+account agent is running; the next launch can hide them without a restart.
 
 Repository `core.sshCommand` retains its transport and adds the stable
 `IdentityAgent` socket. A deploy key is hidden only after fingerprint identity
 and bounded signing confirmation on the launch host. Unconfirmed keys remain
-readable with a warning so Git keeps working. Remote execution machines retain
-readable deploy keys with an explicit warning until remote agent ownership is
-implemented.
+readable so Git keeps working. On remote execution machines, the existing generic
+launch helper starts one long-lived account agent through a systemd user unit
+on Linux or launchd on macOS, on the first launch that needs it, using
+`~/.rcp/ssh-agent/agent.sock`. A staged stdlib helper loads keys from `~/.local/share/rcp/credentials` and confirms deploy
+keys against that stable socket and user identities against the remote account's
+own `SSH_AUTH_SOCK` on each launch. Remote `core.sshCommand` keeps `-i` and adds
+`IdentityAgent` when the account agent runs. Missing agents or failed identity or
+signing checks leave the affected keys readable for that turn.
 
-Doctor reports missing hiding support and blocked Linux user namespaces as
-warnings, consistent with Settings and turn status. Such hosts run unhidden;
-hiding availability never blocks provider launches or shrinks browser and Git
-capability. This is selected-secret protection against generic network prompt
+Settings and doctor show missing hiding support, blocked Linux user namespaces,
+readable private keys, and the macOS browser exception. There is no per-turn
+warning trace or badge; the agent prompt retains its effective status. Local
+Settings checks account key evidence as well as wrapper readiness; remote
+Settings leaves status unchecked until launch. Launches with these gaps report
+unhidden; hiding availability never blocks provider launches or shrinks browser
+and Git capability. This is selected-secret protection against generic network prompt
 injection, not a separate account or a hostile same-account sandbox.
 
 ## External dependencies

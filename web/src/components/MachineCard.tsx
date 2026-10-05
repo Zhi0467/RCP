@@ -257,7 +257,9 @@ export function HiddenFolders({
           {status.reasons.length > 0 && (
             <ul>
               {status.reasons.map((reason) => (
-                <li key={reason}>{hiddenReadReason(reason)}</li>
+                <li key={reason} data-hidden-read-reason={reason}>
+                  {hiddenReadReason(reason)}
+                </li>
               ))}
             </ul>
           )}

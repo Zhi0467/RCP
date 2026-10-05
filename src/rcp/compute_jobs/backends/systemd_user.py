@@ -86,6 +86,30 @@ class SystemdUserBackend:
             raise
         return handle
 
+    def start_account_service(
+        self, service_root: str, argv: list[str], context: BackendContext
+    ) -> None:
+        """Start one stable account service without stopping a concurrent owner.
+
+        systemd owns uniqueness. A duplicate or uncertain submission is followed
+        by the caller's bounded readiness check, never by cancellation.
+        """
+        handle = f"rcp-{PurePosixPath(service_root).name}"
+        context.run(
+            self.command(
+                context,
+                "systemd-run",
+                "--unit",
+                handle,
+                "--collect",
+                "-p",
+                "UMask=0077",
+                "--",
+                *argv,
+            ),
+            timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS,
+        )
+
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
             result = context.run(owner_command(self.id, handle, context.target_uid()))

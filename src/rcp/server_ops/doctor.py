@@ -10,6 +10,7 @@ import shlex
 import sqlite3
 import stat
 import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -328,8 +329,54 @@ class AgentSecurityReadiness(_StrictModel):
     hidden_read: HiddenReadStatus
 
 
+def local_hidden_read_status(
+    readiness: HiddenReadStatus, *, app_data_dir: Path | None = None
+) -> HiddenReadStatus:
+    """Machine-level gaps use the same account key checks as launch preparation."""
+    from rcp.agents.write_scope import installed_server_storage
+    from rcp.ssh_agent import (
+        confirm_key_evidence,
+        running_agent_socket,
+        user_ssh_identity_candidates,
+    )
+
+    home = Path.home()
+    storage = installed_server_storage(app_data_dir) if app_data_dir is not None else None
+    credentials = (
+        Path(storage.credentials_root)
+        if storage is not None
+        else home / ".local/share/rcp/credentials"
+    )
+    evidence = confirm_key_evidence(
+        private_key_paths=user_ssh_identity_candidates(home),
+        kind="ssh_identity",
+        agent_socket=os.environ.get("SSH_AUTH_SOCK"),
+    ) + confirm_key_evidence(
+        private_key_paths=tuple(
+            sorted(str(path) for path in credentials.glob("projects/*/*/id_ed25519"))
+        ),
+        kind="deploy_key",
+        agent_socket=running_agent_socket(),
+    )
+    reasons = set(readiness.reasons)
+    if sys.platform == "darwin":
+        reasons.add("browser_unwrapped_macos")
+    for key in evidence:
+        if key.visibility == "readable":
+            reasons.add(
+                "deploy_key_agent_unconfirmed"
+                if key.kind == "deploy_key"
+                else "ssh_key_agent_unconfirmed"
+            )
+    return HiddenReadStatus(
+        status="unhidden" if reasons else readiness.status, reasons=tuple(sorted(reasons))
+    )
+
+
 def probe_agent_security(
-    *, hidden_read_probe: Callable[[], WrapperReadiness] | None = None
+    *,
+    hidden_read_probe: Callable[[], WrapperReadiness] | None = None,
+    app_data_dir: Path | None = None,
 ) -> AgentSecurityReadiness:
     """Read the calling account; used under runuser by installed-server doctor."""
     from rcp.ssh_agent import agent_status
@@ -344,7 +391,10 @@ def probe_agent_security(
             status="enforced" if result["ready"] else "unhidden",
             reasons=() if result["ready"] else (result["reason"] or "wrapper_unavailable",),
         )
-    return AgentSecurityReadiness(ssh_agent_status=status, hidden_read=readiness)
+    return AgentSecurityReadiness(
+        ssh_agent_status=status,
+        hidden_read=local_hidden_read_status(readiness, app_data_dir=app_data_dir),
+    )
 
 
 @dataclass(frozen=True)
@@ -1080,7 +1130,8 @@ class LinuxServerDoctorMachine:
         # service account. Root's user-namespace permissions are not evidence.
         program = (
             "from rcp.server_ops.doctor import probe_agent_security; "
-            "print(probe_agent_security().model_dump_json())"
+            "from pathlib import Path; "
+            f"print(probe_agent_security(app_data_dir=Path({str(self.layout.data_dir)!r})).model_dump_json())"
         )
         try:
             result = self._runner(

@@ -21,6 +21,8 @@ from tests.test_project_membership import _create_project, _team_app
 
 @pytest.fixture(autouse=True)
 def browser_probe(monkeypatch):
+    monkeypatch.setattr("rcp.ssh_agent.confirm_key_evidence", lambda **kwargs: ())
+    monkeypatch.setattr("rcp.ssh_agent.running_agent_socket", lambda: None)
     monkeypatch.setattr(
         "rcp.api.space_machines.readiness",
         lambda **kwargs: BrowserReadiness(status="not_installed"),
@@ -431,9 +433,13 @@ def test_machine_hidden_folders_upgrade_preserves_existing_card(app) -> None:
 
 @pytest.mark.parametrize("host", ["", "remote.example"])
 @pytest.mark.parametrize("ready", [False, True])
-def test_settings_projects_defaults_and_only_local_readiness(app, monkeypatch, host, ready):
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_settings_projects_defaults_and_only_local_readiness(
+    app, monkeypatch, host, ready, platform
+):
     from rcp.core.models import HiddenReadStatus
 
+    monkeypatch.setattr("rcp.server_ops.doctor.sys.platform", platform)
     status = HiddenReadStatus(
         status="enforced" if ready else "unhidden",
         reasons=() if ready else ("wrapper_unavailable",),
@@ -456,7 +462,13 @@ def test_settings_projects_defaults_and_only_local_readiness(app, monkeypatch, h
     assert projection["user_folders"] == record["hidden_folders"] == ["/private-secret"]
     assert "~/.config/rcp/claude-setup-token" in projection["default_paths"]
     assert "effective_scope" not in projection
-    assert projection["readiness"] == (None if host else status.model_dump(mode="json"))
+    reasons = set(status.reasons)
+    if platform == "darwin":
+        reasons.add("browser_unwrapped_macos")
+    expected = HiddenReadStatus(
+        status="unhidden" if reasons else "enforced", reasons=tuple(sorted(reasons))
+    )
+    assert projection["readiness"] == (None if host else expected.model_dump(mode="json"))
     calls.clear()
     from rcp.api.space_machines import _hidden_read_projection
 
