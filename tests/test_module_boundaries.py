@@ -390,11 +390,32 @@ async def builder(service, chat_id):
     assert _flagged_lines(source, _references_transcript_reader) == [5, 6, 7]
 
 
+# Path methods and attributes whose result is still the same file (or its
+# directory): provenance flows through them.
+PATH_PRESERVING_METHODS = {"resolve", "absolute", "expanduser", "with_suffix", "with_name"}
+PATH_PRESERVING_ATTRIBUTES = {"parent"}
+
+
 def _resolves_transcript_path(
-    node: ast.AST, aliases: dict[str, str], resolvers: set[str] = frozenset()
+    node: ast.AST,
+    aliases: dict[str, str],
+    resolvers: set[str] = frozenset(),
+    holders: set[str] = frozenset(),
 ) -> bool:
+    """True when the expression is the transcript path: a resolver call, a
+    local name bound to one, or a path-preserving method or attribute on either."""
+    if isinstance(node, ast.Name):
+        return node.id in holders
+    if isinstance(node, ast.Attribute) and node.attr in PATH_PRESERVING_ATTRIBUTES:
+        return _resolves_transcript_path(node.value, aliases, resolvers, holders)
     if not isinstance(node, ast.Call):
         return False
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr in PATH_PRESERVING_METHODS
+        and _resolves_transcript_path(node.func.value, aliases, resolvers, holders)
+    ):
+        return True
     name, _ = _call_name(node, aliases)
     return name in TRANSCRIPT_PATH_RESOLVERS or name in resolvers or name.endswith(".chat_path")
 
@@ -404,20 +425,27 @@ def _resolver_holders(
     aliases: dict[str, str],
     resolvers: set[str],
 ) -> set[str]:
-    """Local names bound to a resolver result by plain or annotated assignment."""
+    """Local names bound, directly or through other such names, to a resolver
+    result by plain or annotated assignment."""
     holders: set[str] = set()
-    for node in ast.walk(function):
-        if isinstance(node, ast.Assign) and _resolves_transcript_path(
-            node.value, aliases, resolvers
-        ):
-            holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and node.value is not None
-            and _resolves_transcript_path(node.value, aliases, resolvers)
-            and isinstance(node.target, ast.Name)
-        ):
-            holders.add(node.target.id)
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign):
+                targets = [target.id for target in node.targets if isinstance(target, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets = [node.target.id]
+                value = node.value
+            else:
+                continue
+            if value is None or not _resolves_transcript_path(value, aliases, resolvers, holders):
+                continue
+            new = set(targets) - holders
+            if new:
+                holders.update(new)
+                changed = True
     return holders
 
 
@@ -432,14 +460,12 @@ def _returns_transcript_path(
 ) -> bool:
     """A function whose return value is a resolver result, direct or via a local name."""
     holders = _resolver_holders(function, aliases, resolvers)
-    for node in ast.walk(function):
-        if not isinstance(node, ast.Return) or node.value is None:
-            continue
-        if _resolves_transcript_path(node.value, aliases, resolvers):
-            return True
-        if isinstance(node.value, ast.Name) and node.value.id in holders:
-            return True
-    return False
+    return any(
+        isinstance(node, ast.Return)
+        and node.value is not None
+        and _resolves_transcript_path(node.value, aliases, resolvers, holders)
+        for node in ast.walk(function)
+    )
 
 
 def _resolver_wrappers(modules: list[tuple[Path, ast.AST, dict[str, str]]]) -> set[str]:
@@ -470,7 +496,10 @@ def locate(service, request):
 
 def locate_again(service, request):
     path: Path = locate(service, request)
-    return path
+    return path.resolve()
+
+def locate_dir(service, request):
+    return _chat_path(service, request).parent
 
 def builder(service, request):
     return locate_again(service, request).read_text()
@@ -484,8 +513,10 @@ def builder(service, request):
         "rcp.runs.prompts.locate",
         "locate_again",
         "rcp.runs.prompts.locate_again",
+        "locate_dir",
+        "rcp.runs.prompts.locate_dir",
     }
-    builder = [node for node in tree.body if isinstance(node, ast.FunctionDef)][2]
+    builder = [node for node in tree.body if isinstance(node, ast.FunctionDef)][3]
     assert any(_resolves_transcript_path(node, aliases, wrappers) for node in ast.walk(builder))
 
 
@@ -556,16 +587,13 @@ def _transcript_path_escapes(
         if not isinstance(node, ast.Call):
             continue
         name, _ = _call_name(node, aliases)
-        if name in APPROVED_PATH_SINKS or _resolves_transcript_path(node, aliases, resolvers):
+        if name in APPROVED_PATH_SINKS or _resolves_transcript_path(
+            node, aliases, resolvers, holders
+        ):
             continue
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
-        for argument in arguments:
-            carries_path = (isinstance(argument, ast.Name) and argument.id in holders) or (
-                _resolves_transcript_path(argument, aliases, resolvers)
-            )
-            if carries_path:
-                escapes.append(node.lineno)
-                break
+        if any(_resolves_transcript_path(a, aliases, resolvers, holders) for a in arguments):
+            escapes.append(node.lineno)
     return escapes
 
 
@@ -576,7 +604,9 @@ def builder(service, request):
     text = read_input(path)
     _append_chat_records(service, path, [])
     other = load(_chat_path(service, request))
-    return text, other
+    copy = path.absolute()
+    third = load(copy)
+    return text, other, third
 
 def fine(service, request):
     path = _chat_path(service, request)
@@ -585,7 +615,7 @@ def fine(service, request):
     tree = ast.parse(source)
     aliases = _import_aliases(tree)
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
-    assert _transcript_path_escapes(functions[0], aliases) == [4, 6]
+    assert _transcript_path_escapes(functions[0], aliases) == [4, 6, 8]
     assert _transcript_path_escapes(functions[1], aliases) == []
 
 
