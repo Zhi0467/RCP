@@ -124,7 +124,9 @@ attempts the violation.
 Retired numbers stay with their owners: 2 folded into 1; 5 is the module
 docstring of `agents/write_scope.py`; 7 the `_atomic_write` and `_atomic_text`
 helpers; 7b `materialize._fork_state`; 9 `AppStore.complete_agent_task`; 10
-and 10f the watermark comment in `materialize.apply_patch`; 10c
+`prepare_agent_patch` (an agent Patch carries no cursor or coverage operation,
+so chat never advances ingestion); 10f the watermark comment in
+`materialize.apply_patch`; 10c
 `clear_turn_handoff_files`; 10d the native chat context rule in the
 conversations spec; 11 `ProviderStreamEvent`.
 

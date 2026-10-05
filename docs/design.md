@@ -94,10 +94,12 @@ number here.
 - **Canonical history is append-only.** Main and episode branch Patch
   logs are never edited or compacted. Materialized graph, research, glossary,
   Proposal, control, and branch outputs are derived and replaceable.
-- **Graph changes have one typed channel.** Agents write one strict
-  `patch.json` in RCP-owned scratch. Typed operations preserve the persisted
-  JSON shape. RCP never parses graph authority from an answer, artifact,
-  command trace, or repository edit.
+- **Graph changes have one typed channel.** Agents write one strict Patch,
+  `patch.json`, in their RCP-owned task stage, and RCP collects it from that
+  stage and nowhere else; only an ingestion run whose stage lacks that name
+  accepts one patch-shaped file under another. Typed operations preserve the
+  persisted JSON shape. RCP never parses graph authority from an answer,
+  artifact, command trace, or repository edit.
 - **One transition owns one mutation.** Human Sync, agent Apply, branch Apply,
   and branch merge all pass through the synchronous backend transition manager.
   Deterministic generated effects, validation, final graph, control, guidance,

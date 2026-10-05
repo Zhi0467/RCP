@@ -15,17 +15,56 @@ SOURCE = Path(__file__).resolve().parent.parent / "src" / "rcp"
 
 # Any call that puts bytes on disk. Routes compose service and history owners;
 # they never hold a file handle on canonical or operational state themselves.
-FILE_WRITE = re.compile(
-    r"\.(write_text|write_bytes|unlink|rmdir|touch|mkdir)\("
-    r"|\bos\.(replace|rename|remove|unlink|mkdir|makedirs|rmdir)\("
-    r"|\bshutil\.(copy\w*|move|rmtree)\("
-    r"|\.open\(\s*[\"\'][waxWAX]"
-    r"|\bopen\([^)]*,\s*[\"\'][waxWAX]"
-)
+PATH_WRITE_METHODS = {"write_text", "write_bytes", "unlink", "rmdir", "touch", "mkdir"}
+OS_WRITE_FUNCTIONS = {"replace", "rename", "remove", "unlink", "mkdir", "makedirs", "rmdir"}
+SHUTIL_WRITE_PREFIXES = ("copy", "move", "rmtree")
+WRITE_MODE = re.compile(r"[wax+]")
 
 
 def _python_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.rglob("*.py") if path.is_file())
+
+
+def _open_mode(call: ast.Call, *, builtin: bool) -> tuple[ast.expr | None, bool]:
+    """The mode argument of an `open` call and whether it was passed by keyword."""
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            return keyword.value, True
+    position = 1 if builtin else 0
+    if len(call.args) > position:
+        return call.args[position], False
+    return None, False
+
+
+def _writes_a_file(call: ast.Call) -> bool:
+    function = call.func
+    if isinstance(function, ast.Name):
+        if function.id != "open":
+            return False
+        builtin = True
+        mode, by_keyword = _open_mode(call, builtin=True)
+    elif isinstance(function, ast.Attribute):
+        owner = function.value
+        if isinstance(owner, ast.Name) and owner.id == "os":
+            return function.attr in OS_WRITE_FUNCTIONS
+        if isinstance(owner, ast.Name) and owner.id == "shutil":
+            return function.attr.startswith(SHUTIL_WRITE_PREFIXES)
+        if function.attr in PATH_WRITE_METHODS:
+            return True
+        if function.attr != "open":
+            return False
+        builtin = False
+        mode, by_keyword = _open_mode(call, builtin=False)
+    else:
+        return False
+    if mode is None:
+        return False
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+        return WRITE_MODE.search(mode.value) is not None
+    # A computed mode is a write until proven otherwise, except that a bare
+    # positional on some object's `.open(x)` is usually not a file at all
+    # (`catalog.open(project_id)`); only builtin `open` or `mode=` keeps it.
+    return builtin or by_keyword
 
 
 def test_api_routes_never_write_files_directly() -> None:
@@ -35,13 +74,38 @@ def test_api_routes_never_write_files_directly() -> None:
 
     offenders: list[str] = []
     for path in _python_files(SOURCE / "api"):
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if FILE_WRITE.search(line):
-                offenders.append(f"{path.relative_to(SOURCE)}:{number}: {line.strip()}")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _writes_a_file(node):
+                offenders.append(
+                    f"{path.relative_to(SOURCE)}:{node.lineno}: {ast.unparse(node)[:80]}"
+                )
     assert offenders == [], (
         "API routes write files directly; move the write behind the owning service or "
         "history method:\n" + "\n".join(offenders)
     )
+
+
+def test_route_write_detection_sees_keyword_and_multiline_modes() -> None:
+    """The detector must not be fooled by the forms a one-line regex misses."""
+
+    source = """
+def route(path, mode):
+    path.open(mode="w")
+    open(
+        path,
+        "a",
+    )
+    catalog.open(project_id)
+    path.open(mode=mode)
+    with path.open("rb") as handle:
+        handle.read()
+    open(path).read()
+    text.replace("a", "b")
+"""
+    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
+    flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
+    assert flagged == [3, 4, 9]
 
 
 # The transcript readers live on the project service for display and backup.
