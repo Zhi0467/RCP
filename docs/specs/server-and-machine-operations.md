@@ -10,6 +10,38 @@ are in [Projects, spaces, and operations](projects-spaces-and-operations.md).
 The operator's terminal procedure is [`docs/server.md`](../server.md), which is
 a guide and never overrides this file.
 
+## Agent secret hiding and repository authentication
+
+The backend owns one long-lived deploy-key `ssh-agent` per OS account, guarded
+by an account lock even when backends use different data directories. Its private
+stable socket directory lives under `~/.rcp`, outside `/tmp`, so the service's
+`PrivateTmp` does not split the transport. Startup opens the effect fence, starts
+the agent, and then admits recovery launches; shutdown drains workers before
+stopping it. The user's `SSH_AUTH_SOCK` remains separate. Provisioning, restore,
+and rotation load deploy keys immediately after writing them when the local
+account agent is running; the next launch can hide them without a restart.
+
+Repository `core.sshCommand` retains its transport and adds the stable
+`IdentityAgent` socket. A deploy key is hidden only after fingerprint identity
+and bounded signing confirmation on the launch host. Unconfirmed keys remain
+readable so Git keeps working. On remote execution machines, the existing generic
+launch helper starts one long-lived account agent through a systemd user unit
+on Linux or launchd on macOS, on the first launch that needs it, using
+`~/.rcp/ssh-agent/agent.sock`. A staged stdlib helper loads keys from `~/.local/share/rcp/credentials` and confirms deploy
+keys against that stable socket and user identities against the remote account's
+own `SSH_AUTH_SOCK` on each launch. Remote `core.sshCommand` keeps `-i` and adds
+`IdentityAgent` when the account agent runs. Missing agents or failed identity or
+signing checks leave the affected keys readable for that turn.
+
+Settings and doctor show missing hiding support, blocked Linux user namespaces,
+readable private keys, and the macOS browser exception. There is no per-turn
+warning trace or badge; the agent prompt retains its effective status. Local
+Settings checks account key evidence as well as wrapper readiness; remote
+Settings leaves status unchecked until launch. Launches with these gaps report
+unhidden; hiding availability never blocks provider launches or shrinks browser
+and Git capability. This is selected-secret protection against generic network prompt
+injection, not a separate account or a hostile same-account sandbox.
+
 ## External dependencies
 
 This is the source-derived inventory of named external programs started by
@@ -36,17 +68,21 @@ and `sys.executable`, which starts RCP's own Python runtime.
 | `id` | desktop / execution host / team server | `compute_jobs/backend_context.py` | Numeric effective uid from `-u` | Invocation output validated as decimal | Compute context refuses invalid uid |
 | `launchctl` | desktop / execution host | `compute_jobs/backends/launchd.py`, `transport/compute_process_owner.py` | Launchd GUI domain bootstrap, print and bootout | `print gui/<uid>` facility probe | Backend unavailable; failed cancellation remains explicit |
 | `ldd` | Linux execution host / team server | `browser/host.py` | Inspect Chromium shared-library dependencies | Invocation during browser readiness on supported Ubuntu releases | Browser unavailable when libraries or inspection are unavailable |
-| `loginctl` | team server | `server_ops/install.py`, `server_ops/doctor.py` | Enable and inspect execution-account linger | PATH existence at install; `show-user` readback and doctor | Refuse install or report unhealthy service account |
+| `loginctl` | team server / Linux execution host | `server_ops/install.py`, `server_ops/doctor.py`, `browser/host.py`, `compute_jobs/backends/systemd_user.py` | Enable and inspect execution-account linger; the machine card enables it on a member's request | PATH existence at install; `show-user` readback in doctor, browser readiness, and the helper probe | Refuse install, report an unhealthy service account, or report `linger_disabled` with the administrator command |
 | `mkdir` | execution host | `transport/state.py`, `transport/run_stage.py` | `-p` stage/root creation | No probe today | Refuse preparation/publication on command failure |
 | `npm` | desktop / team server | `web_assets.py` | Run the repository's Web build and watch scripts | No independent version probe today | Source Web build fails visibly; packaged prebuilt Web mode does not invoke npm |
 | `osascript` | desktop | `machine_power_macos.py` | `do shell script … with administrator privileges` for the one-time keep-awake install and uninstall | None; macOS only | A cancelled prompt changes nothing; any other failure is reported as `admin_failed` |
+| `printenv` | execution host | `agents/provider_environment.py` | Read the execution account's `HOME` before resolving hidden-read paths | Invocation output must be an absolute path | Launch falls back unhidden with a visible reason |
 | `ps` | desktop / execution host / team server | `transport/remote_terminate_provider.py`, `machine_power_macos.py` | Process pid, parent, group and command inspection; backend start-time identity for the keep-awake heartbeat | No independent probe today | Cannot confirm provider process ownership/stopping; no inferred successful stop |
 | `python3` | execution host | `transport/state.py`, `transport/state_transfer.py`, `transport/run_stage.py`, `agents/launcher.py`, `compute_jobs/files.py`, `sources/indexer.py`, `terminals/probe.py`, `server_ops/backup_checkout.py` | Python >=3.9 standard library for shipped helpers | Used in discovery and helper execution; no explicit version gate today | Remote operation fails when interpreter/helper is unavailable |
 | `rm` | execution host | `transport/run_stage.py` | `-f` staged handoff cleanup | No probe today | Stage cleanup reports failure; no silent success |
 | `rsync` | desktop / execution host / team server | `transport/state_transfer.py`, `transport/state.py`, `transport/run_stage.py`, `sources/indexer.py` | Three state transfers and run-stage inputs: protocol >=29 and support for `-a`, `--delete`, `--exclude`, `-R` over `-e ssh` at both ends; GNU rsync and stock macOS openrsync qualify; other owners retain existing flags | State owner passes the required flags before `--version` and parses GNU/openrsync output for local PATH candidates and remote rsync; other owners have no contract probe today | Three state transfers and run-stage inputs use visible tar fallback; backup, restore, kept artifacts/result views and source index: rsync required, no fallback yet. Every owner retries a dropped stream |
 | `runuser` | team server | `server_ops/install.py`, `server_ops/git_credentials.py`, `server_ops/backup_config.py` | Run argv under the exact service account | PATH existence at install; no independent feature/version probe | Refuse affected account operation |
+| `sandbox-exec` | desktop | `agents/staged_hidden_read.py` | Run a tool call under an inline allow-default Seatbelt profile that denies hidden paths | Readiness probe executes a trivial command under the profile | Launch runs unhidden with a visible reason; an enforced launch that loses it refuses the command |
 | `sh` | desktop / execution host / team server | `transport/state.py`, `compute_jobs/backends/launchd.py`, `compute_jobs/backends/systemd_user.py`, `server_ops/provider_update.py`, `machine_power_macos.py` | POSIX command shell for history probe, job wrappers, installer and the keep-awake watchdog | No independent probe today | Owning command/launch fails |
 | `ssh` | desktop / execution host / team server | `transport/ssh.py`, `transport/remote_compute_probe.py`, `server_ops/git_credentials.py`, `server_ops/install.py`, `server_ops/doctor.py` | OpenSSH batch transport, connection/keepalive options, multiplexing and strict host-key mode where requested | Install PATH/`-V`; doctor checks OpenSSH version prefix; remote readiness executes the route; no general version gate | Remote operation unavailable on transport failure; no alternative transport |
+| `ssh-add` | desktop / execution host / team server | `ssh_agent.py`, `transport/remote_ssh_agent.py`, `git_access.py` | Load deploy keys into the account agent and list its key fingerprints | Listed fingerprint plus a bounded signing check per key | The key stays readable for that launch, with a visible reason |
+| `ssh-agent` | desktop / team server | `ssh_agent.py` | One long-lived account agent at a stable socket holding deploy keys | Socket answers `ssh-add -l` after start | Deploy keys stay readable; Git keeps its existing transport |
 | `ssh-keygen` | execution host / team server | `server_ops/remote_git_credentials.py`, `server_ops/git_credentials.py`, `server_ops/install.py` | Ed25519 repository-scoped keys and public-key derivation | PATH existence at install; generated key/public-key readback; no version probe | Refuse credential preparation/readback |
 | `sudo` | team server | `server_ops/install.py`, `server_ops/cli.py`, `server_ops/git_credentials.py` | Noninteractive account-policy check and operator privilege boundary | PATH existence and `-n -U <account> -l` at install | Refuse install unless absence of service-account sudo authority is proved; operator command fails if unauthorized |
 | `systemctl` | desktop / execution host / team server | `server_ops/install.py`, `server_ops/doctor.py`, `terminals/launch.py`, `transport/remote_terminal.py`, `transport/remote_terminal_probe.py`, `transport/compute_process_owner.py` | System service lifecycle and reachable user manager | Install `--version`/manager readback; terminal/compute `--user show-environment`; doctor service-property checks | Refuse install or affected backend; no uncontained terminal fallback |
@@ -1781,13 +1817,16 @@ team service. Current RCP must not simulate those journeys or describe
 
 ## Agent browser host runtime
 
-Browser installation is explicit. The execution account needs Node.js 18 or
+Browser installation is explicit. The execution account needs Node.js 20 or
 newer and npm; RCP itself still starts without them. Doctor and machine cards
 use the same readiness service. Doctor probes the installed service account,
 including its login environment, rather than root's tools. Browser readiness is
 optional and does not make the core server dependency check fail.
 
-RCP installs a pinned Playwright CLI and Chromium into its tools directory.
+RCP installs a pinned Playwright CLI and Chromium into its tools directory. Agents
+reach it through an RCP-owned `playwright-cli` launcher in `tools/bin` that runs
+the Node readiness checked, never whichever `node` comes first on the shell's
+`PATH`; the pinned Playwright refuses Node older than 20.
 Profiles, configurations and owner state live in the sibling browser directory.
 Both roots are excluded from protected backups and remain RCP-owned protected
 storage under ordinary agent write scopes. SSH hosts use the private account

@@ -34,6 +34,7 @@ from rcp.core.authority import (
 from rcp.core.models import (
     DISPLAY_NAME_MAX_LENGTH,
     AuthorizedHuman,
+    HiddenReadPath,
     normalize_display_name,
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -41,6 +42,7 @@ from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
     AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
+    HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
@@ -3662,8 +3664,18 @@ class SpaceMachineRecord(BaseModel):
     host: str
     os_account: str
     writable_paths: list[str] = Field(default_factory=list)
+    hidden_folders: list[HiddenReadPath] = Field(
+        default_factory=list, max_length=HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT
+    )
     created_at: str
     updated_at: str
+
+    @field_validator("hidden_folders")
+    @classmethod
+    def canonical_hidden_folders(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("hidden folders must be unique")
+        return sorted(values)
 
 
 __all__ = [

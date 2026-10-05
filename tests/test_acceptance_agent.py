@@ -100,7 +100,7 @@ def test_acceptance_agent_cli_flag_is_explicit_and_survives_reload(monkeypatch) 
     captured: dict[str, object] = {}
     expected = object()
 
-    def fake_create_app(project, *, instance_metadata, acceptance_agent):
+    def fake_create_app(project, *, instance_metadata, acceptance_agent, request_host_guard):
         captured.update(
             project=project,
             instance_metadata=instance_metadata,

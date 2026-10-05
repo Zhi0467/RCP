@@ -189,6 +189,9 @@ def test_work_followup_launch_has_fresh_snapshot_and_records_delivery(
         patch_inputs=SimpleNamespace(validator_staged="mailbox"),
         validator_lifecycle="lifecycle",
         question_snapshot=None,
+        hidden_read_scope=None,
+        service=None,
+        data_dir=tmp_path,
     )
     snapshot_part = runtime.prepare_work_question_snapshot(turn)
     prompts = []

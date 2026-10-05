@@ -240,6 +240,8 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
             output = "501"
         elif argv[:2] == ["python3", "-c"]:
             output = json.dumps(operate(*argv[-3:]))
+        elif argv[:2] == ["loginctl", "show-user"]:
+            output = "yes"
         elif "systemd-run" in argv:
             root = Path(argv[-1]).parent
             if root.name.startswith("probe-"):

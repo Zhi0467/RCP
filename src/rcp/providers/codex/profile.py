@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,7 +18,10 @@ from rcp.providers.base import (
     ProviderSkill,
     ProviderSkillProbe,
     ProviderStreamEvent,
+    ProviderTurn,
+    ProviderTurnRequest,
     ProviderUsage,
+    _JsonlProviderRuntime,
     _optional_usage_int,
     _require_project_write_scope,
     _usage_dedupe_key,
@@ -29,6 +33,7 @@ from rcp.providers.turn_fence import TurnFence
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
 
@@ -72,7 +77,7 @@ class CodexProfile(ProviderProfile):
 
     def runtime(self, runtime_id: str) -> ProviderRuntime:
         if runtime_id == self.legacy_runtime_id:
-            return super().runtime(runtime_id)
+            return _CodexExecRuntime(runtime_id, self)
         if runtime_id == "codex.app-server-stdio.v1":
             # The protocol adapter imports these shared runtime contracts, so
             # load it only after this module and the provider registry exist.
@@ -258,6 +263,7 @@ class CodexProfile(ProviderProfile):
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> list[str]:
         del prompt, read_dirs
         command = [binary, "exec"]
@@ -273,6 +279,7 @@ class CodexProfile(ProviderProfile):
         # Live retrieval is a provider tool, independent of whether command
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
+        command.extend(_codex_environment_config(hidden_read_scope))
         if capability in {"work_auto", "orchestrate"}:
             scope = _require_project_write_scope(
                 write_scope,
@@ -285,7 +292,7 @@ class CodexProfile(ProviderProfile):
                     "--config",
                     'default_permissions="rcp_project"',
                     "--config",
-                    _codex_permission_profile(scope),
+                    _codex_permission_profile(scope, hidden_read_scope),
                 ]
             )
         else:
@@ -298,16 +305,27 @@ class CodexProfile(ProviderProfile):
                         "--config",
                         'default_permissions="rcp_discuss"',
                         "--config",
-                        _codex_discuss_permission_profile(cwd),
+                        _codex_discuss_permission_profile(cwd, hidden_read_scope),
+                    ]
+                )
+            if capability != "discuss" and hidden_read_scope is not None:
+                command.extend(
+                    [
+                        "--config",
+                        'default_permissions="rcp_stage"',
+                        "--config",
+                        _codex_stage_permission_profile(
+                            cwd, hidden_read_scope, read_only=capability == "paper_readonly"
+                        ),
                     ]
                 )
             sandbox = "read-only" if capability == "paper_readonly" else "workspace-write"
-            if capability != "discuss":
+            if capability != "discuss" and hidden_read_scope is None:
                 if session_id:
                     command.extend(["--config", f'sandbox_mode="{sandbox}"'])
                 else:
                     command.extend(["--sandbox", sandbox])
-            if capability not in {"paper_readonly", "discuss"}:
+            if capability not in {"paper_readonly", "discuss"} and hidden_read_scope is None:
                 command.extend(["--config", "sandbox_workspace_write.network_access=true"])
         if not session_id:
             command.extend(["--cd", str(cwd)])
@@ -380,13 +398,16 @@ class CodexProfile(ProviderProfile):
         )
 
 
-def _codex_permission_profile(scope: ProjectWriteScope) -> str:
+def _codex_permission_profile(
+    scope: ProjectWriteScope, hidden_read_scope: HiddenReadScope | None = None
+) -> str:
     roots = ",".join(
         f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
     )
     protected = ",".join(
         f'{json.dumps(path, ensure_ascii=False)}="read"' for path in scope.protected_write_paths
     )
+    denials = _codex_read_denials(hidden_read_scope)
     # Codex protects `.git` separately, so the writable root alone does not let
     # Work run ordinary Git commands such as fetch or pull. `.research` is "read",
     # never "deny": Codex reads `deny` as no access at all, which would also revoke
@@ -397,39 +418,110 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
         + '},filesystem={":root"="read",":workspace_roots"={"."="write",'
         '".git"="write",".research"="read"}'
         + ("," + protected if protected else "")
-        + ","
-        + _codex_read_denials()
+        + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
     )
 
 
-# Home-relative rules resolve on the execution host, including SSH launches.
-# These are WKWebView storage owners for the release and development identifiers
-# in the Tauri configs, independent of repository write protection.
-CODEX_READ_DENY_PATHS = tuple(
-    f"~/Library/{directory}/{bundle}{suffix}"
-    for bundle in ("app.researchcontrolpanel.rcp", "app.researchcontrolpanel.rcp.dev")
-    for directory, suffix in (
-        ("WebKit", ""),
-        ("Application Support", ""),
-        ("HTTPStorages", ""),
-        ("HTTPStorages", ".binarycookies"),
-        ("Caches", ""),
-        ("Cookies", ".binarycookies"),
+def _codex_read_denials(hidden_read_scope: HiddenReadScope | None = None) -> str:
+    if hidden_read_scope is None:
+        from rcp.agents.hidden_read import WEBKIT_READ_DENY_PATHS
+
+        return ",".join(f'{json.dumps(path)}="deny"' for path in WEBKIT_READ_DENY_PATHS)
+    paths = (
+        *hidden_read_scope.hidden_directories,
+        *hidden_read_scope.hidden_files,
+        *hidden_read_scope.hidden_globs,
     )
-)
+    return ",".join(f'{json.dumps(path)}="deny"' for path in paths)
 
 
-def _codex_read_denials() -> str:
-    return ",".join(f'{json.dumps(path)}="deny"' for path in CODEX_READ_DENY_PATHS)
+def _codex_shell_environment_policy(scope: HiddenReadScope | None) -> dict[str, object]:
+    from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
+
+    denied = list(scope.env_deny_list if scope else HIDDEN_READ_ENV_DENY_LIST)
+    return {
+        # An empty deny list is the explicit unhidden fallback: preserve the
+        # original tool environment, including Git and SSH authentication.
+        "inherit": "all",
+        "include_only": [],
+        "ignore_default_excludes": True,
+        "exclude": denied,
+        "set": {},
+    }
 
 
-def _codex_discuss_permission_profile(cwd: Path) -> str:
+def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
+    policy = _codex_shell_environment_policy(scope)
+    return [
+        "--config",
+        "shell_environment_policy={inherit="
+        + json.dumps(policy["inherit"])
+        + ",ignore_default_excludes=true,exclude="
+        + json.dumps(policy["exclude"])
+        + ",set={},include_only=[]}",
+    ]
+
+
+def _codex_stage_permission_profile(
+    cwd: Path, hidden_read_scope: HiddenReadScope, *, read_only: bool
+) -> str:
+    filesystem = '":root"="read"'
+    if not read_only:
+        filesystem += ',":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
+    denials = _codex_read_denials(hidden_read_scope)
+    if denials:
+        filesystem += "," + denials
+    return (
+        "permissions={rcp_stage={workspace_roots={"
+        + json.dumps(str(cwd))
+        + "=true},filesystem={"
+        + filesystem
+        + "},network={enabled=true}}}"
+    )
+
+
+def _codex_discuss_permission_profile(
+    cwd: Path, hidden_read_scope: HiddenReadScope | None = None
+) -> str:
+    denials = _codex_read_denials(hidden_read_scope)
     return (
         "permissions={rcp_discuss={workspace_roots={"
         + json.dumps(str(cwd))
         + '=true},filesystem={":root"="read",'
-        '":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write",'
-        + _codex_read_denials()
+        '":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
+        + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
     )
+
+
+class _CodexExecRuntime(_JsonlProviderRuntime):
+    def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
+        if request.legacy_command is None:
+            command = self._profile.command(
+                request.prompt,
+                binary=request.binary,
+                cwd=request.cwd,
+                model=request.model,
+                reasoning=request.reasoning,
+                session_id=request.session_id,
+                read_dirs=request.read_dirs,
+                write_dirs=request.write_dirs,
+                write_scope=request.write_scope,
+                capability=request.capability,
+                provider_version=request.provider_version,
+                browser_grant=request.browser_grant,
+                hidden_read_scope=request.hidden_read_scope,
+            )
+            request = replace(request, legacy_command=command)
+        return super().turn(request)
+
+
+def __getattr__(name: str) -> object:
+    # Compatibility for callers of the previous provider-owned defaults. A
+    # deferred alias avoids cycling through the policy resolver's registry import.
+    if name == "CODEX_READ_DENY_PATHS":
+        from rcp.agents.hidden_read import WEBKIT_READ_DENY_PATHS
+
+        return WEBKIT_READ_DENY_PATHS
+    raise AttributeError(name)

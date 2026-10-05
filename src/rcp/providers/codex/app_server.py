@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rcp.providers.base import (
     ProviderRuntime,
@@ -17,8 +18,14 @@ from rcp.providers.base import (
 )
 from rcp.providers.codex.profile import (
     _codex_discuss_permission_profile,
+    _codex_environment_config,
     _codex_permission_profile,
+    _codex_shell_environment_policy,
+    _codex_stage_permission_profile,
 )
+
+if TYPE_CHECKING:
+    from rcp.core.models import HiddenReadScope
 
 CODEX_APP_SERVER_RUNTIME_ID = "codex.app-server-stdio.v1"
 _INITIALIZE_ID = 1
@@ -84,6 +91,7 @@ class _CodexAppServerTurn(ProviderTurn):
             "--config",
             'web_search="live"',
         ]
+        command.extend(_codex_environment_config(request.hidden_read_scope))
         if request.capability in {"work_auto", "orchestrate"}:
             scope = _require_project_write_scope(
                 request.write_scope,
@@ -95,7 +103,7 @@ class _CodexAppServerTurn(ProviderTurn):
                     "--config",
                     'default_permissions="rcp_project"',
                     "--config",
-                    _codex_permission_profile(scope),
+                    _codex_permission_profile(scope, request.hidden_read_scope),
                 ]
             )
         elif request.capability == "discuss":
@@ -108,7 +116,7 @@ class _CodexAppServerTurn(ProviderTurn):
                     "--config",
                     'default_permissions="rcp_discuss"',
                     "--config",
-                    _codex_discuss_permission_profile(request.cwd),
+                    _codex_discuss_permission_profile(request.cwd, request.hidden_read_scope),
                 ]
             )
         else:
@@ -116,6 +124,22 @@ class _CodexAppServerTurn(ProviderTurn):
                 raise ValueError(
                     f"capability {request.capability!r} cannot carry a project write scope"
                 )
+            if request.hidden_read_scope is not None:
+                command.extend(
+                    [
+                        "--config",
+                        'approval_policy="never"',
+                        "--config",
+                        'default_permissions="rcp_stage"',
+                        "--config",
+                        _codex_stage_permission_profile(
+                            request.cwd,
+                            request.hidden_read_scope,
+                            read_only=request.capability == "paper_readonly",
+                        ),
+                    ]
+                )
+                return command
             sandbox = "read-only" if request.capability == "paper_readonly" else "workspace-write"
             command.extend(
                 [
@@ -250,7 +274,7 @@ class _CodexAppServerTurn(ProviderTurn):
             if self._phase != "config":
                 return self._protocol_error("Codex app-server config arrived out of order.")
             try:
-                config = _containment_config(result.get("config"))
+                config = _containment_config(result.get("config"), self._request.hidden_read_scope)
             except ValueError as exc:
                 return self._protocol_error(str(exc))
             self._phase = "thread"
@@ -322,6 +346,8 @@ class _CodexAppServerTurn(ProviderTurn):
             params["permissions"] = "rcp_project"
         elif self._request.capability == "discuss":
             params["permissions"] = "rcp_discuss"
+        elif self._request.hidden_read_scope is not None:
+            params["permissions"] = "rcp_stage"
         else:
             params["sandbox"] = (
                 "read-only" if self._request.capability == "paper_readonly" else "workspace-write"
@@ -337,7 +363,11 @@ class _CodexAppServerTurn(ProviderTurn):
             "model": self._request.model,
             "threadId": thread_id,
         }
-        if not self._work_like and self._request.capability != "discuss":
+        if (
+            not self._work_like
+            and self._request.capability != "discuss"
+            and self._request.hidden_read_scope is None
+        ):
             params["sandboxPolicy"] = _sandbox_policy(
                 self._request.cwd,
                 read_only=self._request.capability == "paper_readonly",
@@ -347,8 +377,18 @@ class _CodexAppServerTurn(ProviderTurn):
     def _enforcement_problem(self, result: dict[str, object]) -> str | None:
         if result.get("approvalPolicy") != "never":
             return "Codex app-server did not apply RCP's noninteractive approval policy."
-        if self._work_like or self._request.capability == "discuss":
-            expected = "rcp_project" if self._work_like else "rcp_discuss"
+        if (
+            self._work_like
+            or self._request.capability == "discuss"
+            or self._request.hidden_read_scope is not None
+        ):
+            expected = (
+                "rcp_project"
+                if self._work_like
+                else "rcp_discuss"
+                if self._request.capability == "discuss"
+                else "rcp_stage"
+            )
             profile = result.get("activePermissionProfile")
             if not isinstance(profile, dict) or profile.get("id") != expected:
                 return "Codex app-server did not activate RCP's exact project permission profile."
@@ -480,7 +520,9 @@ class _CodexAppServerTurn(ProviderTurn):
         )
 
 
-def _containment_config(value: object) -> dict[str, object]:
+def _containment_config(
+    value: object, hidden_read_scope: HiddenReadScope | None = None
+) -> dict[str, object]:
     """Neutralize every user-config channel that can run code or add instructions.
 
     `codex app-server` has no `--ignore-user-config`, so unlike `codex exec` this
@@ -508,7 +550,7 @@ def _containment_config(value: object) -> dict[str, object]:
         # Code-execution channels. `notify` runs an external program when a turn
         # ends, and the environment policy injects variables into every command.
         "notify": [],
-        "shell_environment_policy": {},
+        "shell_environment_policy": _codex_shell_environment_policy(hidden_read_scope),
         "hooks": _disabled_hooks(value.get("hooks")),
     }
     for key in ("apps", "mcp_servers", "plugins"):

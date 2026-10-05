@@ -26,6 +26,7 @@ from rcp.agents.launcher import (
 from rcp.agents.prompts import COMMAND_CLIENT, PromptFactory
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.core.models import HiddenReadScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
 from rcp.providers.browser_grant import BrowserGrant
@@ -174,6 +175,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -201,6 +203,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     operation_id=operation_id,
                     git_access=git_access,
                     browser_grant=browser_grant,
+                    hidden_read_scope=hidden_read_scope,
                 ):
                     yield event
             return
@@ -217,6 +220,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             supervise_remote,
             supervisor_path,
             operation_id,
+            hidden_read_scope,
         )
         resolved_cwd = cwd.resolve()
         stable_session = session_id or str(

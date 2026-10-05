@@ -8,13 +8,23 @@ import json
 import os
 import shlex
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
 from rcp.git_identity import GitIdentity, write_git_identity
+
+if TYPE_CHECKING:
+    from rcp.agents.git_access import ProviderGitAccess
+    from rcp.agents.write_scope import RegisteredRepositoryRoot
+    from rcp.config import Manifest
+    from rcp.core.models import HiddenReadScope
+    from rcp.providers import AgentCapability, ProviderId
+    from rcp.transport.run_stage import RemoteRunStage
 
 
 class CredentialRecord(BaseModel):
@@ -207,3 +217,132 @@ __all__ = [
     "ProviderProcessEnvironment",
     "account_directory_name",
 ]
+
+
+def unhidden_read_scope(
+    *, execution_machine: str, host: str, os_account: str = "unknown"
+) -> HiddenReadScope:
+    """An explicit launch fallback when execution-host policy cannot be prepared."""
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
+
+    return HiddenReadScope(
+        execution_machine=execution_machine,
+        execution_host=host,
+        os_account=os_account or "unknown",
+        enforcement=HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",)),
+    )
+
+
+def prepare_hidden_read_launch(
+    *,
+    manifest: Manifest,
+    execution_machine: str,
+    provider: ProviderId,
+    capability: AgentCapability,
+    stage_root: str,
+    workspace_root: str,
+    app_data_dir: Path | None,
+    remote_stage: RemoteRunStage | None,
+    repository_inventory: Sequence[RegisteredRepositoryRoot] = (),
+    machine_hidden_folders: Sequence[str] = (),
+    git_access: ProviderGitAccess | None = None,
+    browser_enabled: bool = False,
+) -> HiddenReadScope:
+    """Confirm keys, resolve once, then stage the exact policy used by tools."""
+    import logging
+
+    from rcp.agents.hidden_read import resolve_hidden_read_scope, staged_hidden_read_source
+    from rcp.agents.staged_hidden_read import install as install_hidden_read_files
+    from rcp.agents.write_scope import installed_server_storage
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
+    from rcp.limits import HIDDEN_READ_STAGE_TIMEOUT_SECONDS
+    from rcp.ssh_agent import (
+        confirm_key_evidence,
+        confirm_remote_key_evidence,
+        running_agent_socket,
+        user_ssh_identity_candidates,
+    )
+
+    machine = manifest.machine_map[execution_machine]
+    try:
+        if remote_stage is None:
+            deploy_keys = (
+                {key for _, key in git_access.checkouts} if git_access is not None else set()
+            )
+            storage = installed_server_storage(app_data_dir) if app_data_dir is not None else None
+            if storage is not None:
+                deploy_keys.update(
+                    str(path)
+                    for path in Path(storage.credentials_root).glob("projects/*/*/id_ed25519")
+                )
+            evidence = confirm_key_evidence(
+                private_key_paths=user_ssh_identity_candidates(Path.home()),
+                kind="ssh_identity",
+                agent_socket=os.environ.get("SSH_AUTH_SOCK"),
+            ) + confirm_key_evidence(
+                private_key_paths=tuple(sorted(deploy_keys)),
+                kind="deploy_key",
+                agent_socket=running_agent_socket(),
+            )
+        else:
+            # Confirm on the execution account, never against the local agents.
+            # A transport failure before inventory raises into the unhidden fallback.
+            home_result = remote_stage._ssh(["printenv", "HOME"])
+            home = home_result.stdout.strip()
+            if home_result.returncode or not home.startswith("/"):
+                raise OSError("execution-host home could not be resolved")
+            evidence = confirm_remote_key_evidence(remote_stage=remote_stage, home=home)
+        scope = resolve_hidden_read_scope(
+            manifest=manifest,
+            execution_machine=execution_machine,
+            provider=provider,
+            capability=capability,
+            stage_root=stage_root,
+            workspace_root=workspace_root,
+            app_data_dir=app_data_dir,
+            remote_stage=remote_stage,
+            repository_inventory=list(repository_inventory),
+            machine_hidden_folders=list(machine_hidden_folders),
+            key_evidence=evidence,
+            browser_enabled=browser_enabled,
+        )
+        reasons = set(scope.enforcement.reasons)
+        if provider == "opencode":
+            # grep/glob permissions match search patterns, not filesystem paths.
+            reasons.add("provider_native_tools_uncovered")
+        if reasons:
+            scope = HiddenReadScope.model_validate(
+                {
+                    **scope.model_dump(exclude={"fingerprint"}),
+                    "enforcement": HiddenReadStatus(
+                        status="unhidden", reasons=tuple(sorted(reasons))
+                    ),
+                }
+            )
+        # Staged outside every write root and hidden by the scope itself, so a
+        # tool call can neither read nor rewrite the policy it runs under.
+        wrapper = PurePosixPath(scope.wrapper_path())
+        files = {
+            wrapper.name: staged_hidden_read_source(),
+            wrapper.name + ".policy.json": json.dumps(
+                scope.model_dump(mode="json"), sort_keys=True
+            ),
+        }
+        if remote_stage is not None:
+            result = remote_stage._ssh_bytes(
+                ["python3", "-c", staged_hidden_read_source(), "--install", str(wrapper.parent)],
+                input_data=json.dumps(files).encode(),
+                timeout_seconds=HIDDEN_READ_STAGE_TIMEOUT_SECONDS,
+            )
+            if result.returncode:
+                raise OSError("hidden-read wrapper could not be staged")
+        else:
+            install_hidden_read_files(str(wrapper.parent), files)
+        return scope
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Hidden-read launch preparation failed; running unhidden"
+        )
+        return unhidden_read_scope(
+            execution_machine=execution_machine, host=machine.host, os_account=machine.os_account
+        )

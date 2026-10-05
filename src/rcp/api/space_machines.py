@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -11,15 +12,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_inside
+from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_defaults
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.browser import install_browser, readiness
+from rcp.browser import enable_linger, install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
+from rcp.core.models import MachineHiddenReadProjection
+from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.projects import ProjectCatalog
+from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
 from rcp.storage import AppStore
 from rcp.storage.models import SpaceMachineRecord
+from rcp.transport.ssh import control_directory_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,7 @@ class UpdateSpaceMachineRequest(BaseModel):
 
     name: str | None = None
     writable_paths: list[str] | None = Field(default=None, max_length=_MAX_WRITABLE_PATHS)
+    hidden_folders: list[str] | None = Field(default=None, max_length=HIDDEN_READ_PATH_MAX_COUNT)
 
     @field_validator("name")
     @classmethod
@@ -115,11 +122,47 @@ def _machine_usage(
     return usage, complete
 
 
+def _hidden_read_projection(
+    machine: SpaceMachineRecord, data_dir: Path
+) -> MachineHiddenReadProjection:
+    from rcp.server_ops.doctor import local_hidden_read_status
+
+    home = "~" if machine.host else str(Path.home())
+    # Remote defaults are display templates; only launch-host resolution knows overrides.
+    environment = {} if machine.host else os.environ
+    groups = hidden_read_defaults(
+        home=home,
+        app_data_dir=home + "/.local/share/rcp" if machine.host else str(data_dir),
+        credential_roots=(),
+        provider_login_files=(
+            environment.get("CODEX_HOME", home + "/.codex") + "/auth.json",
+            environment.get("CLAUDE_CONFIG_DIR", home + "/.claude") + "/.credentials.json",
+            environment.get("XDG_DATA_HOME", home + "/.local/share") + "/opencode/auth.json",
+        ),
+        control_socket_dir=None if machine.host else str(control_directory_candidate()),
+    )
+    paths = {
+        "~/" + path[len(home) + 1 :] if path.startswith(home + "/") else path
+        for group in groups
+        for path in group
+    }
+    return MachineHiddenReadProjection(
+        default_paths=tuple(sorted(paths)),
+        user_folders=tuple(machine.hidden_folders),
+        readiness=(
+            None
+            if machine.host
+            else local_hidden_read_status(cached_hidden_read_readiness(), app_data_dir=data_dir)
+        ),
+    )
+
+
 def _machine_view(
     machine: SpaceMachineRecord,
     usage: dict[str, list[dict[str, str]]],
     complete: bool,
     visible: set[str],
+    data_dir: Path,
 ) -> dict[str, object]:
     projects = usage.get(machine.host, [])
     return {
@@ -128,6 +171,8 @@ def _machine_view(
         "host": machine.host,
         "os_account": machine.os_account,
         "writable_paths": list(machine.writable_paths),
+        "hidden_folders": list(machine.hidden_folders),
+        "hidden_read": _hidden_read_projection(machine, data_dir).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
         "in_use": True if projects else (False if complete else None),
@@ -137,7 +182,7 @@ def _machine_view(
 def _one_machine_view(
     store: AppStore, machine: SpaceMachineRecord, visible: set[str]
 ) -> dict[str, object]:
-    return _machine_view(machine, *_machine_usage(store), visible)
+    return _machine_view(machine, *_machine_usage(store), visible, store.path.parent)
 
 
 def _visible_project_ids(
@@ -222,6 +267,88 @@ def _validated_writable_paths(
     return paths
 
 
+def _validated_hidden_folders(
+    machine: SpaceMachineRecord, requested: list[str], catalog: ProjectCatalog
+) -> list[str]:
+    from rcp.agents.hidden_read import SYSTEM_RUNTIME_ROOTS, validate_machine_hidden_folders
+
+    # Launches refuse a folder covering a configured provider binary; refuse it at save too.
+    provider_roots = tuple(
+        str(PurePosixPath(path).parent)
+        for _provider, host, path in catalog.provider_targets()
+        if host == machine.host and path
+    )
+    # The policy owner checks syntax and bounds before any host request.
+    paths = validate_machine_hidden_folders(
+        requested, protected_roots=(*SYSTEM_RUNTIME_ROOTS, *provider_roots)
+    )
+    if not paths:
+        return []
+    checkouts = [
+        item.path
+        for item in catalog.repository_ownership_inventory()
+        if item.execution_host == machine.host
+    ]
+    result = run_machine_directory_request(
+        machine.host,
+        {"mode": "check", "paths": sorted({*paths, *checkouts})},
+        os_account=machine.os_account,
+    )
+    home = result.get("home")
+    resolved = result.get("resolved")
+    if (
+        not isinstance(home, str)
+        or not PurePosixPath(home).is_absolute()
+        or not isinstance(resolved, dict)
+        or set(resolved) != {*paths, *checkouts}
+    ):
+        raise ValueError("The machine returned an invalid folder check.")
+    root = PurePosixPath(home) / ".rcp"
+    protected = [
+        *checkouts,
+        str(root / "stages"),
+        str(root / "tools"),
+        str(root / "browser"),
+        command_socket_directory(home),
+        # Settings has no launch-host key confirmation: these parents must remain readable.
+        str(PurePosixPath(home) / ".ssh"),
+        str(PurePosixPath(home) / ".ssh/known_hosts"),
+        str(PurePosixPath(home) / ".local/share/rcp/credentials"),
+        *SYSTEM_RUNTIME_ROOTS,
+        *provider_roots,
+    ]
+    if not machine.host:
+        protected.extend(str(catalog.data_dir / name) for name in ("run-stage", "tools", "browser"))
+        from rcp.server_ops.config import load_installed_server_config
+        from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+
+        if DEFAULT_SERVER_LAYOUT.config_path.exists():
+            layout = load_installed_server_config(DEFAULT_SERVER_LAYOUT.config_path).paths
+            if Path(layout.data_dir).resolve() == catalog.data_dir.resolve():
+                protected.append(layout.credentials_root)
+    legacy = result.get("legacy_stages", [])
+    if not isinstance(legacy, list) or not all(isinstance(path, str) for path in legacy):
+        raise ValueError("The machine returned an invalid folder check.")
+    protected.extend(legacy)
+    # Resolve protected directories on that host as well; never realpath an SSH path locally.
+    targets = run_machine_directory_request(
+        machine.host,
+        {"path": home, "limit": 1, "protect": sorted(set(protected))},
+        os_account=machine.os_account,
+    ).get("protected_targets")
+    if not isinstance(targets, list) or not all(isinstance(value, str) for value in targets):
+        raise ValueError("The machine returned an invalid protected-folder check.")
+    protected.extend(targets)
+    actual = []
+    for path in paths:
+        value = resolved[path]
+        if not isinstance(value, str):
+            raise ValueError(f"{path} is not a folder on {machine.name}.")
+        actual.append(value)
+    validate_machine_hidden_folders(paths, protected_roots=tuple(protected))
+    return validate_machine_hidden_folders(actual, protected_roots=tuple(protected))
+
+
 @router.get("/api/space/machines")
 def list_space_machines(
     request: Request,
@@ -233,7 +360,8 @@ def list_space_machines(
     usage, complete = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(machine, usage, complete, visible) for machine in store.space_machines()
+            _machine_view(machine, usage, complete, visible, store.path.parent)
+            for machine in store.space_machines()
         ]
     }
 
@@ -287,7 +415,21 @@ def update_space_machine(
             writable_paths = _validated_writable_paths(machine, body.writable_paths, catalog)
         except (MachineBrowseFailure, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    updated = store.update_space_machine(machine_id, name=body.name, writable_paths=writable_paths)
+    hidden_folders = None
+    if body.hidden_folders is not None:
+        try:
+            hidden_folders = _validated_hidden_folders(machine, body.hidden_folders, catalog)
+        except (MachineBrowseFailure, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": getattr(exc, "code", "hidden_folder_rejected"),
+                    "message": str(exc),
+                },
+            ) from exc
+    updated = store.update_space_machine(
+        machine_id, name=body.name, writable_paths=writable_paths, hidden_folders=hidden_folders
+    )
     return _one_machine_view(store, updated, _visible_project_ids(request, identity_access, store))
 
 
@@ -397,5 +539,22 @@ def install_machine_browser(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     return install_browser(
+        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+    ).model_dump()
+
+
+@router.post("/api/space/machines/{machine_id}/linger")
+def enable_machine_linger(
+    machine_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    """The member's explicit consent to keep this account's background processes running."""
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    return enable_linger(
         host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
     ).model_dump()

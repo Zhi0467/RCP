@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import subprocess
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,7 @@ from rcp.providers.opencode.remote import EXIT_MARKER, OpenCodeRunTurnFence
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.core.models import HiddenReadScope
 
 _RUNTIME_ID = "opencode.run-json.v1"
 # `opencode models --verbose` prints each model as its `provider/model` slug on
@@ -65,6 +67,23 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
     """One `opencode run` process, ended by the wrapper's report of its exit."""
 
     def __init__(self, profile: OpenCodeProfile, request: ProviderTurnRequest) -> None:
+        if request.hidden_read_scope is not None and request.legacy_command is None:
+            command = profile.command(
+                request.prompt,
+                binary=request.binary,
+                cwd=request.cwd,
+                model=request.model,
+                reasoning=request.reasoning,
+                session_id=request.session_id,
+                read_dirs=request.read_dirs,
+                write_dirs=request.write_dirs,
+                write_scope=request.write_scope,
+                capability=request.capability,
+                provider_version=request.provider_version,
+                browser_grant=request.browser_grant,
+                hidden_read_scope=request.hidden_read_scope,
+            )
+            request = replace(request, legacy_command=command)
         super().__init__(profile, request)
         self.environment = profile.launch_environment(request)
         self._session_seen = False
@@ -216,6 +235,7 @@ class OpenCodeProfile(ProviderProfile):
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> list[str]:
         del prompt, read_dirs
         work_like = capability in {"work_auto", "orchestrate"}
@@ -224,7 +244,9 @@ class OpenCodeProfile(ProviderProfile):
         elif write_scope is not None:
             raise ValueError(f"capability {capability!r} cannot carry a project write scope")
         self.validate_readiness_version(provider_version, capability=capability)
-        permission = _permission(capability, cwd, write_dirs, write_scope, browser_grant)
+        permission = _permission(
+            capability, cwd, write_dirs, write_scope, browser_grant, hidden_read_scope
+        )
         # `--pure` loads no plugin, whose config hook could rewrite these rules.
         command = [binary, "run", "--format", "json", "--pure", "--agent", _agent_name(permission)]
         if session_id:
@@ -246,6 +268,7 @@ class OpenCodeProfile(ProviderProfile):
             request.write_dirs,
             request.write_scope,
             request.browser_grant,
+            request.hidden_read_scope,
         )
         policy = {
             "$schema": "https://opencode.ai/config.json",
@@ -261,10 +284,18 @@ class OpenCodeProfile(ProviderProfile):
             # agents can widen these.
             "agent": {_agent_name(permission): {"mode": "primary", "permission": permission}},
         }
-        return {
+        environment = {
             "OPENCODE_CONFIG_CONTENT": json.dumps(policy, separators=(",", ":")),
             "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
         }
+
+        if (
+            request.hidden_read_scope is not None
+            and request.hidden_read_scope.account_home is not None
+        ):
+            wrapper = request.hidden_read_scope.wrapper_path()
+            environment.update(SHELL=wrapper, RCP_HIDDEN_READ_POLICY=wrapper + ".policy.json")
+        return environment
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
         if not isinstance(value, dict):
@@ -327,11 +358,27 @@ def _permission(
     write_dirs: list[Path],
     scope: ProjectWriteScope | None,
     browser_grant: BrowserGrant | None = None,
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> dict[str, object]:
     # OpenCode applies the last rule that matches, so the blanket deny comes first.
     base: dict[str, object] = {"*": "deny", **dict.fromkeys(_READ_TOOLS, "allow")}
     # Every capability may read outside its folder.
     base["external_directory"] = "allow"
+    if hidden_read_scope is not None:
+        # Native read uses worktree-relative paths; the non-Git guard fixes
+        # their base at /. Paper may run inside Git, and grep/glob match
+        # search expressions: the launch reports provider_native_tools_uncovered.
+        patterns = [
+            *(path + "/**" for path in hidden_read_scope.hidden_directories),
+            *hidden_read_scope.hidden_directories,
+            *hidden_read_scope.hidden_files,
+            *hidden_read_scope.hidden_globs,
+        ]
+        base["read"] = {
+            "*": "allow",
+            **dict.fromkeys((path.lstrip("/") for path in patterns), "deny"),
+        }
+
     if capability == "paper_readonly":
         # Reads its staged inputs outside the project; it can neither edit nor run.
         return base
@@ -348,6 +395,10 @@ def _permission(
         if any(PurePosixPath(item) in PurePosixPath(path).parents for item in denied):
             edit.pop(_root_pattern(path))
             edit[_root_pattern(path)] = "allow"
+    if hidden_read_scope is not None and hidden_read_scope.account_home is not None:
+        # Last match wins: a granted root may contain the wrapper's home.
+        wrapper_root = str(PurePosixPath(hidden_read_scope.wrapper_path()).parent)
+        edit[_root_pattern(wrapper_root)] = "deny"
     base["edit"] = edit
     if scope is not None:
         # Work has an unbounded shell. Other capabilities keep their narrow

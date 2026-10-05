@@ -16,6 +16,7 @@ from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
     from rcp.providers.session_format import SessionFormat
     from rcp.providers.turn_fence import TurnFence
@@ -133,6 +134,8 @@ class ProviderTurnRequest:
     provider_version: str | None
     browser_grant: BrowserGrant | None = None
     legacy_command: list[str] | None = None
+    # None is unresolved during migration, never evidence of enforcement.
+    hidden_read_scope: HiddenReadScope | None = None
 
 
 @dataclass(frozen=True)

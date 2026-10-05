@@ -1,3 +1,4 @@
+import type { MachineSettingsRecord } from "../projects/spaceMachines";
 import type {
   ChatBrowserPreference,
   MachineBrowserReadiness,
@@ -42,7 +43,6 @@ import type {
   ServiceConnectionUpdate,
   ServiceModels,
   TranscriptionResult,
-  SpaceMachine,
   SpaceMachineCreateRequest,
   SpaceMachineUpdateRequest,
   SpaceRunIndexEntry,
@@ -360,12 +360,14 @@ export function clearAllProjectCaches(projectId: string): Promise<AllProjectCach
   );
 }
 
-export async function loadSpaceMachines(): Promise<SpaceMachine[]> {
-  return (await api<{ machines: SpaceMachine[] }>("/api/space/machines")).machines;
+export async function loadSpaceMachines(): Promise<MachineSettingsRecord[]> {
+  return (await api<{ machines: MachineSettingsRecord[] }>("/api/space/machines")).machines;
 }
 
-export function createSpaceMachine(request: SpaceMachineCreateRequest): Promise<SpaceMachine> {
-  return api<SpaceMachine>("/api/space/machines", {
+export function createSpaceMachine(
+  request: SpaceMachineCreateRequest,
+): Promise<MachineSettingsRecord> {
+  return api<MachineSettingsRecord>("/api/space/machines", {
     method: "POST",
     body: JSON.stringify(request),
   });
@@ -374,8 +376,8 @@ export function createSpaceMachine(request: SpaceMachineCreateRequest): Promise<
 export function updateSpaceMachine(
   machineId: string,
   request: SpaceMachineUpdateRequest,
-): Promise<SpaceMachine> {
-  return api<SpaceMachine>(`/api/space/machines/${encodeURIComponent(machineId)}`, {
+): Promise<MachineSettingsRecord> {
+  return api<MachineSettingsRecord>(`/api/space/machines/${encodeURIComponent(machineId)}`, {
     method: "PATCH",
     body: JSON.stringify(request),
   });
@@ -876,6 +878,13 @@ export function loadMachineBrowser(machineId: string): Promise<MachineBrowserRea
 
 export function installMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {
   return api(`/api/space/machines/${encodeURIComponent(machineId)}/browser/install`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function enableMachineLinger(machineId: string): Promise<MachineBrowserReadiness> {
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/linger`, {
     method: "POST",
     body: JSON.stringify({}),
   });

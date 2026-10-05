@@ -8,17 +8,17 @@ const reasons: Record<string, { label: string; reason: string; fix?: string }> =
   node_missing: {
     label: "Node missing",
     reason: "Node.js is missing.",
-    fix: "Install Node 18+ and npm on this machine first, then check the machine card.",
+    fix: "Install Node 20+ and npm on this machine first, then check the machine card.",
   },
   node_too_old: {
     label: "Node too old",
     reason: "Node.js is too old.",
-    fix: "Install Node 18+ and npm on this machine first, then check the machine card.",
+    fix: "Install Node 20+ and npm on this machine first, then check the machine card.",
   },
   npm_missing: {
     label: "npm missing",
     reason: "npm is missing.",
-    fix: "Install Node 18+ and npm on this machine first, then check the machine card.",
+    fix: "Install Node 20+ and npm on this machine first, then check the machine card.",
   },
   system_libraries_missing: {
     label: "Libraries missing",
@@ -41,6 +41,11 @@ const reasons: Record<string, { label: string; reason: string; fix?: string }> =
   storage_unavailable: {
     label: "Storage unavailable",
     reason: "The browser's storage is unavailable.",
+  },
+  linger_disabled: {
+    label: "Stops at logout",
+    reason: "Background processes on this machine stop when its account logs out.",
+    fix: "Allow background processes on the machine card in Settings.",
   },
   owner_unavailable: {
     label: "Process owner unavailable",

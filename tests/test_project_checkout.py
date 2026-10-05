@@ -26,6 +26,7 @@ from rcp.server_ops.project_checkout import (
     ProjectCheckoutRefused,
     retained_research_operator_step,
 )
+from rcp.ssh_agent import agent_socket_path, agent_status
 from rcp.storage import ProjectProvisioningMachineIntent
 
 SPACE_ID = "7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2"
@@ -420,6 +421,12 @@ def test_manager_clones_verifies_and_recovers_without_renaming(
         expected_commit=commit,
     )
     checkout = Path(first.repository_path)
+    # The shipped helper probes the account's own agent socket; expect the same.
+    home = Path(material.account_home)
+    monkeypatch.setattr(
+        "rcp.ssh_agent.running_agent_socket",
+        lambda: str(agent_socket_path(home)) if agent_status(home) == "running" else None,
+    )
     command = deploy_key_ssh_command(material.private_key_path, material.account_home)
     assert _git_command("config", "--local", "--get", "core.sshCommand", cwd=checkout) == command
     _git_command("config", "--local", "--unset", "core.sshCommand", cwd=checkout)

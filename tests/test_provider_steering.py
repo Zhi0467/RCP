@@ -323,6 +323,7 @@ from pathlib import Path
 capture = Path({str(capture)!r})
 def emit(value):
     print(json.dumps(value), flush=True)
+initial_uuid = None
 for line in sys.stdin:
     with capture.open('a') as file:
         file.write(line)
@@ -344,7 +345,7 @@ for line in sys.stdin:
             emit({{'method':'item/completed','params':{{'item':{{'type':'agentMessage','text':'Final'}},'threadId':'thread','turnId':'turn'}}}})
             emit({{'method':'turn/completed','params':{{'threadId':'thread','turn':{{'id':'turn','status':'completed'}}}}}})
     else:
-        if value['message']['content'] == 'Original prompt':
+        if initial_uuid is None:
             emit({{'type':'system','subtype':'init','session_id':'session'}})
             initial_uuid = value['uuid']
             emit({{'type':'command_lifecycle','state':'started','command_uuid':initial_uuid}})

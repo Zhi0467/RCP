@@ -13,6 +13,14 @@ def downgrade_artifacts(
         row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
     ):
         return
+    if any(
+        row[1] == "hidden_folders_json"
+        for row in connection.execute("PRAGMA table_info(space_machines)")
+    ):
+        connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_name = 'machine_hidden_folders_v1'"
+        )
     connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
     for table in ("chat_browser_preferences", "browser_owners", "browser_turn_status"):
         connection.execute(f"DROP TABLE IF EXISTS {table}")

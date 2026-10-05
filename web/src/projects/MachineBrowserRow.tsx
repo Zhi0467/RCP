@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { installMachineBrowser, loadMachineBrowser } from "../core/api";
+import { enableMachineLinger, installMachineBrowser, loadMachineBrowser } from "../core/api";
 import { browserReason } from "../core/browserStatus";
 import { errorMessage } from "../core/errors";
 import type { MachineBrowserReadiness } from "../core/types";
@@ -12,7 +12,7 @@ export function MachineBrowserRow({
   disabled: boolean;
 }) {
   const [readiness, setReadiness] = useState<MachineBrowserReadiness | null>(null);
-  const [pending, setPending] = useState<"check" | "install" | null>("check");
+  const [pending, setPending] = useState<"check" | "install" | "linger" | null>("check");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -33,7 +33,7 @@ export function MachineBrowserRow({
       cancelled = true;
     };
   }, [machineId]);
-  async function run(action: "check" | "install") {
+  async function run(action: "check" | "install" | "linger") {
     setPending(action);
     setError(null);
     setCopied(false);
@@ -41,7 +41,9 @@ export function MachineBrowserRow({
       setReadiness(
         await (action === "install"
           ? installMachineBrowser(machineId)
-          : loadMachineBrowser(machineId)),
+          : action === "linger"
+            ? enableMachineLinger(machineId)
+            : loadMachineBrowser(machineId)),
       );
     } catch (failure) {
       setError(errorMessage(failure));
@@ -50,6 +52,11 @@ export function MachineBrowserRow({
     }
   }
   const reason = readiness ? browserReason(readiness.status) : null;
+  // A command the member must hand to an administrator, when RCP cannot run it itself.
+  const command =
+    (readiness?.status === "system_libraries_missing" && readiness.apt_command) ||
+    (readiness?.status === "linger_disabled" && readiness.admin_command) ||
+    null;
   return (
     <section className="machine-browser-row" aria-label="Browser" aria-busy={pending !== null}>
       <header>
@@ -57,23 +64,27 @@ export function MachineBrowserRow({
         <span role="status">
           {pending === "install"
             ? "Installing… This can take up to 15 minutes."
-            : pending === "check"
-              ? "Checking…"
-              : reason?.label}
+            : pending === "linger"
+              ? "Allowing…"
+              : pending === "check"
+                ? "Checking…"
+                : reason?.label}
         </span>
       </header>
       {readiness?.detail && <p>{readiness.detail}</p>}
-      {reason?.fix && readiness?.status !== "not_installed" && <p>{reason.fix}</p>}
-      {readiness?.status === "system_libraries_missing" && readiness.apt_command && (
+      {reason?.fix && !["not_installed", "linger_disabled"].includes(readiness!.status) && (
+        <p>{reason.fix}</p>
+      )}
+      {command && (
         <div className="browser-install-command">
-          <code>{readiness.apt_command}</code>
+          <code>{command}</code>
           <button
             type="button"
             className="button secondary compact"
             onClick={async () => {
               setError(null);
               try {
-                await navigator.clipboard.writeText(readiness.apt_command!);
+                await navigator.clipboard.writeText(command);
                 setCopied(true);
               } catch {
                 setError("Could not copy the command. Select it and copy it manually.");
@@ -85,6 +96,16 @@ export function MachineBrowserRow({
         </div>
       )}
       <div className="provider-login-notice-actions">
+        {readiness?.status === "linger_disabled" && !readiness.admin_command && (
+          <button
+            type="button"
+            className="button secondary compact"
+            disabled={disabled || pending !== null}
+            onClick={() => void run("linger")}
+          >
+            Allow background processes
+          </button>
+        )}
         {readiness?.status === "not_installed" && (
           <button
             type="button"

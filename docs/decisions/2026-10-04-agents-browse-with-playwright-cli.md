@@ -76,7 +76,7 @@ Probed on 2026-10-04 with Claude Code 2.1.288, Codex 0.160.0 (macOS) and 0.157.0
   reason ([decision](2026-10-04-the-personal-backend-requires-an-owner-session.md)).
 - **Cross-chat isolation on a team server.** Every agent runs as the service
   account and can address another chat's session by name.
-- **An install on each execution host.** Node.js 18 or newer must exist. Linux
+- **An install on each execution host.** Node.js 20 or newer must exist. Linux
   hosts may need system libraries that only an administrator can install.
 - **Services that offer only MCP.** Agents cannot use a SaaS tool that ships only
   an MCP server unless a CLI for it exists.
