@@ -58,13 +58,23 @@ def _python_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.rglob("*.py") if path.is_file())
 
 
-def _import_aliases(tree: ast.AST) -> dict[str, str]:
+def _module_package(module: Path | None) -> list[str]:
+    """Dotted package parts of a module under `src/rcp`, e.g. ['rcp', 'runs']."""
+    if module is None:
+        return []
+    return ["rcp", *module.relative_to(SOURCE).parent.parts]
+
+
+def _import_aliases(tree: ast.AST, module: Path | None = None) -> dict[str, str]:
     """Local name to dotted origin for every import in a module.
 
     `import os as o` maps `o` to `os`; `from io import open as io_open` maps
-    `io_open` to `io.open`; a plain `import os` maps `os` to itself. A name not
-    in the map is a local binding, not a module.
+    `io_open` to `io.open`; a plain `import os` maps `os` to itself. A relative
+    import is resolved against the module's own package, so `from .chat import
+    _chat_path` inside `rcp/runs/` maps to `rcp.runs.chat._chat_path`. A name
+    not in the map is a local binding, not a module.
     """
+    package = _module_package(module)
     aliases: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -74,9 +84,14 @@ def _import_aliases(tree: ast.AST) -> dict[str, str]:
                 else:
                     root = alias.name.split(".")[0]
                     aliases[root] = root
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                base = node.module or ""
+            else:
+                anchor = package[: len(package) - (node.level - 1)] if package else []
+                base = ".".join([*anchor, *([node.module] if node.module else [])])
             for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+                aliases[alias.asname or alias.name] = f"{base}.{alias.name}" if base else alias.name
     return aliases
 
 
@@ -201,9 +216,9 @@ def _writes_a_file(call: ast.Call, aliases: dict[str, str]) -> bool:
     return _mode_writes(mode, computed_default=computed_default)
 
 
-def _flagged_lines(source: str, predicate) -> list[int]:
+def _flagged_lines(source: str, predicate, module: Path | None = None) -> list[int]:
     tree = ast.parse(source)
-    aliases = _import_aliases(tree)
+    aliases = _import_aliases(tree, module)
     return sorted({node.lineno for node in ast.walk(tree) if predicate(node, aliases)})
 
 
@@ -217,7 +232,7 @@ def test_api_routes_never_write_files_directly() -> None:
     assert "phone_listener.py" in names, "route discovery must see routes outside api/"
     offenders: list[str] = []
     for path, tree in modules:
-        aliases = _import_aliases(tree)
+        aliases = _import_aliases(tree, path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _writes_a_file(node, aliases):
                 offenders.append(
@@ -355,6 +370,22 @@ def other(service, request):
     assert _flagged_lines(source, _reads_a_file) == [7]
 
 
+def test_transcript_path_detection_resolves_relative_imports() -> None:
+    source = """
+from .chat import _chat_path as transcript_file
+from ..service import ProjectService
+
+def holder(service, request):
+    return transcript_file(service, request).read_text()
+"""
+    module = SOURCE / "runs" / "steering.py"
+    assert _flagged_lines(source, _resolves_transcript_path, module) == [6]
+    assert _import_aliases(ast.parse(source), module) == {
+        "transcript_file": "rcp.runs.chat._chat_path",
+        "ProjectService": "rcp.service.ProjectService",
+    }
+
+
 def test_task_runtime_never_reads_chat_transcripts() -> None:
     """Discuss and Work do not consume prior RCP chat transcripts.
 
@@ -387,7 +418,7 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
         for path in _python_files(SOURCE / package):
             module = path.relative_to(SOURCE).as_posix()
             tree = ast.parse(path.read_text(encoding="utf-8"))
-            aliases = _import_aliases(tree)
+            aliases = _import_aliases(tree, path)
             for function in ast.walk(tree):
                 if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
