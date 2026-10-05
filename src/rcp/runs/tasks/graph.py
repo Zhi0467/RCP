@@ -1014,8 +1014,8 @@ async def stream_graph_run(
             assert run_lock_lease is not None
             run_lock_lease.assert_owned()
             # Resume and Retry reuse their predecessor's stage, including any
-            # retained patch. Fingerprint it rather than deleting it: invariant 9
-            # says failed work remains inspectable, but a Retry may not claim an
+            # retained patch. Fingerprint it rather than deleting it: failed work
+            # keeps its scratch and Patch text, but a Retry may not claim an
             # inherited file as output it produced. In-process correction rounds
             # have the same safeguard.
             requires_new_patch = bool(rounds) or continuation == "retry"

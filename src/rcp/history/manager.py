@@ -2131,6 +2131,14 @@ class HistoryManager:
 
     @staticmethod
     def _atomic_text(path: Path, content: str) -> None:
+        """Publish one canonical file whole or not at all.
+
+        Every Patch, manifest, and materialized output under the state
+        repository is written here: same-directory temporary file, fsync,
+        one rename, directory fsync. `tests/test_history.py::
+        test_interrupted_canonical_write_leaves_the_previous_file_intact`
+        stops the write before the rename and expects the previous bytes.
+        """
         temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         with temp.open("w", encoding="utf-8") as handle:
             handle.write(content)
