@@ -98,9 +98,12 @@ targeted poisoning of RCP content; egress filtering.
    setup token
    (`~/.config/rcp/claude-setup-token`), the control-socket directory,
    `~/.ssh/id_*` keys loaded in `ssh-agent` (never `known_hosts`, `config`, or
-   `.pub`), resolved provider login files,
-   well-known credential files (`~/.aws`, `~/.config/gh`, `~/.netrc`, ...), and
-   the WebKit storage entries now in `CODEX_READ_DENY_PATHS`.
+   `.pub`), resolved provider login files (the provider process reads them
+   outside the wrapper), and the WebKit storage entries now in
+   `CODEX_READ_DENY_PATHS`. Credential files that agent tools read directly
+   (`~/.config/gh`, `~/.netrc`, `~/.aws`, ...) are not defaults, since hiding
+   them would break `gh`, Git, or cloud CLIs; a user may add them as hidden
+   folders.
 3. One staged, stdlib-only wrapper, shipped from its source module like
    `agents/staged_command_client.py`: an environment allow list, then a Seatbelt
    profile on macOS (`allow default`, deny the hidden paths) or `bwrap --dev-bind / /` with the hidden paths masked on
