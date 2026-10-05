@@ -32,6 +32,8 @@ PATH_SINGLE_TARGET_METHODS = {"rename", "replace"}
 # Receivers whose `.open(x)` opens a project or record, never a file. Every
 # other `.open(<computed>)` counts as a write until proven otherwise.
 NON_FILE_OPEN_RECEIVERS = {"catalog", "_catalog"}
+# Modules whose `open(file, mode)` has the builtin signature, mode second.
+BUILTIN_SIGNATURE_OPENERS = {"io", "builtins", "codecs"}
 OS_WRITE_FUNCTIONS = {
     "replace",
     "rename",
@@ -97,7 +99,14 @@ def _writes_a_file(call: ast.Call) -> bool:
         mode, by_keyword = _open_mode(call, builtin=True)
     elif isinstance(function, ast.Attribute):
         owner = function.value
-        if isinstance(owner, ast.Name) and owner.id == "os":
+        if (
+            isinstance(owner, ast.Name)
+            and owner.id in BUILTIN_SIGNATURE_OPENERS
+            and function.attr == "open"
+        ):
+            builtin = True
+            mode, by_keyword = _open_mode(call, builtin=True)
+        elif isinstance(owner, ast.Name) and owner.id == "os":
             if function.attr == "open":
                 return _os_open_writes(call)
             if function.attr == "fdopen":
@@ -109,20 +118,21 @@ def _writes_a_file(call: ast.Call) -> bool:
                     else True
                 )
             return function.attr in OS_WRITE_FUNCTIONS
-        if isinstance(owner, ast.Name) and owner.id == "shutil":
+        elif isinstance(owner, ast.Name) and owner.id == "shutil":
             return function.attr.startswith(SHUTIL_WRITE_PREFIXES)
-        if function.attr in PATH_WRITE_METHODS:
+        elif function.attr in PATH_WRITE_METHODS:
             return True
-        if function.attr in PATH_SINGLE_TARGET_METHODS:
+        elif function.attr in PATH_SINGLE_TARGET_METHODS:
             positional_target = len(call.args) == 1 and not call.keywords
             keyword_target = not call.args and [keyword.arg for keyword in call.keywords] == [
                 "target"
             ]
             return positional_target or keyword_target
-        if function.attr != "open":
+        elif function.attr != "open":
             return False
-        builtin = False
-        mode, by_keyword = _open_mode(call, builtin=False)
+        else:
+            builtin = False
+            mode, by_keyword = _open_mode(call, builtin=False)
     else:
         return False
     if mode is None:
@@ -193,10 +203,14 @@ def route(path, mode):
     os.write(descriptor, payload)
     os.fdopen(descriptor, "w")
     os.fdopen(descriptor)
+    io.open(path, "w")
+    io.open(path)
+    builtins.open(path, mode="a")
+    codecs.open(path, "r")
 """
     calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
     flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
-    assert flagged == [3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26]
+    assert flagged == [3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 28, 30]
 
 
 # The transcript readers live on the project service for display and backup.
