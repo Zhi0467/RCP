@@ -29,6 +29,9 @@ PATH_WRITE_METHODS = {
 # `str.replace(old, new)` and `Path.replace(target)` share a name; the Path
 # form takes exactly one positional argument and no keywords.
 PATH_SINGLE_TARGET_METHODS = {"rename", "replace"}
+# Receivers whose `.open(x)` opens a project or record, never a file. Every
+# other `.open(<computed>)` counts as a write until proven otherwise.
+NON_FILE_OPEN_RECEIVERS = {"catalog", "_catalog"}
 OS_WRITE_FUNCTIONS = {
     "replace",
     "rename",
@@ -126,10 +129,19 @@ def _writes_a_file(call: ast.Call) -> bool:
         return False
     if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
         return WRITE_MODE.search(mode.value) is not None
-    # A computed mode is a write until proven otherwise, except that a bare
-    # positional on some object's `.open(x)` is usually not a file at all
-    # (`catalog.open(project_id)`); only builtin `open` or `mode=` keeps it.
-    return builtin or by_keyword
+    # A computed mode is a write until proven otherwise. The one exemption is a
+    # positional argument on a receiver known not to open files.
+    if builtin or by_keyword:
+        return True
+    owner = call.func.value if isinstance(call.func, ast.Attribute) else None
+    receiver = (
+        owner.id
+        if isinstance(owner, ast.Name)
+        else owner.attr
+        if isinstance(owner, ast.Attribute)
+        else None
+    )
+    return receiver not in NON_FILE_OPEN_RECEIVERS
 
 
 def test_api_routes_never_write_files_directly() -> None:
@@ -162,6 +174,7 @@ def route(path, mode):
         "a",
     )
     catalog.open(project_id)
+    path.open(mode)
     path.open(mode=mode)
     with path.open("rb") as handle:
         handle.read()
@@ -183,7 +196,7 @@ def route(path, mode):
 """
     calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
     flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
-    assert flagged == [3, 4, 9, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25]
+    assert flagged == [3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26]
 
 
 # The transcript readers live on the project service for display and backup.
