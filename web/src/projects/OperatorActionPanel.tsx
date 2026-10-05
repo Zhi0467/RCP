@@ -1,7 +1,7 @@
 import { Check, Clipboard, ExternalLink, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ServerOperatorRoute } from "../core/desktopRuntime";
-import { formatCommandArgv } from "./projectSetup";
+import { formatCommandArgv } from "./projectSetupModel";
 import type { ServerExecutionContext, ServerStep } from "../core/types";
 
 /** The shell a displayed command belongs to, or null when the step never said. */

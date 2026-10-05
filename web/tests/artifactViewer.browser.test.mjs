@@ -74,7 +74,7 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
     );
     await page.evaluate(async () =>
-      (await import("/src/artifacts/artifactViewer.ts")).openArtifact({
+      (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
         projectId: "project",
         artifactId: "a",
       }),

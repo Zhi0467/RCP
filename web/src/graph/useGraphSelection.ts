@@ -14,7 +14,7 @@ import {
   projectHashAfterViewChange,
   type ExperimentRouteIdentity,
   type ProjectHashRoute,
-} from "../experiments/experimentBoard";
+} from "../experiments/experimentBoardModel";
 import type { DetailWindowSlot } from "../ui/floatingWindow";
 import {
   projectViewportRef,

@@ -18,7 +18,7 @@ import {
   routeProvedBy,
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
-} from "../src/projects/projectSetup.ts";
+} from "../src/projects/projectSetupModel.ts";
 import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
 const server = await createServer({

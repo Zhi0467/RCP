@@ -35,7 +35,7 @@ import {
   writeAgentBoardOrder,
   type AgentBoardColumn,
   type AgentBoardDrop,
-} from "./agentBoard";
+} from "./agentBoardModel";
 import type { GlossaryIndex } from "../graph/glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,

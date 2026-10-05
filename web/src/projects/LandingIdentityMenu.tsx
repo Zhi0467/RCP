@@ -22,7 +22,10 @@ import {
   revokeTeamSession,
 } from "../core/api";
 import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../core/desktopRuntime";
-import { loadNotificationDevices, type NotificationDevice } from "../desktop/notificationDevices";
+import {
+  loadNotificationDevices,
+  type NotificationDevice,
+} from "../desktop/notificationDevicesModel";
 import {
   DeviceNotificationControl,
   notificationStatusLabel,

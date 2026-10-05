@@ -24,7 +24,9 @@ so that merging often costs nothing and releasing stays deliberate.
 ## What happens on a merge
 
 1. CI runs lint, pytest on 3.11 and 3.12, old-data upgrade, installed upgrade,
-   and web checks. Publication requires all of them to pass.
+   web checks, and a macOS web build. Publication requires all of them to pass.
+   The old-data job also fails a change that adds a storage migration unless a
+   fixture frozen at the previous schema exists.
 2. The candidate packaging job builds the wheels once on PRs and main. The app
    version is `<__version__>+build.<N>.g<sha7>`, where `__version__` comes from
    `src/rcp/__init__.py`. It independently builds `supervisor/` without stamping
@@ -155,6 +157,5 @@ remain explicit follow-up evidence.
   promotion builds the app afresh and says so in its run summary.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
-- If the change touched `src/rcp/storage/`, a frozen fixture exists for the new
-  persistence era, per
+- A frozen fixture for each schema change is enforced by CI's old-data job, per
   [the schema compatibility decision](decisions/2026-08-27-server-schema-compatibility.md).

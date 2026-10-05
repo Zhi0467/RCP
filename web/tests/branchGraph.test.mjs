@@ -19,7 +19,7 @@ const {
   graphViewHash,
 } = await server.ssrLoadModule("/src/core/graphTarget.ts");
 const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
-  "/src/experiments/experimentBoard.ts",
+  "/src/experiments/experimentBoardModel.ts",
 );
 const { branchGraphProjection, expandBranchContext } = await server.ssrLoadModule(
   "/src/graph/branchGraph.ts",

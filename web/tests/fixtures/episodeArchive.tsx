@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, archiveEpisode } from "../../src/core/api";
 import { SpaceRuns } from "../../src/experiments/SpaceRuns";
-import { parseProjectHash } from "../../src/experiments/experimentBoard";
+import { parseProjectHash } from "../../src/experiments/experimentBoardModel";
 import { useEpisodeDialogs } from "../../src/experiments/useEpisodeDialogs";
 import { useProjectTabs } from "../../src/projects/useProjectTabs";
 import { useTheme } from "../../src/ui/useTheme";

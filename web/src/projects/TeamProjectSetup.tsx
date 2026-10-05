@@ -50,7 +50,7 @@ import {
   projectProvisioningHash,
   projectProvisioningRequestId,
   routeProvedBy,
-} from "./projectSetup";
+} from "./projectSetupModel";
 import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,

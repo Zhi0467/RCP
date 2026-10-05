@@ -12,7 +12,7 @@ import {
   directoryRequest,
   filterMoveIsCurrent,
   pathBreadcrumbs,
-} from "../src/projects/pathPicker.ts";
+} from "../src/projects/pathPickerModel.ts";
 import {
   createPathEditor,
   projectMachineAlias,

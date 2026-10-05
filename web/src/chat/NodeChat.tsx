@@ -89,7 +89,7 @@ import {
 import {
   openArtifact as openArtifactPanel,
   openRepositoryFile as openRepositoryFilePanel,
-} from "../artifacts/artifactViewer";
+} from "../artifacts/artifactViewerModel";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import {
   assembleChatTurn,

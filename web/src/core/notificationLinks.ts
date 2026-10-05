@@ -6,7 +6,7 @@ import {
   AUTO_RESEARCH_ROUTE_PREFIX,
   experimentBoardHref,
   experimentBoardRouteToken,
-} from "../experiments/experimentBoard";
+} from "../experiments/experimentBoardModel";
 import type { Episode, ExperimentLoopIndexEntry } from "./types";
 
 export type NotificationItemKind =

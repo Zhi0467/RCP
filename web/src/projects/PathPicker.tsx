@@ -11,7 +11,7 @@ import {
   pathBreadcrumbs,
   type PathPickerMove,
   type PathPickerState,
-} from "./pathPicker";
+} from "./pathPickerModel";
 import type { MachineDirectoryListing, MachineDirectoryRequest } from "../core/types";
 
 const FILTER_DELAY_MS = 250;

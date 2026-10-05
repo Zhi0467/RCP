@@ -1,6 +1,6 @@
 import { ChevronRight, FlaskConical, WifiOff } from "lucide-react";
 import { useMemo } from "react";
-import { experimentBoardRouteToken, experimentTerminalLabel } from "./experimentBoard";
+import { experimentBoardRouteToken, experimentTerminalLabel } from "./experimentBoardModel";
 import { activeExperimentGuidanceText } from "../core/experimentGuidance";
 import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
 import type { ExperimentLoopHealth, ExperimentLoopIndexEntry } from "../core/types";

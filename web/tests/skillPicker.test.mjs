@@ -26,7 +26,7 @@ const {
   removeSkillSelection,
   selectedSkillRefs,
   skillInvocationFields,
-} = await server.ssrLoadModule("/src/core/skillPicker.ts");
+} = await server.ssrLoadModule("/src/core/skillPickerModel.ts");
 const { SkillPicker } = await server.ssrLoadModule("/src/core/SkillPicker.tsx");
 
 after(() => server.close());

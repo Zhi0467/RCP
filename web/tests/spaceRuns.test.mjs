@@ -15,7 +15,7 @@ const { SPACE_RUN_BADGE_PALETTE, SpaceRunRow, SpaceRuns } = await server.ssrLoad
   "/src/experiments/SpaceRuns.tsx",
 );
 const { experimentBoardHref, parseProjectHash, spaceRunRouteToken } = await server.ssrLoadModule(
-  "/src/experiments/experimentBoard.ts",
+  "/src/experiments/experimentBoardModel.ts",
 );
 
 after(() => server.close());

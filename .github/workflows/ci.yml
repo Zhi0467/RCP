@@ -274,9 +274,25 @@ jobs:
       - run: npm --prefix web exec playwright -- install --with-deps chromium
       - run: npm --prefix web test
 
+  web-macos:
+    name: web build (macOS)
+    # The desktop app is built on macOS, whose default filesystem ignores case
+    # in module paths. A tree that builds on Linux can still fail here, so no
+    # build is published until this one passes.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+
   build:
     name: build
-    needs: [lint, python, old-data-upgrade, web]
+    needs: [lint, python, old-data-upgrade, web, web-macos]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write

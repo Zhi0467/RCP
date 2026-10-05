@@ -20,7 +20,7 @@ const {
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projects/projectTabs.ts");
 const { exactAutoResearchEpisodeHref, exactRunExperimentSelectionHref, parseProjectHash } =
-  await server.ssrLoadModule("/src/experiments/experimentBoard.ts");
+  await server.ssrLoadModule("/src/experiments/experimentBoardModel.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/graph/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/projects/ProjectDock.tsx");
 

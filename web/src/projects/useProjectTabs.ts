@@ -7,7 +7,7 @@ import {
   loadProjectExperimentEpisodes,
   loadSpaceRuns,
 } from "../core/api";
-import { experimentBoardHref } from "../experiments/experimentBoard";
+import { experimentBoardHref } from "../experiments/experimentBoardModel";
 import {
   adjacentProjectTabId,
   closeProjectTab,

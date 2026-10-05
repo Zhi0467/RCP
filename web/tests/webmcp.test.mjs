@@ -51,7 +51,7 @@ const { catalog, catalogAsFunctionTools, publishToolSurface, resolve, webMcpHost
 const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } = await server.ssrLoadModule(
   "/src/voice/voiceTerminal.ts",
 );
-const { parseProjectHash } = await server.ssrLoadModule("/src/experiments/experimentBoard.ts");
+const { parseProjectHash } = await server.ssrLoadModule("/src/experiments/experimentBoardModel.ts");
 const { graphTargetFromHash } = await server.ssrLoadModule("/src/core/graphTarget.ts");
 
 after(() => server.close());

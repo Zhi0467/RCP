@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { verifyProviderLogin } from "../core/api";
-import { signedOutNote } from "./providerLogins";
+import { signedOutNote } from "./providerLoginsModel";
 import type { ProviderLoginState } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
 

@@ -32,7 +32,7 @@ import {
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
   type ProjectSetupRoute,
-} from "./projectSetup";
+} from "./projectSetupModel";
 import { NewMachineForm } from "./MachineCard";
 import { AddMachineTile, MachineTile } from "./MachineTile";
 import { PathPicker } from "./PathPicker";

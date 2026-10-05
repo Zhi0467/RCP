@@ -9,7 +9,7 @@ import {
   openEpisodeReport,
   useArtifactViewerTarget,
   type ArtifactViewerTarget,
-} from "./artifactViewer";
+} from "./artifactViewerModel";
 import {
   acceptsArtifactEditMessage,
   artifactVersionChanged,
@@ -19,7 +19,7 @@ import {
   type ViewerPlacement,
 } from "./artifactViewerLayout";
 import { artifactPopupTarget, isPermanentArtifactError } from "./artifactViewerRequests";
-import { parseProjectHash } from "../experiments/experimentBoard";
+import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { listenDesktopEvent } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { errorMessage } from "../core/errors";

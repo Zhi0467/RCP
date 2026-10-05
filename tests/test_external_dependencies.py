@@ -44,9 +44,12 @@ RUNNERS = {
     "_target_result",
 }
 SSH_BUILDERS = {"ssh_arguments", "_strict_ssh_arguments"}
+# A literal `shutil.which("tool")` names a program RCP depends on, even when the
+# launch itself receives the resolved path.
+LOOKUPS = {"which"}
 # `_programs` records names only at calls to these; a file without one has none.
 LAUNCH_CALL = re.compile(
-    r"\b(?:" + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS))) + r")\s*\("
+    r"\b(?:" + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS | LOOKUPS))) + r")\s*\("
 )
 
 
@@ -252,6 +255,13 @@ def _programs(source: str) -> set[str]:
                     for keyword in node.keywords:
                         if keyword.arg in {"args", "argv"}:
                             argv(keyword.value)
+                if (
+                    name in LOOKUPS
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    found.add(Path(node.args[0].value).name)
                 if name in SSH_BUILDERS and len(node.args) > 1:
                     found.add("ssh")
                     remote(node.args[1])
@@ -319,6 +329,8 @@ subprocess.run([sys.executable, "-m", "rcp"])
 subprocess.run(dynamic_argv)
 subprocess.Popen([configured_binary, "--version"])
 unrelated(["ordinary-data"])
+shutil.which("looked-up-tool")
+shutil.which(configured_tool)
 """
     assert _programs(source) == {
         "assigned-tool",
@@ -336,4 +348,5 @@ unrelated(["ordinary-data"])
         "exec-tool",
         "rsync",
         "loop-tool",
+        "looked-up-tool",
     }

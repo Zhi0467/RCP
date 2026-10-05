@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import gzip
 import hashlib
 import json
@@ -26,11 +27,13 @@ from tests.helpers import signed_in_client
 
 from . import server_upgrade_harness
 from .server_upgrade_harness import (
+    REPOSITORY_ROOT,
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
     capture_release_update_with,
     exact_base_gate_enabled,
+    exact_candidate_base,
     immutable_fixture_directories,
     published_release_tags,
     verify_fixture_integrity,
@@ -202,6 +205,37 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
     assert metadata["created_with_commit"] == base_commit
     _exercise_candidate_upgrade(fixture)
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_new_storage_migrations_freeze_the_base_shape(tmp_path: Path) -> None:
+    base_ref, _ = exact_candidate_base()
+    migrations = "src/rcp/storage/base.py"
+    base_head = max(_migration_versions(_git_capture("show", f"{base_ref}:{migrations}")))
+    candidate = _migration_versions((REPOSITORY_ROOT / migrations).read_text(encoding="utf-8"))
+    if max(candidate) <= base_head:
+        return
+
+    frozen = set()
+    for fixture in immutable_fixture_directories():
+        database = tmp_path / f"{fixture.name}.sqlite3"
+        database.write_bytes(gzip.decompress((fixture / "data/rcp.sqlite3.gz").read_bytes()))
+        with sqlite3.connect(database) as connection:
+            ledger = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'storage_schema_migrations'"
+            ).fetchone()
+            if ledger is not None:
+                frozen.add(
+                    connection.execute(
+                        "SELECT MAX(migration_version) FROM storage_schema_migrations"
+                    ).fetchone()[0]
+                )
+    assert base_head in frozen, (
+        f"this change adds storage migrations after {base_head}; add an immutable fixture "
+        f"frozen at migration {base_head}, built by the base source "
+        "(tests/fixtures/server_upgrade/README.md)"
+    )
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
@@ -411,6 +445,28 @@ def _metadata_optional_string(metadata: dict[str, object], name: str) -> str | N
     if not isinstance(value, str) or not value:
         raise ValueError(f"server-upgrade fixture metadata has invalid {name}")
     return value
+
+
+def _migration_versions(source: str) -> list[int]:
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_STORAGE_SCHEMA_MIGRATIONS"
+            and node.value is not None
+        ):
+            return [version for version, _ in ast.literal_eval(node.value)]
+    raise ValueError("storage migration registry not found")
+
+
+def _git_capture(*arguments: str) -> str:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
 
 
 def _materialize_database(data_dir: Path) -> Path:

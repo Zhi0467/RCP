@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import {
   experimentBoardHref,
   experimentBoardRouteToken,
-} from "../../src/experiments/experimentBoard";
+} from "../../src/experiments/experimentBoardModel";
 import { ExecutionView } from "../../src/graph/GraphViews";
 
 const projectId = "project-one";
