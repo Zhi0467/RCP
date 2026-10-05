@@ -248,8 +248,11 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
 
 
 def test_claude_prefix_runs_as_claude_invokes_it(tmp_path):
-    from rcp.agents.staged_hidden_read import install
+    from rcp.agents.staged_hidden_read import install, probe_hidden_read_wrapper
 
+    readiness = probe_hidden_read_wrapper()
+    if not readiness["ready"]:
+        pytest.skip(readiness["reason"])
     scope = _scope(str(tmp_path / "home"))
     wrapper = Path(scope.wrapper_path())
     install(

@@ -532,6 +532,20 @@ def seed_patch() -> Patch:
     )
 
 
+class _InertSSHAgent:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def stop_after_workers_drained(self, is_idle: object) -> None:
+        pass
+
+
 def isolate_host(
     monkeypatch: pytest.MonkeyPatch, root: Path, *, provider_discovery: bool = False
 ) -> list[BackgroundAgentTasks]:
@@ -616,6 +630,12 @@ def isolate_host(
 
     # Test apps never contact GitHub; transport tests opt in against loopback.
     monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
+
+    # The deploy-key agent lives at one per-account socket. Every app lifespan
+    # would start a real one there, racing other workers and the developer's
+    # own backend; `tests/test_ssh_agent.py` drives it with its own home.
+    monkeypatch.setattr("rcp.ssh_agent.rcp_home", lambda: root / "rcp-home")
+    monkeypatch.setattr("rcp.api.app.BackendSSHAgent", _InertSSHAgent)
 
     # App tests never inspect or alter the host machine's real power state.
     from rcp.machine_power import MachinePowerController

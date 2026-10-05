@@ -146,8 +146,9 @@ class HiddenReadScope(BaseModel):
     hidden_directories: tuple[HiddenReadPath, ...] = Field(
         default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
     )
+    # Confirmed keys join the default files, so both budgets fit.
     hidden_files: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
+        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT + HIDDEN_READ_KEY_MAX_COUNT
     )
     hidden_globs: tuple[HiddenReadPath, ...] = Field(
         default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT

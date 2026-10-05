@@ -17,7 +17,11 @@ from rcp.agents.hidden_read import (
 from rcp.agents.staged_hidden_read import clean_environment
 from rcp.config import Manifest
 from rcp.core.models import HiddenReadKeyEvidence
-from rcp.limits import HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT, HIDDEN_READ_PATH_MAX_LENGTH
+from rcp.limits import (
+    HIDDEN_READ_KEY_MAX_COUNT,
+    HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
+    HIDDEN_READ_PATH_MAX_LENGTH,
+)
 
 
 def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
@@ -239,6 +243,23 @@ def test_only_confirmed_keys_hidden_and_exempt_parents_stay_readable(
         )
         assert str(Path(path).parent) not in covered.hidden_directories
         assert "hidden_folder_conflict" in covered.enforcement.reasons
+
+
+def test_every_confirmed_key_is_hidden_alongside_the_defaults(manifest, tmp_path, monkeypatch):
+    keys = tuple(
+        HiddenReadKeyEvidence(
+            path=str(tmp_path / f"keys/{n}"),
+            kind="deploy_key",
+            agent_confirmed=True,
+            visibility="hidden",
+            public_key_fingerprint="SHA256:" + "A" * 43,
+        )
+        for n in range(HIDDEN_READ_KEY_MAX_COUNT)
+    )
+    scope = _resolve(manifest, tmp_path, monkeypatch, key_evidence=keys)
+    assert {key.path for key in keys} < set(scope.hidden_files)
+    assert str(tmp_path / "home/.codex/auth.json") in scope.hidden_files
+    assert scope.enforcement.status == "enforced"
 
 
 def test_remote_canonicalization_uses_shipped_source(manifest, tmp_path, monkeypatch):
