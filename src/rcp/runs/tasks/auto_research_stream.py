@@ -230,6 +230,7 @@ async def stream_auto_research_orchestrator_run(
                 execution=execution,
                 remote_stage=stage.remote,
                 capability="orchestrate",
+                hidden_read_scope=hidden_read_scope,
             )
         )
         command_files = RunStageMailbox.for_stage(
@@ -534,6 +535,7 @@ async def stream_auto_research_worker_run(
                 execution=execution,
                 remote_stage=stage.remote,
                 capability="work_auto",
+                hidden_read_scope=hidden_read_scope,
             )
         )
         context = _auto_research_context(service, turn.request, stage)

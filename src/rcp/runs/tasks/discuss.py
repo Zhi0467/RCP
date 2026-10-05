@@ -589,6 +589,7 @@ async def stream_discuss_run(
                     execution=execution,
                     remote_stage=remote_stage,
                     capability="discuss",
+                    hidden_read_scope=hidden_read_scope,
                 )
             )
             if not reusing_checkpoint:

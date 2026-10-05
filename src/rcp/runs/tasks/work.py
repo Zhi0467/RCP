@@ -2568,6 +2568,7 @@ async def _stream_work_run(
                 execution=turn.execution,
                 remote_stage=turn.remote_stage,
                 capability="work_auto",
+                hidden_read_scope=turn.hidden_read_scope,
             )
         )
         question_followup = bool(

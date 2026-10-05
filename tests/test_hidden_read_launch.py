@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,7 @@ from rcp.agents.provider_environment import prepare_hidden_read_launch
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.providers import profile_for
+from rcp.providers.browser_grant import BrowserGrant
 
 CAPABILITIES = ("discuss", "work_auto", "orchestrate", "scratch_patch", "paper_readonly")
 
@@ -100,6 +103,8 @@ async def test_launcher_always_passes_scope(monkeypatch, tmp_path, provider, cap
         type(profile.runtime(profile.legacy_runtime_id)), "turn", lambda _, r: turn(r)
     )
     scope = _scope() if resolved else None
+    browser_status = HiddenReadStatus(status="unhidden", reasons=("browser_unwrapped_macos",))
+    events = []
     with pytest.raises(Captured):
         async for _ in launcher.stream(
             provider,
@@ -108,10 +113,30 @@ async def test_launcher_always_passes_scope(monkeypatch, tmp_path, provider, cap
             capability=capability,
             runtime_id=profile.legacy_runtime_id,
             hidden_read_scope=scope,
+            browser_grant=BrowserGrant(
+                requested=True, status="granted", hidden_read_enforcement=browser_status
+            ),
         ):
-            pass
+            events.append(_)
+    assert events == []
     actual = captured[0].hidden_read_scope
     assert actual is not None
+    prompt = captured[0].prompt
+    policy = json.loads(prompt[prompt.index("{") :])
+    for field in (
+        "enforcement",
+        "hidden_directories",
+        "hidden_files",
+        "hidden_globs",
+        "env_allow_list",
+        "fingerprint",
+    ):
+        assert policy[field] == actual.model_dump(mode="json")[field]
+    assert policy["browser_enforcement"] == browser_status.model_dump(mode="json")
+    assert policy["effective_enforcement"] == {
+        "status": "unhidden",
+        "reasons": sorted(set(actual.enforcement.reasons) | set(browser_status.reasons)),
+    }
     if resolved:
         assert actual is scope
     else:
@@ -195,3 +220,63 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
             assert (tmp_path / "rcp-hidden-read.py").stat().st_mode & 0o100
         if provider == "opencode":
             assert "provider_native_tools_uncovered" in scope.enforcement.reasons
+
+
+def _browser_admission_calls():
+    from rcp import runs
+
+    # Discover every call, including future task owners, rather than maintaining
+    # a second inventory that could silently miss a new launch path.
+    for path in sorted(Path(runs.__file__).parent.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "browser_turn"
+            ):
+                yield pytest.param(path, node, id=f"{path.stem}:{node.lineno}")
+
+
+@pytest.mark.parametrize(("path", "call"), list(_browser_admission_calls()))
+@pytest.mark.asyncio
+async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_path, path, call):
+    from rcp.providers.browser_grant import BrowserGrant
+    from rcp.runs import browser_lifecycle
+
+    scope = _scope()
+    captured = []
+
+    def acquire(**kwargs):
+        captured.append(kwargs["hidden_read_scope"])
+        return BrowserGrant()
+
+    monkeypatch.setattr(browser_lifecycle, "acquire_turn_browser", acquire)
+    request = SimpleNamespace()
+    turn = SimpleNamespace(
+        request=request,
+        workspace=tmp_path,
+        execution_host="",
+        execution=None,
+        remote_stage=None,
+        hidden_read_scope=scope,
+    )
+    stage = SimpleNamespace(workspace=tmp_path, execution_host="", remote=None)
+    # Execute the actual task's admission expression through browser_turn. The
+    # task's unrelated staging/settlement machinery is outside this invariant.
+    admission = eval(
+        compile(ast.Expression(call), str(path), "eval"),
+        {"browser_turn": browser_lifecycle.browser_turn},
+        dict(
+            request=request,
+            turn=turn,
+            stage=stage,
+            workspace=tmp_path,
+            execution_host="",
+            execution=None,
+            remote_stage=None,
+            hidden_read_scope=scope,
+        ),
+    )
+    async with admission:
+        assert captured == [scope]
+        assert captured[0] is scope

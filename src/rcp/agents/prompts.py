@@ -20,7 +20,7 @@ from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 
 if TYPE_CHECKING:
-    from rcp.core.models import HiddenReadScope
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
 from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
@@ -1641,8 +1641,28 @@ Current output instruction:
 """
 
 
-def hidden_read_prompt(scope: HiddenReadScope) -> str:
-    """Describe the exact effective launch status, including uncovered surfaces."""
+def hidden_read_prompt(
+    scope: HiddenReadScope, *, browser_enforcement: HiddenReadStatus | None = None
+) -> str:
+    """Render the resolved policy and the browser's actual coverage without mutating either."""
+    policy = scope.model_dump(
+        mode="json",
+        include={
+            "enforcement",
+            "hidden_directories",
+            "hidden_files",
+            "hidden_globs",
+            "env_allow_list",
+            "fingerprint",
+        },
+    )
+    if browser_enforcement is not None:
+        reasons = sorted(set(scope.enforcement.reasons) | set(browser_enforcement.reasons))
+        policy["browser_enforcement"] = browser_enforcement.model_dump(mode="json")
+        policy["effective_enforcement"] = {
+            "status": "unhidden" if reasons else "enforced",
+            "reasons": reasons,
+        }
     return "Selected-secret read policy: " + json.dumps(
-        scope.enforcement.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        policy, sort_keys=True, separators=(",", ":")
     )
