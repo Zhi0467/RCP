@@ -16,7 +16,9 @@ from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
 from rcp.browser import install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
+from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.projects import ProjectCatalog
+from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
 from rcp.storage import AppStore
 from rcp.storage.models import SpaceMachineRecord
@@ -63,6 +65,7 @@ class UpdateSpaceMachineRequest(BaseModel):
 
     name: str | None = None
     writable_paths: list[str] | None = Field(default=None, max_length=_MAX_WRITABLE_PATHS)
+    hidden_folders: list[str] | None = Field(default=None, max_length=HIDDEN_READ_PATH_MAX_COUNT)
 
     @field_validator("name")
     @classmethod
@@ -128,6 +131,7 @@ def _machine_view(
         "host": machine.host,
         "os_account": machine.os_account,
         "writable_paths": list(machine.writable_paths),
+        "hidden_folders": list(machine.hidden_folders),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
         "in_use": True if projects else (False if complete else None),
@@ -222,6 +226,78 @@ def _validated_writable_paths(
     return paths
 
 
+def _validated_hidden_folders(
+    machine: SpaceMachineRecord, requested: list[str], catalog: ProjectCatalog
+) -> list[str]:
+    from rcp.agents.hidden_read import validate_machine_hidden_folders
+
+    # The policy owner checks syntax and bounds before any host request.
+    paths = validate_machine_hidden_folders(requested, protected_roots=())
+    if not paths:
+        return []
+    checkouts = [
+        item.path
+        for item in catalog.repository_ownership_inventory()
+        if item.execution_host == machine.host
+    ]
+    result = run_machine_directory_request(
+        machine.host,
+        {"mode": "check", "paths": sorted({*paths, *checkouts})},
+        os_account=machine.os_account,
+    )
+    home = result.get("home")
+    resolved = result.get("resolved")
+    if (
+        not isinstance(home, str)
+        or not PurePosixPath(home).is_absolute()
+        or not isinstance(resolved, dict)
+        or set(resolved) != {*paths, *checkouts}
+    ):
+        raise ValueError("The machine returned an invalid folder check.")
+    root = PurePosixPath(home) / ".rcp"
+    protected = [
+        *checkouts,
+        str(root / "stages"),
+        str(root / "tools"),
+        str(root / "browser"),
+        command_socket_directory(home),
+        # Settings has no launch-host key confirmation: these parents must remain readable.
+        str(PurePosixPath(home) / ".ssh"),
+        str(PurePosixPath(home) / ".ssh/known_hosts"),
+        str(PurePosixPath(home) / ".local/share/rcp/credentials"),
+    ]
+    if not machine.host:
+        protected.extend(str(catalog.data_dir / name) for name in ("run-stage", "tools", "browser"))
+        from rcp.server_ops.config import load_installed_server_config
+        from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+
+        if DEFAULT_SERVER_LAYOUT.config_path.exists():
+            layout = load_installed_server_config(DEFAULT_SERVER_LAYOUT.config_path).paths
+            if Path(layout.data_dir).resolve() == catalog.data_dir.resolve():
+                protected.append(layout.credentials_root)
+    legacy = result.get("legacy_stages", [])
+    if not isinstance(legacy, list) or not all(isinstance(path, str) for path in legacy):
+        raise ValueError("The machine returned an invalid folder check.")
+    protected.extend(legacy)
+    # Resolve protected directories on that host as well; never realpath an SSH path locally.
+    targets = run_machine_directory_request(
+        machine.host,
+        {"path": home, "limit": 1, "protect": sorted(set(protected))},
+        os_account=machine.os_account,
+    ).get("protected_targets")
+    if not isinstance(targets, list) or not all(isinstance(value, str) for value in targets):
+        raise ValueError("The machine returned an invalid protected-folder check.")
+    protected.extend(targets)
+    actual = []
+    for path in paths:
+        value = resolved[path]
+        if not isinstance(value, str):
+            raise ValueError(f"{path} is not a folder on {machine.name}.")
+        actual.append(value)
+    validate_machine_hidden_folders(paths, protected_roots=tuple(protected))
+    return validate_machine_hidden_folders(actual, protected_roots=tuple(protected))
+
+
 @router.get("/api/space/machines")
 def list_space_machines(
     request: Request,
@@ -287,7 +363,21 @@ def update_space_machine(
             writable_paths = _validated_writable_paths(machine, body.writable_paths, catalog)
         except (MachineBrowseFailure, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    updated = store.update_space_machine(machine_id, name=body.name, writable_paths=writable_paths)
+    hidden_folders = None
+    if body.hidden_folders is not None:
+        try:
+            hidden_folders = _validated_hidden_folders(machine, body.hidden_folders, catalog)
+        except (MachineBrowseFailure, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": getattr(exc, "code", "hidden_folder_rejected"),
+                    "message": str(exc),
+                },
+            ) from exc
+    updated = store.update_space_machine(
+        machine_id, name=body.name, writable_paths=writable_paths, hidden_folders=hidden_folders
+    )
     return _one_machine_view(store, updated, _visible_project_ids(request, identity_access, store))
 
 

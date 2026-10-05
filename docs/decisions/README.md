@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Selected agent secrets are usable but not readable](2026-10-04-agent-secret-hiding.md)
+  records the generic network threat model, confirmed-key hiding, preserved
+  browser and Git capability, Keychain compatibility, and visible fallback.
+
 - [The kernel asks node-type questions](2026-10-04-the-kernel-asks-node-type-questions.md)
   records why kernel code asks a project type which node types play which part,
   why a type's own rules live in a listed research layer, why the project type

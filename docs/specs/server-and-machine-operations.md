@@ -10,6 +10,28 @@ are in [Projects, spaces, and operations](projects-spaces-and-operations.md).
 The operator's terminal procedure is [`docs/server.md`](../server.md), which is
 a guide and never overrides this file.
 
+## Agent secret hiding and repository authentication
+
+The backend owns one long-lived deploy-key `ssh-agent` per OS account, guarded
+by an account lock even when backends use different data directories. Its private
+stable socket directory lives under `~/.rcp`, outside `/tmp`, so the service's
+`PrivateTmp` does not split the transport. Startup opens the effect fence, starts
+the agent, and then admits recovery launches; shutdown drains workers before
+stopping it. The user's `SSH_AUTH_SOCK` remains separate.
+
+Repository `core.sshCommand` retains its transport and adds the stable
+`IdentityAgent` socket. A deploy key is hidden only after fingerprint identity
+and bounded signing confirmation on the launch host. Unconfirmed keys remain
+readable with a warning so Git keeps working. Remote execution machines retain
+readable deploy keys with an explicit warning until remote agent ownership is
+implemented.
+
+Doctor reports missing hiding support and blocked Linux user namespaces as
+warnings, consistent with Settings and turn status. Such hosts run unhidden;
+hiding availability never blocks provider launches or shrinks browser and Git
+capability. This is selected-secret protection against generic network prompt
+injection, not a separate account or a hostile same-account sandbox.
+
 ## External dependencies
 
 This is the source-derived inventory of named external programs started by

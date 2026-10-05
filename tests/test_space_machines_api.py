@@ -4,8 +4,10 @@ import json
 import shlex
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -294,3 +296,134 @@ def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> N
     assert calls[0]["data_dir"] == tmp_path / "data"
     assert client.post("/api/space/machines/absent/browser/install", json={}).status_code == 404
     assert len(calls) == 1
+
+
+@pytest.fixture
+def hidden_policy(monkeypatch):
+    """Isolate the Settings contract while the policy slice is developed separately."""
+    from pydantic import TypeAdapter
+
+    from rcp.core.models import HiddenReadPath
+
+    calls = []
+
+    class Rejected(ValueError):
+        code = "protected_overlap"
+
+    def validate(folders, *, protected_roots):
+        calls.append((folders, protected_roots))
+        result = sorted(set(TypeAdapter(list[HiddenReadPath]).validate_python(folders)))
+        for path in result:
+            candidate = Path(path)
+            for root in protected_roots:
+                protected = Path(root)
+                if candidate.is_relative_to(protected) or protected.is_relative_to(candidate):
+                    raise Rejected("Folder overlaps a required path.")
+        return result
+
+    module = ModuleType("rcp.agents.hidden_read")
+    module.validate_machine_hidden_folders = validate
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return calls
+
+
+def test_machine_hidden_folders_round_trip_and_atomic_refusal(
+    app, manifest, tmp_path, hidden_policy
+) -> None:
+    client = signed_in_client(app)
+    machine = _machine(client, "laptop")
+    machine_id = machine["machine_id"]
+    url = f"/api/space/machines/{machine_id}"
+    secret = tmp_path / "private"
+    secret.mkdir()
+    saved = client.patch(url, json={"hidden_folders": [str(secret), str(secret)]})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["hidden_folders"] == [str(secret.resolve())]
+    assert _store(app).space_machine(machine_id).hidden_folders == [str(secret.resolve())]
+    assert client.patch(url, json={"name": "Renamed"}).json()["hidden_folders"] == [
+        str(secret.resolve())
+    ]
+
+    checkout = Path(load_manifest(manifest.path).repositories[0].path)
+    for folder in (checkout, checkout / ".research", checkout.parent):
+        refused = client.patch(url, json={"name": "Not saved", "hidden_folders": [str(folder)]})
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["code"] == "protected_overlap"
+        assert _store(app).space_machine(machine_id).name == "Renamed"
+        assert _store(app).space_machine(machine_id).hidden_folders == [str(secret.resolve())]
+    assert client.patch(url, json={"hidden_folders": []}).json()["hidden_folders"] == []
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_machine_hidden_folders_validate_host_resolved_symlinks(
+    app, monkeypatch, hidden_policy, remote
+) -> None:
+    client = signed_in_client(app)
+    if remote:
+        machine = client.post(
+            "/api/space/machines",
+            json={
+                "name": "GPU",
+                "host": "worker@gpu.example",
+                "os_account": "worker",
+            },
+        ).json()
+    else:
+        machine = _machine(client, "laptop")
+    calls = []
+
+    def check(host, request, *, os_account):
+        calls.append((host, os_account))
+        if "protect" in request:
+            return {"protected_targets": request["protect"]}
+        return {
+            "home": "/home/worker",
+            "resolved": {
+                path: ("/home/worker/.rcp/stages" if path == "/private-link" else path)
+                for path in request["paths"]
+            },
+        }
+
+    monkeypatch.setattr("rcp.api.space_machines.run_machine_directory_request", check)
+    response = client.patch(
+        f"/api/space/machines/{machine['machine_id']}", json={"hidden_folders": ["/private-link"]}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "protected_overlap"
+    assert calls and all(host == machine["host"] for host, _ in calls)
+    assert _store(app).space_machine(machine["machine_id"]).hidden_folders == []
+
+
+def test_team_member_can_edit_machine_hidden_folders(tmp_path, hidden_policy) -> None:
+    _app, client, store, people, acting = _team_app(tmp_path)
+    _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
+    machine = client.get("/api/space/machines").json()["machines"][0]
+    secret = tmp_path / "member-secret"
+    secret.mkdir()
+    acting[0] = people[1].user_id
+    response = client.patch(
+        f"/api/space/machines/{machine['machine_id']}", json={"hidden_folders": [str(secret)]}
+    )
+    assert response.status_code == 200, response.text
+    assert store.space_machine(machine["machine_id"]).hidden_folders == [str(secret.resolve())]
+
+
+def test_machine_hidden_folders_upgrade_preserves_existing_card(app) -> None:
+    from rcp.storage import AppStore
+
+    store = _store(app)
+    machine = store.space_machines()[0]
+    store.update_space_machine(machine.machine_id, writable_paths=["/shared"])
+    with store.connection() as connection:
+        connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_name = ?",
+            ("machine_hidden_folders_v1",),
+        )
+    upgraded = AppStore(store.path)
+    card = upgraded.space_machine(machine.machine_id)
+    assert card.writable_paths == ["/shared"]
+    assert card.hidden_folders == []
+    upgraded.update_space_machine(machine.machine_id, hidden_folders=["/private"])
+    upgraded = AppStore(store.path)
+    assert upgraded.space_machine(machine.machine_id).hidden_folders == ["/private"]

@@ -44,6 +44,7 @@ const gpu = {
   host: "alice@gpu.example",
   os_account: "alice",
   writable_paths: ["/data/cache", "/scratch"],
+  hidden_folders: ["/private"],
   projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
   in_use: true,
 };
@@ -395,4 +396,51 @@ test("adding a machine names it from its card, numbered past taken names", () =>
     "lab-cluster-3",
   );
   assert.ok(projectMachineAlias("x".repeat(80), ["x".repeat(48)]).length <= 48);
+});
+
+test("hidden folders serialize edits without changing defaults or writable paths", async () => {
+  const calls = [];
+  const editor = createPathEditor(async (id, request) => {
+    calls.push({ id, request });
+    return { ...gpu, ...request };
+  }, "hidden_folders");
+  editor.sync(gpu);
+  await editor.edit({ kind: "add", path: "/credentials" });
+  await editor.edit({ kind: "remove", path: "/private" });
+  assert.deepEqual(calls, [
+    { id: gpu.machine_id, request: { hidden_folders: ["/private", "/credentials"] } },
+    { id: gpu.machine_id, request: { hidden_folders: ["/credentials"] } },
+  ]);
+});
+
+test("hidden-folder defaults cannot be removed and effective status is visible", () => {
+  const record = {
+    ...gpu,
+    hidden_read: {
+      default_directories: ["/default-secret"],
+      default_files: [],
+      default_globs: [],
+      effective_scope: {
+        enforcement: {
+          status: "unhidden",
+          reasons: ["wrapper_unavailable"],
+        },
+      },
+    },
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(MachineCard, {
+      title: "GPU",
+      hostLabel: "GPU",
+      osAccount: "worker",
+      record,
+      level: "space",
+      onRecordChange() {},
+    }),
+  );
+  assert.match(html, /data-hidden-read-status="unhidden"/);
+  const defaultRow = html.match(/<li[^>]*data-hidden-default=""[^>]*>(.*?)<\/li>/)?.[1];
+  assert.ok(defaultRow);
+  assert.doesNotMatch(defaultRow, /<button/);
+  assert.equal((html.match(/data-machine-action="remove-hidden-folder"/g) ?? []).length, 1);
 });

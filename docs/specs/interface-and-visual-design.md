@@ -332,6 +332,17 @@ level, name filter, **Load more**, locked protected folders, **Use this
 folder**) rather than typed. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset
 compute** removes the optional block through the normal Settings **Save**.
+
+Each machine card also shows **Hidden folders** beside writable paths. Code-owned
+default directories, files, and globs are read-only rows with no removal control.
+**Add folder** opens the same folder picker; user additions have a remove control.
+Edits save immediately for all projects using that machine, and any member can
+edit them. Refusals stay inline with the attempted action. The effective
+**Enforced** or **Unhidden** state and its reasons remain visible, including
+readable keys and the macOS browser exception; a missing projection is explicitly
+unavailable, never shown as enforced. Errors and status use the ordinary card
+hierarchy, without muted explanatory subtitles.
+
 Readiness uses the same label, tone, and pending presentation as compute
 connections, with one row per offered route (scheduler and helper). There is
 no Probe control: a save that changes the block checks it in the background,
