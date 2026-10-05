@@ -79,6 +79,7 @@ from rcp.runs.session_master import (
 )
 from rcp.runs.shared import (
     _pinned_to_profile,
+    _prepare_hidden_read_scope,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -569,6 +570,17 @@ async def stream_discuss_run(
                 )
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
+            hidden_read_scope = await _prepare_hidden_read_scope(
+                service,
+                request,
+                workspace=workspace,
+                remote_stage=remote_stage,
+                execution=execution,
+                capability="discuss",
+                execution_host=execution_host,
+                data_dir=data_dir,
+                local_stage=local_stage,
+            )
             browser_grant = await browser_stack.enter_async_context(
                 browser_turn(
                     request,
@@ -896,6 +908,8 @@ async def stream_discuss_run(
                     launcher,
                     request,
                     prompt,
+                    service=service,
+                    hidden_read_scope=hidden_read_scope,
                     workspace=workspace,
                     session_id=request.session_id,
                     required_session_id=request.session_id if request.artifact_edit else None,

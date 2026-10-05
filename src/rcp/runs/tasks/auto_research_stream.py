@@ -90,6 +90,7 @@ from rcp.runs.session_master import (
 from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _parent_task_contract_path,
+    _prepare_hidden_read_scope,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -210,6 +211,17 @@ async def stream_auto_research_orchestrator_run(
                 "auto_research orchestrator stream and command dispatcher must share one store"
             )
         stage = _open_orchestrator_stage(service, data_dir, execution, turn)
+        hidden_read_scope = await _prepare_hidden_read_scope(
+            service,
+            turn.request,
+            workspace=stage.workspace,
+            remote_stage=stage.remote,
+            execution=execution,
+            capability="orchestrate",
+            execution_host=stage.execution_host,
+            data_dir=data_dir,
+            local_stage=stage.local,
+        )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(
                 turn.request,
@@ -354,6 +366,8 @@ async def stream_auto_research_orchestrator_run(
                     launcher,
                     cast(RunRequest, turn.request),
                     prompt,
+                    service=service,
+                    hidden_read_scope=hidden_read_scope,
                     workspace=stage.workspace,
                     session_id=turn.binding.native_session_id,
                     read_dirs=read_dirs,
@@ -501,6 +515,17 @@ async def stream_auto_research_worker_run(
                 "auto_research worker stream and command dispatcher must share one store"
             )
         stage = _open_worker_stage(service, data_dir, execution, turn)
+        hidden_read_scope = await _prepare_hidden_read_scope(
+            service,
+            turn.request,
+            workspace=stage.workspace,
+            remote_stage=stage.remote,
+            execution=execution,
+            capability="work_auto",
+            execution_host=stage.execution_host,
+            data_dir=data_dir,
+            local_stage=stage.local,
+        )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(
                 turn.request,
@@ -616,6 +641,8 @@ async def stream_auto_research_worker_run(
                     launcher,
                     cast(RunRequest, turn.request),
                     prompt,
+                    service=service,
+                    hidden_read_scope=hidden_read_scope,
                     workspace=stage.workspace,
                     session_id=turn.binding.native_session_id,
                     read_dirs=read_dirs,
@@ -2092,6 +2119,7 @@ async def _settle_worker_patch(
                     launcher,
                     cast(RunRequest, turn.request),
                     correction_prompt,
+                    service=service,
                     workspace=stage.workspace,
                     session_id=native_session_id,
                     read_dirs=read_dirs,

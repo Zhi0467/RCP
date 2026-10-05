@@ -214,6 +214,8 @@ async def stream_artifact_edit_run(
             launcher,
             request,
             prompt,
+            service=service,
+            data_dir=data_dir,
             workspace=workspace,
             session_id=request.session_id,
             read_dirs=[],

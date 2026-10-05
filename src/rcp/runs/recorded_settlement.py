@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
+from rcp.agents.provider_environment import unhidden_read_scope
 from rcp.providers import ProviderTurnRequest
 from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
@@ -43,6 +44,7 @@ def provider_turn_request(
         read_dirs=[],
         write_dirs=[],
         write_scope=None,
+        hidden_read_scope=unhidden_read_scope(execution_machine="recorded", host=""),
         # Nothing launches from this request; it exists so the decoder can build
         # the runtime that reads the wire. Naming the turn's real capability here
         # would ask for a write scope no reader needs and no recovery has.
