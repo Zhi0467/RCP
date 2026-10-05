@@ -1,11 +1,10 @@
 # Agent secrets: usable but not readable
 
-Status 2026-10-04: design settled; implementation in progress. One branch and
-one PR carry all of it. Implemented on this branch: the production CORS
-allowlist is gone (Vite proxies `/api`, so no origin needed it), and slice A's
-contracts (`HiddenReadScope`, key evidence, enforcement status, the
-`ProviderTurnRequest` field, `SpaceMachineRecord.hidden_folders`, and the web
-types), with no behavior change yet. Remaining: slices B–F below.
+Status 2026-10-04: design settled; code complete on this branch. One branch and
+one PR carry all of it. Implemented: the `Host` check, CORS removal, slices A–F,
+remote account agents and key confirmation, and the wrapper staged in a hidden
+`~/.rcp/hidden-read/<fingerprint>` folder outside every write root. Remaining:
+the live checks under "Open checks" (a probe matrix compared against `main`).
 
 ## Threat model
 
