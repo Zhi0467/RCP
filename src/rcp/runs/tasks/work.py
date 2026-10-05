@@ -25,6 +25,7 @@ from rcp.agents import (
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
+from rcp.agents.context import ChatContext
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -43,7 +44,6 @@ from rcp.agents.prompts import (
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface, Manifest
@@ -64,20 +64,16 @@ from rcp.runs.chat import (
     _append_chat_graph_receipt,
     _chat_read_dirs,
     _chat_stage_name,
-    _ChatPatchInputs,
     _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
-    _logical_chat_turn_operation_id,
     _prepare_chat_prompt_state,
-    _prepare_local_artifact_directory,
     _prepare_local_chat_workspace,
     _project_write_scope,
     _read_chat_patch,
     _read_watch_request,
     _record_applied_graph_revision,
     _record_artifact_discovery_receipt,
-    _record_chat_context_receipt,
     _stage_chat_patch_inputs,
     _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
@@ -127,7 +123,6 @@ from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
-    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
@@ -144,6 +139,11 @@ from rcp.runs.shared import (
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import (
     _process_experiment_watcher_maintenance,
+)
+from rcp.runs.tasks.work_staging import (
+    StagedArtifactAccess,
+    WorkStageLayout,
+    stage_work_turn,
 )
 from rcp.runs.tasks.work_turn_runtime import (
     WORK_CORRECTION_SESSION_ROLE,
@@ -611,261 +611,87 @@ async def _stage_work_turn(
     request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
     clear_stale_handoffs = _clears_stale_turn_handoffs(continuation)
-    resuming = continuation == "resume"
-    local_stage: Path | None = None
-    remote_stage: RemoteRunStage | None = None
-    patch_inputs: _ChatPatchInputs | None = None
-    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None
-    validator_budget = PatchValidationBudget()
-    outcome = _ProviderOutcome(session_id=request.session_id)
-    try:
-        context = service.assemble_chat(request)
-        if execution is not None:
-            task = execution.store.agent_task(execution.operation_id)
-            if task is None:
-                raise ValueError("The conversation task binding is unavailable.")
-            context = conversation_worktree_context(
-                service,
-                execution.store,
-                task.project_id,
-                request,
-                context,
-                resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
-            )
-        surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
-        _record_chat_context_receipt(execution, context, surface=surface)
-        stage_name = _chat_stage_name(service, request, execution)
-        saved_stage = execution is not None and execution.stage_root is not None
-        if resolved.execution_host:
-            if saved_stage:
-                stage_root = _validated_remote_chat_resume_stage(
-                    execution,
-                    resolved.execution_host,
-                    stage_name,
-                )
-                remote_stage = RemoteRunStage(resolved.execution_host).attach(stage_root)
-            else:
-                remote_stage = RemoteRunStage(resolved.execution_host).open(
-                    stage_name,
-                    reuse=True,
-                    protected_roots=_protected_run_stage_roots(
-                        execution.store if execution is not None else None,
-                        resolved.execution_host,
-                    ),
-                )
-            assert remote_stage.root is not None
-            remote_stage.touch()
-            if execution is not None:
-                execution.checkpoint_stage(resolved.execution_host, str(remote_stage.root))
-            context = context.model_copy(
-                update=_stage_context_paths(
-                    context,
-                    service,
-                    remote_stage,
-                    resolved.execution_machine_alias,
-                )
-            )
-            workspace = Path(str(remote_stage.workspace))
-        else:
-            stage_root = _swept_stage_root(
-                data_dir,
-                store=execution.store if execution is not None else None,
-            )
-            expected_stage = stage_root / stage_name
-            if saved_stage:
-                local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
-            else:
-                local_stage = expected_stage
-                local_stage.mkdir(parents=True, exist_ok=True)
-            workspace = _prepare_local_chat_workspace(
-                local_stage,
-                execution=execution,
-                saved_stage=saved_stage,
-            )
-            if execution is not None:
-                execution.checkpoint_stage("", str(local_stage))
-        token = _task_token(execution)
-        patch_inputs = _stage_chat_patch_inputs(
-            local_stage,
-            remote_stage,
-            workspace=workspace,
-            stage_name=stage_name,
-            task_id=execution.operation_id if execution is not None else token,
-            turn_id=f"{token}:work",
-            broker=True,
-            episode_id=request.control_episode_id,
+
+    def bind_conversation_worktree(context: ChatContext) -> ChatContext:
+        if execution is None:
+            return context
+        task = execution.store.agent_task(execution.operation_id)
+        if task is None:
+            raise ValueError("The conversation task binding is unavailable.")
+        return conversation_worktree_context(
+            service,
+            execution.store,
+            task.project_id,
+            request,
+            context,
+            resuming_integration=execution.continuation in {"resume", "retry", "handoff"},
         )
+
+    def clear_handoffs(layout: WorkStageLayout) -> None:
         if clear_stale_handoffs:
-            _clear_stale_turn_handoffs(workspace, remote_stage)
-        artifact_scope_id = (
-            _logical_chat_turn_operation_id(execution.store, execution.operation_id)
-            if execution is not None and resuming
-            else execution.operation_id
-            if execution is not None
-            else str(uuid.uuid4())
-        )
-        if remote_stage is not None:
-            artifact_directory: Path | PurePosixPath = remote_stage.prepare_artifact_directory(
-                artifact_scope_id,
-                reuse=resuming,
-            )
-        else:
-            assert local_stage is not None
-            artifact_directory = _prepare_local_artifact_directory(
-                workspace,
-                artifact_scope_id,
-                reuse=resuming,
-            )
+            _clear_stale_turn_handoffs(layout.workspace, layout.remote_stage)
+
+    def stage_artifacts(
+        layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
+    ) -> StagedArtifactAccess:
         artifact_context = stage_artifact_context(
             service,
             request,
             execution,
-            local_stage=local_stage,
-            remote_stage=remote_stage,
+            local_stage=layout.local_stage,
+            remote_stage=layout.remote_stage,
             artifact_path=str(artifact_directory),
         )
-        read_dirs = _chat_read_dirs(
-            context,
-            local_stage,
-            remote_stage,
-            service,
-            resolved.execution_machine_alias,
-        )
         has_references = any(item.reference is not None for item in request.attachments)
-        if has_references and remote_stage is None:
+        local_references = has_references and layout.remote_stage is None
+        if local_references:
             # Scope canonicalization requires even a not-yet-used storage root to exist.
             (data_dir / "artifacts").mkdir(parents=True, exist_ok=True)
-        write_scope = _project_write_scope(
-            context,
-            service,
-            resolved.execution_machine_alias,
-            episode_request=request,
-            local_stage=local_stage,
-            workspace=workspace,
-            remote_stage=remote_stage,
-            data_dir=data_dir,
-            execution=execution,
-            capability="work_auto",
-            additional_protected_write_paths=[
+        return StagedArtifactAccess(
+            protected_write_paths=[
                 *(artifact_context.protected_write_paths if artifact_context is not None else ()),
-                *([str(data_dir / "artifacts")] if remote_stage is None and has_references else []),
+                *([str(data_dir / "artifacts")] if local_references else []),
             ],
+            pointer=artifact_context.pointer if artifact_context is not None else None,
         )
-        compute_commands = (
-            WorkComputeCommands(
-                execution, service.manifest, write_scope, remote_stage, request.control_episode_id
-            )
-            if execution is not None
-            else None
+
+    def select_skills(request: RunRequest) -> tuple[SkillSelection, RunRequest]:
+        if not is_consolidation(execution):
+            return service.resolve_skill_selection(request), request
+        skill_selection = consolidation_skill_selection()
+        return skill_selection, request.model_copy(
+            update={
+                "workflow_ids": skill_selection.workflow_ids,
+                "skill_ids": skill_selection.skill_ids,
+                "invoked_workflow_ids": ["graph-consolidation"],
+                "resolved_skill_packages": skill_selection.resolved_skill_packages,
+            }
         )
-        validator_lifecycle = _start_work_validator_mailbox(
-            service,
-            patch_inputs.validator_staged,
-            execution=execution,
-            budget=validator_budget,
-            compute_commands=compute_commands,
-            run_truth_scope=context.run_truth_scope,
-        )
-        write_dirs = [Path(item) for item in write_scope.repository_roots]
-        experiment_resources = await stage_chat_experiment_watcher_resources(
+
+    turn, staged, _ = await stage_work_turn(
+        service,
+        resolved,
+        data_dir,
+        execution,
+        refresh_remote_stage=True,
+        read_dirs_before_write_scope=True,
+        compute_episode_id=request.control_episode_id,
+        prepare_handoffs=clear_handoffs,
+        start_validator_mailbox=_start_work_validator_mailbox,
+        bind_context=bind_conversation_worktree,
+        stage_artifacts=stage_artifacts,
+        stage_experiment_resources=lambda layout: stage_chat_experiment_watcher_resources(
             request,
             execution,
-            local_stage,
-            remote_stage,
-            workspace=workspace,
-            token=token,
+            layout.local_stage,
+            layout.remote_stage,
+            workspace=layout.workspace,
+            token=layout.token,
             clear_stale=clear_stale_handoffs,
-        )
-        experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
-        skill_selection = (
-            consolidation_skill_selection()
-            if is_consolidation(execution)
-            else service.resolve_skill_selection(request)
-        )
-        if is_consolidation(execution):
-            request = request.model_copy(
-                update={
-                    "workflow_ids": skill_selection.workflow_ids,
-                    "skill_ids": skill_selection.skill_ids,
-                    "invoked_workflow_ids": ["graph-consolidation"],
-                    "resolved_skill_packages": skill_selection.resolved_skill_packages,
-                }
-            )
-        skill_pointers = stage_skill_selection(
-            skill_selection,
-            local_stage=local_stage,
-            remote_stage=remote_stage,
-            label=skill_bundle_label(skill_selection),
-            reuse_existing=True,
-        )
-        if bool(request.attachment_batch_id) != bool(request.attachments):
-            raise ValueError("The chat task has incomplete attachment batch metadata.")
-        attachment_pointers = (
-            ChatAttachmentStore(data_dir / "chat-attachments").stage(
-                request.attachment_batch_id,
-                request.attachments,
-                local_stage=local_stage,
-                remote_stage=remote_stage,
-            )
-            if request.attachment_batch_id
-            else []
-        )
-        if artifact_context is not None:
-            attachment_pointers.append(artifact_context.pointer)
-        read_dirs.extend(
-            path
-            for path in dict.fromkeys(
-                Path(str(item["path"])).parent for item in attachment_pointers
-            )
-            if path not in read_dirs
-        )
-        repositories = [
-            {"alias": item.alias, "host": item.host, "path": item.path}
-            for item in context.repositories
-        ]
-        turn = WorkTurn(
-            service=service,
-            request=request,
-            execution=execution,
-            context=context,
-            workspace=workspace,
-            local_stage=local_stage,
-            remote_stage=remote_stage,
-            execution_host=resolved.execution_host,
-            provider_binary=resolved.provider_binary,
-            read_dirs=read_dirs,
-            write_dirs=write_dirs,
-            write_scope=write_scope,
-            patch_inputs=patch_inputs,
-            validator_lifecycle=validator_lifecycle,
-            validator_budget=validator_budget,
-            compute_commands=compute_commands,
-            outcome=outcome,
-        )
-        staged = _StagedWorkInputs(
-            token=token,
-            artifact_scope_id=artifact_scope_id,
-            artifact_directory=artifact_directory,
-            experiment_resources=experiment_resources,
-            experiment_resource_pointers=experiment_resource_pointers,
-            skill_selection=skill_selection,
-            skill_pointers=skill_pointers,
-            attachment_pointers=attachment_pointers,
-            repositories=repositories,
-        )
-        return turn, staged
-    except BaseException as exc:
-        if validator_lifecycle is not None:
-            await validator_lifecycle.close(primary_error=exc)
-        elif patch_inputs is not None and not patch_inputs.validator_staged.credential.expired:
-            await _close_work_validator_mailbox(
-                patch_inputs.validator_staged,
-                stop=None,
-                task=None,
-                execution=execution,
-                primary_error=exc,
-            )
-        raise
+        ),
+        select_skills=select_skills,
+    )
+    return turn, staged
 
 
 async def _prepare_work_prompt_context(
@@ -3138,53 +2964,6 @@ def _validate_work_patch_live(
     )
 
 
-def _record_work_lock_wait(
-    execution: AgentTaskExecution,
-    message: str,
-    location: str,
-) -> None:
-    detail = f"{message} Location: {location}"
-    execution.store.update_agent_task_message(
-        execution.operation_id,
-        detail,
-        phase="waiting",
-        event=True,
-    )
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        "canonical_state_lock_wait",
-        {"location": location},
-        tier="diagnostic",
-    )
-
-
-def _record_work_lock_lost(
-    execution: AgentTaskExecution,
-    message: str,
-    location: str,
-) -> None:
-    detail = (
-        f"{message} RCP will report the observed outcome of the retained Work patch without "
-        f"repeating operational work. Location: {location}"
-    )
-    execution.store.update_agent_task_message(
-        execution.operation_id,
-        detail,
-        phase="applying",
-    )
-    execution.store.record_agent_task_event(
-        execution.operation_id,
-        detail,
-        level="warning",
-    )
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        "canonical_state_lock_lost",
-        {"location": location},
-        tier="diagnostic",
-    )
-
-
 def _apply_work_patch(
     service: ProjectService,
     execution: AgentTaskExecution | None,
@@ -3224,16 +3003,6 @@ def _apply_work_patch(
         rejected_patch_error="The graph rejected the Work patch.",
         proposal_ids_for_patch=_work_patch_proposal_ids,
         bounded_messages=_bounded_graph_messages,
-        record_lock_wait=(
-            (lambda message, location: _record_work_lock_wait(execution, message, location))
-            if execution is not None
-            else None
-        ),
-        record_lock_lost=(
-            (lambda message, location: _record_work_lock_lost(execution, message, location))
-            if execution is not None
-            else None
-        ),
         cancelled=cancelled,
         under_lock=under_lock,
         prior_commit_status=prior_commit_status,

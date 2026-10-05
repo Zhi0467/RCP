@@ -14,6 +14,7 @@ import pytest
 import rcp.runs.tasks.auto_research_child_work as child_module
 import rcp.runs.tasks.experiment_loop as loop_module
 import rcp.runs.tasks.work as work_module
+import rcp.runs.tasks.work_staging as staging_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.agents.staged_command_client import _broker_socket_path
@@ -72,7 +73,7 @@ async def test_initial_validator_preserves_setup_failure_over_serve_and_cleanup_
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
     finished: list[str] = []
-    original_stage = work_module._stage_chat_patch_inputs
+    original_stage = staging_module._stage_chat_patch_inputs
     original_cleanup = StagedCommandMailbox.cleanup
 
     def capture_stage(*args, **kwargs):
@@ -96,7 +97,7 @@ async def test_initial_validator_preserves_setup_failure_over_serve_and_cleanup_
     def fail_launch_receipt(*_args, **_kwargs):
         raise ValueError("primary Work launch receipt failure")
 
-    monkeypatch.setattr(work_module, "_stage_chat_patch_inputs", capture_stage)
+    monkeypatch.setattr(staging_module, "_stage_chat_patch_inputs", capture_stage)
     monkeypatch.setattr(work_module, "serve_patch_validation_mailbox", fail_serve)
     monkeypatch.setattr(work_module, "_record_agent_launch_receipt", fail_launch_receipt)
     monkeypatch.setattr(StagedCommandMailbox, "cleanup", fail_cleanup)
@@ -134,7 +135,7 @@ async def test_correction_validator_closes_when_post_stage_receipt_fails(
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
     finished: list[str] = []
-    original_chat_stage = work_module._stage_chat_patch_inputs
+    original_chat_stage = staging_module._stage_chat_patch_inputs
     original_correction_stage = work_module.stage_patch_validation_mailbox
     original_serve = work_module.serve_patch_validation_mailbox
     original_receipt = work_module._record_agent_launch_receipt
@@ -168,7 +169,7 @@ async def test_correction_validator_closes_when_post_stage_receipt_fails(
         if "work-patch-correction" in staged.credential.identity.turn_id:
             raise RuntimeError("secondary correction cleanup failure")
 
-    monkeypatch.setattr(work_module, "_stage_chat_patch_inputs", capture_chat_stage)
+    monkeypatch.setattr(staging_module, "_stage_chat_patch_inputs", capture_chat_stage)
     monkeypatch.setattr(work_module, "stage_patch_validation_mailbox", capture_correction_stage)
     monkeypatch.setattr(work_module, "serve_patch_validation_mailbox", tracked_serve)
     monkeypatch.setattr(work_module, "_record_agent_launch_receipt", fail_correction_receipt)

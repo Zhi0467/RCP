@@ -869,6 +869,53 @@ def validate_work_patch_live(
     )
 
 
+def _record_work_lock_wait(
+    execution: AgentTaskExecution,
+    message: str,
+    location: str,
+) -> None:
+    detail = f"{message} Location: {location}"
+    execution.store.update_agent_task_message(
+        execution.operation_id,
+        detail,
+        phase="waiting",
+        event=True,
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "canonical_state_lock_wait",
+        {"location": location},
+        tier="diagnostic",
+    )
+
+
+def _record_work_lock_lost(
+    execution: AgentTaskExecution,
+    message: str,
+    location: str,
+) -> None:
+    detail = (
+        f"{message} RCP will report the observed outcome of the retained Work patch without "
+        f"repeating operational work. Location: {location}"
+    )
+    execution.store.update_agent_task_message(
+        execution.operation_id,
+        detail,
+        phase="applying",
+    )
+    execution.store.record_agent_task_event(
+        execution.operation_id,
+        detail,
+        level="warning",
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "canonical_state_lock_lost",
+        {"location": location},
+        tier="diagnostic",
+    )
+
+
 def apply_work_patch(
     service: ProjectService,
     execution: AgentTaskExecution | None,
@@ -882,8 +929,6 @@ def apply_work_patch(
     rejected_patch_error: str,
     proposal_ids_for_patch: Callable[[Patch], list[str]],
     bounded_messages: Callable[..., list[str]],
-    record_lock_wait: Callable[[str, str], None] | None = None,
-    record_lock_lost: Callable[[str, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
     under_lock: Callable[[], None] | None = None,
     prior_commit_status: Literal["present", "unknown"] | None = None,
@@ -926,13 +971,13 @@ def apply_work_patch(
         workspace = service.history.workspace
         with workspace.run_lock(
             on_wait=(
-                (lambda message: record_lock_wait(message, workspace.location))
-                if record_lock_wait is not None
+                (lambda message: _record_work_lock_wait(execution, message, workspace.location))
+                if execution is not None
                 else None
             ),
             on_lost=(
-                (lambda message: record_lock_lost(message, workspace.location))
-                if record_lock_lost is not None
+                (lambda message: _record_work_lock_lost(execution, message, workspace.location))
+                if execution is not None
                 else None
             ),
             cancelled=(
