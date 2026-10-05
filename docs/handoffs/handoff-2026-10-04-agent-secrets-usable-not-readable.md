@@ -32,19 +32,25 @@ targeted poisoning of RCP content; egress filtering.
   hidden-path policy (Chromium's own sandbox is already off there), so an
   `upload` of a hidden file fails while every other upload and download works.
   On macOS the daemon stays unwrapped, because Chromium's sandbox cannot nest
-  inside Seatbelt; browser file operations stay unhidden there and the turn
-  says so.
+  inside Seatbelt; browser file operations stay unhidden there (shown in
+  Settings and doctor).
 - Git: the backend owns one long-lived `ssh-agent` per account at a stable
   socket path, loaded with that account's deploy keys and restarted with the
   backend. `core.sshCommand` keeps its transport and adds
   `-o IdentityAgent=<stable path>`. A deploy key is hidden only when that agent
   is confirmed to hold it at launch; otherwise the key stays readable for that
-  turn with a visible warning, so Git always works. The agent is owned per OS
+  turn (shown in Settings and doctor), so Git always works. The agent is owned per OS
   account (an account lock, since two data directories can share an account),
   lives in a private stable directory under `~/.rcp` (not `/tmp`: the service
   unit has `PrivateTmp`), starts after the startup-effect fence opens and before
-  recovery launches work, and stops after workers drain. Remote execution
-  machines keep readable deploy keys with a warning in this PR.
+  recovery launches work, and stops after workers drain.
+- Remote execution machines get the same rule in this PR. Each remote account
+  runs one long-lived `ssh-agent` at a stable socket under its `~/.rcp`, owned
+  by the existing generic launch helper (systemd user unit on Linux), started
+  on the first launch that needs it and loaded with that account's deploy keys.
+  Each launch confirms deploy keys against it, and user keys against the
+  remote account's own agent, through the staged remote helper. If either
+  agent is missing or a check fails, the key stays readable for that turn.
 - "Holds the key" means: the SHA256 fingerprint of the decoded public key is
   listed by that agent on the launch's host and a bounded signing check passes.
   A missing or stale `.pub`, an unavailable agent, or a failed check means
@@ -72,8 +78,9 @@ targeted poisoning of RCP content; egress filtering.
   temporary directory, SSH agent socket, runtime directory, and RCP's own Git and
   browser variables). Providers keep their own authentication.
 - When a host cannot enforce hiding (no `bwrap`, or user namespaces blocked as
-  on Ubuntu 24.04), the launch runs unhidden with a visible warning in the turn,
-  Settings, and doctor. It never blocks.
+  on Ubuntu 24.04), the launch runs unhidden. It never blocks.
+- Gaps are shown per machine in Settings and in doctor, never as a per-turn
+  trace or badge. The agent's prompt still states its effective status.
 - The macOS Keychain stays open to tool calls. RCP's own items (owner secret,
   team credentials, local-HTTPS sealing key) trust Apple's `security` tool, so an
   agent can read them, but they work only against the loopback backend, the
