@@ -1693,7 +1693,11 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
         "arguments": {"patch": "{}"},
     }
     try:
-        (workspace / f"{name}.request.json").write_text(json.dumps(payload))
+        # Publish the request whole, as the staged client does: the mailbox polls
+        # every 20 ms and must never read a half-written request.
+        partial = workspace / f"{name}.partial"
+        partial.write_text(json.dumps(payload))
+        partial.replace(workspace / f"{name}.request.json")
         response = wait_until(lambda: (workspace / f"{name}.response.json").exists())
         assert response
         assert json.loads((workspace / f"{name}.response.json").read_text())["status"] == "ok"
