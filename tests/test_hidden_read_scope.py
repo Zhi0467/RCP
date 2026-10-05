@@ -50,6 +50,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         assert hidden(path)
     for path in (
         "/data/tools/tool",
+        "/data/providers/git-identities/identity.gitconfig",
         "/data/run-stage/task/workspace/file",
         "/home/research/.rcp/sockets/command.sock",
         "/home/research/.ssh/id_ed25519",
@@ -207,7 +208,7 @@ def test_readiness_gaps_are_visible(
 def test_only_confirmed_keys_hidden_and_exempt_parents_stay_readable(
     manifest, tmp_path, monkeypatch, kind, confirmed
 ):
-    path = str(tmp_path / "data/providers/key")
+    path = str(tmp_path / "data/providers/claude/key")
     key = HiddenReadKeyEvidence(
         path=path,
         kind=kind,
@@ -217,7 +218,7 @@ def test_only_confirmed_keys_hidden_and_exempt_parents_stay_readable(
     )
     scope = _resolve(manifest, tmp_path, monkeypatch, key_evidence=(key,))
     assert (path in scope.hidden_files) == confirmed
-    assert (str(tmp_path / "data/providers") in scope.hidden_directories) == confirmed
+    assert (str(tmp_path / "data/providers/claude") in scope.hidden_directories) == confirmed
     assert (scope.enforcement.status == "enforced") == confirmed
     if not confirmed:
         with pytest.raises(HiddenFolderRejected):

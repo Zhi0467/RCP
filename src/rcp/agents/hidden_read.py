@@ -25,7 +25,7 @@ from rcp.limits import (
     HIDDEN_READ_PATH_MAX_LENGTH,
     HIDDEN_READ_READINESS_TTL_SECONDS,
 )
-from rcp.providers import AgentCapability, ProviderId
+from rcp.providers import PROVIDER_IDS, AgentCapability, ProviderId
 from rcp.rcp_home import command_socket_directory
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.ssh import control_directory_candidate
@@ -118,9 +118,10 @@ def hidden_read_defaults(
     if app_data_dir:
         # Globs vary only their last component, so a Linux wrapper can hide
         # future matches too; wholly secret trees are plain directories.
+        # Each provider's credential namespace, never the Git identities beside them.
+        directories.extend(app_data_dir + "/providers/" + provider for provider in PROVIDER_IDS)
         directories.extend(
             (
-                app_data_dir + "/providers",
                 app_data_dir + "/service-connections",
                 app_data_dir + "/run-stage/project-transfer-activation",
             )
