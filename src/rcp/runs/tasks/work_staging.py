@@ -275,7 +275,9 @@ async def stage_work_turn(
             if stage_experiment_resources is not None
             else []
         )
-        experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
+        experiment_resource_pointers = [
+            dict[str, object](item.prompt_value()) for item in experiment_resources
+        ]
         if select_skills is not None:
             skill_selection, request = select_skills(request)
         else:

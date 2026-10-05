@@ -5328,16 +5328,6 @@
                 }
             }
         ],
-        "./src/rcp/runs/tasks/work_staging.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 41,
-                    "endColumn": 69,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/runs/tasks/work_turn_runtime.py": [
             {
                 "code": "reportArgumentType",
