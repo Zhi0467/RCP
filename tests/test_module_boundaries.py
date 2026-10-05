@@ -106,10 +106,16 @@ def _call_name(call: ast.Call, aliases: dict[str, str]) -> tuple[str, ast.expr |
     if isinstance(function, ast.Name):
         return aliases.get(function.id, function.id), None
     if isinstance(function, ast.Attribute):
+        # Walk `a.b.c(...)` down to its root; a root that is an imported name
+        # makes the whole chain module-qualified, anything else is a method call.
+        chain = [function.attr]
         owner = function.value
+        while isinstance(owner, ast.Attribute):
+            chain.append(owner.attr)
+            owner = owner.value
         if isinstance(owner, ast.Name) and owner.id in aliases:
-            return f"{aliases[owner.id]}.{function.attr}", None
-        return f".{function.attr}", owner
+            return ".".join([aliases[owner.id], *reversed(chain)]), None
+        return f".{function.attr}", function.value
     return "", None
 
 
