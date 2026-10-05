@@ -15,7 +15,7 @@ updated as described in its "Maintaining this file" section.
   independent `Agent` calls in one block so they run concurrently. Verification
   and diff review come back to you. Stay serial for small changes and for edits
   to the shared contracts (`src/rcp/core/models.py`, `src/rcp/config.py`,
-  `web/src/types.ts`).
+  `web/src/core/types.ts`).
 - Give every subagent its file scope, the invariants it must not break, and its
   own check command. Re-run the checks yourself before reporting done.
 - The human often has a server already running on 8421, holding the

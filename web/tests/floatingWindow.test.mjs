@@ -11,7 +11,7 @@ import {
   nodeDetailSizeStorageKey,
   parseFloatingSize,
   resizedFloatingRect,
-} from "../src/floatingWindow.ts";
+} from "../src/ui/floatingWindow.ts";
 
 test("floating windows clamp to reachable viewport positions", () => {
   const size = { width: 400, height: 300 };

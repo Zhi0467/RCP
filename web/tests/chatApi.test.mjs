@@ -15,7 +15,7 @@ const {
   mergeChatSummaryPage,
   nextChatSummaryOffset,
   reconcileChatSelectionAfterRefresh,
-} = await server.ssrLoadModule("/src/chatApi.ts");
+} = await server.ssrLoadModule("/src/chat/chatApi.ts");
 
 test("chat summary loading fetches exactly the requested page", async () => {
   const calls = [];

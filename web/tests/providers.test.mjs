@@ -10,7 +10,7 @@ import {
   providerOptions,
   reasoningFor,
   reasoningOptions,
-} from "../src/providers.ts";
+} from "../src/projects/providers.ts";
 
 /** Shaped like a real `codex debug models` probe: efforts differ per model. */
 const CODEX = {

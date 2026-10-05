@@ -31,7 +31,7 @@ six modules. Two pieces now separate that knowledge:
   attempt ledger), and research-only features (the Experiment loop, the
   research rendering) live in an explicit list of modules. Kernel code calls
   them; it does not restate them. The Web client has the same split, with
-  `web/src/researchType.ts` mirroring the backend answers and presentation.
+  `web/src/graph/researchType.ts` mirroring the backend answers and presentation.
 
 Prose that describes enforcement, such as "an existing ResearchQuestion or
 Hypothesis waits for a human", renders its type names from the project type,

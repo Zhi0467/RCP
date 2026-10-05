@@ -13,7 +13,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ProjectMembers, inviteUnavailableReason } = await server.ssrLoadModule(
-  "/src/components/ProjectMembers.tsx",
+  "/src/projects/ProjectMembers.tsx",
 );
 
 after(() => server.close());

@@ -11,7 +11,7 @@ const server = await createServer({
 });
 after(() => server.close());
 const { episodeNotificationHash, graphNotificationHash, parseNotificationLink } =
-  await server.ssrLoadModule("/src/notificationLinks.ts");
+  await server.ssrLoadModule("/src/core/notificationLinks.ts");
 
 test("notification links parse exactly and refuse other hashes", () => {
   assert.deepEqual(parseNotificationLink("#/projects/p%201/targets/main/proposal/prop%2Fa"), {

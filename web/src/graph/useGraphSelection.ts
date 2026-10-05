@@ -1,0 +1,638 @@
+import {
+  graphSessionKey,
+  graphTargetFromHash,
+  graphTargetUrl,
+  MAIN_GRAPH,
+} from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import {
+  continuedExperimentRoute,
+  exactAutoResearchEpisodeHref,
+  exactRunExperimentSelectionHref,
+  experimentBoardHref,
+  projectHashAfterViewChange,
+  type ExperimentRouteIdentity,
+  type ProjectHashRoute,
+} from "../experiments/experimentBoard";
+import type { DetailWindowSlot } from "../ui/floatingWindow";
+import {
+  projectViewportRef,
+  type ProjectViewState,
+  type ProjectViewportRef,
+} from "../projects/projectTabs";
+import type {
+  AppView,
+  Episode,
+  GraphNode,
+  GraphState,
+  ProjectSnapshot,
+  TrustView,
+} from "../core/types";
+import type { DagViewport } from "./dagZoom";
+
+export const emptyGraph: GraphState = {
+  revision: 0,
+  nodes: {},
+  edges: {},
+  proposals: {},
+  ambiguities: {},
+  glossary: {},
+  validation_messages: [],
+  belief_transitions: [],
+  replay_status: "complete",
+  replay_failure: null,
+  ontology: { types: [], fields: [], relations: [] },
+};
+
+export interface GraphSelectionTabSnapshot {
+  runScope: string[];
+  selectedNodeId: string | null;
+  companionNodeId: string | null;
+  detailFocusTokens: Record<DetailWindowSlot, number>;
+  selectedExperimentRunId: string | null;
+  focusExperimentRunId: string | null;
+  selectedExperimentRoute: ExperimentRouteIdentity | null;
+  selectedAutoResearchEpisodeId: string | null;
+  dockedNodeIds: string[];
+  dagRelationFocusId: string | null;
+  viewState: ProjectViewState;
+}
+
+type SelectionSnapshot = Omit<GraphSelectionTabSnapshot, "viewState">;
+
+interface UseGraphSelectionOptions {
+  initialView: AppView;
+  initialExperimentId: string | null;
+  initialExperimentRoute: ExperimentRouteIdentity | null;
+  initialAutoResearchEpisodeId: string | null;
+  projectId: string | null;
+  graphTarget?: GraphTargetRef;
+  loadedProjectId: string | null;
+  loading: boolean;
+  getActiveProjectId: () => string | null;
+}
+
+export interface ExperimentSelectionState {
+  selectedExperimentRunId: string | null;
+  focusExperimentRunId: string | null;
+  selectedExperimentRoute: ExperimentRouteIdentity | null;
+  selectedAutoResearchEpisodeId: string | null;
+}
+
+export type ExperimentSelectionAction =
+  | {
+      kind: "route";
+      experimentId: string | null;
+      experimentRoute: ExperimentRouteIdentity | null;
+      autoResearchEpisodeId: string | null;
+    }
+  | {
+      kind: "restore";
+      experimentId: string | null;
+      focusExperimentId: string | null;
+      experimentRoute: ExperimentRouteIdentity | null;
+      autoResearchEpisodeId: string | null;
+    }
+  | { kind: "select"; experimentId: string | null }
+  | { kind: "show"; experimentId: string }
+  | { kind: "clear_focus" }
+  | { kind: "view_changed" };
+
+export function reduceExperimentSelection(
+  state: ExperimentSelectionState,
+  action: ExperimentSelectionAction,
+): ExperimentSelectionState {
+  if (action.kind === "view_changed") return state;
+  if (action.kind === "clear_focus") {
+    return state.focusExperimentRunId === null ? state : { ...state, focusExperimentRunId: null };
+  }
+  if (action.kind === "select") {
+    const retainsExactRoute =
+      action.experimentId === null ||
+      action.experimentId === state.selectedExperimentRoute?.experiment_id;
+    return {
+      ...state,
+      selectedExperimentRunId: action.experimentId,
+      selectedExperimentRoute: retainsExactRoute ? state.selectedExperimentRoute : null,
+      selectedAutoResearchEpisodeId: null,
+    };
+  }
+  if (action.kind === "show") {
+    return {
+      selectedExperimentRunId: action.experimentId,
+      focusExperimentRunId: action.experimentId,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    };
+  }
+  return {
+    selectedExperimentRunId: action.experimentId,
+    focusExperimentRunId:
+      action.kind === "restore" ? action.focusExperimentId : action.experimentId,
+    selectedExperimentRoute: copyExperimentRoute(action.experimentRoute),
+    selectedAutoResearchEpisodeId: action.autoResearchEpisodeId,
+  };
+}
+
+export function relatedNodeWindowAction(
+  sourceSlot: DetailWindowSlot,
+  targetNodeId: string,
+  originalNodeId: string | null,
+  companionNodeId: string | null,
+): { kind: "focus" | "open"; slot: DetailWindowSlot } {
+  if (targetNodeId === originalNodeId) return { kind: "focus", slot: "original" };
+  if (targetNodeId === companionNodeId) return { kind: "focus", slot: "companion" };
+  return { kind: "open", slot: sourceSlot === "original" ? "companion" : "original" };
+}
+
+export function useGraphSelection({
+  initialView,
+  initialExperimentId,
+  initialExperimentRoute,
+  initialAutoResearchEpisodeId,
+  projectId,
+  graphTarget = MAIN_GRAPH,
+  loadedProjectId,
+  loading,
+  getActiveProjectId,
+}: UseGraphSelectionOptions) {
+  const [view, setView] = useState<AppView>(initialView);
+  const [trustView, setTrustView] = useState<TrustView>(readTrustView);
+  const [runScope, setRunScope] = useState<string[]>([]);
+  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [companionNode, setCompanionNode] = useState<GraphNode | null>(null);
+  const [detailFocusTokens, setDetailFocusTokens] = useState<Record<DetailWindowSlot, number>>({
+    original: 0,
+    companion: 0,
+  });
+  const [experimentSelection, dispatchExperimentSelection] = useReducer(reduceExperimentSelection, {
+    selectedExperimentRunId: initialExperimentId,
+    focusExperimentRunId: initialExperimentId,
+    selectedExperimentRoute: copyExperimentRoute(initialExperimentRoute),
+    selectedAutoResearchEpisodeId: initialAutoResearchEpisodeId,
+  });
+  const {
+    selectedExperimentRunId,
+    focusExperimentRunId,
+    selectedExperimentRoute,
+    selectedAutoResearchEpisodeId,
+  } = experimentSelection;
+  const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
+  const [watcherCheckId, setWatcherCheckId] = useState<string | null>(null);
+  const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
+  const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const panelScrollRef = useRef(new Map<AppView, number>());
+  const viewRef = useRef<AppView>(view);
+  const researchSubviewRef = useRef<AppView>("scientific");
+  const dagViewportRefsRef = useRef(new Map<string, ProjectViewportRef<DagViewport>>());
+  const selectionSnapshotRef = useRef<SelectionSnapshot>({
+    runScope,
+    selectedNodeId: selectedNode?.id ?? null,
+    companionNodeId: companionNode?.id ?? null,
+    detailFocusTokens,
+    selectedExperimentRunId,
+    focusExperimentRunId,
+    selectedExperimentRoute,
+    selectedAutoResearchEpisodeId,
+    dockedNodeIds,
+    dagRelationFocusId,
+  });
+  selectionSnapshotRef.current = {
+    runScope,
+    selectedNodeId: selectedNode?.id ?? null,
+    companionNodeId: companionNode?.id ?? null,
+    detailFocusTokens,
+    selectedExperimentRunId,
+    focusExperimentRunId,
+    selectedExperimentRoute,
+    selectedAutoResearchEpisodeId,
+    dockedNodeIds,
+    dagRelationFocusId,
+  };
+
+  const activeDagViewportRef = projectId
+    ? projectViewportRef(dagViewportRefsRef.current, graphSessionKey(projectId, graphTarget))
+    : null;
+
+  const captureProjectSelection = useCallback(
+    (id: string, target: GraphTargetRef = MAIN_GRAPH): GraphSelectionTabSnapshot => {
+      const panelScroll = new Map(panelScrollRef.current);
+      const dagViewport =
+        dagViewportRefsRef.current.get(graphSessionKey(id, target))?.current ?? null;
+      if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
+      const current = selectionSnapshotRef.current;
+      return {
+        ...current,
+        runScope: [...current.runScope],
+        detailFocusTokens: { ...current.detailFocusTokens },
+        selectedExperimentRoute: copyExperimentRoute(current.selectedExperimentRoute),
+        dockedNodeIds: [...current.dockedNodeIds],
+        viewState: {
+          view: viewRef.current,
+          panelScroll: [...panelScroll.entries()],
+          researchSubview: researchSubviewRef.current,
+          dagViewport: dagViewport ? { ...dagViewport } : null,
+        },
+      };
+    },
+    [],
+  );
+
+  const restoreProjectSelection = useCallback(
+    (
+      id: string,
+      nextGraph: GraphState,
+      presentedNodes: GraphState["nodes"],
+      snapshot: GraphSelectionTabSnapshot,
+      requestedRoute?: ProjectHashRoute,
+      target: GraphTargetRef = MAIN_GRAPH,
+    ) => {
+      setRunScope([...snapshot.runScope]);
+      setSelectedNode(
+        snapshot.selectedNodeId ? (presentedNodes[snapshot.selectedNodeId] ?? null) : null,
+      );
+      setCompanionNode(
+        snapshot.companionNodeId ? (presentedNodes[snapshot.companionNodeId] ?? null) : null,
+      );
+      setDetailFocusTokens({ ...snapshot.detailFocusTokens });
+      dispatchExperimentSelection(
+        requestedRoute
+          ? {
+              kind: "route",
+              experimentId: requestedRoute.experimentId,
+              experimentRoute: requestedRoute.experimentRoute,
+              autoResearchEpisodeId: requestedRoute.autoResearchEpisodeId,
+            }
+          : {
+              kind: "restore",
+              experimentId: snapshot.selectedExperimentRunId,
+              focusExperimentId: snapshot.focusExperimentRunId,
+              experimentRoute: snapshot.selectedExperimentRoute ?? null,
+              autoResearchEpisodeId: snapshot.selectedAutoResearchEpisodeId,
+            },
+      );
+      setExperimentStopId(null);
+      setWatcherCheckId(null);
+      setDockedNodeIds(snapshot.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
+      setDagRelationFocusId(snapshot.dagRelationFocusId);
+      panelScrollRef.current = new Map(snapshot.viewState.panelScroll);
+      researchSubviewRef.current = snapshot.viewState.researchSubview;
+      const viewportRef = projectViewportRef(
+        dagViewportRefsRef.current,
+        graphSessionKey(id, target),
+      );
+      viewportRef.current = snapshot.viewState.dagViewport
+        ? { ...snapshot.viewState.dagViewport }
+        : null;
+      setView(requestedRoute?.view ?? snapshot.viewState.view);
+    },
+    [],
+  );
+
+  const resetProjectSelection = useCallback(
+    (
+      nextView: AppView,
+      experimentId: string | null,
+      experimentRoute: ExperimentRouteIdentity | null,
+      autoResearchEpisodeId: string | null,
+    ) => {
+      setSelectedNode(null);
+      setCompanionNode(null);
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId,
+        experimentRoute,
+        autoResearchEpisodeId,
+      });
+      setExperimentStopId(null);
+      setWatcherCheckId(null);
+      setDockedNodeIds([]);
+      setDagRelationFocusId(null);
+      setRunScope([]);
+      panelScrollRef.current = new Map();
+      researchSubviewRef.current = "scientific";
+      setView(nextView);
+    },
+    [],
+  );
+
+  const applyCanonicalProject = useCallback(
+    (nextProject: ProjectSnapshot, authoritative: boolean) => {
+      const nextGraph = nextProject.graph;
+      setSelectedNode((current) =>
+        current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
+      );
+      setCompanionNode((current) =>
+        current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
+      );
+      setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
+      setRunScope((current) =>
+        current.length
+          ? current.filter((item) => nextProject.project_truth_scope.includes(item))
+          : nextProject.default_run_truth_scope,
+      );
+    },
+    [],
+  );
+
+  const replaceRunScope = useCallback((nextScope: string[]) => {
+    setRunScope(nextScope);
+  }, []);
+  const applyRouteSelection = useCallback(
+    (
+      nextView: AppView,
+      experimentId: string | null,
+      experimentRoute: ExperimentRouteIdentity | null,
+      autoResearchEpisodeId: string | null,
+    ) => {
+      setView(nextView);
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId,
+        experimentRoute,
+        autoResearchEpisodeId,
+      });
+    },
+    [],
+  );
+
+  // Capture the outgoing scroll synchronously while its view is still mounted.
+  const changeView = useCallback((next: AppView) => {
+    const panel = panelRef.current;
+    if (panel) panelScrollRef.current.set(viewRef.current, panel.scrollTop);
+    const replacementHash = projectHashAfterViewChange(window.location.hash, next);
+    if (replacementHash) window.history.replaceState(null, "", replacementHash);
+    dispatchExperimentSelection({ kind: "view_changed" });
+    setView(next);
+  }, []);
+  const openLastResearchView = useCallback(() => {
+    changeView(researchSubviewRef.current);
+  }, [changeView]);
+
+  const changeTrustView = useCallback((next: TrustView) => {
+    setTrustView(next);
+  }, []);
+  const openNode = useCallback(
+    (node: GraphNode | null) => {
+      if (!node) return;
+      setDockedNodeIds((current) => current.filter((nodeId) => nodeId !== node.id));
+      if (selectedNode?.id === node.id) {
+        setDetailFocusTokens((current) => ({ ...current, original: current.original + 1 }));
+        return;
+      }
+      if (companionNode?.id === node.id) {
+        setDetailFocusTokens((current) => ({ ...current, companion: current.companion + 1 }));
+        return;
+      }
+      setSelectedNode(node);
+      setCompanionNode(null);
+      setDetailFocusTokens((current) => ({ ...current, original: current.original + 1 }));
+    },
+    [companionNode?.id, selectedNode?.id],
+  );
+  const openRelatedNode = useCallback(
+    (sourceSlot: DetailWindowSlot, node: GraphNode | null) => {
+      if (!node) return;
+      setDockedNodeIds((current) => current.filter((id) => id !== node.id));
+      const action = relatedNodeWindowAction(
+        sourceSlot,
+        node.id,
+        selectedNode?.id ?? null,
+        companionNode?.id ?? null,
+      );
+      if (action.kind === "focus") {
+        setDetailFocusTokens((current) => ({
+          ...current,
+          [action.slot]: current[action.slot] + 1,
+        }));
+        return;
+      }
+      if (action.slot === "original") setSelectedNode(node);
+      else setCompanionNode(node);
+      setDetailFocusTokens((current) => ({
+        ...current,
+        [action.slot]: current[action.slot] + 1,
+      }));
+    },
+    [companionNode?.id, selectedNode?.id],
+  );
+  const closeDetailSlot = useCallback((slot: DetailWindowSlot) => {
+    if (slot === "original") setSelectedNode(null);
+    else setCompanionNode(null);
+  }, []);
+  const clearNodeSelections = useCallback(() => {
+    setSelectedNode(null);
+    setCompanionNode(null);
+  }, []);
+  const dockNode = useCallback(
+    (nodeId: string, slot: DetailWindowSlot) => {
+      setDockedNodeIds((current) => (current.includes(nodeId) ? current : [...current, nodeId]));
+      closeDetailSlot(slot);
+    },
+    [closeDetailSlot],
+  );
+  const restoreDockedNode = useCallback(
+    (nodeId: string, node: GraphNode | null) => {
+      setDockedNodeIds((current) => current.filter((id) => id !== nodeId));
+      openNode(node);
+    },
+    [openNode],
+  );
+
+  const replaceExactRunExperimentSelection = useCallback(
+    (nodeId: string | null, selectionKind: "select" | "show") => {
+      const replacementHref = exactRunExperimentSelectionHref(
+        projectId,
+        nodeId,
+        selectedExperimentRoute,
+        selectedAutoResearchEpisodeId,
+        selectionKind,
+      );
+      if (replacementHref)
+        window.history.replaceState(
+          null,
+          "",
+          graphTargetUrl(replacementHref, graphTargetFromHash(window.location.hash)),
+        );
+    },
+    [projectId, selectedAutoResearchEpisodeId, selectedExperimentRoute],
+  );
+  const replaceExactAutoResearchSelection = useCallback(
+    (episodeProjectId: string, episodeId: string) => {
+      // A start or reauthorization can settle after the human switched project tabs, so the
+      // live active project and pinned episode decide, never the ones this render captured.
+      const replacementHref = exactAutoResearchEpisodeHref(
+        getActiveProjectId(),
+        episodeProjectId,
+        episodeId,
+        selectionSnapshotRef.current.selectedAutoResearchEpisodeId,
+      );
+      if (!replacementHref) return;
+      window.history.replaceState(
+        null,
+        "",
+        graphTargetUrl(replacementHref, graphTargetFromHash(window.location.hash)),
+      );
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId: null,
+        experimentRoute: null,
+        autoResearchEpisodeId: episodeId,
+      });
+      // The pinned episode survives leaving Runs, so show the view this new URL describes
+      // rather than leaving another view rendered under a Runs address.
+      changeView("execution");
+    },
+    [changeView, getActiveProjectId],
+  );
+  const replaceExactExperimentEpisode = useCallback(
+    (episode: Episode) => {
+      // A continuation can settle after the human switched project tabs, so the live
+      // active project and pinned route decide, never the ones this render captured.
+      const route = continuedExperimentRoute(
+        getActiveProjectId(),
+        episode,
+        selectionSnapshotRef.current.selectedExperimentRoute,
+      );
+      if (!route) return;
+      window.history.replaceState(
+        null,
+        "",
+        graphTargetUrl(
+          experimentBoardHref(episode.project_id, route),
+          graphTargetFromHash(window.location.hash),
+        ),
+      );
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId: route.experiment_id,
+        experimentRoute: route,
+        autoResearchEpisodeId: null,
+      });
+      // The pinned route survives leaving Runs, so show the view this new URL describes
+      // rather than leaving another view rendered under a Runs address.
+      changeView("execution");
+    },
+    [changeView, getActiveProjectId],
+  );
+  const selectExperiment = useCallback(
+    (nodeId: string | null) => {
+      replaceExactRunExperimentSelection(nodeId, "select");
+      dispatchExperimentSelection({ kind: "select", experimentId: nodeId });
+    },
+    [replaceExactRunExperimentSelection],
+  );
+  const clearExperimentFocus = useCallback(() => {
+    dispatchExperimentSelection({ kind: "clear_focus" });
+  }, []);
+  const showExperiment = useCallback(
+    (nodeId: string) => {
+      replaceExactRunExperimentSelection(nodeId, "show");
+      dispatchExperimentSelection({ kind: "show", experimentId: nodeId });
+      setSelectedNode(null);
+      setCompanionNode(null);
+      changeView("execution");
+    },
+    [changeView, replaceExactRunExperimentSelection],
+  );
+  const beginExperimentStop = useCallback((nodeId: string) => {
+    setExperimentStopId(nodeId);
+    return () => setExperimentStopId(null);
+  }, []);
+  const beginWatcherCheck = useCallback((watcherId: string) => {
+    setWatcherCheckId(watcherId);
+    return () => setWatcherCheckId(null);
+  }, []);
+  const clearDagRelationFocus = useCallback(() => {
+    setDagRelationFocusId(null);
+  }, []);
+  const forgetProjectViewport = useCallback((id: string) => {
+    for (const key of dagViewportRefsRef.current.keys()) {
+      if (key === id || key.startsWith(`${id}:branch:`)) dagViewportRefsRef.current.delete(key);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("rcp:trust-view", trustView);
+    } catch {
+      // The chosen view is a convenience; storage failures must not affect the project.
+    }
+  }, [trustView]);
+
+  useLayoutEffect(() => {
+    viewRef.current = view;
+    if (view === "scientific" || view === "dag") researchSubviewRef.current = view;
+    const panel = panelRef.current;
+    if (panel) panel.scrollTop = panelScrollRef.current.get(view) ?? 0;
+  }, [loading, loadedProjectId, view]);
+
+  return {
+    view,
+    trustView,
+    runScope,
+    selectedNode,
+    companionNode,
+    detailFocusTokens,
+    selectedExperimentRunId,
+    focusExperimentRunId,
+    selectedExperimentRoute,
+    selectedAutoResearchEpisodeId,
+    experimentStopId,
+    watcherCheckId,
+    dockedNodeIds,
+    dagRelationFocusId,
+    panelRef,
+    activeDagViewportRef,
+    captureProjectSelection,
+    restoreProjectSelection,
+    resetProjectSelection,
+    applyCanonicalProject,
+    replaceRunScope,
+    applyRouteSelection,
+    changeView,
+    openLastResearchView,
+    changeTrustView,
+    openNode,
+    openRelatedNode,
+    closeDetailSlot,
+    clearNodeSelections,
+    dockNode,
+    restoreDockedNode,
+    replaceExactAutoResearchSelection,
+    replaceExactExperimentEpisode,
+    selectExperiment,
+    clearExperimentFocus,
+    showExperiment,
+    beginExperimentStop,
+    beginWatcherCheck,
+    clearDagRelationFocus,
+    forgetProjectViewport,
+  };
+}
+
+function copyExperimentRoute(
+  route: ExperimentRouteIdentity | null | undefined,
+): ExperimentRouteIdentity | null {
+  if (!route) return null;
+  return {
+    ...route,
+    graph_target:
+      route.graph_target.kind === "branch"
+        ? { kind: "branch", branch_id: route.graph_target.branch_id }
+        : { kind: "main" },
+  };
+}
+
+function readTrustView(): TrustView {
+  try {
+    const stored = localStorage.getItem("rcp:trust-view");
+    return stored === "accepted" || stored === "review" || stored === "working"
+      ? stored
+      : "working";
+  } catch {
+    return "working";
+  }
+}

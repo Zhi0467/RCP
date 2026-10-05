@@ -1,0 +1,2044 @@
+import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
+import { ProviderLoginNotice } from "../projects/ProviderLoginNotice";
+import { branchGraphProjection, expandBranchContext } from "./branchGraph";
+import { graphSessionKey } from "../core/graphTarget";
+import { ChangedFields, ChangeHistory } from "./BranchChangeDetail";
+import { EpisodeMergePanel } from "../experiments/EpisodeMergePanel";
+import { type BranchDiffWord, branchDiffWord, mergeDiffMarks } from "./mergePanel";
+import type {
+  GraphBranchChanges,
+  GraphTargetRef,
+  MergeDiffPath,
+  MergeEpisodeBody,
+} from "../core/types";
+
+const BRANCH_DIFF_WORDS: Record<BranchDiffWord, string> = {
+  created: "Added",
+  updated: "Changed",
+  removed: "Removed",
+  changed: "Changed",
+  delivered: "Already merged",
+  proposal: "Proposal",
+  needs_agent: "Needs agent",
+  conflict: "Conflict",
+};
+const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
+  "created",
+  "updated",
+  "removed",
+  "proposal",
+  "needs_agent",
+  "conflict",
+];
+import {
+  ChevronDown,
+  CircleDot,
+  Eye,
+  EyeOff,
+  FlaskConical,
+  Focus,
+  Gauge,
+  GitBranch,
+  Link2,
+  Maximize2,
+  Minimize2,
+  Orbit,
+  Pin,
+  PinOff,
+  RotateCcw,
+  Scan,
+  Search,
+  Workflow,
+  X,
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
+  type Ref,
+  type ReactNode,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import {
+  buildNodeProjectionEmphasis,
+  buildDagProjection,
+  edgeProjectionEmphasis,
+  projectNodes,
+  relationFocus,
+  type DagOntologyProjection,
+} from "./graphProjection";
+import {
+  DAG_ZOOM_MIN,
+  fitDagToViewport,
+  zoomDagAtPoint,
+  type DagViewport,
+  type DagZoomResult,
+} from "./dagZoom";
+import {
+  DAG_NODE_HEIGHT,
+  DAG_NODE_WIDTH,
+  useForceDag,
+  type DagLayoutMode,
+  type DagPosition,
+} from "./useForceDag";
+import { buildResearchPaths } from "./researchProjection";
+import { buildExperimentRun, type ExperimentRun } from "../experiments/runProjection";
+import {
+  ExperimentRunDetail,
+  experimentHealthLabel,
+  experimentHealthTone,
+} from "../experiments/ExperimentRunDetail";
+import { GraphEditingControls, type GraphEditingProps } from "./GraphEditingControls";
+import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../experiments/CampaignRuns";
+import {
+  EpisodeArchiveButton,
+  EpisodeAuthor,
+  type ArchiveEpisodeAction,
+} from "../experiments/EpisodeRunControls";
+import { runsEpisodeCards } from "../experiments/campaigns";
+import {
+  graphTargetsEqual,
+  mainExperimentRouteMatchesControl,
+  projectExperimentExecution,
+  type ExperimentRouteIdentity,
+} from "../experiments/experimentBoard";
+import type {
+  ProviderLoginState,
+  Machine,
+  AgentTask,
+  Edge,
+  Episode,
+  EpisodeRunSection,
+  ExperimentControlState,
+  ExperimentLoopIndexEntry,
+  GraphNode,
+  GraphState,
+  Proposal,
+  TrustView,
+  WatcherRecord,
+} from "../core/types";
+import { nodeTypeLabel } from "./nodePresentation";
+import { RESEARCH, TYPE_LENS, isControlNode, isQuestion } from "./researchType";
+import { useNarrowViewport } from "../ui/useNarrowViewport";
+
+export function focusRunDetail(detail: Pick<HTMLDivElement, "focus" | "scrollIntoView">): void {
+  detail.focus({ preventScroll: true });
+  detail.scrollIntoView({ block: "center" });
+}
+
+interface Props {
+  graph: GraphState;
+  trustView: TrustView;
+  onSelectNode: (node: GraphNode) => void;
+  /** Main nodes changed since the viewer's digest mark; empty on other targets. */
+  changedNodeIds?: ReadonlySet<string>;
+}
+
+interface ScientificProps extends Props, GraphEditingProps {}
+
+const dagTypes = RESEARCH.nodeTypes;
+const NO_CHANGED_NODES: ReadonlySet<string> = new Set();
+const dagTypeMeta = TYPE_LENS;
+
+export function ScientificView({
+  graph,
+  trustView,
+  onSelectNode,
+  changedNodeIds = NO_CHANGED_NODES,
+  ...editing
+}: ScientificProps) {
+  const nodes = projectNodes(Object.values(graph.nodes), trustView);
+  const projection = buildResearchPaths(nodes, Object.values(graph.edges));
+  const hidden = Object.values(graph.nodes).length - nodes.length;
+  return (
+    <section className="view-panel research-view">
+      <ViewHeading
+        title="Research paths"
+        aside={
+          hidden > 0
+            ? `${hidden} hidden`
+            : `${projection.paths.length} question${projection.paths.length === 1 ? "" : "s"}`
+        }
+      />
+      <GraphEditingControls graph={graph} {...editing} />
+      {projection.paths.length === 0 && projection.unconnected.length === 0 ? (
+        <EmptyState icon={<Search size={20} />} title="No research structure" />
+      ) : (
+        <>
+          <div className="research-path-list">
+            {projection.paths.map((path) => (
+              <article className="research-path" key={path.question.id}>
+                <div className="research-path-stage question-stage">
+                  <span className="research-stage-label">Question</span>
+                  <ResearchNodeCard
+                    node={path.question}
+                    onSelectNode={onSelectNode}
+                    changed={changedNodeIds.has(path.question.id)}
+                  />
+                </div>
+                <ResearchStage
+                  label="Ideas & decisions"
+                  changedNodeIds={changedNodeIds}
+                  nodes={path.ideas}
+                  onSelectNode={onSelectNode}
+                />
+                <ResearchStage
+                  label="Experiments"
+                  changedNodeIds={changedNodeIds}
+                  nodes={path.experiments}
+                  onSelectNode={onSelectNode}
+                />
+                <ResearchStage
+                  label="Evidence"
+                  nodes={path.evidence}
+                  changedNodeIds={changedNodeIds}
+                  onSelectNode={onSelectNode}
+                />
+              </article>
+            ))}
+          </div>
+          {projection.unconnected.length > 0 && (
+            <section className="research-unconnected">
+              <header>
+                <strong>Not yet connected</strong>
+                <span>{projection.unconnected.length}</span>
+              </header>
+              <div>
+                {projection.unconnected.map((node) => (
+                  <ResearchNodeCard
+                    node={node}
+                    onSelectNode={onSelectNode}
+                    changed={changedNodeIds.has(node.id)}
+                    compact
+                    key={node.id}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+interface DagProps extends Props, GraphEditingProps {
+  graphTarget?: GraphTargetRef;
+  branchChanges?: GraphBranchChanges | null;
+  /** The branch's changed fields as the merge builder classifies them, when loaded. */
+  mergePaths?: MergeDiffPath[] | null;
+  onInspectTask?: (taskId: string) => void;
+  /** Session-scoped pan and zoom, owned by the shell so it survives leaving the view. */
+  viewportRef: MutableRefObject<DagViewport | null>;
+  relationFocusNodeId?: string | null;
+  onClearRelationFocus?: () => void;
+}
+
+interface DragState {
+  nodeId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
+}
+
+export function DagView({
+  graph,
+  trustView,
+  onSelectNode,
+  projectId,
+  graphTarget,
+  branchChanges,
+  mergePaths,
+  onInspectTask,
+  viewportRef,
+  relationFocusNodeId,
+  onClearRelationFocus,
+  changedNodeIds = NO_CHANGED_NODES,
+  ...editing
+}: DagProps) {
+  const narrow = useNarrowViewport();
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+  const [connection, setConnection] = useState<{ source: string; target: string } | null>(null);
+  const connectionDrag = useRef<{ source: string; pointerId: number } | null>(null);
+  const [expandedContext, setExpandedContext] = useState<Set<string> | null>(() => new Set());
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const displayGraph = useMemo(
+    () => (branchChanges ? branchGraphProjection(graph, branchChanges, expandedContext) : graph),
+    [graph, branchChanges, expandedContext],
+  );
+  const nodeChanges = useMemo(
+    () => new Map(branchChanges?.nodes.map((change) => [change.node_id, change]) ?? []),
+    [branchChanges],
+  );
+  const edgeChanges = useMemo(
+    () => new Map(branchChanges?.edges.map((change) => [change.edge_id, change]) ?? []),
+    [branchChanges],
+  );
+  const mergeMarks = useMemo(() => mergeDiffMarks(mergePaths ?? []), [mergePaths]);
+  const changeTasks = useMemo(
+    () => [
+      ...new Map(
+        [...(branchChanges?.nodes ?? []), ...(branchChanges?.edges ?? [])].flatMap((change) =>
+          change.history
+            .filter((source) => source.task_id)
+            .map((source) => [source.task_id!, source] as const),
+        ),
+      ).values(),
+    ],
+    [branchChanges],
+  );
+  const taskHighlights = useMemo(() => {
+    const nodes = new Set<string>();
+    for (const change of branchChanges?.nodes ?? []) {
+      if (change.history.some((source) => source.task_id === selectedTaskId))
+        nodes.add(change.node_id);
+    }
+    for (const change of branchChanges?.edges ?? []) {
+      if (!change.history.some((source) => source.task_id === selectedTaskId)) continue;
+      for (const edge of [change.before, change.after]) {
+        if (edge) {
+          nodes.add(edge.source);
+          nodes.add(edge.target);
+        }
+      }
+    }
+    return nodes;
+  }, [branchChanges, selectedTaskId]);
+  const projection = useMemo(
+    () =>
+      buildDagProjection(displayGraph, trustView, relationFocusNodeId, {
+        includeResolvedBlockers: Boolean(branchChanges),
+      }),
+    [displayGraph, relationFocusNodeId, trustView, branchChanges],
+  );
+  const naturalFocusNodeId = useMemo(
+    () => dagFocusNode(projection.nodes, projection.edges),
+    [projection],
+  );
+  const focusNodeId =
+    relationFocusNodeId && graph.nodes[relationFocusNodeId]
+      ? relationFocusNodeId
+      : naturalFocusNodeId;
+  const focusedRelations = useMemo(
+    () => (relationFocusNodeId ? relationFocus(relationFocusNodeId, projection.edges) : null),
+    [projection.edges, relationFocusNodeId],
+  );
+  const [brightTypes, setBrightTypes] = useState<Set<GraphNode["type"]>>(() => new Set(dagTypes));
+  const [ontologyProjection, setOntologyProjection] = useState<DagOntologyProjection>("all");
+  const nodeProjectionEmphasis = useMemo(
+    () => buildNodeProjectionEmphasis(projection.edges, ontologyProjection),
+    [ontologyProjection, projection.edges],
+  );
+  const [repulsion, setRepulsion] = useState(readRepulsion);
+  const [layoutMode, setLayoutMode] = useState<DagLayoutMode>(readDagLayoutMode);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [zoom, setZoom] = useState(() => viewportRef.current?.zoom ?? 1);
+  const [canvasOffset, setCanvasOffset] = useState(() => ({
+    offsetX: viewportRef.current?.offsetX ?? 0,
+    offsetY: viewportRef.current?.offsetY ?? 0,
+  }));
+  const canvasOffsetRef = useRef(canvasOffset);
+  // An explicit relation focus outranks the remembered viewport: it is a request to look somewhere.
+  const restoringViewportRef = useRef(relationFocusNodeId ? null : viewportRef.current);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef(zoom);
+  // The current fitted or remembered floor, so gestures can return to that view.
+  // Each Fit resets it for the current layout.
+  const gestureFloorRef = useRef(viewportRef.current?.floor ?? Math.min(DAG_ZOOM_MIN, zoom));
+  const pendingZoomScrollRef = useRef<DagZoomResult | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const dragWatchdogRef = useRef<number | null>(null);
+  const suppressClickRef = useRef<string | null>(null);
+  const framedLayoutRef = useRef<string | null>(null);
+  const commitViewport = useCallback(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    viewportRef.current = {
+      ...canvasOffsetRef.current,
+      zoom: zoomRef.current,
+      floor: gestureFloorRef.current,
+      scrollLeft: scroller.scrollLeft,
+      scrollTop: scroller.scrollTop,
+    };
+  }, [viewportRef]);
+  const layout = useForceDag({
+    nodes: projection.nodes,
+    edges: projection.edges,
+    projectId: graphSessionKey(projectId, graphTarget),
+    repulsion,
+    mode: layoutMode,
+  });
+  const typeCounts = useMemo(
+    () =>
+      Object.fromEntries(
+        dagTypes.map((type) => [
+          type,
+          projection.nodes.filter((node) => node.type === type).length,
+        ]),
+      ) as Record<GraphNode["type"], number>,
+    [projection.nodes],
+  );
+  const layoutReady = Object.keys(layout.positions).length === projection.nodes.length;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("rcp:dag-repulsion", String(repulsion));
+    } catch {
+      // Keep the control usable when browser storage is unavailable.
+    }
+  }, [repulsion]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("rcp:dag-layout-mode", layoutMode);
+    } catch {
+      // Keep the layout switch usable when browser storage is unavailable.
+    }
+  }, [layoutMode]);
+
+  useEffect(
+    () => () => {
+      if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const updateFullscreenState = () =>
+      setIsFullscreen(document.fullscreenElement === shellRef.current);
+    document.addEventListener("fullscreenchange", updateFullscreenState);
+    return () => document.removeEventListener("fullscreenchange", updateFullscreenState);
+  }, []);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const pinchZoom = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const rect = scroller.getBoundingClientRect();
+      const pending = pendingZoomScrollRef.current;
+      const deltaScale =
+        event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? scroller.clientHeight : 1;
+      const next = zoomDagAtPoint({
+        ...canvasOffsetRef.current,
+        zoom: zoomRef.current,
+        deltaY: event.deltaY * deltaScale,
+        focalX: event.clientX - rect.left - scroller.clientLeft,
+        focalY: event.clientY - rect.top - scroller.clientTop,
+        scrollLeft: pending?.scrollLeft ?? scroller.scrollLeft,
+        scrollTop: pending?.scrollTop ?? scroller.scrollTop,
+        minZoom: gestureFloorRef.current,
+      });
+      if (next.zoom === zoomRef.current) return;
+      pendingZoomScrollRef.current = next;
+      viewportRef.current = {
+        ...next,
+        ...canvasOffsetRef.current,
+        floor: gestureFloorRef.current,
+      };
+      zoomRef.current = next.zoom;
+      setZoom(next.zoom);
+    };
+    scroller.addEventListener("wheel", pinchZoom, { passive: false });
+    return () => scroller.removeEventListener("wheel", pinchZoom);
+  }, [projection.nodes.length, viewportRef]);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    commitViewport();
+    scroller.addEventListener("scroll", commitViewport, { passive: true });
+    return () => scroller.removeEventListener("scroll", commitViewport);
+  }, [commitViewport, projection.nodes.length]);
+
+  useLayoutEffect(() => {
+    const pending = pendingZoomScrollRef.current;
+    const scroller = scrollRef.current;
+    if (!pending || pending.zoom !== zoom || !scroller) return;
+    scroller.scrollLeft = pending.scrollLeft;
+    scroller.scrollTop = pending.scrollTop;
+    pendingZoomScrollRef.current = null;
+  }, [zoom, canvasOffset]);
+
+  useLayoutEffect(() => {
+    const restored = restoringViewportRef.current;
+    const scroller = scrollRef.current;
+    if (!restored || !scroller) return;
+    scroller.scrollLeft = restored.scrollLeft;
+    scroller.scrollTop = restored.scrollTop;
+  }, []);
+
+  // Read the viewport while the canvas is still mounted; a scroll event may never arrive in time.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    return () => {
+      viewportRef.current = {
+        ...canvasOffsetRef.current,
+        zoom: zoomRef.current,
+        floor: gestureFloorRef.current,
+        scrollLeft: scroller.scrollLeft,
+        scrollTop: scroller.scrollTop,
+      };
+    };
+  }, [projection.nodes.length, viewportRef]);
+
+  const fitToView = useCallback(() => {
+    const scroller = scrollRef.current;
+    const canvas = canvasRef.current;
+    if (!scroller || !canvas) return;
+    const next = fitDagToViewport({
+      nodes: [...canvas.querySelectorAll<HTMLElement>(".dag-node")].map((node) => ({
+        left: node.offsetLeft,
+        top: node.offsetTop,
+        width: node.offsetWidth,
+        height: node.offsetHeight,
+      })),
+      viewportWidth: scroller.clientWidth,
+      viewportHeight: scroller.clientHeight,
+    });
+    if (!next) return;
+    gestureFloorRef.current = Math.min(DAG_ZOOM_MIN, next.zoom);
+    viewportRef.current = next;
+    const offset = { offsetX: next.offsetX ?? 0, offsetY: next.offsetY ?? 0 };
+    if (
+      next.zoom === zoomRef.current &&
+      offset.offsetX === canvasOffsetRef.current.offsetX &&
+      offset.offsetY === canvasOffsetRef.current.offsetY
+    ) {
+      scroller.scrollLeft = next.scrollLeft;
+      scroller.scrollTop = next.scrollTop;
+      return;
+    }
+    // Scroll lands in the layout effect once the canvas has re-scaled.
+    pendingZoomScrollRef.current = next;
+    canvasOffsetRef.current = offset;
+    setCanvasOffset(offset);
+    zoomRef.current = next.zoom;
+    setZoom(next.zoom);
+  }, [viewportRef]);
+
+  // Fit the columns on open. A relation focus and a remembered viewport
+  // both outrank this: each already states where the human wants to look.
+  useEffect(() => {
+    if (!layoutReady || focusNodeId) return;
+    const frameKey = `fit:${layoutMode}:${projection.nodes.length}:${projection.edges.length}`;
+    if (framedLayoutRef.current === frameKey) return;
+    framedLayoutRef.current = frameKey;
+    if (restoringViewportRef.current) {
+      restoringViewportRef.current = null;
+      return;
+    }
+    const timer = window.setTimeout(fitToView, layoutMode === "force" ? 550 : 80);
+    return () => window.clearTimeout(timer);
+  }, [
+    fitToView,
+    focusNodeId,
+    layoutMode,
+    layoutReady,
+    projection.edges.length,
+    projection.nodes.length,
+  ]);
+
+  useEffect(() => {
+    if (!layoutReady || !focusNodeId) return;
+    const frameKey = `${layoutMode}:${focusNodeId}:${projection.nodes.length}:${projection.edges.length}`;
+    if (framedLayoutRef.current === frameKey) return;
+    framedLayoutRef.current = frameKey;
+    if (restoringViewportRef.current) {
+      restoringViewportRef.current = null;
+      return;
+    }
+    const timer = window.setTimeout(
+      () => {
+        const scroller = scrollRef.current;
+        const focusNode = [
+          ...(canvasRef.current?.querySelectorAll<HTMLElement>(".dag-node") ?? []),
+        ].find((node) => node.dataset.nodeId === focusNodeId);
+        if (!scroller || !focusNode) return;
+        const currentZoom = zoomRef.current;
+        scroller.scrollLeft = Math.max(
+          0,
+          canvasOffsetRef.current.offsetX + focusNode.offsetLeft * currentZoom - 32,
+        );
+        scroller.scrollTop = Math.max(
+          0,
+          canvasOffsetRef.current.offsetY +
+            focusNode.offsetTop * currentZoom -
+            Math.max(32, (scroller.clientHeight - focusNode.offsetHeight * currentZoom) / 2),
+        );
+      },
+      layoutMode === "force" ? 550 : 80,
+    );
+    return () => window.clearTimeout(timer);
+  }, [focusNodeId, layoutMode, layoutReady, projection.edges.length, projection.nodes.length]);
+
+  const toggleType = (type: GraphNode["type"]) => {
+    setBrightTypes((current) => {
+      const next = new Set(current);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  };
+
+  const pointerDown = (event: ReactPointerEvent<HTMLDivElement>, nodeId: string) => {
+    if (event.button !== 0) return;
+    if ((event.target as Element).closest(".dag-connect-handle")) {
+      connectionDrag.current = { source: nodeId, pointerId: event.pointerId };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+    if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
+    dragRef.current = {
+      nodeId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+  };
+
+  const finishDrag = (pointerId: number) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+    if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
+    dragWatchdogRef.current = null;
+    if (drag.moved) {
+      layout.endDrag();
+      suppressClickRef.current = drag.nodeId;
+      window.requestAnimationFrame(() => {
+        if (suppressClickRef.current === drag.nodeId) suppressClickRef.current = null;
+      });
+    }
+    dragRef.current = null;
+    setDraggingId(null);
+  };
+
+  const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5)
+      return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      layout.beginDrag(drag.nodeId);
+      setDraggingId(drag.nodeId);
+    }
+    const rect = canvas.getBoundingClientRect();
+    layout.moveDrag(
+      drag.nodeId,
+      (event.clientX - rect.left) / zoomRef.current,
+      (event.clientY - rect.top) / zoomRef.current,
+    );
+    if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
+    dragWatchdogRef.current = window.setTimeout(() => finishDrag(drag.pointerId), 3000);
+    event.preventDefault();
+  };
+
+  const pointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const connection = connectionDrag.current;
+    if (connection?.pointerId === event.pointerId) {
+      connectionDrag.current = null;
+      if (event.type === "pointerup") {
+        const target = document
+          .elementFromPoint(event.clientX, event.clientY)
+          ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+        setConnection({
+          source: connection.source,
+          target: target && graph.nodes[target] && target !== connection.source ? target : "",
+        });
+      }
+      return;
+    }
+    finishDrag(event.pointerId);
+  };
+
+  const connectionClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.detail !== 0 || !(event.target as Element).closest(".dag-connect-handle")) return;
+    const source = event.currentTarget.dataset.nodeId;
+    if (source) setConnection({ source, target: "" });
+  };
+
+  const inspectNode = (node: GraphNode) => {
+    if (suppressClickRef.current === node.id) {
+      suppressClickRef.current = null;
+      return;
+    }
+    onSelectNode(node);
+  };
+
+  const toggleFullscreen = async () => {
+    const shell = shellRef.current;
+    if (!shell || !document.fullscreenEnabled) return;
+    try {
+      if (document.fullscreenElement === shell) await document.exitFullscreen();
+      else await shell.requestFullscreen();
+    } catch {
+      setIsFullscreen(document.fullscreenElement === shell);
+    }
+  };
+
+  const allBright = brightTypes.size === dagTypes.length;
+  const allDim = brightTypes.size === 0;
+  const fullscreenSupported =
+    typeof document !== "undefined" &&
+    document.fullscreenEnabled &&
+    "requestFullscreen" in HTMLElement.prototype;
+  const repulsionLabel =
+    repulsion < 650
+      ? "Gentle"
+      : repulsion < 1050
+        ? "Balanced"
+        : repulsion < 1500
+          ? "Strong"
+          : "Wide";
+  return (
+    <section className="view-panel dag-panel">
+      <ViewHeading
+        title={branchChanges ? "Branch graph" : "DAG view"}
+        aside={`${projection.nodes.length} nodes · ${projection.edges.length} edges`}
+      />
+      {branchChanges && (
+        <div className="branch-graph-controls">
+          <div className="segmented" role="group" aria-label="Branch graph lens">
+            <button
+              type="button"
+              aria-pressed={expandedContext !== null}
+              onClick={() => setExpandedContext(new Set())}
+            >
+              Changes + context
+            </button>
+            <button
+              type="button"
+              aria-pressed={expandedContext === null}
+              onClick={() => setExpandedContext(null)}
+            >
+              Full graph
+            </button>
+          </div>
+          {expandedContext !== null && (
+            <button
+              type="button"
+              className="button compact secondary"
+              onClick={() =>
+                setExpandedContext(
+                  expandBranchContext(graph, new Set(Object.keys(displayGraph.nodes))),
+                )
+              }
+            >
+              Expand context
+            </button>
+          )}
+          <label>
+            Task{" "}
+            <select
+              aria-label="Highlight task changes"
+              value={selectedTaskId}
+              onChange={(event) => setSelectedTaskId(event.target.value)}
+            >
+              <option value="">All changes</option>
+              {changeTasks.map((source) => (
+                <option key={source.task_id} value={source.task_id!}>
+                  {source.summary || `Revision ${source.revision}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedTaskId && onInspectTask && (
+            <button
+              type="button"
+              className="button compact secondary"
+              onClick={() => onInspectTask(selectedTaskId)}
+            >
+              View task
+            </button>
+          )}
+          <div className="branch-change-legend" aria-label="Change legend">
+            {BRANCH_DIFF_LEGEND.map((word) => (
+              <span key={word} className={`branch-diff-word diff-${word}`}>
+                {BRANCH_DIFF_WORDS[word]}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <GraphEditingControls
+        graph={graph}
+        projectId={projectId}
+        {...editing}
+        connection={connection}
+      />
+      {relationFocusNodeId && graph.nodes[relationFocusNodeId] && (
+        <div className="dag-relation-focus" role="status">
+          <Focus size={16} />
+          <span>
+            <strong>Relation focus:</strong> {graph.nodes[relationFocusNodeId].title}. This node and
+            its directly connected neighbors stay bright; all other graph context is dimmed.
+          </span>
+          <button className="button compact secondary" onClick={onClearRelationFocus}>
+            <X size={14} /> Clear focus
+          </button>
+        </div>
+      )}
+      {branchChanges && branchChanges.edges.length > 0 && (
+        <details className="branch-edge-changes">
+          <summary>{branchChanges.edges.length} relation changes</summary>
+          {branchChanges.edges.map((change) => {
+            const edge = change.after ?? change.before!;
+            return (
+              <article key={change.edge_id}>
+                <strong>
+                  <span className={`branch-change-badge ${change.change}`}>{change.change}</span>{" "}
+                  {displayGraph.nodes[edge.source]?.title ?? edge.source} →{" "}
+                  {displayGraph.nodes[edge.target]?.title ?? edge.target}
+                </strong>
+                <p>{edge.relation.replaceAll("_", " ")}</p>
+                <ChangedFields before={change.before} after={change.after} />
+                <ChangeHistory history={change.history} onInspectTask={onInspectTask} />
+              </article>
+            );
+          })}
+        </details>
+      )}
+      {projection.nodes.length === 0 ? (
+        <EmptyState icon={<GitBranch size={20} />} title="No graph" />
+      ) : (
+        <div className="dag-shell" ref={shellRef}>
+          <details className="dag-controls-disclosure" open={!narrow || mobileControlsOpen}>
+            <summary
+              className="view-disclosure-summary"
+              onClick={(event) => {
+                event.preventDefault();
+                setMobileControlsOpen((current) => !current);
+              }}
+            >
+              <span>DAG controls</span>
+              <ChevronDown size={14} />
+            </summary>
+            <div className="dag-controls">
+              <div className="dag-layout-controls">
+                <span className="dag-control-label">
+                  <GitBranch size={14} /> Layout
+                </span>
+                <div className="segmented" role="group" aria-label="DAG layout">
+                  <button
+                    type="button"
+                    aria-pressed={layoutMode === "force"}
+                    onClick={() => setLayoutMode("force")}
+                  >
+                    <Orbit size={14} /> Force-directed
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={layoutMode === "flow"}
+                    onClick={() => setLayoutMode("flow")}
+                  >
+                    <Workflow size={14} /> Research flow
+                  </button>
+                </div>
+                <span className="dag-control-label dag-projection-label">Projection</span>
+                <div
+                  className="segmented dag-projection-switch"
+                  role="group"
+                  aria-label="DAG ontology projection"
+                >
+                  {(["all", "belief", "action"] as const).map((item) => (
+                    <button
+                      type="button"
+                      aria-pressed={ontologyProjection === item}
+                      onClick={() => setOntologyProjection(item)}
+                      key={item}
+                    >
+                      {item[0].toUpperCase() + item.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="dag-lenses" role="group" aria-label="Node brightness by type">
+                <span className="dag-control-label">
+                  <Eye size={14} /> Brightness
+                </span>
+                {dagTypes.map((type) => {
+                  const active = brightTypes.has(type);
+                  const meta = dagTypeMeta[type];
+                  return (
+                    <button
+                      className={`dag-lens ${active ? "is-bright" : "is-dim"}`}
+                      style={{ "--lens-color": meta.color } as CSSProperties}
+                      type="button"
+                      aria-pressed={active}
+                      aria-label={`${active ? "Dim" : "Brighten"} ${meta.label.toLowerCase()} (${typeCounts[type]})`}
+                      onClick={() => toggleType(type)}
+                      key={type}
+                    >
+                      {active ? <Eye size={12} /> : <EyeOff size={12} />}
+                      <span>{meta.label}</span>
+                      <small>{typeCounts[type]}</small>
+                    </button>
+                  );
+                })}
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  disabled={allBright}
+                  onClick={() => setBrightTypes(new Set(dagTypes))}
+                >
+                  <Eye size={14} /> Brighten all
+                </button>
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  disabled={allDim}
+                  onClick={() => setBrightTypes(new Set())}
+                >
+                  <EyeOff size={14} /> Dim all
+                </button>
+              </div>
+              <div className="dag-physics-controls">
+                {layoutMode === "force" && (
+                  <label className="dag-force-control">
+                    <span>
+                      <Gauge size={14} /> Repulsion
+                    </span>
+                    <input
+                      aria-label="Node repulsion"
+                      type="range"
+                      min="350"
+                      max="1900"
+                      step="50"
+                      value={repulsion}
+                      onChange={(event) => setRepulsion(Number(event.target.value))}
+                    />
+                    <output>{repulsionLabel}</output>
+                  </label>
+                )}
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  disabled={layout.pinCount === 0}
+                  onClick={layout.releasePins}
+                >
+                  <PinOff size={14} /> Release all pins
+                </button>
+                <button
+                  className="dag-tool-button"
+                  type="button"
+                  onClick={() => {
+                    framedLayoutRef.current = null;
+                    layout.resetLayout();
+                  }}
+                >
+                  <RotateCcw size={14} /> Reset layout
+                </button>
+                <button className="dag-tool-button" type="button" onClick={fitToView}>
+                  <Scan size={14} /> Fit
+                </button>
+                {fullscreenSupported && (
+                  <button
+                    aria-label={isFullscreen ? "Exit DAG full screen" : "Enter DAG full screen"}
+                    aria-pressed={isFullscreen}
+                    className="dag-tool-button"
+                    type="button"
+                    onClick={toggleFullscreen}
+                  >
+                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                    {isFullscreen ? "Exit full screen" : "Full screen"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </details>
+          <div className="dag-scroll" ref={scrollRef}>
+            <div
+              className="dag-zoom-plane"
+              style={{
+                // Trailing room lets the browser center nodes near either canvas edge.
+                width: `calc(${layout.width * zoom + canvasOffset.offsetX}px + 50%)`,
+                height: `calc(${layout.height * zoom + canvasOffset.offsetY}px + 50%)`,
+              }}
+            >
+              <div
+                className="dag-canvas"
+                ref={canvasRef}
+                style={{
+                  width: layout.width,
+                  height: layout.height,
+                  left: canvasOffset.offsetX,
+                  top: canvasOffset.offsetY,
+                  transform: `scale(${zoom})`,
+                }}
+              >
+                <svg width={layout.width} height={layout.height} aria-hidden="true">
+                  <defs>
+                    <marker
+                      id="dag-arrow"
+                      viewBox="0 0 10 10"
+                      refX="9"
+                      refY="5"
+                      markerWidth="6"
+                      markerHeight="6"
+                      orient="auto-start-reverse"
+                    >
+                      <path d="M 0 0 L 10 5 L 0 10 z" />
+                    </marker>
+                  </defs>
+                  {projection.edges.map((edge, edgeIndex) => {
+                    const source = layout.positions[edge.source];
+                    const target = layout.positions[edge.target];
+                    if (!source || !target) return null;
+                    const geometry = edgeGeometry(source, target, edgeIndex);
+                    const projectionEmphasis = edgeProjectionEmphasis(edge, ontologyProjection);
+                    const dimmed =
+                      projectionEmphasis === "dimmed" ||
+                      !brightTypes.has(displayGraph.nodes[edge.source]?.type) ||
+                      !brightTypes.has(displayGraph.nodes[edge.target]?.type) ||
+                      Boolean(focusedRelations && !focusedRelations.edgeIds.has(edge.id)) ||
+                      Boolean(
+                        selectedTaskId &&
+                        !edgeChanges
+                          .get(edge.id)
+                          ?.history.some((source) => source.task_id === selectedTaskId),
+                      );
+                    return (
+                      <g
+                        className={`dag-edge-group ${edgeChanges.has(edge.id) ? `branch-${edgeChanges.get(edge.id)!.change}` : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""}`}
+                        key={edge.id}
+                      >
+                        <path className="dag-edge" d={geometry.path} markerEnd="url(#dag-arrow)" />
+                        <text className="dag-edge-label" x={geometry.labelX} y={geometry.labelY}>
+                          {edgeChanges.has(edge.id) ? `${edgeChanges.get(edge.id)!.change} · ` : ""}
+                          {edge.relation.replaceAll("_", " ")}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </svg>
+                {projection.nodes.map((node) => {
+                  const position = layout.positions[node.id];
+                  if (!position) return null;
+                  const projectionEmphasis =
+                    nodeProjectionEmphasis.get(node.id) ??
+                    (ontologyProjection === "all" ? "emphasized" : "neutral");
+                  const dimmed =
+                    projectionEmphasis === "dimmed" ||
+                    !brightTypes.has(node.type) ||
+                    Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
+                    Boolean(selectedTaskId && !taskHighlights.has(node.id));
+                  const nodeChange = nodeChanges.get(node.id);
+                  const diffWord = nodeChange
+                    ? branchDiffWord(nodeChange.change, mergeMarks.get(`node:${node.id}`))
+                    : null;
+                  return (
+                    <div
+                      className={`dag-node ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""} ${changedNodeIds.has(node.id) ? "digest-changed" : ""}`}
+                      data-node-id={node.id}
+                      style={
+                        {
+                          left: position.x - DAG_NODE_WIDTH / 2,
+                          top: position.y - DAG_NODE_HEIGHT / 2,
+                          "--node-accent": dagTypeMeta[node.type].color,
+                        } as CSSProperties
+                      }
+                      key={node.id}
+                      onDragStart={(event) => event.preventDefault()}
+                      onPointerDown={(event) => pointerDown(event, node.id)}
+                      onPointerMove={pointerMove}
+                      onPointerUp={pointerEnd}
+                      onPointerCancel={pointerEnd}
+                      onLostPointerCapture={pointerEnd}
+                      onClick={connectionClick}
+                    >
+                      <button
+                        aria-label={`${node.title}. Inspect node. Drag this card to pin it.`}
+                        className="dag-node-inspect"
+                        type="button"
+                        onClick={() => inspectNode(node)}
+                      >
+                        {!branchChanges && <span className="eyebrow">{nodeTypeLabel(node)}</span>}
+                        <strong>{node.title}</strong>
+                        {branchChanges && (
+                          <span className={`branch-diff-word diff-${diffWord ?? "context"}`}>
+                            {diffWord ? BRANCH_DIFF_WORDS[diffWord] : "Context"}
+                          </span>
+                        )}
+                        <small className="dag-node-standing">
+                          <span className={`standing ${node.standing}`}>{node.standing}</span>
+                          <span>{node.status || node.validity || ""}</span>
+                        </small>
+                      </button>
+                      {!editing.mutationsDisabled && graph.nodes[node.id] && (
+                        <button
+                          className="dag-connect-handle"
+                          type="button"
+                          aria-label={`Connect from ${node.title}`}
+                          title="Drag to another node, or click to choose a connection"
+                        >
+                          <Link2 size={14} />
+                        </button>
+                      )}
+                      {position.pinned && (
+                        <button
+                          aria-label={`Release pin from ${node.title}`}
+                          className="dag-pin-state"
+                          title="Release this pin"
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            layout.releasePin(node.id);
+                          }}
+                          onPointerDown={(event) => event.stopPropagation()}
+                        >
+                          <Pin size={12} /> pinned
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+interface ExecutionProps {
+  graph: GraphState;
+  episodes: Episode[];
+  episodeAction: string | null;
+  tasks: AgentTask[];
+  watchers: WatcherRecord[];
+  experimentControl: Record<string, ExperimentControlState>;
+  experimentEntries?: ExperimentLoopIndexEntry[];
+  exactExperimentRoute?: ExperimentRouteIdentity | null;
+  exactExperimentEntry?: ExperimentLoopIndexEntry | null;
+  selectedExperimentId: string | null;
+  focusExperimentId: string | null;
+  selectedAutoResearchEpisodeId?: string | null;
+  runBusy: boolean;
+  stopBusyId: string | null;
+  watcherCheckBusyId: string | null;
+  taskActionId: string | null;
+  selectedExperimentConversation?: ReactNode;
+  providerLabels?: Record<string, string>;
+  providerLogins?: ProviderLoginState[];
+  onProviderLoginVerified?: () => void;
+  machines?: Machine[];
+  computeApiBase?: string;
+  onOpenSettings?: () => void;
+  mutationsDisabled?: boolean;
+  experimentStartsDisabled?: boolean;
+  onInspectTask: (operationId: string) => void;
+  onStopEpisode: (episodeId: string) => Promise<void>;
+  onArchiveEpisode: ArchiveEpisodeAction;
+  onMergeEpisode: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
+  onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
+  onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
+  onSwitchEpisodeProvider: (task: AgentTask) => void;
+  onSelectExperiment: (nodeId: string | null) => void;
+  onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
+  onDetailFocused: () => void;
+  onOpenHistory: () => void;
+  onRunExperiment: (
+    node: GraphNode,
+    invocationCeiling?: number,
+    browserRequested?: boolean,
+  ) => void;
+  onStopExperiment: (nodeId: string, episodeId?: string) => void;
+  onCheckExperimentWatcher: (watcherId: string) => void;
+  onStopExperimentWatcher: (watcherId: string) => void;
+  onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
+  onSwitchExperimentProvider: (task: AgentTask) => void;
+  episodeReportHref: (episodeId: string) => string;
+}
+
+export function ExecutionView({
+  graph,
+  episodes,
+  episodeAction,
+  tasks,
+  watchers,
+  experimentControl,
+  experimentEntries = [],
+  exactExperimentRoute = null,
+  exactExperimentEntry = null,
+  selectedExperimentId,
+  focusExperimentId,
+  selectedAutoResearchEpisodeId = null,
+  runBusy,
+  stopBusyId,
+  watcherCheckBusyId,
+  taskActionId,
+  selectedExperimentConversation,
+  providerLabels = {},
+  providerLogins = [],
+  onProviderLoginVerified,
+  machines = [],
+  computeApiBase = "",
+  onOpenSettings,
+  mutationsDisabled = false,
+  experimentStartsDisabled = false,
+  onInspectTask,
+  onStopEpisode,
+  onArchiveEpisode,
+  onMergeEpisode,
+  onContinueEpisode,
+  onSendEpisodeMessage,
+  onOperateEpisodeTask,
+  onSwitchEpisodeProvider,
+  onSelectExperiment,
+  onOpenExperimentEntry,
+  onDetailFocused,
+  onOpenHistory,
+  onRunExperiment,
+  onStopExperiment,
+  onCheckExperimentWatcher,
+  onStopExperimentWatcher,
+  onRecoverExperiment,
+  onSwitchExperimentProvider,
+  episodeReportHref,
+}: ExecutionProps) {
+  const [showArchived, setShowArchived] = useState(false);
+  const selectedDetailRef = useRef<HTMLDivElement>(null);
+  const selectedAutoResearchDetailRef = useRef<HTMLDivElement>(null);
+  const focusedAutoResearchEpisodeId = useRef<string | null>(null);
+  const exactProjection = projectExperimentExecution(
+    Object.values(graph.nodes),
+    tasks,
+    watchers,
+    experimentControl,
+    exactExperimentRoute,
+    exactExperimentEntry,
+  );
+  const experimentNodes = new Map(
+    exactProjection.nodes.filter((node) => isControlNode(node.type)).map((node) => [node.id, node]),
+  );
+  const experimentRuns = new Map<string, ExperimentRun>();
+  const experimentEntriesByEpisode = new Map<string, ExperimentLoopIndexEntry>();
+  experimentNodes.forEach((node, nodeId) => {
+    const control = exactProjection.experimentControl[nodeId];
+    if (!control) {
+      throw new Error(`Experiment ${nodeId} is missing its backend control projection.`);
+    }
+    if (!control.health || !control.recommendation || !control.run_section) {
+      throw new Error(`Experiment ${nodeId} has an incomplete backend control projection.`);
+    }
+    if (!control?.episode_id) return;
+    experimentRuns.set(
+      control.episode_id,
+      buildExperimentRun(node, control, exactProjection.tasks, exactProjection.watchers),
+    );
+  });
+  const indexedEntries = (
+    exactExperimentEntry ? [...experimentEntries, exactExperimentEntry] : experimentEntries
+  ).filter((entry) => {
+    if (
+      exactExperimentRoute &&
+      entry.node.id === exactExperimentRoute.experiment_id &&
+      entry.episode.episode_id !== exactExperimentRoute.episode_id
+    ) {
+      return false;
+    }
+    if (entry.graph_target.kind !== "main") return true;
+    return mainExperimentRouteMatchesControl(
+      {
+        experiment_id: entry.node.id,
+        episode_id: entry.episode.episode_id,
+        graph_target: entry.graph_target,
+        parent_episode_id: entry.parent_episode_id,
+      },
+      exactProjection.experimentControl[entry.node.id],
+    );
+  });
+  indexedEntries.forEach((entry) => {
+    if (
+      entry.control.episode_id !== entry.episode.episode_id ||
+      entry.control.episode?.episode_id !== entry.episode.episode_id
+    ) {
+      throw new Error(
+        `Experiment ${entry.node.id} index entry does not identify one exact episode.`,
+      );
+    }
+    if (entry.graph_target.kind === "main" && experimentRuns.has(entry.episode.episode_id)) {
+      return;
+    }
+    const exactWatchers = watchers.filter((watcher) =>
+      graphTargetsEqual(watcher.graph_target, entry.graph_target),
+    );
+    experimentRuns.set(
+      entry.episode.episode_id,
+      buildExperimentRun(entry.node, entry.control, entry.episode.tasks, exactWatchers),
+    );
+    experimentEntriesByEpisode.set(entry.episode.episode_id, entry);
+  });
+  // The cached graph control owns lifecycle state. The episode reads own the
+  // current archive preference, including for main cards built from that cache.
+  const episodesById = new Map(episodes.map((episode) => [episode.episode_id, episode]));
+  indexedEntries.forEach((entry) => episodesById.set(entry.episode.episode_id, entry.episode));
+  const orderedEpisodes = runsEpisodeCards(
+    [...episodesById.values()],
+    new Set(experimentRuns.keys()),
+    showArchived,
+  );
+  const visibleEpisodes = orderedEpisodes.filter((episode) => !episode.archived);
+  const archivedEpisodes = orderedEpisodes.filter((episode) => episode.archived);
+  const requestedEpisodeId =
+    selectedAutoResearchEpisodeId ?? exactExperimentRoute?.episode_id ?? null;
+  const requestedEpisode = requestedEpisodeId ? episodesById.get(requestedEpisodeId) : undefined;
+  const requestedEpisodeArchived = requestedEpisode?.archived ?? false;
+  const childExperimentsByParent = new Map<string, ExperimentLoopIndexEntry[]>();
+  experimentEntriesByEpisode.forEach((entry) => {
+    if (!entry.parent_episode_id) return;
+    if (!showArchived && episodesById.get(entry.episode.episode_id)?.archived) return;
+    const children = childExperimentsByParent.get(entry.parent_episode_id) ?? [];
+    children.push(entry);
+    childExperimentsByParent.set(entry.parent_episode_id, children);
+  });
+  childExperimentsByParent.forEach((children) => {
+    children.sort(
+      (left, right) =>
+        Date.parse(right.episode.created_at) - Date.parse(left.episode.created_at) ||
+        left.episode.episode_id.localeCompare(right.episode.episode_id),
+    );
+  });
+  const selectedAutoResearchLoaded = orderedEpisodes.some(
+    (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
+  );
+  const needsAction = visibleEpisodes.filter(
+    (episode) => episodeRunSection(episode) === "actionable",
+  );
+  const inProgress = visibleEpisodes.filter((episode) => episodeRunSection(episode) === "running");
+  const completed = visibleEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
+  // Expand one card by default: the selection when there is one, else the first
+  // row a human is expected to read, which is the first section carrying work.
+  const expandedEpisodeId =
+    selectedAutoResearchEpisodeId ??
+    (needsAction.length > 0 ? needsAction : inProgress)[0]?.episode_id ??
+    null;
+  const completedGroups = [
+    {
+      mode: "experiment_loop" as const,
+      title: "Experiment loop",
+      episodes: completed.filter((episode) => episode.mode === "experiment_loop"),
+    },
+    {
+      mode: "auto_research" as const,
+      title: "Auto-research",
+      episodes: completed.filter((episode) => episode.mode === "auto_research"),
+    },
+  ];
+
+  useEffect(() => {
+    if (requestedEpisodeArchived) setShowArchived(true);
+  }, [requestedEpisodeId, requestedEpisodeArchived]);
+
+  useEffect(() => {
+    if (
+      exactProjection.staleMainRoute ||
+      !focusExperimentId ||
+      focusExperimentId !== selectedExperimentId
+    ) {
+      return;
+    }
+    selectedDetailRef.current?.focus();
+    onDetailFocused();
+  }, [exactProjection.staleMainRoute, focusExperimentId, onDetailFocused, selectedExperimentId]);
+
+  useEffect(() => {
+    if (!selectedAutoResearchEpisodeId) {
+      focusedAutoResearchEpisodeId.current = null;
+      return;
+    }
+    if (
+      !selectedAutoResearchLoaded ||
+      focusedAutoResearchEpisodeId.current === selectedAutoResearchEpisodeId
+    ) {
+      return;
+    }
+    const detail = selectedAutoResearchDetailRef.current;
+    if (!detail) return;
+    focusRunDetail(detail);
+    focusedAutoResearchEpisodeId.current = selectedAutoResearchEpisodeId;
+  }, [selectedAutoResearchEpisodeId, selectedAutoResearchLoaded]);
+
+  return (
+    <section className="view-panel runs-view" aria-label="Runs">
+      <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
+      {onOpenSettings && (
+        <ComputeRouteNotice
+          // One instance per project, so a check's result or error never
+          // outlives the project it was made for.
+          key={computeApiBase}
+          apiBase={computeApiBase}
+          machines={machines}
+          onOpenSettings={onOpenSettings}
+        />
+      )}
+      <div className="runs-view-controls">
+        <label className="show-archived-runs">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(event) => setShowArchived(event.target.checked)}
+          />
+          Show archived
+        </label>
+      </div>
+      {exactProjection.staleMainRoute ? (
+        <div className="run-route-history" role="status">
+          <strong>The requested Experiment episode is now in History.</strong>
+          <button className="button secondary compact" type="button" onClick={onOpenHistory}>
+            Open History
+          </button>
+          {showArchived && requestedEpisode?.archived && renderEpisodeCard(requestedEpisode, false)}
+        </div>
+      ) : (
+        <div className="operating-sections episode-ledger-sections">
+          <section className="operating-section episode-ledger-section needs-action">
+            <header>
+              <h2>Needs action</h2>
+              <span>{needsAction.length}</span>
+            </header>
+            {needsAction.length === 0 ? (
+              <p className="episode-ledger-empty">Nothing needs you right now.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {needsAction.map((episode) =>
+                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+                )}
+              </div>
+            )}
+          </section>
+          <section className="operating-section episode-ledger-section in-progress">
+            <header>
+              <h2>In progress</h2>
+              <span>{inProgress.length}</span>
+            </header>
+            {inProgress.length === 0 ? (
+              <p className="episode-ledger-empty">No run is in flight.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {inProgress.map((episode) =>
+                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+                )}
+              </div>
+            )}
+          </section>
+          <section className="operating-section episode-ledger-section completed">
+            <header>
+              <h2>Completed</h2>
+              <span>{completed.length}</span>
+            </header>
+            <div className="episode-type-groups">
+              {completedGroups.map((group) => (
+                <details
+                  className="episode-type-group"
+                  open={
+                    group.episodes.some((episode) => episode.episode_id === requestedEpisodeId) ||
+                    undefined
+                  }
+                  key={`${group.mode}:${requestedEpisodeId ?? ""}`}
+                >
+                  <summary>
+                    <strong>{group.title}</strong>
+                    <span>{group.episodes.length}</span>
+                  </summary>
+                  <div className="campaign-run-list">
+                    {group.episodes.map((episode) =>
+                      renderEpisodeCard(
+                        episode,
+                        episode.episode_id === selectedAutoResearchEpisodeId,
+                      ),
+                    )}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </section>
+          {showArchived && (
+            <section
+              className="operating-section episode-ledger-section archived"
+              aria-label="Archived runs"
+            >
+              <header>
+                <h2>Archived</h2>
+                <span>{archivedEpisodes.length}</span>
+              </header>
+              {archivedEpisodes.length === 0 ? (
+                <p className="episode-ledger-empty">No archived runs.</p>
+              ) : (
+                <div className="campaign-run-list">
+                  {archivedEpisodes.map((episode) => renderEpisodeCard(episode, false))}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
+      )}
+    </section>
+  );
+
+  function renderEpisodeCard(episode: Episode, initiallyExpanded: boolean) {
+    if (episode.mode === "auto_research") {
+      return (
+        <AutoResearchEpisodeCard
+          episode={episode}
+          initiallyExpanded={initiallyExpanded}
+          selected={episode.episode_id === selectedAutoResearchEpisodeId}
+          detailRef={
+            episode.episode_id === selectedAutoResearchEpisodeId
+              ? selectedAutoResearchDetailRef
+              : undefined
+          }
+          busyAction={episodeAction}
+          taskActionId={taskActionId}
+          // A chain is one card, so children of every member are listed on it.
+          childExperiments={episode.chain.flatMap(
+            (member) => childExperimentsByParent.get(member.episode_id) ?? [],
+          )}
+          onOpenExperimentEntry={(entry) => {
+            onSelectExperiment(entry.node.id);
+            onOpenExperimentEntry(entry);
+          }}
+          onInspectTask={onInspectTask}
+          onStop={onStopEpisode}
+          onMerge={onMergeEpisode}
+          onContinue={onContinueEpisode}
+          onSendMessage={onSendEpisodeMessage}
+          onOperateTask={onOperateEpisodeTask}
+          onSwitchProvider={onSwitchEpisodeProvider}
+          onArchive={onArchiveEpisode}
+          key={episode.episode_id}
+        />
+      );
+    }
+    const run = experimentRuns.get(episode.episode_id);
+    if (!run && episode.archived) {
+      const historicalEntry = experimentEntries.find(
+        (entry) => entry.episode.episode_id === episode.episode_id,
+      );
+      const title =
+        historicalEntry?.node.title ??
+        (episode.graph_target.kind === "main"
+          ? graph.nodes[episode.control_node_id ?? ""]?.title
+          : undefined) ??
+        episode.control_node_id ??
+        "Experiment loop";
+      return (
+        <article
+          className="campaign-run archived-episode-card"
+          data-episode-id={episode.episode_id}
+          key={episode.episode_id}
+        >
+          <div className="campaign-run-heading">
+            <span className="campaign-run-identity">
+              <strong className="campaign-run-title">
+                <FlaskConical size={14} aria-hidden="true" />
+                <span>{title}</span>
+              </strong>
+              <span className="campaign-run-meta">
+                <time dateTime={episode.created_at}>
+                  {formatEpisodeTimestamp(episode.created_at)}
+                </time>
+                <EpisodeAuthor author={episode.authorized_by} />
+              </span>
+            </span>
+            <div className="archived-episode-actions">
+              <button className="button secondary compact" type="button" onClick={onOpenHistory}>
+                Open History
+              </button>
+              <EpisodeArchiveButton
+                episode={episode}
+                disabled={episodeAction !== null}
+                onArchive={onArchiveEpisode}
+              />
+            </div>
+          </div>
+        </article>
+      );
+    }
+    if (!run) {
+      throw new Error(
+        `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
+      );
+    }
+    const indexedEntry = experimentEntriesByEpisode.get(episode.episode_id) ?? null;
+    const watchedByParentAutoResearch = indexedEntry?.parent_watching ?? false;
+    return (
+      <ExperimentEpisodeCard
+        episode={episode}
+        run={run}
+        initiallyExpanded={
+          !exactProjection.staleMainRoute &&
+          (initiallyExpanded || selectedExperimentId === run.node.id)
+        }
+        selected={!exactProjection.staleMainRoute && selectedExperimentId === run.node.id}
+        detailRef={
+          !exactProjection.staleMainRoute && selectedExperimentId === run.node.id
+            ? selectedDetailRef
+            : undefined
+        }
+        runBusy={runBusy}
+        stopBusy={stopBusyId === run.node.id}
+        watcherCheckBusyId={watcherCheckBusyId}
+        taskActionId={taskActionId}
+        archiveDisabled={episodeAction !== null}
+        onArchive={onArchiveEpisode}
+        mergeBusy={episodeAction === `merge:${episode.episode_id}`}
+        onMerge={onMergeEpisode}
+        experimentConversation={selectedExperimentConversation}
+        indexedEntry={indexedEntry}
+        watchedByParentAutoResearch={watchedByParentAutoResearch}
+        exactBranchEntry={
+          indexedEntry?.graph_target.kind === "branch"
+            ? indexedEntry
+            : exactProjection.exactBranchEntry
+        }
+        providerLabels={providerLabels}
+        experimentStartsDisabled={experimentStartsDisabled}
+        mutationsDisabled={
+          mutationsDisabled ||
+          runBusy ||
+          Boolean(stopBusyId) ||
+          Boolean(taskActionId) ||
+          Boolean(watcherCheckBusyId)
+        }
+        onInspectTask={onInspectTask}
+        onContinueEpisode={onContinueEpisode}
+        onSelectExperiment={onSelectExperiment}
+        onOpenExperimentEntry={onOpenExperimentEntry}
+        onRunExperiment={onRunExperiment}
+        onStopExperiment={onStopExperiment}
+        onCheckExperimentWatcher={onCheckExperimentWatcher}
+        onStopExperimentWatcher={onStopExperimentWatcher}
+        onRecoverExperiment={onRecoverExperiment}
+        onSwitchExperimentProvider={onSwitchExperimentProvider}
+        episodeReportHref={episodeReportHref}
+        key={episode.episode_id}
+      />
+    );
+  }
+
+  function episodeRunSection(episode: Episode): EpisodeRunSection {
+    if (episode.mode === "auto_research") return episode.run_section;
+    const run = experimentRuns.get(episode.episode_id);
+    if (!run) {
+      throw new Error(
+        `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
+      );
+    }
+    return run.control.run_section;
+  }
+}
+
+function ExperimentEpisodeCard({
+  episode,
+  run,
+  initiallyExpanded,
+  selected,
+  detailRef,
+  runBusy,
+  stopBusy,
+  watcherCheckBusyId,
+  taskActionId,
+  archiveDisabled,
+  onArchive,
+  mergeBusy,
+  onMerge,
+  experimentConversation,
+  indexedEntry,
+  watchedByParentAutoResearch,
+  exactBranchEntry,
+  providerLabels,
+  experimentStartsDisabled,
+  mutationsDisabled,
+  onSelectExperiment,
+  onInspectTask,
+  onOpenExperimentEntry,
+  onRunExperiment,
+  onStopExperiment,
+  onCheckExperimentWatcher,
+  onStopExperimentWatcher,
+  onRecoverExperiment,
+  onSwitchExperimentProvider,
+  onContinueEpisode,
+  episodeReportHref,
+}: {
+  episode: Episode;
+  run: ExperimentRun;
+  initiallyExpanded: boolean;
+  selected: boolean;
+  detailRef?: Ref<HTMLDivElement>;
+  runBusy: boolean;
+  stopBusy: boolean;
+  watcherCheckBusyId: string | null;
+  taskActionId: string | null;
+  archiveDisabled: boolean;
+  onArchive: ArchiveEpisodeAction;
+  mergeBusy: boolean;
+  onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
+  experimentConversation?: ReactNode;
+  indexedEntry: ExperimentLoopIndexEntry | null;
+  watchedByParentAutoResearch: boolean;
+  exactBranchEntry: ExperimentLoopIndexEntry | null;
+  providerLabels: Record<string, string>;
+  experimentStartsDisabled: boolean;
+  mutationsDisabled: boolean;
+  onSelectExperiment: (nodeId: string | null) => void;
+  onInspectTask: (operationId: string) => void;
+  onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
+  onRunExperiment: (
+    node: GraphNode,
+    invocationCeiling?: number,
+    browserRequested?: boolean,
+  ) => void;
+  onStopExperiment: (nodeId: string, episodeId?: string) => void;
+  onCheckExperimentWatcher: (watcherId: string) => void;
+  onStopExperimentWatcher: (watcherId: string) => void;
+  onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
+  onSwitchExperimentProvider: (task: AgentTask) => void;
+  onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  episodeReportHref: (episodeId: string) => string;
+}) {
+  const detailId = useId();
+  const [expanded, setExpanded] = useState(initiallyExpanded);
+  const tone = experimentHealthTone(run.health);
+  const title = run.node.title;
+  const episodeTimestamp = formatEpisodeTimestamp(episode.created_at);
+  const isExactBranchEpisode = exactBranchEntry?.episode?.episode_id === episode.episode_id;
+  const exactEpisodeId = isExactBranchEpisode
+    ? (exactBranchEntry?.episode?.episode_id ?? exactBranchEntry?.control.episode_id)
+    : null;
+
+  useEffect(() => {
+    if (selected) setExpanded(true);
+  }, [selected]);
+
+  return (
+    <article
+      className={`campaign-run experiment-episode-card ${tone}`}
+      data-episode-id={episode.episode_id}
+    >
+      <span className="campaign-state-rail" aria-hidden="true" />
+      <div className="campaign-run-heading">
+        <button
+          className="campaign-run-toggle"
+          type="button"
+          aria-label={`${expanded ? "Collapse" : "Expand"} Experiment loop episode ${title}`}
+          aria-expanded={expanded}
+          aria-controls={detailId}
+          onClick={() => {
+            const next = !expanded;
+            setExpanded(next);
+            onSelectExperiment(next ? run.node.id : null);
+            if (next && indexedEntry) onOpenExperimentEntry(indexedEntry);
+          }}
+        />
+        <span className="campaign-run-identity">
+          <strong className="campaign-run-title">
+            <FlaskConical size={14} aria-hidden="true" />
+            <span>{title}</span>
+          </strong>
+          <span className="campaign-run-meta">
+            <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
+            <time dateTime={episode.created_at}>{episodeTimestamp}</time>
+            <EpisodeAuthor author={episode.authorized_by} />
+          </span>
+        </span>
+        <EpisodeBudgetMeter episode={episode} />
+        <span className="campaign-run-time">
+          <EpisodeArchiveButton
+            episode={episode}
+            disabled={archiveDisabled}
+            onArchive={onArchive}
+          />
+          <ChevronDown size={16} aria-hidden="true" />
+        </span>
+      </div>
+      {expanded && (
+        <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
+          <ExperimentRunDetail
+            apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
+            run={run}
+            runBusy={runBusy}
+            runDisabled={mutationsDisabled}
+            startDisabled={experimentStartsDisabled}
+            stopBusy={stopBusy}
+            recoveryBusy={Boolean(run.currentTask && taskActionId === run.currentTask.operation_id)}
+            watcherCheckBusyId={watcherCheckBusyId}
+            providerLabel={experimentProviderLabel(run, providerLabels)}
+            conversation={experimentConversation}
+            ownedByAutoResearch={Boolean(indexedEntry?.parent_episode_id)}
+            watchedByParentAutoResearch={watchedByParentAutoResearch}
+            allowStart={!isExactBranchEpisode}
+            onRun={(invocationCeiling, browserRequested) =>
+              onRunExperiment(run.node, invocationCeiling, browserRequested)
+            }
+            onContinue={(episodeId, invocationCeiling) =>
+              void onContinueEpisode(episodeId, invocationCeiling)
+            }
+            onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
+            onCheckWatcher={onCheckExperimentWatcher}
+            onStopWatcher={onStopExperimentWatcher}
+            onRecover={(action) => {
+              if (run.currentTask) onRecoverExperiment(run.currentTask, action);
+            }}
+            onInspectTask={onInspectTask}
+            onSwitchProvider={() => {
+              if (run.currentTask) onSwitchExperimentProvider(run.currentTask);
+            }}
+            episodeReportHref={episodeReportHref}
+          />
+          {(episode.graph_branch || episode.code_worktree) && (
+            <EpisodeMergePanel
+              apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
+              episode={episode}
+              disabled={archiveDisabled || mutationsDisabled}
+              busy={mergeBusy}
+              onMerge={onMerge}
+            />
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function formatEpisodeTimestamp(value: string): string {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
+function experimentProviderLabel(
+  experiment: ExperimentRun,
+  providerLabels: Record<string, string>,
+): string | undefined {
+  const provider =
+    experiment.currentTask?.request.provider || experiment.control?.operational?.session.provider;
+  return provider ? providerLabels[provider] || provider : undefined;
+}
+
+interface AttentionOverviewProps {
+  consolidationCount: number;
+  proposals: Proposal[];
+  decisions: GraphNode[];
+  blockers: GraphNode[];
+  onSelectNode: (node: GraphNode) => void;
+}
+
+export function AttentionOverview({
+  consolidationCount,
+  proposals,
+  decisions,
+  blockers,
+  onSelectNode,
+}: AttentionOverviewProps) {
+  return (
+    <section className="view-panel">
+      <ViewHeading
+        title="Inbox"
+        aside={`${proposals.length + decisions.length + blockers.length + consolidationCount} open`}
+      />
+      <div className="attention-overview-grid">
+        <OverviewCard label="Pending proposals" value={proposals.length} />
+        <OverviewCard label="Decisions awaiting choice" value={decisions.length} />
+        <OverviewCard label="Blockers awaiting judgment" value={blockers.length} />
+      </div>
+      <h3 className="section-label">Recommended next action</h3>
+      {proposals[0] ? (
+        <div className="recommended-action">
+          <CircleDot size={16} />
+          <strong>Understand and decide “{proposals[0].title}”</strong>
+        </div>
+      ) : decisions[0] ? (
+        <button className="recommended-action" onClick={() => onSelectNode(decisions[0])}>
+          <CircleDot size={16} />
+          <strong>Choose “{decisions[0].title}”</strong>
+        </button>
+      ) : blockers[0] ? (
+        <button className="recommended-action" onClick={() => onSelectNode(blockers[0])}>
+          <CircleDot size={16} />
+          <strong>Inspect “{blockers[0].title}”</strong>
+        </button>
+      ) : (
+        <div className="quiet-empty compact">
+          <CircleDot size={16} />
+          <strong>No judgment queued</strong>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ResearchStage({
+  label,
+  nodes,
+  changedNodeIds,
+  onSelectNode,
+}: {
+  label: string;
+  nodes: GraphNode[];
+  changedNodeIds: ReadonlySet<string>;
+  onSelectNode: (node: GraphNode) => void;
+}) {
+  return (
+    <div className="research-path-stage">
+      <span className="research-stage-label">{label}</span>
+      <div className="research-stage-cards">
+        {nodes.length > 0 ? (
+          nodes.map((node) => (
+            <ResearchNodeCard
+              node={node}
+              onSelectNode={onSelectNode}
+              changed={changedNodeIds.has(node.id)}
+              key={node.id}
+            />
+          ))
+        ) : (
+          <span className="research-stage-empty">—</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ResearchNodeCard({
+  node,
+  onSelectNode,
+  compact = false,
+  changed = false,
+}: {
+  node: GraphNode;
+  onSelectNode: (node: GraphNode) => void;
+  compact?: boolean;
+  changed?: boolean;
+}) {
+  return (
+    <button
+      className={`research-node-card ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${compact ? "compact" : ""} ${changed ? "digest-changed" : ""}`}
+      onClick={() => onSelectNode(node)}
+    >
+      <span className="research-node-topline">
+        <span>{nodeTypeLabel(node)}</span>
+        <span className={`standing ${node.standing}`}>{node.standing}</span>
+      </span>
+      <strong>{node.title}</strong>
+    </button>
+  );
+}
+
+function dagFocusNode(nodes: GraphNode[], edges: Edge[]): string | undefined {
+  const incoming = new Set(edges.map((edge) => edge.target));
+  const outgoing = new Map<string, number>();
+  edges.forEach((edge) => outgoing.set(edge.source, (outgoing.get(edge.source) ?? 0) + 1));
+  const questions = nodes.filter((node) => isQuestion(node.type));
+  const roots = questions.filter((node) => !incoming.has(node.id));
+  return (
+    [...(roots.length > 0 ? roots : questions)].sort(
+      (left, right) =>
+        (outgoing.get(right.id) ?? 0) - (outgoing.get(left.id) ?? 0) ||
+        left.id.localeCompare(right.id),
+    )[0]?.id ?? nodes[0]?.id
+  );
+}
+
+function edgeGeometry(source: DagPosition, target: DagPosition, edgeIndex: number) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const distance = Math.max(1, Math.hypot(dx, dy));
+  const ux = dx / distance;
+  const uy = dy / distance;
+  const horizontalReach = DAG_NODE_WIDTH / 2 / Math.max(0.001, Math.abs(ux));
+  const verticalReach = DAG_NODE_HEIGHT / 2 / Math.max(0.001, Math.abs(uy));
+  const reach = Math.min(horizontalReach, verticalReach);
+  const startX = source.x + ux * reach;
+  const startY = source.y + uy * reach;
+  const endX = target.x - ux * reach;
+  const endY = target.y - uy * reach;
+  const curve = ((edgeIndex % 5) - 2) * 9;
+  const controlX = (startX + endX) / 2 - uy * curve;
+  const controlY = (startY + endY) / 2 + ux * curve;
+  return {
+    path: `M ${startX} ${startY} Q ${controlX} ${controlY}, ${endX} ${endY}`,
+    labelX: (startX + 2 * controlX + endX) / 4,
+    labelY: (startY + 2 * controlY + endY) / 4 - 6,
+  };
+}
+
+function readRepulsion(): number {
+  try {
+    const stored = Number(window.localStorage.getItem("rcp:dag-repulsion"));
+    if (Number.isFinite(stored) && stored >= 350 && stored <= 1900) return stored;
+  } catch {
+    // Use the balanced default when browser storage is unavailable.
+  }
+  return 950;
+}
+
+function readDagLayoutMode(): DagLayoutMode {
+  try {
+    return window.localStorage.getItem("rcp:dag-layout-mode") === "flow" ? "flow" : "force";
+  } catch {
+    return "force";
+  }
+}
+
+function ViewHeading({
+  title,
+  aside,
+  action,
+}: {
+  title: string;
+  aside: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <header className="view-heading">
+      <h2>{title}</h2>
+      <span className="view-aside">{aside}</span>
+      {action}
+    </header>
+  );
+}
+
+function EmptyState({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <div className="empty-state">
+      {icon}
+      <strong>{title}</strong>
+    </div>
+  );
+}
+
+function OverviewCard({ label, value }: { label: string; value: number }) {
+  return (
+    <article className="overview-card">
+      <span className="eyebrow">{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}

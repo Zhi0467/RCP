@@ -7,7 +7,7 @@ import {
   DAG_ZOOM_MIN,
   fitDagToViewport,
   zoomDagAtPoint,
-} from "../src/hooks/dagZoom.ts";
+} from "../src/graph/dagZoom.ts";
 
 const base = {
   zoom: 1,

@@ -12,15 +12,17 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { RunDialog, agentSelectionChanged } = await server.ssrLoadModule(
-  "/src/components/RunDialog.tsx",
+  "/src/experiments/RunDialog.tsx",
 );
-const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
-const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
-const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
-const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/components/DraggableWindow.tsx");
-const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
-const { providerPathPresentation } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
-const { ChatsWorkspace } = await server.ssrLoadModule("/src/views/ChatsWorkspace.tsx");
+const { AgentTaskInspector } = await server.ssrLoadModule("/src/agents/AgentTaskInspector.tsx");
+const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
+const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
+const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/ui/DraggableWindow.tsx");
+const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { providerPathPresentation } = await server.ssrLoadModule(
+  "/src/projects/ProjectSettings.tsx",
+);
+const { ChatsWorkspace } = await server.ssrLoadModule("/src/chat/ChatsWorkspace.tsx");
 
 after(() => server.close());
 

@@ -1,7 +1,7 @@
-import { UpdateNotice } from "./components/UpdateNotice";
-import { useUpdateNotice } from "./hooks/useUpdateNotice";
-import { TerminalTab } from "./components/TerminalTab";
-import { branchMergeStateLabel } from "./components/CampaignRuns";
+import { UpdateNotice } from "./desktop/UpdateNotice";
+import { useUpdateNotice } from "./desktop/useUpdateNotice";
+import { TerminalTab } from "./terminals/TerminalTab";
+import { branchMergeStateLabel } from "./experiments/CampaignRuns";
 import {
   branchOwnerEpisode,
   experimentStartTarget,
@@ -11,8 +11,8 @@ import {
   graphViewHash,
   MAIN_GRAPH,
   sameGraphTarget,
-} from "./graphTarget";
-import type { GraphEditingProps } from "./components/GraphEditingControls";
+} from "./core/graphTarget";
+import type { GraphEditingProps } from "./graph/GraphEditingControls";
 import {
   TriangleAlert,
   ArrowLeft,
@@ -47,10 +47,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { isActiveTask } from "./agentTasks";
-import { mergeProviderLogins } from "./providers";
-import { loadChatTranscript } from "./chatApi";
-import { closeArtifactViewer, openArtifact, openEpisodeReport } from "./artifactViewer";
+import { isActiveTask } from "./agents/agentTasks";
+import { mergeProviderLogins } from "./projects/providers";
+import { loadChatTranscript } from "./chat/chatApi";
+import { closeArtifactViewer, openArtifact, openEpisodeReport } from "./artifacts/artifactViewer";
 import {
   chatIndicator,
   unreadChatIdsFromReads,
@@ -60,7 +60,7 @@ import {
   unsentConversation,
   type ChatKind,
   type ConversationTurnSubmission,
-} from "./chatWorkspace";
+} from "./chat/chatWorkspace";
 import {
   api,
   archiveEpisode,
@@ -76,7 +76,7 @@ import {
   sendEpisodeMessage,
   startEpisode,
   stopEpisode,
-} from "./api";
+} from "./core/api";
 import {
   BACKEND_IDENTITY_EVENT,
   backendReconnectLabel,
@@ -87,13 +87,13 @@ import {
   returnDesktopToPersonal,
   TEAM_TRANSPORT_RECOVERED,
   type BackendIdentityEventDetail,
-} from "./desktopRuntime";
+} from "./core/desktopRuntime";
 import {
   projectGraphMutationFailureLabel,
   projectGraphMutationsDisabled,
   taskMayMutateGraph,
-} from "./graphAuthority";
-import { buildGlossaryIndex } from "./glossary";
+} from "./graph/graphAuthority";
+import { buildGlossaryIndex } from "./graph/glossary";
 import {
   experimentBoardHref,
   experimentBoardRouteToken,
@@ -104,52 +104,38 @@ import {
   projectExperimentExecution,
   projectRunsNeedsExperimentIndex,
   type ProjectHashRoute,
-} from "./experimentBoard";
+} from "./experiments/experimentBoard";
 import {
   decodeTransitionTriggerManifest,
   reduceProjectTransitionProjection,
-  transitionHeadsEqual,
-  transitionPreviewRouting,
   transitionSnapshotRefusal,
   transitionSyncCompletionDisposition,
   type ProjectTransitionProjection,
-  type StagedTransitionEdit,
-  type TransitionPreviewRouting,
-} from "./projectTransition";
-import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./campaigns";
-import {
-  cloneAgentTasksSnapshot,
-  useAgentTasks,
-  type AgentTasksSnapshot,
-} from "./hooks/useAgentTasks";
-import { useActorIdentity } from "./hooks/useActorIdentity";
+} from "./graph/projectTransition";
+import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./ui/floatingWindow";
+import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./experiments/campaigns";
+import { cloneAgentTasksSnapshot, useAgentTasks } from "./agents/useAgentTasks";
+import { useActorIdentity } from "./desktop/useActorIdentity";
 import {
   cloneChatStateSnapshot,
   experimentChatFreshnessToken,
   useChatState,
   visibleChatTranscriptIds,
   visibleUnreadChatId,
-  type ChatStateSnapshot,
-} from "./hooks/useChatState";
-import { useDesktopShell } from "./hooks/useDesktopShell";
-import { startLiveEpisodePolling, useEpisodeDialogs } from "./hooks/useEpisodeDialogs";
-import {
-  emptyGraph,
-  useGraphSelection,
-  type GraphSelectionTabSnapshot,
-} from "./hooks/useGraphSelection";
+} from "./chat/useChatState";
+import { useDesktopShell } from "./desktop/useDesktopShell";
+import { startLiveEpisodePolling, useEpisodeDialogs } from "./experiments/useEpisodeDialogs";
+import { emptyGraph, useGraphSelection } from "./graph/useGraphSelection";
 import {
   cloneProjectHistorySnapshot,
   useProjectHistory,
   validationNoticeId,
-  type ProjectHistorySnapshot,
-} from "./hooks/useProjectHistory";
+} from "./graph/useProjectHistory";
 import {
   EXPERIMENT_BOARD_POLL_DELAY_MS,
   startProjectCachePolling,
   useProjectTabs,
-} from "./hooks/useProjectTabs";
+} from "./projects/useProjectTabs";
 import {
   cachedSnapshotCanReplace,
   canonicalGraphHead,
@@ -159,37 +145,33 @@ import {
   projectHeartbeatSnapshotDisposition,
   projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
-  reconcileInactiveProjectSession,
   RETAIN_ALL_PROJECT_READINESS,
   serializeProjectSessionTabState,
   trustedProjectTransitionManifest,
-  type BrowserTransitionProjection,
-  type ProjectReadinessRetention,
-  type ProjectSessionTabState,
-} from "./hooks/projectSession";
-import { useProjectSession } from "./hooks/useProjectSession";
-import { AutoResearchDialog } from "./components/AutoResearchDialog";
-import { AgentTaskInspector } from "./components/AgentTaskInspector";
-import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
-import { ConsolidationInbox } from "./components/ConsolidationInbox";
+} from "./graph/projectSession";
+import { useProjectSession } from "./graph/useProjectSession";
+import { AutoResearchDialog } from "./experiments/AutoResearchDialog";
+import { AgentTaskInspector } from "./agents/AgentTaskInspector";
+import { AttentionRail, ProposalJudgmentSection } from "./graph/AttentionRail";
+import { ConsolidationInbox } from "./projects/ConsolidationInbox";
 import {
   CONSOLIDATION_SETTINGS_ANCHOR,
   consolidationAttentionCount,
   consolidationNeedsRenewal,
   openConsolidationItems,
   resolveConsolidationRun,
-} from "./consolidation";
-import { useConsolidation } from "./hooks/useConsolidation";
-import { useProjectDigest } from "./hooks/useProjectDigest";
-import { digestChangedNodeIds } from "./projectDigest";
-import { DetailDrawer } from "./components/DetailDrawer";
-import { DraggableWindow } from "./components/DraggableWindow";
-import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
-import { ProjectDock } from "./components/ProjectDock";
-import { RunDialog } from "./components/RunDialog";
-import { initialOwnerCode } from "./pairingLink";
-import { ProjectLocatorBoundary } from "./components/ProjectLocatorBoundary";
-import { TeamLoginBoundary } from "./components/TeamLoginBoundary";
+} from "./projects/consolidation";
+import { useConsolidation } from "./projects/useConsolidation";
+import { useProjectDigest } from "./projects/useProjectDigest";
+import { digestChangedNodeIds } from "./projects/projectDigest";
+import { DetailDrawer } from "./graph/DetailDrawer";
+import { DraggableWindow } from "./ui/DraggableWindow";
+import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
+import { ProjectDock } from "./projects/ProjectDock";
+import { RunDialog } from "./experiments/RunDialog";
+import { initialOwnerCode } from "./desktop/pairingLink";
+import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
+import { TeamLoginBoundary } from "./desktop/TeamLoginBoundary";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
@@ -215,10 +197,8 @@ import {
   unstageNodeRemoval,
   toHumanSyncRequest,
   type HumanDraft,
-  type HumanSyncRequest,
-} from "./humanDraft";
+} from "./graph/humanDraft";
 import type {
-  AgentExecutionProfile,
   AgentRunConfig,
   AgentTask,
   AgentTaskKind,
@@ -230,8 +210,6 @@ import type {
   MergeDiffPath,
   MergeEpisodeBody,
   ExperimentControlState,
-  GraphAttentionProjection,
-  GraphHeadRef,
   GraphRevisionSnapshot,
   GraphNode,
   GraphState,
@@ -245,31 +223,30 @@ import type {
   ProviderLoginState,
   ProjectTransitionResponse,
   TransitionPreviewResponse,
-  TransitionTriggerManifest,
   TrustView,
   WatcherRecord,
-} from "./types";
-import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./types";
-import { ProjectLanding } from "./views/ProjectLanding";
-import { SpaceSettings } from "./views/SpaceSettings";
-import { LandingIdentityMenu } from "./components/LandingIdentityMenu";
-import { ProjectOverview } from "./views/ProjectOverview";
-import { isBlocker, isChooser, isControlNode } from "./researchType";
-import { ProjectSetup } from "./views/ProjectSetup";
+} from "./core/types";
+import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
+import { ProjectLanding } from "./projects/ProjectLanding";
+import { SpaceSettings } from "./projects/SpaceSettings";
+import { LandingIdentityMenu } from "./projects/LandingIdentityMenu";
+import { ProjectOverview } from "./projects/ProjectOverview";
+import { isControlNode } from "./graph/researchType";
+import { ProjectSetup } from "./projects/ProjectSetup";
 import {
   parseProjectSetupRoute,
   projectMoveSetupHash,
   type ProjectSetupRoute,
-} from "./projectSetup";
+} from "./projects/projectSetup";
 import {
   changeTextScale,
   normalizeTextScale,
   TEXT_SCALE_STORAGE_KEY,
   textScaleShortcut,
   type TextScaleAction,
-} from "./textScale";
-import { useTheme } from "./hooks/useTheme";
-import { NOTICE_TIMEOUT_MS } from "./uiConstants";
+} from "./ui/textScale";
+import { useTheme } from "./ui/useTheme";
+import { NOTICE_TIMEOUT_MS } from "./core/uiConstants";
 import {
   createWebMcpToolRegistry,
   episodeStopRefusal,
@@ -288,199 +265,152 @@ import {
   type WebMcpToolRegistry,
   type WebMcpViewOwners,
   webMcpSurface,
-} from "./webmcp";
-import { publishToolSurface, webMcpHostDefinitions } from "./toolCatalog";
-import { voiceTerminalToolDefinitions } from "./voiceTerminal";
-import { openTerminalSocket } from "./terminalSocket";
-import { useVoiceAgent, type VoicePageState } from "./hooks/useVoiceAgent";
-import { VoiceButton, VoicePanel } from "./components/VoicePanel";
+} from "./webmcp/index";
+import { publishToolSurface, webMcpHostDefinitions } from "./voice/toolCatalog";
+import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
+import { openTerminalSocket } from "./terminals/terminalSocket";
+import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
+import { VoiceButton, VoicePanel } from "./voice/VoicePanel";
 
-import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
+import {
+  initialProjectHash,
+  isEditableShortcutTarget,
+  projectTabShortcut,
+} from "./projects/projectTabs";
 import {
   episodeNotificationHash,
   graphNotificationHash,
   initialNotificationLink,
   parseNotificationLink,
   type NotificationLink,
-} from "./notificationLinks";
-import { loadNotificationDevices, reconcileWebPush } from "./notificationDevices";
-import { unfinishedJobsFromError } from "./mergePanel";
+} from "./core/notificationLinks";
+import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevices";
+import { unfinishedJobsFromError } from "./graph/mergePanel";
+import {
+  attentionGraphForProjection,
+  decisionsAwaitingChoice,
+  humanAttentionBlockers,
+  projectAttentionForPresentation,
+} from "./projectAttention";
+import {
+  currentProjectReadinessGeneration,
+  invalidateProjectReadinessGenerations,
+  projectReadinessFailureApplies,
+  projectReadinessFailureState,
+  type ProjectReadinessGeneration,
+  projectReadinessResponseApplies,
+  type ProjectReadinessSnapshot,
+  projectReadinessUpdate,
+  PROVIDER_SKILL_READINESS_POLL_DELAY_MS,
+  type ProviderReadinessInFlight,
+  type ProviderReadinessRequestState,
+  shouldPollProviderSkillReadiness,
+  shouldRequestProviderReadiness,
+} from "./projectReadiness";
+import {
+  type CachedProjectTabState,
+  canonicalRevisionNeedsReload,
+  emptyProjectCounts,
+  loadExperimentWatcherPoll,
+  loadGraphRevision,
+  openProjectSequence,
+  projectIsStillReadable,
+  projectWithTransitionProjection,
+  reconcileInactiveProjectTabState,
+} from "./projectSnapshot";
+import {
+  activeBranchMergeTask,
+  experimentControlsNeedWrapupPolling,
+  isExperimentLoopRecovery,
+  retryProfileKind,
+  taskActionNeedsAuthoritativeProjectReload,
+  taskRetryConfig,
+  taskRetryRequestBody,
+  terminalTaskNeedsAuthoritativeProjectReload,
+} from "./taskRecovery";
+import {
+  experimentStartNeedsSync,
+  humanDraftTransitionRouting,
+  humanSyncSuccessNotice,
+  localDraftTransitionProjection,
+  previewTraceMismatch,
+  proposalChoicesClearedNotice,
+  transitionProjectionForRoute,
+} from "./transitionRouting";
 
-const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
-const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
-
-interface ProviderReadinessRequestState {
-  pending: boolean;
-  providerError: string | null;
-  computeError: string | null;
-}
-
-type ProjectReadinessSnapshot = Awaited<ReturnType<typeof loadProjectReadiness>>;
-
-interface ProviderReadinessInFlight {
-  refresh: boolean;
-  generation: ProjectReadinessGeneration;
-  request: Promise<ProjectReadinessSnapshot | null>;
-}
-
-/** Separate request generations for the provider and compute readiness slices. */
-export interface ProjectReadinessGeneration {
-  provider: number;
-  compute: number;
-}
-
-const INITIAL_PROJECT_READINESS_GENERATION: ProjectReadinessGeneration = {
-  provider: 0,
-  compute: 0,
-};
-
-export function currentProjectReadinessGeneration(
-  generations: ReadonlyMap<string, ProjectReadinessGeneration>,
-  projectId: string,
-): ProjectReadinessGeneration {
-  return generations.get(projectId) ?? INITIAL_PROJECT_READINESS_GENERATION;
-}
-
-/** Advance the request generation of every readiness slice this retention drops. */
-export function invalidateProjectReadinessGenerations(
-  generations: Map<string, ProjectReadinessGeneration>,
-  projectId: string,
-  retention: ProjectReadinessRetention,
-): ProjectReadinessGeneration {
-  const current = currentProjectReadinessGeneration(generations, projectId);
-  const next = {
-    provider: current.provider + (retention.provider ? 0 : 1),
-    compute: current.compute + (retention.compute ? 0 : 1),
-  };
-  generations.set(projectId, next);
-  return next;
-}
-
-/**
- * Which slices of one readiness response are still current.
- *
- * A resolve invalidates provider readiness alone, so an in-flight compute probe
- * that answers afterwards still carries the live matrix.
- */
-export function projectReadinessResponseApplies(
-  generations: ReadonlyMap<string, ProjectReadinessGeneration>,
-  projectId: string,
-  requestGeneration: ProjectReadinessGeneration,
-): ProjectReadinessRetention {
-  const current = currentProjectReadinessGeneration(generations, projectId);
-  return {
-    provider: current.provider === requestGeneration.provider,
-    compute: current.compute === requestGeneration.compute,
-  };
-}
-
-export function projectReadinessUpdate(
-  readiness: ProjectReadinessSnapshot,
-  applies: ProjectReadinessRetention,
-): Partial<ProjectReadinessSnapshot> {
-  return {
-    ...(applies.compute ? { compute_status: readiness.compute_status } : {}),
-    ...(applies.provider
-      ? {
-          provider_logins: readiness.provider_logins,
-          provider_readiness: readiness.provider_readiness,
-          providers: readiness.providers,
-          provider_skill_inventories: readiness.provider_skill_inventories,
-          // Profiles resolve their unnamed model against this catalog, so a
-          // refresh that changes the head re-exports them with it.
-          agent_profiles: readiness.agent_profiles,
-        }
-      : {}),
-  };
-}
-
-/**
- * Whether one failed readiness response may still write shared request state.
- *
- * A failure carries no slice data, so it speaks for the project only while it
- * is the registered request. A replaced request must stay silent: the `finally`
- * that clears `pending` runs only for the registered request, so a late failure
- * would otherwise leave readiness controls disabled until reload.
- */
-export function projectReadinessFailureApplies(
-  registered: boolean,
-  applies: ProjectReadinessRetention,
-): boolean {
-  return registered && (applies.provider || applies.compute);
-}
-
-/**
- * The request state after one failed readiness response.
- *
- * The failure reports only for the slices this request still owns. A slice a
- * later edit superseded keeps whatever its own newer decision left behind.
- * `pending` stays true because only a registered request reaches here.
- */
-export function projectReadinessFailureState(
-  previous: ProviderReadinessRequestState | undefined,
-  applies: ProjectReadinessRetention,
-  message: string,
-): ProviderReadinessRequestState {
-  return {
-    pending: true,
-    providerError: applies.provider ? message : (previous?.providerError ?? null),
-    computeError: applies.compute ? message : (previous?.computeError ?? null),
-  };
-}
-
-export function shouldPollProviderSkillReadiness(
-  inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
-  completedFollowUps: number,
-): boolean {
-  return (
-    inventories !== undefined &&
-    completedFollowUps < PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS &&
-    Object.values(inventories).some((providers) =>
-      Object.values(providers).some((inventory) => inventory?.status === "refreshing"),
-    )
-  );
-}
-
-export function shouldRequestProviderReadiness(
-  readiness: ProjectSnapshot["provider_readiness"],
-  pending: boolean,
-): boolean {
-  return (
-    !pending && !Object.values(readiness).some((providers) => Object.keys(providers).length > 0)
-  );
-}
+export {
+  attentionGraphForProjection,
+  decisionsAwaitingChoice,
+  humanAttentionBlockers,
+  projectAttentionForPresentation,
+} from "./projectAttention";
+export {
+  currentProjectReadinessGeneration,
+  invalidateProjectReadinessGenerations,
+  projectReadinessFailureApplies,
+  projectReadinessFailureState,
+  projectReadinessResponseApplies,
+  projectReadinessUpdate,
+  shouldPollProviderSkillReadiness,
+  shouldRequestProviderReadiness,
+} from "./projectReadiness";
+export type { ProjectReadinessGeneration } from "./projectReadiness";
+export {
+  canonicalRevisionNeedsReload,
+  loadExperimentWatcherPoll,
+  loadGraphRevision,
+  openProjectSequence,
+  projectIsStillReadable,
+  projectWithGraph,
+  reconcileInactiveProjectTabState,
+} from "./projectSnapshot";
+export {
+  activeBranchMergeTask,
+  experimentControlsNeedWrapupPolling,
+  retryProfileKind,
+  taskActionNeedsAuthoritativeProjectReload,
+  taskRetryRequestBody,
+  terminalTaskNeedsAuthoritativeProjectReload,
+} from "./taskRecovery";
+export {
+  experimentStartNeedsSync,
+  humanDraftTransitionRouting,
+  humanSyncSuccessNotice,
+  proposalChoicesClearedNotice,
+  transitionProjectionForRoute,
+} from "./transitionRouting";
 
 const AttentionOverview = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.AttentionOverview })),
+  import("./graph/GraphViews").then((module) => ({ default: module.AttentionOverview })),
 );
 const DagView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.DagView })),
+  import("./graph/GraphViews").then((module) => ({ default: module.DagView })),
 );
 const ExecutionView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.ExecutionView })),
+  import("./graph/GraphViews").then((module) => ({ default: module.ExecutionView })),
 );
 const ScientificView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.ScientificView })),
+  import("./graph/GraphViews").then((module) => ({ default: module.ScientificView })),
 );
 const LoadedPaperWorkspace = lazy(() =>
-  import("./views/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
+  import("./paper/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
 );
 const ProjectSettings = lazy(() =>
-  import("./views/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
+  import("./projects/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
 );
 const ChatsWorkspace = lazy(() =>
-  import("./views/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
+  import("./chat/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
 );
 const NodeChat = lazy(() =>
-  import("./components/NodeChat").then((module) => ({ default: module.NodeChat })),
+  import("./chat/NodeChat").then((module) => ({ default: module.NodeChat })),
 );
 
 const Artifacts = lazy(() =>
-  import("./views/Artifacts").then((module) => ({ default: module.Artifacts })),
+  import("./artifacts/Artifacts").then((module) => ({ default: module.Artifacts })),
 );
 
 const Terminals = lazy(() =>
-  import("./views/Terminals").then((module) => ({ default: module.Terminals })),
+  import("./terminals/Terminals").then((module) => ({ default: module.Terminals })),
 );
 
 const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> = [
@@ -536,53 +466,6 @@ function ArtifactsSubnav({
   );
 }
 
-export async function loadGraphRevision(
-  fetchJson: <T>(path: string) => Promise<T>,
-  apiBase: string,
-): Promise<GraphRevisionSnapshot> {
-  return fetchJson<GraphRevisionSnapshot>(`${apiBase}/cached/revision`);
-}
-
-/**
- * Open a project in two steps: the cached display snapshot paints first when the
- * session accepts it, and the authoritative reload always follows and finishes
- * the open. A cached snapshot the session declines — a newer snapshot request
- * already started, such as the active-tab heartbeat's reload, or a stale
- * revision — must never end the open early, or the view keeps its spinner with
- * nothing left to clear it.
- */
-export async function openProjectSequence(steps: {
-  applyCachedSnapshot: () => Promise<void>;
-  reloadAuthoritative: () => Promise<void>;
-  stillOpening: () => boolean;
-  settle: () => void;
-}): Promise<void> {
-  await steps.applyCachedSnapshot();
-  if (!steps.stillOpening()) return;
-  try {
-    await steps.reloadAuthoritative();
-  } finally {
-    if (steps.stillOpening()) steps.settle();
-  }
-}
-
-export function canonicalRevisionNeedsReload(
-  observedRevision: number,
-  renderedRevision: number,
-  observedMutation?: ProjectSnapshot["graph_mutation"],
-  renderedMutation?: ProjectSnapshot["graph_mutation"],
-): boolean {
-  return (
-    observedRevision > renderedRevision ||
-    Boolean(
-      observedMutation &&
-      renderedMutation &&
-      (observedMutation.available !== renderedMutation.available ||
-        observedMutation.reason !== renderedMutation.reason),
-    )
-  );
-}
-
 function pageIsHidden(): boolean {
   return document.visibilityState === "hidden";
 }
@@ -601,126 +484,7 @@ export function AcceptanceAgentIndicator({
   );
 }
 
-export async function projectIsStillReadable(
-  fetchJson: <T>(path: string) => Promise<T>,
-  projectId: string,
-): Promise<boolean> {
-  // The project index is already filtered to what the caller may see, so its
-  // answer covers both a deleted project and one that is no longer ours.
-  // A failure to ask is not an answer: keep the tab.
-  try {
-    const cards = await fetchJson<ProjectCard[]>("/api/projects");
-    return cards.some((card) => card.id === projectId);
-  } catch {
-    return true;
-  }
-}
-
-export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): boolean {
-  return (
-    task.kind === "branch_merge" ||
-    Boolean(task.applied_revision) ||
-    task.request.patch_kind === "experiment_loop"
-  );
-}
-
-export function experimentControlsNeedWrapupPolling(
-  controls: Readonly<Record<string, Pick<ExperimentControlState, "health">>>,
-): boolean {
-  return Object.values(controls).some((control) => control.health === "wrapping_up");
-}
-
-export function activeBranchMergeTask(episode: Episode): AgentTask | null {
-  const operationId = episode.graph_branch?.active_merge_task_id;
-  if (!operationId) return null;
-  return (
-    episode.tasks.find(
-      (task) =>
-        task.operation_id === operationId && task.kind === "branch_merge" && isActiveTask(task),
-    ) ?? null
-  );
-}
-
-export function taskActionNeedsAuthoritativeProjectReload(
-  task: AgentTask,
-  action: "pause" | "resume" | "retry",
-): boolean {
-  return task.request.patch_kind === "experiment_loop" && action !== "pause";
-}
-
-export function humanAttentionBlockers(
-  blockerIds: readonly string[],
-  presentedNodes: GraphState["nodes"],
-): GraphNode[] {
-  return blockerIds.map((nodeId) => {
-    const node = presentedNodes[nodeId];
-    if (!isBlocker(node?.type)) {
-      throw new Error(`Attention member ${nodeId} is not a presented Blocker.`);
-    }
-    return node;
-  });
-}
-
-export function decisionsAwaitingChoice(
-  decisionIds: readonly string[],
-  membershipNodes: GraphState["nodes"],
-  presentedNodes: GraphState["nodes"],
-): GraphNode[] {
-  return decisionIds.map((nodeId) => {
-    const membershipNode = membershipNodes[nodeId];
-    const presented = presentedNodes[nodeId] ?? membershipNode;
-    if (!isChooser(membershipNode?.type) || !isChooser(presented?.type)) {
-      throw new Error(`Attention member ${nodeId} is not a presented Decision.`);
-    }
-    return { ...presented, status: membershipNode.status };
-  });
-}
-
-export async function loadExperimentWatcherPoll(
-  fetchJson: <T>(path: string) => Promise<T>,
-  base: string,
-  graphTarget: GraphTargetRef = MAIN_GRAPH,
-): Promise<{
-  watchers: WatcherRecord[];
-  tasks: AgentTask[];
-  project: ProjectSnapshot;
-}> {
-  const [watchers, tasks, project] = await Promise.all([
-    fetchJson<WatcherRecord[]>(graphTargetUrl(`${base}/watchers`, graphTarget)),
-    fetchJson<AgentTask[]>(`${base}/tasks`),
-    fetchJson<ProjectSnapshot>(graphTargetUrl(base, graphTarget)),
-  ]);
-  return { watchers, tasks, project };
-}
-
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
-
-const EMPTY_GRAPH_ATTENTION: GraphAttentionProjection = {
-  pending_proposal_ids: [],
-  decisions_awaiting_choice_ids: [],
-  open_blocker_ids: [],
-  proposal_actions: {},
-  decision_prior_choices: {},
-};
-
-export function projectAttentionForPresentation(
-  project: ProjectSnapshot | null,
-  projection: BrowserTransitionProjection | null,
-): GraphAttentionProjection {
-  if (projection) {
-    if (!projection.attention) {
-      throw new Error("Transition projection omitted graph attention.");
-    }
-    return projection.attention;
-  }
-  if (project) {
-    if (!project.attention) {
-      throw new Error("Project snapshot omitted graph attention.");
-    }
-    return project.attention;
-  }
-  return EMPTY_GRAPH_ATTENTION;
-}
 
 export {
   cachedSnapshotCanReplace,
@@ -728,136 +492,6 @@ export {
   latestSnapshotRequestCanApply,
   persistProjectHumanDraft,
 };
-
-export function experimentStartNeedsSync(projection: BrowserTransitionProjection | null): boolean {
-  return projection?.base_head != null;
-}
-
-interface CachedProjectTabState
-  extends
-    ProjectHistorySnapshot,
-    AgentTasksSnapshot,
-    ChatStateSnapshot,
-    GraphSelectionTabSnapshot,
-    ProjectSessionTabState {
-  project: ProjectSnapshot;
-  projectHeaderCollapsed: boolean;
-  usage: AgentUsageSnapshot | null;
-  watchers: WatcherRecord[];
-}
-
-export function attentionGraphForProjection(
-  canonicalGraph: GraphState,
-  projection: BrowserTransitionProjection | null,
-  route: TransitionPreviewRouting["route"] = "backend_preview",
-  draft: HumanDraft | null = null,
-): GraphState {
-  if (route === "local_draft") return applyHumanDraft(canonicalGraph, draft);
-  return projection?.graph ?? canonicalGraph;
-}
-
-export function transitionProjectionForRoute(
-  projection: BrowserTransitionProjection | null,
-  route: TransitionPreviewRouting["route"],
-): BrowserTransitionProjection | null {
-  return route === "backend_preview" ? projection : null;
-}
-
-export function humanDraftTransitionRouting(
-  draft: HumanDraft,
-  graph: GraphState,
-  manifest: TransitionTriggerManifest | null,
-  rulesetTag: string | null,
-): TransitionPreviewRouting {
-  const request = toHumanSyncRequest(draft, graph);
-  const edits: StagedTransitionEdit[] = request.nodes.map((item) => ({
-    operation: "update_nodes",
-    node_types: graph.nodes[item.node_id] ? [graph.nodes[item.node_id].type] : undefined,
-    node_fields: [
-      ...Object.keys(item.changes),
-      ...(item.standing ? ["standing"] : []),
-      ...(item.cancel_attempt_ids?.length ? ["attempts"] : []),
-    ],
-    relations: [],
-  }));
-  if (request.custom_nodes.length > 0) {
-    edits.push({
-      operation: "create_nodes",
-      node_types: request.custom_nodes.map((node) => node.type),
-      node_fields: [],
-      relations: [],
-    });
-  }
-  if (request.ontology) {
-    edits.push({ operation: "set_ontology", node_types: [], node_fields: [], relations: [] });
-  }
-  const changesExperimentControl =
-    request.nodes.some(
-      (item) =>
-        isControlNode(graph.nodes[item.node_id]?.type) &&
-        Object.hasOwn(item.changes, "invocation_ceiling"),
-    ) || request.custom_nodes.some((node) => isControlNode(node.type));
-  // Removal expands to incident relation changes, and a Proposal decision may expand to any
-  // Proposal operation. Experiment ceiling updates and new Experiments also change the coherent
-  // control projection even though the current manifest does not list them. The browser does not
-  // infer any outcomes; absent tags route all of these shapes to preview conservatively.
-  if (
-    request.removed_node_ids.length > 0 ||
-    request.custom_nodes.length > 0 ||
-    request.added_edges.length > 0 ||
-    request.removed_edge_ids.length > 0 ||
-    request.proposals.length > 0 ||
-    changesExperimentControl
-  ) {
-    edits.push({});
-  }
-  for (const edit of edits) {
-    const routing = transitionPreviewRouting(manifest, rulesetTag, edit);
-    if (routing.route === "backend_preview") return routing;
-  }
-  return { route: "local_draft", reason: "no_manifest_trigger" };
-}
-
-export function reconcileInactiveProjectTabState(
-  state: CachedProjectTabState,
-  snapshot: ProjectSnapshot,
-): CachedProjectTabState {
-  const session = reconcileInactiveProjectSession(state, snapshot);
-  if (session === state) return state;
-  if (!session.project) return state;
-  const presented = applyHumanDraft(session.project.graph, session.humanDraft);
-  return {
-    ...state,
-    ...session,
-    project: session.project,
-    selectedNodeId:
-      state.selectedNodeId && presented.nodes[state.selectedNodeId] ? state.selectedNodeId : null,
-    companionNodeId:
-      state.companionNodeId && presented.nodes[state.companionNodeId]
-        ? state.companionNodeId
-        : null,
-    floatingChat:
-      state.floatingChat && presented.nodes[state.floatingChat.nodeId] ? state.floatingChat : null,
-  };
-}
-
-export function proposalChoicesClearedNotice(proposalIds: string[]): string {
-  return `Externally resolved proposal choices were cleared: ${proposalIds.join(", ")}.`;
-}
-
-export function humanSyncSuccessNotice(
-  revision: number,
-  submittedProposals: HumanSyncRequest["proposals"],
-  nextGraph: GraphState,
-): string {
-  const withdrawnProposalIds = submittedProposals
-    .filter((judgment) => nextGraph.proposals[judgment.proposal_id]?.status === "withdrawn")
-    .map((judgment) => judgment.proposal_id)
-    .sort();
-  return withdrawnProposalIds.length > 0
-    ? `Synced revision ${revision}. Stale proposals were withdrawn and their proposed changes were not applied: ${withdrawnProposalIds.join(", ")}.`
-    : `Synced revision ${revision}.`;
-}
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
@@ -5616,128 +5250,6 @@ function readTextScale(): number {
   } catch {
     return normalizeTextScale(null);
   }
-}
-
-export function projectWithGraph(
-  project: ProjectSnapshot,
-  graph: GraphState,
-  attention: GraphAttentionProjection = projectAttentionForPresentation(project, null),
-  primaryQuestion: GraphNode | null = project.primary_question ?? null,
-  counts = project.counts,
-): ProjectSnapshot {
-  return {
-    ...project,
-    graph,
-    revision: graph.revision,
-    primary_question: primaryQuestion,
-    attention,
-    counts,
-  };
-}
-
-function projectWithTransitionProjection(
-  project: ProjectSnapshot,
-  graph: GraphState,
-  experimentControl: Record<string, ExperimentControlState>,
-  attention: GraphAttentionProjection,
-  primaryQuestion: GraphNode | null,
-  counts: ProjectSnapshot["counts"],
-): ProjectSnapshot {
-  return {
-    ...projectWithGraph(project, graph, attention, primaryQuestion, counts),
-    experiment_control: experimentControl,
-  };
-}
-
-function localDraftTransitionProjection(
-  graph: GraphState,
-  experimentControl: Record<string, ExperimentControlState>,
-  attention: GraphAttentionProjection,
-  primaryQuestion: GraphNode | null,
-  counts: ProjectSnapshot["counts"],
-  head: GraphHeadRef,
-  rulesetTag: string | null,
-): BrowserTransitionProjection {
-  return {
-    head,
-    graph,
-    attention,
-    primary_question: primaryQuestion,
-    counts,
-    experiment_control: experimentControl,
-    ruleset_tag: rulesetTag,
-    transition_id: head.transition_id,
-    canonical: false,
-    base_head: head,
-  };
-}
-
-function emptyProjectCounts(): ProjectSnapshot["counts"] {
-  return {
-    pending_proposals: 0,
-    decisions_awaiting_choice: 0,
-    open_blockers: 0,
-    asserted: 0,
-    accepted: 0,
-    contested: 0,
-  };
-}
-
-function previewTraceMismatch(
-  response: TransitionPreviewResponse,
-  projection: ProjectTransitionResponse,
-): string | null {
-  if (projection.canonical) return "Staged transition preview was marked canonical.";
-  if (!projection.base_head) return "Staged transition preview omitted its canonical base head.";
-  if (!transitionHeadsEqual(projection.base_head, response.transition.pre_head)) {
-    return "Staged transition preview base head did not match its transition trace.";
-  }
-  if (projection.transition_id !== response.transition.transition_id) {
-    return "Staged transition preview id did not match its transition trace.";
-  }
-  if (projection.ruleset_tag !== response.transition.ruleset_tag) {
-    return "Staged transition preview ruleset did not match its transition trace.";
-  }
-  return null;
-}
-
-function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): AgentRunConfig {
-  const profile = project.agent_profiles[retryProfileKind(task)];
-  return {
-    provider: task.request.provider || profile.provider,
-    model: task.request.model ?? profile.model,
-    reasoning: task.request.reasoning || profile.reasoning,
-    run_on: task.request.run_on || profile.run_on,
-  };
-}
-
-/** The profile whose defaults fill a retry the task's own request left unset. */
-export function retryProfileKind(task: AgentTask): AgentExecutionProfile {
-  if (task.kind === "seed" || task.kind === "refresh") return task.kind;
-  if (task.kind === "auto_research") return "orchestrator";
-  if (isExperimentLoopRecovery(task)) return "node_chat";
-  return task.kind === "project_chat" || task.kind === "paper_coach" ? task.kind : "node_chat";
-}
-
-function isExperimentLoopRecovery(task: AgentTask): boolean {
-  return task.request.patch_kind === "experiment_loop";
-}
-
-/**
- * A turn bound to an episode keeps the machine its watchers and stage live on;
- * a standalone turn may move to a reachable one. Everything else is rebindable
- * on every recovery.
- */
-export function taskRetryRequestBody(
-  task: AgentTask,
-  config: AgentRunConfig,
-): AgentRunConfig | Omit<AgentRunConfig, "run_on"> {
-  const rebound = {
-    provider: config.provider,
-    model: config.model,
-    reasoning: config.reasoning,
-  };
-  return task.episode_id ? rebound : { ...rebound, run_on: config.run_on };
 }
 
 function isSetupRoute(): boolean {

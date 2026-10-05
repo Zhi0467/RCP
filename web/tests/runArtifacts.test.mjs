@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { artifactsForOperations, orderRunArtifacts } from "../src/runArtifacts.ts";
+import { artifactsForOperations, orderRunArtifacts } from "../src/experiments/runArtifacts.ts";
 
 const entry = (id, operation, minute, extra = {}) => ({
   artifact_id: id,

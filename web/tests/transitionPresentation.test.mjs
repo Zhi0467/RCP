@@ -12,12 +12,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
+const { ExperimentBoard } = await server.ssrLoadModule("/src/experiments/ExperimentBoard.tsx");
 const { ExperimentRunDetail } = await server.ssrLoadModule(
-  "/src/components/ExperimentRunDetail.tsx",
+  "/src/experiments/ExperimentRunDetail.tsx",
 );
-const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
-const { buildExperimentRun } = await server.ssrLoadModule("/src/runProjection.ts");
+const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
+const { buildExperimentRun } = await server.ssrLoadModule("/src/experiments/runProjection.ts");
 
 after(() => server.close());
 

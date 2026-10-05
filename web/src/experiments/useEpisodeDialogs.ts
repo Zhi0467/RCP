@@ -1,0 +1,349 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { loadEpisodeMessages, loadEpisodes } from "../core/api";
+import { isLiveEpisode, mergeEpisode } from "./campaigns";
+import type { Episode, EpisodeMessage } from "../core/types";
+
+export const LIVE_EPISODE_POLL_INTERVAL_MS = 1_500;
+
+interface LiveEpisodePollingClock {
+  setTimeout(callback: () => void, delay: number): number;
+  clearTimeout(timeoutId: number): void;
+}
+
+export function startLiveEpisodePolling(
+  clock: LiveEpisodePollingClock,
+  refresh: () => Promise<void>,
+  onError: (error: unknown) => void,
+  onSuccess: () => void,
+): () => void {
+  let stopped = false;
+  let timeoutId = 0;
+  const schedule = () => {
+    timeoutId = clock.setTimeout(() => void poll(), LIVE_EPISODE_POLL_INTERVAL_MS);
+  };
+  const poll = async () => {
+    try {
+      await refresh();
+      if (!stopped) onSuccess();
+    } catch (error) {
+      if (!stopped) onError(error);
+    } finally {
+      if (!stopped) schedule();
+    }
+  };
+  schedule();
+  return () => {
+    stopped = true;
+    clock.clearTimeout(timeoutId);
+  };
+}
+
+export function episodePollingTarget(episodes: Episode[]): Episode | null {
+  return (
+    episodes.find(isLiveEpisode) ??
+    episodes.find((episode) => episode.graph_branch?.merge_state === "running") ??
+    null
+  );
+}
+
+export interface EpisodeState {
+  projectId: string | null;
+  episodes: Episode[];
+  messages: Record<string, EpisodeMessage[]>;
+}
+
+interface UseEpisodeDialogsOptions {
+  projectId: string | null;
+  apiBase: string;
+  selectedAutoResearchEpisodeId: string | null;
+  isActiveProject: (projectId: string) => boolean;
+  runsVisible?: boolean;
+}
+
+export function mergeExactEpisode(episodes: Episode[], exact: Episode[]): Episode[] {
+  return exact.reduce((current, episode) => mergeEpisode(current, episode), episodes);
+}
+
+export function applyEpisodeRefreshResponse(
+  current: EpisodeState,
+  requestedProjectId: string,
+  responseGeneration: number,
+  latestGeneration: number,
+  nextEpisodes: Episode[],
+): EpisodeState {
+  if (responseGeneration !== latestGeneration) return current;
+  return {
+    projectId: requestedProjectId,
+    episodes: nextEpisodes,
+    messages: current.projectId === requestedProjectId ? current.messages : {},
+  };
+}
+
+const EMPTY_EPISODE_STATE: Omit<EpisodeState, "projectId"> = { episodes: [], messages: {} };
+
+/** The state to show when `projectId` becomes current: its own, kept, or empty. */
+export function restoreEpisodeState(
+  current: EpisodeState,
+  kept: ReadonlyMap<string, EpisodeState>,
+  projectId: string,
+): EpisodeState {
+  if (current.projectId === projectId) return current;
+  return kept.get(projectId) ?? { projectId, ...EMPTY_EPISODE_STATE };
+}
+
+export interface EpisodeRequestSlot {
+  current: { projectId: string; request: Promise<boolean> } | null;
+}
+
+/** Record `request` as the project's in-flight episode list request until it settles. */
+export function trackEpisodeRequest(
+  slot: EpisodeRequestSlot,
+  projectId: string,
+  request: Promise<boolean>,
+): Promise<boolean> {
+  const entry = { projectId, request };
+  slot.current = entry;
+  const clear = () => {
+    if (slot.current === entry) slot.current = null;
+  };
+  request.then(clear, clear);
+  return request;
+}
+
+export function useEpisodeDialogs({
+  projectId,
+  apiBase,
+  selectedAutoResearchEpisodeId,
+  isActiveProject,
+  runsVisible = false,
+}: UseEpisodeDialogsOptions) {
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
+  const [autoResearchDialogOpen, setAutoResearchDialogOpen] = useState(false);
+  const [autoResearchStartError, setAutoResearchStartError] = useState<string | null>(null);
+  const [episodeAction, setEpisodeAction] = useState<string | null>(null);
+  const [episodeRefreshError, setEpisodeRefreshError] = useState<string | null>(null);
+  const [episodeState, setEpisodeState] = useState<EpisodeState>({
+    projectId: null,
+    episodes: [],
+    messages: {},
+  });
+  const episodeRefreshGeneration = useRef(0);
+  // Each project's last episode state, shown at once when its tab comes back.
+  const keptEpisodeStates = useRef(new Map<string, EpisodeState>());
+  const episodeRequest = useRef<EpisodeRequestSlot["current"]>(null);
+
+  useEffect(() => {
+    if (episodeState.projectId) keptEpisodeStates.current.set(episodeState.projectId, episodeState);
+  }, [episodeState]);
+
+  const episodes = episodeState.projectId === projectId ? episodeState.episodes : [];
+  const episodeMessages = episodeState.projectId === projectId ? episodeState.messages : {};
+  const liveAutoResearchEpisode =
+    episodes.find((episode) => episode.mode === "auto_research" && isLiveEpisode(episode)) ?? null;
+  const pollingEpisode = episodePollingTarget(episodes);
+  const pollingAutoResearchEpisode = episodePollingTarget(
+    episodes.filter((episode) => episode.mode === "auto_research"),
+  );
+
+  const refreshEpisodes = useCallback(() => {
+    if (!projectId || !apiBase) return Promise.resolve(false);
+    const requestedProjectId = projectId;
+    const requestGeneration = ++episodeRefreshGeneration.current;
+    const load = async () => {
+      let nextEpisodes: Episode[];
+      try {
+        nextEpisodes = await loadEpisodes(apiBase);
+        if (
+          selectedAutoResearchEpisodeId &&
+          !nextEpisodes.some((episode) => episode.episode_id === selectedAutoResearchEpisodeId)
+        ) {
+          const exact = await loadEpisodes(apiBase, "auto_research", selectedAutoResearchEpisodeId);
+          nextEpisodes = mergeExactEpisode(nextEpisodes, exact);
+        }
+      } catch (error) {
+        if (
+          !isActiveProject(requestedProjectId) ||
+          requestGeneration !== episodeRefreshGeneration.current
+        )
+          return false;
+        throw error;
+      }
+      if (
+        !isActiveProject(requestedProjectId) ||
+        requestGeneration !== episodeRefreshGeneration.current
+      )
+        return false;
+      setEpisodeState((current) =>
+        applyEpisodeRefreshResponse(
+          current,
+          requestedProjectId,
+          requestGeneration,
+          episodeRefreshGeneration.current,
+          nextEpisodes,
+        ),
+      );
+      return true;
+    };
+    return trackEpisodeRequest(episodeRequest, requestedProjectId, load());
+  }, [apiBase, isActiveProject, projectId, selectedAutoResearchEpisodeId]);
+
+  const refreshEpisodeMessages = useCallback(
+    async (episodeId: string) => {
+      if (!projectId || !apiBase) return;
+      const requestedProjectId = projectId;
+      const nextMessages = await loadEpisodeMessages(apiBase, episodeId);
+      if (!isActiveProject(requestedProjectId)) return;
+      setEpisodeState((current) =>
+        current.projectId === requestedProjectId
+          ? {
+              ...current,
+              messages: { ...current.messages, [episodeId]: nextMessages },
+            }
+          : current,
+      );
+    },
+    [apiBase, isActiveProject, projectId],
+  );
+
+  useEffect(() => {
+    if (!projectId || !apiBase) {
+      episodeRefreshGeneration.current += 1;
+      setEpisodeRefreshError(null);
+      setEpisodeState({ projectId: null, episodes: [], messages: {} });
+      return;
+    }
+    const requestedProjectId = projectId;
+    setEpisodeRefreshError(null);
+    setEpisodeState((current) =>
+      restoreEpisodeState(current, keptEpisodeStates.current, requestedProjectId),
+    );
+    void refreshEpisodes()
+      .then((applied) => {
+        if (applied && isActiveProject(requestedProjectId)) setEpisodeRefreshError(null);
+      })
+      .catch((error) => {
+        if (!isActiveProject(requestedProjectId)) return;
+        setEpisodeRefreshError(
+          `Episodes could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }, [apiBase, isActiveProject, projectId, refreshEpisodes]);
+
+  useEffect(() => {
+    const episodeId = pollingEpisode?.episode_id;
+    if (!episodeId && !runsVisible) return;
+    return startLiveEpisodePolling(
+      {
+        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+        clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
+      },
+      async () => {
+        // Join a list request already in flight for this project rather than overlap it.
+        const inFlight =
+          episodeRequest.current?.projectId === projectId ? episodeRequest.current.request : null;
+        await Promise.all([
+          inFlight ?? refreshEpisodes(),
+          pollingAutoResearchEpisode
+            ? refreshEpisodeMessages(pollingAutoResearchEpisode.episode_id)
+            : Promise.resolve(),
+        ]);
+      },
+      (error) => {
+        setEpisodeRefreshError(
+          `Episodes could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+      () => setEpisodeRefreshError(null),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by episode id; the episode object is replaced on every poll and would restart polling
+  }, [
+    pollingAutoResearchEpisode?.episode_id,
+    pollingEpisode?.episode_id,
+    projectId,
+    refreshEpisodeMessages,
+    refreshEpisodes,
+    runsVisible,
+  ]);
+
+  const replaceEpisode = useCallback(
+    (nextEpisode: Episode) => {
+      if (!isActiveProject(nextEpisode.project_id)) return;
+      // A mutation response supersedes any episode poll already in flight.
+      episodeRefreshGeneration.current += 1;
+      setEpisodeState((current) => {
+        if (!isActiveProject(nextEpisode.project_id)) return current;
+        const currentEpisodes =
+          current.projectId === nextEpisode.project_id ? current.episodes : [];
+        return {
+          projectId: nextEpisode.project_id,
+          messages: current.projectId === nextEpisode.project_id ? current.messages : {},
+          episodes: mergeEpisode(currentEpisodes, nextEpisode),
+        };
+      });
+    },
+    [isActiveProject],
+  );
+
+  const recordEpisodeMessage = useCallback(
+    (requestedProjectId: string, episodeId: string, saved: EpisodeMessage) => {
+      setEpisodeState((current) =>
+        current.projectId === requestedProjectId
+          ? {
+              ...current,
+              messages: {
+                ...current.messages,
+                [episodeId]: [
+                  ...(current.messages[episodeId] ?? []).filter(
+                    (item) => item.message_id !== saved.message_id,
+                  ),
+                  saved,
+                ],
+              },
+            }
+          : current,
+      );
+    },
+    [],
+  );
+
+  const openRunDialog = useCallback(() => setRunDialogOpen(true), []);
+  const closeRunDialog = useCallback(() => setRunDialogOpen(false), []);
+  const openAutoResearchDialog = useCallback(() => {
+    setAutoResearchStartError(null);
+    setAutoResearchDialogOpen(true);
+  }, []);
+  const closeAutoResearchDialog = useCallback(() => setAutoResearchDialogOpen(false), []);
+  const reportAutoResearchStartError = useCallback(
+    (message: string | null) => setAutoResearchStartError(message),
+    [],
+  );
+  const beginEpisodeAction = useCallback(
+    (action: string) => {
+      if (episodeAction) return null;
+      setEpisodeAction(action);
+      return () => setEpisodeAction(null);
+    },
+    [episodeAction],
+  );
+
+  return {
+    runDialogOpen,
+    autoResearchDialogOpen,
+    autoResearchStartError,
+    episodeAction,
+    episodeRefreshError,
+    episodes,
+    episodeMessages,
+    liveAutoResearchEpisode,
+    openRunDialog,
+    closeRunDialog,
+    openAutoResearchDialog,
+    closeAutoResearchDialog,
+    reportAutoResearchStartError,
+    beginEpisodeAction,
+    replaceEpisode,
+    recordEpisodeMessage,
+    refreshEpisodes,
+    refreshEpisodeMessages,
+  };
+}

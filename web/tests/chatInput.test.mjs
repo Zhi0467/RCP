@@ -7,7 +7,7 @@ import {
   parseStagedChatAnnotations,
   replaceTextSpan,
   stagedArtifactContext,
-} from "../src/chatInput.ts";
+} from "../src/chat/chatInput.ts";
 
 test("dictation inserts at the captured cursor and revises only its active span", () => {
   const first = replaceTextSpan("before  after", { start: 7, end: 7 }, "partial");

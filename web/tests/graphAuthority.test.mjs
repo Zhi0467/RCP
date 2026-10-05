@@ -5,7 +5,7 @@ import {
   projectGraphMutationFailureLabel,
   projectGraphMutationsDisabled,
   taskMayMutateGraph,
-} from "../src/graphAuthority.ts";
+} from "../src/graph/graphAuthority.ts";
 
 test("degraded replay blocks graph authority and names the last coherent state", () => {
   const project = {

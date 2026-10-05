@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ExperimentRunDetail } from "../../src/components/ExperimentRunDetail";
-import { NodeChat } from "../../src/components/NodeChat";
-import { buildExperimentRun } from "../../src/runProjection";
+import { ExperimentRunDetail } from "../../src/experiments/ExperimentRunDetail";
+import { NodeChat } from "../../src/chat/NodeChat";
+import { buildExperimentRun } from "../../src/experiments/runProjection";
 import { withExperimentControlAnswers } from "../taskAnswers.mjs";
-import { ExternalJobRow } from "../../src/components/ExternalJobRow";
-import { ProjectSettings } from "../../src/views/ProjectSettings";
+import { ExternalJobRow } from "../../src/experiments/ExternalJobRow";
+import { ProjectSettings } from "../../src/projects/ProjectSettings";
 import "../../src/styles.css";
 
 const profile = {

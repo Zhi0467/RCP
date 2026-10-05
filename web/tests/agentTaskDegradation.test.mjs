@@ -12,10 +12,8 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { AgentTaskInspector } = await server.ssrLoadModule("/src/components/AgentTaskInspector.tsx");
-const { ProjectHistoryDrawer } = await server.ssrLoadModule(
-  "/src/components/ProjectHistoryDrawer.tsx",
-);
+const { AgentTaskInspector } = await server.ssrLoadModule("/src/agents/AgentTaskInspector.tsx");
+const { ProjectHistoryDrawer } = await server.ssrLoadModule("/src/agents/ProjectHistoryDrawer.tsx");
 
 after(() => server.close());
 

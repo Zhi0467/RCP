@@ -5,7 +5,7 @@ import {
   activeExperimentGuidanceText,
   currentExperimentGuidance,
   experimentGuidanceDetail,
-} from "../src/experimentGuidance.ts";
+} from "../src/core/experimentGuidance.ts";
 
 test("active Experiment guidance never returns text marked stale", () => {
   const node = {

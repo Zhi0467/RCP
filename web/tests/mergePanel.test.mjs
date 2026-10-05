@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { api } from "../src/api.ts";
+import { api } from "../src/core/api.ts";
 import {
   mergeDiffCounts,
   mergeDiffMarks,
   mergeRequestBody,
   previewAnswersDraft,
   unfinishedJobsFromError,
-} from "../src/mergePanel.ts";
+} from "../src/graph/mergePanel.ts";
 
 function path(id, flags = {}) {
   return {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 
-import { releaseNotice } from "../src/updateNotice.ts";
+import { releaseNotice } from "../src/desktop/updateNotice.ts";
 
 const fixture = {
   space: "personal",
@@ -191,7 +191,7 @@ test("poll scheduling follows cache status and stops on cleanup", async () => {
   });
   try {
     const { startUpdateNoticePolling, UPDATE_NOTICE_UNCHECKED_POLL_MS, UPDATE_NOTICE_POLL_MS } =
-      await server.ssrLoadModule("/src/hooks/useUpdateNotice.ts");
+      await server.ssrLoadModule("/src/desktop/useUpdateNotice.ts");
     const visibility = new EventTarget();
     visibility.visibilityState = "visible";
     let scheduled;

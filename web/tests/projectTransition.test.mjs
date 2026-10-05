@@ -18,7 +18,7 @@ const {
   transitionPreviewRouting,
   transitionSnapshotRefusal,
   transitionSyncCompletionDisposition,
-} = await server.ssrLoadModule("/src/projectTransition.ts");
+} = await server.ssrLoadModule("/src/graph/projectTransition.ts");
 
 const transitionOne = "1".repeat(64);
 const transitionTwo = "2".repeat(64);

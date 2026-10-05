@@ -13,7 +13,7 @@ import {
   readStoredAppearance,
   resolveColorMode,
   resolveTheme,
-} from "../src/theme.ts";
+} from "../src/ui/theme.ts";
 import { appStylesheet } from "./appStylesheet.mjs";
 
 test("theme and color mode normalize independently with Aqua and System defaults", () => {

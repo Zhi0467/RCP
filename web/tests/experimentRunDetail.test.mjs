@@ -13,11 +13,11 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ExperimentRunDetail, experimentHealthLabel } = await server.ssrLoadModule(
-  "/src/components/ExperimentRunDetail.tsx",
+  "/src/experiments/ExperimentRunDetail.tsx",
 );
 const { buildExperimentRun, experimentWatcherDisplayItems, experimentRecommendation } =
-  await server.ssrLoadModule("/src/runProjection.ts");
-const { ExecutionView } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
+  await server.ssrLoadModule("/src/experiments/runProjection.ts");
+const { ExecutionView } = await server.ssrLoadModule("/src/graph/GraphViews.tsx");
 
 after(() => server.close());
 
@@ -1432,7 +1432,7 @@ test("grouped watchers show truthful operational counts and preserve member prov
 });
 
 test("external job rows use watcher facts and keep Cancel independent of observation status", async () => {
-  const { ExternalJobRow } = await server.ssrLoadModule("/src/components/ExternalJobRow.tsx");
+  const { ExternalJobRow } = await server.ssrLoadModule("/src/experiments/ExternalJobRow.tsx");
   const record = watcher({
     status: "stopped",
     log_path: "/scratch/training.log",

@@ -19,9 +19,9 @@ const {
   reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
   trustedProjectTransitionManifest,
-} = await server.ssrLoadModule("/src/hooks/projectSession.ts");
+} = await server.ssrLoadModule("/src/graph/projectSession.ts");
 const { transitionSyncCompletionDisposition } = await server.ssrLoadModule(
-  "/src/projectTransition.ts",
+  "/src/graph/projectTransition.ts",
 );
 
 after(() => server.close());

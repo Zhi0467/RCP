@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { api, archiveEpisode } from "../../src/api";
-import { SpaceRuns } from "../../src/components/SpaceRuns";
-import { parseProjectHash } from "../../src/experimentBoard";
-import { useEpisodeDialogs } from "../../src/hooks/useEpisodeDialogs";
-import { useProjectTabs } from "../../src/hooks/useProjectTabs";
-import { useTheme } from "../../src/hooks/useTheme";
-import { ExecutionView } from "../../src/views/GraphViews";
-import { ProjectOverview } from "../../src/views/ProjectOverview";
-import type { ProjectSnapshot } from "../../src/types";
+import { api, archiveEpisode } from "../../src/core/api";
+import { SpaceRuns } from "../../src/experiments/SpaceRuns";
+import { parseProjectHash } from "../../src/experiments/experimentBoard";
+import { useEpisodeDialogs } from "../../src/experiments/useEpisodeDialogs";
+import { useProjectTabs } from "../../src/projects/useProjectTabs";
+import { useTheme } from "../../src/ui/useTheme";
+import { ExecutionView } from "../../src/graph/GraphViews";
+import { ProjectOverview } from "../../src/projects/ProjectOverview";
+import type { ProjectSnapshot } from "../../src/core/types";
 import "../../src/styles.css";
 
 const projectId = "project-one";

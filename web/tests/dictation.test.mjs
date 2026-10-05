@@ -6,8 +6,8 @@ import {
   liveDictationSpan,
   modelChoices,
   voiceConnectionUpdate,
-} from "../src/dictation.ts";
-import { MicrophoneBusyError, claimMicrophone } from "../src/microphone.ts";
+} from "../src/voice/dictation.ts";
+import { MicrophoneBusyError, claimMicrophone } from "../src/voice/microphone.ts";
 
 test("recording uses the first service format the browser can record, in service order", () => {
   const formats = ["audio/webm;codecs=opus", "audio/mp4;codecs=mp4a.40.2"];

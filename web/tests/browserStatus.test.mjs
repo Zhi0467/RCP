@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { browserReason } from "../src/browserStatus.ts";
+import { browserReason } from "../src/core/browserStatus.ts";
 
 const codes = [
   "ready",
@@ -53,7 +53,7 @@ test("browser notices render only degraded turns and preserve their structured s
   });
   try {
     const { BrowserTurnNotice, BrowserToggle } = await server.ssrLoadModule(
-      "/src/components/BrowserControls.tsx",
+      "/src/core/BrowserControls.tsx",
     );
     for (const status of [null, "not_requested", "granted", "unavailable", "lost"]) {
       const markup = renderToStaticMarkup(

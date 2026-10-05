@@ -6,7 +6,7 @@ import {
   repositoryFilePreviewUrl,
   resolveRepositoryFileHref,
   turnArtifactName,
-} from "../src/repositoryFileLinks.ts";
+} from "../src/core/repositoryFileLinks.ts";
 
 test("repository file links use path boundaries and preserve the absolute path", () => {
   const repositories = [{ alias: "parent", machine: "local", path: "/work/repo" }];

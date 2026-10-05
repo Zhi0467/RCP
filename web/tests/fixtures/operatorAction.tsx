@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
-import { OperatorActionPanel } from "../../src/views/OperatorActionPanel";
-import type { ServerStep } from "../../src/types";
+import { OperatorActionPanel } from "../../src/projects/OperatorActionPanel";
+import type { ServerStep } from "../../src/core/types";
 import "../../src/styles.css";
 
 // The exact stop `deploy_key_operator_step` builds, so the panel is measured

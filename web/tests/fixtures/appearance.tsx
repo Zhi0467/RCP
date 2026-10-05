@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { useTheme } from "../../src/hooks/useTheme";
-import { ProjectLanding } from "../../src/views/ProjectLanding";
-import type { ProjectCreationControl, SpaceRunIndexEntry } from "../../src/types";
+import { useTheme } from "../../src/ui/useTheme";
+import { ProjectLanding } from "../../src/projects/ProjectLanding";
+import type { ProjectCreationControl, SpaceRunIndexEntry } from "../../src/core/types";
 import "../../src/styles.css";
 
 const noop = () => undefined;

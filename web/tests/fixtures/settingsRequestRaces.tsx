@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { useTheme } from "../../src/hooks/useTheme";
-import { ProjectSettings } from "../../src/views/ProjectSettings";
-import type { IdentityResponse, ProjectSnapshot } from "../../src/types";
+import { useTheme } from "../../src/ui/useTheme";
+import { ProjectSettings } from "../../src/projects/ProjectSettings";
+import type { IdentityResponse, ProjectSnapshot } from "../../src/core/types";
 import "../../src/styles.css";
 
 function projectFor(id: string): ProjectSnapshot {

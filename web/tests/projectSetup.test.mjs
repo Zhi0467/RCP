@@ -18,7 +18,7 @@ import {
   routeProvedBy,
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
-} from "../src/projectSetup.ts";
+} from "../src/projects/projectSetup.ts";
 import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
 const server = await createServer({
@@ -29,9 +29,9 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ProjectSetup, RepositoryEditor } = await server.ssrLoadModule(
-  "/src/views/ProjectSetup.tsx",
+  "/src/projects/ProjectSetup.tsx",
 );
-const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
+const { ProjectSettings } = await server.ssrLoadModule("/src/projects/ProjectSettings.tsx");
 const {
   TransferProjectSetup,
   TransferRepositoryPolicy,
@@ -39,14 +39,14 @@ const {
   transferFinished,
   transferRelayFailure,
   transferTargetIsReady,
-} = await server.ssrLoadModule("/src/views/TransferProjectSetup.tsx");
+} = await server.ssrLoadModule("/src/projects/TransferProjectSetup.tsx");
 const {
   ProvisioningStatus,
   gitWriteFact,
   projectProvisioningCreateModeAvailable,
   serverOperatorProbeMatchesDraft,
   TeamProjectSetup,
-} = await server.ssrLoadModule("/src/views/TeamProjectSetup.tsx");
+} = await server.ssrLoadModule("/src/projects/TeamProjectSetup.tsx");
 
 after(() => server.close());
 
@@ -809,7 +809,7 @@ test("the provisioning view renders backend answers and hides native actions in 
   assert.match(finalReviewHtml, />Alice</);
 
   const source = await readFile(
-    new URL("../src/views/TeamProjectSetup.tsx", import.meta.url),
+    new URL("../src/projects/TeamProjectSetup.tsx", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(source, /request\.status\b/);

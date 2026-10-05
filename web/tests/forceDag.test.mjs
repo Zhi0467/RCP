@@ -3,7 +3,7 @@ import { registerHooks } from "node:module";
 import test from "node:test";
 import { forceLink, forceManyBody, forceSimulation, forceX, forceY } from "d3-force";
 
-import { resolveRectangleCollisions } from "../src/hooks/dagLayout.ts";
+import { resolveRectangleCollisions } from "../src/graph/dagLayout.ts";
 
 const moduleHooks = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -14,7 +14,7 @@ const moduleHooks = registerHooks({
   },
 });
 const { DAG_NODE_WIDTH, forceCanvasMetrics, forceDagSemanticKey, forceLaneX, forceTuning } =
-  await import("../src/hooks/useForceDag.ts");
+  await import("../src/graph/useForceDag.ts");
 moduleHooks.deregister();
 
 test("repulsion endpoints tune the whole force model from compact to wide", () => {

@@ -10,7 +10,7 @@ const server = await createServer({
 });
 after(() => server.close());
 const { buildNotificationLink, parseNotificationLink } = await server.ssrLoadModule(
-  "/src/notificationLinks.ts",
+  "/src/core/notificationLinks.ts",
 );
 const {
   extractReferences,
@@ -23,8 +23,8 @@ const {
   referenceUrl,
   setReferenceDrag,
   unlabeledArtifactIds,
-} = await server.ssrLoadModule("/src/projectReferences.ts");
-const { conversationTurnRequest } = await server.ssrLoadModule("/src/chatWorkspace.ts");
+} = await server.ssrLoadModule("/src/core/projectReferences.ts");
+const { conversationTurnRequest } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
 const main = { kind: "main" };
 const branch = { kind: "branch", branch_id: "branch / 雪?#" };
 const ref = (id) => ({ selector: { kind: "artifact", artifact_id: id }, target: main, label: id });

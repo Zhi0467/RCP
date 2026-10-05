@@ -16,7 +16,7 @@ const {
   TeamConnectionGroup,
   createTeamReconciliationTracker,
   replaceTeamConnectionView,
-} = await server.ssrLoadModule("/src/components/TeamSpaceGroups.tsx");
+} = await server.ssrLoadModule("/src/projects/TeamSpaceGroups.tsx");
 
 after(() => server.close());
 
