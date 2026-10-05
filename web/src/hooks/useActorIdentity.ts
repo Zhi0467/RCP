@@ -163,6 +163,7 @@ export function useActorIdentity() {
     return () => {
       stopped = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by backend identity; the effect sets verifiedHealth itself, so the object would loop
   }, [
     identityIssue,
     identityReady,

@@ -185,7 +185,7 @@ export function useEpisodeDialogs({
       return true;
     };
     return trackEpisodeRequest(episodeRequest, requestedProjectId, load());
-  }, [apiBase, projectId, selectedAutoResearchEpisodeId]);
+  }, [apiBase, isActiveProject, projectId, selectedAutoResearchEpisodeId]);
 
   const refreshEpisodeMessages = useCallback(
     async (episodeId: string) => {
@@ -202,7 +202,7 @@ export function useEpisodeDialogs({
           : current,
       );
     },
-    [apiBase, projectId],
+    [apiBase, isActiveProject, projectId],
   );
 
   useEffect(() => {
@@ -227,7 +227,7 @@ export function useEpisodeDialogs({
           `Episodes could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
-  }, [apiBase, projectId, refreshEpisodes]);
+  }, [apiBase, isActiveProject, projectId, refreshEpisodes]);
 
   useEffect(() => {
     const episodeId = pollingEpisode?.episode_id;
@@ -255,6 +255,7 @@ export function useEpisodeDialogs({
       },
       () => setEpisodeRefreshError(null),
     );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by episode id; the episode object is replaced on every poll and would restart polling
   }, [
     pollingAutoResearchEpisode?.episode_id,
     pollingEpisode?.episode_id,

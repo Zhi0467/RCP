@@ -1302,6 +1302,7 @@ export default function App() {
     return () => {
       current = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- branchMergeKey narrows activeBranchEpisode to the fields that warrant a reload
   }, [apiBase, branchMergeKey]);
   const {
     snapshot: projectHistorySnapshot,
@@ -1424,8 +1425,10 @@ export default function App() {
       cacheProjectState,
       restoreProjectChats,
       restoreProjectHeader,
+      restoreProjectHistory,
       restoreProjectSelection,
       restoreProjectSessionTab,
+      restoreProjectTasks,
     ],
   );
 
@@ -1517,10 +1520,10 @@ export default function App() {
       graphPath,
       isActiveGraph,
       beginProjectSnapshotRequest,
-      isActiveProject,
       projectId,
       projectSnapshotRequestIsCurrent,
       refreshChatSummaries,
+      replaceTasks,
     ],
   );
   reloadRef.current = reload;
@@ -1856,7 +1859,18 @@ export default function App() {
       stopped = true;
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [desktop, refreshDesktopUpdate]);
+  }, [
+    currentActiveAgentTasks,
+    desktop,
+    getActiveProjectId,
+    isActiveProject,
+    recordDesktopUpdateReady,
+    refreshDesktopUpdate,
+    replaceProjects,
+    replaceTasks,
+    reportIdentityIssue,
+    reverifyIdentity,
+  ]);
 
   const requestProjectReadiness = useCallback(
     (refresh: boolean): Promise<ProjectReadinessSnapshot | null> => {
@@ -2251,9 +2265,13 @@ export default function App() {
     graphTarget,
     graphPath,
     isActiveGraph,
+    refreshProjectInvitations,
     reload,
+    resetProjectChats,
     resetProjectHeader,
+    resetProjectHistory,
     resetProjectSelection,
+    resetProjectTasks,
     restoreProjectTabState,
     selectChat,
     setupOpen,
@@ -2405,7 +2423,7 @@ export default function App() {
   const attentionGraph = presentedGraph;
   const glossaryIndex = useMemo(
     () => buildGlossaryIndex(presentedGraph.glossary),
-    [presentedGraph.glossary, presentedGraph.revision],
+    [presentedGraph.glossary],
   );
   const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
   // A notification link resolves once into the item's ordinary route. A graph
@@ -2549,7 +2567,7 @@ export default function App() {
     if (selectedExperimentChatId && floatingChat?.chatId === selectedExperimentChatId) {
       setFloatingChat(null);
     }
-  }, [floatingChat?.chatId, selectedExperimentChatId]);
+  }, [floatingChat?.chatId, selectedExperimentChatId, setFloatingChat]);
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
   const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
@@ -2598,6 +2616,7 @@ export default function App() {
       conflict: null,
       pending: true,
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draftTransitionProjection is this effect's own output (a dep would loop the local-draft path); project is narrowed to the fields not already carried by graph
   }, [
     committableDraftCount,
     dispatchProjectSession,
@@ -2848,7 +2867,7 @@ export default function App() {
       closeRunDialog();
       closeAutoResearchDialog();
     }
-  }, [mutationsDisabled]);
+  }, [closeAutoResearchDialog, closeRunDialog, mutationsDisabled]);
 
   useEffect(() => {
     if (recordTaskUpdates(tasks)) {
@@ -2861,7 +2880,15 @@ export default function App() {
         });
       }
     }
-  }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
+  }, [
+    apiBase,
+    graphPath,
+    isActiveGraph,
+    projectId,
+    recordTaskUpdates,
+    refreshChatSummaries,
+    tasks,
+  ]);
 
   useEffect(() => {
     const visibleChatId = visibleUnreadChatId(
@@ -2954,7 +2981,17 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [consumeTerminalTasks, hasActiveTasks, projectId, graphTarget, reloadAuthoritativeProject]);
+  }, [
+    consumeTerminalTasks,
+    graphPath,
+    hasActiveTasks,
+    isActiveProject,
+    projectId,
+    graphTarget,
+    reloadAuthoritativeProject,
+    replaceTasks,
+    reverifyIdentity,
+  ]);
 
   useEffect(() => {
     if (!projectId || !watchersAwaitingDelivery) return;
@@ -3022,7 +3059,10 @@ export default function App() {
     isActiveProject,
     projectId,
     projectSnapshotRequestIsCurrent,
+    graphTarget,
+    recordWatcherResults,
     refreshChatSummaries,
+    replaceTasks,
     reportErrorNotice,
     watchersAwaitingDelivery,
   ]);

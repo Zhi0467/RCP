@@ -461,6 +461,7 @@ export function ChatsWorkspace({
     return () => {
       current = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setDisplay is recreated every render and only closes over apiBase
   }, [apiBase]);
 
   useEffect(() => {

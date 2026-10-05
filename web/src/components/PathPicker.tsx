@@ -93,6 +93,7 @@ export function PathPicker({
       abort.current?.abort();
       cancelPendingFilter();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open the initial path once per machine; move reads refs and is recreated every render
   }, [machineId]);
 
   useEffect(() => {
@@ -104,6 +105,7 @@ export function PathPicker({
       void move({ kind: "filter", filter: filterDraft, path });
     }, FILTER_DELAY_MS);
     return cancelPendingFilter;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce on the draft only; move reads refs and is recreated every render
   }, [filterDraft]);
 
   const pick = async () => {

@@ -315,7 +315,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
       );
       publish();
     },
-    [flowLayout, metrics.height, metrics.width, mode, publish, storageKey],
+    [flowLayout, metrics.width, mode, publish, storageKey],
   );
 
   const resetLayout = useCallback(() => {

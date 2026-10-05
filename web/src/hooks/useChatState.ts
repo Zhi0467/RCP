@@ -263,6 +263,7 @@ export function useChatState({
     };
     // The Experiment target is derived per render, so its identity cannot be a
     // dependency; the key below changes exactly when the target does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleChatVersions keys the visible ids and summaries, experimentChatTargetKey the target
   }, [
     apiBase,
     graphTarget,
@@ -493,7 +494,9 @@ export function useChatState({
     chatSummariesLoading,
     chatSummaryNextOffset,
     chatSummaryTotal,
+    isActiveProject,
     projectId,
+    reportError,
   ]);
 
   const recordTaskUpdates = useCallback((tasks: AgentTask[]) => {

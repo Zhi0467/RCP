@@ -165,6 +165,7 @@ export function ExperimentRunDetail({
     };
     // Turn progress updates the task row, and a watcher stops or completes,
     // without touching the episode's own timestamp.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- episode is narrowed to its id and updated_at so unrelated control refreshes do not refetch
   }, [
     apiBase,
     episode?.episode_id,

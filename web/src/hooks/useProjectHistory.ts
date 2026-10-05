@@ -93,7 +93,7 @@ export function useProjectHistory({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, graphTarget, revision, loadedProjectId, projectId]);
+  }, [apiBase, graphTarget, isActiveProject, revision, loadedProjectId, projectId, reportError]);
 
   useEffect(() => {
     if (!projectHistoryOpen || !projectId || !apiBase || loadedProjectId !== projectId) return;
@@ -118,7 +118,16 @@ export function useProjectHistory({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, graphTarget, revision, loadedProjectId, projectHistoryOpen, projectId]);
+  }, [
+    apiBase,
+    graphTarget,
+    isActiveProject,
+    revision,
+    loadedProjectId,
+    projectHistoryOpen,
+    projectId,
+    reportError,
+  ]);
 
   const openProjectHistory = useCallback(() => {
     setHistorySummariesRevision(null);

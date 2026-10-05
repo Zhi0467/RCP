@@ -98,7 +98,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     return () => {
       cancelled = true;
     };
-  }, [inspectorVersion, projectId, taskInspectorId]);
+  }, [inspectorVersion, projectId, reportError, taskInspectorId]);
 
   const replaceTasks = useCallback(
     (nextTasks: AgentTask[]) => {
