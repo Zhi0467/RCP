@@ -59,7 +59,7 @@ The same prerequisite command applies to both supported Ubuntu releases:
 
 ```bash
 sudo apt-get update
-sudo apt-get install --yes age ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd sudo util-linux xz-utils
+sudo apt-get install --yes age bubblewrap ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd rsync sudo util-linux xz-utils
 ```
 
 Success is an exit status of zero. Then install system-wide `uv` below.
