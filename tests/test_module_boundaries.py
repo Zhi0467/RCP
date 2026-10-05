@@ -34,6 +34,10 @@ PATH_SINGLE_TARGET_METHODS = {"rename", "replace"}
 NON_FILE_OPEN_RECEIVERS = {"catalog", "_catalog"}
 # Callables with the builtin `open(file, mode)` signature, by canonical name.
 BUILTIN_OPENERS = {"open", "builtins.open", "io.open", "codecs.open"}
+# Path classes whose methods may be called unbound with the path first.
+UNBOUND_PATH_PREFIXES = tuple(
+    f"pathlib.{name}." for name in ("Path", "PurePath", "PosixPath", "WindowsPath")
+)
 OS_WRITE_FUNCTIONS = {
     "replace",
     "rename",
@@ -198,18 +202,26 @@ def _writes_a_file(call: ast.Call, aliases: dict[str, str]) -> bool:
         return name.removeprefix("os.") in OS_WRITE_FUNCTIONS
     if name.startswith("shutil."):
         return name.removeprefix("shutil.").startswith(SHUTIL_WRITE_PREFIXES)
-    if receiver is None:
+    positional = list(call.args)
+    if name.startswith(UNBOUND_PATH_PREFIXES):
+        # `Path.write_text(path, payload)`: the method called unbound, with the
+        # receiver as its first positional argument.
+        method = name.rsplit(".", 1)[1]
+        receiver = positional[0] if positional else None
+        positional = positional[1:]
+    elif receiver is None:
         return False
-    method = name.removeprefix(".")
+    else:
+        method = name.removeprefix(".")
     if method in PATH_WRITE_METHODS:
         return True
     if method in PATH_SINGLE_TARGET_METHODS:
-        positional_target = len(call.args) == 1 and not call.keywords
-        keyword_target = not call.args and [keyword.arg for keyword in call.keywords] == ["target"]
+        positional_target = len(positional) == 1 and not call.keywords
+        keyword_target = not positional and [keyword.arg for keyword in call.keywords] == ["target"]
         return positional_target or keyword_target
     if method != "open":
         return False
-    mode, by_keyword = _open_mode(call, builtin=False)
+    mode, by_keyword = _open_mode(call, builtin=len(positional) != len(call.args))
     # A computed mode is a write until proven otherwise. The one exemption is a
     # positional argument on a receiver known not to open files.
     computed_default = by_keyword or _receiver_name(receiver) not in NON_FILE_OPEN_RECEIVERS
@@ -311,6 +323,23 @@ def route(path, source, target):
     assert _flagged_lines(source, _is_write_call) == [9, 11, 12, 14, 16]
 
 
+def test_route_write_detection_sees_unbound_path_methods() -> None:
+    source = """
+from pathlib import Path
+import pathlib
+
+def route(path, target, payload):
+    Path.write_text(path, payload)
+    Path.replace(path, target)
+    Path.unlink(path)
+    Path.open(path, "w")
+    Path.open(path)
+    Path.read_text(path)
+    pathlib.Path.rename(path, target)
+"""
+    assert _flagged_lines(source, _is_write_call) == [6, 7, 8, 9, 12]
+
+
 # The transcript readers live on the project service for display and backup.
 TRANSCRIPT_READERS = {
     "chat_transcript",
@@ -364,6 +393,28 @@ def _resolves_transcript_path(
     return name in TRANSCRIPT_PATH_RESOLVERS or name in resolvers or name.endswith(".chat_path")
 
 
+def _resolver_holders(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    aliases: dict[str, str],
+    resolvers: set[str],
+) -> set[str]:
+    """Local names bound to a resolver result by plain or annotated assignment."""
+    holders: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign) and _resolves_transcript_path(
+            node.value, aliases, resolvers
+        ):
+            holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and _resolves_transcript_path(node.value, aliases, resolvers)
+            and isinstance(node.target, ast.Name)
+        ):
+            holders.add(node.target.id)
+    return holders
+
+
 def _module_dotted(module: Path | None) -> str:
     return ".".join([*_module_package(module), module.stem]) if module is not None else ""
 
@@ -374,12 +425,7 @@ def _returns_transcript_path(
     resolvers: set[str],
 ) -> bool:
     """A function whose return value is a resolver result, direct or via a local name."""
-    holders: set[str] = set()
-    for node in ast.walk(function):
-        if isinstance(node, ast.Assign) and _resolves_transcript_path(
-            node.value, aliases, resolvers
-        ):
-            holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    holders = _resolver_holders(function, aliases, resolvers)
     for node in ast.walk(function):
         if not isinstance(node, ast.Return) or node.value is None:
             continue
@@ -417,7 +463,7 @@ def locate(service, request):
     return _chat_path(service, request)
 
 def locate_again(service, request):
-    path = locate(service, request)
+    path: Path = locate(service, request)
     return path
 
 def builder(service, request):
@@ -498,19 +544,7 @@ def _transcript_path_escapes(
 ) -> list[int]:
     """Lines where a resolver result, direct or via a local name, is passed to
     a callee outside `APPROVED_PATH_SINKS`."""
-    holders: set[str] = set()
-    for node in ast.walk(function):
-        if isinstance(node, ast.Assign) and _resolves_transcript_path(
-            node.value, aliases, resolvers
-        ):
-            holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and node.value is not None
-            and _resolves_transcript_path(node.value, aliases, resolvers)
-            and isinstance(node.target, ast.Name)
-        ):
-            holders.add(node.target.id)
+    holders = _resolver_holders(function, aliases, resolvers)
     escapes: list[int] = []
     for node in ast.walk(function):
         if not isinstance(node, ast.Call):
