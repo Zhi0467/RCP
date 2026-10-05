@@ -212,20 +212,19 @@ class MachineHiddenReadProjection(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    default_directories: tuple[HiddenReadPath, ...] = Field(
+    default_paths: tuple[
+        Annotated[str, Field(min_length=1, max_length=HIDDEN_READ_PATH_MAX_LENGTH)], ...
+    ] = Field(default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT)
+    user_folders: tuple[HiddenReadPath, ...] = Field(
         default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
     )
-    default_files: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
-    )
-    default_globs: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
-    )
-    effective_scope: HiddenReadScope
+    readiness: HiddenReadStatus | None = None
 
-    @field_validator("default_directories", "default_files", "default_globs")
+    @field_validator("default_paths")
     @classmethod
-    def canonical_defaults(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+    def display_defaults(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            _absolute_hidden_read_path("/" + value[2:] if value.startswith("~/") else value)
         if len(values) != len(set(values)):
             raise ValueError("hidden-read defaults must be unique")
         return tuple(sorted(values))

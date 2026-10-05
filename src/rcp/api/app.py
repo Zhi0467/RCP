@@ -56,6 +56,7 @@ from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
+from rcp.api.host_guard import HostGuard, HostGuardConfig
 from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
@@ -315,6 +316,7 @@ def create_app(
     data_dir: Path | None = None,
     *,
     instance_metadata: ServerMetadata | None = None,
+    request_host_guard: HostGuardConfig | None = None,
     acceptance_agent: bool = False,
     trusted_principal_resolver: TrustedPrincipalResolver | None = None,
     startup_effect_fence: StartupEffectFence | None = None,
@@ -2400,14 +2402,15 @@ def create_app(
     if web_dist.exists():
         app.mount("/", _WebPages(directory=web_dist, html=True), name="web")
 
-    from rcp.api.host_guard import HostGuard
-    from rcp.team_access import team_access_url
-
-    public_origin = team_access_url() if space_kind == "team" else None
-    if space_kind != "team" or public_origin is not None:
-        app.add_middleware(HostGuard, port=identity.port, team_access_url=public_origin)
-    else:
-        logger.warning("Host guard unavailable: team server has no configured public origin.")
+    if request_host_guard is not None:
+        if space_kind == "team" and request_host_guard.team_access_url is None:
+            logger.warning("Host guard unavailable: team server has no configured public origin.")
+        else:
+            app.add_middleware(
+                HostGuard,
+                port=request_host_guard.port,
+                team_access_url=request_host_guard.team_access_url,
+            )
     return app
 
 

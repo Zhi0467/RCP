@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -11,17 +12,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_inside
+from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_defaults
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
 from rcp.browser import install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
+from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.projects import ProjectCatalog
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
 from rcp.storage import AppStore
 from rcp.storage.models import SpaceMachineRecord
+from rcp.transport.ssh import control_directory_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +122,41 @@ def _machine_usage(
     return usage, complete
 
 
+def _hidden_read_projection(
+    machine: SpaceMachineRecord, data_dir: Path
+) -> MachineHiddenReadProjection:
+    home = "~" if machine.host else str(Path.home())
+    # Remote defaults are display templates; only launch-host resolution knows overrides.
+    environment = {} if machine.host else os.environ
+    groups = hidden_read_defaults(
+        home=home,
+        app_data_dir=home + "/.local/share/rcp" if machine.host else str(data_dir),
+        credential_roots=(),
+        provider_login_files=(
+            environment.get("CODEX_HOME", home + "/.codex") + "/auth.json",
+            environment.get("CLAUDE_CONFIG_DIR", home + "/.claude") + "/.credentials.json",
+            environment.get("XDG_DATA_HOME", home + "/.local/share") + "/opencode/auth.json",
+        ),
+        control_socket_dir=None if machine.host else str(control_directory_candidate()),
+    )
+    paths = {
+        "~/" + path[len(home) + 1 :] if path.startswith(home + "/") else path
+        for group in groups
+        for path in group
+    }
+    return MachineHiddenReadProjection(
+        default_paths=tuple(sorted(paths)),
+        user_folders=tuple(machine.hidden_folders),
+        readiness=None if machine.host else cached_hidden_read_readiness(),
+    )
+
+
 def _machine_view(
     machine: SpaceMachineRecord,
     usage: dict[str, list[dict[str, str]]],
     complete: bool,
     visible: set[str],
+    data_dir: Path,
 ) -> dict[str, object]:
     projects = usage.get(machine.host, [])
     return {
@@ -132,6 +166,7 @@ def _machine_view(
         "os_account": machine.os_account,
         "writable_paths": list(machine.writable_paths),
         "hidden_folders": list(machine.hidden_folders),
+        "hidden_read": _hidden_read_projection(machine, data_dir).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
         "in_use": True if projects else (False if complete else None),
@@ -141,7 +176,7 @@ def _machine_view(
 def _one_machine_view(
     store: AppStore, machine: SpaceMachineRecord, visible: set[str]
 ) -> dict[str, object]:
-    return _machine_view(machine, *_machine_usage(store), visible)
+    return _machine_view(machine, *_machine_usage(store), visible, store.path.parent)
 
 
 def _visible_project_ids(
@@ -309,7 +344,8 @@ def list_space_machines(
     usage, complete = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(machine, usage, complete, visible) for machine in store.space_machines()
+            _machine_view(machine, usage, complete, visible, store.path.parent)
+            for machine in store.space_machines()
         ]
     }
 

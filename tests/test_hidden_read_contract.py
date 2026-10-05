@@ -226,9 +226,14 @@ def test_contracts_are_strict_and_immutable() -> None:
             _scope(**changes)
     with pytest.raises(ValidationError):
         _key(agent_confirmed="false")
-    projection = MachineHiddenReadProjection(effective_scope=scope, default_files=("/secret",))
+    projection = MachineHiddenReadProjection(
+        readiness=scope.enforcement, default_paths=("~/secret",)
+    )
     with pytest.raises(ValidationError):
-        projection.default_files = ()
+        projection.default_paths = ()
+    assert MachineHiddenReadProjection().readiness is None
+    with pytest.raises(ValidationError):
+        MachineHiddenReadProjection(user_folders=("~/secret",))
 
 
 @pytest.mark.parametrize("capability", get_args(AgentCapability))

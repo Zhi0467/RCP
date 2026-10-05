@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from starlette.responses import JSONResponse
@@ -10,6 +11,12 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 _DESKTOP_RELAY_HOST = re.compile(r"rcp-[0-9a-f]{32}\.rcp\.localhost:([0-9]{1,5})")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
+
+
+@dataclass(frozen=True)
+class HostGuardConfig:
+    port: int
+    team_access_url: str | None = None
 
 
 class HostGuard:

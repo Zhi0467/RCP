@@ -959,6 +959,10 @@ def test_agent_security_readiness_uses_policy_hook(monkeypatch, reason):
     expected = HiddenReadStatus(
         status="unhidden" if reason else "enforced", reasons=(reason,) if reason else ()
     )
-    observed = server_doctor.probe_agent_security(hidden_read_probe=lambda: expected)
+    monkeypatch.setattr(
+        "rcp.agents.hidden_read.probe_hidden_read_wrapper",
+        lambda: {"ready": reason is None, "reason": reason},
+    )
+    observed = server_doctor.probe_agent_security()
     assert observed.ssh_agent_status == "running"
     assert observed.hidden_read == expected
