@@ -2,12 +2,30 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from rcp.core.models import HiddenReadScope, HiddenReadStatus
+
+
+class SessionRequest(BaseModel):
+    """Controller-to-host admission, serialized unchanged for local and SSH hosts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    action: Literal["ensure"] = "ensure"
+    owner_token: str
+    workspace_dir: str
+    lease_id: str
+    retained_lease_ids: list[str] = Field(default_factory=list)
+    hidden_read_scope: HiddenReadScope | None = None
 
 
 class SessionLease(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    hidden_read_enforcement: HiddenReadStatus | None = None
     session_name: str
     invocation_dir: str
     path_prefix: str
