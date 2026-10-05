@@ -93,15 +93,15 @@ def test_folder_validation_is_bounded_and_unique(folders, code) -> None:
     assert rejected.value.code == code
 
 
-def test_folder_symlinks_cannot_bypass_protected_roots(tmp_path: Path) -> None:
+def test_folder_validation_never_resolves_on_this_host(tmp_path: Path) -> None:
+    # Remote meaning comes from the execution host's canonical paths; the
+    # API's host check covers symlinks (test_space_machines_api).
     protected = tmp_path / "protected"
     protected.mkdir()
     alias = tmp_path / "alias"
     alias.symlink_to(protected, target_is_directory=True)
-    with pytest.raises(HiddenFolderRejected):
-        validate_machine_hidden_folders([str(alias)], protected_roots=(str(protected),))
-    assert validate_machine_hidden_folders([str(alias)], protected_roots=()) == [
-        str(protected.resolve())
+    assert validate_machine_hidden_folders([str(alias)], protected_roots=(str(protected),)) == [
+        str(alias)
     ]
 
 

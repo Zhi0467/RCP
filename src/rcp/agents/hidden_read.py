@@ -5,7 +5,6 @@ from __future__ import annotations
 import glob
 import importlib.resources
 import json
-import os
 import re
 import threading
 import time
@@ -159,13 +158,9 @@ def _validated_folders(folders: list[str], protected_roots: tuple[str, ...]) -> 
 def validate_machine_hidden_folders(
     folders: list[str], *, protected_roots: tuple[str, ...]
 ) -> list[str]:
-    # Called on the execution host. The resolver uses its remote canonical map
-    # directly rather than accidentally resolving remote symlinks on this host.
-    _validated_folders(folders, ())
-    return _validated_folders(
-        [os.path.realpath(path) for path in folders],
-        tuple(os.path.realpath(path) for path in protected_roots),
-    )
+    # Lexical only: callers canonicalize on the execution host first, so a
+    # path is never resolved through this backend's symlinks.
+    return _validated_folders(folders, protected_roots)
 
 
 def _facts(remote_stage: RemoteRunStage | None, paths: list[str]) -> dict:

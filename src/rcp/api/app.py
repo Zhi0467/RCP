@@ -2404,13 +2404,15 @@ def create_app(
 
     if request_host_guard is not None:
         if space_kind == "team" and request_host_guard.team_access_url is None:
-            logger.warning("Host guard unavailable: team server has no configured public origin.")
-        else:
-            app.add_middleware(
-                HostGuard,
-                port=request_host_guard.port,
-                team_access_url=request_host_guard.team_access_url,
+            logger.warning(
+                "Team server has no configured public origin; only loopback and "
+                "desktop-relay hosts are accepted."
             )
+        app.add_middleware(
+            HostGuard,
+            port=request_host_guard.port,
+            team_access_url=request_host_guard.team_access_url,
+        )
     return app
 
 
