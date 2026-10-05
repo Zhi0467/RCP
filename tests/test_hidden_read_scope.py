@@ -41,6 +41,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         "/data/run-stage/project-transfer-activation/request/rcp.sqlite3",
         "/data/run-stage/backup-123/rcp.sqlite3",
         "/data/providers/claude/token",
+        "/data/providers/command-mailboxes/mailbox.json",
         "/data/service-connections/member/connections/id/key",
         "/provider/auth.json",
         "/control/socket",

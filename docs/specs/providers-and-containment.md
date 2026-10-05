@@ -270,8 +270,8 @@ injection; research data remains readable. It does not add same-account isolatio
 or restrict network, Git, browser, SSH, Slurm, GPUs, or process managers.
 
 Code owns the default directories, literal files, and globs: RCP database and
-backup/checkpoint copies, provider credential stores and login files, service
-connection keys, the remote Claude setup token, private control sockets, and
+backup/checkpoint copies, provider credential stores and login files, command-mailbox
+checkpoints, service connection keys, the remote Claude setup token, private control sockets, and
 selected WebKit storage. Deploy keys and private `~/.ssh/id_*` identities enter
 the scope only after their decoded public-key SHA256 fingerprint is listed by
 the appropriate agent and a bounded signing check passes. Missing or stale public

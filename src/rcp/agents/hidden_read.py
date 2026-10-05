@@ -118,10 +118,12 @@ def hidden_read_defaults(
     if app_data_dir:
         # Globs vary only their last component, so a Linux wrapper can hide
         # future matches too; wholly secret trees are plain directories.
-        # Each provider's credential namespace, never the Git identities beside them.
+        # Each provider's credential namespace and the command-mailbox checkpoints,
+        # never the Git identities beside them.
         directories.extend(app_data_dir + "/providers/" + provider for provider in PROVIDER_IDS)
         directories.extend(
             (
+                app_data_dir + "/providers/command-mailboxes",
                 app_data_dir + "/service-connections",
                 app_data_dir + "/run-stage/project-transfer-activation",
             )
