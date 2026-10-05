@@ -20,7 +20,7 @@ import {
   type ChatKind,
   type ConversationTurnSubmission,
 } from "../chat/chatWorkspace";
-import { filterSkillCatalogToDefaults } from "../core/skillPicker";
+import { filterSkillCatalogToDefaults } from "../core/skillPickerModel";
 import {
   NEVER_CONFIRM,
   type WebMcpToolDefinition,

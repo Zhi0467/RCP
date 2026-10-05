@@ -32,7 +32,7 @@ import {
 import {
   experimentIndexEntryForRoute,
   parseProjectHash,
-} from "../src/experiments/experimentBoard.ts";
+} from "../src/experiments/experimentBoardModel.ts";
 
 function task(overrides) {
   return withTaskAnswers({

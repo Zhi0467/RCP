@@ -1,6 +1,6 @@
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
-import { spaceRunRouteToken } from "./experimentBoard";
+import { spaceRunRouteToken } from "./experimentBoardModel";
 import type { ResolvedTheme } from "../ui/theme";
 import type { SpaceRunIndexEntry, SpaceRunMode } from "../core/types";
 import {

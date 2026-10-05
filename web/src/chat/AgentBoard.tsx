@@ -5,7 +5,7 @@ import {
   placeAgentBoardCard,
   type AgentBoardColumn,
   type AgentBoardDrop,
-} from "./agentBoard";
+} from "./agentBoardModel";
 
 export interface AgentBoardCard {
   id: string;

@@ -9,8 +9,8 @@ import {
   isSkillPickerChooseKey,
   moveSkillHighlight,
   readSkillTrigger,
-} from "./skillPicker";
-import type { ProviderSkillPickerEntry, SkillPickerEntry } from "./skillPicker";
+} from "./skillPickerModel";
+import type { ProviderSkillPickerEntry, SkillPickerEntry } from "./skillPickerModel";
 import type { ProviderId, ProviderSkillInventory, SkillCatalogEntry, SkillDefaults } from "./types";
 
 interface Options {

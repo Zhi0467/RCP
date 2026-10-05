@@ -23,7 +23,7 @@ const {
   projectExperimentExecution,
   projectHashAfterViewChange,
   projectRunsNeedsExperimentIndex,
-} = await server.ssrLoadModule("/src/experiments/experimentBoard.ts");
+} = await server.ssrLoadModule("/src/experiments/experimentBoardModel.ts");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/experiments/ExperimentBoard.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/graph/GraphViews.tsx");

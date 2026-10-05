@@ -1,4 +1,7 @@
-import { experimentBoardHref, experimentBoardRouteToken } from "../experiments/experimentBoard.ts";
+import {
+  experimentBoardHref,
+  experimentBoardRouteToken,
+} from "../experiments/experimentBoardModel.ts";
 import { sameGraphTarget } from "../core/graphTarget.ts";
 import type {
   ProjectReferenceSelector,

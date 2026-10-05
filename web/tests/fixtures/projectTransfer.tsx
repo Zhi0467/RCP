@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { parseProjectSetupRoute } from "../../src/projects/projectSetup";
+import { parseProjectSetupRoute } from "../../src/projects/projectSetupModel";
 import { TransferProjectSetup } from "../../src/projects/TransferProjectSetup";
 import "../../src/styles.css";
 

@@ -10,7 +10,7 @@ import {
   startProviderSignIn,
   verifyProviderLogin,
 } from "../core/api";
-import { accountLabel, resumedNote, signInNote, tokenNote } from "./providerLogins";
+import { accountLabel, resumedNote, signInNote, tokenNote } from "./providerLoginsModel";
 import type { ProviderLoginAccount, ProviderSignInStatus } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
 

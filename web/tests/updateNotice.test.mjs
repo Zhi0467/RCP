@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 
-import { releaseNotice } from "../src/desktop/updateNotice.ts";
+import { releaseNotice } from "../src/desktop/updateNoticeModel.ts";
 
 const fixture = {
   space: "personal",

@@ -1,4 +1,4 @@
-import { parseProjectHash } from "../experiments/experimentBoard";
+import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { graphTargetFromHash } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
@@ -10,7 +10,7 @@ import {
   MessageCircle,
   RefreshCw,
 } from "lucide-react";
-import { openArtifact } from "./artifactViewer";
+import { openArtifact } from "./artifactViewerModel";
 import { api } from "../core/api";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";

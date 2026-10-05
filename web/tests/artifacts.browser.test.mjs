@@ -501,7 +501,7 @@ test("viewer persists placement and follows an edit through publication and Undo
     );
     const open = () =>
       page.evaluate(async () => {
-        const { openArtifact } = await import("/src/artifacts/artifactViewer.ts");
+        const { openArtifact } = await import("/src/artifacts/artifactViewerModel.ts");
         openArtifact({ projectId: "project", artifactId: "plot" });
       });
     await open();

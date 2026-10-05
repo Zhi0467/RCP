@@ -57,7 +57,7 @@ const RESEARCH_LAYER = new Set([
   "core/types.ts",
   "graph/researchType.ts",
   "graph/researchProjection.ts",
-  "experiments/experimentBoard.ts",
+  "experiments/experimentBoardModel.ts",
   "core/experimentGuidance.ts",
   "experiments/ExperimentBoard.tsx",
   "experiments/ExperimentRunDetail.tsx",

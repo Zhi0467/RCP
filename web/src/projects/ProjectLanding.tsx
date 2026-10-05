@@ -33,7 +33,7 @@ import type {
   ProjectInvitation,
   SpaceRunIndexEntry,
 } from "../core/types";
-import { projectCreationPrimaryLabel } from "./projectSetup";
+import { projectCreationPrimaryLabel } from "./projectSetupModel";
 
 interface Props extends AppearancePickerProps {
   palette: ResolvedTheme;

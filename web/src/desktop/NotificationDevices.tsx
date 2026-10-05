@@ -16,7 +16,7 @@ import {
   webPushSupported,
   type NotificationDevice,
   type PhonePairing,
-} from "./notificationDevices";
+} from "./notificationDevicesModel";
 
 const PAIRING_POLL_MS = 3000;
 

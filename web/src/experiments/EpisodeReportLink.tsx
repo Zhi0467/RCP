@@ -4,7 +4,7 @@ import { MAIN_GRAPH } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef, RunArtifactEntry } from "../core/types";
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
-import { openEpisodeReport } from "../artifacts/artifactViewer";
+import { openEpisodeReport } from "../artifacts/artifactViewerModel";
 
 interface Props extends Omit<
   AnchorHTMLAttributes<HTMLAnchorElement>,

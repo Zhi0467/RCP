@@ -108,7 +108,7 @@ import {
   mainExperimentRouteMatchesControl,
   projectExperimentExecution,
   type ExperimentRouteIdentity,
-} from "../experiments/experimentBoard";
+} from "../experiments/experimentBoardModel";
 import type {
   ProviderLoginState,
   Machine,

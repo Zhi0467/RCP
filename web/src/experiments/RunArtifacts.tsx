@@ -4,7 +4,7 @@ import type { GraphTargetRef } from "../core/types";
 import { useState } from "react";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { errorMessage } from "../core/errors";
-import { openArtifact } from "../artifacts/artifactViewer";
+import { openArtifact } from "../artifacts/artifactViewerModel";
 import type { RunArtifactEntry } from "../core/types";
 import { StoredArtifactDownload } from "../artifacts/StoredArtifactDownload";
 import "../styles/runArtifacts.css";

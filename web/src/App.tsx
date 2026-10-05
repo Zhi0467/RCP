@@ -50,7 +50,11 @@ import {
 import { isActiveTask } from "./agents/agentTasks";
 import { mergeProviderLogins } from "./projects/providers";
 import { loadChatTranscript } from "./chat/chatApi";
-import { closeArtifactViewer, openArtifact, openEpisodeReport } from "./artifacts/artifactViewer";
+import {
+  closeArtifactViewer,
+  openArtifact,
+  openEpisodeReport,
+} from "./artifacts/artifactViewerModel";
 import {
   chatIndicator,
   unreadChatIdsFromReads,
@@ -104,7 +108,7 @@ import {
   projectExperimentExecution,
   projectRunsNeedsExperimentIndex,
   type ProjectHashRoute,
-} from "./experiments/experimentBoard";
+} from "./experiments/experimentBoardModel";
 import {
   decodeTransitionTriggerManifest,
   reduceProjectTransitionProjection,
@@ -237,7 +241,7 @@ import {
   parseProjectSetupRoute,
   projectMoveSetupHash,
   type ProjectSetupRoute,
-} from "./projects/projectSetup";
+} from "./projects/projectSetupModel";
 import {
   changeTextScale,
   normalizeTextScale,
@@ -284,7 +288,7 @@ import {
   parseNotificationLink,
   type NotificationLink,
 } from "./core/notificationLinks";
-import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevices";
+import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevicesModel";
 import { unfinishedJobsFromError } from "./graph/mergePanel";
 import {
   attentionGraphForProjection,

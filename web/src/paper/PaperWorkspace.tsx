@@ -18,7 +18,7 @@ import { api } from "../core/api";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { profileRunConfig } from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
-import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPicker";
+import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
 import type {
   AgentRunConfig,
   AgentTask,

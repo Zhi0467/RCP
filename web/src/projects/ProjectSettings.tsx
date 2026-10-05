@@ -26,7 +26,7 @@ import { AddMachineTile, MachineTile, type MachineSignal } from "./MachineTile";
 import { AddProjectMachine } from "./AddProjectMachine";
 import { useSpaceMachines } from "./useSpaceMachines";
 import { machineHostLabel, spaceMachineForProject } from "./spaceMachines";
-import { EMPTY_SKILL_SELECTION } from "../core/skillPicker";
+import { EMPTY_SKILL_SELECTION } from "../core/skillPickerModel";
 import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
 import { AgentUsageWidgets } from "../agents/AgentUsageWidgets";
 import { SkillPackageInspector } from "../agents/SkillPackageInspector";
