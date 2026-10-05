@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Watcher commands run outside the provider sandbox](2026-10-05-watcher-commands-run-outside-the-provider-sandbox.md)
+  records why `watch.json` check and cancel commands run in an unbounded login
+  shell, and what that gives up.
+
 - [The kernel asks node-type questions](2026-10-04-the-kernel-asks-node-type-questions.md)
   records why kernel code asks a project type which node types play which part,
   why a type's own rules live in a listed research layer, why the project type
