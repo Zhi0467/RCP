@@ -8,7 +8,7 @@ import {
   type ThemeChoice,
 } from "./theme";
 import { TEXT_SCALE_MAX, TEXT_SCALE_MIN, type TextScaleAction } from "./textScale";
-import "../components/AppearancePicker.css";
+import "./AppearancePicker.css";
 
 export interface AppearancePickerProps {
   themeChoice: ThemeChoice;

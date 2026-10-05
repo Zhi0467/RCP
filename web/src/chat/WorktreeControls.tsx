@@ -8,7 +8,7 @@ import type {
   GraphTargetRef,
   WorktreeIntegrationOption,
 } from "../core/types";
-import "../components/WorktreeControls.css";
+import "./WorktreeControls.css";
 
 export function useConversationWorktree(
   projectId: string,
