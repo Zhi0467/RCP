@@ -70,9 +70,15 @@ def test_fingerprint_is_canonical_and_covers_effective_policy() -> None:
         "hidden_globs": ("/data/backup-*", "/data/*.sqlite3"),
         "env_allow_list": ("PATH", "HOME"),
         "key_evidence": (_key("/keys/b"), _key("/keys/a")),
+        "enforcement": HiddenReadStatus(status="unhidden", reasons=("ssh_key_agent_unconfirmed",)),
     }
     first = _scope(**policy)
-    reordered = _scope(**{name: tuple(reversed(value)) for name, value in policy.items()})
+    reordered = _scope(
+        **{
+            name: value if isinstance(value, HiddenReadStatus) else tuple(reversed(value))
+            for name, value in policy.items()
+        }
+    )
     assert first == reordered
     assert HiddenReadScope.model_validate_json(first.model_dump_json()) == first
     assert len(first.fingerprint) == 64
@@ -84,13 +90,33 @@ def test_fingerprint_is_canonical_and_covers_effective_policy() -> None:
         "hidden_files": ("/other/token",),
         "hidden_globs": ("/other/*",),
         "env_allow_list": ("HOME",),
-        "enforcement": HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",)),
+        "enforcement": HiddenReadStatus(
+            status="unhidden", reasons=("ssh_key_agent_unconfirmed", "wrapper_unavailable")
+        ),
         "key_evidence": (_key("/keys/other"),),
     }
     for name, value in variants.items():
         assert _scope(**{**policy, name: value}).fingerprint != first.fingerprint
     with pytest.raises(ValidationError):
         _scope(**policy, fingerprint="0" * 64)
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [("ssh_identity", "ssh_key_agent_unconfirmed"), ("deploy_key", "deploy_key_agent_unconfirmed")],
+)
+def test_readable_key_requires_its_unhidden_reason(kind: str, reason: str) -> None:
+    key = _key(kind=kind)
+    with pytest.raises(ValidationError):
+        _scope(key_evidence=(key,))
+    with pytest.raises(ValidationError):
+        _scope(
+            key_evidence=(key,),
+            enforcement=HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",)),
+        )
+    assert _scope(
+        key_evidence=(key,), enforcement=HiddenReadStatus(status="unhidden", reasons=(reason,))
+    ).enforcement.reasons == (reason,)
 
 
 @pytest.mark.parametrize(

@@ -181,6 +181,17 @@ class HiddenReadScope(BaseModel):
 
     @model_validator(mode="after")
     def validate_fingerprint(self) -> HiddenReadScope:
+        # A readable private key is a visible gap: it can never ride under
+        # an enforced status or an unrelated reason.
+        required = {
+            "deploy_key": "deploy_key_agent_unconfirmed",
+            "ssh_identity": "ssh_key_agent_unconfirmed",
+        }
+        for item in self.key_evidence:
+            if item.visibility == "readable" and required[item.kind] not in (
+                self.enforcement.reasons
+            ):
+                raise ValueError("a readable private key requires its unconfirmed-key reason")
         paths = (*self.hidden_directories, *self.hidden_files, *self.hidden_globs)
         if len(paths) != len(set(paths)):
             raise ValueError("a hidden path must occur in only one path category")

@@ -1,9 +1,11 @@
 # Agent secrets: usable but not readable
 
-Status 2026-10-04: design settled; implementation not started. One branch and
+Status 2026-10-04: design settled; implementation in progress. One branch and
 one PR carry all of it. Implemented on this branch: the production CORS
-allowlist is gone (Vite proxies `/api`, so no origin needed it). Remaining:
-everything under "Plan".
+allowlist is gone (Vite proxies `/api`, so no origin needed it), and slice A's
+contracts (`HiddenReadScope`, key evidence, enforcement status, the
+`ProviderTurnRequest` field, `SpaceMachineRecord.hidden_folders`, and the web
+types), with no behavior change yet. Remaining: slices B–F below.
 
 ## Threat model
 
