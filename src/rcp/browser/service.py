@@ -17,7 +17,14 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from rcp import limits
-from rcp.browser.models import BrowserReadiness, SessionCheck, SessionLease, Unavailable
+from rcp.browser.models import (
+    BrowserReadiness,
+    SessionCheck,
+    SessionLease,
+    SessionRequest,
+    Unavailable,
+)
+from rcp.core.models import HiddenReadScope
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.ssh import ssh_arguments
 
@@ -55,7 +62,9 @@ def _invoke(request: dict, *, host: str, partition: str | None, data_dir: Path) 
         "controller_id": hashlib.sha256(str(data_dir).encode()).hexdigest(),
         "controller_epoch": _EPOCH,
     }
-    timeout_key = {"ensure": "start", "release": "close"}.get(request["action"], request["action"])
+    timeout_key = {"ensure": "start", "release": "close", "enable_linger": "readiness"}.get(
+        request["action"], request["action"]
+    )
     timeout = request["limits"][timeout_key]
     # Let the worker finish cancellation and return its diagnostic before its transport ends.
     request["limits"][timeout_key] = max(0.1, timeout - 1)
@@ -80,6 +89,9 @@ def _invoke(request: dict, *, host: str, partition: str | None, data_dir: Path) 
             return {"reason_code": "runtime_failed", "detail": str(exc)[-2000:]}
     try:
         sources = {
+            "rcp.agents.staged_hidden_read": (
+                root.parent / "agents" / "staged_hidden_read.py"
+            ).read_text(),
             "rcp.browser.libraries": (root / "libraries.py").read_text(),
             "rcp.transport.compute_process_owner": (
                 root.parent / "transport" / "compute_process_owner.py"
@@ -212,6 +224,7 @@ def ensure_session(
     workspace_dir: str,
     data_dir: Path,
     retained_lease_ids: tuple[str, ...] | list[str] = (),
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> SessionLease | Unavailable:
     try:
         data_dir = _data_dir(data_dir)
@@ -232,28 +245,30 @@ def ensure_session(
             _INFLIGHT_ENSURES.add(path)
         try:
             result = _invoke(
-                {
-                    "action": "ensure",
-                    "owner_token": owner_token,
-                    "workspace_dir": workspace_dir,
-                    "lease_id": lease_id,
-                    "retained_lease_ids": list(retained_lease_ids),
-                },
+                SessionRequest(
+                    owner_token=owner_token,
+                    workspace_dir=workspace_dir,
+                    lease_id=lease_id,
+                    retained_lease_ids=list(retained_lease_ids),
+                    hidden_read_scope=hidden_read_scope,
+                ).model_dump(mode="json"),
                 host=host,
                 partition=partition,
                 data_dir=data_dir,
             )
             if result.get("reason_code"):
                 return Unavailable.model_validate(result)
-            lease = SessionLease.model_validate(
-                {
-                    **result,
-                    "owner_token": owner_token,
-                    "lease_id": lease_id,
-                    "host": host,
-                    "partition": partition,
-                    "data_dir": str(data_dir),
-                }
+            lease = SessionLease.model_validate_json(
+                json.dumps(
+                    {
+                        **result,
+                        "owner_token": owner_token,
+                        "lease_id": lease_id,
+                        "host": host,
+                        "partition": partition,
+                        "data_dir": str(data_dir),
+                    }
+                )
             )
             _acknowledge(path, release)
             return lease
@@ -369,3 +384,7 @@ def readiness(*, host: str = "", os_account: str = "", data_dir: Path) -> Browse
 
 def install_browser(*, host: str = "", os_account: str = "", data_dir: Path) -> BrowserReadiness:
     return _host_status("install", host=host, os_account=os_account, data_dir=data_dir)
+
+
+def enable_linger(*, host: str = "", os_account: str = "", data_dir: Path) -> BrowserReadiness:
+    return _host_status("enable_linger", host=host, os_account=os_account, data_dir=data_dir)

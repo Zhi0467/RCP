@@ -1014,8 +1014,8 @@ async def stream_graph_run(
             assert run_lock_lease is not None
             run_lock_lease.assert_owned()
             # Resume and Retry reuse their predecessor's stage, including any
-            # retained patch. Fingerprint it rather than deleting it: invariant 9
-            # says failed work remains inspectable, but a Retry may not claim an
+            # retained patch. Fingerprint it rather than deleting it: failed work
+            # keeps its scratch and Patch text, but a Retry may not claim an
             # inherited file as output it produced. In-process correction rounds
             # have the same safeguard.
             requires_new_patch = bool(rounds) or continuation == "retry"
@@ -1073,6 +1073,7 @@ async def stream_graph_run(
                     request,
                     prompt,
                     workspace=workspace,
+                    data_dir=data_dir,
                     session_id=session_id,
                     read_dirs=read_dirs,
                     execution_host=execution_host,
@@ -1329,6 +1330,11 @@ async def stream_graph_run(
                 staged=validator_staged,
                 execution=execution,
             )
+        # A failed run keeps its scratch: the stage is removed only once its
+        # Patch applied, so a rejected or unavailable Apply stays inspectable
+        # and repairable (tests/test_api.py::
+        # test_remote_stage_is_retained_after_failure_and_after_pause,
+        # tests/test_operational_retention.py).
         if applied:
             if local_stage is not None:
                 with suppress(OSError, ValueError):
@@ -1348,6 +1354,7 @@ async def _stream_graph_agent_events(
     prompt: str,
     *,
     workspace: Path,
+    data_dir: Path,
     session_id: str | None,
     read_dirs: list[Path],
     execution_host: str,
@@ -1382,6 +1389,8 @@ async def _stream_graph_agent_events(
                 launcher,
                 request,
                 prompt,
+                service=service,
+                data_dir=data_dir,
                 workspace=workspace,
                 session_id=session_id,
                 read_dirs=read_dirs,

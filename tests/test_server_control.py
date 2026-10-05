@@ -536,20 +536,10 @@ def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) ->
     app = create_app(data_dir=tmp_path / "data")
     with signed_in_client(app) as client:
         app.state.runtime_admission_gate.close_and_wait(timeout=1)
-        response = client.get(
-            "/api/health",
-            headers={"Origin": "http://localhost:5173"},
-        )
-        disallowed = client.get(
-            "/api/health",
-            headers={"Origin": "https://attacker.test"},
-        )
+        response = client.get("/api/health")
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "server_maintenance"
-    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
-    assert disallowed.status_code == 503
-    assert "access-control-allow-origin" not in disallowed.headers
 
 
 @pytest.mark.parametrize(

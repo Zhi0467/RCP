@@ -49,6 +49,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import (
+    _MAX_PATCH_CANDIDATES,
     AgentOutputProblem,
     _collect_patch_text,
     _existing_exact_patch_digest,
@@ -526,21 +527,27 @@ def test_personal_post_refuses_requests_a_cross_site_page_can_send(
         assert response.status_code in {404, 405}
 
 
+def test_api_grants_no_cross_origin_reads(app) -> None:
+    # Vite proxies /api in development, so no origin needs CORS.
+    response = signed_in_client(app).get(
+        "/api/projects", headers={"Origin": "http://localhost:5173"}
+    )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_stale_instance_guard_rejects_mutation_before_side_effect(app) -> None:
-    client = signed_in_client(app, base_url="http://127.0.0.1:5173")
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
 
     rejected = client.delete(
         f"/api/projects/{project_id}",
-        headers={
-            "Origin": "http://127.0.0.1:5173",
-            "X-RCP-Instance-ID": "replaced-instance",
-        },
+        headers={"X-RCP-Instance-ID": "replaced-instance"},
     )
 
     assert rejected.status_code == 409
     assert rejected.json()["instance_id"] == app.state.instance_metadata.instance_id
-    assert rejected.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
     assert any(item["id"] == project_id for item in client.get("/api/projects").json())
 
 
@@ -2084,7 +2091,7 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
         PATCH_CORRECTION_MAX_ROUNDS
     )
     assert _applied_revision(frames) is None
-    assert any("without writing any JSON file" in text for text in _error_texts(frames))
+    assert not any((workspace / "patch.json").exists() for workspace in launcher.workspaces)
     assert service.history.state().revision == 2
 
 
@@ -2158,6 +2165,23 @@ def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> N
     (tmp_path / "backup.json").write_text(patch, encoding="utf-8")
     with pytest.raises(AgentOutputProblem):
         _collect_patch_text(tmp_path, None)
+
+
+def test_patch_collector_examines_a_bounded_window_of_json_files(tmp_path) -> None:
+    """The collector reads at most `_MAX_PATCH_CANDIDATES` JSON files, `patch.json`
+    first and then by name; a candidate sorted beyond that window is not seen."""
+    patch = agent_patch_json(refresh_patch())
+    for index in range(_MAX_PATCH_CANDIDATES):
+        (tmp_path / f"a{index:02d}.json").write_text('{"kind": "note"}', encoding="utf-8")
+    (tmp_path / "zz-patch.json").write_text(patch, encoding="utf-8")
+
+    with pytest.raises(AgentOutputProblem):
+        _collect_patch_text(tmp_path, None)
+
+    (tmp_path / "patch.json").write_text(patch, encoding="utf-8")
+    text, name = _collect_patch_text(tmp_path, None)
+    assert name == "patch.json"
+    assert text == patch
 
 
 def test_exact_patch_digest_ignores_patch_shaped_drafts(tmp_path) -> None:
@@ -5288,7 +5312,9 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     assert launcher.calls == 1
     assert launcher.last_kwargs["capability"] == "paper_readonly"
     assert launcher.last_kwargs["binary"] == "/opt/agents/codex"
-    assert launcher.last_kwargs["cwd"] == manifest.research_dir
+    workspace = launcher.last_kwargs["cwd"]
+    assert workspace.name == "workspace"
+    assert workspace.is_relative_to(tmp_path / "data")
     assert any("Review the claim boundary." in item for item in events)
     assert paper.sessions()[0].native_session_id == session_id
 

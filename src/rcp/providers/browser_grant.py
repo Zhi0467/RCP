@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, field_validator
 
 
 class BrowserOwnerKey(BaseModel):
@@ -23,6 +24,9 @@ class BrowserOwnerKey(BaseModel):
 class BrowserGrant(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Core models import the provider registry; validate lazily to avoid that cycle.
+    hidden_read_scope: SerializeAsAny[BaseModel] | None = None
+    hidden_read_enforcement: SerializeAsAny[BaseModel] | None = None
     requested: bool = False
     status: Literal["not_requested", "granted", "unavailable"] = "not_requested"
     reason_code: str | None = None
@@ -34,6 +38,19 @@ class BrowserGrant(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     # Names the runtime lease this turn must release; persisted only in turn status.
     lease_id: str | None = Field(default=None, exclude=True)
+
+    @field_validator("hidden_read_scope", "hidden_read_enforcement", mode="before")
+    @classmethod
+    def validate_hidden_read(cls, value, info):
+        if value is None:
+            return None
+        from rcp.core.models import HiddenReadScope, HiddenReadStatus
+
+        model = HiddenReadScope if info.field_name == "hidden_read_scope" else HiddenReadStatus
+        # JSON mode also accepts the contract's serialized tuple fields.
+        if isinstance(value, model):
+            return value
+        return model.model_validate_json(json.dumps(value))
 
 
 class BrowserTurnStatus(BaseModel):

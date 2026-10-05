@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import shlex
@@ -222,7 +224,7 @@ def test_provider_usage_is_normalized_at_provider_boundaries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_campaign_broker_wraps_provider_and_preserves_exact_prompt(
+async def test_campaign_broker_wraps_provider_and_preserves_effective_prompt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -278,7 +280,7 @@ async def test_campaign_broker_wraps_provider_and_preserves_exact_prompt(
         staged.cleanup()
 
     payload = json.loads(next(event.text for event in events if event.event == "message"))
-    assert payload["prompt"] == "exact provider prompt"
+    assert payload["prompt"].startswith("exact provider prompt\n\n")
     assert payload["code"] == 0
     assert json.loads(payload["output"])["status"] == "ok"
     assert handled == ["status"]
@@ -451,7 +453,7 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
 
     assert captured["limit"] == AgentLauncher._STREAM_LIMIT
     assert "prompt" not in captured["command"]
-    assert FakeProcess.stdin.data == b"prompt"
+    assert FakeProcess.stdin.data.split(b"\n\n", 1)[0] == b"prompt"
     assert any(event.event == "raw" for event in events)
     assert events[-1].event == "done"
     exit_evidence = json.loads(
@@ -476,8 +478,9 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
         '{"text": "x" * (2 * 1024 * 1024)}}) + "\\n")\n'
         "sys.stdout.flush()\n"
         "prompt = sys.stdin.buffer.read()\n"
+        "original_prompt = prompt.split(b'\\n\\n', 1)[0]\n"
         'print(json.dumps({"type": "item", "item": '
-        '{"text": f"received={len(prompt)}"}}), flush=True)\n'
+        '{"text": f"received={len(original_prompt)}"}}), flush=True)\n'
         "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
     )
     launcher = _scripted_launcher(monkeypatch, provider_script)

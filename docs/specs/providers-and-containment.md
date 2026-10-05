@@ -261,6 +261,50 @@ cooperative. RCP does not claim hostile same-account process isolation,
 cross-project read secrecy, a general OS sandbox, network confinement, or
 resource supervision.
 
+Selected-secret hiding is a separate read policy for supported launches, including
+Discuss, Work, Experiment, orchestration, ingestion, correction, consolidation,
+and paper coaching. One immutable `HiddenReadScope` is resolved after launch-host
+key confirmation, before provider or browser preparation. Prompts render that
+same scope and its effective status. This targets generic network prompt
+injection; research data remains readable. It does not add same-account isolation
+or restrict network, Git, browser, SSH, Slurm, GPUs, or process managers.
+
+Code owns the default directories, literal files, and globs: RCP database and
+backup/checkpoint copies, provider credential stores and login files, command-mailbox
+checkpoints, service connection keys, the remote Claude setup token, private control sockets, and
+selected WebKit storage. Deploy keys and private `~/.ssh/id_*` identities enter
+the scope only after their decoded public-key SHA256 fingerprint is listed by
+the appropriate agent and a bounded signing check passes. Missing or stale public
+keys and failed confirmation leave the key readable with a reason in Settings
+and doctor. Public keys, SSH configuration, and `known_hosts` remain readable.
+A folder containing an exempt key must never be masked.
+
+Settings adds per-machine hidden folders to the code defaults. The shared host
+validator bounds a machine to 64 absolute folders, canonicalizes them, and
+rejects overlap in either direction with checkouts, stages, required tools,
+provider binaries and command sockets. Launch rechecks: a saved folder that has
+since come to cover a required path is dropped alone with
+`hidden_folder_conflict`, and every default stays hidden. These additions live beside machine writable paths, never in
+project manifests; any member may edit them. Tool environments drop names matching the resolved
+deny list (case-insensitive globs of credential-looking names) and keep every
+other variable; provider authentication remains outside the tool wrapper.
+Credential files read directly by ordinary tools, including `~/.config/gh`,
+`~/.netrc`, and `~/.aws`, are not defaults. The macOS Keychain stays open so
+Keychain-backed Git and `gh` continue working.
+
+Deploy keys use the account's RCP agent at `~/.rcp/ssh-agent/agent.sock`;
+user identities use that account's own `SSH_AUTH_SOCK`. On remote machines, the
+generic launch helper starts the long-lived agent through a systemd user unit
+on Linux or launchd on macOS, on the first launch that needs it. A staged stdlib
+helper loads remote deploy keys and confirms both kinds against their respective agents on every launch.
+Locally, provisioning and restore load newly written deploy keys into the
+running account agent immediately, so confirmation does not require a restart.
+
+A host without working hiding support runs unhidden and reports the reason in
+Settings and doctor only, without a per-turn trace or badge. The agent prompt
+still states its effective scope and status. Hiding never blocks a launch. See the
+[decision](../decisions/2026-10-04-agent-secret-hiding.md) for the threat model.
+
 RCP resolves one strict `ProjectWriteScope` before every Work or orchestrate
 launch. It binds:
 
@@ -358,6 +402,27 @@ use; one owned by another account is refused.
 
 ## Provider enforcement
 
+Selected-secret policy is rendered from `HiddenReadScope` on every capability:
+Claude receives the staged shell prefix plus native read-path denies; Codex
+receives file, directory, and glob denies in both exec and app-server policies,
+plus the environment deny list; OpenCode receives the shell wrapper and native
+read, grep, glob, and list denies where its rules can express them. An uncovered
+native tool makes the launch visibly unhidden. macOS shell calls use a selected
+path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
+Hidden globs vary only their last path component. On Linux the wrapper empties
+each glob's parent and binds its other existing entries back, so a match created
+after a shell or browser daemon starts, such as a WAL file or a backup, stays
+hidden. A hidden literal that does not exist yet is hidden the same way under its
+existing parent. A shell command never empties the account home or a folder
+above that parent, so deeper misses are rechecked at the next command; the
+persistent browser daemon also masks at the home, so a credential folder created
+mid-session never appears to it. A changed mask set restarts the daemon at its
+next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
+on the execution host, outside every write root and inside the hidden set. A
+launch already resolved unhidden runs its commands silently; if hiding was
+enforced at launch and the sandbox later becomes unavailable, the wrapper
+refuses the command rather than run it unhidden.
+
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine and host.
 Catalog ownership and overlap checks validate the registered checkout and
@@ -419,7 +484,7 @@ they never copy the controller's PATH. Codex retains `shell_environment_policy={
 Browser actions execute in an RCP-started process outside the provider sandbox.
 The CLI permits agent-written Playwright code and writes outside the chat's write
 roots. It can reach any address available to its execution account. The human's
-grant accepts this boundary; `patch.json` remains the only graph-change channel.
+grant accepts this boundary; the task stage remains the only graph-change channel.
 
 ### Claude
 
@@ -659,8 +724,14 @@ the one its session began with.
 
 ## One graph output channel
 
-An agent writes `patch.json` only in its exact RCP-owned stage. That file is the
-sole graph-change channel. Work repository edits carry operational authority,
+An agent's exact RCP-owned task stage is the sole graph-change channel. RCP
+collects `patch.json` there once the invocation ends. A conversation turn reads
+that exact name and nothing else. An ingestion run and a branch merge collect
+`patch.json` when it holds a Patch; when it is missing or not patch-shaped they
+collect exactly one other patch-shaped JSON file from the stage, and refuse more
+than one. They examine at most eight JSON files, `patch.json` first and then by
+name; a file beyond that window is not collected. Work repository edits carry
+operational authority,
 not graph authority, and canonical `.research` stays outside agent write roots.
 RCP never extracts a Patch from stdout, an answer, provider directive, artifact,
 URL, or repository file.
@@ -1613,6 +1684,15 @@ contract requires that.
 
 ## Host browser runtime
 
+On Linux, the browser daemon and Chromium run under the launch's hidden-path
+policy inside the systemd job command. The host persists the policy fingerprint
+and changes a live daemon's policy under the host lock, preserving its profile
+and active leases. Hidden-file uploads fail; other uploads, downloads, and
+browser capabilities remain available. On macOS the daemon stays unwrapped
+because Chromium's sandbox cannot nest inside Seatbelt; browser file operations
+remain unhidden; Settings and doctor show that exception. An enforcement failure
+keeps the browser available and contributes to the effective scope status.
+
 `browser/` owns optional headless browser installation and sessions. It is
 separate from provider launches. The launch integration supplies a stable owner
 token and the stage workspace. The runtime exports ensure, release, and close;
@@ -1626,7 +1706,8 @@ attachment, headed, profile, and storage-state settings are overridden. Launch
 environment overrides are removed. The pinned daemon entry point runs directly
 under launchd or a lingering systemd user manager, so the OS owns the daemon
 rather than its short-lived CLI launcher. A missing process owner makes the
-browser unavailable.
+browser unavailable; a systemd account without linger reports `linger_disabled`
+before an install is offered.
 
 Ensure probes the CLI registry from the stage workspace before starting a
 session. It creates no `.playwright` marker and never reopens a live session.

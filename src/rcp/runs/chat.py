@@ -2114,7 +2114,10 @@ def _append_chat_records(
             if reserve_prompt and path.exists():
                 # A live steer may already have recorded this attempt's original
                 # human prompt, or finalization may be resuming after appending
-                # the answer. Inspect only identity, never use transcript as input.
+                # the answer. Inspect only identity, never use transcript as input:
+                # the transcript exists for display, and continuity comes from the
+                # provider's native session
+                # (tests/test_module_boundaries.py::test_task_runtime_never_reads_chat_transcripts).
                 existing = [json.loads(line) for line in path.read_text().split("\n") if line]
                 recorded = {
                     (item.get("operationId"), item.get("role"))

@@ -102,10 +102,10 @@ Implemented:
   consumes the watcher completion into a failed notification task with an
   actionable error; no provider launches for that task.
 - Generic wake admission stores `watcher_wake`, preserving the new logical-turn
-  handoff clearing rule (invariant 10c). The chat prompt owner selects `wake`
+  handoff clearing rule. The chat prompt owner selects `wake`
   on a continuing session and records its node, with the compatible master
   pointer or a bootstrapped master. Provider output is pinned to the resolved
-  wake session. No transcript participates in resolution (invariant 10d).
+  wake session. No transcript participates in resolution.
 - Task API projections expose `current_chat_session_id`. NodeChat and WebMCP
   consume it without searching native-session history or chat text. Artifact
   context keeps exact artifact ownership but follows the current chat profile;
@@ -275,9 +275,8 @@ Target:
 - A killed transfer is retried with the same staged bytes, inside
   `StateWorkspace`. The commit stays present, absent, or unknown, exactly as
   today. A lost acknowledgement never reruns the semantic mutation
-  (invariants 6 and 6b). Failed Patch and stage data are retained
-  (invariant 9), and `patch.json` stays the only graph-change channel
-  (invariant 4b).
+  (invariants 6 and 6b). Failed Patch and stage data are retained, and the
+  task stage stays the only graph-change channel (invariant 4b).
 - Transport unavailability is its own outcome, not a rejection, and it can be
   repaired or resumed. Implemented: `apply_work_patch` records a transport
   failure as graph update `unavailable` with its commit status (`absent`,

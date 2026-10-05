@@ -46,6 +46,9 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-machine hidden folders, fresh and upgraded in place.
+        "bfc5386ccc7def478a8ff8f9eb01dbd9a32e6b8d3c77d7a871acdde5bb582f34",
+        "c499a49066e8111b6f6ef4e47e0327e1af514d8c77c0181c9fbc342b55df8026",
         # Owner sign-in and browser grants, fresh and upgraded in place.
         "2bcc3922f9e1a8f78e901fd526ab04da3680b10715e920095d6ae9f73be1887b",
         "35fdc7eb7816e1f73d9670c2ce9c5e711e7c98def769aefe0c21139f81dc05d9",

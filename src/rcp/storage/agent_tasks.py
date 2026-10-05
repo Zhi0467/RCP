@@ -1941,7 +1941,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ),
             )
             if status not in {"rejected", "unavailable"}:
-                # Invariant 9: retained Patch text is dropped only once it applied.
+                # Retained Patch text is dropped only once it applied; a failed or
+                # unavailable run keeps it for repair and Apply again
+                # (tests/test_agent_task_lifecycle.py::test_agent_task_lifecycle_matrix).
                 connection.execute(
                     "DELETE FROM graph_run_outputs WHERE operation_id = ?",
                     (operation_id,),
@@ -4706,7 +4708,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         graph_status = graph_update.get("status") if isinstance(graph_update, dict) else None
         graph_unavailable = graph_status == "unavailable"
         # Both keep the retained Patch text: a rejection for repair, and an
-        # unavailable Apply for Apply again (invariant 9).
+        # unavailable Apply for Apply again.
         graph_rejected = graph_status == "rejected" or graph_unavailable
         status_message = _completed_graph_status_message(graph_update)
         message = (
@@ -5137,7 +5139,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def prune_operational_storage(self, *, now: datetime | None = None) -> dict[str, int]:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so
-        resume ancestry (invariant 10b) stays walkable for the life of a project."""
+        resume ancestry stays walkable for the life of a project."""
 
         current = _retention_reference_time(now)
         inactive = """

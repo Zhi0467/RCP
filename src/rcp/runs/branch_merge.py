@@ -63,6 +63,7 @@ from rcp.core.models import (
     Edge,
     GraphBranchMetadata,
     GraphState,
+    HiddenReadScope,
     Patch,
     ProjectNode,
     Proposal,
@@ -1782,6 +1783,7 @@ async def stream_branch_merge_run(
     code_block: str = "",
     code_roots: list[str] | None = None,
     code_landed: bool = False,
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> AsyncIterator[str]:
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
@@ -1945,6 +1947,7 @@ async def stream_branch_merge_run(
                 binary=binary,
                 session_id=None,
                 required_session_id=None,
+                hidden_read_scope=hidden_read_scope,
             )
             async with aclosing(events) as frames:
                 async for frame in frames:
@@ -2109,6 +2112,7 @@ async def stream_branch_merge_run(
                 binary=binary,
                 session_id=session_id,
                 required_session_id=session_id,
+                hidden_read_scope=hidden_read_scope,
             )
             async with aclosing(events) as frames:
                 async for frame in frames:
@@ -2327,6 +2331,7 @@ async def stream_branch_merge_run(
             binary=binary,
             session_id=session_id,
             required_session_id=session_id,
+            hidden_read_scope=hidden_read_scope,
         )
         async with aclosing(events) as frames:
             async for frame in frames:
@@ -2367,6 +2372,7 @@ async def stream_code_merge_run(
     verify: Callable[[], None],
     execution: Any | None = None,
     binary: str | None = None,
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> AsyncIterator[str]:
     """Run one code merge turn with no graph residue, then RCP verifies the landing."""
 
@@ -2411,6 +2417,7 @@ async def stream_code_merge_run(
         binary=binary,
         session_id=None,
         required_session_id=None,
+        hidden_read_scope=hidden_read_scope,
     )
     async with aclosing(events) as frames:
         async for frame in frames:
@@ -2990,6 +2997,7 @@ def _provider_turn(
     binary: str | None,
     session_id: str | None,
     required_session_id: str | None,
+    hidden_read_scope: HiddenReadScope | None,
 ) -> tuple[_ProviderOutcome, AsyncIterator[str]]:
     provider_outcome = _ProviderOutcome(session_id=session_id)
     inputs = (
@@ -3016,6 +3024,7 @@ def _provider_turn(
         outcome=provider_outcome,
         binary=binary,
         required_session_id=required_session_id,
+        hidden_read_scope=hidden_read_scope,
     )
     return provider_outcome, stream
 

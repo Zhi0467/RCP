@@ -313,6 +313,7 @@ async def stage_work_turn(
             for item in context.repositories
         ]
         turn = WorkTurn(
+            data_dir=data_dir,
             service=service,
             request=request,
             execution=execution,

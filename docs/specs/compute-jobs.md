@@ -63,7 +63,12 @@ launches apply the same resolved writable roots and protect the turn's excluded
 paths. These are write guardrails, not read secrecy, network isolation, or a
 hostile same-account security boundary.
 
-Install enables and verifies linger for the service account. An ordinary update
+The systemd helper probe also requires linger. Without it the user manager, and
+every job it owns, stops ten seconds after the account's last session ends; this
+was observed on systemd 249, the version on the reference execution host. The
+probe fails with a required action pointing to the machine card's **Allow
+background processes**. Install enables and verifies linger for the service
+account. An ordinary update
 preserves configured machine choices. Selecting Slurm is a setup choice; the
 probe executes as the actual execution account, including the `rcp` service
 account for server-local work.

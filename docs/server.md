@@ -514,11 +514,14 @@ human **Cancel** available in the job row. **Stop watching** only stops
 continuation; it leaves the external job alive.
 
 Without Slurm selected, the generic launch helper uses the execution machine's
-OS process owner. Linux requires the systemd user manager and linger; launches
-are refused when reliable ownership is unavailable. `rcp server install` enables
-linger for the service account, and `rcp server doctor` reports a problem when
-it is missing, so an installation from before that rule converges by rerunning
-install. Short jobs may still finish inline. See
+OS process owner. Linux requires the systemd user manager and linger: without
+linger, systemd stops the user manager, and every job it owns, about ten seconds
+after the account's last session ends. The helper probe refuses launches on an
+account without linger. `rcp server install` enables linger for the service
+account, and `rcp server doctor` reports a problem when it is missing, so an
+installation from before that rule converges by rerunning install. On any other
+machine, **Allow background processes** on the machine card enables it for that
+account. Short jobs may still finish inline. See
 [compute jobs](specs/compute-jobs.md) for the contract and limits.
 
 ## Reach the team space from a phone

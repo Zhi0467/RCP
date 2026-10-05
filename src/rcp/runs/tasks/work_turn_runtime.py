@@ -25,7 +25,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentAuthorizerDeparted
-from rcp.core.models import Patch
+from rcp.core.models import HiddenReadScope, Patch
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
@@ -188,6 +188,8 @@ class WorkTurn:
     compute_commands: WorkComputeCommands | None = None
     supervise_remote: bool = False
     question_snapshot: QuestionSnapshot | None = None
+    hidden_read_scope: HiddenReadScope | None = None
+    data_dir: Path | None = None
 
     @property
     def run_truth_scope(self) -> list[str]:
@@ -463,6 +465,8 @@ async def stream_turn_agent_events(
     """Stream one provider continuation from a staged Work execution context."""
 
     snapshot = turn.question_snapshot
+    hidden_read_scope = turn.hidden_read_scope
+    turn.hidden_read_scope = None
     if supervise_remote:
         # Every owner's supervised launch comes through here, so a pinned
         # continuation cannot reach a host without its pin being recoverable.
@@ -473,6 +477,9 @@ async def stream_turn_agent_events(
             turn.request,
             prompt,
             workspace=turn.workspace,
+            service=turn.service,
+            data_dir=turn.data_dir,
+            hidden_read_scope=hidden_read_scope,
             session_id=session_id,
             read_dirs=turn.read_dirs,
             write_dirs=turn.write_dirs,
@@ -505,6 +512,9 @@ async def stream_work_agent_events(
     prompt: str,
     *,
     workspace: Path,
+    service: ProjectService | None = None,
+    data_dir: Path | None = None,
+    hidden_read_scope: HiddenReadScope | None = None,
     session_id: str | None,
     read_dirs: list[Path],
     write_dirs: list[Path],
@@ -528,6 +538,9 @@ async def stream_work_agent_events(
                 request,
                 prompt,
                 workspace=workspace,
+                service=service,
+                data_dir=data_dir,
+                hidden_read_scope=hidden_read_scope,
                 session_id=session_id,
                 read_dirs=read_dirs,
                 write_dirs=write_dirs,

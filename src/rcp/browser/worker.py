@@ -9,7 +9,7 @@ import types
 
 def main() -> None:
     payload = json.load(sys.stdin)
-    for name in ("rcp", "rcp.browser", "rcp.transport"):
+    for name in ("rcp", "rcp.agents", "rcp.browser", "rcp.transport"):
         module = types.ModuleType(name)
         module.__path__ = []
         sys.modules[name] = module

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -10,6 +13,7 @@ from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -22,12 +26,234 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined, to_jsonable_python
 
 from rcp.core.transition_models import GraphHeadRef
+from rcp.limits import (
+    HIDDEN_READ_ENV_MAX_COUNT,
+    HIDDEN_READ_ENV_NAME_MAX_LENGTH,
+    HIDDEN_READ_IDENTITY_MAX_LENGTH,
+    HIDDEN_READ_KEY_MAX_COUNT,
+    HIDDEN_READ_PATH_MAX_COUNT,
+    HIDDEN_READ_PATH_MAX_LENGTH,
+    HIDDEN_READ_REASON_MAX_COUNT,
+)
 from rcp.providers import PROVIDER_IDS
 
 DISPLAY_NAME_MAX_LENGTH = 120
 EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH = 500
 EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH = 300
 EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS = 12
+
+
+def _absolute_hidden_read_path(value: str) -> str:
+    # Lexical validation only: the resolver must canonicalize on the execution
+    # host and check protected overlaps. Never resolve remote paths locally.
+    if (
+        not PurePosixPath(value).is_absolute()
+        or ".." in value.split("/")
+        or str(PurePosixPath(value)) != value
+        or value.startswith("//")
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("hidden-read paths must be canonical absolute POSIX paths")
+    return value
+
+
+# Outside every write root; tool calls can neither read nor rewrite the policy.
+HIDDEN_READ_WRAPPER_ROOT = ".rcp/hidden-read"
+HiddenReadPath = Annotated[
+    str,
+    Field(strict=True, min_length=1, max_length=HIDDEN_READ_PATH_MAX_LENGTH),
+    AfterValidator(_absolute_hidden_read_path),
+]
+HiddenReadReason = Literal[
+    "wrapper_unavailable",
+    "userns_blocked",
+    "provider_native_tools_uncovered",
+    "browser_unwrapped_macos",
+    "deploy_key_agent_unconfirmed",
+    "ssh_key_agent_unconfirmed",
+    "credential_compatibility_exception",
+    "hidden_folder_conflict",
+]
+
+
+class HiddenReadStatus(BaseModel):
+    """Conservative launch status; any uncovered surface requires reasons."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    status: Literal["enforced", "unhidden"]
+    reasons: tuple[HiddenReadReason, ...] = Field(
+        default=(), max_length=HIDDEN_READ_REASON_MAX_COUNT
+    )
+
+    @model_validator(mode="after")
+    def validate_status(self) -> HiddenReadStatus:
+        if (self.status == "unhidden") != bool(self.reasons):
+            raise ValueError("unhidden requires reasons; enforced must have none")
+        if len(self.reasons) != len(set(self.reasons)):
+            raise ValueError("hidden-read reasons must be unique")
+        object.__setattr__(self, "reasons", tuple(sorted(self.reasons)))
+        return self
+
+
+class HiddenReadKeyEvidence(BaseModel):
+    """Launch-host evidence, never private key bytes.
+
+    agent_confirmed means the decoded public-key SHA256 identity was listed
+    by the appropriate agent AND a bounded signing check passed on this host.
+    None preserves missing/unverified public identities without inventing one.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    path: HiddenReadPath
+    kind: Literal["deploy_key", "ssh_identity"]
+    public_key_fingerprint: str | None = Field(
+        default=None, pattern=r"^SHA256:[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]$"
+    )
+    agent_confirmed: bool
+    visibility: Literal["hidden", "readable"]
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> HiddenReadKeyEvidence:
+        if self.path.endswith(".pub"):
+            raise ValueError("public key files are not private-key candidates")
+        if self.agent_confirmed and self.public_key_fingerprint is None:
+            raise ValueError("confirmed keys require a public-key fingerprint")
+        if self.visibility == "hidden" and not self.agent_confirmed:
+            raise ValueError("a private key can be hidden only after agent confirmation")
+        return self
+
+
+class HiddenReadScope(BaseModel):
+    """One immutable effective policy for any capability, on one execution host.
+
+    Empty execution_host denotes this backend's host, as in ProjectWriteScope;
+    execution_machine and os_account identify the machine account. Paths have
+    already been resolved there. Directories, literal files and glob patterns
+    remain distinct for provider rendering. Status includes browser/native-tool
+    gaps; hidden entries describe the effective denies on covered surfaces.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    schema_generation: Literal[1] = 1
+    execution_machine: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
+    execution_host: str = Field(max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
+    os_account: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
+    # Canonical execution-account home; it locates the staged tool wrapper.
+    account_home: HiddenReadPath | None = None
+    hidden_directories: tuple[HiddenReadPath, ...] = Field(
+        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
+    )
+    # Confirmed keys join the default files, so both budgets fit.
+    hidden_files: tuple[HiddenReadPath, ...] = Field(
+        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT + HIDDEN_READ_KEY_MAX_COUNT
+    )
+    hidden_globs: tuple[HiddenReadPath, ...] = Field(
+        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
+    )
+    env_deny_list: tuple[
+        Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=HIDDEN_READ_ENV_NAME_MAX_LENGTH,
+                # Case-insensitive name globs, as Codex's environment policy reads them.
+                pattern=r"^[A-Za-z0-9_*]+$",
+            ),
+        ],
+        ...,
+    ] = Field(default=(), max_length=HIDDEN_READ_ENV_MAX_COUNT)
+    enforcement: HiddenReadStatus
+    key_evidence: tuple[HiddenReadKeyEvidence, ...] = Field(
+        default=(), max_length=HIDDEN_READ_KEY_MAX_COUNT
+    )
+    fingerprint: str = Field(default="", pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("hidden_directories", "hidden_files", "hidden_globs", "env_deny_list")
+    @classmethod
+    def canonical_entries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("hidden-read entries must be unique")
+        return tuple(sorted(values))
+
+    @field_validator("hidden_globs")
+    @classmethod
+    def last_component_globs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        # A Linux wrapper hides future matches by masking the literal parent.
+        for value in values:
+            parent = re.sub(r"\[[*?[]\]", "", value.rsplit("/", 1)[0])
+            if any(char in parent for char in "*?["):
+                raise ValueError("hidden glob wildcards must be in the last path component")
+        return values
+
+    @field_validator("key_evidence")
+    @classmethod
+    def canonical_keys(
+        cls, values: tuple[HiddenReadKeyEvidence, ...]
+    ) -> tuple[HiddenReadKeyEvidence, ...]:
+        if len(values) != len({item.path for item in values}):
+            raise ValueError("hidden-read key paths must be unique")
+        return tuple(sorted(values, key=lambda item: item.path))
+
+    @model_validator(mode="after")
+    def validate_fingerprint(self) -> HiddenReadScope:
+        # A readable private key is a visible gap: it can never ride under
+        # an enforced status or an unrelated reason.
+        required = {
+            "deploy_key": "deploy_key_agent_unconfirmed",
+            "ssh_identity": "ssh_key_agent_unconfirmed",
+        }
+        for item in self.key_evidence:
+            if item.visibility == "readable" and required[item.kind] not in (
+                self.enforcement.reasons
+            ):
+                raise ValueError("a readable private key requires its unconfirmed-key reason")
+        paths = (*self.hidden_directories, *self.hidden_files, *self.hidden_globs)
+        if len(paths) != len(set(paths)):
+            raise ValueError("a hidden path must occur in only one path category")
+        payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        expected = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if self.fingerprint and self.fingerprint != expected:
+            raise ValueError("hidden-read fingerprint does not match the effective policy")
+        object.__setattr__(self, "fingerprint", expected)
+        return self
+
+    def wrapper_path(self) -> str:
+        """The RCP-owned wrapper copy; its directory is hidden from tool calls."""
+        if self.account_home is None:
+            raise ValueError("hidden-read scope has no execution-account home")
+        return (
+            f"{self.account_home}/{HIDDEN_READ_WRAPPER_ROOT}/{self.fingerprint}/rcp-hidden-read.py"
+        )
+
+
+class MachineHiddenReadProjection(BaseModel):
+    """Computed Settings output, never editable defaults or manifest policy."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    default_paths: tuple[
+        Annotated[str, Field(min_length=1, max_length=HIDDEN_READ_PATH_MAX_LENGTH)], ...
+    ] = Field(default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT)
+    user_folders: tuple[HiddenReadPath, ...] = Field(
+        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
+    )
+    readiness: HiddenReadStatus | None = None
+
+    @field_validator("default_paths")
+    @classmethod
+    def display_defaults(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            _absolute_hidden_read_path("/" + value[2:] if value.startswith("~/") else value)
+        if len(values) != len(set(values)):
+            raise ValueError("hidden-read defaults must be unique")
+        return tuple(sorted(values))
 
 
 class WorktreeBinding(BaseModel):

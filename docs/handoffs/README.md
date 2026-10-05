@@ -96,6 +96,13 @@ stands in for it. Run one on disposable data, then delete its line here.
   survives a service restart; a real OpenCode Work turn reuses a page and
   login across turns; killing the browser mid-turn leaves the turn complete
   with a lost notice.
+- Agent secret hiding: after the team server updates, run doctor and one Work
+  turn under the real unit (`PrivateTmp`, `NoNewPrivileges`) as the service
+  account, confirming hidden secrets stay unreadable and Git, Slurm, and the
+  browser keep working; push through a deploy key held by the backend's
+  `ssh-agent`, and confirm the key stays readable when that agent is missing;
+  check `bwrap` and the fallback warning on Ubuntu 24.04; repeat on the frozen
+  candidate build.
 - Personal sign-in: in the desktop app, native PDF preview, project transfer,
   and terminals through the owner session, and adopting a terminal-started
   backend by pasting its one-time code.

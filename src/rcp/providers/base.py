@@ -16,6 +16,7 @@ from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
     from rcp.providers.session_format import SessionFormat
     from rcp.providers.turn_fence import TurnFence
@@ -101,6 +102,15 @@ class ProviderUsage(BaseModel):
 
 @dataclass(frozen=True)
 class ProviderStreamEvent:
+    """One decoded provider event.
+
+    `answer` is the provider's labelled final assistant message, the human's
+    reply; every other assistant item, in-flight partial, reasoning, command or
+    todo trace is a `message`. Provider profiles make that call, nothing
+    downstream re-labels
+    (`tests/test_launcher.py::test_only_the_final_assistant_message_is_an_answer`).
+    """
+
     event: Literal["session", "message", "answer", "error", "raw"]
     text: str = ""
     session_id: str | None = None
@@ -124,6 +134,8 @@ class ProviderTurnRequest:
     provider_version: str | None
     browser_grant: BrowserGrant | None = None
     legacy_command: list[str] | None = None
+    # None is unresolved during migration, never evidence of enforcement.
+    hidden_read_scope: HiddenReadScope | None = None
 
 
 @dataclass(frozen=True)

@@ -86,6 +86,30 @@ class SystemdUserBackend:
             raise
         return handle
 
+    def start_account_service(
+        self, service_root: str, argv: list[str], context: BackendContext
+    ) -> None:
+        """Start one stable account service without stopping a concurrent owner.
+
+        systemd owns uniqueness. A duplicate or uncertain submission is followed
+        by the caller's bounded readiness check, never by cancellation.
+        """
+        handle = f"rcp-{PurePosixPath(service_root).name}"
+        context.run(
+            self.command(
+                context,
+                "systemd-run",
+                "--unit",
+                handle,
+                "--collect",
+                "-p",
+                "UMask=0077",
+                "--",
+                *argv,
+            ),
+            timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS,
+        )
+
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
             result = context.run(owner_command(self.id, handle, context.target_uid()))
@@ -100,9 +124,31 @@ class SystemdUserBackend:
         require_cancel_success(self.id, result)
 
     def probe(self, context: BackendContext) -> ComputeBackendProbe:
-        return facility_probe(
+        facility = facility_probe(
             self,
             context,
             self.command(context, "systemctl", "show-environment"),
             "enable the execution account's systemd user manager and linger",
+        )
+        if not facility.ready:
+            return facility
+        # Without linger the user manager stops ten seconds after the account's
+        # last session ends, and every job it owns stops with it.
+        try:
+            linger = context.run(
+                ["loginctl", "show-user", context.target_uid(), "-p", "Linger", "--value"]
+            )
+            if linger.returncode == 0 and linger.stdout.strip() == "yes":
+                return facility
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            pass
+        return facility.model_copy(
+            update={
+                "state": "failed",
+                "ready": False,
+                "diagnostic": "Jobs stop when this account's last login session ends.",
+                "required_action": "Allow background processes on this machine's card in Settings.",
+                "status_label": "Failed",
+                "status_tone": "error",
+            }
         )

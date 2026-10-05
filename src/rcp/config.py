@@ -763,9 +763,24 @@ def _apply_machine_provider_path_updates(
 
 
 def _atomic_write(path: Path, content: str) -> None:
+    """Publish the manifest so a reader never sees a partial file.
+
+    The bytes reach a same-directory temporary file, are fsynced, and replace
+    the manifest in one rename; the directory is fsynced so the rename itself
+    survives a crash. `tests/test_config.py::test_interrupted_manifest_write_leaves_the_manifest_intact`
+    stops the write before the rename and expects the previous manifest.
+    """
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temp.write_text(content, encoding="utf-8")
+    with temp.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temp, path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _expand_local_user_path(value: str, *, local_home: Path | None) -> Path:

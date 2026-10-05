@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from typing import get_args
 
 import pytest
 
+import rcp.config as config_module
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
@@ -306,3 +308,40 @@ def test_manifest_rejects_duplicate_authority_aliases(manifest, field: str, mess
 
     with pytest.raises(ValueError, match=rf"{message} must be unique"):
         Manifest.model_validate(payload)
+
+
+def test_interrupted_manifest_write_leaves_the_manifest_intact(manifest, monkeypatch) -> None:
+    """A crash before the rename is invisible to the next reader.
+
+    The manifest is published whole or not at all: the bytes land in a
+    same-directory temporary file and reach the manifest path only through
+    one rename, so a reader never sees a truncated or half-written file.
+    """
+    before = manifest.path.read_bytes()
+    synced: list[int] = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+
+    def interrupted_replace(source, destination):
+        raise OSError("power lost before the rename")
+
+    monkeypatch.setattr(os, "replace", interrupted_replace)
+    with pytest.raises(OSError):
+        config_module._atomic_write(manifest.path, "name = 'half-written'\n")
+
+    assert manifest.path.read_bytes() == before
+    assert synced, "the temporary file is fsynced before it can replace the manifest"
+    leftovers = [
+        path for path in manifest.path.parent.iterdir() if path.name.startswith(".manifest")
+    ]
+    assert leftovers, "the interrupted bytes stay in the temporary file, never in the manifest"
+
+
+def test_manifest_write_fsyncs_the_file_and_its_directory(manifest, monkeypatch) -> None:
+    synced: list[int] = []
+    real_fsync = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+
+    config_module._atomic_write(manifest.path, manifest.path.read_text())
+
+    assert len(synced) == 2, "one fsync for the temporary file, one for the directory rename"

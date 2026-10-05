@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -81,6 +82,7 @@ def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypat
 
 
 def test_remote_transport_ships_source_and_uses_login_environment(tmp_path, monkeypatch):
+    run_worker = subprocess.run
     calls = []
     monkeypatch.setattr(service, "_limits", lambda: {"readiness": 60})
     monkeypatch.setattr(service, "ssh_arguments", lambda host, command, **kw: [host, command])
@@ -103,6 +105,26 @@ def test_remote_transport_ships_source_and_uses_login_environment(tmp_path, monk
         == (Path(service.__file__).parent / "host.py").read_text()
     )
     assert kwargs["timeout"] == 60
+    root = Path(service.__file__).parent
+    assert (
+        payload["sources"]["rcp.agents.staged_hidden_read"]
+        == (root.parent / "agents" / "staged_hidden_read.py").read_text()
+    )
+    payload["request"] = {
+        "action": "close",
+        "owner_token": "absent",
+        "root": str(tmp_path / "worker"),
+        "limits": {"close": 5},
+    }
+    completed = run_worker(
+        [sys.executable, "-c", (root / "worker.py").read_text()],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert json.loads(completed.stdout) == {}
 
 
 def test_local_dispatch_uses_login_environment_without_a_python_child(tmp_path, monkeypatch):

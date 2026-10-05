@@ -1,3 +1,12 @@
+"""Exact filesystem write roots for Work-like launches.
+
+Context, graph target, and write scope are distinct: a repository pointer or
+graph context in the prompt grants no filesystem authority, and the scope is
+built only from the repositories the run admitted. Unadmitted repositories,
+canonical `.research` state, and stage inputs stay read-only
+(`tests/test_write_scope.py`, `tests/test_dispatch_authority.py`).
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +15,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -16,6 +25,9 @@ from rcp.core.models import ConversationWorktreeBinding, EpisodeWorktreeBinding,
 from rcp.providers import AgentCapability
 from rcp.rcp_home import command_socket_directory, short_socket_root
 from rcp.transport.run_stage import RemoteRunStage
+
+if TYPE_CHECKING:
+    from rcp.server_ops.config import ServerPathsConfig
 
 
 class WritableRepositoryRoot(BaseModel):
@@ -558,16 +570,23 @@ def rcp_owned_paths(
     return paths
 
 
-def _installed_server_paths(data_dir: Path) -> list[str]:
+def installed_server_storage(data_dir: Path) -> ServerPathsConfig | None:
+    """Return the installed storage owner only when it owns this data directory."""
     from rcp.server_ops.config import load_installed_server_config
     from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 
     config_path = DEFAULT_SERVER_LAYOUT.config_path
     if not os.path.lexists(config_path):
-        return []
-    config = load_installed_server_config(config_path)
-    paths = config.paths
-    if Path(paths.data_dir).resolve() != data_dir:
+        return None
+    paths = load_installed_server_config(config_path).paths
+    if Path(paths.data_dir).resolve() != data_dir.resolve():
+        return None
+    return paths
+
+
+def _installed_server_paths(data_dir: Path) -> list[str]:
+    paths = installed_server_storage(data_dir)
+    if paths is None:
         return []
     return [
         paths.releases_root,

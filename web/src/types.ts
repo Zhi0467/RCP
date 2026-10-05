@@ -3006,6 +3006,55 @@ export interface SetupExecution {
   host: string;
 }
 
+export type HiddenReadReason =
+  | "wrapper_unavailable"
+  | "userns_blocked"
+  | "provider_native_tools_uncovered"
+  | "browser_unwrapped_macos"
+  | "deploy_key_agent_unconfirmed"
+  | "ssh_key_agent_unconfirmed"
+  | "credential_compatibility_exception"
+  | "hidden_folder_conflict";
+
+export interface HiddenReadStatus {
+  readonly status: "enforced" | "unhidden";
+  readonly reasons: readonly HiddenReadReason[];
+}
+
+export interface HiddenReadKeyEvidence {
+  readonly path: string;
+  readonly kind: "deploy_key" | "ssh_identity";
+  /** OpenSSH SHA256 fingerprint of the decoded public-key blob. */
+  readonly public_key_fingerprint: string | null;
+  /** Identity listing and bounded signing check both passed on the launch host. */
+  readonly agent_confirmed: boolean;
+  readonly visibility: "hidden" | "readable";
+}
+
+export interface HiddenReadScope {
+  readonly schema_generation: 1;
+  readonly execution_machine: string;
+  /** Empty denotes the backend host. */
+  readonly execution_host: string;
+  readonly os_account: string;
+  /** Canonical execution-account home; locates the staged tool wrapper. */
+  readonly account_home: string | null;
+  readonly hidden_directories: readonly string[];
+  readonly hidden_files: readonly string[];
+  readonly hidden_globs: readonly string[];
+  readonly env_deny_list: readonly string[];
+  readonly enforcement: HiddenReadStatus;
+  readonly key_evidence: readonly HiddenReadKeyEvidence[];
+  readonly fingerprint: string;
+}
+
+/** Computed Settings output; not a writable machine setting. */
+export interface MachineHiddenReadProjection {
+  readonly default_paths: readonly string[];
+  readonly user_folders: readonly string[];
+  readonly readiness: HiddenReadStatus | null;
+}
+
 /** One execution account in the space, shared by every project that uses it. */
 export interface SpaceMachine {
   machine_id: string;
@@ -3014,6 +3063,8 @@ export interface SpaceMachine {
   host: string;
   os_account: string;
   writable_paths: string[];
+  hidden_folders: string[];
+  hidden_read: MachineHiddenReadProjection;
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
   in_use: boolean | null;
@@ -3034,6 +3085,7 @@ export interface SpaceMachineCreateRequest {
 export interface SpaceMachineUpdateRequest {
   name?: string;
   writable_paths?: string[];
+  hidden_folders?: string[];
 }
 
 export interface MachineDirectoryRequest {
@@ -3553,4 +3605,5 @@ export interface MachineBrowserReadiness {
   status: string;
   detail: string | null;
   apt_command: string | null;
+  admin_command: string | null;
 }

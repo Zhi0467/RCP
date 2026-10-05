@@ -376,8 +376,33 @@ def _prepare_or_inspect(
         public,
         created=created,
     )
+    if operation == "prepare":
+        _load_deploy_key(private, home=home, account=account.pw_name)
     result["label"] = label
     return result
+
+
+def _load_deploy_key(private: Path, *, home: Path, account: str) -> None:
+    """Refresh the account's running agent after provisioning or recovery."""
+    try:
+        loaded = _run(
+            (
+                "env",
+                f"SSH_AUTH_SOCK={home / '.rcp' / 'ssh-agent' / 'agent.sock'}",
+                "SSH_ASKPASS_REQUIRE=never",
+                "ssh-add",
+                str(private),
+            ),
+            home=home,
+            account=account,
+        )
+        if loaded.returncode == 0:
+            return
+    except ValueError:
+        pass
+    # Provisioning still succeeds. Launch confirmation and Settings/doctor
+    # expose the readable-key fallback if the account agent is unavailable.
+    print("Deploy key remains readable: account SSH agent could not load it.", file=sys.stderr)
 
 
 def _recovery_preflight(

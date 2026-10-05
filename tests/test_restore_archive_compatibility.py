@@ -247,6 +247,7 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
         connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
+        connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
         for table in (
             "owner_credentials",
             "owner_sign_in_codes",

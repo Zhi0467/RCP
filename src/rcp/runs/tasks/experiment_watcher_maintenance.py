@@ -122,8 +122,8 @@ async def _process_experiment_watcher_maintenance(
     for name, initial_text in sorted(outputs.items()):
         # A Retry reuses the conversation's folder without clearing it, so a
         # previous attempt's maintenance file is still sitting there. Applying it
-        # would commit that attempt's handoff under this attempt's authorization
-        # (invariant 10c), so an unchanged survivor counts as nothing written.
+        # would commit that attempt's handoff under this attempt's authorization,
+        # so an unchanged survivor counts as nothing written.
         if _retry_deliverable_is_unchanged(
             execution,
             filename=name,
@@ -343,6 +343,7 @@ async def _process_experiment_watcher_maintenance(
                     launcher,
                     request,
                     correction_prompt,
+                    service=service,
                     workspace=workspace,
                     session_id=native_session_id,
                     read_dirs=read_dirs,
