@@ -575,6 +575,8 @@ BROWSER_MAX_SESSIONS_PER_HOST = 8
 # Per-launch secret-hiding policy and per-machine folder payload bounds.
 HIDDEN_READ_PATH_MAX_LENGTH = 4096
 HIDDEN_READ_PATH_MAX_COUNT = 256
+# A machine's own folders join the defaults in one scope, so they get a smaller share.
+HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT = 64
 HIDDEN_READ_ENV_NAME_MAX_LENGTH = 256
 HIDDEN_READ_ENV_MAX_COUNT = 128
 HIDDEN_READ_KEY_MAX_COUNT = 256

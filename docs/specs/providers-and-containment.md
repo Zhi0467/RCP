@@ -280,9 +280,11 @@ and doctor. Public keys, SSH configuration, and `known_hosts` remain readable.
 A folder containing an exempt key must never be masked.
 
 Settings adds per-machine hidden folders to the code defaults. The shared host
-validator bounds and canonicalizes absolute folders, rejects overlap in either
-direction with checkouts, stages, required tools and command sockets, and
-rechecks at launch. These additions live beside machine writable paths, never in
+validator bounds a machine to 64 absolute folders, canonicalizes them, and
+rejects overlap in either direction with checkouts, stages, required tools,
+provider binaries and command sockets. Launch rechecks: a saved folder that has
+since come to cover a required path is dropped alone with
+`hidden_folder_conflict`, and every default stays hidden. These additions live beside machine writable paths, never in
 project manifests; any member may edit them. Tool environments drop names matching the resolved
 deny list (case-insensitive globs of credential-looking names) and keep every
 other variable; provider authentication remains outside the tool wrapper.

@@ -42,7 +42,7 @@ from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
     AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
-    HIDDEN_READ_PATH_MAX_COUNT,
+    HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
@@ -3665,7 +3665,7 @@ class SpaceMachineRecord(BaseModel):
     os_account: str
     writable_paths: list[str] = Field(default_factory=list)
     hidden_folders: list[HiddenReadPath] = Field(
-        default_factory=list, max_length=HIDDEN_READ_PATH_MAX_COUNT
+        default_factory=list, max_length=HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT
     )
     created_at: str
     updated_at: str

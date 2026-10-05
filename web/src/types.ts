@@ -3013,7 +3013,8 @@ export type HiddenReadReason =
   | "browser_unwrapped_macos"
   | "deploy_key_agent_unconfirmed"
   | "ssh_key_agent_unconfirmed"
-  | "credential_compatibility_exception";
+  | "credential_compatibility_exception"
+  | "hidden_folder_conflict";
 
 export interface HiddenReadStatus {
   readonly status: "enforced" | "unhidden";

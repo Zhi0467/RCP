@@ -326,6 +326,8 @@ function hiddenReadReason(reason: string): string {
       "Deploy keys remain readable until SSH-agent signing is confirmed.",
     ssh_key_agent_unconfirmed: "SSH keys remain readable until SSH-agent signing is confirmed.",
     credential_compatibility_exception: "Credentials required by tools remain readable.",
+    hidden_folder_conflict:
+      "A hidden folder now covers a path tools need, so that folder stays readable.",
   };
   return reasons[reason] ?? reason;
 }

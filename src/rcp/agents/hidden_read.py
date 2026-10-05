@@ -21,6 +21,7 @@ from rcp.core.models import (
     HiddenReadStatus,
 )
 from rcp.limits import (
+    HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
     HIDDEN_READ_READINESS_TTL_SECONDS,
@@ -199,6 +200,8 @@ def _validated_folders(folders: list[str], protected_roots: tuple[str, ...]) -> 
 def validate_machine_hidden_folders(
     folders: list[str], *, protected_roots: tuple[str, ...]
 ) -> list[str]:
+    if len(folders) > HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT:
+        raise HiddenFolderRejected(code="too_many_hidden_folders")
     # Lexical only: callers canonicalize on the execution host first, so a
     # path is never resolved through this backend's symlinks.
     return _validated_folders(folders, protected_roots)
@@ -316,10 +319,15 @@ def resolve_hidden_read_scope(
         *resolved["runtime_paths"],
         *(str(PurePosixPath(path).parent) for path in machine.provider_paths.values()),
     ]
+    # A saved folder can come to cover a required path later (a provider moved
+    # in, a checkout appeared). Drop only that folder; the defaults stay hidden.
+    requested = list(dict.fromkeys(canonical[path] for path in machine_hidden_folders))
     folders = _validated_folders(
-        [canonical[path] for path in machine_hidden_folders], tuple(protected)
+        [folder for folder in requested if not any(_overlap(folder, r) for r in protected)], ()
     )
     reasons = set()
+    if len(folders) != len(requested):
+        reasons.add("hidden_folder_conflict")
     readiness = resolved["readiness"]
     if not readiness["ready"]:
         reasons.add(readiness["reason"] or "wrapper_unavailable")

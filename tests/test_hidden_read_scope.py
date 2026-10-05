@@ -17,7 +17,7 @@ from rcp.agents.hidden_read import (
 from rcp.agents.staged_hidden_read import clean_environment
 from rcp.config import Manifest
 from rcp.core.models import HiddenReadKeyEvidence
-from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT, HIDDEN_READ_PATH_MAX_LENGTH
+from rcp.limits import HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT, HIDDEN_READ_PATH_MAX_LENGTH
 
 
 def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
@@ -102,7 +102,10 @@ def test_overlap_is_refused_in_both_directions(folder: str) -> None:
         (["/a/../b"], "invalid_hidden_folder"),
         (["/a\x00"], "invalid_hidden_folder"),
         (["/" + "x" * HIDDEN_READ_PATH_MAX_LENGTH], "invalid_hidden_folder"),
-        ([f"/a/{n}" for n in range(HIDDEN_READ_PATH_MAX_COUNT + 1)], "too_many_hidden_folders"),
+        (
+            [f"/a/{n}" for n in range(HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT + 1)],
+            "too_many_hidden_folders",
+        ),
         (["/a", "/a"], "duplicate_hidden_folder"),
     ],
 )
@@ -156,13 +159,17 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
 
 
 @pytest.mark.parametrize("folder", ["/usr", "/usr/local", "/opt/python"])
-def test_launch_refuses_folders_covering_runtime_executables(
+def test_launch_drops_only_a_folder_covering_runtime_executables(
     manifest, tmp_path, monkeypatch, folder
 ):
-    # System roots, plus the host's own python3/bwrap/bash folders.
-    with pytest.raises(HiddenFolderRejected) as rejected:
-        _resolve(manifest, tmp_path, monkeypatch, machine_hidden_folders=[folder])
-    assert rejected.value.code == "protected_root_overlap"
+    # System roots, plus the host's own python3/bwrap/bash folders. A saved folder
+    # that comes to cover one is dropped; the defaults and other folders stay hidden.
+    private = str(tmp_path / "private")
+    scope = _resolve(manifest, tmp_path, monkeypatch, machine_hidden_folders=[folder, private])
+    assert folder not in scope.hidden_directories
+    assert private in scope.hidden_directories
+    assert str(tmp_path / "data/providers/claude") in scope.hidden_directories
+    assert scope.enforcement.reasons == ("hidden_folder_conflict",)
 
 
 def test_adding_folder_changes_fingerprint(manifest: Manifest, tmp_path: Path, monkeypatch) -> None:
@@ -222,14 +229,16 @@ def test_only_confirmed_keys_hidden_and_exempt_parents_stay_readable(
     assert (str(tmp_path / "data/providers/claude") in scope.hidden_directories) == confirmed
     assert (scope.enforcement.status == "enforced") == confirmed
     if not confirmed:
-        with pytest.raises(HiddenFolderRejected):
-            _resolve(
-                manifest,
-                tmp_path,
-                monkeypatch,
-                key_evidence=(key,),
-                machine_hidden_folders=[str(Path(path).parent)],
-            )
+        # A user folder over a readable key's parent is dropped, never masking the key.
+        covered = _resolve(
+            manifest,
+            tmp_path,
+            monkeypatch,
+            key_evidence=(key,),
+            machine_hidden_folders=[str(Path(path).parent)],
+        )
+        assert str(Path(path).parent) not in covered.hidden_directories
+        assert "hidden_folder_conflict" in covered.enforcement.reasons
 
 
 def test_remote_canonicalization_uses_shipped_source(manifest, tmp_path, monkeypatch):
