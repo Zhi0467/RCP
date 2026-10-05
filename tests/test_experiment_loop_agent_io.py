@@ -1047,7 +1047,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 ) -> None:
     acquired = []
 
-    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+    def acquire(
+        owner, *, execution, workspace_dir, data_dir, retained_lease_ids, hidden_read_scope=None
+    ):
         acquired.append(owner)
         return BrowserGrant(
             requested=True,

@@ -40,23 +40,6 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 
-# One shape for fresh databases and the hidden-folders rebuild; SQLite stores
-# the text without IF NOT EXISTS, so both produce identical schema rows.
-_SPACE_MACHINES_TABLE_SQL = """
-            CREATE TABLE IF NOT EXISTS space_machines (
-                machine_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                host TEXT NOT NULL,
-                os_account TEXT NOT NULL,
-                writable_paths_json TEXT NOT NULL DEFAULT '[]',
-                hidden_folders_json TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE (host)
-            )
-        """
-
-
 class AppStoreBase:
     """Connection ownership, schema initialization, and the clock every mixin shares."""
 
@@ -2491,14 +2474,24 @@ class AppStoreBase:
 
     @staticmethod
     def _migrate_space_machines(connection: sqlite3.Connection) -> None:
-        connection.execute(_SPACE_MACHINES_TABLE_SQL)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS space_machines (
+                machine_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                os_account TEXT NOT NULL,
+                writable_paths_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (host)
+            )
+        """)
 
     @classmethod
     def _migrate_machine_hidden_folders(cls, connection: sqlite3.Connection) -> None:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(space_machines)")}
-        if "hidden_folders_json" not in columns:
-            # Rebuild rather than ALTER, so an upgraded table matches a fresh one exactly.
-            cls._rebuild_storage_table(connection, "space_machines", _SPACE_MACHINES_TABLE_SQL)
+        cls._ensure_column(
+            connection, "space_machines", "hidden_folders_json", "TEXT NOT NULL DEFAULT '[]'"
+        )
 
     @staticmethod
     def _migrate_chat_display(connection: sqlite3.Connection) -> None:

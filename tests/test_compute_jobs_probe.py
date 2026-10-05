@@ -363,6 +363,16 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_
     )
     if facility.returncode:
         pytest.skip(f"{backend_id} facility unavailable: {facility.stderr.strip()}")
+    if backend_id == "systemd_user":
+        linger = subprocess.run(
+            ["loginctl", "show-user", uid, "-p", "Linger", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=COMPUTE_JOB_STATUS_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if linger.stdout.strip() != "yes":
+            pytest.skip("The helper requires linger, which this account does not have")
     if backend_id == "launchd":
         # Probe OS admission independently of the implementation's generated plist.
         label = f"rcp-compute-facility-{uuid.uuid4().hex}"

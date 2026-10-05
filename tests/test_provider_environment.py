@@ -46,7 +46,8 @@ def _fake_claude(tmp_path: Path) -> Path:
         "    print(json.dumps({'type': 'system', 'subtype': 'init', 'skills': ['review']}))\n"
         "elif 'Reply with OK only.' in args:\n"
         "    print('OK')\n"
-        "elif '--settings' in args:\n"
+        # Every turn carries --settings now; only the Work probe skips persistence.
+        "elif '--no-session-persistence' in args:\n"
         "    assert sys.stdin.read() == ''\n"
         "else:\n"
         "    command = json.loads(sys.stdin.readline())\n"
@@ -176,9 +177,11 @@ async def test_every_local_claude_start_receives_the_stored_token(
     assert ["--version"] in argvs and ["auth", "status"] in argvs
     assert any("/context" in argv for argv in argvs), "the skill probe never ran"
     # The prompt travels on stdin; the turn is the stream-json start that is
-    # neither the Work probe (`--settings`) nor the skill probe.
+    # neither the Work probe (`--no-session-persistence`) nor the skill probe.
     assert any(
-        "--input-format" in argv and "--settings" not in argv and "/context" not in argv
+        "--input-format" in argv
+        and "--no-session-persistence" not in argv
+        and "/context" not in argv
         for argv in argvs
     ), "the turn never ran"
     _assert_token_only(starts)
