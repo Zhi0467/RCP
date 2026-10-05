@@ -102,6 +102,14 @@ def host_facts(paths=()):
     }
 
 
+def _regex_literal(char):
+    # Seatbelt regex literals take backslashes verbatim and accept no escaped
+    # quote, so escape only metacharacters, once; a quote widens to any char.
+    if char == '"':
+        return "."
+    return "\\" + char if char in ".^$*+?()[]{}|\\" else char
+
+
 def glob_path_regex(pattern):
     """Path glob to Seatbelt regex, including recursive copies and literal escapes."""
     pieces = []
@@ -123,7 +131,7 @@ def glob_path_regex(pattern):
             else:
                 content = pattern[index + 1 : end]
                 if content in ("[", "*", "?"):
-                    pieces.append(re.escape(content))
+                    pieces.append(_regex_literal(content))
                 else:
                     if content.startswith("!"):
                         content = "^" + content[1:]
@@ -132,7 +140,7 @@ def glob_path_regex(pattern):
                     pieces.append("[" + content.replace("\\", "\\\\") + "]")
                 index = end
         else:
-            pieces.append(re.escape(char))
+            pieces.append(_regex_literal(char))
         index += 1
     # A directory match hides descendants too, just like its tmpfs mask.
     return "^" + "".join(pieces) + "(/.*)?$"
@@ -146,8 +154,10 @@ def render_sandbox_profile(policy):
         ("hidden_globs", "regex"),
     ):
         for path in policy.get(field, ()):
-            value = glob_path_regex(path) if selector == "regex" else path
-            literal = json.dumps(value, ensure_ascii=False)
+            if selector == "regex":
+                literal = '"' + glob_path_regex(path).replace('"', ".") + '"'
+            else:
+                literal = json.dumps(path, ensure_ascii=False)
             lines.append(
                 "(deny file-read* file-write* ("
                 + selector
@@ -260,7 +270,11 @@ def main(argv=None):
     # argparse interprets -lc as clustered short flags unless normalized.
     arguments = ["-c" if value == "-lc" else value for value in arguments]
     parser.add_argument("-c", dest="command")
+    # Claude's CLAUDE_CODE_SHELL_PREFIX runs `<wrapper> <command>`.
+    parser.add_argument("prefixed_command", nargs="?")
     args = parser.parse_args(arguments)
+    if args.command is None:
+        args.command = args.prefixed_command
     if args.probe:
         print(json.dumps(probe_hidden_read_wrapper()))
         return 0

@@ -69,7 +69,7 @@ def test_claude_all_capabilities_render_scope(capability, tmp_path):
     assert {"Read(//secret/folder/**)", "Read(//secret/file)", "Read(//secret/db*)"} <= set(
         settings["permissions"]["deny"]
     )
-    assert scope.wrapper_path() in settings["env"]["CLAUDE_CODE_SHELL_PREFIX"]
+    assert settings["env"]["CLAUDE_CODE_SHELL_PREFIX"] == scope.wrapper_path()
     wrapper_root = str(Path(scope.wrapper_path()).parent)
     assert f"Edit(/{wrapper_root}/**)" in settings["permissions"]["deny"]
 
@@ -245,6 +245,36 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
     assert files[wrapper.name] == staged_hidden_read_source()
     if provider == "opencode":
         assert "provider_native_tools_uncovered" in scope.enforcement.reasons
+
+
+def test_claude_prefix_runs_as_claude_invokes_it(tmp_path):
+    from rcp.agents.staged_hidden_read import install
+
+    scope = _scope(str(tmp_path / "home"))
+    wrapper = Path(scope.wrapper_path())
+    install(
+        str(wrapper.parent),
+        {
+            wrapper.name: staged_hidden_read_source(),
+            wrapper.name + ".policy.json": scope.model_dump_json(),
+        },
+    )
+    command = AgentLauncher._command(
+        "claude",
+        "task",
+        cwd=tmp_path,
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[],
+        capability="discuss",
+        hidden_read_scope=scope,
+        provider_version="2.1.288",
+    )
+    settings = json.loads(command[command.index("--settings") + 1])
+    # Claude runs the prefix as one executable path with the command as its argument.
+    prefix = settings["env"]["CLAUDE_CODE_SHELL_PREFIX"]
+    assert subprocess.run([prefix, "exit 7"], capture_output=True).returncode == 7
 
 
 def test_every_task_launch_resolves_or_carries_a_scope():

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 import subprocess
 import uuid
 from dataclasses import replace
@@ -630,7 +629,9 @@ def _claude_write_settings(
 
 
 def _shell_prefix(wrapper: str) -> str:
-    return shlex.join(["python3", wrapper, "--policy", wrapper + ".policy.json"])
+    # Claude runs the prefix as one executable path with the command as its
+    # argument; the executable wrapper reads the policy staged beside it.
+    return wrapper
 
 
 def _claude_hidden_read_settings(scope: HiddenReadScope) -> dict[str, object]:

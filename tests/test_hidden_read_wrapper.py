@@ -61,6 +61,19 @@ def test_seatbelt_profile_is_allow_default_with_escaped_path_denies() -> None:
     assert "mach-lookup" not in rendered
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS only")
+def test_seatbelt_denies_hidden_globs_for_real(tmp_path: Path) -> None:
+    # Regex literals take backslashes verbatim: a doubled escape matches nothing.
+    data = tmp_path / "da-ta"
+    data.mkdir()
+    (data / "rcp.sqlite3-wal").write_text("secret")
+    (data / "kept").write_text("kept")
+    profile = render_sandbox_profile({"hidden_globs": [str(data) + "/rcp.sqlite3*"]})
+    run = [shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec", "-p", profile, "/bin/cat"]
+    assert subprocess.run([*run, str(data / "rcp.sqlite3-wal")], capture_output=True).returncode
+    assert subprocess.run([*run, str(data / "kept")], capture_output=True).stdout == b"kept"
+
+
 def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path) -> None:
     data = tmp_path / "data"
     (data / "run-stage" / "task").mkdir(parents=True)
