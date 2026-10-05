@@ -1,10 +1,10 @@
 # Agent secrets: usable but not readable
 
-Status 2026-10-04: design settled; code complete on this branch. One branch and
-one PR carry all of it. Implemented: the `Host` check, CORS removal, slices A–F,
-remote account agents and key confirmation, and the wrapper staged in a hidden
-`~/.rcp/hidden-read/<fingerprint>` folder outside every write root. Remaining:
-the live checks under "Open checks" (a probe matrix compared against `main`).
+Status 2026-10-05: code complete on this branch, and the live provider and browser
+checks pass. One branch and one PR carry all of it. Implemented: the `Host` check,
+CORS removal, slices A–F, remote account agents and key confirmation, the wrapper
+staged in a hidden `~/.rcp/hidden-read/<fingerprint>` folder, linger detection, and
+the pinned browser CLI launcher. Remaining: the checks listed under "Live checks".
 
 ## Threat model
 
@@ -192,13 +192,22 @@ on an Ubuntu 22.04 host (kernel 5.15, bwrap 0.6.1); OpenCode 1.18.30 on macOS.
   blocks it while network, `ssh-agent`, and public HTTPS Git keep working;
   Keychain-backed HTTPS Git credentials stop working inside tool calls.
 
-## Open checks
+## Live checks
 
+Done 2026-10-05 against `main`, with served Work turns through the real routes:
+- Every provider, Discuss and Work, on a macOS desktop and on an Ubuntu 22.04 host,
+  local and over SSH: command broker, `patch.json`, and Apply work.
+- No capability changed from allowed to blocked. Hidden secrets read on `main` and
+  fail on this branch.
+- On Linux, uploading a hidden file through the browser fails with `ENOENT` while
+  ordinary uploads work.
+- Missing linger on systemd 249 kills helper jobs ten seconds after logout. This
+  branch now detects it and offers **Allow background processes**.
+
+Remaining:
+- After merge, update the team server; run doctor and one Work turn under the real
+  unit (`PrivateTmp`, `NoNewPrivileges`) as the service account.
+- A deploy-key Git push through the backend agent, and the readable fallback when
+  that agent is missing.
 - Ubuntu 24.04 `bwrap` behavior and the fallback warning.
-- A full Work turn under the wrapper: command broker `launch`, `patch.json`,
-  watcher, and Apply, local and over SSH.
-- The team server's service account under the real unit (`PrivateTmp`).
-- Browser grant from a wrapped tool call; Linux daemon restart on a policy
-  change.
-- Deploy-key Git push through the backend agent, and the readable-key fallback
-  when the agent is missing.
+- The frozen candidate build.
