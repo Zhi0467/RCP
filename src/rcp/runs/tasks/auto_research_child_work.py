@@ -4,7 +4,7 @@ import asyncio
 import shlex
 import threading
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
 from dataclasses import replace
 from functools import partial
@@ -772,7 +772,7 @@ async def settle_child_work_deliverables(
     composed: _ComposedWorkPrompt | None = None,
     required_session_id: str | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Turn one finished child result into this task's durable output.
 
     The one door a child Work result goes through, whether its provider
@@ -874,7 +874,7 @@ async def stream_auto_research_child_work_run(
     execution: AgentTaskExecution,
     *,
     route: AutoResearchChildWorkRecord,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one durably admitted Auto-research child Work task."""
 
     if execution.continuation == "graph_repair":

@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -584,7 +584,7 @@ async def stream_graph_run(
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     continuation = execution.continuation if execution is not None else "fresh"
     reuses_native_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     if request.session_id and not reuses_native_checkpoint:
@@ -1366,7 +1366,7 @@ async def _stream_graph_agent_events(
     validator_budget: PatchValidationBudget,
     kind: str,
     run_truth_scope: list[str],
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     stop = asyncio.Event()
     mailbox = asyncio.create_task(
         serve_patch_validation_mailbox(

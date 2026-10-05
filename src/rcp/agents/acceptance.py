@@ -7,7 +7,7 @@ import shlex
 import subprocess
 import sys
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,7 +176,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
                 async for event in self.stream(

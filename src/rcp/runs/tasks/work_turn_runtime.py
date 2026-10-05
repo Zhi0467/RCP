@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import subprocess
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import asdict, dataclass, field
@@ -529,7 +529,7 @@ async def stream_work_agent_events(
     required_session_id: str | None = None,
     supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     primary_error: BaseException | None = None
     try:
         async with aclosing(

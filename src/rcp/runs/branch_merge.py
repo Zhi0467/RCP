@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -1784,7 +1784,7 @@ async def stream_branch_merge_run(
     code_roots: list[str] | None = None,
     code_landed: bool = False,
     hidden_read_scope: HiddenReadScope | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
     ``load_context`` must resolve the immutable base/branch snapshots and the
@@ -2373,7 +2373,7 @@ async def stream_code_merge_run(
     execution: Any | None = None,
     binary: str | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one code merge turn with no graph residue, then RCP verifies the landing."""
 
     if request.provider is None or request.run_on is None:

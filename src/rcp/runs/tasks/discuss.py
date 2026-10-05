@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -479,7 +479,7 @@ async def stream_discuss_run(
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one Discuss turn over graph, node, request, and repository context."""
     continuation = execution.continuation if execution is not None else "fresh"
     reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)

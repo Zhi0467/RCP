@@ -5,7 +5,7 @@ import hashlib
 import json
 import shlex
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -1534,7 +1534,7 @@ async def _settle_patch_deliverable(
     composed: _ComposedWorkPrompt | None = None,
     required_session_id: str | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     initial = _read_initial_patch_deliverable(
         turn,
         predecessor_digest,
@@ -1719,7 +1719,7 @@ async def _settle_watch_deliverable(
     staged: _StagedWorkInputs | None = None,
     composed: _ComposedWorkPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     if is_consolidation(turn.execution):
         if initial.text is not None or initial.failure is not None:
@@ -2033,7 +2033,7 @@ async def _launch_and_stream_work_turn(
     *,
     supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     turn.supervise_remote = supervise_remote
     try:
         if is_consolidation(turn.execution) and not turn.execution.store.agent_task_has_receipt(
@@ -2233,7 +2233,7 @@ async def finalize_work_result(
     staged: _StagedWorkInputs | None = None,
     composed: _ComposedWorkPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Turn one finished provider result into this task's durable output.
 
     Everything past this door reads what the turn already produced; nothing past
@@ -2314,7 +2314,7 @@ async def stream_work_run(
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     async with (
         AsyncExitStack() as browser_stack,
         aclosing(
@@ -2335,7 +2335,7 @@ async def _stream_work_run(
     execution: AgentTaskExecution | None = None,
     *,
     browser_stack: AsyncExitStack,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one operational conversation turn with optional graph reflection."""
 
     if request.patch_kind == "experiment_loop":
@@ -2506,7 +2506,7 @@ async def _stream_work_graph_repair(
     execution: AgentTaskExecution,
     master_for: Callable[[WorkTurn, _StagedWorkInputs], tuple[Callable[[], str], dict[str, object]]]
     | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Repair only a retained Work patch; never repeat the operational turn.
 
     ``master_for`` gives the owner's master renderer and values when the session's master

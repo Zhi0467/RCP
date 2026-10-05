@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -63,7 +63,7 @@ async def stream_branch_merge_task(
     episode: EpisodeRecord,
     task: AgentTaskRecord,
     execution: AgentTaskExecution,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one human-dispatched branch merge through its contained scratch stage."""
 
     if (

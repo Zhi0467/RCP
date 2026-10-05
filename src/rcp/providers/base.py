@@ -496,6 +496,7 @@ class ProviderProfile:
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError

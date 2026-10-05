@@ -10,14 +10,6 @@
                 }
             },
             {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 50,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 68,
@@ -886,14 +878,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 20,
-                    "endColumn": 21,
-                    "lineCount": 30
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 14,
                     "endColumn": 30,
                     "lineCount": 1
@@ -912,14 +896,6 @@
                 "range": {
                     "startColumn": 50,
                     "endColumn": 69,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 29,
                     "lineCount": 1
                 }
             },
@@ -1180,78 +1156,6 @@
                 "range": {
                     "startColumn": 16,
                     "endColumn": 17,
-                    "lineCount": 9
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 8
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 89,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 8
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 25,
-                    "lineCount": 8
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 25,
-                    "lineCount": 7
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 21,
-                    "lineCount": 7
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 7
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
                     "lineCount": 8
                 }
             },
@@ -3412,14 +3316,6 @@
         ],
         "./src/rcp/providers/claude/profile.py": [
             {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 38,
@@ -3458,16 +3354,6 @@
                 "range": {
                     "startColumn": 28,
                     "endColumn": 37,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/rcp/providers/codex/profile.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 33,
                     "lineCount": 1
                 }
             }
@@ -4526,14 +4412,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 30
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 12,
                     "endColumn": 28,
                     "lineCount": 1
@@ -4550,33 +4428,7 @@
                 }
             }
         ],
-        "./src/rcp/runs/tasks/artifact_edit.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 20
-                }
-            }
-        ],
         "./src/rcp/runs/tasks/auto_research_child_work.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 6
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 11
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -4596,41 +4448,9 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 10
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 49,
                     "endColumn": 68,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 11
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 11
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 9
                 }
             },
             {
@@ -4678,25 +4498,9 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 20
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 12,
                     "endColumn": 24,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 20
                 }
             },
             {
@@ -4722,25 +4526,9 @@
                     "endColumn": 25,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 19
-                }
             }
         ],
         "./src/rcp/runs/tasks/branch_merge.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 11
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -4755,14 +4543,6 @@
                     "startColumn": 30,
                     "endColumn": 48,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 20
                 }
             },
             {
@@ -4797,14 +4577,6 @@
                     "startColumn": 37,
                     "endColumn": 47,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 16
                 }
             },
             {
@@ -4881,24 +4653,6 @@
                     "startColumn": 45,
                     "endColumn": 73,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 21
-                }
-            }
-        ],
-        "./src/rcp/runs/tasks/episode_report.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 20,
-                    "endColumn": 21,
-                    "lineCount": 17
                 }
             }
         ],
@@ -5056,14 +4810,6 @@
                 }
             },
             {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 10
-                }
-            },
-            {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
                     "startColumn": 19,
@@ -5125,22 +4871,6 @@
                     "startColumn": 16,
                     "endColumn": 17,
                     "lineCount": 12
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 10
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 10
                 }
             },
             {
@@ -5250,57 +4980,9 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 10
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 24,
                     "endColumn": 36,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 8
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 7
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 11
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 10
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 9
                 }
             },
             {
@@ -5335,14 +5017,6 @@
                     "startColumn": 28,
                     "endColumn": 45,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 19
                 }
             },
             {
@@ -5433,22 +5107,6 @@
                     "startColumn": 47,
                     "endColumn": 65,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 16,
-                    "endColumn": 17,
-                    "lineCount": 19
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 18
                 }
             },
             {
@@ -5624,57 +5282,9 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 10
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 10
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 24,
                     "endColumn": 36,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 3
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 7
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 12
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 9
                 }
             },
             {
@@ -5716,14 +5326,6 @@
                     "endColumn": 52,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 7
-                }
             }
         ],
         "./src/rcp/runs/tasks/work_staging.py": [
@@ -5740,25 +5342,9 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 8,
-                    "endColumn": 9,
-                    "lineCount": 25
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 32,
                     "endColumn": 13,
                     "lineCount": 3
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 13,
-                    "lineCount": 23
                 }
             },
             {
@@ -10788,38 +10374,6 @@
                 }
             },
             {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 31,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 31,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 34,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 20,
@@ -10848,70 +10402,6 @@
                 "range": {
                     "startColumn": 13,
                     "endColumn": 30,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 19,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 38,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 30,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 15,
-                    "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 34,
-                    "endColumn": 42,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 26,
-                    "endColumn": 34,
                     "lineCount": 1
                 }
             },

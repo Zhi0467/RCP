@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, replace
 from functools import partial
@@ -1435,7 +1435,7 @@ async def _settle_watch_deliverable(
     staged: _StagedWorkInputs | None = None,
     composed: _ComposedExperimentPrompt | None = None,
     maximum_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
     text = initial.text
     failure = initial.failure
@@ -1618,7 +1618,7 @@ async def _resettle_changed_watch_handoff(
     staged: _StagedWorkInputs | None = None,
     composed: _ComposedExperimentPrompt | None = None,
     maximum_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     # A correction can change the observer declaration or launch more compute.
     # Preserve Patch-read diagnostics before checking that operational handoff.
     try:
@@ -2238,7 +2238,7 @@ async def _launch_and_stream_work_turn(
     *,
     supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     turn.supervise_remote = supervise_remote
     try:
         _record_agent_launch_receipt(
@@ -2329,7 +2329,7 @@ async def settle_experiment_loop_deliverables(
     composed: _ComposedExperimentPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
     maximum_watch_corrections: int = EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Settle one finished loop turn, live or recorded, against its own task.
 
     Both deliveries reach the same joint Patch/watch admission and the same
@@ -2403,7 +2403,7 @@ async def stream_experiment_loop_task(
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     async with (
         AsyncExitStack() as browser_stack,
         aclosing(
@@ -2429,7 +2429,7 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
     execution: AgentTaskExecution | None = None,
     *,
     browser_stack: AsyncExitStack,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one already-admitted Experiment-loop invocation end to end."""
 
     if request.mode != "work" or request.patch_kind != "experiment_loop":
@@ -2660,7 +2660,7 @@ async def _stream_work_graph_repair(
     data_dir: Path,
     *,
     execution: AgentTaskExecution,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Repair only a retained Experiment-loop Patch; never repeat the operational turn."""
 
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
