@@ -18,7 +18,6 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -2301,17 +2300,6 @@ def create_app(
         ):
             set_team_session_cookie(response, session)
         return response
-
-    # FastAPI prepends decorator middleware as it is registered. Add CORS only
-    # after those refusal owners so their early responses retain allowed-origin
-    # headers while authentication and body limits remain inside the envelope.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @app.exception_handler(PatchRejected)
     async def patch_rejected(_: Request, exc: PatchRejected) -> JSONResponse:

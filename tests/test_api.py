@@ -526,21 +526,27 @@ def test_personal_post_refuses_requests_a_cross_site_page_can_send(
         assert response.status_code in {404, 405}
 
 
+def test_api_grants_no_cross_origin_reads(app) -> None:
+    # Vite proxies /api in development, so no origin needs CORS.
+    response = signed_in_client(app).get(
+        "/api/projects", headers={"Origin": "http://localhost:5173"}
+    )
+
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_stale_instance_guard_rejects_mutation_before_side_effect(app) -> None:
-    client = signed_in_client(app, base_url="http://127.0.0.1:5173")
+    client = signed_in_client(app)
     project_id = app.state.default_project_id
 
     rejected = client.delete(
         f"/api/projects/{project_id}",
-        headers={
-            "Origin": "http://127.0.0.1:5173",
-            "X-RCP-Instance-ID": "replaced-instance",
-        },
+        headers={"X-RCP-Instance-ID": "replaced-instance"},
     )
 
     assert rejected.status_code == 409
     assert rejected.json()["instance_id"] == app.state.instance_metadata.instance_id
-    assert rejected.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
     assert any(item["id"] == project_id for item in client.get("/api/projects").json())
 
 
