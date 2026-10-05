@@ -261,6 +261,38 @@ cooperative. RCP does not claim hostile same-account process isolation,
 cross-project read secrecy, a general OS sandbox, network confinement, or
 resource supervision.
 
+Selected-secret hiding is a separate read policy for supported launches, including
+Discuss, Work, Experiment, orchestration, ingestion, correction, consolidation,
+and paper coaching. One immutable `HiddenReadScope` is resolved after launch-host
+key confirmation, before provider or browser preparation. Prompts render that
+same scope and its effective status. This targets generic network prompt
+injection; research data remains readable. It does not add same-account isolation
+or restrict network, Git, browser, SSH, Slurm, GPUs, or process managers.
+
+Code owns the default directories, literal files, and globs: RCP database and
+backup/checkpoint copies, provider credential stores and login files, service
+connection keys, the remote Claude setup token, private control sockets, and
+selected WebKit storage. Deploy keys and private `~/.ssh/id_*` identities enter
+the scope only after their decoded public-key SHA256 fingerprint is listed by
+the appropriate agent and a bounded signing check passes. Missing or stale public
+keys and failed confirmation leave the key readable with a visible reason;
+public keys, SSH configuration, and `known_hosts` remain readable. A folder
+containing an exempt key must never be masked.
+
+Settings adds per-machine hidden folders to the code defaults. The shared host
+validator bounds and canonicalizes absolute folders, rejects overlap in either
+direction with checkouts, stages, required tools and command sockets, and
+rechecks at launch. These additions live beside machine writable paths, never in
+project manifests; any member may edit them. Tool environments use the resolved
+allow list while provider authentication remains outside the tool wrapper.
+Credential files read directly by ordinary tools, including `~/.config/gh`,
+`~/.netrc`, and `~/.aws`, are not defaults. The macOS Keychain stays open so
+Keychain-backed Git and `gh` continue working.
+
+A host without working hiding support runs unhidden and reports the reason in
+the turn, Settings, and doctor. Hiding never blocks a launch. See the
+[decision](../decisions/2026-10-04-agent-secret-hiding.md) for the threat model.
+
 RCP resolves one strict `ProjectWriteScope` before every Work or orchestrate
 launch. It binds:
 
@@ -347,6 +379,14 @@ one an older release made under a 0002 umask, loses that write access on next
 use; one owned by another account is refused.
 
 ## Provider enforcement
+
+Selected-secret policy is rendered from `HiddenReadScope` on every capability:
+Claude receives the staged shell prefix plus native read-path denies; Codex
+receives file, directory, and glob denies in both exec and app-server policies,
+plus the environment allow list; OpenCode receives the shell wrapper and native
+read, grep, glob, and list denies where its rules can express them. An uncovered
+native tool makes the launch visibly unhidden. macOS shell calls use a selected
+path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine and host.
@@ -1602,6 +1642,15 @@ Generic scratch-only Patch correction remains offline where its retained
 contract requires that.
 
 ## Host browser runtime
+
+On Linux, the browser daemon and Chromium run under the launch's hidden-path
+policy inside the systemd job command. The host persists the policy fingerprint
+and changes a live daemon's policy under the host lock, preserving its profile
+and active leases. Hidden-file uploads fail; other uploads, downloads, and
+browser capabilities remain available. On macOS the daemon stays unwrapped
+because Chromium's sandbox cannot nest inside Seatbelt; browser file operations
+remain unhidden and the turn reports that exception. An enforcement failure
+keeps the browser available with a visible reason.
 
 `browser/` owns optional headless browser installation and sessions. It is
 separate from provider launches. The launch integration supplies a stable owner

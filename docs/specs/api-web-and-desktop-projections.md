@@ -27,6 +27,23 @@ returns the verified backend identity with `owner_authenticated=false`, allowing
 the ordinary sign-in boundary. Quit and update still require authenticated
 health details before using active-work counts.
 
+## Machine hidden folders
+
+The machine payload includes persisted `hidden_folders` and computed `hidden_read`
+shaped as `MachineHiddenReadProjection`: `default_directories`, `default_files`,
+`default_globs`, and `effective_scope`. The scope carries the host/account,
+resolved paths, environment allow list, key evidence, fingerprint, and
+`enforcement` (`enforced` or `unhidden` with stable reason codes). Defaults and
+effective status are read-only projections, not writable settings.
+
+The existing `PATCH /api/space/machines/{machine_id}` accepts `hidden_folders`
+as a whole replacement list. Omission preserves the list; an empty list clears
+only user additions. The same member admission as writable paths applies.
+Validation runs on the execution host and delegates overlap policy to
+`validate_machine_hidden_folders`; refusals return HTTP 422 with
+`detail.code` and `detail.message`. A refused edit changes none of the card's
+fields. Launch-time validation remains necessary after a successful save.
+
 ## Agent browser Web consumers
 
 The chat Options menu reads and updates `/api/projects/{project_id}/chats/{chat_id}/browser`

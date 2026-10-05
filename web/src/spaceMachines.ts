@@ -1,4 +1,12 @@
-import type { Machine, SpaceMachine, SpaceMachineUpdateRequest } from "./types";
+import type {
+  Machine,
+  MachineHiddenReadProjection,
+  SpaceMachine,
+  SpaceMachineUpdateRequest,
+} from "./types";
+
+/** Computed response fields are not writable machine settings. */
+export type MachineSettingsRecord = SpaceMachine & { hidden_read?: MachineHiddenReadProjection };
 
 export type WritablePathEdit = { kind: "add"; path: string } | { kind: "remove"; path: string };
 
@@ -89,6 +97,7 @@ export function replaceSpaceMachine(
  */
 export function createPathEditor(
   save: (machineId: string, request: SpaceMachineUpdateRequest) => Promise<SpaceMachine>,
+  field: "writable_paths" | "hidden_folders" = "writable_paths",
 ) {
   let saved: SpaceMachine | null = null;
   let pending = false;
@@ -105,7 +114,11 @@ export function createPathEditor(
       if (!saved) throw new Error("This machine has no space record yet.");
       pending = true;
       try {
-        saved = await save(saved.machine_id, writablePathsRequest(saved, change));
+        const { writable_paths: paths } = writablePathsRequest(
+          { writable_paths: saved[field] },
+          change,
+        );
+        saved = await save(saved.machine_id, { [field]: paths });
         return saved;
       } finally {
         pending = false;

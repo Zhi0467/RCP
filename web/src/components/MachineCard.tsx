@@ -2,7 +2,11 @@ import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react
 import { useRef, useState, type ReactNode } from "react";
 import { createSpaceMachine, updateSpaceMachine } from "../api";
 import { errorMessage } from "../errors";
-import { createPathEditor, type WritablePathEdit } from "../spaceMachines";
+import {
+  createPathEditor,
+  type MachineSettingsRecord,
+  type WritablePathEdit,
+} from "../spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../types";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { PathPicker } from "./PathPicker";
@@ -95,6 +99,13 @@ export function MachineCard({
         writesDisabled={writesDisabled}
         onRecordChange={onRecordChange}
       />
+      {record && (
+        <HiddenFolders
+          record={record}
+          writesDisabled={writesDisabled}
+          onRecordChange={onRecordChange}
+        />
+      )}
     </article>
   );
 }
@@ -201,6 +212,124 @@ export function WritablePaths({
       )}
     </section>
   );
+}
+
+/** Machine additions share the same serialized list editor and folder picker as grants. */
+export function HiddenFolders({
+  record,
+  writesDisabled,
+  onRecordChange,
+}: {
+  record: MachineSettingsRecord;
+  writesDisabled: boolean;
+  onRecordChange: (machine: SpaceMachine) => void;
+}) {
+  const [picking, setPicking] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const editor = useRef(createPathEditor(updateSpaceMachine, "hidden_folders")).current;
+  editor.sync(record);
+  const projection = record.hidden_read;
+  const defaults = projection
+    ? [...projection.default_directories, ...projection.default_files, ...projection.default_globs]
+    : [];
+  const status = projection?.effective_scope.enforcement;
+  const edit = async (change: WritablePathEdit) => {
+    setPending(true);
+    setError(null);
+    try {
+      onRecordChange(await editor.edit(change));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <section className="machine-writable-paths" data-machine-hidden-folders="">
+      <header>
+        <strong>Hidden folders</strong>
+        <button
+          type="button"
+          className="button secondary compact"
+          data-machine-action="add-hidden-folder"
+          disabled={writesDisabled || pending || picking}
+          onClick={() => setPicking(true)}
+        >
+          <FolderPlus size={14} /> Add folder
+        </button>
+      </header>
+      {status ? (
+        <div role="status" data-hidden-read-status={status.status}>
+          <strong>{status.status === "enforced" ? "Enforced" : "Unhidden"}</strong>
+          {status.reasons.length > 0 && (
+            <ul>
+              {status.reasons.map((reason) => (
+                <li key={reason}>{hiddenReadReason(reason)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : (
+        <p role="status">Hidden-folder status unavailable.</p>
+      )}
+      {defaults.length > 0 && (
+        <ul aria-label="Default hidden paths">
+          {defaults.map((path) => (
+            <li key={path} data-hidden-default="">
+              <code>{path}</code>
+              <span>Default</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <ul aria-label="Added hidden folders">
+        {(record.hidden_folders ?? []).map((path) => (
+          <li key={path}>
+            <code>{path}</code>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={`Remove ${path}`}
+              data-machine-action="remove-hidden-folder"
+              disabled={writesDisabled || pending}
+              onClick={() => {
+                void edit({ kind: "remove", path }).catch((failure) =>
+                  setError(errorMessage(failure)),
+                );
+              }}
+            >
+              <X size={14} />
+            </button>
+          </li>
+        ))}
+      </ul>
+      {error && <p role="alert">{error}</p>}
+      {picking && (
+        <PathPicker
+          machineId={record.machine_id}
+          pickLabel="Hide this folder"
+          onClose={() => setPicking(false)}
+          onPick={async (path) => {
+            await edit({ kind: "add", path });
+            setPicking(false);
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function hiddenReadReason(reason: string): string {
+  const reasons: Record<string, string> = {
+    wrapper_unavailable: "This host cannot enforce secret hiding.",
+    userns_blocked: "This host blocks the Linux isolation needed to hide secrets.",
+    provider_native_tools_uncovered: "This provider's file tools cannot enforce secret hiding.",
+    browser_unwrapped_macos: "Browser file operations remain unhidden on macOS.",
+    deploy_key_agent_unconfirmed:
+      "Deploy keys remain readable until SSH-agent signing is confirmed.",
+    ssh_key_agent_unconfirmed: "SSH keys remain readable until SSH-agent signing is confirmed.",
+    credential_compatibility_exception: "Credentials required by tools remain readable.",
+  };
+  return reasons[reason] ?? reason;
 }
 
 /** Adds one machine account to the space list, for setup and project Settings to pick. */
