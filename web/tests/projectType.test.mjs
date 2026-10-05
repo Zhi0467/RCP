@@ -54,11 +54,11 @@ const BASELINE = fileURLToPath(
 // research-only features (Research paths, the Experiment board, Auto-research,
 // the paper). Another project type would replace these modules, not edit them.
 const RESEARCH_LAYER = new Set([
-  "types.ts",
+  "core/types.ts",
   "researchType.ts",
   "researchProjection.ts",
   "experimentBoard.ts",
-  "experimentGuidance.ts",
+  "core/experimentGuidance.ts",
   "components/ExperimentBoard.tsx",
   "components/ExperimentRunDetail.tsx",
   "components/AutoResearchDialog.tsx",
