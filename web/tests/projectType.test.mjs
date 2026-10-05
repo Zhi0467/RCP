@@ -62,7 +62,7 @@ const RESEARCH_LAYER = new Set([
   "components/ExperimentBoard.tsx",
   "components/ExperimentRunDetail.tsx",
   "components/AutoResearchDialog.tsx",
-  "views/PaperWorkspace.tsx",
+  "paper/PaperWorkspace.tsx",
 ]);
 // Meta relations such as `supersedes` belong to every graph, not to research.
 const META_RELATIONS = new Set(["supersedes", "duplicate_of"]);
