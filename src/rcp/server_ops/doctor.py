@@ -11,6 +11,7 @@ import sqlite3
 import stat
 import subprocess
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import BinaryIO, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from rcp.core.models import HiddenReadStatus
 from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS, SERVER_SUPERVISOR_PROJECTION_MAX_BYTES
 from rcp.release_check import ReleaseCheck, ReleaseStatus
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -130,6 +132,9 @@ class ServerDoctorReport(_StrictModel):
     provider_check_status: Literal["available", "unavailable"]
     dependencies_ready: bool
     dependency_versions: str
+    ssh_agent_status: str = "unavailable"
+    hidden_read_status: Literal["enforced", "unhidden"] = "unhidden"
+    hidden_read_warnings: tuple[str, ...] = ("wrapper_unavailable",)
     browser_status: str = "not_installed"
     browser_detail: str | None = None
     browser_apt_command: str | None = None
@@ -212,6 +217,15 @@ class ServerDoctorReport(_StrictModel):
         if (self.overall_state == "problems") != bool(self.problems):
             raise ValueError("doctor overall state must agree with its problem list")
         return self
+
+    def agent_security_fields(self) -> tuple[NonsecretField, ...]:
+        return (
+            NonsecretField(name="ssh_agent_status", value=self.ssh_agent_status),
+            NonsecretField(name="hidden_read_status", value=self.hidden_read_status),
+            NonsecretField(
+                name="hidden_read_warnings", value=_problem_text(self.hidden_read_warnings)
+            ),
+        )
 
     def fields(self) -> tuple[NonsecretField, ...]:
         return (
@@ -306,6 +320,34 @@ class ServerDoctorReport(_StrictModel):
         )
 
 
+class AgentSecurityReadiness(_StrictModel):
+    """Warnings describe readable fallback; they never make doctor fail."""
+
+    ssh_agent_status: str
+    hidden_read: HiddenReadStatus
+
+
+def probe_agent_security(
+    *, hidden_read_probe: Callable[[], HiddenReadStatus] | None = None
+) -> AgentSecurityReadiness:
+    """Read the calling account; used under runuser by installed-server doctor."""
+    from rcp.ssh_agent import agent_status
+
+    status = agent_status()
+    if hidden_read_probe is None:
+        try:
+            from rcp.agents.hidden_read import probe_hidden_read_readiness
+        except ImportError:
+            hidden_read_probe = None
+        else:
+            hidden_read_probe = probe_hidden_read_readiness
+    readiness = HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",))
+    if hidden_read_probe is not None:
+        with suppress(OSError, subprocess.SubprocessError):
+            readiness = hidden_read_probe()
+    return AgentSecurityReadiness(ssh_agent_status=status, hidden_read=readiness)
+
+
 @dataclass(frozen=True)
 class _BackupDoctorSummary:
     status: DoctorBackupState
@@ -360,7 +402,7 @@ def prepare_doctor_command(
         raise ValueError("prepare_doctor_command requires one server doctor request")
     target = MachineTarget(host=identity.host, os_account="rcp")
     pending = ServerStep(
-        number=1,
+        number=2,
         title="Inspect the installed team server",
         purpose=(
             "Read exact source, release, process, service, filesystem, control, and dependency "
@@ -375,10 +417,32 @@ def prepare_doctor_command(
         ),
         message="RCP will inspect the installed team server without changing it.",
     )
-    plan = ServerPlanEvent(command=request.command, timestamp=datetime.now(UTC), steps=(pending,))
+    security_step = pending.model_copy(
+        update={
+            "number": 1,
+            "title": "Inspect agent secret hiding",
+            "purpose": "Report the service account SSH agent and hidden-read readiness warnings.",
+            "expected_success": "Readiness warnings are visible without blocking server operation.",
+            "message": "Read agent readiness for the service account.",
+        }
+    )
+    plan = ServerPlanEvent(
+        command=request.command, timestamp=datetime.now(UTC), steps=(security_step, pending)
+    )
     resolved_machine = machine or LinuxServerDoctorMachine()
 
     def execute(emitter: ServerEventEmitter, _input_stream: BinaryIO) -> None:
+        emitter.emit_step(security_step.model_copy(update={"state": "running"}))
+        report = resolved_machine.inspect()
+        emitter.emit_step(
+            security_step.model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": "Agent readiness inspected; unavailable hiding is a warning.",
+                    "fields": report.agent_security_fields(),
+                }
+            )
+        )
         emitter.emit_step(
             pending.model_copy(
                 update={
@@ -387,7 +451,6 @@ def prepare_doctor_command(
                 }
             )
         )
-        report = resolved_machine.inspect()
         release_check = ReleaseCheck(
             space="team",
             current_version=(
@@ -438,6 +501,7 @@ class LinuxServerDoctorMachine:
         metadata_reader: MetadataReader | None = None,
         control_probe: ControlProbe | None = None,
         runner: ReadOnlyRunner | None = None,
+        agent_security_probe: Callable[[], AgentSecurityReadiness] | None = None,
         service_identity: tuple[int, int] | None = None,
         root_identity: tuple[int, int] = (0, 0),
     ) -> None:
@@ -447,6 +511,7 @@ class LinuxServerDoctorMachine:
         self._metadata_reader = metadata_reader or read_server_metadata
         self._control_probe = control_probe or _probe_control
         self._runner = runner or _run_read_only
+        self._agent_security_probe = agent_security_probe or self._inspect_agent_security
         self._service_identity = service_identity
         self._root_identity = root_identity
         self._selected: dict | None = None
@@ -534,6 +599,7 @@ class LinuxServerDoctorMachine:
             add_problem,
         )
         browser = self._inspect_browser()
+        agent_security = self._agent_security_probe()
         backup = self._inspect_backup(
             config,
             service_uid=service_uid,
@@ -609,6 +675,9 @@ class LinuxServerDoctorMachine:
             provider_logins=provider_login_summary(self.layout.data_dir / "rcp.sqlite3"),
             dependencies_ready=dependencies_ready,
             dependency_versions=dependency_versions,
+            ssh_agent_status=agent_security.ssh_agent_status,
+            hidden_read_status=agent_security.hidden_read.status,
+            hidden_read_warnings=agent_security.hidden_read.reasons,
             browser_status=browser.status,
             browser_detail=browser.detail,
             browser_apt_command=browser.apt_command,
@@ -999,6 +1068,46 @@ class LinuxServerDoctorMachine:
             add_problem("control socket identity differs from running metadata")
             return metadata, probe, "identity_mismatch"
         return metadata, probe, "healthy"
+
+    def _inspect_agent_security(self) -> AgentSecurityReadiness:
+        unavailable = AgentSecurityReadiness(
+            ssh_agent_status="unavailable",
+            hidden_read=HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",)),
+        )
+        if self._selected is None:
+            return unavailable
+        python = Path(self._selected["release_directory"]) / ".venv/bin/python"
+        # Invoke the source owner, not a copied implementation, in the actual
+        # service account. Root's user-namespace permissions are not evidence.
+        program = (
+            "from rcp.server_ops.doctor import probe_agent_security; "
+            "print(probe_agent_security().model_dump_json())"
+        )
+        try:
+            result = self._runner(
+                (
+                    "runuser",
+                    "--user",
+                    self.layout.service_account,
+                    "--",
+                    "env",
+                    "-i",
+                    f"HOME={self.layout.service_home}",
+                    f"USER={self.layout.service_account}",
+                    f"LOGNAME={self.layout.service_account}",
+                    "PATH=/usr/local/bin:/usr/bin:/bin",
+                    "LANG=C.UTF-8",
+                    str(python),
+                    "-I",
+                    "-c",
+                    program,
+                )
+            )
+            if result.returncode == 0:
+                return AgentSecurityReadiness.model_validate_json(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        return unavailable
 
     def _inspect_browser(self):
         from rcp.browser import BrowserReadiness

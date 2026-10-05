@@ -125,7 +125,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert exit_code == 0
     assert calls == 1
     events = [json.loads(line) for line in machine_output.splitlines()]
-    assert [event["event"] for event in events] == ["plan", "step", "step"]
+    assert [event["event"] for event in events] == ["plan", "step", "step", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
     assert len(fields) == len(_report().fields())
@@ -269,7 +269,7 @@ def test_running_release_identity_and_health_are_exact(tmp_path: Path) -> None:
     )
     app = create_named_app(data_dir=layout.data_dir, instance_metadata=metadata)
 
-    with signed_in_client(app) as client:
+    with signed_in_client(app, base_url="http://127.0.0.1:8421") as client:
         health = client.get("/api/health").json()
 
     assert identity.commit == COMMIT
@@ -490,8 +490,10 @@ def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: s
     assert problems == ["service account linger is not enabled; rerun rcp server install"]
 
 
+@pytest.mark.parametrize("hidden_reason", [None, "wrapper_unavailable", "userns_blocked"])
 def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     tmp_path: Path,
+    hidden_reason,
 ) -> None:
     runtime_temp = tempfile.TemporaryDirectory(prefix="rcpd-", dir="/tmp")
     runtime_dir = Path(runtime_temp.name)
@@ -559,10 +561,20 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
         )
 
     runner = _HealthyRunner(layout=layout, commit=COMMIT, pid=metadata.pid)
+    from rcp.core.models import HiddenReadStatus
+
+    security = server_doctor.AgentSecurityReadiness(
+        ssh_agent_status="running",
+        hidden_read=HiddenReadStatus(
+            status="unhidden" if hidden_reason else "enforced",
+            reasons=(hidden_reason,) if hidden_reason else (),
+        ),
+    )
     try:
         report = LinuxServerDoctorMachine(
             layout,
             config_loader=config_loader,
+            agent_security_probe=lambda: security,
             team_loader=lambda path: (
                 ServerTeamConfig(access_url="https://lab-gpu-01.tail1234.ts.net")
                 if path == layout.team_config_path
@@ -604,6 +616,17 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     assert broken_report.problems == ("team address file is unreadable or invalid",)
     assert broken_report.team_access_url is None
     assert report.team_access_url == "https://lab-gpu-01.tail1234.ts.net"
+    assert report.ssh_agent_status == "running"
+    assert report.hidden_read_status == security.hidden_read.status
+    assert report.hidden_read_warnings == security.hidden_read.reasons
+    code, output, _ = _run_doctor(report, machine_readable=True)
+    assert code == 0
+    security_fields = {
+        item["name"]: item["value"] for item in json.loads(output.splitlines()[2])["step"]["fields"]
+    }
+    assert security_fields["ssh_agent_status"] == "running"
+    assert security_fields["hidden_read_status"] == security.hidden_read.status
+    assert security_fields["hidden_read_warnings"] == (hidden_reason or "none")
     assert report.overall_state == "healthy", report.problems
     assert report.problems == ()
     assert report.current_commit == report.running_commit == report.managed_main_head == COMMIT
@@ -889,3 +912,53 @@ def test_browser_doctor_uses_execution_account_and_shared_service(tmp_path):
     invocation = shlex.split(argv[-1])
     assert invocation[:3] == [str(tmp_path / ".venv/bin/python"), "-I", "-c"]
     assert "from rcp.browser import readiness" in invocation[3]
+
+
+@pytest.mark.parametrize("outcome", ["ready", "failed", "invalid", "timeout"])
+def test_agent_security_doctor_probes_service_account_and_warns_on_failure(tmp_path, outcome):
+    from rcp.core.models import HiddenReadStatus
+
+    expected = server_doctor.AgentSecurityReadiness(
+        ssh_agent_status="running",
+        hidden_read=HiddenReadStatus(status="enforced"),
+    )
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(argv, 1)
+        return subprocess.CompletedProcess(
+            argv,
+            1 if outcome == "failed" else 0,
+            "{}" if outcome == "invalid" else expected.model_dump_json(),
+            "",
+        )
+
+    machine = LinuxServerDoctorMachine(runner=runner)
+    machine._selected = {"release_directory": str(tmp_path)}
+    result = machine._inspect_agent_security()
+    argv = calls.pop()
+    assert argv[:4] == ("runuser", "--user", machine.layout.service_account, "--")
+    assert f"HOME={machine.layout.service_home}" in argv
+    assert str(tmp_path / ".venv/bin/python") in argv
+    if outcome == "ready":
+        assert result == expected
+    else:
+        assert result.ssh_agent_status == "unavailable"
+        assert result.hidden_read.status == "unhidden"
+        assert result.hidden_read.reasons == ("wrapper_unavailable",)
+
+
+@pytest.mark.parametrize("reason", [None, "wrapper_unavailable", "userns_blocked"])
+def test_agent_security_readiness_uses_policy_hook(monkeypatch, reason):
+    from rcp import ssh_agent
+    from rcp.core.models import HiddenReadStatus
+
+    monkeypatch.setattr(ssh_agent, "agent_status", lambda: "running")
+    expected = HiddenReadStatus(
+        status="unhidden" if reason else "enforced", reasons=(reason,) if reason else ()
+    )
+    observed = server_doctor.probe_agent_security(hidden_read_probe=lambda: expected)
+    assert observed.ssh_agent_status == "running"
+    assert observed.hidden_read == expected

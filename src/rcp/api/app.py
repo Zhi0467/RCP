@@ -212,6 +212,7 @@ from rcp.sources import (
     discover_project_cache_roots,
     legacy_shared_cache_roots,
 )
+from rcp.ssh_agent import BackendSSHAgent
 from rcp.storage import (
     AgentTaskKind,
     AppStore,
@@ -357,6 +358,7 @@ def create_app(
     backup_capture_coordinator: BackupCaptureCoordinator | None = None
     member_removal_coordinator: MemberRemovalCoordinator | None = None
     maintenance_coordinator: MaintenanceCoordinator | None = None
+    deploy_key_agent = BackendSSHAgent(server_layout.credentials_root)
     startup_effect_runtime_event = threading.Event()
     startup_effect_release_error: list[str | None] = [None]
 
@@ -1779,6 +1781,7 @@ def create_app(
                 if machine_power is not None:
                     machine_power.start()
                     app.state.machine_power_started = True
+                await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
                 background_tasks.recover_at_startup()
                 from rcp.runs.episodes.merge import reconcile_episode_merge
@@ -1954,6 +1957,10 @@ def create_app(
             try:
                 await start_deferred_runtime()
             except BaseException:
+                background_tasks.shutdown()
+                await asyncio.to_thread(
+                    deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
+                )
                 await terminals.close()
                 if machine_power is not None and app.state.machine_power_started:
                     app.state.machine_power_started = False
@@ -1980,6 +1987,11 @@ def create_app(
                     try:
                         await start_deferred_runtime()
                     except BaseException as exc:
+                        background_tasks.shutdown()
+                        await asyncio.to_thread(
+                            deploy_key_agent.stop_after_workers_drained,
+                            background_tasks.runtime_is_idle,
+                        )
                         startup_effect_release_error[0] = str(exc)
                         app.state.startup_effect_release_error = startup_effect_release_error[0]
                         logger.exception("Deferred startup failed after the effect fence opened.")
@@ -2025,6 +2037,9 @@ def create_app(
             try:
                 background_tasks.shutdown()
             finally:
+                await asyncio.to_thread(
+                    deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
+                )
                 # Hold the Mac awake until workers have drained.
                 if machine_power is not None and app.state.machine_power_started:
                     app.state.machine_power_started = False
@@ -2385,6 +2400,14 @@ def create_app(
     if web_dist.exists():
         app.mount("/", _WebPages(directory=web_dist, html=True), name="web")
 
+    from rcp.api.host_guard import HostGuard
+    from rcp.team_access import team_access_url
+
+    public_origin = team_access_url() if space_kind == "team" else None
+    if space_kind != "team" or public_origin is not None:
+        app.add_middleware(HostGuard, port=identity.port, team_access_url=public_origin)
+    else:
+        logger.warning("Host guard unavailable: team server has no configured public origin.")
     return app
 
 

@@ -11,6 +11,14 @@ from pathlib import Path
 
 def deploy_key_ssh_command(key: str, account_home: str) -> str:
     """Pin Git transport to one repository key and the execution account's trust."""
+    agent_options: tuple[str, ...] = ()
+    # The shipped helper is stdlib-only; remote accounts have no RCP agent yet.
+    if __package__:
+        from rcp.ssh_agent import running_agent_socket
+
+        socket = running_agent_socket()
+        if socket is not None and Path(account_home) == Path.home():
+            agent_options = ("-o", f"IdentityAgent={socket}")
     return shlex.join(
         (
             "ssh",
@@ -20,6 +28,7 @@ def deploy_key_ssh_command(key: str, account_home: str) -> str:
             key,
             "-o",
             "IdentitiesOnly=yes",
+            *agent_options,
             "-o",
             "StrictHostKeyChecking=yes",
             "-o",
