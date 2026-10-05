@@ -33,6 +33,7 @@ from rcp.runs.session_master import (
 )
 from rcp.runs.shared import (
     _pinned_to_profile,
+    _prepare_hidden_read_scope,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _record_provider_exit,
@@ -340,16 +341,29 @@ async def stream_coach(
             "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
         },
     )
+    workspace = local_stage / "workspace"
+    workspace.mkdir(exist_ok=True)
+    hidden_read_scope = await _prepare_hidden_read_scope(
+        service,
+        request,
+        workspace=workspace,
+        remote_stage=None,
+        execution=execution,
+        capability="paper_readonly",
+        data_dir=data_dir,
+        local_stage=local_stage,
+    )
     async with aclosing(
         launcher.stream(
             request.provider,
             prompt,
-            cwd=service.manifest.research_dir,
+            cwd=workspace,
             model=model,
             reasoning=reasoning,
             session_id=request.session_id,
             read_dirs=read_dirs,
             capability="paper_readonly",
+            hidden_read_scope=hidden_read_scope,
             control=execution.control if execution is not None else None,
             binary=provider_binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,

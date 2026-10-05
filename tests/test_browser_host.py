@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import plistlib
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -210,6 +213,7 @@ def test_interrupted_install_reads_as_installable(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True)
     path.write_text('{"version": "0.1')
     monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "owner_ready", lambda: None)
     assert runtime.readiness()["status"] == "not_installed"
 
 
@@ -234,6 +238,7 @@ def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
         runtime.core.mkdir(parents=True)
         (runtime.core / "package.json").write_text("broken")
     monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "owner_ready", lambda: None)
     monkeypatch.setattr(runtime, "readiness", lambda **kw: {"status": "ready"})
     monkeypatch.setattr(runtime, "executable", lambda: "/owned/chromium")
     monkeypatch.setattr(runtime, "start", lambda *a: None)
@@ -261,3 +266,221 @@ def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
     else:
         assert runtime.install()["status"] == ("ready" if owner_state == "stopped" else "busy")
     assert len(installed) == (2 if owner_state == "stopped" else 0)
+
+
+def hidden_scope(path="/selected/secret"):
+    from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
+
+    return HiddenReadScope(
+        execution_machine="local",
+        execution_host="",
+        os_account="researcher",
+        hidden_files=(path,),
+        env_deny_list=HIDDEN_READ_ENV_DENY_LIST,
+        enforcement=HiddenReadStatus(status="enforced"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("system", "ready", "reason"),
+    [
+        ("Linux", True, None),
+        ("Linux", False, "userns_blocked"),
+        ("Darwin", True, "browser_unwrapped_macos"),
+    ],
+)
+def test_daemon_job_policy_preserves_browser_capability(
+    tmp_path, monkeypatch, system, ready, reason
+):
+    secret = tmp_path / "secret"
+    secret.write_text("private")
+    monkeypatch.setattr("rcp.browser.host.platform.system", lambda: system)
+    monkeypatch.setattr(
+        "rcp.browser.host.probe_hidden_read_wrapper",
+        lambda **kw: {"ready": ready, "reason": reason},
+    )
+    monkeypatch.setattr("rcp.browser.host.shutil.which", lambda name, **kw: "/usr/bin/" + name)
+    runtime = HostRuntime(
+        request(tmp_path, hidden_read_scope=hidden_scope(str(secret)).model_dump(mode="json"))
+    )
+    runtime.env["HTTPS_PROXY"] = "http://proxy.example"
+    runtime.browser_policy()
+    record = {
+        "owner_token": "first",
+        "handle": "job",
+        "session_name": "session",
+        "workspace_dir": str(tmp_path / "workspace"),
+    }
+    calls = []
+    monkeypatch.setattr(
+        runtime,
+        "run",
+        lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+    monkeypatch.setattr(runtime, "alive", lambda record: True)
+    monkeypatch.setattr(runtime, "stop_owner", lambda record: None)
+    monkeypatch.setattr(runtime, "cli_run", lambda *a, **kw: None)
+    runtime.start(record, "/owned/chromium")
+    owner_dir = runtime.record_path("first").parent
+    if system == "Linux":
+        job = calls[0]
+        assert job[0] == "systemd-run"
+        assert job[job.index("--") + 1 :] == ["/bin/sh", str(owner_dir / "daemon.sh")]
+        argv = shlex.split((owner_dir / "daemon.sh").read_text().split("exec ", 1)[1])
+        assert "HTTPS_PROXY=http://proxy.example" in argv
+        if ready:
+            offset = argv.index("/usr/bin/bwrap")
+            assert argv[offset : offset + 4] == ["/usr/bin/bwrap", "--dev-bind", "/", "/"]
+            assert argv[argv.index("--ro-bind") + 1 : argv.index("--ro-bind") + 3] == [
+                "/dev/null",
+                str(secret),
+            ]
+            daemon = shlex.split(argv[-1])
+            assert daemon[:2] == ["exec", runtime.node]
+            assert daemon[2] == str(runtime.core / "lib/entry/cliDaemon.js")
+        else:
+            assert "/usr/bin/bwrap" not in argv
+            assert argv[argv.index(runtime.node) + 1] == str(
+                runtime.core / "lib/entry/cliDaemon.js"
+            )
+    else:
+        plist = plistlib.loads((owner_dir / "owner.plist").read_bytes())
+        assert plist["ProgramArguments"][:3] == [
+            runtime.node,
+            str(runtime.core / "lib/entry/cliDaemon.js"),
+            "session",
+        ]
+        assert plist["EnvironmentVariables"] == runtime.daemon_env()
+    assert runtime.hidden_read_enforcement == {
+        "status": "unhidden" if reason else "enforced",
+        "reasons": [reason] if reason else [],
+    }
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_policy_restart_keeps_profile_and_all_active_leases(host, monkeypatch, interrupted):
+    monkeypatch.setattr("rcp.browser.host.platform.system", lambda: "Linux")
+    host.backend = "systemd_user"
+    monkeypatch.setattr(
+        "rcp.browser.host.probe_hidden_read_wrapper",
+        lambda **kw: {"ready": False, "reason": "userns_blocked"},
+    )
+    host.request["hidden_read_scope"] = hidden_scope().model_dump(mode="json")
+    host.ensure()
+    path = host.record_path("first")
+    profile = path.parent / "profile" / "login"
+    profile.write_text("retained")
+    previous = json.loads(path.read_text())
+    previous["leases"]["other"] = {"controller_id": "other", "controller_epoch": "old"}
+    host.save(previous)
+    host.request.update(
+        lease_id="next", hidden_read_scope=hidden_scope("/changed/secret").model_dump(mode="json")
+    )
+    if interrupted:
+        close = host.cli_run
+        monkeypatch.setattr(
+            host, "cli_run", lambda *a, **kw: (_ for _ in ()).throw(OSError("interrupted"))
+        )
+        with pytest.raises(OSError):
+            host.ensure()
+        assert json.loads(path.read_text())["leases"] == previous["leases"]
+        monkeypatch.setattr(host, "cli_run", close)
+    host.ensure()
+    current = json.loads(path.read_text())
+    assert current["hidden_read_fingerprint"] != previous["hidden_read_fingerprint"]
+    assert set(current["leases"]) == {"first", "other", "next"}
+    assert profile.read_text() == "retained"
+    assert host.starts == ["first", "first"]
+    host.ensure()
+    assert host.starts == ["first", "first"]
+
+
+@pytest.mark.parametrize("failure", ["probe", "start", "timeout"])
+def test_enforcement_failure_admits_unhidden_browser(host, monkeypatch, failure):
+    host.backend = "systemd_user"
+    host.request["hidden_read_scope"] = hidden_scope().model_dump(mode="json")
+    monkeypatch.setattr("rcp.browser.host.shutil.which", lambda *a, **kw: "/usr/bin/bwrap")
+
+    def probe(**kwargs):
+        if failure == "probe":
+            raise OSError("probe unavailable")
+        return {"ready": True, "reason": None}
+
+    monkeypatch.setattr("rcp.browser.host.probe_hidden_read_wrapper", probe)
+    start = host.start
+    attempts = []
+
+    def launch(record, executable):
+        attempts.append(bool(host.hidden_read_command))
+        if host.hidden_read_command:
+            host.live.add(record["owner_token"])
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired("bwrap", 1)
+            raise UnavailableError("start_failed", "mount failed")
+        start(record, executable)
+
+    monkeypatch.setattr(host, "start", launch)
+    result = host.ensure()
+    assert result["hidden_read_enforcement"] == {
+        "status": "unhidden",
+        "reasons": ["wrapper_unavailable"],
+    }
+    assert attempts == ([False] if failure == "probe" else [True, False])
+    assert host.release()["alive"]
+
+
+@pytest.mark.parametrize("permitted", [True, False])
+def test_missing_linger_is_its_own_reason_and_the_member_can_enable_it(
+    tmp_path, monkeypatch, permitted
+):
+    runtime = HostRuntime(request(tmp_path, action="enable_linger"))
+    runtime.backend = "systemd_user"
+    linger = {"value": "no"}
+    calls = []
+
+    def run(argv, check=True):
+        calls.append(argv)
+        if argv[:2] == ["loginctl", "enable-linger"]:
+            if not permitted:
+                return subprocess.CompletedProcess(argv, 1, "", "Access denied")
+            linger["value"] = "yes"
+        out = linger["value"] + "\n" if argv[:2] == ["loginctl", "show-user"] else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    monkeypatch.setattr(runtime, "run", run)
+    monkeypatch.setattr(shutil, "which", lambda tool, path=None: f"/usr/bin/{tool}")
+    with pytest.raises(UnavailableError) as error:
+        runtime.owner_ready()
+    assert error.value.code == "linger_disabled"
+
+    monkeypatch.setattr(runtime, "readiness", lambda: runtime.owner_ready() or {"status": "ready"})
+    result = runtime.enable_linger()
+    # The account enables its own linger; nothing is run as another user.
+    assert ["loginctl", "enable-linger"] in calls
+    if permitted:
+        assert result["status"] == "ready"
+    else:
+        assert result["status"] == "linger_disabled"
+        assert shlex.split(result["admin_command"])[:3] == ["sudo", "loginctl", "enable-linger"]
+
+
+def test_agent_cli_runs_with_the_checked_node_not_the_first_on_path(tmp_path, monkeypatch):
+    runtime = HostRuntime(request(tmp_path))
+    checked = tmp_path / "checked-node"
+    checked.write_text('#!/bin/sh\necho checked "$@"\n')
+    checked.chmod(0o700)
+    runtime.node = str(checked)
+    stale = tmp_path / "stale-bin"
+    stale.mkdir()
+    (stale / "node").write_text("#!/bin/sh\necho stale\n")
+    (stale / "node").chmod(0o700)
+    prefix = runtime.cli_launcher()
+    result = subprocess.run(
+        [str(Path(prefix) / "playwright-cli"), "snapshot"],
+        env={"PATH": f"{stale}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.split() == ["checked", str(runtime.cli), "snapshot"]

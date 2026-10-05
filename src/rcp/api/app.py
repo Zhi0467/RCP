@@ -18,7 +18,6 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -57,6 +56,7 @@ from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
+from rcp.api.host_guard import HostGuard, HostGuardConfig
 from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
@@ -213,6 +213,7 @@ from rcp.sources import (
     discover_project_cache_roots,
     legacy_shared_cache_roots,
 )
+from rcp.ssh_agent import BackendSSHAgent
 from rcp.storage import (
     AgentTaskKind,
     AppStore,
@@ -315,6 +316,7 @@ def create_app(
     data_dir: Path | None = None,
     *,
     instance_metadata: ServerMetadata | None = None,
+    request_host_guard: HostGuardConfig | None = None,
     acceptance_agent: bool = False,
     trusted_principal_resolver: TrustedPrincipalResolver | None = None,
     startup_effect_fence: StartupEffectFence | None = None,
@@ -358,6 +360,7 @@ def create_app(
     backup_capture_coordinator: BackupCaptureCoordinator | None = None
     member_removal_coordinator: MemberRemovalCoordinator | None = None
     maintenance_coordinator: MaintenanceCoordinator | None = None
+    deploy_key_agent = BackendSSHAgent(server_layout.credentials_root)
     startup_effect_runtime_event = threading.Event()
     startup_effect_release_error: list[str | None] = [None]
 
@@ -1780,6 +1783,7 @@ def create_app(
                 if machine_power is not None:
                     machine_power.start()
                     app.state.machine_power_started = True
+                await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
                 background_tasks.recover_at_startup()
                 from rcp.runs.episodes.merge import reconcile_episode_merge
@@ -1955,6 +1959,10 @@ def create_app(
             try:
                 await start_deferred_runtime()
             except BaseException:
+                background_tasks.shutdown()
+                await asyncio.to_thread(
+                    deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
+                )
                 await terminals.close()
                 if machine_power is not None and app.state.machine_power_started:
                     app.state.machine_power_started = False
@@ -1981,6 +1989,11 @@ def create_app(
                     try:
                         await start_deferred_runtime()
                     except BaseException as exc:
+                        background_tasks.shutdown()
+                        await asyncio.to_thread(
+                            deploy_key_agent.stop_after_workers_drained,
+                            background_tasks.runtime_is_idle,
+                        )
                         startup_effect_release_error[0] = str(exc)
                         app.state.startup_effect_release_error = startup_effect_release_error[0]
                         logger.exception("Deferred startup failed after the effect fence opened.")
@@ -2026,6 +2039,9 @@ def create_app(
             try:
                 background_tasks.shutdown()
             finally:
+                await asyncio.to_thread(
+                    deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
+                )
                 # Hold the Mac awake until workers have drained.
                 if machine_power is not None and app.state.machine_power_started:
                     app.state.machine_power_started = False
@@ -2302,17 +2318,6 @@ def create_app(
             set_team_session_cookie(response, session)
         return response
 
-    # FastAPI prepends decorator middleware as it is registered. Add CORS only
-    # after those refusal owners so their early responses retain allowed-origin
-    # headers while authentication and body limits remain inside the envelope.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     @app.exception_handler(PatchRejected)
     async def patch_rejected(_: Request, exc: PatchRejected) -> JSONResponse:
         status = 409 if any(item.code == "stale-node-edit" for item in exc.report.messages) else 422
@@ -2397,6 +2402,17 @@ def create_app(
     if web_dist.exists():
         app.mount("/", _WebPages(directory=web_dist, html=True), name="web")
 
+    if request_host_guard is not None:
+        if space_kind == "team" and request_host_guard.team_access_url is None:
+            logger.warning(
+                "Team server has no configured public origin; only loopback and "
+                "desktop-relay hosts are accepted."
+            )
+        app.add_middleware(
+            HostGuard,
+            port=request_host_guard.port,
+            team_access_url=request_host_guard.team_access_url,
+        )
     return app
 
 

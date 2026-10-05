@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import shlex
 import shutil
@@ -896,20 +898,117 @@ def test_probe_error_preserves_unicode_line_separators(profile):
 def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
     import tomllib
 
+    from rcp.agents.hidden_read import WEBKIT_READ_DENY_PATHS
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.providers.codex.profile import (
-        CODEX_READ_DENY_PATHS,
         _codex_discuss_permission_profile,
         _codex_permission_profile,
     )
 
+    paths = tuple(path.replace("~", "/home/rcp", 1) for path in WEBKIT_READ_DENY_PATHS)
+    scope = HiddenReadScope(
+        execution_machine="local",
+        execution_host="",
+        os_account="rcp",
+        hidden_directories=paths,
+        enforcement=HiddenReadStatus(status="enforced"),
+    )
     for rendered in (
-        _codex_permission_profile(_granted_scope()),
-        _codex_discuss_permission_profile(tmp_path),
+        _codex_permission_profile(_granted_scope(), scope),
+        _codex_discuss_permission_profile(tmp_path, scope),
     ):
         profile = next(iter(tomllib.loads(rendered)["permissions"].values()))
         filesystem = profile["filesystem"]
-        assert all(filesystem[path] == "deny" for path in CODEX_READ_DENY_PATHS)
+        assert all(filesystem[path] == "deny" for path in paths)
         for config in ("tauri.conf.json", "tauri.dev-bundle.conf.json"):
             identifier = json.loads((Path("web/src-tauri") / config).read_text())["identifier"]
-            assert filesystem[f"~/Library/WebKit/{identifier}"] == "deny"
+            assert filesystem[f"/home/rcp/Library/WebKit/{identifier}"] == "deny"
         assert filesystem[":root"] == "read"
+
+
+@pytest.mark.parametrize(
+    "capability", ["discuss", "work_auto", "orchestrate", "scratch_patch", "paper_readonly"]
+)
+@pytest.mark.parametrize("runtime", ["codex.exec-json.v1", "codex.app-server-stdio.v1"])
+@pytest.mark.parametrize("session_id", [None, "resumed-session"])
+@pytest.mark.parametrize("unhidden", [False, True])
+def test_codex_hidden_read_scope_covers_every_capability(
+    tmp_path, capability, runtime, session_id, unhidden
+):
+    import tomllib
+
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
+    from rcp.providers import ProviderTurnRequest
+
+    scope = HiddenReadScope(
+        execution_machine="local",
+        execution_host="",
+        os_account="rcp",
+        hidden_directories=() if unhidden else ("/private/secrets",),
+        hidden_files=() if unhidden else ("/private/token",),
+        hidden_globs=() if unhidden else ("/private/rcp.sqlite3*",),
+        env_deny_list=() if unhidden else ("*_TOKEN*", "*SECRET*"),
+        enforcement=(
+            HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",))
+            if unhidden
+            else HiddenReadStatus(status="enforced")
+        ),
+    )
+    write_scope = (
+        _granted_scope().model_copy(update={"capability": capability})
+        if capability in {"work_auto", "orchestrate"}
+        else None
+    )
+    request = ProviderTurnRequest(
+        prompt="Inspect the stage",
+        binary="codex",
+        cwd=tmp_path,
+        model=None,
+        reasoning=None,
+        session_id=session_id,
+        read_dirs=[],
+        write_dirs=[],
+        write_scope=write_scope,
+        capability=capability,
+        provider_version="0.160.0",
+        hidden_read_scope=scope,
+    )
+    turn = CodexProfile().runtime(runtime).turn(request)
+    config = {}
+    for index, argument in enumerate(turn.command):
+        if argument == "--config":
+            config.update(tomllib.loads(turn.command[index + 1]))
+    profile = config["permissions"][config["default_permissions"]]
+    assert all(
+        profile["filesystem"][path] == "deny"
+        for path in (*scope.hidden_directories, *scope.hidden_files, *scope.hidden_globs)
+    )
+    assert profile["network"]["enabled"] is True
+    if capability == "paper_readonly":
+        assert ":workspace_roots" not in profile["filesystem"]
+    policy = config["shell_environment_policy"]
+    assert policy["inherit"] == "all"
+    assert policy["exclude"] == list(scope.env_deny_list)
+    assert policy["include_only"] == []
+    assert policy["set"] == {}
+    if runtime == "codex.app-server-stdio.v1":
+        turn.receive_line(json.dumps({"id": 1, "result": {}}))
+        thread = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
+        params = json.loads(thread.outgoing[0])["params"]
+        assert params["permissions"] == config["default_permissions"]
+        assert params["config"]["shell_environment_policy"] == policy
+        started = turn.receive_line(
+            json.dumps(
+                {
+                    "id": 3,
+                    "result": {
+                        "approvalPolicy": "never",
+                        "activePermissionProfile": {"id": params["permissions"]},
+                        "thread": {"id": session_id or "fresh"},
+                    },
+                }
+            )
+        )
+        # The turn inherits the verified profile; legacy sandboxPolicy would
+        # replace it and remove the selected-secret denies.
+        assert "sandboxPolicy" not in json.loads(started.outgoing[0])["params"]

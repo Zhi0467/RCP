@@ -243,6 +243,7 @@ async def stream_episode_report_run(
                         launcher,
                         cast(RunRequest, request),
                         prompt,
+                        service=service,
                         workspace=stage.workspace,
                         session_id=turn.wrapup.native_session_id,
                         read_dirs=[inputs_path],

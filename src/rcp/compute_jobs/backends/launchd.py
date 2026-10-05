@@ -69,6 +69,32 @@ class LaunchdBackend:
             raise
         return handle
 
+    def start_account_service(
+        self, service_root: str, argv: list[str], context: BackendContext
+    ) -> None:
+        """Bootstrap one stable service, or start its existing inactive job."""
+        from rcp.transport.state import _remote_script
+
+        handle = f"rcp-{PurePosixPath(service_root).name}"
+        path = f"{service_root}/service.plist"
+        plist = plistlib.dumps(
+            {"Label": handle, "ProgramArguments": argv, "RunAtLoad": True, "KeepAlive": False}
+        ).decode()
+        context.run(
+            ["python3", "-c", _remote_script("remote_job_files.py"), "write", path, plist],
+            check=True,
+        )
+        domain = f"gui/{context.target_uid()}"
+        result = context.run(
+            ["launchctl", "bootstrap", domain, path], timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
+        )
+        if result.returncode:
+            # No -k: a concurrently running service must never be stopped.
+            context.run(
+                ["launchctl", "kickstart", f"{domain}/{handle}"],
+                timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS,
+            )
+
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
             result = context.run(owner_command(self.id, handle, context.target_uid()))

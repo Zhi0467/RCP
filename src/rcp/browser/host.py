@@ -19,6 +19,11 @@ import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
+from rcp.agents.staged_hidden_read import (
+    PROBE_TIMEOUT_SECONDS,
+    bwrap_argv,
+    probe_hidden_read_wrapper,
+)
 from rcp.browser.libraries import apt_install_command, missing_library_packages
 from rcp.transport.compute_process_owner import (
     owner_alive,
@@ -79,6 +84,10 @@ class UnavailableError(RuntimeError):
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
         self.code = code
+
+
+# @playwright/cli declares Node 18, but the Playwright it runs refuses anything below 20.
+MIN_NODE_MAJOR = 20
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -161,9 +170,12 @@ class HostRuntime:
         self.deadline = (
             time.monotonic()
             + self.limits[
-                {"ensure": "start", "release": "close", "close": "close"}.get(
-                    request["action"], request["action"]
-                )
+                {
+                    "ensure": "start",
+                    "release": "close",
+                    "close": "close",
+                    "enable_linger": "readiness",
+                }.get(request["action"], request["action"])
             ]
         )
         self.env = {
@@ -178,6 +190,80 @@ class HostRuntime:
         self.cli = self.tools / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"
         self.core = self.tools / "node_modules" / "playwright-core"
         self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
+        self.hidden_read_command: list[str] = []
+        self.hidden_read_enforcement: dict | None = None
+        self.hidden_read_fingerprint: str | None = None
+
+    def browser_policy(self, reason: str | None = None) -> None:
+        """Use B's mount wrapper, retaining the browser's existing network environment."""
+        scope = self.request.get("hidden_read_scope")
+        self.hidden_read_command = []
+        if scope is None:
+            self.hidden_read_enforcement = None
+            self.hidden_read_fingerprint = None
+            return
+        reasons = set(scope["enforcement"]["reasons"])
+        if self.backend == "launchd":
+            reason = "browser_unwrapped_macos"
+        elif reason is None:
+            try:
+                readiness = probe_hidden_read_wrapper(
+                    timeout=max(
+                        0.001, min(PROBE_TIMEOUT_SECONDS, (self.deadline - time.monotonic()) / 2)
+                    )
+                )
+                if readiness["ready"]:
+                    executable = shutil.which("bwrap", path=self.env.get("PATH"))
+                    if executable is None:
+                        reason = "wrapper_unavailable"
+                    else:
+                        self.hidden_read_command = bwrap_argv(
+                            scope, "", executable=executable, persistent=True
+                        )[:-1]
+                else:
+                    reason = readiness["reason"] or "wrapper_unavailable"
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                reason = "wrapper_unavailable"
+        if reason:
+            reasons.add(reason)
+        self.hidden_read_enforcement = {
+            "status": "unhidden" if reasons else "enforced",
+            "reasons": sorted(reasons),
+        }
+        self.hidden_read_fingerprint = hashlib.sha256(
+            json.dumps(
+                [scope["fingerprint"], self.hidden_read_enforcement, self.hidden_read_command],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+    def start_with_policy(self, record: dict, executable: str) -> None:
+        deadline = self.deadline
+        wrapped = bool(self.hidden_read_command)
+        record.update(
+            hidden_read_fingerprint=self.hidden_read_fingerprint,
+            hidden_read_enforcement=self.hidden_read_enforcement,
+        )
+        self.save(record)
+        try:
+            # Leave time to clean up a failed wrapped job and admit an unhidden daemon.
+            if wrapped:
+                self.deadline = time.monotonic() + (deadline - time.monotonic()) / 2
+            self.start(record, executable)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            if not wrapped:
+                raise
+            self.deadline = deadline
+            self.close_record(record, preserve_leases=True)
+            self.browser_policy("wrapper_unavailable")
+            record.update(
+                hidden_read_fingerprint=self.hidden_read_fingerprint,
+                hidden_read_enforcement=self.hidden_read_enforcement,
+            )
+            self.save(record)
+            self.start(record, executable)
+        finally:
+            self.deadline = deadline
 
     def daemon_env(self) -> dict[str, str]:
         return {key: value for key, value in self.env.items() if key in _DAEMON_ENVIRONMENT}
@@ -259,8 +345,8 @@ class HostRuntime:
                 )
                 if linger.returncode or linger.stdout.strip() != "yes":
                     raise UnavailableError(
-                        "owner_unavailable",
-                        "Enable the execution account's systemd user manager and linger",
+                        "linger_disabled",
+                        "Background processes stop when this account's last session ends",
                     )
         if result.returncode:
             raise UnavailableError(
@@ -278,20 +364,33 @@ class HostRuntime:
         if not self.node:
             return self.readiness_result("node_missing")
         version = self.run([self.node, "--version"]).stdout.strip()
-        if int(version.lstrip("v").split(".")[0]) < 18:
+        if int(version.lstrip("v").split(".")[0]) < MIN_NODE_MAJOR:
             return self.readiness_result("node_too_old", version)
         if not self.npm:
             return self.readiness_result("npm_missing")
         return None
 
     @staticmethod
-    def readiness_result(status: str, detail: str | None = None, apt_command: str | None = None):
-        return {"status": status, "detail": detail, "apt_command": apt_command}
+    def readiness_result(
+        status: str,
+        detail: str | None = None,
+        apt_command: str | None = None,
+        admin_command: str | None = None,
+    ):
+        return {
+            "status": status,
+            "detail": detail,
+            "apt_command": apt_command,
+            "admin_command": admin_command,
+        }
 
     def executable(self) -> str:
         return self.run([self.node, "-e", _EXECUTABLE_PROBE, str(self.core)]).stdout.strip()
 
     def readiness(self, *, require_verified: bool = True) -> dict:
+        # Ownership is the account's, not the browser's: report it before any
+        # browser prerequisite, so a machine card always offers its fix.
+        self.owner_ready()
         prerequisite = self.prerequisites()
         if prerequisite:
             return prerequisite
@@ -329,7 +428,6 @@ class HostRuntime:
                 )
         if not os.access(executable, os.X_OK):
             return self.readiness_result("not_installed", "RCP Chromium is not executable")
-        self.owner_ready()
         verified = self.tools / "verified.json"
         if require_verified and (
             not verified.is_file() or json.loads(verified.read_text()).get("version") != CLI_VERSION
@@ -366,9 +464,11 @@ class HostRuntime:
             records.append(record)
         return records
 
-    def close_record(self, record: dict, *, delete: bool = False) -> None:
+    def close_record(
+        self, record: dict, *, delete: bool = False, preserve_leases: bool = False
+    ) -> None:
         # Persist intent before contact: retry after a controller interruption.
-        record["pending_close"] = True
+        record["pending_restart" if preserve_leases else "pending_close"] = True
         record["delete_profile"] = delete or record.get("delete_profile", False)
         self.save(record)
         workspace_exists = Path(record["workspace_dir"]).is_dir()
@@ -387,7 +487,9 @@ class HostRuntime:
             # Page snapshots and logs can hold signed-in content; delete with the profile.
             shutil.rmtree(self.record_path(record["owner_token"]).parent)
             return
-        record.update(pending_close=False, delete_profile=False, leases={})
+        record.update(pending_close=False, pending_restart=False, delete_profile=False)
+        if not preserve_leases:
+            record["leases"] = {}
         self.save(record)
 
     def start(self, record: dict, executable: str) -> None:
@@ -431,6 +533,8 @@ class HostRuntime:
             if result.returncode:
                 raise UnavailableError("owner_unavailable", result.stderr.strip())
         else:
+            if self.hidden_read_command:
+                command = [*self.hidden_read_command, "exec " + shlex.join(command)]
             # Keep environment literals out of systemd's version-dependent $ expansion.
             wrapper = owner_dir / "daemon.sh"
             if "$" in str(wrapper) or "$" in record["workspace_dir"]:
@@ -494,6 +598,7 @@ class HostRuntime:
             raise UnavailableError(
                 readiness["status"], readiness.get("detail") or readiness["status"]
             )
+        self.browser_policy()
         token = self.request["owner_token"]
         self.record_path(token)
         records = self.records()
@@ -510,6 +615,12 @@ class HostRuntime:
             raise UnavailableError("owner_mismatch", "Browser owner workspace changed")
         if record and record.get("pending_close"):
             raise UnavailableError("closing", "Browser owner is closing")
+        if record and (
+            record.get("pending_restart")
+            or record.get("hidden_read_fingerprint") != self.hidden_read_fingerprint
+        ):
+            # dispatch holds host_lock through stop/start; profile and leases survive.
+            self.close_record(record, preserve_leases=True)
         if not record or not self.alive(record):
             live = [r for r in records if r is not record and self.alive(r)]
             if len(live) >= self.limits["cap"]:
@@ -534,7 +645,7 @@ class HostRuntime:
                     "session_unreachable", "Owned daemon has no reachable session"
                 )
             self.save(record)
-            self.start(record, self.executable())
+            self.start_with_policy(record, self.executable())
         record["leases"][self.request["lease_id"]] = {
             "controller_id": controller,
             "controller_epoch": epoch,
@@ -542,14 +653,24 @@ class HostRuntime:
         record["last_used"] = time.time()
         self.save(record)
         return {
+            "hidden_read_enforcement": record.get("hidden_read_enforcement"),
             "session_name": record["session_name"],
             "invocation_dir": record["workspace_dir"],
-            "path_prefix": str(self.tools / "node_modules" / ".bin"),
+            "path_prefix": self.cli_launcher(),
             "env": {
                 "PLAYWRIGHT_CLI_SESSION": record["session_name"],
                 "PLAYWRIGHT_BROWSERS_PATH": str(self.tools / "browsers"),
             },
         }
+
+    def cli_launcher(self) -> str:
+        """Agents run the CLI with the Node readiness checked, never whichever is first on PATH."""
+        if not self.node:
+            raise UnavailableError("node_missing", "Node is missing from the execution account")
+        launcher = self.tools / "bin" / "playwright-cli"
+        atomic_write(launcher, f'#!/bin/sh\nexec {shlex.join([self.node, str(self.cli)])} "$@"\n')
+        launcher.chmod(0o700)
+        return str(launcher.parent)
 
     def release(self) -> dict:
         path = self.record_path(self.request["owner_token"])
@@ -582,7 +703,21 @@ class HostRuntime:
                 self.close_record(record, delete=self.request["delete_profile"])
         return {}
 
+    def enable_linger(self) -> dict:
+        """Let this account's user manager outlive its sessions, as the member asked."""
+        if self.backend == "systemd_user":
+            result = self.run(["loginctl", "enable-linger"], check=False)
+            if result.returncode:
+                account = pwd.getpwuid(os.getuid()).pw_name
+                return self.readiness_result(
+                    "linger_disabled",
+                    (result.stderr or result.stdout).strip() or None,
+                    admin_command=shlex.join(["sudo", "loginctl", "enable-linger", account]),
+                )
+        return self.readiness()
+
     def install(self) -> dict:
+        self.owner_ready()
         prerequisite = self.prerequisites()
         if prerequisite:
             return prerequisite
@@ -645,7 +780,7 @@ def dispatch(request: dict) -> dict:
             return getattr(runtime, action)()
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, UnavailableError) else "runtime_error"
-        if action in {"readiness", "install"}:
+        if action in {"readiness", "install", "enable_linger"}:
             return {"status": code, "detail": str(exc), "apt_command": None}
         if action == "release":
             return {"alive": False, "reason_code": code, "detail": str(exc)}

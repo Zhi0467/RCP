@@ -343,6 +343,7 @@ async def _process_experiment_watcher_maintenance(
                     launcher,
                     request,
                     correction_prompt,
+                    service=service,
                     workspace=workspace,
                     session_id=native_session_id,
                     read_dirs=read_dirs,

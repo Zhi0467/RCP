@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from rcp.core.models import HiddenReadScope
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
@@ -54,6 +55,7 @@ def acquire_turn_browser(
     execution: RemoteRunStage | None,
     workspace_dir: str,
     chat_id: str | None,
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> BrowserGrant:
     if not requested:
         return BrowserGrant()
@@ -82,6 +84,7 @@ def acquire_turn_browser(
             workspace_dir=workspace_dir,
             data_dir=store.path.parent,
             retained_lease_ids=_retained_browser_leases(store, owner.host_key),
+            hidden_read_scope=hidden_read_scope,
         )
     except Exception:
         logger.exception("Browser admission failed")
@@ -290,6 +293,7 @@ async def browser_turn(
     execution: AgentTaskExecution | None,
     remote_stage: RemoteRunStage | None,
     capability: str,
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> AsyncIterator[BrowserGrant]:
     """Resolve before rendering; release even if rendering or staging fails."""
     from rcp.runs.auto_research import AutoResearchRunRequest
@@ -314,6 +318,7 @@ async def browser_turn(
         execution=remote_stage,
         workspace_dir=str(workspace),
         chat_id=chat_id,
+        hidden_read_scope=hidden_read_scope,
     )
     try:
         if execution is not None:

@@ -25,7 +25,8 @@ def _claude_binary(tmp_path: Path, *, authenticated: bool = True, work_ready: bo
         "    print('2.1.266 (Claude Code)')\n"
         "elif args == ['auth', 'status']:\n"
         f"    print(json.dumps({{'loggedIn': {authenticated!r}}}))\n"
-        "elif '--settings' in args:\n"
+        # Every turn carries --settings now; only the Work probe skips persistence.
+        "elif '--no-session-persistence' in args:\n"
         "    settings = json.loads(args[args.index('--settings') + 1])\n"
         "    assert settings['sandbox'] == {'enabled': False}\n"
         "    assert settings['permissions']['defaultMode'] == 'dontAsk'\n"

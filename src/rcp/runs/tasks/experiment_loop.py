@@ -127,6 +127,7 @@ from rcp.runs.session_master import (
 )
 from rcp.runs.shared import (
     _pinned_to_profile,
+    _prepare_hidden_read_scope,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -535,6 +536,7 @@ async def _stage_work_turn(
             for item in context.repositories
         ]
         turn = WorkTurn(
+            data_dir=data_dir,
             service=service,
             request=request,
             execution=execution,
@@ -2658,6 +2660,17 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
+        turn.hidden_read_scope = await _prepare_hidden_read_scope(
+            service,
+            turn.request,
+            workspace=turn.workspace,
+            remote_stage=turn.remote_stage,
+            execution=turn.execution,
+            capability="work_auto",
+            execution_host=turn.execution_host,
+            data_dir=data_dir,
+            local_stage=turn.local_stage,
+        )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(
                 turn.request,
@@ -2666,6 +2679,7 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
                 execution=turn.execution,
                 remote_stage=turn.remote_stage,
                 capability="work_auto",
+                hidden_read_scope=turn.hidden_read_scope,
             )
         )
         resuming = turn.resuming
@@ -2924,6 +2938,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            data_dir=data_dir,
             service=service,
             request=request,
             execution=execution,

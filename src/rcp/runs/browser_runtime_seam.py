@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rcp.browser import Unavailable, close_owner, ensure_session, release_session
+from rcp.core.models import HiddenReadScope
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.transport import RemoteRunStage
 
@@ -16,6 +17,7 @@ def acquire_browser_grant(
     workspace_dir: str,
     data_dir: Path,
     retained_lease_ids: list[str],
+    hidden_read_scope: HiddenReadScope | None = None,
 ) -> BrowserGrant:
     lease = ensure_session(
         owner.token(),
@@ -23,6 +25,7 @@ def acquire_browser_grant(
         workspace_dir=workspace_dir,
         data_dir=data_dir,
         retained_lease_ids=retained_lease_ids,
+        hidden_read_scope=hidden_read_scope,
     )
     if isinstance(lease, Unavailable):
         return BrowserGrant(
@@ -35,6 +38,8 @@ def acquire_browser_grant(
     return BrowserGrant(
         requested=True,
         status="granted",
+        hidden_read_scope=hidden_read_scope,
+        hidden_read_enforcement=lease.hidden_read_enforcement,
         owner=owner,
         session_name=lease.session_name,
         invocation_dir=lease.invocation_dir,

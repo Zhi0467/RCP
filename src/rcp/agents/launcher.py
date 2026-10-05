@@ -27,12 +27,18 @@ from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup
 from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.prompts import hidden_read_prompt
 from rcp.agents.provider_accounts import ProviderAccounts
-from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
+from rcp.agents.provider_environment import (
+    ProviderCredentialStore,
+    ProviderProcessEnvironment,
+    unhidden_read_scope,
+)
 from rcp.agents.schema import EXPERIMENT_WATCH_OUTPUT_GLOB
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.core.models import HiddenReadScope
 from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
@@ -1124,6 +1130,7 @@ class AgentLauncher:
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1133,6 +1140,14 @@ class AgentLauncher:
         held.
         """
 
+        if hidden_read_scope is None:
+            hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
+        prompt += "\n\n" + hidden_read_prompt(
+            hidden_read_scope,
+            browser_enforcement=(
+                browser_grant.hidden_read_enforcement if browser_grant is not None else None
+            ),
+        )
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
@@ -1166,6 +1181,7 @@ class AgentLauncher:
                         operation_id=operation_id,
                         git_access=git_access,
                         browser_grant=browser_grant,
+                        hidden_read_scope=hidden_read_scope,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1214,6 +1230,7 @@ class AgentLauncher:
         operation_id: str | None = None,
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1274,6 +1291,8 @@ class AgentLauncher:
         if work_problem is not None:
             yield AgentEvent(event="error", text=work_problem)
             return
+        if hidden_read_scope is None:
+            hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
         legacy_command = (
@@ -1291,6 +1310,7 @@ class AgentLauncher:
                 capability=capability,
                 provider_version=getattr(readiness, "version", None),
                 browser_grant=browser_grant,
+                hidden_read_scope=hidden_read_scope,
             )
             if runtime.id == profile.legacy_runtime_id
             else None
@@ -1311,6 +1331,7 @@ class AgentLauncher:
                     provider_version=getattr(readiness, "version", None),
                     legacy_command=legacy_command,
                     browser_grant=browser_grant,
+                    hidden_read_scope=hidden_read_scope,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1358,18 +1379,18 @@ class AgentLauncher:
             environment = self.process_environment(provider, host).with_variables(
                 turn.environment, remote=bool(host)
             )
-            if browser_grant is not None and browser_grant.status == "granted":
-                environment = environment.with_variables(browser_grant.env, remote=bool(host))
-                if browser_grant.path_prefix:
-                    environment = environment.with_path_prefix(
-                        browser_grant.path_prefix, remote=bool(host)
-                    )
             if git_access is not None:
                 if git_access.host != host:
                     raise ValueError("Git access does not match the provider execution host.")
                 environment, notices = await git_access.prepare(environment)
                 for notice in notices:
                     yield AgentEvent(event="message", text=notice)
+            if browser_grant is not None and browser_grant.status == "granted":
+                environment = environment.with_variables(browser_grant.env, remote=bool(host))
+                if browser_grant.path_prefix:
+                    environment = environment.with_path_prefix(
+                        browser_grant.path_prefix, remote=bool(host)
+                    )
             local_cwd: str | None = str(cwd)
             if host:
                 command = ssh_arguments(
@@ -1854,6 +1875,7 @@ class AgentLauncher:
         capability: AgentCapability,
         provider_version: str | None = None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> list[str]:
         return profile_for(provider).command(
             prompt,
@@ -1868,6 +1890,7 @@ class AgentLauncher:
             capability=capability,
             provider_version=provider_version,
             browser_grant=browser_grant,
+            hidden_read_scope=hidden_read_scope,
         )
 
     def _discover_remote_provider(

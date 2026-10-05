@@ -187,8 +187,12 @@ turns add no notice.
 Each saved machine card loads its Browser row independently after mounting;
 readiness never delays the rest of the card. The row shows status and diagnostic
 detail, offers **Install** when the browser is absent, and tells the human to
-install Node 18+ and npm first when either is missing or too old. Missing system
-libraries show a selectable command and **Copy command**. Install shows progress
+install Node 20+ and npm first when either is missing or too old. Missing system
+libraries show a selectable command and **Copy command**. An account whose
+background processes stop at logout (`linger_disabled`) offers **Allow
+background processes**, which runs `loginctl enable-linger` as that account;
+when the host refuses, the row shows the administrator's command with **Copy
+command** instead. Install shows progress
 and disables repeat requests until it returns the new readiness. Failed checks
 and installs leave **Check again** available.
 
@@ -332,6 +336,22 @@ level, name filter, **Load more**, locked protected folders, **Use this
 folder**) rather than typed. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset
 compute** removes the optional block through the normal Settings **Save**.
+
+Each machine card also shows **Hidden folders** beside writable paths. Code-owned
+default directories, files, and globs are read-only rows with no removal control.
+**Add folder** opens the same folder picker; user additions have a remove control.
+Edits save immediately for all projects using that machine, and any member can
+edit them. Refusals stay inline with the attempted action. The effective
+**Enforced** or **Unhidden** state and its reasons remain visible, including
+readable keys and the macOS browser exception; a missing projection is explicitly
+unavailable, never shown as enforced. Errors and status use the ordinary card
+hierarchy, without muted explanatory subtitles. Local status combines wrapper
+readiness with current user-key and deploy-key signing evidence and the macOS
+browser exception. Remote status is `null`, rendered as checked at launch;
+Settings does not probe remote agents. Gaps appear only here and in doctor,
+without per-turn warning traces or badges; the agent prompt retains its effective
+status.
+
 Readiness uses the same label, tone, and pending presentation as compute
 connections, with one row per offered route (scheduler and helper). There is
 no Probe control: a save that changes the block checks it in the background,
