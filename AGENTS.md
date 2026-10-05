@@ -64,6 +64,8 @@ failures, shared-contract changes, or integration uncertainty warrant it.
   run `npm --prefix web run build` when source or types change.
 - Formatting and file hygiene: `uv run pre-commit run --files <changed paths>`,
   including new files. All-file hooks see tracked files only.
+- Types: pre-commit runs `basedpyright` against `.basedpyright/baseline.json`.
+  Fix a new error; never baseline it with `--writebaseline`. The baseline only shrinks.
 - User-visible workflows, reported product failures, and substantial route,
   background, or view changes need the affected served-app journey. Inspect
   network, console, and server logs; report the exact gap if it cannot be driven.
