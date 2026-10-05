@@ -74,8 +74,10 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
     token.touch()
     policy = {
         "hidden_directories": [str(data / "providers"), str(secret), str(tmp_path / "absent")],
-        "hidden_files": [str(token), str(tmp_path / "absent-file")],
+        "hidden_files": [str(token), str(tmp_path / "absent-file"), str(data / "tools" / "later")],
         "hidden_globs": [str(data) + "/rcp.sqlite3*"],
+        # The home is never emptied for a missing literal directly inside it.
+        "account_home": str(tmp_path),
     }
     argv = bwrap_argv(policy, "exit 23")
     data = Path(os.path.realpath(data))
@@ -87,8 +89,10 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
     assert ["--symlink", "tools", str(data / "link")] == mounts[2:5]
     assert ["--bind", str(data / "run-stage"), str(data / "run-stage")] == mounts[5:8]
     assert ["--bind", str(data / "tools"), str(data / "tools")] == mounts[8:11]
+    # A literal that does not exist yet is hidden by emptying its existing parent.
+    assert ["--tmpfs", str(data / "tools")] == mounts[11:13]
     # Masks inside a bound entry come after it; hidden or matching entries stay unbound.
-    assert mounts[11:] == [
+    assert mounts[13:] == [
         "--tmpfs",
         os.path.realpath(secret),
         "--ro-bind",

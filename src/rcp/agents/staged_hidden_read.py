@@ -170,6 +170,18 @@ def bwrap_argv(policy, command, *, executable="bwrap"):
     directories = {os.path.realpath(path) for path in policy.get("hidden_directories", ())}
     files = {os.path.realpath(path) for path in policy.get("hidden_files", ())}
     hidden = directories | files
+    # A literal that does not exist yet is hidden the same way under its parent.
+    # The account home is never emptied: that would discard new files written
+    # there. Deeper missing paths are rechecked at each command and browser start.
+    home = os.path.realpath(policy.get("account_home") or os.path.expanduser("~"))
+    for path in hidden:
+        parent = os.path.dirname(path)
+        if (
+            not os.path.lexists(path)
+            and os.path.isdir(parent)
+            and not (home == parent or home.startswith(parent.rstrip("/") + "/"))
+        ):
+            names.setdefault(parent, []).append(glob.escape(os.path.basename(path)))
     argv = [executable, "--dev-bind", "/", "/"]
     covered = []  # Roots already empty inside the sandbox.
     for parent in sorted(names, key=lambda path: (path.count("/"), path)):

@@ -399,7 +399,10 @@ path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
 Hidden globs vary only their last path component. On Linux the wrapper empties
 each glob's parent and binds its other existing entries back, so a match created
 after a shell or browser daemon starts, such as a WAL file or a backup, stays
-hidden. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>` on
+hidden. A hidden literal that does not exist yet is hidden the same way under its
+existing parent, except directly in the account home, which is never emptied;
+deeper missing paths are rechecked at each command and browser start, and a
+changed mask set restarts the browser daemon. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>` on
 the execution host, outside every write root and inside the hidden set.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's

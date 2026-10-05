@@ -39,6 +39,7 @@ from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
+    _prepare_hidden_read_scope,
     _protected_run_stage_roots,
     _remove_local_tree,
     _safe_stage_name,
@@ -137,6 +138,17 @@ async def stream_branch_merge_task(
         )
         # A merge orchestrator never carries a provider session into its turn.
         execution.bind_write_scope(write_scope, resumes_native_session=False)
+        # Every merge turn hides the same selected secrets as other orchestration.
+        hidden_read_scope = await _prepare_hidden_read_scope(
+            service,
+            request,
+            workspace=workspace,
+            remote_stage=remote_stage,
+            execution=execution,
+            capability="orchestrate",
+            data_dir=data_dir,
+            local_stage=local_stage,
+        )
 
         async def code_turn() -> AsyncIterator[str]:
             # The agent lands the code in its own turn; RCP verifies before anything else.
@@ -151,6 +163,7 @@ async def stream_branch_merge_task(
                     verify=lambda: verify_episode_merge_code(execution.store, episode),
                     execution=execution,
                     binary=machine.provider_paths.get(request.provider),
+                    hidden_read_scope=hidden_read_scope,
                 )
             ) as stream:
                 async for frame in stream:
@@ -269,6 +282,7 @@ async def stream_branch_merge_task(
                     code_block=code_block,
                     code_roots=list(write_scope.repository_roots) if code else None,
                     code_landed=code_landed,
+                    hidden_read_scope=hidden_read_scope,
                 )
             ) as stream:
                 async for frame in stream:

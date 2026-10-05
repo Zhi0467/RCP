@@ -244,6 +244,22 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
         assert "provider_native_tools_uncovered" in scope.enforcement.reasons
 
 
+def test_every_task_launch_resolves_or_carries_a_scope():
+    from rcp import runs
+
+    # A call with neither would silently launch with the empty unhidden scope.
+    calls = [
+        (path.stem, node.lineno, {keyword.arg for keyword in node.keywords})
+        for path in sorted(Path(runs.__file__).parent.rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_stream_agent_events"
+    ]
+    assert calls
+    assert [call for call in calls if not {"service", "hidden_read_scope"} & call[2]] == []
+
+
 def _browser_admission_calls():
     from rcp import runs
 
