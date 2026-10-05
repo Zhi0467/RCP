@@ -72,6 +72,12 @@ targeted poisoning of RCP content; egress filtering.
 - When a host cannot enforce hiding (no `bwrap`, or user namespaces blocked as
   on Ubuntu 24.04), the launch runs unhidden with a visible warning in the turn,
   Settings, and doctor. It never blocks.
+- The macOS Keychain stays open to tool calls. RCP's own items (owner secret,
+  team credentials, local-HTTPS sealing key) trust Apple's `security` tool, so an
+  agent can read them, but they work only against the loopback backend, the
+  tailnet-only team server, or the RCP window, so they are worth little to a
+  remote attacker. Blocking the Keychain would break `gh` and Keychain-backed
+  Git. Developer ID signing with app-scoped items is the future fix.
 - The claim is "selected secrets are unreadable on supported launches", never
   "private data is removed": research data stays readable by design.
 
@@ -97,8 +103,7 @@ targeted poisoning of RCP content; egress filtering.
    the WebKit storage entries now in `CODEX_READ_DENY_PATHS`.
 3. One staged, stdlib-only wrapper, shipped from its source module like
    `agents/staged_command_client.py`: an environment allow list, then a Seatbelt
-   profile on macOS (`allow default`, deny the hidden paths, deny the Keychain
-   service lookup) or `bwrap --dev-bind / /` with the hidden paths masked on
+   profile on macOS (`allow default`, deny the hidden paths) or `bwrap --dev-bind / /` with the hidden paths masked on
    Linux (no network namespace). A readiness probe per host chooses between
    enforced and the visible-warning fallback.
 4. Provider wiring, all rendered from the scope:
