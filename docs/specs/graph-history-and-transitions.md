@@ -335,7 +335,7 @@ status: `absent` before the commit point, `present` after it, or `unknown`
 when the commit point's answer was lost. It is never correctable or
 repairable. A halted replay stays a non-correctable rejection: history is
 read-only until a human repairs it, and a lost link is not the cause. The task
-keeps its Patch text (invariant 9).
+keeps its Patch text.
 
 An ordinary conversation Work turn in that state offers **Apply again**
 (`POST …/tasks/{operation_id}/apply-graph-update-again`, patch-capable identity,

@@ -2563,7 +2563,8 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
     """A Retry reuses the chat folder, so a survivor is not this attempt's handoff.
 
     Applying it would commit the previous attempt's maintenance under this
-    attempt's authorization, which invariant 10c forbids.
+    attempt's authorization; conversation scratch belongs to the stable chat,
+    not to one turn (`clear_turn_handoff_files`).
     """
 
     store = AppStore(tmp_path / "retry-survivor.sqlite3")

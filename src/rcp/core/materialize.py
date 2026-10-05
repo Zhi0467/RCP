@@ -310,7 +310,9 @@ def _fork_state(state: GraphState) -> GraphState:
     ambiguities and glossary terms inside them are shared. That is
     safe because ``_apply_patch`` never mutates one of those objects in place —
     every change replaces a container slot or the whole attribute — so a patch
-    that raises part-way leaves the caller's containers untouched.
+    that raises part-way leaves the caller's containers untouched
+    (`tests/test_history.py::test_patch_failing_part_way_leaks_no_earlier_operation`,
+    `tests/test_glossary_authoring.py::test_failed_apply_after_glossary_upsert_preserves_shared_previous_term`).
 
     Deep-copying instead made replay quadratic in graph size: it dominated
     materialization at 98% of total time, and a 800-patch log took 15s to open.
@@ -566,6 +568,12 @@ def _apply_patch(
             state.edges[edge_id] = edge.model_copy(update={"layer": derived})
 
     state.revision = max(state.revision, revision)
+    # The ingestion watermark moves only for an ingestion Patch that
+    # materialized, so a failed or rejected run and every conversation turn
+    # leave it alone. It is an overlap-tolerant timestamp, not an exactly-once
+    # cursor (tests/test_direct_ingestion_run.py::
+    # test_failed_graph_run_stages_no_conversation_bytes_and_keeps_watermark,
+    # tests/test_direct_ingestion_contract.py).
     if patch.kind in {"seed", "refresh"}:
         state.last_refresh_at = patch.created_at
 

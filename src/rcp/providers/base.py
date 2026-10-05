@@ -101,6 +101,15 @@ class ProviderUsage(BaseModel):
 
 @dataclass(frozen=True)
 class ProviderStreamEvent:
+    """One decoded provider event.
+
+    `answer` is the provider's labelled final assistant message, the human's
+    reply; every other assistant item, in-flight partial, reasoning, command or
+    todo trace is a `message`. Provider profiles make that call, nothing
+    downstream re-labels
+    (`tests/test_launcher.py::test_only_the_final_assistant_message_is_an_answer`).
+    """
+
     event: Literal["session", "message", "answer", "error", "raw"]
     text: str = ""
     session_id: str | None = None
