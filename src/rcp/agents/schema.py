@@ -638,7 +638,15 @@ def prepare_agent_patch(
     source_effect_sha256: str | None = None,
     profile: AgentProfile | None = None,
 ) -> Patch:
-    """Wrap one semantic agent deliverable in RCP-owned canonical metadata."""
+    """Wrap one semantic agent deliverable in RCP-owned canonical metadata.
+
+    Conversation and ingestion are different lifecycles that share launch
+    plumbing only: the agent Patch schema has no coverage or cursor operation
+    and `processed_cursors` is always empty here, so a chat turn can never
+    advance an ingestion watermark or cursor
+    (`tests/test_direct_ingestion_contract.py`,
+    `tests/test_api.py::test_chat_does_not_assemble_or_project_transcripts`).
+    """
 
     resolved_profile = _agent_patch_profile(draft, profile)
     normalized = _agent_patch_model(resolved_profile).model_validate(

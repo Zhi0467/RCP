@@ -158,8 +158,8 @@ def _existing_patch_digest(
 ) -> str | None:
     """Fingerprint a patch already sitting in the stage before a launch.
 
-    A continuation runs in the stage its earlier attempt was given, and
-    invariant 9 keeps that attempt's `patch.json` on disk. Without this
+    A continuation runs in the stage its earlier attempt was given, and a
+    failed attempt keeps its `patch.json` on disk. Without this
     fingerprint a provider that writes nothing at all has its predecessor's
     file collected as this launch's deliverable.
     """

@@ -409,7 +409,7 @@ they never copy the controller's PATH. Codex retains `shell_environment_policy={
 Browser actions execute in an RCP-started process outside the provider sandbox.
 The CLI permits agent-written Playwright code and writes outside the chat's write
 roots. It can reach any address available to its execution account. The human's
-grant accepts this boundary; `patch.json` remains the only graph-change channel.
+grant accepts this boundary; the task stage remains the only graph-change channel.
 
 ### Claude
 
@@ -649,8 +649,14 @@ the one its session began with.
 
 ## One graph output channel
 
-An agent writes `patch.json` only in its exact RCP-owned stage. That file is the
-sole graph-change channel. Work repository edits carry operational authority,
+An agent's exact RCP-owned task stage is the sole graph-change channel. RCP
+collects `patch.json` there once the invocation ends. A conversation turn reads
+that exact name and nothing else. An ingestion run and a branch merge collect
+`patch.json` when it holds a Patch; when it is missing or not patch-shaped they
+collect exactly one other patch-shaped JSON file from the stage, and refuse more
+than one. They examine at most eight JSON files, `patch.json` first and then by
+name; a file beyond that window is not collected. Work repository edits carry
+operational authority,
 not graph authority, and canonical `.research` stays outside agent write roots.
 RCP never extracts a Patch from stdout, an answer, provider directive, artifact,
 URL, or repository file.

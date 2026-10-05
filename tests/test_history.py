@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 
 import rcp.config as config_module
 from rcp.config import load_manifest
+from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import GraphState, Patch, ValidationMessage
 from rcp.core.operations import operation_dict
 from rcp.core.research_md import render_research_md
@@ -928,10 +930,14 @@ def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
     """A patch is all-or-nothing even when an earlier op in it already applied.
 
     `_fork_state` shares node objects between revisions and only copies the
-    containers, so this is the property that keeps that sharing safe.
+    containers, so this is the property that keeps that sharing safe. The
+    failure has to happen inside apply, after the first operation landed in
+    the fork: a validation rejection never reaches the fork and proves nothing.
     """
     history = _seeded_history(manifest)
     before = history.state()
+    shared_nodes = dict(before.nodes)
+    shared_edges = dict(before.edges)
     partial = _agent_patch(
         [
             {
@@ -949,25 +955,42 @@ def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
                 ],
             },
             {
-                "op": "create_edges",
-                "edges": [
-                    {
-                        "source": "rq/transfer-after-shift",
-                        "target": "hyp/replanning-restores-plasticity",
-                        "relation": "not_a_relation",
-                    }
-                ],
+                "op": "update_nodes",
+                "nodes": [{"id": "hyp/missing", "changes": {"title": "Never applied"}}],
             },
         ]
     )
 
-    appended, result = history.append(partial, raise_on_reject=False)
+    with pytest.raises(KeyError):
+        apply_valid_patch(before, partial)
 
-    assert result.reports[appended.revision].rejected is True
-    after = history.state()
-    assert "rq/transfer-after-shift" not in after.nodes
-    assert set(after.nodes) == set(before.nodes)
-    assert set(after.edges) == set(before.edges)
+    assert "rq/transfer-after-shift" not in before.nodes
+    assert before.nodes == shared_nodes
+    assert before.edges == shared_edges
+    assert all(before.nodes[node_id] is node for node_id, node in shared_nodes.items())
+    assert history.state().nodes == shared_nodes
+
+
+def test_interrupted_canonical_write_leaves_the_previous_file_intact(manifest, monkeypatch) -> None:
+    """Canonical files are published whole or not at all.
+
+    A crash between the temporary file and the rename leaves the previous
+    bytes in place; the partial content never reaches the canonical path.
+    """
+    target = manifest.research_dir / "graph.json"
+    target.write_text('{"previous": true}\n', encoding="utf-8")
+    before = target.read_bytes()
+
+    def interrupted_replace(source, destination):
+        raise OSError("power lost before the rename")
+
+    monkeypatch.setattr(os, "replace", interrupted_replace)
+    with pytest.raises(OSError):
+        HistoryManager._atomic_text(target, '{"partial":')
+
+    assert target.read_bytes() == before
+    temporaries = [path for path in target.parent.iterdir() if path.name.startswith(".graph.json.")]
+    assert temporaries, "the interrupted bytes stay in the temporary file"
 
 
 def test_invalid_agent_patch_is_auditable_but_not_materialized(manifest) -> None:

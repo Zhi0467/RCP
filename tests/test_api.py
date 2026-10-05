@@ -49,6 +49,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import (
+    _MAX_PATCH_CANDIDATES,
     AgentOutputProblem,
     _collect_patch_text,
     _existing_exact_patch_digest,
@@ -2158,6 +2159,23 @@ def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> N
     (tmp_path / "backup.json").write_text(patch, encoding="utf-8")
     with pytest.raises(AgentOutputProblem):
         _collect_patch_text(tmp_path, None)
+
+
+def test_patch_collector_examines_a_bounded_window_of_json_files(tmp_path) -> None:
+    """The collector reads at most `_MAX_PATCH_CANDIDATES` JSON files, `patch.json`
+    first and then by name; a candidate sorted beyond that window is not seen."""
+    patch = agent_patch_json(refresh_patch())
+    for index in range(_MAX_PATCH_CANDIDATES):
+        (tmp_path / f"a{index:02d}.json").write_text('{"kind": "note"}', encoding="utf-8")
+    (tmp_path / "zz-patch.json").write_text(patch, encoding="utf-8")
+
+    with pytest.raises(AgentOutputProblem):
+        _collect_patch_text(tmp_path, None)
+
+    (tmp_path / "patch.json").write_text(patch, encoding="utf-8")
+    text, name = _collect_patch_text(tmp_path, None)
+    assert name == "patch.json"
+    assert text == patch
 
 
 def test_exact_patch_digest_ignores_patch_shaped_drafts(tmp_path) -> None:

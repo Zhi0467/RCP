@@ -68,7 +68,7 @@ def test_demo_fixture_still_offers_the_work_the_scenarios_open_it_for(
 
 
 def test_checked_in_graph_json_is_what_the_patch_log_produces(demo_state: Path) -> None:
-    """`graph.json` is an output (invariant 2). If the committed one describes a
+    """`graph.json` is an output (invariant 1). If the committed one describes a
     graph the log cannot produce, someone hand-edited it, or it rotted against a
     code change — either way the fixture stops being a trustworthy starting state.
 

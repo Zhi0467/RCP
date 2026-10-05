@@ -204,8 +204,8 @@ per-turn parts.
   masters v2→v3. The shared `MASTER_VERSION` stays.
 - **Question snapshots:** each fresh, recovery, or wake launch carries a bounded
   list of open questions, dismissals not yet delivered, and newly delivered
-  answers, read from question records and never from chat transcripts
-  (invariant 10d). Larger snapshots use the existing input staging. Delivery
+  answers, read from question records and never from chat transcripts.
+  Larger snapshots use the existing input staging. Delivery
   attribution is persisted, so a failed launch does not swallow a dismissal.
 
 ## Slices

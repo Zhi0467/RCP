@@ -172,6 +172,14 @@ test("a pasted token cannot be submitted through the recheck button", async () =
     );
     const recheck = page.getByRole("button", { name: "Verify sign-in" });
     await recheck.waitFor();
+    // The two evaluate calls above return before React commits the rows they
+    // schedule, so wait for the enabled state instead of reading it once.
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll("button")].find(
+          (b) => b.textContent.trim() === "Verify sign-in",
+        )?.disabled === false,
+    );
     assert.equal(await recheck.isEnabled(), true);
     // Typing a token makes the submit the only live action, so the recheck
     // cannot quietly test the old credential and report the paste as failed.

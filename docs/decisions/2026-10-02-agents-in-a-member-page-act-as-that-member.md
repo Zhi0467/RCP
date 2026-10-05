@@ -45,7 +45,7 @@ confirmation; any confirmation is the host agent's own.
   for a tap on a card that shows the exact command and repository, even when
   voice confirmation is off. WebMCP does not get this tool, because a host
   agent has no RCP card to show.
-- **Invariant 10d** is about prior transcripts becoming task authority. The
+- **The native chat context rule** is about prior transcripts becoming task authority. The
   voice agent can read a conversation and then send a Work message the member
   asked for. That message is new input from the member's session, recorded as
   the member's, not a replayed transcript.

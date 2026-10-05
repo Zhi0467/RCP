@@ -1,3 +1,12 @@
+"""Exact filesystem write roots for Work-like launches.
+
+Context, graph target, and write scope are distinct: a repository pointer or
+graph context in the prompt grants no filesystem authority, and the scope is
+built only from the repositories the run admitted. Unadmitted repositories,
+canonical `.research` state, and stage inputs stay read-only
+(`tests/test_write_scope.py`, `tests/test_dispatch_authority.py`).
+"""
+
 from __future__ import annotations
 
 import hashlib

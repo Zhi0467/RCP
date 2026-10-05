@@ -31,7 +31,7 @@ reason ([decision](2026-09-29-artifacts-are-rcp-owned-and-edited-in-place.md)).
 ## Why record during the day and consolidate at night
 
 The agent that hit the problem knows the lesson; a later turn cannot read its
-transcript (invariant 10d). So lessons are written on the hot path, and the
+transcript (the native chat context rule). So lessons are written on the hot path, and the
 nightly turn does the slow work of merging and pruning, the same split as
 encoding during the day and consolidating while asleep.
 
