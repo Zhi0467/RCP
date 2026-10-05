@@ -312,13 +312,13 @@ def route(path, source, target):
 
 
 # The transcript readers live on the project service for display and backup.
-TRANSCRIPT_READERS = (
-    "chat_transcript(",
-    "chat_transcripts(",
+TRANSCRIPT_READERS = {
+    "chat_transcript",
+    "chat_transcripts",
     "_canonical_chat_summaries",
     "_canonical_chat_files",
     "canonical_chat_backup_sources",
-)
+}
 TASK_RUNTIME = ("runs", "agents", "providers")
 TRANSCRIPT_PATH_RESOLVERS = {"_chat_path", "rcp.runs.chat._chat_path"}
 
@@ -332,6 +332,27 @@ def _reads_a_file(node: ast.AST, aliases: dict[str, str]) -> bool:
         name, _ = _call_name(node, aliases)
         return name in BUILTIN_OPENERS
     return False
+
+
+def _references_transcript_reader(node: ast.AST, aliases: dict[str, str]) -> bool:
+    """Any mention of a reader, called or passed along as a callback."""
+    if isinstance(node, ast.Attribute):
+        return node.attr in TRANSCRIPT_READERS
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id).rsplit(".", 1)[-1] in TRANSCRIPT_READERS
+    return False
+
+
+def test_transcript_reader_detection_sees_callbacks_and_aliases() -> None:
+    source = """
+from rcp.service import canonical_chat_backup_sources as backups
+
+async def builder(service, chat_id):
+    transcript = await asyncio.to_thread(service.chat_transcript, chat_id)
+    sources = backups(service.root)
+    return service.chat_transcripts([chat_id])
+"""
+    assert _flagged_lines(source, _references_transcript_reader) == [5, 6, 7]
 
 
 def _resolves_transcript_path(node: ast.AST, aliases: dict[str, str]) -> bool:
@@ -398,10 +419,13 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
     offenders: list[str] = []
     for package in TASK_RUNTIME:
         for path in _python_files(SOURCE / package):
-            text = path.read_text(encoding="utf-8")
-            for reader in TRANSCRIPT_READERS:
-                if reader in text:
-                    offenders.append(f"{path.relative_to(SOURCE)} calls {reader.rstrip('(')}")
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            aliases = _import_aliases(tree, path)
+            for node in ast.walk(tree):
+                if _references_transcript_reader(node, aliases):
+                    offenders.append(
+                        f"{path.relative_to(SOURCE)}:{node.lineno} references a reader"
+                    )
     assert offenders == [], "\n".join(offenders)
 
     # Anywhere in the task runtime, the transcript path is obtained only to
