@@ -267,7 +267,7 @@ def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
 
 
 def hidden_scope(path="/selected/secret"):
-    from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST
+    from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 
     return HiddenReadScope(
@@ -275,7 +275,7 @@ def hidden_scope(path="/selected/secret"):
         execution_host="",
         os_account="researcher",
         hidden_files=(path,),
-        env_allow_list=HIDDEN_READ_ENV_ALLOW_LIST,
+        env_deny_list=HIDDEN_READ_ENV_DENY_LIST,
         enforcement=HiddenReadStatus(status="enforced"),
     )
 

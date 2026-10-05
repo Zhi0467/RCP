@@ -3041,7 +3041,7 @@ export interface HiddenReadScope {
   readonly hidden_directories: readonly string[];
   readonly hidden_files: readonly string[];
   readonly hidden_globs: readonly string[];
-  readonly env_allow_list: readonly string[];
+  readonly env_deny_list: readonly string[];
   readonly enforcement: HiddenReadStatus;
   readonly key_evidence: readonly HiddenReadKeyEvidence[];
   readonly fingerprint: string;

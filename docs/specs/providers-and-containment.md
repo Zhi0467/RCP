@@ -283,8 +283,9 @@ Settings adds per-machine hidden folders to the code defaults. The shared host
 validator bounds and canonicalizes absolute folders, rejects overlap in either
 direction with checkouts, stages, required tools and command sockets, and
 rechecks at launch. These additions live beside machine writable paths, never in
-project manifests; any member may edit them. Tool environments use the resolved
-allow list while provider authentication remains outside the tool wrapper.
+project manifests; any member may edit them. Tool environments drop names matching the resolved
+deny list (case-insensitive globs of credential-looking names) and keep every
+other variable; provider authentication remains outside the tool wrapper.
 Credential files read directly by ordinary tools, including `~/.config/gh`,
 `~/.netrc`, and `~/.aws`, are not defaults. The macOS Keychain stays open so
 Keychain-backed Git and `gh` continue working.
@@ -392,7 +393,7 @@ use; one owned by another account is refused.
 Selected-secret policy is rendered from `HiddenReadScope` on every capability:
 Claude receives the staged shell prefix plus native read-path denies; Codex
 receives file, directory, and glob denies in both exec and app-server policies,
-plus the environment allow list; OpenCode receives the shell wrapper and native
+plus the environment deny list; OpenCode receives the shell wrapper and native
 read, grep, glob, and list denies where its rules can express them. An uncovered
 native tool makes the launch visibly unhidden. macOS shell calls use a selected
 path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.

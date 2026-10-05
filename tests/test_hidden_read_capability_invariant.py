@@ -10,7 +10,7 @@ from typing import get_args
 
 import pytest
 
-from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST
+from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
 from rcp.agents.staged_hidden_read import clean_environment
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
@@ -98,12 +98,12 @@ def _remove_only_added_denies(provider, rendered, empty, populated):
                         assert permission["filesystem"].pop(path) == "deny"
             if "shell_environment_policy" in config:
                 policy = config["shell_environment_policy"]
-                assert policy["include_only"] == list(populated.env_allow_list)
-                policy["include_only"] = list(empty.env_allow_list)
+                assert policy["exclude"] == list(populated.env_deny_list)
+                policy["exclude"] = list(empty.env_deny_list)
         if provider == "codex_app_server":
             policy = rendered["thread"]["params"]["config"]["shell_environment_policy"]
-            assert policy["include_only"] == list(populated.env_allow_list)
-            policy["include_only"] = list(empty.env_allow_list)
+            assert policy["exclude"] == list(populated.env_deny_list)
+            policy["exclude"] = list(empty.env_deny_list)
 
 
 @pytest.mark.parametrize("provider", ("claude", "codex", "codex_app_server", "opencode"))
@@ -112,8 +112,7 @@ def _remove_only_added_denies(provider, rendered, empty, populated):
 def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp_path):
     # The empty baseline passes every variable in the current launch, including
     # provider authentication. The populated scope may filter tool environments.
-    environment = {**os.environ, "TEST_PRIVATE_TOKEN": "secret"}
-    allowed = set(HIDDEN_READ_ENV_ALLOW_LIST) | set(environment)
+    environment = {**os.environ, "TEST_PRIVATE_TOKEN": "secret", "LAB_DATA_ROOT": "/data"}
     identity = {
         "execution_machine": "local",
         "execution_host": "",
@@ -121,20 +120,24 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
         "account_home": str(tmp_path / "home"),
         "enforcement": HiddenReadStatus(status="enforced"),
     }
-    empty = HiddenReadScope(**identity, env_allow_list=tuple(sorted(allowed)))
+    empty = HiddenReadScope(**identity)
     populated = HiddenReadScope(
         **identity,
         hidden_directories=("/secrets/folder",),
         hidden_files=("/secrets/private-key",),
         hidden_globs=("/secrets/database*",),
-        env_allow_list=HIDDEN_READ_ENV_ALLOW_LIST,
+        env_deny_list=HIDDEN_READ_ENV_DENY_LIST,
     )
     assert clean_environment(empty.model_dump(), environment) == environment
     assert clean_environment(populated.model_dump(), environment) == {
         name: value
         for name, value in environment.items()
-        if any(fnmatch.fnmatchcase(name, pattern) for pattern in populated.env_allow_list)
+        if not any(
+            fnmatch.fnmatchcase(name.upper(), pattern) for pattern in populated.env_deny_list
+        )
     }
+    assert "LAB_DATA_ROOT" in clean_environment(populated.model_dump(), environment)
+    assert "TEST_PRIVATE_TOKEN" not in clean_environment(populated.model_dump(), environment)
     write_scope = None
     if capability in {"work_auto", "orchestrate"}:
         write_scope = ProjectWriteScope.create(

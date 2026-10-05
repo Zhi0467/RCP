@@ -15,12 +15,15 @@ Agents retain SSH, Slurm, GPUs, systemd/launchctl, browser, and Git. Deliberate
 escapes through process managers, localhost SSH, or scheduler jobs are outside
 this threat model. Browser and Git capability never shrinks.
 
-One resolved provider-neutral scope owns the paths, environment allow list,
+One resolved provider-neutral scope owns the paths, environment deny list,
 effective status, key evidence, and fingerprint. Code-owned defaults cannot be
 removed in Settings. Any member may add machine hidden folders; the backend
 rejects overlap with required checkouts, stages, tools, sockets, and readable
-keys, and checks again at launch. Tool-call environments use an allow list;
-provider processes keep their own authentication outside the wrapper.
+keys, and checks again at launch. Tool-call environments use a deny list of
+credential-looking names rather than an allow list: an allow list silently
+dropped lab-specific, proxy, scheduler, and GPU variables, breaking capability;
+an unusually named secret can pass, which is the accepted cost. Provider
+processes keep their own authentication outside the wrapper.
 
 Private SSH identities and deploy keys are hidden only when their decoded
 public-key SHA256 fingerprint is listed by the correct host's agent and bounded

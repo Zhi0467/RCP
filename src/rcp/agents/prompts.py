@@ -1652,7 +1652,7 @@ def hidden_read_prompt(
             "hidden_directories",
             "hidden_files",
             "hidden_globs",
-            "env_allow_list",
+            "env_deny_list",
             "fingerprint",
         },
     )

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
-from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST, staged_hidden_read_source
+from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST, staged_hidden_read_source
 from rcp.agents.provider_environment import prepare_hidden_read_launch
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope, HiddenReadStatus
@@ -29,7 +29,7 @@ def _scope(home: str = "/home/research") -> HiddenReadScope:
         hidden_directories=("/secret/folder",),
         hidden_files=("/secret/file",),
         hidden_globs=("/secret/db*",),
-        env_allow_list=HIDDEN_READ_ENV_ALLOW_LIST,
+        env_deny_list=HIDDEN_READ_ENV_DENY_LIST,
         enforcement=HiddenReadStatus(status="enforced"),
     )
 
@@ -132,7 +132,7 @@ async def test_launcher_always_passes_scope(monkeypatch, tmp_path, provider, cap
         "hidden_directories",
         "hidden_files",
         "hidden_globs",
-        "env_allow_list",
+        "env_deny_list",
         "fingerprint",
     ):
         assert policy[field] == actual.model_dump(mode="json")[field]

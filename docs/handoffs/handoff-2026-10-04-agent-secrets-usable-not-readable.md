@@ -73,9 +73,10 @@ targeted poisoning of RCP content; egress filtering.
   may edit a team machine's list (RCP has no admin role). A path that overlaps
   a project checkout, a stage, `known_hosts`, or the command sockets is refused
   with a clear message.
-- Tool-call environments use an allow list (home, path, user, locale, terminal,
-  temporary directory, SSH agent socket, runtime directory, and RCP's own Git and
-  browser variables). Providers keep their own authentication.
+- Tool-call environments use a deny list (decided 2026-10-05): every variable
+  passes except credential-looking names (`*_TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+  `*_KEY`, `AWS_*`, ...), so a lab's own variables, proxies, Slurm, and GPUs keep
+  working. Providers keep their own authentication.
 - When a host cannot enforce hiding (no `bwrap`, or user namespaces blocked as
   on Ubuntu 24.04), the launch runs unhidden. It never blocks.
 - Gaps are shown per machine in Settings and in doctor, never as a per-turn
@@ -113,7 +114,7 @@ targeted poisoning of RCP content; egress filtering.
    them would break `gh`, Git, or cloud CLIs; a user may add them as hidden
    folders.
 3. One staged, stdlib-only wrapper, shipped from its source module like
-   `agents/staged_command_client.py`: an environment allow list, then a Seatbelt
+   `agents/staged_command_client.py`: an environment deny list, then a Seatbelt
    profile on macOS (`allow default`, deny the hidden paths) or `bwrap --dev-bind / /` with the hidden paths masked on
    Linux (no network namespace). A readiness probe per host chooses between
    enforced and the visible-warning fallback.
@@ -124,7 +125,7 @@ targeted poisoning of RCP content; egress filtering.
      differently from directories.
    - Codex: deny entries in every permission profile, including the
      ingestion/paper sandbox path and `app_server` thread and turn policies;
-     `shell_environment_policy` set to the allow list (`app_server` currently
+     `shell_environment_policy` excluding the deny list (`app_server` currently
      resets it to `{}`).
    - OpenCode: `SHELL` set to the wrapper acting as a shell.
 5. Browser (Linux): `browser/host.py` runs the wrapper inside the systemd job
@@ -152,7 +153,7 @@ merge into this one branch.
   fingerprint, machine payloads, and seams in `core/models.py`, `config.py`,
   `providers/base.py`, `storage/models.py`, `agents/hidden_read_scope.py`,
   `limits.py`, `web/src/types.ts`.
-- **B, policy:** defaults, host validation, environment allow list, the staged
+- **B, policy:** defaults, host validation, environment deny list, the staged
   wrapper, readiness, and fallback.
 - **C, backend and Git:** the account `ssh-agent`, identity confirmation,
   `IdentityAgent` transport, the `Host` check, doctor warnings.

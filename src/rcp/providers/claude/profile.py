@@ -71,7 +71,10 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             )
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
-        if request.hidden_read_scope is not None and request.hidden_read_scope.env_allow_list:
+        if (
+            request.hidden_read_scope is not None
+            and request.hidden_read_scope.account_home is not None
+        ):
             self.environment = {
                 "CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(request.hidden_read_scope.wrapper_path())
             }
@@ -637,7 +640,7 @@ def _claude_hidden_read_settings(scope: HiddenReadScope) -> dict[str, object]:
         *(_claude_absolute_pattern(path, directory=False) for path in scope.hidden_globs),
     ]
     deny = [f"Read({pattern})" for pattern in patterns]
-    if not scope.env_allow_list:
+    if scope.account_home is None:
         return {"env": {}, "permissions": {"deny": deny}}
     wrapper = scope.wrapper_path()
     # A granted root may contain the wrapper's home; its policy stays uneditable.

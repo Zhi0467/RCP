@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST, staged_hidden_read_source
+from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST, staged_hidden_read_source
 from rcp.agents.staged_hidden_read import (
     bwrap_argv,
     clean_environment,
@@ -121,7 +121,8 @@ def test_fallback_executes_with_clean_env_and_visible_reason(tmp_path, monkeypat
     from rcp.agents import staged_hidden_read
 
     policy = tmp_path / "policy.json"
-    policy.write_text(json.dumps({"env_allow_list": ["HOME"]}))
+    policy.write_text(json.dumps({"env_deny_list": ["*SECRET*"]}))
+    monkeypatch.setattr(os, "environ", {"HOME": "/home/research", "lab_secret": "value"})
     monkeypatch.setattr(
         staged_hidden_read,
         "probe_hidden_read_wrapper",
@@ -139,7 +140,7 @@ def test_fallback_executes_with_clean_env_and_visible_reason(tmp_path, monkeypat
     monkeypatch.setattr(os, "execve", execute)
     with pytest.raises(Executed):
         main(["--policy", str(policy), "-lc", "exit 29"])
-    assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": os.environ["HOME"]})]
+    assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": "/home/research"})]
     assert capsys.readouterr().err
 
 
@@ -156,7 +157,7 @@ def test_real_wrapper_hides_content_preserves_environment_streams_cwd_and_exit(
     public = tmp_path / "public"
     secret.write_text("PRIVATE-CONTENT")
     public.write_text("public-data")
-    policy = {"hidden_files": [str(secret)], "env_allow_list": HIDDEN_READ_ENV_ALLOW_LIST}
+    policy = {"hidden_files": [str(secret)], "env_deny_list": HIDDEN_READ_ENV_DENY_LIST}
     (tmp_path / "policy.json").write_text(json.dumps(policy))
     script = "\n".join(
         [

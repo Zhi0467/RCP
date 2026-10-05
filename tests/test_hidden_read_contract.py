@@ -68,7 +68,7 @@ def test_fingerprint_is_canonical_and_covers_effective_policy() -> None:
         "hidden_directories": ("/secrets/b", "/secrets/a"),
         "hidden_files": ("/secrets/token-b", "/secrets/token-a"),
         "hidden_globs": ("/data/backup-*", "/data/*.sqlite3"),
-        "env_allow_list": ("PATH", "HOME"),
+        "env_deny_list": ("PATH", "HOME"),
         "key_evidence": (_key("/keys/b"), _key("/keys/a")),
         "enforcement": HiddenReadStatus(status="unhidden", reasons=("ssh_key_agent_unconfirmed",)),
     }
@@ -89,7 +89,7 @@ def test_fingerprint_is_canonical_and_covers_effective_policy() -> None:
         "hidden_directories": ("/other",),
         "hidden_files": ("/other/token",),
         "hidden_globs": ("/other/*",),
-        "env_allow_list": ("HOME",),
+        "env_deny_list": ("HOME",),
         "enforcement": HiddenReadStatus(
             status="unhidden", reasons=("ssh_key_agent_unconfirmed", "wrapper_unavailable")
         ),
@@ -148,7 +148,7 @@ def test_policy_bounds() -> None:
         "hidden_directories": tuple(f"/folder/{i}" for i in range(HIDDEN_READ_PATH_MAX_COUNT + 1)),
         "hidden_files": ("/" + "x" * HIDDEN_READ_PATH_MAX_LENGTH,),
         "hidden_globs": tuple(f"/glob/{i}*" for i in range(HIDDEN_READ_PATH_MAX_COUNT + 1)),
-        "env_allow_list": tuple(f"ENV_{i}" for i in range(HIDDEN_READ_ENV_MAX_COUNT + 1)),
+        "env_deny_list": tuple(f"ENV_{i}" for i in range(HIDDEN_READ_ENV_MAX_COUNT + 1)),
         "key_evidence": tuple(_key(f"/key/{i}") for i in range(HIDDEN_READ_KEY_MAX_COUNT + 1)),
         "execution_machine": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
         "execution_host": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
@@ -158,7 +158,7 @@ def test_policy_bounds() -> None:
         with pytest.raises(ValidationError):
             _scope(**{name: value})
     with pytest.raises(ValidationError):
-        _scope(env_allow_list=("X" * (HIDDEN_READ_ENV_NAME_MAX_LENGTH + 1),))
+        _scope(env_deny_list=("X" * (HIDDEN_READ_ENV_NAME_MAX_LENGTH + 1),))
     with pytest.raises(ValidationError):
         _machine(hidden_folders=list(invalid["hidden_directories"]))
     with pytest.raises(ValidationError):
@@ -168,8 +168,8 @@ def test_policy_bounds() -> None:
 
 
 def test_duplicates_are_refused() -> None:
-    for name in ("hidden_directories", "hidden_files", "hidden_globs", "env_allow_list"):
-        value = "HOME" if name == "env_allow_list" else "/secret"
+    for name in ("hidden_directories", "hidden_files", "hidden_globs", "env_deny_list"):
+        value = "HOME" if name == "env_deny_list" else "/secret"
         with pytest.raises(ValidationError):
             _scope(**{name: (value, value)})
     with pytest.raises(ValidationError):
@@ -220,7 +220,7 @@ def test_contracts_are_strict_and_immutable() -> None:
         {"hidden_files": ["/secret"]},
         {"os_account": 12},
         {"unknown": True},
-        {"env_allow_list": ("TOKEN=value",)},
+        {"env_deny_list": ("TOKEN=value",)},
     ):
         with pytest.raises(ValidationError):
             _scope(**changes)

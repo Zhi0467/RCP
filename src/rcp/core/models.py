@@ -151,14 +151,14 @@ class HiddenReadScope(BaseModel):
     hidden_globs: tuple[HiddenReadPath, ...] = Field(
         default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
     )
-    env_allow_list: tuple[
+    env_deny_list: tuple[
         Annotated[
             str,
             Field(
                 min_length=1,
                 max_length=HIDDEN_READ_ENV_NAME_MAX_LENGTH,
-                # A trailing `*` admits a name prefix, as Codex's policy does.
-                pattern=r"^[A-Za-z_][A-Za-z0-9_]*\*?$",
+                # Case-insensitive name globs, as Codex's environment policy reads them.
+                pattern=r"^[A-Za-z0-9_*]+$",
             ),
         ],
         ...,
@@ -169,7 +169,7 @@ class HiddenReadScope(BaseModel):
     )
     fingerprint: str = Field(default="", pattern=r"^[0-9a-f]{64}$")
 
-    @field_validator("hidden_directories", "hidden_files", "hidden_globs", "env_allow_list")
+    @field_validator("hidden_directories", "hidden_files", "hidden_globs", "env_deny_list")
     @classmethod
     def canonical_entries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         if len(values) != len(set(values)):

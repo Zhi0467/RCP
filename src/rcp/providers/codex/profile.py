@@ -437,16 +437,16 @@ def _codex_read_denials(hidden_read_scope: HiddenReadScope | None = None) -> str
 
 
 def _codex_shell_environment_policy(scope: HiddenReadScope | None) -> dict[str, object]:
-    from rcp.agents.hidden_read import HIDDEN_READ_ENV_ALLOW_LIST
+    from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
 
-    allowed = list(scope.env_allow_list if scope else HIDDEN_READ_ENV_ALLOW_LIST)
+    denied = list(scope.env_deny_list if scope else HIDDEN_READ_ENV_DENY_LIST)
     return {
-        # An empty allow list is the explicit unhidden fallback: preserve the
+        # An empty deny list is the explicit unhidden fallback: preserve the
         # original tool environment, including Git and SSH authentication.
         "inherit": "all",
-        "include_only": allowed,
+        "include_only": [],
         "ignore_default_excludes": True,
-        "exclude": [],
+        "exclude": denied,
         "set": {},
     }
 
@@ -457,8 +457,9 @@ def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
         "--config",
         "shell_environment_policy={inherit="
         + json.dumps(policy["inherit"])
-        + ",ignore_default_excludes=true,"
-        "exclude=[],set={},include_only=" + json.dumps(policy["include_only"]) + "}",
+        + ",ignore_default_excludes=true,exclude="
+        + json.dumps(policy["exclude"])
+        + ",set={},include_only=[]}",
     ]
 
 

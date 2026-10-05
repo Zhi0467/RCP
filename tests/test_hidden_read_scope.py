@@ -8,7 +8,7 @@ import pytest
 
 from rcp.agents import hidden_read
 from rcp.agents.hidden_read import (
-    HIDDEN_READ_ENV_ALLOW_LIST,
+    HIDDEN_READ_ENV_DENY_LIST,
     HiddenFolderRejected,
     hidden_read_defaults,
     resolve_hidden_read_scope,
@@ -81,7 +81,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
             "PIP_INDEX_URL",
         )
     }
-    kept = clean_environment({"env_allow_list": HIDDEN_READ_ENV_ALLOW_LIST}, environment)
+    kept = clean_environment({"env_deny_list": HIDDEN_READ_ENV_DENY_LIST}, environment)
     # Operational variables pass; credential-bearing ones never do.
     assert set(kept) == set(list(environment)[:10])
 

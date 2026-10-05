@@ -224,7 +224,7 @@ def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability
         hidden_directories=("/secrets",),
         hidden_files=("/token",),
         hidden_globs=("/backup-*",),
-        env_allow_list=("PATH",),
+        env_deny_list=("PATH",),
         enforcement=HiddenReadStatus(
             status="unhidden", reasons=("provider_native_tools_uncovered",)
         ),

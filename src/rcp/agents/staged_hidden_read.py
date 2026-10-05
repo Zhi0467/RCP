@@ -242,11 +242,11 @@ def install(directory, files):
 
 
 def clean_environment(policy, environ):
-    allowed = policy["env_allow_list"]
-    exact = {name for name in allowed if not name.endswith("*")}
-    prefixes = tuple(name[:-1] for name in allowed if name.endswith("*"))
+    denied = [pattern.upper() for pattern in policy["env_deny_list"]]
     return {
-        name: value for name, value in environ.items() if name in exact or name.startswith(prefixes)
+        name: value
+        for name, value in environ.items()
+        if not any(fnmatch.fnmatchcase(name.upper(), pattern) for pattern in denied)
     }
 
 

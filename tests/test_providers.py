@@ -947,7 +947,7 @@ def test_codex_hidden_read_scope_covers_every_capability(
         hidden_directories=() if unhidden else ("/private/secrets",),
         hidden_files=() if unhidden else ("/private/token",),
         hidden_globs=() if unhidden else ("/private/rcp.sqlite3*",),
-        env_allow_list=() if unhidden else ("HOME", "PATH", "SSH_AUTH_SOCK"),
+        env_deny_list=() if unhidden else ("*_TOKEN*", "*SECRET*"),
         enforcement=(
             HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",))
             if unhidden
@@ -988,7 +988,8 @@ def test_codex_hidden_read_scope_covers_every_capability(
         assert ":workspace_roots" not in profile["filesystem"]
     policy = config["shell_environment_policy"]
     assert policy["inherit"] == "all"
-    assert policy["include_only"] == list(scope.env_allow_list)
+    assert policy["exclude"] == list(scope.env_deny_list)
+    assert policy["include_only"] == []
     assert policy["set"] == {}
     if runtime == "codex.app-server-stdio.v1":
         turn.receive_line(json.dumps({"id": 1, "result": {}}))

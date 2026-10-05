@@ -30,75 +30,31 @@ from rcp.rcp_home import command_socket_directory
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.ssh import control_directory_candidate
 
-# Names, or prefixes ending in `*`. Operational variables pass so Git, proxies,
-# schedulers, GPUs and toolchains keep working; families that commonly carry
-# credentials (PIP_*, UV_*, AWS_*, *_TOKEN, ...) do not.
-HIDDEN_READ_ENV_ALLOW_LIST = (
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "PATH",
-    "SHELL",
-    "LANG",
-    "LC_*",
-    "TERM",
-    "COLORTERM",
-    "TMPDIR",
-    "TZ",
-    "EDITOR",
-    "SSH_AUTH_SOCK",
-    "XDG_*",
-    "GIT_CONFIG_SYSTEM",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_NOSYSTEM",
-    "PLAYWRIGHT_CLI_SESSION",
-    "PLAYWRIGHT_BROWSERS_PATH",
-    "RCP_HIDDEN_READ_POLICY",
-    # Network: proxies and custom certificate authorities.
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "all_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS",
-    "GIT_SSL_CAINFO",
-    # Schedulers and accelerators.
-    "SLURM_*",
-    "CUDA_*",
-    "NVIDIA_VISIBLE_DEVICES",
-    "ROCR_VISIBLE_DEVICES",
-    "HIP_VISIBLE_DEVICES",
-    "OMP_NUM_THREADS",
-    "MKL_NUM_THREADS",
-    # Toolchains, environments and caches.
-    "LD_LIBRARY_PATH",
-    "LIBRARY_PATH",
-    "CPATH",
-    "PKG_CONFIG_PATH",
-    "MANPATH",
-    "PYTHONPATH",
-    "VIRTUAL_ENV",
-    "CONDA_*",
-    "MAMBA_*",
-    "MODULEPATH",
-    "MODULESHOME",
-    "LOADEDMODULES",
-    "LMOD_*",
-    "JAVA_HOME",
-    "GOPATH",
-    "GOROOT",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "NVM_DIR",
-    "HF_HOME",
-    "TORCH_HOME",
+# Case-insensitive globs over variable names. Tool calls keep every other
+# variable, so a lab's own settings, proxies, schedulers, GPUs and toolchains
+# work unchanged; names that commonly carry credentials are dropped.
+HIDDEN_READ_ENV_DENY_LIST = (
+    "*_TOKEN*",
+    "TOKEN",
+    "*SECRET*",
+    "*PASSWORD*",
+    "*PASSWD*",
+    "*PASSPHRASE*",
+    "*CREDENTIAL*",
+    "*API_KEY*",
+    "*APIKEY*",
+    "*ACCESS_KEY*",
+    "*PRIVATE_KEY*",
+    "*_KEY",
+    "*COOKIE*",
+    "*DATABASE_URL*",
+    "*INDEX_URL*",
+    "*_DSN",
+    "AWS_*",
+    "AZURE_*",
+    # Shell startup hooks would run before the wrapped command.
+    "BASH_ENV",
+    "ENV",
 )
 # Command-mailbox credentials are explicit command arguments, not environment variables.
 WEBKIT_READ_DENY_PATHS = tuple(
@@ -418,7 +374,7 @@ def resolve_hidden_read_scope(
         hidden_directories=filtered_dirs,
         hidden_files=filtered_files,
         hidden_globs=filtered_globs,
-        env_allow_list=HIDDEN_READ_ENV_ALLOW_LIST,
+        env_deny_list=HIDDEN_READ_ENV_DENY_LIST,
         key_evidence=tuple(
             HiddenReadKeyEvidence.model_validate({**key.model_dump(), "path": canonical[key.path]})
             for key in key_evidence
