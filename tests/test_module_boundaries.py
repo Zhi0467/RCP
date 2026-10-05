@@ -227,9 +227,8 @@ TASK_RUNTIME = ("runs", "agents", "providers")
 def _reads_a_file(node: ast.AST) -> bool:
     """Any way of getting a file's bytes: Path methods, builtin `open`, or a
     qualified builtin-style opener such as `io.open`."""
-    if isinstance(node, ast.Attribute):
-        if node.attr in {"read_text", "read_bytes", "open"}:
-            return True
+    if isinstance(node, ast.Attribute) and node.attr in {"read_text", "read_bytes", "open"}:
+        return True
     if isinstance(node, ast.Call):
         function = node.func
         if isinstance(function, ast.Name) and function.id == "open":
@@ -252,9 +251,7 @@ def holder(service, request):
     io.open(path).read()
     path.read_text()
 """
-    flagged = sorted(
-        node.lineno for node in ast.walk(ast.parse(source)) if _reads_a_file(node)
-    )
+    flagged = sorted({node.lineno for node in ast.walk(ast.parse(source)) if _reads_a_file(node)})
     assert flagged == [4, 5, 6]
 
 
@@ -296,8 +293,11 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
         if not resolves_transcript_path:
             continue
         for node in ast.walk(function):
-            if _reads_a_file(node):
-                readers_in_path_holders.append(f"{function.name}:{node.lineno}")
+            if not _reads_a_file(node):
+                continue
+            entry = f"{function.name}:{node.lineno}"
+            if entry not in readers_in_path_holders:
+                readers_in_path_holders.append(entry)
     assert readers_in_path_holders == [], (
         "runs/chat.py reads a file in a function that holds the transcript path: "
         f"{readers_in_path_holders}"
