@@ -79,6 +79,44 @@ def _python_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.rglob("*.py") if path.is_file())
 
 
+ROUTE_DECORATOR_METHODS = {
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "head",
+    "options",
+    "websocket",
+    "api_route",
+}
+
+
+def _declares_routes(tree: ast.AST) -> bool:
+    """A module with a FastAPI route decorator anywhere in it."""
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr in ROUTE_DECORATOR_METHODS
+            ):
+                return True
+    return False
+
+
+def _route_modules() -> list[tuple[Path, ast.AST]]:
+    """Every module under the api package, plus any other module declaring routes."""
+    modules: list[tuple[Path, ast.AST]] = []
+    for path in _python_files(SOURCE):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if path.is_relative_to(SOURCE / "api") or _declares_routes(tree):
+            modules.append((path, tree))
+    return modules
+
+
 def _open_mode(call: ast.Call, *, builtin: bool) -> tuple[ast.expr | None, bool]:
     """The mode argument of an `open` call and whether it was passed by keyword."""
     for keyword in call.keywords:
@@ -159,9 +197,11 @@ def test_api_routes_never_write_files_directly() -> None:
     history manager own locking and publication, and the service layer owns
     everything else that touches disk."""
 
+    modules = _route_modules()
+    names = {path.relative_to(SOURCE).as_posix() for path, _ in modules}
+    assert "phone_listener.py" in names, "route discovery must see routes outside api/"
     offenders: list[str] = []
-    for path in _python_files(SOURCE / "api"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in modules:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _writes_a_file(node):
                 offenders.append(
@@ -280,7 +320,10 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
     tree = ast.parse(chat.read_text(encoding="utf-8"))
     readers_in_path_holders: list[str] = []
     for function in ast.walk(tree):
-        if not isinstance(function, ast.FunctionDef) or function.name == "_append_chat_records":
+        if (
+            not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or function.name == "_append_chat_records"
+        ):
             continue
         resolves_transcript_path = any(
             isinstance(node, ast.Call)
