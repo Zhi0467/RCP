@@ -2090,7 +2090,7 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
         PATCH_CORRECTION_MAX_ROUNDS
     )
     assert _applied_revision(frames) is None
-    assert any("without writing any JSON file" in text for text in _error_texts(frames))
+    assert not any((workspace / "patch.json").exists() for workspace in launcher.workspaces)
     assert service.history.state().revision == 2
 
 
@@ -5294,7 +5294,10 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     assert launcher.calls == 1
     assert launcher.last_kwargs["capability"] == "paper_readonly"
     assert launcher.last_kwargs["binary"] == "/opt/agents/codex"
-    assert launcher.last_kwargs["cwd"] == manifest.research_dir
+    workspace = launcher.last_kwargs["cwd"]
+    assert workspace.name == "workspace"
+    assert workspace.is_relative_to(tmp_path / "data")
+    assert (workspace / "rcp-hidden-read.py").is_file()
     assert any("Review the claim boundary." in item for item in events)
     assert paper.sessions()[0].native_session_id == session_id
 

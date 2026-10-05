@@ -2679,6 +2679,7 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
                 execution=turn.execution,
                 remote_stage=turn.remote_stage,
                 capability="work_auto",
+                hidden_read_scope=turn.hidden_read_scope,
             )
         )
         resuming = turn.resuming

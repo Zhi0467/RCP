@@ -1967,7 +1967,9 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
 
     grant_events = []
 
-    def acquire_grant(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+    def acquire_grant(
+        owner, *, execution, workspace_dir, data_dir, retained_lease_ids, hidden_read_scope
+    ):
         grant_events.append("acquired")
         return BrowserGrant(
             requested=True,

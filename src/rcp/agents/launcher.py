@@ -1142,7 +1142,12 @@ class AgentLauncher:
 
         if hidden_read_scope is None:
             hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
-        prompt += "\n\n" + hidden_read_prompt(hidden_read_scope)
+        prompt += "\n\n" + hidden_read_prompt(
+            hidden_read_scope,
+            browser_enforcement=(
+                browser_grant.hidden_read_enforcement if browser_grant is not None else None
+            ),
+        )
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
@@ -1288,8 +1293,6 @@ class AgentLauncher:
             return
         if hidden_read_scope is None:
             hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
-        if hidden_read_scope.enforcement.status == "unhidden":
-            yield AgentEvent(event="message", text=hidden_read_prompt(hidden_read_scope))
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
         legacy_command = (
