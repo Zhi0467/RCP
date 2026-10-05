@@ -40,7 +40,30 @@ OS_WRITE_FUNCTIONS = {
     "link",
     "symlink",
     "truncate",
+    "ftruncate",
+    "write",
+    "pwrite",
+    "writev",
 }
+
+
+def _os_open_writes(call: ast.Call) -> bool:
+    """`os.open(path, flags)` is a write unless the flags are exactly `os.O_RDONLY`."""
+    flags: ast.expr | None = None
+    for keyword in call.keywords:
+        if keyword.arg == "flags":
+            flags = keyword.value
+    if flags is None and len(call.args) > 1:
+        flags = call.args[1]
+    if flags is None:
+        return False
+    read_only = (
+        isinstance(flags, ast.Attribute)
+        and flags.attr == "O_RDONLY"
+        and isinstance(flags.value, ast.Name)
+        and flags.value.id == "os"
+    )
+    return not read_only
 SHUTIL_WRITE_PREFIXES = ("copy", "move", "rmtree")
 WRITE_MODE = re.compile(r"[wax+]")
 
@@ -70,6 +93,16 @@ def _writes_a_file(call: ast.Call) -> bool:
     elif isinstance(function, ast.Attribute):
         owner = function.value
         if isinstance(owner, ast.Name) and owner.id == "os":
+            if function.attr == "open":
+                return _os_open_writes(call)
+            if function.attr == "fdopen":
+                builtin = True
+                mode, by_keyword = _open_mode(call, builtin=True)
+                return mode is not None and (
+                    WRITE_MODE.search(mode.value) is not None
+                    if isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                    else True
+                )
             return function.attr in OS_WRITE_FUNCTIONS
         if isinstance(owner, ast.Name) and owner.id == "shutil":
             return function.attr.startswith(SHUTIL_WRITE_PREFIXES)
@@ -139,10 +172,16 @@ def route(path, mode):
     os.link(source, target)
     path.replace(target=target)
     path.rename(target=target)
+    os.open(path, os.O_RDONLY)
+    os.open(path, os.O_WRONLY | os.O_CREAT)
+    os.open(path, flags=os.O_RDWR)
+    os.write(descriptor, payload)
+    os.fdopen(descriptor, "w")
+    os.fdopen(descriptor)
 """
     calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
     flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
-    assert flagged == [3, 4, 9, 14, 15, 16, 17, 18, 19, 20]
+    assert flagged == [3, 4, 9, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25]
 
 
 # The transcript readers live on the project service for display and backup.
