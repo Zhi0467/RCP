@@ -49,7 +49,9 @@ def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, 
     store = AppStore(tmp_path / "app.sqlite3")
     calls = []
 
-    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+    def acquire(
+        owner, *, execution, workspace_dir, data_dir, retained_lease_ids, hidden_read_scope
+    ):
         calls.append(owner)
         return BrowserGrant(
             requested=True, status="unavailable", reason_code="runtime_checked", owner=owner
@@ -89,7 +91,9 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
     execution.checkpoint_stage("", str(workspace.parent))
     calls = []
 
-    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
+    def acquire(
+        owner, *, execution, workspace_dir, data_dir, retained_lease_ids, hidden_read_scope
+    ):
         return BrowserGrant(
             requested=True,
             status="granted",
@@ -595,3 +599,54 @@ def test_reused_owner_routes_through_the_latest_ssh_alias(tmp_path):
             chat_id="chat",
         )
     assert store.browser_owners("project")[0]["execution_host"] == "new-alias"
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_hidden_scope_reaches_host_and_effective_status_returns_to_grant(
+    host, tmp_path, monkeypatch, system
+):
+    from rcp.browser import service
+    from rcp.core.models import HiddenReadStatus
+    from tests.test_browser_host import hidden_scope
+
+    host.backend = "launchd" if system == "Darwin" else "systemd_user"
+    monkeypatch.setattr(
+        "rcp.browser.host.probe_hidden_read_wrapper",
+        lambda **kw: {"ready": False, "reason": "userns_blocked"},
+    )
+    monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
+    scope = hidden_scope()
+
+    def invoke(payload, **kwargs):
+        # Exercise the same JSON boundary used by the shipped worker.
+        payload = json.loads(json.dumps(payload))
+        assert payload["hidden_read_scope"] == scope.model_dump(mode="json")
+        host.request.update(payload)
+        return json.loads(json.dumps(host.ensure()))
+
+    monkeypatch.setattr(service, "_invoke", invoke)
+    store = AppStore(tmp_path / "app.sqlite3")
+    grant = acquire_turn_browser(
+        requested=True,
+        capability="discuss",
+        store=store,
+        project_id="project",
+        stage_root="/stage/chat",
+        execution_host="",
+        execution=None,
+        workspace_dir=str(tmp_path / "workspace"),
+        chat_id="chat",
+        hidden_read_scope=scope,
+    )
+    assert grant.status == "granted"
+    assert grant.hidden_read_scope == scope
+    assert isinstance(grant.hidden_read_enforcement, HiddenReadStatus)
+    assert grant.hidden_read_enforcement.reasons == (
+        "browser_unwrapped_macos" if system == "Darwin" else "userns_blocked",
+    )
+    assert grant.env["PLAYWRIGHT_CLI_SESSION"] == grant.session_name
+    assert grant.path_prefix == str(host.tools / "node_modules" / ".bin")
+    assert (
+        BrowserGrant.model_validate_json(grant.model_dump_json()).hidden_read_enforcement
+        == grant.hidden_read_enforcement
+    )

@@ -19,6 +19,11 @@ import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
+from rcp.agents.staged_hidden_read import (
+    PROBE_TIMEOUT_SECONDS,
+    bwrap_argv,
+    probe_hidden_read_wrapper,
+)
 from rcp.browser.libraries import apt_install_command, missing_library_packages
 from rcp.transport.compute_process_owner import (
     owner_alive,
@@ -178,6 +183,78 @@ class HostRuntime:
         self.cli = self.tools / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"
         self.core = self.tools / "node_modules" / "playwright-core"
         self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
+        self.hidden_read_command: list[str] = []
+        self.hidden_read_enforcement: dict | None = None
+        self.hidden_read_fingerprint: str | None = None
+
+    def browser_policy(self, reason: str | None = None) -> None:
+        """Use B's mount wrapper, retaining the browser's existing network environment."""
+        scope = self.request.get("hidden_read_scope")
+        self.hidden_read_command = []
+        if scope is None:
+            self.hidden_read_enforcement = None
+            self.hidden_read_fingerprint = None
+            return
+        reasons = set(scope["enforcement"]["reasons"])
+        if self.backend == "launchd":
+            reason = "browser_unwrapped_macos"
+        elif reason is None:
+            try:
+                readiness = probe_hidden_read_wrapper(
+                    timeout=max(
+                        0.001, min(PROBE_TIMEOUT_SECONDS, (self.deadline - time.monotonic()) / 2)
+                    )
+                )
+                if readiness["ready"]:
+                    executable = shutil.which("bwrap", path=self.env.get("PATH"))
+                    if executable is None:
+                        reason = "wrapper_unavailable"
+                    else:
+                        self.hidden_read_command = bwrap_argv(scope, "", executable=executable)[:-1]
+                else:
+                    reason = readiness["reason"] or "wrapper_unavailable"
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                reason = "wrapper_unavailable"
+        if reason:
+            reasons.add(reason)
+        self.hidden_read_enforcement = {
+            "status": "unhidden" if reasons else "enforced",
+            "reasons": sorted(reasons),
+        }
+        self.hidden_read_fingerprint = hashlib.sha256(
+            json.dumps(
+                [scope["fingerprint"], self.hidden_read_enforcement, self.hidden_read_command],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+    def start_with_policy(self, record: dict, executable: str) -> None:
+        deadline = self.deadline
+        wrapped = bool(self.hidden_read_command)
+        record.update(
+            hidden_read_fingerprint=self.hidden_read_fingerprint,
+            hidden_read_enforcement=self.hidden_read_enforcement,
+        )
+        self.save(record)
+        try:
+            # Leave time to clean up a failed wrapped job and admit an unhidden daemon.
+            if wrapped:
+                self.deadline = time.monotonic() + (deadline - time.monotonic()) / 2
+            self.start(record, executable)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            if not wrapped:
+                raise
+            self.deadline = deadline
+            self.close_record(record, preserve_leases=True)
+            self.browser_policy("wrapper_unavailable")
+            record.update(
+                hidden_read_fingerprint=self.hidden_read_fingerprint,
+                hidden_read_enforcement=self.hidden_read_enforcement,
+            )
+            self.save(record)
+            self.start(record, executable)
+        finally:
+            self.deadline = deadline
 
     def daemon_env(self) -> dict[str, str]:
         return {key: value for key, value in self.env.items() if key in _DAEMON_ENVIRONMENT}
@@ -366,9 +443,11 @@ class HostRuntime:
             records.append(record)
         return records
 
-    def close_record(self, record: dict, *, delete: bool = False) -> None:
+    def close_record(
+        self, record: dict, *, delete: bool = False, preserve_leases: bool = False
+    ) -> None:
         # Persist intent before contact: retry after a controller interruption.
-        record["pending_close"] = True
+        record["pending_restart" if preserve_leases else "pending_close"] = True
         record["delete_profile"] = delete or record.get("delete_profile", False)
         self.save(record)
         workspace_exists = Path(record["workspace_dir"]).is_dir()
@@ -387,7 +466,9 @@ class HostRuntime:
             # Page snapshots and logs can hold signed-in content; delete with the profile.
             shutil.rmtree(self.record_path(record["owner_token"]).parent)
             return
-        record.update(pending_close=False, delete_profile=False, leases={})
+        record.update(pending_close=False, pending_restart=False, delete_profile=False)
+        if not preserve_leases:
+            record["leases"] = {}
         self.save(record)
 
     def start(self, record: dict, executable: str) -> None:
@@ -431,6 +512,8 @@ class HostRuntime:
             if result.returncode:
                 raise UnavailableError("owner_unavailable", result.stderr.strip())
         else:
+            if self.hidden_read_command:
+                command = [*self.hidden_read_command, "exec " + shlex.join(command)]
             # Keep environment literals out of systemd's version-dependent $ expansion.
             wrapper = owner_dir / "daemon.sh"
             if "$" in str(wrapper) or "$" in record["workspace_dir"]:
@@ -494,6 +577,7 @@ class HostRuntime:
             raise UnavailableError(
                 readiness["status"], readiness.get("detail") or readiness["status"]
             )
+        self.browser_policy()
         token = self.request["owner_token"]
         self.record_path(token)
         records = self.records()
@@ -510,6 +594,12 @@ class HostRuntime:
             raise UnavailableError("owner_mismatch", "Browser owner workspace changed")
         if record and record.get("pending_close"):
             raise UnavailableError("closing", "Browser owner is closing")
+        if record and (
+            record.get("pending_restart")
+            or record.get("hidden_read_fingerprint") != self.hidden_read_fingerprint
+        ):
+            # dispatch holds host_lock through stop/start; profile and leases survive.
+            self.close_record(record, preserve_leases=True)
         if not record or not self.alive(record):
             live = [r for r in records if r is not record and self.alive(r)]
             if len(live) >= self.limits["cap"]:
@@ -534,7 +624,7 @@ class HostRuntime:
                     "session_unreachable", "Owned daemon has no reachable session"
                 )
             self.save(record)
-            self.start(record, self.executable())
+            self.start_with_policy(record, self.executable())
         record["leases"][self.request["lease_id"]] = {
             "controller_id": controller,
             "controller_epoch": epoch,
@@ -542,6 +632,7 @@ class HostRuntime:
         record["last_used"] = time.time()
         self.save(record)
         return {
+            "hidden_read_enforcement": record.get("hidden_read_enforcement"),
             "session_name": record["session_name"],
             "invocation_dir": record["workspace_dir"],
             "path_prefix": str(self.tools / "node_modules" / ".bin"),
