@@ -1329,6 +1329,11 @@ async def stream_graph_run(
                 staged=validator_staged,
                 execution=execution,
             )
+        # A failed run keeps its scratch: the stage is removed only once its
+        # Patch applied, so a rejected or unavailable Apply stays inspectable
+        # and repairable (tests/test_api.py::
+        # test_remote_stage_is_retained_after_failure_and_after_pause,
+        # tests/test_operational_retention.py).
         if applied:
             if local_stage is not None:
                 with suppress(OSError, ValueError):

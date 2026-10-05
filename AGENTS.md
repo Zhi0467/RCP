@@ -103,9 +103,10 @@ Verify affected workflows against the frozen backend, not just source.
 
 This numbered registry is cited from source and tests. Never renumber it and
 never reuse a retired number; `docs/design.md` states the same promises
-unnumbered and coarser. A promise that one module alone enforces is not listed
-here: it lives in its owner's docstring, its module spec, and a test that
-attempts the violation.
+unnumbered and coarser. A promise that is neither a product boundary nor an
+architecture commitment is not listed here, however many modules press it: it
+lives in each owner's docstring, its module spec, and a test that attempts the
+violation.
 
 1. **Canonical Patch logs are append-only; materialized graph files are outputs.** Never edit or delete main or branch Patch history, and never hand-edit `graph.json`, `research.md`, glossary, Proposal, or control projections; replay rebuilds the outputs and would change the past.
 3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges; a member's own page, including an agent the member runs there, counts as that human ([decision](docs/decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)). The Auto-research orchestrator is the one explicit exception: on its branch it may choose Decisions and set ordinary belief standing, and a human-dispatched branch merge inherits that profile.
@@ -123,7 +124,9 @@ attempts the violation.
 
 Retired numbers stay with their owners: 2 folded into 1; 5 is the module
 docstring of `agents/write_scope.py`; 7 the `_atomic_write` and `_atomic_text`
-helpers; 7b `materialize._fork_state`; 9 `AppStore.complete_agent_task`; 10
+helpers; 7b `materialize._fork_state`; 9 `AppStore.complete_agent_task` for
+Patch text and the `if applied` stage removal in `stream_graph_run` for
+scratch; 10
 `prepare_agent_patch` (an agent Patch carries no cursor or coverage operation,
 so chat never advances ingestion); 10f the watermark comment in
 `materialize.apply_patch`; 10c

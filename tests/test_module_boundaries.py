@@ -15,8 +15,32 @@ SOURCE = Path(__file__).resolve().parent.parent / "src" / "rcp"
 
 # Any call that puts bytes on disk. Routes compose service and history owners;
 # they never hold a file handle on canonical or operational state themselves.
-PATH_WRITE_METHODS = {"write_text", "write_bytes", "unlink", "rmdir", "touch", "mkdir"}
-OS_WRITE_FUNCTIONS = {"replace", "rename", "remove", "unlink", "mkdir", "makedirs", "rmdir"}
+PATH_WRITE_METHODS = {
+    "write_text",
+    "write_bytes",
+    "unlink",
+    "rmdir",
+    "touch",
+    "mkdir",
+    "symlink_to",
+    "hardlink_to",
+    "link_to",
+}
+# `str.replace(old, new)` and `Path.replace(target)` share a name; the Path
+# form takes exactly one positional argument and no keywords.
+PATH_SINGLE_TARGET_METHODS = {"rename", "replace"}
+OS_WRITE_FUNCTIONS = {
+    "replace",
+    "rename",
+    "remove",
+    "unlink",
+    "mkdir",
+    "makedirs",
+    "rmdir",
+    "link",
+    "symlink",
+    "truncate",
+}
 SHUTIL_WRITE_PREFIXES = ("copy", "move", "rmtree")
 WRITE_MODE = re.compile(r"[wax+]")
 
@@ -51,6 +75,8 @@ def _writes_a_file(call: ast.Call) -> bool:
             return function.attr.startswith(SHUTIL_WRITE_PREFIXES)
         if function.attr in PATH_WRITE_METHODS:
             return True
+        if function.attr in PATH_SINGLE_TARGET_METHODS:
+            return len(call.args) == 1 and not call.keywords
         if function.attr != "open":
             return False
         builtin = False
@@ -102,10 +128,15 @@ def route(path, mode):
         handle.read()
     open(path).read()
     text.replace("a", "b")
+    path.replace(target)
+    path.rename(target)
+    path.symlink_to(target)
+    os.symlink(source, target)
+    os.link(source, target)
 """
     calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
     flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
-    assert flagged == [3, 4, 9]
+    assert flagged == [3, 4, 9, 14, 15, 16, 17, 18]
 
 
 # The transcript readers live on the project service for display and backup.
