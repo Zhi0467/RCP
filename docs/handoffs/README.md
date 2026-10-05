@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Agent secrets: usable but not readable](handoff-2026-10-04-agent-secrets-usable-not-readable.md)
+  — design settled 2026-10-04; the CORS removal is on its branch, the rest remains.
 - [Graph dreaming: nightly consolidation and operational lessons](handoff-2026-10-03-graph-dreaming.md)
   — design settled 2026-10-02; implementation in progress on its PR.
 - [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
