@@ -51,7 +51,7 @@ test("server status formats exact backend facts without deriving lifecycle state
 
 test("server settings reads health only, with no command catalogue or mutation handler", async () => {
   const source = await readFile(
-    new URL("../src/components/ServerSettings.tsx", import.meta.url),
+    new URL("../src/projects/ServerSettings.tsx", import.meta.url),
     "utf8",
   );
 

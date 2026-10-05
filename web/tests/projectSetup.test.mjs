@@ -809,7 +809,7 @@ test("the provisioning view renders backend answers and hides native actions in 
   assert.match(finalReviewHtml, />Alice</);
 
   const source = await readFile(
-    new URL("../src/views/TeamProjectSetup.tsx", import.meta.url),
+    new URL("../src/projects/TeamProjectSetup.tsx", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(source, /request\.status\b/);

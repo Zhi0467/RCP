@@ -15,7 +15,7 @@ test("desktop public personal health renders owner sign-in without protected hea
       {
         name: "unsigned-owner-identity",
         transform(_code, id) {
-          if (!id.endsWith("/hooks/useActorIdentity.ts")) return;
+          if (!id.endsWith("/desktop/useActorIdentity.ts")) return;
           return `export function useActorIdentity() { return {
           identityReady: true, identityIssue: null, actorIdentityChecked: true,
           ownerSessionRequired: true, actorIdentity: null, authenticatedHealth: null,
