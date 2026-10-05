@@ -313,35 +313,43 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
                     offenders.append(f"{path.relative_to(SOURCE)} calls {reader.rstrip('(')}")
     assert offenders == [], "\n".join(offenders)
 
-    # Inside runs/chat.py the transcript path is obtained only to append to it.
-    # A function that resolves that path must not read any file; the append
-    # itself may read back identity, and nothing else holds the path.
-    chat = SOURCE / "runs" / "chat.py"
-    tree = ast.parse(chat.read_text(encoding="utf-8"))
+    # Anywhere in the task runtime, the transcript path is obtained only to
+    # append to it. A function that resolves that path must not read any file;
+    # the one append helper may read back identity, and nothing else holds it.
+    # Identity-only reads: the append helper dedupes by message UUID, and the
+    # steer entry point looks up the stored human message it addresses. Neither
+    # feeds transcript text to a provider.
+    identity_only = {
+        ("runs/chat.py", "_append_chat_records"),
+        ("runs/steering.py", "begin_chat_steer"),
+    }
     readers_in_path_holders: list[str] = []
-    for function in ast.walk(tree):
-        if (
-            not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
-            or function.name == "_append_chat_records"
-        ):
-            continue
-        resolves_transcript_path = any(
-            isinstance(node, ast.Call)
-            and (
-                (isinstance(node.func, ast.Name) and node.func.id == "_chat_path")
-                or (isinstance(node.func, ast.Attribute) and node.func.attr == "chat_path")
-            )
-            for node in ast.walk(function)
-        )
-        if not resolves_transcript_path:
-            continue
-        for node in ast.walk(function):
-            if not _reads_a_file(node):
-                continue
-            entry = f"{function.name}:{node.lineno}"
-            if entry not in readers_in_path_holders:
-                readers_in_path_holders.append(entry)
+    for package in TASK_RUNTIME:
+        for path in _python_files(SOURCE / package):
+            module = path.relative_to(SOURCE).as_posix()
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for function in ast.walk(tree):
+                if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if (module, function.name) in identity_only:
+                    continue
+                resolves_transcript_path = any(
+                    isinstance(node, ast.Call)
+                    and (
+                        (isinstance(node.func, ast.Name) and node.func.id == "_chat_path")
+                        or (isinstance(node.func, ast.Attribute) and node.func.attr == "chat_path")
+                    )
+                    for node in ast.walk(function)
+                )
+                if not resolves_transcript_path:
+                    continue
+                for node in ast.walk(function):
+                    if not _reads_a_file(node):
+                        continue
+                    entry = f"{module}::{function.name}:{node.lineno}"
+                    if entry not in readers_in_path_holders:
+                        readers_in_path_holders.append(entry)
     assert readers_in_path_holders == [], (
-        "runs/chat.py reads a file in a function that holds the transcript path: "
+        "a task runtime function reads a file while holding the transcript path: "
         f"{readers_in_path_holders}"
     )
