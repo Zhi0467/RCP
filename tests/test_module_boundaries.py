@@ -407,13 +407,79 @@ def holder(service, request):
     }
 
 
+# The only callees a resolved transcript path may be handed to. Everything
+# else is an escape: a helper that reads the file would otherwise split the
+# resolver and the read across two functions and slip past a per-function scan.
+APPROVED_PATH_SINKS = {
+    "_append_chat_records",
+    "rcp.runs.chat._append_chat_records",
+}
+
+
+def _transcript_path_escapes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, aliases: dict[str, str]
+) -> list[int]:
+    """Lines where a resolver result, direct or via a local name, is passed to
+    a callee outside `APPROVED_PATH_SINKS`."""
+    holders: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign) and _resolves_transcript_path(node.value, aliases):
+            holders.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and _resolves_transcript_path(node.value, aliases)
+            and isinstance(node.target, ast.Name)
+        ):
+            holders.add(node.target.id)
+    escapes: list[int] = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        name, _ = _call_name(node, aliases)
+        if name in APPROVED_PATH_SINKS or _resolves_transcript_path(node, aliases):
+            continue
+        arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+        for argument in arguments:
+            carries_path = (isinstance(argument, ast.Name) and argument.id in holders) or (
+                _resolves_transcript_path(argument, aliases)
+            )
+            if carries_path:
+                escapes.append(node.lineno)
+                break
+    return escapes
+
+
+def test_transcript_path_escape_detection_sees_helper_calls() -> None:
+    source = """
+def builder(service, request):
+    path = _chat_path(service, request)
+    text = read_input(path)
+    _append_chat_records(service, path, [])
+    other = load(_chat_path(service, request))
+    return text, other
+
+def fine(service, request):
+    path = _chat_path(service, request)
+    return path.exists()
+"""
+    tree = ast.parse(source)
+    aliases = _import_aliases(tree)
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    assert _transcript_path_escapes(functions[0], aliases) == [4, 6]
+    assert _transcript_path_escapes(functions[1], aliases) == []
+
+
 def test_task_runtime_never_reads_chat_transcripts() -> None:
     """Discuss and Work do not consume prior RCP chat transcripts.
 
     Canonical chat history exists for display; continuity comes from the
     provider's native session. No prompt builder, launcher, or provider
-    profile may call a transcript reader, and the one module that appends to
-    the transcript reads it back only inside that append, for identity.
+    profile may reference a transcript reader; a function that resolves the
+    transcript path may neither read a file nor hand the path to anything but
+    the approved append sink. This is a guardrail against a cooperative edit,
+    in the same spirit as the repository's write-scope enforcement, not a
+    sound dataflow analysis against a hostile author.
     """
 
     offenders: list[str] = []
@@ -456,7 +522,10 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
                     entry = f"{module}::{function.name}:{node.lineno}"
                     if entry not in readers_in_path_holders:
                         readers_in_path_holders.append(entry)
+                for line in _transcript_path_escapes(function, aliases):
+                    readers_in_path_holders.append(f"{module}::{function.name}:{line} (escape)")
     assert readers_in_path_holders == [], (
-        "a task runtime function reads a file while holding the transcript path: "
+        "a task runtime function reads a file, or hands the transcript path to an "
+        "unapproved callee, while holding it: "
         f"{readers_in_path_holders}"
     )
