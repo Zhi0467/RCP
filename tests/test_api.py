@@ -49,8 +49,8 @@ from rcp.runs.chat import (
 )
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import (
-    AgentOutputProblem,
     _MAX_PATCH_CANDIDATES,
+    AgentOutputProblem,
     _collect_patch_text,
     _existing_exact_patch_digest,
     _pinned_to_profile,

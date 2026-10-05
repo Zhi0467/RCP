@@ -64,6 +64,8 @@ def _os_open_writes(call: ast.Call) -> bool:
         and flags.value.id == "os"
     )
     return not read_only
+
+
 SHUTIL_WRITE_PREFIXES = ("copy", "move", "rmtree")
 WRITE_MODE = re.compile(r"[wax+]")
 
