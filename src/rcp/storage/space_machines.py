@@ -7,10 +7,11 @@ import sqlite3
 import uuid
 from collections.abc import Iterable
 
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import SpaceMachineRecord
 
 
-class SpaceMachineStoreMixin:
+class SpaceMachineStoreMixin(StoreMixinBase):
     def space_machines(self) -> list[SpaceMachineRecord]:
         with self.connection() as connection:
             rows = connection.execute(

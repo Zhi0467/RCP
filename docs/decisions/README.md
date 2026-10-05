@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Watcher commands run outside the provider sandbox](2026-10-05-watcher-commands-run-outside-the-provider-sandbox.md)
+  records why `watch.json` check and cancel commands run in an unbounded login
+  shell, and what that gives up.
+
 - [Selected agent secrets are usable but not readable](2026-10-04-agent-secret-hiding.md)
   records the generic network threat model, confirmed-key hiding, preserved
   browser and Git capability, Keychain compatibility, and visible fallback.

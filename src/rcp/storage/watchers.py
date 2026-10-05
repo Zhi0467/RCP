@@ -18,6 +18,7 @@ from rcp.limits import (
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.experiments import ExperimentStoreMixin
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     AgentTaskAdmissionConflict,
     AgentTaskRecord,
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from rcp.watchers import WatcherBinding
 
 
-class WatcherStoreMixin:
+class WatcherStoreMixin(StoreMixinBase):
     """External and graph watchers, their claims, and notification delivery."""
 
     @staticmethod

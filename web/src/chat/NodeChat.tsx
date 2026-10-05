@@ -583,6 +583,7 @@ export function NodeChat({
     setScope((current) =>
       reconcileChatRunScope(current, runScope, project.project_truth_scope, reset),
     );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the scope arrays are keyed by content so a new array with the same members keeps the user's choice
   }, [chatId, project.id, projectTruthScopeKey, requestedScopeKey]);
 
   useEffect(() => {
@@ -612,7 +613,7 @@ export function NodeChat({
   useEffect(() => {
     skills.reset();
     // Settings supplies fresh conversation defaults; an open turn keeps its own.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when the chat changes, not when the picker object does
   }, [chatId, project.id]);
 
   useEffect(() => {
@@ -750,7 +751,7 @@ export function NodeChat({
       unlisten.forEach((dispose) => dispose());
     };
     // The event bridge belongs to the native shell lifetime, not each draft render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once per native shell; handlers read refs
   }, [desktop]);
 
   useEffect(
@@ -759,7 +760,7 @@ export function NodeChat({
       releaseMicrophone();
     },
     // Dictation ends with the composer; both helpers read refs only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unmount-only cleanup
     [],
   );
 

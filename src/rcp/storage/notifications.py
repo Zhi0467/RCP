@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_DEVICE_PAIRING_TTL_MINUTES
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _new_device_pairing_code, _parse_device_pairing_code
 
 NOTIFICATION_DEFAULTS = {
@@ -74,7 +75,7 @@ def migrate_question_notifications(connection: sqlite3.Connection) -> None:
     )
 
 
-class NotificationStoreMixin:
+class NotificationStoreMixin(StoreMixinBase):
     def unobserved_consolidation_notifications(
         self, project_id: str, expiry_cutoff: str
     ) -> list[tuple[str, str]]:

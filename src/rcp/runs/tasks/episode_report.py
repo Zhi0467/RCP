@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -85,7 +85,7 @@ async def stream_episode_report_run(
     launcher: AgentLauncher,
     request: EpisodeReportRunRequest,
     execution: AgentTaskExecution,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run at most three hidden report calls inside one exact episode continuation.
 
     Operational context is deliberately absent. The native provider session supplies its retained

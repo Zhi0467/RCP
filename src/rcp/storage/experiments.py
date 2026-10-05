@@ -11,6 +11,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
 from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from rcp.watchers import ExperimentWatchSpec, WatcherBinding
 
 
-class ExperimentStoreMixin:
+class ExperimentStoreMixin(StoreMixinBase):
     """Bounded Experiment episodes and their loop runtime projection."""
 
     @staticmethod

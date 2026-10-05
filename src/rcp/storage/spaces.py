@@ -20,6 +20,7 @@ from rcp.limits import (
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     MemberRemovalPreviewRecord,
     ProjectInvitationRecord,
@@ -59,7 +60,7 @@ def _bounded_removal_values(rows, column: str, *, label: str) -> tuple[str, ...]
     return values
 
 
-class SpaceStoreMixin:
+class SpaceStoreMixin(StoreMixinBase):
     """Space identity, team enrollment, browser sessions, and member tokens."""
 
     @property

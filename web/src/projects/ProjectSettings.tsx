@@ -188,6 +188,7 @@ export function ProjectSettings({
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once per project; a snapshot refresh must not reset the form
   const restoredSettings = useMemo(() => stagedOrSaved(project), [project.id]);
   const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
@@ -317,6 +318,7 @@ export function ProjectSettings({
     } catch {
       // Staging edits is a convenience; storage failures must not affect Settings.
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- current fingerprints every staged field
   }, [dirty, current, project.id]);
   const machineByAlias = Object.fromEntries(
     project.machines.map((machine) => [machine.alias, machine]),

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import IO
 
 from rcp.limits import OWNER_SIGN_IN_TTL_MINUTES, TEAM_CODE_FAILED_ATTEMPT_LIMIT
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     SpaceUserRecord,
     TeamAuthenticationError,
@@ -38,7 +39,7 @@ def _secret_hash(secret: str) -> str:
     return _sha256(secret)
 
 
-class OwnerAuthStoreMixin:
+class OwnerAuthStoreMixin(StoreMixinBase):
     def _require_owner(self, connection: sqlite3.Connection) -> SpaceUserRecord:
         if self._space_kind_from_connection(connection) != "personal":
             raise ValueError("Owner authentication requires a personal space.")

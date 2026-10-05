@@ -10,6 +10,7 @@ from rcp.core.models import (
     EpisodeMergeAttempt,
     EpisodeUnfinishedJob,
 )
+from rcp.storage.mixin_base import StoreMixinBase
 
 
 class UnfinishedEpisodeJobs(ValueError):
@@ -29,7 +30,7 @@ def _unconfirmed(
     return [job for job in jobs if (job.kind, job.id) not in known]
 
 
-class ConversationWorktreeStoreMixin:
+class ConversationWorktreeStoreMixin(StoreMixinBase):
     """One retained worktree binding per conversation, including after removal."""
 
     def episode_isolation(self, project_id: str, owner_episode_id: str) -> EpisodeIsolation | None:

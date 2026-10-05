@@ -270,6 +270,7 @@ export function PaperWorkspace({
     void loadSessions(freshSession ? null : latestSessionId).catch((error) => {
       setSubmitError(error instanceof Error ? error.message : String(error));
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load sessions once per paper; later task updates attach through the settled-task effect
   }, [apiBase]);
 
   const latestCoachTask = tasks.find((task) => task.kind === "paper_coach") ?? null;
@@ -318,6 +319,7 @@ export function PaperWorkspace({
     void loadSessions(latestCoachTask.native_session_id)
       .catch((error) => setSubmitError(error instanceof Error ? error.message : String(error)))
       .finally(() => setPendingCoachTaskId(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- settled derives from status; loadSessions is recreated every render
   }, [latestCoachTask?.native_session_id, latestCoachTask?.operation_id, latestCoachTask?.status]);
 
   useEffect(() => {

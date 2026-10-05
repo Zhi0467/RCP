@@ -25,6 +25,7 @@ from rcp.storage.artifact_models import (
     ArtifactVersionConflict,
     artifact_version_files,
 )
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 
 _EDIT_RETENTION_STATUSES = (*sorted(ACTIVE_AGENT_TASK_STATUSES), "paused", "interrupted")
@@ -116,7 +117,7 @@ def insert_artifact(
         )
 
 
-class ArtifactStoreMixin:
+class ArtifactStoreMixin(StoreMixinBase):
     @contextmanager
     def artifact_capture(self) -> Iterator[None]:
         with _capture_guard(self.path.parent).capture():

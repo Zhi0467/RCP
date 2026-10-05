@@ -83,6 +83,7 @@ export function EpisodeMergePanel({
     return () => {
       current = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshKey already carries target and the episode fields that need a new preview
   }, [apiBase, episode.episode_id, refreshKey]);
 
   const hasGraphBranch = episode.graph_branch !== null;

@@ -12,7 +12,7 @@ import stat
 import subprocess
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
@@ -1131,7 +1131,7 @@ class AgentLauncher:
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
         `before_start` runs once the credential gate is held and the provider is
@@ -1231,7 +1231,7 @@ class AgentLauncher:
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
-    ) -> AsyncIterator[AgentEvent]:
+    ) -> AsyncGenerator[AgentEvent, None]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return

@@ -20,7 +20,7 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, NoReturn
 
 from pydantic import BaseModel
 
@@ -1530,7 +1530,7 @@ def _lock_holder_error(
     return stderr.detail() or f"unexpected holder status {status!r}"
 
 
-def _raise_lock_cancelled(process: subprocess.Popen[str], *, acquired: bool = False) -> None:
+def _raise_lock_cancelled(process: subprocess.Popen[str], *, acquired: bool = False) -> NoReturn:
     _terminate_lock_holder(process)
     timing = "after acquiring" if acquired else "while waiting"
     raise RunLockCancelled(f"Run-lock acquisition was cancelled {timing}.")
@@ -1660,7 +1660,7 @@ def _raise_holder_command_lost(
     process: subprocess.Popen[str],
     lease: RunLockLease,
     message: str,
-) -> None:
+) -> NoReturn:
     lease._mark_lost(message)
     _terminate_lock_holder(process)
     lease.assert_owned()
@@ -2085,11 +2085,11 @@ class SSHStateWorkspace(StateWorkspace):
             or len(result.stdout) > 256 * 1024
             or len(result.stderr) > 256 * 1024
         ):
-            self._mark_unreachable(result.stderr.decode(errors="replace"))
+            self._mark_unreachable(result.stderr)
             raise StateUnavailable("The remote backup root could not be classified.")
         try:
             document = json.loads(result.stdout)
-        except (UnicodeError, json.JSONDecodeError) as exc:
+        except json.JSONDecodeError as exc:
             self._mark_unreachable("remote backup root returned an invalid inventory")
             raise StateUnavailable("The remote backup root inventory is invalid.") from exc
         if not isinstance(document, list) or len(document) > BACKUP_INVENTORY_MAX_ENTRIES:
@@ -2726,7 +2726,7 @@ class SSHStateWorkspace(StateWorkspace):
         commit_path: Path,
         commit_is_directory: bool,
         error: Exception,
-    ) -> None:
+    ) -> NoReturn:
         marker_arguments = [
             "test",
             "-d" if commit_is_directory else "-f",

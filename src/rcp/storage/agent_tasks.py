@@ -55,6 +55,7 @@ from rcp.limits import (
 )
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.storage.digest import append_task_failed
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
@@ -179,7 +180,7 @@ class _RunStageLifecycleAggregate:
     protect_from_cleanup: bool = False
 
 
-class AgentTaskStoreMixin:
+class AgentTaskStoreMixin(StoreMixinBase):
     """Agent task lifecycle, chat sessions, usage, receipts, and pruning."""
 
     def agent_task_profile(self, operation_id: str) -> Literal["ordinary", "orchestrator"]:

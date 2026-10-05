@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -154,7 +154,7 @@ async def stream_artifact_edit_run(
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     edit = request.artifact_edit
     if edit is None or edit.launch_kind != "revoking" or request.mode != "discuss":
         raise ValueError("A revoking edit requires its admitted file-only request.")

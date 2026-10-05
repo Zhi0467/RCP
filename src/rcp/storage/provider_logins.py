@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from rcp.limits import PROVIDER_LOGIN_DETAIL_MAX_CHARS
+from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
 
 RESTORED_LOGIN_DETAIL = (
@@ -12,7 +13,7 @@ RESTORED_LOGIN_DETAIL = (
 )
 
 
-class ProviderLoginStoreMixin:
+class ProviderLoginStoreMixin(StoreMixinBase):
     def provider_login_state(self, provider: str, host: str) -> ProviderLoginStateRecord:
         with self.connection() as connection:
             row = connection.execute(

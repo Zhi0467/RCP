@@ -13,7 +13,7 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -819,7 +819,7 @@ async def _stream_agent_events(
     hidden_read_scope: HiddenReadScope | None = None,
     service: ProjectService | None = None,
     data_dir: Path | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     """Run one provider pass, recording its outcome and forwarding wire events.
 
     Terminal and labelled events are withheld from the wire: the caller decides
@@ -954,12 +954,13 @@ async def _stream_agent_events(
         async for event in stream:
             if event.event == "provider_exit":
                 try:
-                    evidence = json.loads(event.text)
+                    evidence: object = json.loads(event.text)
                 except (json.JSONDecodeError, TypeError, ValueError):
-                    evidence = {"unparsed": event.text[:400]}
-                outcome.exit_evidence = (
+                    evidence = None
+                exit_evidence: dict[str, object] = (
                     evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
                 )
+                outcome.exit_evidence = exit_evidence
                 _record_provider_exit(
                     execution,
                     outcome,
@@ -970,7 +971,7 @@ async def _stream_agent_events(
                     remote_pass_recorded
                     and execution is not None
                     and remote_pid_file is not None
-                    and outcome.exit_evidence.get("remote_process_stopped") is True
+                    and exit_evidence.get("remote_process_stopped") is True
                 ):
                     execution.store.finish_remote_provider_pass(
                         execution.operation_id, remote_pid_file

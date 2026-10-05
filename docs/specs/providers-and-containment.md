@@ -354,6 +354,16 @@ execution account's home directory, and broad temporary directories as
 provider's own runtime exceptions; those exceptions are not general project
 roots.
 
+### Watcher commands
+
+A `watch.json` entry's `check_command` and `cancel_command` are not bounded by
+the turn's write scope or by any provider sandbox. RCP runs each one as written
+in a fresh `bash -lic` shell as the execution account, locally or over SSH,
+under the watcher timeout and a process-group kill. Polls continue after the
+turn ends, and a human Cancel runs the entry's `cancel_command`. The commands
+therefore reach everything the execution account can reach
+([decision](../decisions/2026-10-05-watcher-commands-run-outside-the-provider-sandbox.md)).
+
 ### Machine writable paths
 
 A scope that writes repositories also receives `granted_roots`: the space

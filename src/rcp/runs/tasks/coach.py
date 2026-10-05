@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -107,7 +107,7 @@ async def stream_coach(
     request: CoachRequest,
     data_dir: Path,
     execution: AgentTaskExecution | None = None,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     continuation = execution.continuation if execution is not None else "fresh"
     reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     resuming = continuation == "resume"
@@ -374,12 +374,13 @@ async def stream_coach(
         async for event in stream:
             if event.event == "provider_exit":
                 try:
-                    evidence = json.loads(event.text)
+                    evidence: object = json.loads(event.text)
                 except (json.JSONDecodeError, TypeError, ValueError):
-                    evidence = {"unparsed": event.text[:400]}
-                provider_outcome.exit_evidence = (
+                    evidence = None
+                exit_evidence: dict[str, object] = (
                     evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
                 )
+                provider_outcome.exit_evidence = exit_evidence
                 _record_provider_exit(
                     execution,
                     provider_outcome,

@@ -15,6 +15,7 @@ from rcp.compute_jobs.routes import ComputeRoute
 from rcp.core.models import EpisodeUnfinishedJob
 from rcp.limits import COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT
 from rcp.storage.digest import append_digest_event
+from rcp.storage.mixin_base import StoreMixinBase
 
 
 def _compute_job_record(row: sqlite3.Row) -> ComputeJobRecord:
@@ -23,7 +24,7 @@ def _compute_job_record(row: sqlite3.Row) -> ComputeJobRecord:
     return ComputeJobRecord.model_validate(values)
 
 
-class ComputeJobStoreMixin:
+class ComputeJobStoreMixin(StoreMixinBase):
     def compute_command_receipts(
         self, operation_ids: Sequence[str], verb: str, key: str
     ) -> list[dict[str, object]]:

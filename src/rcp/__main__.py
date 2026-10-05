@@ -19,7 +19,7 @@ import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import TextIO
+from typing import NoReturn, TextIO
 
 import uvicorn
 from fastapi import FastAPI
@@ -791,7 +791,7 @@ def _emit_launch_outcome(
     )
 
 
-def _exit_refused(args: argparse.Namespace, refusal: LaunchRefused) -> None:
+def _exit_refused(args: argparse.Namespace, refusal: LaunchRefused) -> NoReturn:
     metadata = refusal.metadata
     if getattr(args, "machine_readable", False):
         print(
