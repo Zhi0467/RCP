@@ -30,9 +30,9 @@ import {
   requiredStringInput,
   stringListInput,
   webMcpTextResult,
+  taskChatId,
   withExecute,
 } from "./shared";
-import { taskChatId } from "./artifacts";
 
 const WEBMCP_CONVERSATION_RESULT_MAX_CHARS = 12_000;
 const WEBMCP_CONVERSATION_LIST_RESULT_MAX_CHARS = 6_000;

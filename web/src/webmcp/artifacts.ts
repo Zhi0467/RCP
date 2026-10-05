@@ -8,6 +8,7 @@ import {
   compactText,
   optionalStringInput,
   requiredStringInput,
+  taskChatId,
   webMcpTextResult,
   withExecute,
 } from "./shared";
@@ -58,11 +59,6 @@ function artifactFilter(input: Record<string, unknown>): ArtifactFilter {
 
 function taskNodeId(task: AgentTask): string | null {
   const value = task.request.control_node_id ?? task.request.node_id;
-  return typeof value === "string" && value ? value : null;
-}
-
-export function taskChatId(task: AgentTask): string | null {
-  const value = task.request.chat_id;
   return typeof value === "string" && value ? value : null;
 }
 

@@ -5,12 +5,12 @@ import {
   type WebMcpToolDefinition,
   type WebMcpToolSpec,
   compactNode,
+  compactExperimentControl,
   compactText,
   requiredStringInput,
   webMcpTextResult,
   withExecute,
 } from "./shared";
-import { compactExperimentControl } from "./experiments";
 
 const WEBMCP_NODE_RESULT_MAX_CHARS = 16_000;
 const WEBMCP_OVERVIEW_RESULT_MAX_CHARS = 6_000;

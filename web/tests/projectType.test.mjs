@@ -1,7 +1,7 @@
 // Node-type knowledge stays in the Web research layer.
 //
 // The Web mirror of tests/test_project_types.py. Generic modules ask the
-// project type in src/researchType.ts which node types play which part; only
+// project type in src/graph/researchType.ts which node types play which part; only
 // the research layer below names research node types or research relations.
 //
 // The ratchet counts, per other module under web/src, quoted string literals
@@ -205,7 +205,7 @@ test("node-type coupling only falls", () => {
     {},
     "These modules name more research node types or relations than before " +
       `(baseline, now): ${JSON.stringify(grown)}. Ask the predicates and tables in ` +
-      "src/researchType.ts instead, or move a research-only feature into the research layer.",
+      "src/graph/researchType.ts instead, or move a research-only feature into the research layer.",
   );
   const fallen = Object.fromEntries(
     Object.entries(baseline)

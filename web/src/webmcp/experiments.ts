@@ -6,6 +6,7 @@ import {
   type WebMcpJsonSchema,
   type WebMcpToolDefinition,
   type WebMcpToolSpec,
+  compactExperimentControl,
   compactNode,
   compactText,
   optionalStringInput,
@@ -73,94 +74,6 @@ function compactExperimentNode(node: GraphNode): Record<string, unknown> {
             ? compactText(latestAttempt.failure_reason, 180)
             : null,
           job_refs: latestAttempt.job_refs.slice(0, 4),
-        }
-      : null,
-  };
-}
-
-export function compactExperimentControl(
-  control: ProjectSnapshot["experiment_control"][string],
-): Record<string, unknown> {
-  const operational = control.operational;
-  const episode = control.episode;
-  return {
-    ready: control.ready,
-    reasons: (control.reasons ?? []).slice(0, 4).map((reason) => compactText(reason, 180)),
-    graph_reasons: (control.graph_reasons ?? [])
-      .slice(0, 4)
-      .map((reason) => compactText(reason, 180)),
-    invocations: {
-      used: control.invocations_used,
-      ceiling: control.invocation_ceiling,
-      remaining: control.invocations_remaining,
-    },
-    episode_id: control.episode_id,
-    paused: control.paused,
-    active: control.active,
-    health: control.health,
-    recommendation: control.recommendation,
-    run_section: control.run_section,
-    live: control.live,
-    can_start: control.can_start,
-    can_stop: control.can_stop,
-    stop_pending: control.stop_pending,
-    task_control: control.task_control,
-    can_switch_provider: control.can_switch_provider,
-    can_open_report: control.can_open_report,
-    report_episode_id: control.report_episode_id,
-    node_closed: control.node_closed,
-    governing_decision_ids: (control.governing_decisions ?? [])
-      .slice(0, 8)
-      .map((decision) => decision.decision_id),
-    decision_drift_count: (control.decision_drift ?? []).length,
-    operational: operational
-      ? {
-          task_active: operational.task_active,
-          detached_work_active: operational.detached_work_active,
-          watcher_degraded: operational.watcher_degraded,
-          watcher_completion_pending: operational.watcher_completion_pending,
-          episode_exited: operational.episode_exited,
-          episode_live: operational.episode_live,
-          stop_requested: operational.stop_requested,
-          stop_settled: operational.stop_settled,
-          chat_id: operational.chat_id,
-          current_task_id: operational.current_operation_id,
-          current_queued: operational.current_queued,
-          current_active: operational.current_active,
-          current_awaiting_human: operational.current_awaiting_human,
-          current_phase: operational.current_phase,
-          current_status_message: operational.current_status_message
-            ? compactText(operational.current_status_message, 180)
-            : null,
-          current_invocation: operational.current_invocation,
-          session: {
-            provider: operational.session.provider,
-            model: operational.session.model,
-            reasoning: operational.session.reasoning,
-            run_on: operational.session.run_on,
-            execution_host: operational.session.execution_host,
-            run_truth_scope: operational.session.run_truth_scope?.slice(0, 8) ?? null,
-            native_session_bound: operational.session.native_session_bound,
-            diagnostic: operational.session.diagnostic
-              ? compactText(operational.session.diagnostic, 180)
-              : null,
-          },
-        }
-      : null,
-    episode: episode
-      ? {
-          episode_id: episode.episode_id,
-          graph_target: episode.graph_target,
-          recovery: episode.recovery,
-          budget: episode.budget,
-          ending: episode.ending,
-          ending_diagnostic: episode.ending_diagnostic
-            ? compactText(episode.ending_diagnostic, 180)
-            : null,
-          wrapup_state: episode.wrapup_state,
-          wrapup_error: episode.wrapup_error ? compactText(episode.wrapup_error, 180) : null,
-          updated_at: episode.updated_at,
-          report: episode.report,
         }
       : null,
   };
