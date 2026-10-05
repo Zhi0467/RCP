@@ -12,14 +12,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ProjectOverview } = await server.ssrLoadModule("/src/views/ProjectOverview.tsx");
+const { ProjectOverview } = await server.ssrLoadModule("/src/projects/ProjectOverview.tsx");
 const { setupExistingResearchSelection, setupFinalConfirmation } = await server.ssrLoadModule(
-  "/src/views/ProjectSetup.tsx",
+  "/src/projects/ProjectSetup.tsx",
 );
-const { ProjectHistoryDrawer } = await server.ssrLoadModule(
-  "/src/components/ProjectHistoryDrawer.tsx",
-);
-const { revisionSummariesUrl } = await server.ssrLoadModule("/src/hooks/useProjectHistory.ts");
+const { ProjectHistoryDrawer } = await server.ssrLoadModule("/src/agents/ProjectHistoryDrawer.tsx");
+const { revisionSummariesUrl } = await server.ssrLoadModule("/src/graph/useProjectHistory.ts");
 
 after(() => server.close());
 

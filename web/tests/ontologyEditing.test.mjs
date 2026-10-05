@@ -8,7 +8,7 @@ import {
   makeHumanNode,
   removeOntologyType,
   upsertOntologyType,
-} from "../src/ontologyEditing.ts";
+} from "../src/graph/ontologyEditing.ts";
 
 const prefixes = {
   research_question: "rq",

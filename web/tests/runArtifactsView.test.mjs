@@ -12,7 +12,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 after(() => server.close());
-const { RunArtifacts } = await server.ssrLoadModule("/src/components/RunArtifacts.tsx");
+const { RunArtifacts } = await server.ssrLoadModule("/src/experiments/RunArtifacts.tsx");
 const artifact = {
   artifact_id: "pdf-one",
   name: "results.pdf",

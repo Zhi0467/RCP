@@ -23,10 +23,10 @@ const {
   projectExperimentExecution,
   projectHashAfterViewChange,
   projectRunsNeedsExperimentIndex,
-} = await server.ssrLoadModule("/src/experimentBoard.ts");
-const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
-const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
-const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
+} = await server.ssrLoadModule("/src/experiments/experimentBoard.ts");
+const { ExperimentBoard } = await server.ssrLoadModule("/src/experiments/ExperimentBoard.tsx");
+const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/graph/GraphViews.tsx");
 
 after(() => server.close());
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { changedNodeFields, editableNodeFields, nodeEditDraft } from "../src/nodeEditing.ts";
+import { changedNodeFields, editableNodeFields, nodeEditDraft } from "../src/graph/nodeEditing.ts";
 
 const hypothesis = {
   id: "hyp/example",

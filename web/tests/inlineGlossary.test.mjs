@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-import { buildGlossaryIndex } from "../src/glossary.ts";
+import { buildGlossaryIndex } from "../src/graph/glossary.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -13,9 +13,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
-const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
-const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
+const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
+const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
+const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 
 after(() => server.close());
 

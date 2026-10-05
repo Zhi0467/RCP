@@ -1,9 +1,9 @@
 import "/src/styles.css";
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { UpdateNotice, ReleaseCheckRow } from "/src/components/UpdateNotice.tsx";
-import { useUpdateNotice } from "/src/hooks/useUpdateNotice.ts";
-import { desktopBuildIdentity } from "/src/desktopRuntime.ts";
+import { UpdateNotice, ReleaseCheckRow } from "/src/desktop/UpdateNotice.tsx";
+import { useUpdateNotice } from "/src/desktop/useUpdateNotice.ts";
+import { desktopBuildIdentity } from "/src/core/desktopRuntime.ts";
 window.visibility = new EventTarget();
 window.visibility.visibilityState = "visible";
 window.identity = { kind: "prebuilt", version: "0.4.2", checkout: null };

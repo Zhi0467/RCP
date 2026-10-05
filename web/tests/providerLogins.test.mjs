@@ -13,7 +13,7 @@ test("a registered third provider renders only its declared interactions and bac
     optimizeDeps: { noDiscovery: true },
   });
   try {
-    const { ProviderLoginRow } = await server.ssrLoadModule("/src/components/ProviderLogins.tsx");
+    const { ProviderLoginRow } = await server.ssrLoadModule("/src/projects/ProviderLogins.tsx");
     const account = {
       provider: "test-provider",
       label: "Test Research Provider",
@@ -87,7 +87,7 @@ test("a registered third provider renders only its declared interactions and bac
 
 test("shared account API sends a third provider through the generic routes", async () => {
   const { startProviderSignIn, providerSignInStatus, saveProviderToken } =
-    await import("../src/api.ts");
+    await import("../src/core/api.ts");
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {

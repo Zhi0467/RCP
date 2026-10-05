@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 
-import { NodeChat } from "../../src/components/NodeChat";
+import { NodeChat } from "../../src/chat/NodeChat";
 import "../../src/styles.css";
 
 const project = {

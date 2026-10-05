@@ -16,7 +16,7 @@ import {
   versionedArtifactContentUrl,
   taskArtifactOmissions,
   taskArtifacts,
-} from "../src/agentTasks.ts";
+} from "../src/agents/agentTasks.ts";
 
 function task(overrides) {
   return withTaskAnswers({

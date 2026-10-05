@@ -16,9 +16,9 @@ const {
   transcriptAbsenceIsExpected,
   experimentChatFreshnessToken,
   visibleUnreadChatId,
-} = await server.ssrLoadModule("/src/hooks/useChatState.ts");
-const { ApiError } = await server.ssrLoadModule("/src/api.ts");
-const { MAIN_GRAPH } = await server.ssrLoadModule("/src/graphTarget.ts");
+} = await server.ssrLoadModule("/src/chat/useChatState.ts");
+const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
+const { MAIN_GRAPH } = await server.ssrLoadModule("/src/core/graphTarget.ts");
 
 const BRANCH = { kind: "branch", branch_id: "branch-1" };
 

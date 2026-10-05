@@ -9,8 +9,8 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { publishCacheMetrics } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
-const { showClearAllCachesWarning } = await server.ssrLoadModule("/src/views/SpaceSettings.tsx");
+const { publishCacheMetrics } = await server.ssrLoadModule("/src/projects/ProjectSettings.tsx");
+const { showClearAllCachesWarning } = await server.ssrLoadModule("/src/projects/SpaceSettings.tsx");
 
 after(() => server.close());
 

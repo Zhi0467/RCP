@@ -11,10 +11,11 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
-const { presentNode } = await server.ssrLoadModule("/src/nodePresentation.ts");
-const { changedNodeFields, editableNodeFields, nodeEditDraft } =
-  await server.ssrLoadModule("/src/nodeEditing.ts");
+const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
+const { presentNode } = await server.ssrLoadModule("/src/graph/nodePresentation.ts");
+const { changedNodeFields, editableNodeFields, nodeEditDraft } = await server.ssrLoadModule(
+  "/src/graph/nodeEditing.ts",
+);
 
 after(() => server.close());
 

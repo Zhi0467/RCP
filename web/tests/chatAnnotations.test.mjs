@@ -6,7 +6,7 @@ import {
   chatAnnotationViewportMetrics,
   parseStagedChatAnnotations,
   stagedChatAnnotationsAreComplete,
-} from "../src/chatInput.ts";
+} from "../src/chat/chatInput.ts";
 
 test("the read-only selection control reports exactly the selected text", () => {
   const value = "The baseline improved by 12%, but variance was not reported.";

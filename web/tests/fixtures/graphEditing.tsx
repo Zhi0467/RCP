@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { DagView } from "../../src/views/GraphViews";
+import { DagView } from "../../src/graph/GraphViews";
 import {
   emptyHumanDraft,
   applyHumanDraft,
@@ -10,8 +10,8 @@ import {
   stageEdgeRemoval,
   unstageEdgeRemoval,
   toHumanSyncRequest,
-} from "../../src/humanDraft";
-import type { GraphState } from "../../src/types";
+} from "../../src/graph/humanDraft";
+import type { GraphState } from "../../src/core/types";
 import "../../src/styles.css";
 
 const ontology = { types: [], fields: [], relations: [] };

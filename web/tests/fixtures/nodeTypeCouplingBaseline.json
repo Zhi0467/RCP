@@ -1,9 +1,9 @@
 {
-  "components/EpisodeTimeline.tsx": 2,
-  "components/ProjectNotifications.tsx": 4,
-  "nodeDetail.ts": 1,
-  "notificationLinks.ts": 2,
-  "timeline.ts": 4,
-  "views/OperatorActionPanel.tsx": 2,
-  "voiceExecutor.ts": 3
+  "core/notificationLinks.ts": 2,
+  "desktop/ProjectNotifications.tsx": 4,
+  "experiments/EpisodeTimeline.tsx": 2,
+  "experiments/timeline.ts": 4,
+  "graph/nodeDetail.ts": 1,
+  "projects/OperatorActionPanel.tsx": 2,
+  "voice/voiceExecutor.ts": 3
 }

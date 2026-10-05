@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { nodeTypeLabel, presentNode } from "../src/nodePresentation.ts";
+import { nodeTypeLabel, presentNode } from "../src/graph/nodePresentation.ts";
 
 test("node presentation promotes the claim and human-readable context", () => {
   const node = {

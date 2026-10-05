@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isMutationRequest } from "../src/api.ts";
+import { isMutationRequest } from "../src/core/api.ts";
 import {
   advanceDesktopProjectTransfer,
   desktopDownloadPath,
@@ -25,7 +25,7 @@ import {
   runDesktopProjectTransfer,
   selectDesktopProjectTransferExport,
   setDesktopWebviewZoom,
-} from "../src/desktopRuntime.ts";
+} from "../src/core/desktopRuntime.ts";
 
 const identity = {
   version: "0.3.0",

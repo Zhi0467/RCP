@@ -8,7 +8,7 @@ import {
   createTeamProjectProvisioning,
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
-} from "../src/api.ts";
+} from "../src/core/api.ts";
 
 const requestBody = {
   name: "Shared paper project",
@@ -130,7 +130,7 @@ test("project provisioning calls preserve the backend projection and exact reque
 });
 
 test("complete provisioning and transfer lifecycles remain opaque to browser code", async () => {
-  const types = await readFile(new URL("../src/types.ts", import.meta.url), "utf8");
+  const types = await readFile(new URL("../src/core/types.ts", import.meta.url), "utf8");
 
   assert.doesNotMatch(types, /type ProjectProvisioningStatus\s*=\s*"/);
   assert.doesNotMatch(types, /type ProjectProvisioningCheckStatus\s*=\s*"/);

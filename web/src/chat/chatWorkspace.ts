@@ -1,0 +1,627 @@
+import { experimentBoardHref, experimentBoardRouteToken } from "../experiments/experimentBoard.ts";
+import { sameGraphTarget } from "../core/graphTarget.ts";
+import type {
+  ProjectReferenceSelector,
+  AgentRunConfig,
+  AgentTask,
+  AgentTaskRequest,
+  AgentTaskStatus,
+  ArtifactContextRequest,
+  ChatMessage,
+  ChatReads,
+  ChatSummary,
+  ConversationMode,
+  ExperimentLoopIndexEntry,
+  GraphTargetRef,
+  SkillDefaults,
+  StartAgentTask,
+  WorktreeIntegrationOption,
+} from "../core/types";
+
+export type ChatKind = "node_chat" | "project_chat";
+
+export interface ChatConversation {
+  chatId: string;
+  kind: ChatKind;
+  nodeId: string | null;
+  title: string;
+  tasks: AgentTask[];
+  updatedAt: string;
+  /** The latest message's text from the stored summary, for search. */
+  preview?: string;
+}
+
+export interface DraftConversation {
+  chatId: string;
+  kind: ChatKind;
+  nodeId: string | null;
+  title: string;
+}
+
+export function chatDraftStorageKey(projectId: string, chatId: string): string {
+  return `rcp:chat-draft:${projectId}:${chatId}`;
+}
+
+export function chatModeStorageKey(projectId: string, chatId: string): string {
+  return `rcp:chat-mode:${projectId}:${chatId}`;
+}
+
+export function parseConversationMode(value: unknown): ConversationMode | null {
+  return value === "discuss" || value === "work" ? value : null;
+}
+
+export function toggleConversationMode(mode: ConversationMode): ConversationMode {
+  return mode === "discuss" ? "work" : "discuss";
+}
+
+export function isConversationModeShortcut(key: string, shiftKey: boolean): boolean {
+  return key === "Tab" && shiftKey;
+}
+
+export function latestPersistedConversationMode(
+  messages: ChatMessage[],
+  tasks: AgentTask[],
+): ConversationMode {
+  const candidates: Array<{ mode: ConversationMode; timestamp: number; order: number }> = [];
+  let order = 0;
+  messages.forEach((message) => {
+    const mode = parseConversationMode(message.mode);
+    if (mode) candidates.push({ mode, timestamp: comparableTime(message.timestamp), order });
+    order += 1;
+  });
+  tasks.forEach((task) => {
+    const mode = parseConversationMode(task.request.mode);
+    if (mode) candidates.push({ mode, timestamp: comparableTime(task.created_at), order });
+    order += 1;
+  });
+  candidates.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+  return candidates.at(-1)?.mode ?? "discuss";
+}
+
+/** The transcript records "use the provider default" as a literal sentinel; a
+ *  request records it as an empty string. Continuing a conversation reads the
+ *  transcript, so the sentinel has to be translated back or it is sent to the
+ *  provider as though it were a real model name. */
+function persistedModel(value: string | null | undefined): string {
+  return !value || value === "provider-default" ? "" : value;
+}
+
+export function latestPersistedChatConfig(
+  messages: ChatMessage[],
+  tasks: AgentTask[],
+  fallback: AgentRunConfig,
+): AgentRunConfig {
+  const candidates: Array<{ config: AgentRunConfig; timestamp: number; order: number }> = [];
+  let order = 0;
+  messages.forEach((message) => {
+    if (
+      typeof message.provider === "string" &&
+      message.provider.trim() &&
+      typeof message.execution_machine === "string" &&
+      message.execution_machine.trim()
+    ) {
+      candidates.push({
+        config: {
+          ...fallback,
+          provider: message.provider,
+          model: persistedModel(message.model),
+          reasoning: message.reasoning ?? fallback.reasoning,
+          run_on: message.execution_machine,
+        },
+        timestamp: comparableTime(message.timestamp),
+        order,
+      });
+    }
+    order += 1;
+  });
+  tasks.forEach((task) => {
+    const request = task.request;
+    if (
+      typeof request.provider === "string" &&
+      request.provider.trim() &&
+      typeof request.run_on === "string" &&
+      request.run_on.trim()
+    ) {
+      candidates.push({
+        config: {
+          ...fallback,
+          provider: request.provider,
+          model: typeof request.model === "string" ? persistedModel(request.model) : "",
+          reasoning: typeof request.reasoning === "string" ? request.reasoning : fallback.reasoning,
+          run_on: request.run_on,
+        },
+        timestamp: comparableTime(task.created_at),
+        order,
+      });
+    }
+    order += 1;
+  });
+  candidates.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
+  return candidates.at(-1)?.config ?? fallback;
+}
+
+export interface ConversationTurnSubmission {
+  kind: ChatKind;
+  config: AgentRunConfig;
+  runTruthScope: string[];
+  nodeId: string | null;
+  message: string;
+  chatId: string;
+  sessionId: string | null;
+  mode: ConversationMode;
+  activeComputeIds?: string[];
+  artifactContext?: ArtifactContextRequest | null;
+  references?: ProjectReferenceSelector[];
+  attachmentSetId?: string | null;
+  attachmentClientId?: string | null;
+  skills?: SkillDefaults;
+  providerSkillNames?: string[];
+  worktree?: boolean;
+  worktreeIntegration?: WorktreeIntegrationOption["id"];
+}
+
+export function conversationTurnRequest(submission: ConversationTurnSubmission): AgentTaskRequest {
+  const message = submission.message.trim();
+  // An artifact comment turn may carry only its comments; the server writes their text.
+  if (!message && !submission.artifactContext?.selections.length)
+    throw new Error("A conversation turn requires a non-blank message.");
+  const skills = submission.skills ?? { workflow_ids: [], skill_ids: [] };
+  return {
+    ...submission.config,
+    model: submission.config.model || null,
+    run_truth_scope: submission.runTruthScope,
+    node_id: submission.nodeId,
+    message,
+    chat_id: submission.chatId,
+    session_id: submission.sessionId,
+    mode: submission.mode,
+    ...(submission.worktree ? { worktree: true } : {}),
+    ...(submission.worktreeIntegration
+      ? { worktree_integration: submission.worktreeIntegration }
+      : {}),
+    active_compute_ids: submission.activeComputeIds ?? [],
+    ...(submission.references?.length ? { references: submission.references } : {}),
+    ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
+    ...(submission.attachmentSetId && submission.attachmentClientId
+      ? {
+          attachment_set_id: submission.attachmentSetId,
+          attachment_client_id: submission.attachmentClientId,
+        }
+      : {}),
+    invoked_workflow_ids: skills.workflow_ids,
+    invoked_skill_ids: skills.skill_ids,
+    invoked_provider_skill_names: submission.providerSkillNames ?? [],
+  };
+}
+
+/** One ordinary Discuss/Work dispatch boundary shared by the visible composer
+ * and non-UI callers. Admission and durable task recording remain in App's
+ * StartAgentTask owner. */
+export async function startConversationTurn(
+  startTask: StartAgentTask,
+  submission: ConversationTurnSubmission,
+): Promise<AgentTask> {
+  return startTask(submission.kind, conversationTurnRequest(submission));
+}
+
+export function chatIdForTask(task: AgentTask): string | null {
+  if (task.kind !== "node_chat" && task.kind !== "project_chat") return null;
+  const value = task.request.chat_id;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function groupChatConversations(
+  summaries: ChatSummary[],
+  tasks: AgentTask[],
+  nodeTitles: Record<string, string>,
+  projectTitle: string,
+  drafts: DraftConversation[] = [],
+): ChatConversation[] {
+  const grouped = new Map<string, ChatConversation>();
+  for (const summary of summaries) {
+    const title =
+      summary.kind === "node_chat" && summary.node_id
+        ? (nodeTitles[summary.node_id] ?? summary.node_id)
+        : summary.title;
+    grouped.set(summary.chat_id, {
+      chatId: summary.chat_id,
+      kind: summary.kind,
+      nodeId: summary.node_id,
+      title,
+      tasks: [],
+      updatedAt: summary.updated_at,
+      preview: summary.last_message_preview,
+    });
+  }
+  for (const draft of drafts) {
+    if (!grouped.has(draft.chatId))
+      grouped.set(draft.chatId, { ...draft, tasks: [], updatedAt: "" });
+  }
+  for (const task of tasks) {
+    const chatId = chatIdForTask(task);
+    if (!chatId) continue;
+    const kind = task.kind as ChatKind;
+    const nodeId =
+      kind === "node_chat" && typeof task.request.node_id === "string"
+        ? task.request.node_id
+        : null;
+    const existing = grouped.get(chatId);
+    const title = nodeId ? (nodeTitles[nodeId] ?? nodeId) : projectTitle;
+    if (existing) {
+      existing.tasks.push(task);
+      if (Date.parse(task.updated_at) > Date.parse(existing.updatedAt || "1970-01-01")) {
+        existing.updatedAt = task.updated_at;
+      }
+    } else {
+      grouped.set(chatId, {
+        chatId,
+        kind,
+        nodeId,
+        title,
+        tasks: [task],
+        updatedAt: task.updated_at,
+      });
+    }
+  }
+  grouped.forEach((conversation) =>
+    conversation.tasks.sort(
+      (left, right) =>
+        Date.parse(left.created_at) - Date.parse(right.created_at) ||
+        left.operation_id.localeCompare(right.operation_id),
+    ),
+  );
+  return [...grouped.values()].sort(
+    (left, right) =>
+      Date.parse(right.updatedAt || "9999-01-01") - Date.parse(left.updatedAt || "9999-01-01") ||
+      left.title.localeCompare(right.title),
+  );
+}
+
+/** What a conversation's latest turn asks of the human, for the Agents panel. */
+export type ConversationAgentState = "stopped" | "working" | "unread" | "failed" | "done" | "draft";
+export type ConversationAgentGroup = "new_reply" | "failed" | "stopped" | "working" | "done";
+export interface ConversationAgentStatus {
+  state: ConversationAgentState;
+  group: ConversationAgentGroup;
+  latest: AgentTask | null;
+  unread: boolean;
+}
+
+export const CONVERSATION_AGENT_GROUPS: readonly ConversationAgentGroup[] = [
+  "new_reply",
+  "failed",
+  "stopped",
+  "working",
+  "done",
+];
+
+export function conversationAgentStatus(
+  conversation: ChatConversation,
+  unreadChatIds: ReadonlySet<string>,
+): ConversationAgentStatus {
+  const latest = conversation.tasks.at(-1) ?? null;
+  const unread = conversationHasUnread(conversation, unreadChatIds);
+  const result = { latest, unread };
+  if (latest?.failed) return { ...result, state: "failed", group: "failed" };
+  // After failures, the backend attention flag covers paused and interrupted turns.
+  if (latest?.paused || latest?.awaiting_human) {
+    return { ...result, state: "stopped", group: "stopped" };
+  }
+  if (latest?.active) return { ...result, state: "working", group: "working" };
+  if (!latest) {
+    if (unread) return { ...result, state: "unread", group: "new_reply" };
+    return { ...result, state: conversation.updatedAt ? "done" : "draft", group: "done" };
+  }
+  if (latest.settled && unread) return { ...result, state: "unread", group: "new_reply" };
+  return { ...result, state: "done", group: "done" };
+}
+
+/** The list's sections: pinned conversations first, then each status group. */
+export type AgentListSection = "pinned" | ConversationAgentGroup;
+export const AGENT_LIST_SECTIONS: readonly AgentListSection[] = [
+  "pinned",
+  ...CONVERSATION_AGENT_GROUPS,
+];
+
+export interface ConversationAgentRow {
+  conversation: ChatConversation;
+  status: ConversationAgentStatus;
+}
+
+/**
+ * Everything the browser already holds about a conversation, lower-cased: its
+ * name, node, chat kind, latest message, and each loaded turn's prompt,
+ * provider, model, effort, and repositories. Every search word must appear.
+ */
+export function conversationSearchText(conversation: ChatConversation): string {
+  const parts: (string | null | undefined)[] = [
+    conversation.title,
+    conversation.nodeId,
+    conversation.kind === "project_chat" ? "project chat" : "node chat",
+    conversation.preview,
+  ];
+  for (const task of conversation.tasks) {
+    const request = task.request;
+    parts.push(
+      typeof request.message === "string" ? request.message : null,
+      task.provider_label,
+      request.provider,
+      request.model,
+      request.reasoning,
+      ...(request.run_truth_scope ?? []),
+    );
+  }
+  return parts.filter(Boolean).join("\n").toLocaleLowerCase();
+}
+
+/**
+ * Rows grouped by latest turn status; each group keeps recency order. Pinned
+ * conversations leave their status group for the pinned section, newest pin first.
+ */
+export function groupConversationAgents(
+  conversations: ChatConversation[],
+  unreadChatIds: ReadonlySet<string>,
+  query = "",
+  pinnedChatIds: readonly string[] = [],
+): Record<AgentListSection, ConversationAgentRow[]> {
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const pinOrder = new Map(pinnedChatIds.map((chatId, index) => [chatId, index]));
+  const groups: Record<AgentListSection, ConversationAgentRow[]> = {
+    pinned: [],
+    new_reply: [],
+    failed: [],
+    stopped: [],
+    working: [],
+    done: [],
+  };
+  for (const conversation of conversations) {
+    if (terms.length) {
+      const text = conversationSearchText(conversation);
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
+    const status = conversationAgentStatus(conversation, unreadChatIds);
+    groups[pinOrder.has(conversation.chatId) ? "pinned" : status.group].push({
+      conversation,
+      status,
+    });
+  }
+  groups.pinned.sort(
+    (left, right) =>
+      (pinOrder.get(left.conversation.chatId) ?? 0) -
+      (pinOrder.get(right.conversation.chatId) ?? 0),
+  );
+  return groups;
+}
+
+/**
+ * An Experiment episode on a graph branch other than the viewed one. Its chat
+ * and tasks belong to that branch, so the row links to the episode in Runs.
+ */
+export interface BranchEpisodeAgentRow {
+  episodeId: string;
+  title: string;
+  group: Exclude<ConversationAgentGroup, "new_reply">;
+  href: string;
+  updatedAt: string;
+}
+
+/**
+ * Rows for human-started Experiment episodes on another graph branch, from the
+ * Experiment index Runs itself reads, so every row opens a card that exists and
+ * carries the title from the episode's own graph. An Auto-research child is
+ * reached through its parent episode instead.
+ */
+export function branchEpisodeAgentRows(
+  entries: ExperimentLoopIndexEntry[],
+  viewedTarget: GraphTargetRef,
+  projectId: string,
+  query = "",
+): Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> {
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const groups: Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> = {
+    failed: [],
+    stopped: [],
+    working: [],
+    done: [],
+  };
+  for (const entry of entries) {
+    const { episode } = entry;
+    if (
+      entry.project_id !== projectId ||
+      entry.graph_target.kind !== "branch" ||
+      entry.parent_episode_id !== null ||
+      episode.archived ||
+      sameGraphTarget(entry.graph_target, viewedTarget)
+    ) {
+      continue;
+    }
+    const title = entry.node.title;
+    if (terms.length) {
+      const text = `${title}\n${entry.node.id}\nbranch`.toLocaleLowerCase();
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
+    // A failed episode still writing its report is running, as Runs shows it.
+    const group =
+      episode.run_section === "running"
+        ? "working"
+        : episode.ending === "failed"
+          ? "failed"
+          : episode.run_section === "actionable"
+            ? "stopped"
+            : "done";
+    groups[group].push({
+      episodeId: episode.episode_id,
+      title,
+      group,
+      href: experimentBoardHref(projectId, experimentBoardRouteToken(entry)),
+      updatedAt: episode.ended_at ?? episode.updated_at,
+    });
+  }
+  for (const rows of Object.values(groups)) {
+    rows.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  }
+  return groups;
+}
+
+export type AgentGroupItem =
+  { kind: "chat"; row: ConversationAgentRow } | { kind: "branch"; row: BranchEpisodeAgentRow };
+
+/** One status group's chats and branch episodes together, newest first; an unsent draft leads. */
+export function agentGroupItems(
+  chats: ConversationAgentRow[],
+  branches: BranchEpisodeAgentRow[],
+): AgentGroupItem[] {
+  const items: AgentGroupItem[] = chats.map((row) => ({ kind: "chat", row }));
+  if (!branches.length) return items;
+  const at = (item: AgentGroupItem) =>
+    Date.parse(
+      (item.kind === "chat" ? item.row.conversation.updatedAt : item.row.updatedAt) || "9999-01-01",
+    );
+  return [...items, ...branches.map((row) => ({ kind: "branch" as const, row }))].sort(
+    (left, right) => at(right) - at(left),
+  );
+}
+
+/** A draft nobody has sent a turn in; opening a new chat reuses it. */
+export function unsentConversation(
+  conversations: ChatConversation[],
+  kind: ChatKind,
+  nodeId: string | null = null,
+): ChatConversation | null {
+  return (
+    conversations.find(
+      (conversation) =>
+        conversation.kind === kind &&
+        conversation.nodeId === nodeId &&
+        conversation.tasks.length === 0 &&
+        !conversation.updatedAt,
+    ) ?? null
+  );
+}
+
+export function latestConversation(
+  conversations: ChatConversation[],
+  kind: ChatKind,
+  nodeId: string | null = null,
+): ChatConversation | null {
+  return (
+    conversations.find(
+      (conversation) =>
+        conversation.kind === kind && (kind === "project_chat" || conversation.nodeId === nodeId),
+    ) ?? null
+  );
+}
+
+export function chatIndicator(
+  tasks: AgentTask[],
+  unreadChatIds: ReadonlySet<string>,
+): "active" | "unread" | null {
+  if (tasks.some((task) => chatIdForTask(task) && chatTaskNeedsAttention(task))) return "active";
+  return unreadChatIds.size > 0 ? "unread" : null;
+}
+
+export function chatTaskNeedsAttention(task: AgentTask): boolean {
+  return task.active || task.paused;
+}
+
+export function chatEntryConversationId(
+  conversations: ChatConversation[],
+  activityTask: AgentTask | null,
+  unreadChatIds: ReadonlySet<string>,
+  previousChatId: string | null,
+): string | null {
+  if (previousChatId && conversations.some((item) => item.chatId === previousChatId))
+    return previousChatId;
+  const activeChatId =
+    activityTask && chatTaskNeedsAttention(activityTask) ? chatIdForTask(activityTask) : null;
+  if (activeChatId && conversations.some((item) => item.chatId === activeChatId))
+    return activeChatId;
+  const unread = conversations.find((conversation) => unreadChatIds.has(conversation.chatId));
+  if (unread) return unread.chatId;
+  return conversations[0]?.chatId ?? null;
+}
+
+/** Chat turns this page saw change into a settled state; their summaries are stale. */
+export function newlyFinishedChatTaskIds(
+  tasks: AgentTask[],
+  previousStatuses: ReadonlyMap<string, AgentTaskStatus>,
+): string[] {
+  return tasks.flatMap((task) => {
+    const chatId = chatIdForTask(task);
+    const previous = previousStatuses.get(task.operation_id);
+    const becameTerminal =
+      previous !== undefined && previous !== task.status && !chatTaskNeedsAttention(task);
+    return chatId && becameTerminal ? [task.operation_id] : [];
+  });
+}
+
+function laterTime(left: string | null | undefined, right: string | null | undefined) {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  return Date.parse(right) > Date.parse(left) ? right : left;
+}
+
+/**
+ * Each chat's newest turn end: the server's durable answer, advanced by any
+ * loaded turn that finished since it was read.
+ */
+function latestChatFinishes(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads,
+): Record<string, string> {
+  const latest: Record<string, string> = { ...chatReads.latest_finished };
+  const archived = new Set(chatReads.archived);
+  for (const task of tasks) {
+    const chatId = chatIdForTask(task);
+    if (!chatId || archived.has(chatId)) continue;
+    if (!task.finished || !task.finished_at || chatTaskNeedsAttention(task)) continue;
+    latest[chatId] = laterTime(latest[chatId], task.finished_at) ?? task.finished_at;
+  }
+  return latest;
+}
+
+/** A chat is unread when its newest turn ended after the viewer's marker for it. */
+export function unreadChatIdsFromReads(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads | null,
+): Set<string> {
+  if (!chatReads) return new Set();
+  const latest = latestChatFinishes(tasks, chatReads);
+  return new Set(
+    Object.keys(latest).filter(
+      (chatId) =>
+        Date.parse(latest[chatId]) > Date.parse(chatReads.reads[chatId] ?? chatReads.baseline),
+    ),
+  );
+}
+
+/** The newest turn end in a chat, which is what reading it marks. */
+export function chatReadThrough(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads,
+  chatId: string,
+): string | null {
+  return latestChatFinishes(tasks, chatReads)[chatId] ?? null;
+}
+
+/** Markers only move forward, so a stale snapshot cannot unread a viewed reply. */
+export function mergeChatReads(current: ChatReads | null, incoming: ChatReads): ChatReads {
+  if (!current) return incoming;
+  const reads = { ...incoming.reads };
+  for (const [chatId, readThrough] of Object.entries(current.reads)) {
+    reads[chatId] = laterTime(reads[chatId], readThrough) ?? readThrough;
+  }
+  return { ...incoming, reads };
+}
+
+export function conversationHasUnread(
+  conversation: ChatConversation,
+  unreadChatIds: ReadonlySet<string>,
+): boolean {
+  return unreadChatIds.has(conversation.chatId);
+}
+
+function comparableTime(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}

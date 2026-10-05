@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ProviderLoginRow } from "../../src/components/ProviderLogins";
-import type { ProviderLoginAccount } from "../../src/types";
+import { ProviderLoginRow } from "../../src/projects/ProviderLogins";
+import type { ProviderLoginAccount } from "../../src/core/types";
 import "../../src/styles.css";
 
 declare global {

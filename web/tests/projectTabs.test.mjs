@@ -18,11 +18,11 @@ const {
   openProjectTab,
   projectTabShortcut,
   projectViewportRef,
-} = await server.ssrLoadModule("/src/projectTabs.ts");
+} = await server.ssrLoadModule("/src/projects/projectTabs.ts");
 const { exactAutoResearchEpisodeHref, exactRunExperimentSelectionHref, parseProjectHash } =
-  await server.ssrLoadModule("/src/experimentBoard.ts");
-const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
-const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
+  await server.ssrLoadModule("/src/experiments/experimentBoard.ts");
+const { reduceExperimentSelection } = await server.ssrLoadModule("/src/graph/useGraphSelection.ts");
+const { ProjectDock } = await server.ssrLoadModule("/src/projects/ProjectDock.tsx");
 
 after(() => server.close());
 

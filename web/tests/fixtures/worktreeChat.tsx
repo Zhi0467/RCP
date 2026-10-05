@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { NodeChat } from "../../src/components/NodeChat";
-import type { AgentTask, AgentTaskRequest, ProjectSnapshot } from "../../src/types";
+import { NodeChat } from "../../src/chat/NodeChat";
+import type { AgentTask, AgentTaskRequest, ProjectSnapshot } from "../../src/core/types";
 import "../../src/styles.css";
 
 const profile = {

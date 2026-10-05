@@ -14,7 +14,7 @@ const {
   handleAutoResearchDialogKeyDown,
   makeAutoResearchDialogBackgroundInert,
   restoreAutoResearchDialogFocus,
-} = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
+} = await server.ssrLoadModule("/src/experiments/AutoResearchDialog.tsx");
 
 after(() => server.close());
 

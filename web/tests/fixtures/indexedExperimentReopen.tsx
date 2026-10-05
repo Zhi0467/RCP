@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { experimentBoardHref, experimentBoardRouteToken } from "../../src/experimentBoard";
-import { ExecutionView } from "../../src/views/GraphViews";
+import {
+  experimentBoardHref,
+  experimentBoardRouteToken,
+} from "../../src/experiments/experimentBoard";
+import { ExecutionView } from "../../src/graph/GraphViews";
 
 const projectId = "project-one";
 const experimentId = "experiment/branch-child";

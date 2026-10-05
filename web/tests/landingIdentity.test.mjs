@@ -12,7 +12,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
-  "/src/views/ProjectLanding.tsx",
+  "/src/projects/ProjectLanding.tsx",
 );
 const {
   LandingIdentityMenu,
@@ -20,7 +20,7 @@ const {
   TeamDevicePairingCard,
   TeamSessionList,
   copyIdentityId,
-} = await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
+} = await server.ssrLoadModule("/src/projects/LandingIdentityMenu.tsx");
 
 after(() => server.close());
 
@@ -373,7 +373,7 @@ test("a pairing card with an access address shows a scannable QR code and the ad
 });
 
 test("a scanned pairing link prefills the code and only accepts the code shape", async () => {
-  const { pairingCodeFromHash } = await server.ssrLoadModule("/src/pairingLink.ts");
+  const { pairingCodeFromHash } = await server.ssrLoadModule("/src/desktop/pairingLink.ts");
   assert.equal(pairingCodeFromHash("#pair=ABCD-EFGHJK"), "ABCD-EFGHJK");
   assert.equal(pairingCodeFromHash("#pair=abcd-efghjk"), "ABCD-EFGHJK");
   assert.equal(pairingCodeFromHash("#pair=ABCD-EFGHJK&x=1"), null);

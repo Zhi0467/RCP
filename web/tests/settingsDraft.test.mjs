@@ -11,7 +11,7 @@ import {
   mergeMachineProviderPaths,
   serializeSettingsDraft,
   settingsFingerprint,
-} from "../src/settingsDraft.ts";
+} from "../src/projects/settingsDraft.ts";
 
 test("machine provider paths preserve recorded values and emit only edits", () => {
   const saved = machineProviderPathsFrom([
@@ -349,7 +349,8 @@ test("settings compare keeps list order, which the researcher chose", () => {
 });
 
 test("machine compute edits stage, restore, and save only changed aliases", async () => {
-  const { machineComputeFrom, machineComputeUpdates } = await import("../src/settingsDraft.ts");
+  const { machineComputeFrom, machineComputeUpdates } =
+    await import("../src/projects/settingsDraft.ts");
   const slurm = { job_manager: "slurm", jobs_root: "/jobs" };
   const saved = machineComputeFrom([
     { alias: "local", compute: null },
@@ -376,7 +377,7 @@ test("machine compute edits stage, restore, and save only changed aliases", asyn
 });
 
 test("compute drafts cannot restore untouched stale machine settings", async () => {
-  const { machineComputeUpdates } = await import("../src/settingsDraft.ts");
+  const { machineComputeUpdates } = await import("../src/projects/settingsDraft.ts");
   const original = { job_manager: null, jobs_root: "/old" };
   const fresh = { job_manager: null, jobs_root: "/new" };
   const saved = { local: fresh, cluster: null };

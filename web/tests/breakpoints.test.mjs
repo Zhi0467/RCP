@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { PHONE_MAX_WIDTH_PX } from "../src/hooks/useNarrowViewport.ts";
+import { PHONE_MAX_WIDTH_PX } from "../src/ui/useNarrowViewport.ts";
 
 const TABLET_MAX_WIDTH_PX = 920;
 // Content-driven thresholds: the component each belongs to needs that width.
@@ -11,8 +11,8 @@ const CONTENT_THRESHOLDS_PX = new Set([640, 680, 700, 720, 820, 1180]);
 function stylesheets() {
   const root = new URL("../src/", import.meta.url);
   const styles = readdirSync(new URL("styles/", root)).map((name) => `styles/${name}`);
-  return [...styles, "components/AppearancePicker.css", "components/WorktreeControls.css"].map(
-    (path) => readFileSync(new URL(path, root), "utf8"),
+  return [...styles, "ui/AppearancePicker.css", "chat/WorktreeControls.css"].map((path) =>
+    readFileSync(new URL(path, root), "utf8"),
   );
 }
 

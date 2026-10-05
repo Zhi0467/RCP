@@ -7,7 +7,7 @@ import {
   edgeProjectionEmphasis,
   projectNodes,
   relationFocus,
-} from "../src/graphProjection.ts";
+} from "../src/graph/graphProjection.ts";
 
 const nodes = [
   { id: "accepted", type: "research_question", standing: "accepted" },

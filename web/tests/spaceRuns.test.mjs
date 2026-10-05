@@ -12,10 +12,11 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { SPACE_RUN_BADGE_PALETTE, SpaceRunRow, SpaceRuns } = await server.ssrLoadModule(
-  "/src/components/SpaceRuns.tsx",
+  "/src/experiments/SpaceRuns.tsx",
 );
-const { experimentBoardHref, parseProjectHash, spaceRunRouteToken } =
-  await server.ssrLoadModule("/src/experimentBoard.ts");
+const { experimentBoardHref, parseProjectHash, spaceRunRouteToken } = await server.ssrLoadModule(
+  "/src/experiments/experimentBoard.ts",
+);
 
 after(() => server.close());
 

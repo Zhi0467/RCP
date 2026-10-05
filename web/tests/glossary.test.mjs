@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildGlossaryIndex, segmentGlossaryText } from "../src/glossary.ts";
+import { buildGlossaryIndex, segmentGlossaryText } from "../src/graph/glossary.ts";
 
 const glossary = {
   mopd: {

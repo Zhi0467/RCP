@@ -11,7 +11,7 @@ import {
   isGraphWatcherRecord,
   visibleChatWatchers,
   watcherLastObservedAt,
-} from "../src/runProjection.ts";
+} from "../src/experiments/runProjection.ts";
 
 function task(
   operationId,

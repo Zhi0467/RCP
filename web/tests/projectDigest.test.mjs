@@ -5,7 +5,7 @@ import {
   createDigestRequestFence,
   digestChangedNodeIds,
   projectDigestIsEmpty,
-} from "../src/projectDigest.ts";
+} from "../src/projects/projectDigest.ts";
 
 const digest = (overrides = {}) => ({
   cursor: 0,

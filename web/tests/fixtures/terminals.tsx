@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { TerminalTab } from "../../src/components/TerminalTab";
-import { Terminals } from "../../src/views/Terminals";
-import { useTheme } from "../../src/hooks/useTheme";
+import { TerminalTab } from "../../src/terminals/TerminalTab";
+import { Terminals } from "../../src/terminals/Terminals";
+import { useTheme } from "../../src/ui/useTheme";
 import "../../src/styles.css";
 
 function Fixture() {

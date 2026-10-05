@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createServer } from "vite";
 
-import { ApiError } from "../src/api.ts";
+import { ApiError } from "../src/core/api.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -41,7 +41,7 @@ const {
   unstageCustomNode,
   unstageNodeRemoval,
   toHumanSyncRequest,
-} = await server.ssrLoadModule("/src/humanDraft.ts");
+} = await server.ssrLoadModule("/src/graph/humanDraft.ts");
 
 after(() => server.close());
 

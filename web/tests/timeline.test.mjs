@@ -9,7 +9,7 @@ import {
   timelineRelated,
   timelineWakeRows,
   timelineSummary,
-} from "../src/timeline.ts";
+} from "../src/experiments/timeline.ts";
 
 const at = (minutes) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
 const actor = (id, kind, row = id, extra = {}) => ({

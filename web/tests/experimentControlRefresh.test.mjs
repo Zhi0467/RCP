@@ -18,7 +18,7 @@ const {
   terminalTaskNeedsAuthoritativeProjectReload,
 } = await server.ssrLoadModule("/src/App.tsx");
 const { cloneAgentTasksSnapshot, reconcileKnownActiveTasks } = await server.ssrLoadModule(
-  "/src/hooks/useAgentTasks.ts",
+  "/src/agents/useAgentTasks.ts",
 );
 
 after(() => server.close());

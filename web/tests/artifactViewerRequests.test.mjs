@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { artifactPopupTarget, isPermanentArtifactError } from "../src/artifactViewerRequests.ts";
+import {
+  artifactPopupTarget,
+  isPermanentArtifactError,
+} from "../src/artifacts/artifactViewerRequests.ts";
 
 test("permanent client errors stop polling, while transient and transport failures can recover", () => {
   for (const status of [400, 401, 403, 404, 410, 422])

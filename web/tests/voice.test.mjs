@@ -7,8 +7,8 @@ import {
   voiceCallOutcome,
   voiceCommentary,
   voiceWatchFromResult,
-} from "../src/voiceExecutor.ts";
-import { openVoiceSession } from "../src/voiceSession.ts";
+} from "../src/voice/voiceExecutor.ts";
+import { openVoiceSession } from "../src/voice/voiceSession.ts";
 
 const TOOLS = [
   { name: "rcp_get_project_overview", confirm: () => false, readOnly: true },

@@ -6,7 +6,7 @@ import {
   buildTopologyLayout,
   rectangleCollisionCandidates,
   resolveRectangleCollisions,
-} from "../src/hooks/dagLayout.ts";
+} from "../src/graph/dagLayout.ts";
 
 test("every node type has its own research-flow column across reverse-reading relations", () => {
   const nodes = [

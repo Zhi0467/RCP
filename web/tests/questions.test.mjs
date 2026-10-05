@@ -5,7 +5,7 @@ import {
   questionIsOpen,
   questionTranscript,
   toggleQuestionChoice,
-} from "../src/questions.ts";
+} from "../src/chat/questions.ts";
 
 const question = {
   question_id: "q",

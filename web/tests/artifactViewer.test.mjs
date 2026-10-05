@@ -11,7 +11,7 @@ import {
   collapseViewer,
   acceptsArtifactEditMessage,
   artifactVersionChanged,
-} from "../src/artifactViewerLayout.ts";
+} from "../src/artifacts/artifactViewerLayout.ts";
 
 const viewport = { width: 1200, height: 800 };
 test("viewer starts docked at the right and resizes against its fixed right edge", () => {
