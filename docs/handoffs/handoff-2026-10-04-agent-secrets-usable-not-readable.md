@@ -12,8 +12,8 @@ tailnet-only), so the only untrusted input is agents fetching web content
 (search, fetch, browser). An untargeted prompt injection asks the agent to read
 a secret, such as `~/.ssh/id_*`, and send it somewhere. Such an attack needs
 untrusted content, private data, and a way out. Agents keep the web and the
-network, so this work removes the private data: tools can still *use* a
-secret but cannot *read* it.
+network, so this work makes selected secrets unreadable on supported launches:
+tools can still *use* them but cannot *read* them.
 
 Out of scope: an agent that deliberately escapes through `systemd-run`,
 `launchctl`, `ssh localhost`, or a scheduler job; same-account isolation;
@@ -37,13 +37,31 @@ targeted poisoning of RCP content; egress filtering.
   backend. `core.sshCommand` keeps its transport and adds
   `-o IdentityAgent=<stable path>`. A deploy key is hidden only when that agent
   is confirmed to hold it at launch; otherwise the key stays readable for that
-  turn with a visible warning, so Git always works. Local keys first; remote
-  execution machines follow the same rule if their agent ownership stays small.
-- `~/.ssh/id_*` files are hidden only when that key is loaded in the account's
-  `ssh-agent`, so SSH keeps signing through the agent; keys not in an agent stay
-  readable.
+  turn with a visible warning, so Git always works. The agent is owned per OS
+  account (an account lock, since two data directories can share an account),
+  lives in a private stable directory under `~/.rcp` (not `/tmp`: the service
+  unit has `PrivateTmp`), starts after the startup-effect fence opens and before
+  recovery launches work, and stops after workers drain. Remote execution
+  machines keep readable deploy keys with a warning in this PR.
+- "Holds the key" means: the SHA256 fingerprint of the decoded public key is
+  listed by that agent on the launch's host and a bounded signing check passes.
+  A missing or stale `.pub`, an unavailable agent, or a failed check means
+  readable fallback. Confirmation runs before scope, browser, and provider
+  policy are resolved. A parent folder holding an exempt key is never masked.
+  The user's `SSH_AUTH_SOCK` stays separate from RCP's deploy-key agent.
+- `~/.ssh/id_*` files (never `.pub`) are hidden only when that key is loaded
+  in the account's `ssh-agent` by the same fingerprint rule, so SSH keeps
+  signing through the agent; keys not in an agent stay readable.
+- OpenCode's native `read`, `grep`, `glob`, and `list` tools bypass `$SHELL`.
+  They get path denies from the scope where OpenCode's permission rules can
+  express them; otherwise that launch reports itself unhidden.
 - Files use a deny list: code-owned defaults plus per-machine **hidden folders**
-  stored beside the existing machine writable paths. Settings lists the
+  stored beside the existing machine writable paths (`hidden_folders_json`
+  beside `writable_paths_json`, `SpaceMachineRecord.hidden_folders`, the
+  existing machine PATCH, and `MachineCard`; never a project manifest). One
+  backend resolver validates bounded absolute folders on the execution host,
+  checks overlap both ways against checkouts, stages, tools, and sockets, and
+  rechecks at launch. Settings lists the
   defaults read-only; users can add folders, not remove defaults. Any member
   may edit a team machine's list (RCP has no admin role). A path that overlaps
   a project checkout, a stage, `known_hosts`, or the command sockets is refused
@@ -93,8 +111,10 @@ targeted poisoning of RCP content; egress filtering.
      `shell_environment_policy` set to the allow list (`app_server` currently
      resets it to `{}`).
    - OpenCode: `SHELL` set to the wrapper acting as a shell.
-5. Browser (Linux): `browser/host.py` starts the daemon through the wrapper,
-   records the policy fingerprint, and restarts a live daemon when it changes.
+5. Browser (Linux): `browser/host.py` runs the wrapper inside the systemd job
+   command (wrapping `systemd-run` itself would not bind the daemon), persists
+   the policy fingerprint, and restarts a live daemon under `host_lock` when it
+   changes, keeping the profile and active leases.
    Wrapped tool calls keep the browser CLI socket, path prefix, and session
    variable.
 6. Git: a backend-owned `ssh-agent` with a stable socket loads deploy keys;
@@ -106,6 +126,26 @@ targeted poisoning of RCP content; egress filtering.
 8. Docs: `providers-and-containment.md` (cooperative model, provider and
    browser sections; network behavior unchanged), Settings in the interface spec,
    and a decision record for the threat model.
+
+## Slices
+
+Codex workers in sibling worktrees after the serial contract slice; commits
+merge into this one branch.
+
+- **A, contracts (serial):** `HiddenReadScope`, key evidence, effective status,
+  fingerprint, machine payloads, and seams in `core/models.py`, `config.py`,
+  `providers/base.py`, `storage/models.py`, `agents/hidden_read_scope.py`,
+  `limits.py`, `web/src/types.ts`.
+- **B, policy:** defaults, host validation, environment allow list, the staged
+  wrapper, readiness, and fallback.
+- **C, backend and Git:** the account `ssh-agent`, identity confirmation,
+  `IdentityAgent` transport, the `Host` check, doctor warnings.
+- **D, launch and providers:** resolve once before browser and provider
+  preparation; Claude, Codex (`exec` and `app_server`), OpenCode; prompts and
+  warnings.
+- **E, browser:** Linux daemon policy, fingerprint restart, lease preservation,
+  macOS and fallback visibility.
+- **F, Settings and docs:** migration, `MachineCard`, specs, decision record.
 
 ## Probe evidence (2026-10-04)
 
