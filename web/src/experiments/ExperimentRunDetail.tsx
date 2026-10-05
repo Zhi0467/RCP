@@ -1,0 +1,1032 @@
+import { BrowserToggle } from "../components/BrowserControls";
+import { EpisodeQuestions } from "./EpisodeQuestions";
+import { useHiddenWatchers } from "./useHiddenWatchers";
+import { ExternalJobRow } from "./ExternalJobRow";
+import { ExternalLink, FlaskConical } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { fetchEpisodeTimeline, loadEpisodes } from "../api";
+import { useRunArtifacts } from "./useRunArtifacts";
+import { RunArtifacts } from "./RunArtifacts";
+import { EpisodeTimeline } from "./EpisodeTimeline";
+import {
+  type ExperimentRun,
+  type ExperimentWatcherGroup,
+  type ExperimentWatcherItem,
+  authorizedInvocationCount,
+  experimentRecommendation,
+  experimentWatcherDisplayItems,
+  graphConditionLabel,
+  isExternalWatcherRecord,
+  watcherLastObservedAt,
+} from "./runProjection";
+import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
+import type {
+  EpisodeTask,
+  EpisodeTimelineResponse,
+  ExperimentLoopHealth,
+  WatcherRecord,
+} from "../types";
+import { EpisodeReportLink } from "./EpisodeReportLink";
+
+const healthLabels: Record<ExperimentLoopHealth, string> = {
+  starting: "Starting",
+  agent_active: "Agent active",
+  waiting_on_watchers: "Waiting on watchers",
+  completion_pending: "Completion pending delivery",
+  degraded: "Watcher degraded",
+  stopping: "Stopping gracefully",
+  wrapping_up: "Wrapping up visualization and report",
+  failed: "Failed",
+  human_stopped: "Human-stopped",
+  paused_at_limit: "Paused at invocation limit",
+  needs_action: "Needs action",
+  completed: "Completed",
+};
+
+const healthTones: Record<ExperimentLoopHealth, string> = {
+  starting: "running",
+  agent_active: "running",
+  waiting_on_watchers: "waiting",
+  completion_pending: "waiting",
+  degraded: "degraded",
+  stopping: "stopping",
+  wrapping_up: "running",
+  failed: "degraded",
+  human_stopped: "stopped",
+  paused_at_limit: "paused",
+  needs_action: "actionable",
+  completed: "completed",
+};
+
+export function experimentHealthLabel(health: ExperimentLoopHealth): string {
+  return healthLabels[health];
+}
+
+export function experimentHealthTone(health: ExperimentLoopHealth): string {
+  return healthTones[health];
+}
+
+interface Props {
+  apiBase: string;
+  run: ExperimentRun;
+  runBusy: boolean;
+  runDisabled: boolean;
+  stopBusy: boolean;
+  recoveryBusy: boolean;
+  watcherCheckBusyId: string | null;
+  providerLabel?: string;
+  conversation?: ReactNode;
+  ownedByAutoResearch?: boolean;
+  watchedByParentAutoResearch?: boolean;
+  allowStart?: boolean;
+  startDisabled?: boolean;
+  onInspectTask?: (operationId: string) => void;
+  onRun: (invocationCeiling?: number, browserRequested?: boolean) => void;
+  /** Add turns to the ended episode in its own session; absent where no episode can continue. */
+  onContinue?: (episodeId: string, invocationCeiling: number) => void;
+  onStopLoop: () => void;
+  onRecover: (action: "resume" | "retry") => void;
+  onSwitchProvider: () => void;
+  onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
+  episodeReportHref: (episodeId: string) => string;
+}
+
+export function ExperimentRunDetail({
+  apiBase,
+  run,
+  runBusy,
+  runDisabled,
+  stopBusy,
+  recoveryBusy,
+  watcherCheckBusyId,
+  providerLabel,
+  conversation,
+  ownedByAutoResearch = false,
+  watchedByParentAutoResearch = false,
+  allowStart = true,
+  startDisabled = false,
+  onInspectTask,
+  onRun,
+  onContinue,
+  onStopLoop,
+  onRecover,
+  onSwitchProvider,
+  onCheckWatcher,
+  onStopWatcher,
+  episodeReportHref,
+}: Props) {
+  const [browserRequested, setBrowserRequested] = useState(false);
+  useEffect(() => setBrowserRequested(false), [run.node.id]);
+  const [reportOpenError, setReportOpenError] = useState<string | null>(null);
+  const { node, control, taskGroup, currentTask, health } = run;
+  // Untouched, the field follows the node's own limit, which the human sees as
+  // Next episode limit beside it. A one-time initializer would keep a stale
+  // default when that limit changes while this card stays mounted, and then
+  // Reauthorize would send a count the human never chose.
+  const [editedCeiling, setEditedCeiling] = useState<string | null>(null);
+  const operational = control.operational;
+  const session = operational.session;
+  const episode = control.episode;
+  const [browserTasks, setBrowserTasks] = useState<EpisodeTask[]>([]);
+  const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
+  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const runArtifacts = useRunArtifacts(
+    apiBase,
+    episode?.episode_id,
+    true,
+    `${episode?.updated_at}:${currentTask?.operation_id}:${currentTask?.status}:${currentTask?.updated_at}`,
+  );
+  const watcherSignature = run.watchers
+    .map((watcher) => `${watcher.watcher_id}:${watcher.status}:${watcher.completed_at ?? ""}`)
+    .join("|");
+  useEffect(() => {
+    if (!episode) return;
+    let cancelled = false;
+    void Promise.all([
+      fetchEpisodeTimeline(apiBase, episode.episode_id),
+      loadEpisodes(apiBase, "experiment_loop", episode.episode_id),
+    ]).then(
+      ([response, episodes]) => {
+        if (!cancelled) {
+          setTimeline(response);
+          setBrowserTasks(
+            episodes.find((item) => item.episode_id === episode.episode_id)?.tasks ?? [],
+          );
+          setTimelineError(null);
+        }
+      },
+      (error) => {
+        if (!cancelled) setTimelineError(error instanceof Error ? error.message : String(error));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // Turn progress updates the task row, and a watcher stops or completes,
+    // without touching the episode's own timestamp.
+  }, [
+    apiBase,
+    episode?.episode_id,
+    episode?.updated_at,
+    currentTask?.operation_id,
+    currentTask?.status,
+    currentTask?.updated_at,
+    watcherSignature,
+  ]);
+  const stopUnsettled = control.stop_pending;
+  const currentOperationId =
+    currentTask?.operation_id ??
+    operational?.current_operation_id ??
+    taskGroup?.latest.operation_id;
+  const attempts = node.attempts ?? [];
+  const completionCriteria = node.completion_criteria ?? [];
+  const watcherVisibility = useHiddenWatchers(apiBase);
+  const hiddenWatchers = run.watchers.filter(watcherVisibility.isHidden);
+  const watcherItems = experimentWatcherDisplayItems(
+    run.watchers.filter((watcher) => !watcherVisibility.isHidden(watcher)),
+  );
+  const stoppedWatcherItems = watcherItems.filter(watcherItemIsStopped);
+  const currentWatcherItems = watcherItems.filter((item) => !watcherItemIsStopped(item));
+  const stoppedWatcherCount = stoppedWatcherItems.reduce(watcherItemCount, 0);
+  const currentWatcherCount = currentWatcherItems.reduce(watcherItemCount, 0);
+  const lastActivity = formatMoment(
+    currentTask?.last_activity_at ?? operational?.current_last_activity_at,
+  );
+  const recoveryAction = currentTask ? control.task_control : null;
+  const recoveryProvider =
+    providerLabel ||
+    capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
+  const canSwitchProvider = Boolean(currentTask && control.can_switch_provider);
+  const showStop = Boolean(control.episode_id && (stopBusy || control.can_stop));
+  const baseRecommendation = experimentRecommendation(run);
+  const recommendation =
+    !allowStart && baseRecommendation.step === "start_episode"
+      ? { step: "review" as const, label: "Review the owning Auto-research episode" }
+      : startDisabled && baseRecommendation.step === "start_episode"
+        ? { step: "review" as const, label: "Sync staged changes before starting" }
+        : baseRecommendation;
+  const summaryGuidance = experimentGuidanceDetail(node, "current_summary");
+  const nextActionGuidance = experimentGuidanceDetail(node, "next_action");
+  const currentSummary = currentExperimentGuidance(node, "current_summary");
+  const currentNextAction = currentExperimentGuidance(node, "next_action");
+  const watcherActionsDisabled =
+    runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
+  // An ended episode with a bound session continues with the turns the human
+  // names here; the count travels with the act and never edits the graph. Where
+  // no episode can continue, a Run at the ceiling still carries the count.
+  const canContinue = Boolean(episode?.can_continue && onContinue);
+  const reauthorizing = health === "paused_at_limit" && !canContinue;
+  const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
+  const authorizedCeiling = authorizedInvocationCount(ceilingInput);
+
+  return (
+    <div className={`experiment-run-detail ${healthTones[health]}`}>
+      <div className="experiment-run-topline">
+        <div
+          className={`experiment-run-health ${healthTones[health]}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <strong>{healthLabels[health]}</strong>
+        </div>
+        <div className="experiment-run-actions" aria-label="Experiment loop actions">
+          {recoveryAction && (
+            <button
+              type="button"
+              className="button primary compact experiment-recovery-button"
+              disabled={runDisabled || recoveryBusy || stopBusy}
+              aria-busy={recoveryBusy}
+              onClick={() => onRecover(recoveryAction)}
+            >
+              {recoveryBusy
+                ? recoveryAction === "resume"
+                  ? `Resuming ${recoveryProvider}…`
+                  : `Retrying ${recoveryProvider}…`
+                : recoveryAction === "resume"
+                  ? `Resume ${recoveryProvider}`
+                  : `Retry ${recoveryProvider}`}
+            </button>
+          )}
+          {canSwitchProvider && (
+            <button
+              type="button"
+              className="button compact"
+              disabled={runDisabled || recoveryBusy || stopBusy}
+              onClick={onSwitchProvider}
+            >
+              Switch provider…
+            </button>
+          )}
+          {showStop && (
+            <button
+              type="button"
+              className="button compact experiment-stop-loop"
+              disabled={runDisabled || stopBusy || recoveryBusy || stopUnsettled}
+              onClick={onStopLoop}
+            >
+              {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
+            </button>
+          )}
+          {control.can_open_report &&
+            !control.report_is_current &&
+            control.report_episode_id &&
+            episode && (
+              <EpisodeReportLink
+                className="button primary compact"
+                href={episodeReportHref(control.report_episode_id)}
+                projectId={episode.project_id}
+                graphTarget={episode.graph_target}
+                episodeId={control.report_episode_id}
+                onOpenError={setReportOpenError}
+              >
+                <ExternalLink size={12} aria-hidden="true" />
+                Previous episode report
+              </EpisodeReportLink>
+            )}
+          {allowStart && !control.node_closed && (reauthorizing || canContinue) && (
+            <label className="experiment-reauthorize-count">
+              <span className="eyebrow">{canContinue ? "Turns to add" : "Invocations"}</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={ceilingInput}
+                disabled={runDisabled || startDisabled || runBusy || !control.can_start}
+                onChange={(event) => setEditedCeiling(event.target.value)}
+                aria-label={
+                  canContinue ? "Turns to add" : "Invocations to authorize for the next episode"
+                }
+              />
+            </label>
+          )}
+          {allowStart && !control.node_closed && canContinue && episode && onContinue && (
+            <button
+              type="button"
+              className="button primary compact experiment-continue-button"
+              disabled={
+                runDisabled ||
+                startDisabled ||
+                runBusy ||
+                stopUnsettled ||
+                !control.can_start ||
+                authorizedCeiling === null
+              }
+              onClick={() => {
+                if (authorizedCeiling !== null) onContinue(episode.episode_id, authorizedCeiling);
+              }}
+            >
+              {authorizedCeiling === null ? "Add turns" : `Add ${authorizedCeiling} turns`}
+            </button>
+          )}
+          {allowStart && !control.node_closed && (
+            <button
+              type="button"
+              className="button primary compact experiment-run-button"
+              disabled={
+                runDisabled ||
+                startDisabled ||
+                runBusy ||
+                stopUnsettled ||
+                !control.can_start ||
+                (reauthorizing && authorizedCeiling === null)
+              }
+              onClick={() =>
+                onRun(
+                  reauthorizing ? (authorizedCeiling ?? undefined) : undefined,
+                  browserRequested,
+                )
+              }
+              aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
+            >
+              <FlaskConical size={14} aria-hidden="true" />{" "}
+              {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {allowStart && !control.node_closed && (
+        <BrowserToggle
+          subject="run"
+          checked={browserRequested}
+          disabled={runDisabled || startDisabled || runBusy}
+          onChange={setBrowserRequested}
+        />
+      )}
+
+      {episode && (
+        <EpisodeQuestions
+          apiBase={apiBase}
+          episodeId={episode.episode_id}
+          freshness={`${episode.updated_at}:${episode.status}`}
+        />
+      )}
+
+      {episode && (
+        <RunArtifacts
+          projectId={episode.project_id}
+          graphTarget={episode.graph_target}
+          {...runArtifacts}
+          onRetry={runArtifacts.reload}
+        />
+      )}
+
+      <div className={`experiment-run-recommendation ${recommendation.step}`}>
+        <span className="eyebrow">Recommended next step</span>
+        <strong>{recommendation.label}</strong>
+      </div>
+
+      {timelineError && (
+        <div className="campaign-run-error" role="alert">
+          {timelineError}
+        </div>
+      )}
+      {episode && timeline?.episode_id === episode.episode_id && (
+        <EpisodeTimeline
+          browserTasks={browserTasks}
+          response={timeline}
+          projectId={episode.project_id}
+          artifacts={runArtifacts.artifacts}
+          apiBase={apiBase}
+          episodeId={episode.episode_id}
+          graphTarget={episode.graph_target}
+          onInspectTask={(operationId) => onInspectTask?.(operationId)}
+        />
+      )}
+
+      {episode?.ending_diagnostic && (
+        <div className="campaign-run-error" role="alert">
+          {episode.ending_diagnostic}
+        </div>
+      )}
+
+      {/* An ended episode explains itself through `ending_diagnostic` above. A
+          live episode whose latest turn failed had the same explanation folded
+          away in the task details, which left the card recommending Retry with
+          no visible reason to retry. */}
+      {!episode?.ending_diagnostic && currentTask?.failed && currentTask.error && (
+        <div className="campaign-run-error" role="alert">
+          {currentTask.error}
+        </div>
+      )}
+
+      {/* The report is a deliverable of an ended episode, so its failure is reported
+          after the reason the episode ended and never in place of it. */}
+      {episode?.wrapup_state === "failed" && (
+        <div className="campaign-run-note">
+          Report generation error: {episode.wrapup_error || "The report could not be generated."}
+        </div>
+      )}
+
+      {reportOpenError && (
+        <div className="campaign-run-error" role="alert">
+          {reportOpenError}
+        </div>
+      )}
+
+      <p className="experiment-run-meta">
+        {control && (
+          <span>
+            <span className="eyebrow">Invocation</span>
+            {operational?.current_invocation ??
+              taskInvocation(currentTask) ??
+              control.invocations_used}{" "}
+            / {control.invocation_ceiling}
+          </span>
+        )}
+        {control?.episode_id && (
+          <span>
+            <span className="eyebrow">Next episode limit</span>
+            {node.invocation_ceiling}
+          </span>
+        )}
+        {lastActivity !== "—" && (
+          <span>
+            <span className="eyebrow">Active</span>
+            {lastActivity}
+          </span>
+        )}
+      </p>
+
+      {control && !control.node_closed && control.reasons.length > 0 && (
+        <ul
+          id={`${node.id}-run-requirements`}
+          className="experiment-gate-reasons"
+          aria-label="Run requirements"
+        >
+          {control.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
+
+      <section className="experiment-run-block">
+        <div className="experiment-run-block-heading">
+          <h4>{currentSummary ? "Research summary" : "Experiment objective"}</h4>
+        </div>
+        <p className="experiment-run-prose">
+          {String(currentSummary || node.objective || "No current summary recorded")}
+        </p>
+        {currentNextAction && (
+          <p className="experiment-run-prose experiment-run-next-action">
+            <span className="eyebrow">Next action</span>
+            {currentNextAction}
+          </p>
+        )}
+        {summaryGuidance.status === "stale" && (
+          <p className="experiment-run-prose">
+            <span className="eyebrow">{summaryGuidance.label}</span>
+            {summaryGuidance.text}
+          </p>
+        )}
+        {nextActionGuidance.status === "stale" && (
+          <p className="experiment-run-prose experiment-run-next-action">
+            <span className="eyebrow">{nextActionGuidance.label}</span>
+            {nextActionGuidance.text}
+          </p>
+        )}
+      </section>
+
+      {(control?.decision_drift ?? []).length > 0 && (
+        <ul className="experiment-run-drift" aria-label="Decision drift">
+          {(control?.decision_drift ?? []).map((drift) => (
+            <li key={drift.decision_id}>
+              {`${drift.decision_id} moved to ${drift.current_option ?? drift.current_status ?? "an unavailable state"} after this episode was pinned to ${drift.pinned_option}.`}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Fold title="Watchers" count={currentWatcherCount} defaultOpen>
+        {watchedByParentAutoResearch && (
+          <p className="experiment-parent-watch" role="status">
+            The owning Auto-research episode is watching this Experiment's completion.
+          </p>
+        )}
+        {watcherVisibility.error && <p role="alert">{watcherVisibility.error}</p>}
+        {hiddenWatchers.length > 0 && (
+          <button
+            className="button compact"
+            type="button"
+            onClick={() =>
+              watcherVisibility.show(hiddenWatchers.map((watcher) => watcher.watcher_id))
+            }
+          >
+            Show hidden watchers ({hiddenWatchers.length})
+          </button>
+        )}
+        {currentWatcherItems.length === 0 && hiddenWatchers.length === 0 ? (
+          <p className="experiment-run-empty">
+            {ownedByAutoResearch && health === "agent_active"
+              ? "The agent is still working. No detached work has been handed off by this Experiment."
+              : stoppedWatcherCount > 0
+                ? "No current watchers."
+                : "No detached work has been handed off."}
+          </p>
+        ) : currentWatcherItems.length > 0 ? (
+          <ul className="experiment-run-watchers" aria-label="Experiment watchers">
+            <WatcherItems
+              apiBase={apiBase}
+              items={currentWatcherItems}
+              watcherCheckBusyId={watcherCheckBusyId}
+              actionsDisabled={watcherActionsDisabled}
+              onCheckWatcher={onCheckWatcher}
+              onStopWatcher={onStopWatcher}
+              onHideWatcher={watcherVisibility.hide}
+            />
+          </ul>
+        ) : null}
+        {stoppedWatcherCount > 0 && (
+          <Fold title="Stopped watchers" count={stoppedWatcherCount} nested>
+            <ul className="experiment-run-watchers" aria-label="Stopped experiment watchers">
+              <WatcherItems
+                apiBase={apiBase}
+                items={stoppedWatcherItems}
+                watcherCheckBusyId={watcherCheckBusyId}
+                actionsDisabled={watcherActionsDisabled}
+                onCheckWatcher={onCheckWatcher}
+                onStopWatcher={onStopWatcher}
+                onHideWatcher={watcherVisibility.hide}
+              />
+            </ul>
+          </Fold>
+        )}
+      </Fold>
+
+      {attempts.length > 0 && (
+        <Fold title="Semantic attempts" count={attempts.length}>
+          <ol className="experiment-run-attempts" aria-label="Semantic attempts">
+            {attempts.map((attempt) => (
+              <li key={attempt.id}>
+                <span className="experiment-run-attempt-seq">
+                  {String(attempt.sequence).padStart(2, "0")}
+                </span>
+                <span className="experiment-run-attempt-copy">
+                  <strong>{attempt.purpose}</strong>
+                  <span>{attempt.outcome || attempt.failure_reason || "No outcome recorded"}</span>
+                  {attempt.job_refs.length > 0 && (
+                    <span className="mono experiment-run-breakable">
+                      {attempt.job_refs.join(", ")}
+                    </span>
+                  )}
+                </span>
+                <span className={`status-pill ${attempt.status}`}>{attempt.status}</span>
+              </li>
+            ))}
+          </ol>
+        </Fold>
+      )}
+
+      {(session || control?.episode_id || currentOperationId) && (
+        <Fold title="Execution">
+          <Facts
+            entries={[
+              {
+                label: "Agent",
+                value: joinFacts([
+                  session?.provider,
+                  session?.model || "provider default",
+                  session?.reasoning,
+                ]),
+              },
+              { label: "Machine", value: joinFacts([session?.run_on, session?.execution_host]) },
+              {
+                label: "Truth scope",
+                value: session?.run_truth_scope?.join(", "),
+                breakable: true,
+              },
+              {
+                label: "Native continuity",
+                value: session
+                  ? joinFacts([
+                      session.native_session_bound ? "Bound" : "Not bound",
+                      session.diagnostic,
+                    ])
+                  : null,
+              },
+              {
+                label: "Last task error",
+                value: currentTask?.error,
+                breakable: true,
+              },
+              { label: "Episode", value: control?.episode_id, mono: true, breakable: true },
+              { label: "Current task", value: currentOperationId, mono: true, breakable: true },
+            ]}
+          />
+        </Fold>
+      )}
+
+      {completionCriteria.length > 0 && (
+        <Fold title="Completion criteria" count={completionCriteria.length}>
+          <ul className="experiment-run-list">
+            {completionCriteria.map((criterion) => (
+              <li key={criterion}>{criterion}</li>
+            ))}
+          </ul>
+        </Fold>
+      )}
+
+      {(control?.governing_decisions ?? []).length > 0 && (
+        <Fold title="Governing decisions" count={(control?.governing_decisions ?? []).length}>
+          <ul className="experiment-run-list">
+            {(control?.governing_decisions ?? []).map((pin) => (
+              <li key={pin.decision_id}>
+                <span className="mono">{pin.decision_id}</span> · r{pin.decision_revision} ·{" "}
+                {pin.selected_option}
+              </li>
+            ))}
+          </ul>
+        </Fold>
+      )}
+
+      {conversation && (
+        <section className="experiment-run-conversation" aria-label="Run conversation">
+          <div className="experiment-run-block-heading">
+            <h4>Conversation</h4>
+          </div>
+          {conversation}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Fold({
+  title,
+  count,
+  defaultOpen,
+  nested,
+  children,
+}: {
+  title: string;
+  count?: number;
+  defaultOpen?: boolean;
+  nested?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className={nested ? "experiment-fold nested" : "experiment-fold"} open={defaultOpen}>
+      <summary>
+        <span className="experiment-fold-title">{title}</span>
+        {count !== undefined && <span className="experiment-fold-count">{count}</span>}
+      </summary>
+      <div className="experiment-fold-body">{children}</div>
+    </details>
+  );
+}
+
+interface Fact {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  breakable?: boolean;
+  className?: string;
+}
+
+function Facts({ entries, className }: { entries: Fact[]; className?: string }) {
+  const present = entries.filter(
+    (entry) =>
+      entry.value !== null &&
+      entry.value !== undefined &&
+      entry.value !== "" &&
+      entry.value !== "—",
+  );
+  if (present.length === 0) return null;
+  return (
+    <dl className={className ? `experiment-run-facts ${className}` : "experiment-run-facts"}>
+      {present.map((entry) => (
+        <div key={entry.label}>
+          <dt>{entry.label}</dt>
+          <dd
+            className={
+              [
+                entry.mono ? "mono" : "",
+                entry.breakable ? "experiment-run-breakable" : "",
+                entry.className ?? "",
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined
+            }
+          >
+            {entry.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function joinFacts(parts: (string | null | undefined)[]): string | null {
+  const kept = parts.filter((part): part is string => Boolean(part));
+  return kept.length > 0 ? kept.join(" · ") : null;
+}
+
+function WatcherItems({
+  apiBase,
+  items,
+  watcherCheckBusyId,
+  actionsDisabled,
+  onCheckWatcher,
+  onStopWatcher,
+  onHideWatcher,
+}: {
+  apiBase: string;
+  items: ExperimentWatcherItem[];
+  watcherCheckBusyId: string | null;
+  actionsDisabled: boolean;
+  onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
+  onHideWatcher: (watcherId: string) => void;
+}) {
+  return items.map((item) =>
+    item.kind === "group" ? (
+      <WatcherGroupDetail
+        apiBase={apiBase}
+        group={item.group}
+        watcherCheckBusyId={watcherCheckBusyId}
+        actionsDisabled={actionsDisabled}
+        onCheckWatcher={onCheckWatcher}
+        onStopWatcher={onStopWatcher}
+        onHideWatcher={onHideWatcher}
+        key={item.group.groupId}
+      />
+    ) : (
+      <WatcherDetail
+        apiBase={apiBase}
+        watcher={item.watcher}
+        watcherCheckBusyId={watcherCheckBusyId}
+        actionsDisabled={actionsDisabled}
+        onCheckWatcher={onCheckWatcher}
+        onStopWatcher={onStopWatcher}
+        onHideWatcher={onHideWatcher}
+        key={item.watcher.watcher_id}
+      />
+    ),
+  );
+}
+
+function watcherItemCount(total: number, item: ExperimentWatcherItem): number {
+  return total + (item.kind === "group" ? item.group.watchers.length : 1);
+}
+
+function watcherItemIsStopped(item: ExperimentWatcherItem): boolean {
+  return item.kind === "group"
+    ? item.group.watchers.every((watcher) => watcher.status === "stopped")
+    : item.watcher.status === "stopped";
+}
+
+function WatcherGroupDetail({
+  apiBase,
+  group,
+  watcherCheckBusyId,
+  actionsDisabled,
+  onCheckWatcher,
+  onStopWatcher,
+  onHideWatcher,
+}: {
+  apiBase: string;
+  group: ExperimentWatcherGroup;
+  watcherCheckBusyId: string | null;
+  actionsDisabled: boolean;
+  onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
+  onHideWatcher: (watcherId: string) => void;
+}) {
+  return (
+    <li className="experiment-run-watcher-group">
+      <details>
+        <summary>
+          <span>
+            <span className="eyebrow">Watcher group</span>
+            <strong>{group.label}</strong>
+          </span>
+          <span className="experiment-run-watcher-group-counts">{watcherGroupSummary(group)}</span>
+        </summary>
+        <p className="experiment-run-watcher-group-id">
+          <span className="eyebrow">Group ID</span>
+          <code>{group.groupId}</code>
+        </p>
+        <ul className="experiment-run-watcher-group-members" aria-label={`${group.label} watchers`}>
+          {group.watchers.map((watcher) => (
+            <WatcherDetail
+              apiBase={apiBase}
+              watcher={watcher}
+              watcherCheckBusyId={watcherCheckBusyId}
+              actionsDisabled={actionsDisabled}
+              onCheckWatcher={onCheckWatcher}
+              onStopWatcher={onStopWatcher}
+              onHideWatcher={onHideWatcher}
+              key={watcher.watcher_id}
+            />
+          ))}
+        </ul>
+      </details>
+    </li>
+  );
+}
+
+function WatcherDetail({
+  apiBase,
+  watcher,
+  watcherCheckBusyId,
+  actionsDisabled,
+  onCheckWatcher,
+  onStopWatcher,
+  onHideWatcher,
+}: {
+  apiBase: string;
+  watcher: WatcherRecord;
+  watcherCheckBusyId: string | null;
+  actionsDisabled: boolean;
+  onCheckWatcher: (watcherId: string) => void;
+  onStopWatcher: (watcherId: string) => void;
+  onHideWatcher: (watcherId: string) => void;
+}) {
+  const external = isExternalWatcherRecord(watcher);
+  // Retiring an observer writes no graph, so the graph-mutation lock folded into
+  // actionsDisabled must not reach it: that would leave destructive Cancel as the
+  // only enabled control, which is the dead end this whole control exists to remove.
+  const canCheckNow = watcher.can_check_now;
+  const checkBusy = watcherCheckBusyId === watcher.watcher_id;
+  return (
+    <li className={`experiment-run-watcher ${watcher.status}`}>
+      <div className="chat-watcher-row">
+        {external ? (
+          <ExternalJobRow
+            apiBase={apiBase}
+            watcher={watcher}
+            onHide={() => onHideWatcher(watcher.watcher_id)}
+          />
+        ) : (
+          <>
+            <strong>{graphConditionLabel(watcher.condition)}</strong>
+            {watcher.status === "completed" && (
+              <button
+                type="button"
+                className="button compact watcher-action"
+                onClick={() => onHideWatcher(watcher.watcher_id)}
+                aria-label={`Hide watcher ${graphConditionLabel(watcher.condition)}`}
+              >
+                Hide
+              </button>
+            )}
+          </>
+        )}
+        {watcher.can_stop_watching && (
+          <button
+            type="button"
+            className="button compact watcher-action"
+            onClick={() => onStopWatcher(watcher.watcher_id)}
+            aria-label={`Stop watching ${watcher.watcher_id}`}
+            title="Stop observing this job. The job itself keeps running."
+          >
+            Stop watching
+          </button>
+        )}
+      </div>
+      <details>
+        <summary className="experiment-run-watcher-heading">
+          <span className={`status-pill ${watcher.status}`}>{watcher.status}</span>
+          <strong className="mono experiment-run-breakable">{watcher.watcher_id}</strong>
+          <span>{watcher.delivery_label}</span>
+        </summary>
+        <Facts
+          className="experiment-run-watcher-facts"
+          entries={[
+            {
+              label: "Origin invocation",
+              value: watcher.origin_operation_id,
+              mono: true,
+              breakable: true,
+            },
+            {
+              label: "Watcher ID",
+              value: external ? null : watcher.watcher_id,
+              mono: true,
+              breakable: true,
+            },
+            { label: "Provenance", value: watcherProvenance(watcher) },
+            {
+              label: external ? "Last check" : "Last evaluation",
+              value: formatMoment(watcherLastObservedAt(watcher)),
+            },
+            {
+              label: "Next check",
+              value: external
+                ? watcher.next_check_at
+                  ? formatMoment(watcher.next_check_at)
+                  : "Not scheduled"
+                : null,
+            },
+            {
+              label: "Consecutive failures",
+              value: external ? watcher.consecutive_error_count : null,
+            },
+            { label: "Check exit code", value: external ? watcher.last_exit_code : null },
+            { label: "Completed", value: formatMoment(watcher.completed_at) },
+            { label: "Machine", value: watcher.execution_host || "Local" },
+            {
+              label: "Delivery task",
+              value: watcher.notification_operation_id,
+              mono: true,
+              breakable: true,
+            },
+            {
+              label: "Stopped by",
+              value: watcher.status === "stopped" ? watcherStopDisposition(watcher) : null,
+            },
+            {
+              label: "Current error",
+              value: external ? watcher.last_error : null,
+              className: "experiment-run-watcher-current-error",
+            },
+          ]}
+        />
+        {canCheckNow && (
+          <div className="experiment-run-watcher-actions">
+            <button
+              type="button"
+              className="button compact"
+              disabled={actionsDisabled}
+              aria-busy={checkBusy}
+              onClick={() => onCheckWatcher(watcher.watcher_id)}
+            >
+              {checkBusy ? "Checking…" : "Check now"}
+            </button>
+          </div>
+        )}
+        {external ? (
+          <>
+            <div className="experiment-run-watcher-command">
+              <span className="eyebrow">Check command</span>
+              <code>{watcher.check_command}</code>
+            </div>
+            <div className="experiment-run-watcher-paths">
+              <span>
+                <span className="eyebrow">Log</span>
+                <code>{watcher.log_path}</code>
+              </span>
+              <span>
+                <span className="eyebrow">Working directory</span>
+                <code>{watcher.cwd}</code>
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="experiment-run-watcher-command">
+            <span className="eyebrow">Graph condition</span>
+            <code>{graphConditionLabel(watcher.condition)}</code>
+          </div>
+        )}
+        {watcher.stop_reason && (
+          <p className="experiment-run-watcher-stop-reason">
+            <strong>{watcher.stopped_by === "agent" ? "Agent reason" : "Stop reason"}</strong>
+            {watcher.stop_reason}
+          </p>
+        )}
+      </details>
+    </li>
+  );
+}
+
+function watcherGroupSummary(group: ExperimentWatcherGroup): string {
+  const { finished, degraded, running, stopped } = group.counts;
+  const summary = [`${finished} finished`, `${degraded} degraded`, `${running} running`];
+  if (stopped > 0) summary.push(`${stopped} stopped`);
+  return summary.join(" · ");
+}
+
+function watcherProvenance(watcher: WatcherRecord): string {
+  const episode = watcher.continuation.control_episode_id ?? "—";
+  const invocation = watcher.continuation.control_invocation ?? "—";
+  const ceiling = watcher.continuation.control_invocation_ceiling;
+  return `episode ${episode} · invocation ${invocation}${ceiling ? ` / ${ceiling}` : ""}`;
+}
+
+function watcherStopDisposition(watcher: WatcherRecord): string {
+  const actor = watcher.stopped_by ? `${capitalize(watcher.stopped_by)} stopped` : "Stopped";
+  const stoppedAt = formatMoment(watcher.stopped_at);
+  return stoppedAt === "—" ? actor : `${actor} · ${stoppedAt}`;
+}
+
+function capitalize(value: string): string {
+  return `${value[0].toUpperCase()}${value.slice(1)}`;
+}
+
+function taskInvocation(task: ExperimentRun["currentTask"]): number | null {
+  const value = task?.request.control_invocation;
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function formatMoment(value: string | null | undefined): string {
+  if (!value || !Number.isFinite(Date.parse(value))) return "—";
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
