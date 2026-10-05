@@ -32,8 +32,8 @@ PATH_SINGLE_TARGET_METHODS = {"rename", "replace"}
 # Receivers whose `.open(x)` opens a project or record, never a file. Every
 # other `.open(<computed>)` counts as a write until proven otherwise.
 NON_FILE_OPEN_RECEIVERS = {"catalog", "_catalog"}
-# Modules whose `open(file, mode)` has the builtin signature, mode second.
-BUILTIN_SIGNATURE_OPENERS = {"io", "builtins", "codecs"}
+# Callables with the builtin `open(file, mode)` signature, by canonical name.
+BUILTIN_OPENERS = {"open", "builtins.open", "io.open", "codecs.open"}
 OS_WRITE_FUNCTIONS = {
     "replace",
     "rename",
@@ -50,33 +50,56 @@ OS_WRITE_FUNCTIONS = {
     "pwrite",
     "writev",
 }
-
-
-def _os_open_writes(call: ast.Call) -> bool:
-    """`os.open(path, flags)` is a write unless the flags are exactly `os.O_RDONLY`."""
-    flags: ast.expr | None = None
-    for keyword in call.keywords:
-        if keyword.arg == "flags":
-            flags = keyword.value
-    if flags is None and len(call.args) > 1:
-        flags = call.args[1]
-    if flags is None:
-        return False
-    read_only = (
-        isinstance(flags, ast.Attribute)
-        and flags.attr == "O_RDONLY"
-        and isinstance(flags.value, ast.Name)
-        and flags.value.id == "os"
-    )
-    return not read_only
-
-
 SHUTIL_WRITE_PREFIXES = ("copy", "move", "rmtree")
 WRITE_MODE = re.compile(r"[wax+]")
 
 
 def _python_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.rglob("*.py") if path.is_file())
+
+
+def _import_aliases(tree: ast.AST) -> dict[str, str]:
+    """Local name to dotted origin for every import in a module.
+
+    `import os as o` maps `o` to `os`; `from io import open as io_open` maps
+    `io_open` to `io.open`; a plain `import os` maps `os` to itself. A name not
+    in the map is a local binding, not a module.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+                else:
+                    root = alias.name.split(".")[0]
+                    aliases[root] = root
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _call_name(call: ast.Call, aliases: dict[str, str]) -> tuple[str, ast.expr | None]:
+    """The callee's canonical dotted name, and its receiver when it is a method
+    call on something other than an imported module (None otherwise)."""
+    function = call.func
+    if isinstance(function, ast.Name):
+        return aliases.get(function.id, function.id), None
+    if isinstance(function, ast.Attribute):
+        owner = function.value
+        if isinstance(owner, ast.Name) and owner.id in aliases:
+            return f"{aliases[owner.id]}.{function.attr}", None
+        return f".{function.attr}", owner
+    return "", None
+
+
+def _receiver_name(receiver: ast.expr | None) -> str | None:
+    if isinstance(receiver, ast.Name):
+        return receiver.id
+    if isinstance(receiver, ast.Attribute):
+        return receiver.attr
+    return None
 
 
 ROUTE_DECORATOR_METHODS = {
@@ -128,68 +151,60 @@ def _open_mode(call: ast.Call, *, builtin: bool) -> tuple[ast.expr | None, bool]
     return None, False
 
 
-def _writes_a_file(call: ast.Call) -> bool:
-    function = call.func
-    if isinstance(function, ast.Name):
-        if function.id != "open":
-            return False
-        builtin = True
-        mode, by_keyword = _open_mode(call, builtin=True)
-    elif isinstance(function, ast.Attribute):
-        owner = function.value
-        if (
-            isinstance(owner, ast.Name)
-            and owner.id in BUILTIN_SIGNATURE_OPENERS
-            and function.attr == "open"
-        ):
-            builtin = True
-            mode, by_keyword = _open_mode(call, builtin=True)
-        elif isinstance(owner, ast.Name) and owner.id == "os":
-            if function.attr == "open":
-                return _os_open_writes(call)
-            if function.attr == "fdopen":
-                builtin = True
-                mode, by_keyword = _open_mode(call, builtin=True)
-                return mode is not None and (
-                    WRITE_MODE.search(mode.value) is not None
-                    if isinstance(mode, ast.Constant) and isinstance(mode.value, str)
-                    else True
-                )
-            return function.attr in OS_WRITE_FUNCTIONS
-        elif isinstance(owner, ast.Name) and owner.id == "shutil":
-            return function.attr.startswith(SHUTIL_WRITE_PREFIXES)
-        elif function.attr in PATH_WRITE_METHODS:
-            return True
-        elif function.attr in PATH_SINGLE_TARGET_METHODS:
-            positional_target = len(call.args) == 1 and not call.keywords
-            keyword_target = not call.args and [keyword.arg for keyword in call.keywords] == [
-                "target"
-            ]
-            return positional_target or keyword_target
-        elif function.attr != "open":
-            return False
-        else:
-            builtin = False
-            mode, by_keyword = _open_mode(call, builtin=False)
-    else:
-        return False
+def _mode_writes(mode: ast.expr | None, *, computed_default: bool) -> bool:
     if mode is None:
         return False
     if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
         return WRITE_MODE.search(mode.value) is not None
+    return computed_default
+
+
+def _os_open_writes(call: ast.Call) -> bool:
+    """`os.open(path, flags)` is a write unless the flags are exactly `O_RDONLY`."""
+    flags: ast.expr | None = None
+    for keyword in call.keywords:
+        if keyword.arg == "flags":
+            flags = keyword.value
+    if flags is None and len(call.args) > 1:
+        flags = call.args[1]
+    if flags is None:
+        return False
+    return not (isinstance(flags, ast.Attribute) and flags.attr == "O_RDONLY")
+
+
+def _writes_a_file(call: ast.Call, aliases: dict[str, str]) -> bool:
+    name, receiver = _call_name(call, aliases)
+    if name in BUILTIN_OPENERS or name == "os.fdopen":
+        mode, _ = _open_mode(call, builtin=True)
+        return _mode_writes(mode, computed_default=True)
+    if name == "os.open":
+        return _os_open_writes(call)
+    if name.startswith("os."):
+        return name.removeprefix("os.") in OS_WRITE_FUNCTIONS
+    if name.startswith("shutil."):
+        return name.removeprefix("shutil.").startswith(SHUTIL_WRITE_PREFIXES)
+    if receiver is None:
+        return False
+    method = name.removeprefix(".")
+    if method in PATH_WRITE_METHODS:
+        return True
+    if method in PATH_SINGLE_TARGET_METHODS:
+        positional_target = len(call.args) == 1 and not call.keywords
+        keyword_target = not call.args and [keyword.arg for keyword in call.keywords] == ["target"]
+        return positional_target or keyword_target
+    if method != "open":
+        return False
+    mode, by_keyword = _open_mode(call, builtin=False)
     # A computed mode is a write until proven otherwise. The one exemption is a
     # positional argument on a receiver known not to open files.
-    if builtin or by_keyword:
-        return True
-    owner = call.func.value if isinstance(call.func, ast.Attribute) else None
-    receiver = (
-        owner.id
-        if isinstance(owner, ast.Name)
-        else owner.attr
-        if isinstance(owner, ast.Attribute)
-        else None
-    )
-    return receiver not in NON_FILE_OPEN_RECEIVERS
+    computed_default = by_keyword or _receiver_name(receiver) not in NON_FILE_OPEN_RECEIVERS
+    return _mode_writes(mode, computed_default=computed_default)
+
+
+def _flagged_lines(source: str, predicate) -> list[int]:
+    tree = ast.parse(source)
+    aliases = _import_aliases(tree)
+    return sorted({node.lineno for node in ast.walk(tree) if predicate(node, aliases)})
 
 
 def test_api_routes_never_write_files_directly() -> None:
@@ -202,8 +217,9 @@ def test_api_routes_never_write_files_directly() -> None:
     assert "phone_listener.py" in names, "route discovery must see routes outside api/"
     offenders: list[str] = []
     for path, tree in modules:
+        aliases = _import_aliases(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and _writes_a_file(node):
+            if isinstance(node, ast.Call) and _writes_a_file(node, aliases):
                 offenders.append(
                     f"{path.relative_to(SOURCE)}:{node.lineno}: {ast.unparse(node)[:80]}"
                 )
@@ -248,9 +264,36 @@ def route(path, mode):
     builtins.open(path, mode="a")
     codecs.open(path, "r")
 """
-    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
-    flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
+    source = "import os\nimport io\nimport builtins\nimport codecs\n" + source
+    flagged = [line - 4 for line in _flagged_lines(source, _is_write_call)]
     assert flagged == [3, 4, 9, 10, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 28, 30]
+
+
+def _is_write_call(node: ast.AST, aliases: dict[str, str]) -> bool:
+    return isinstance(node, ast.Call) and _writes_a_file(node, aliases)
+
+
+def test_route_write_detection_resolves_import_aliases() -> None:
+    """An aliased import of a file primitive is classified by what it imports."""
+
+    source = """
+from io import open as io_open
+import os as operating_system
+from os import replace as swap
+from codecs import open as decode
+from pathlib import Path
+
+def route(path, source, target):
+    io_open(path, "w")
+    io_open(path)
+    operating_system.replace(source, target)
+    swap(source, target)
+    decode(path, "r")
+    decode(path, "a")
+    operating_system.open(path, operating_system.O_RDONLY)
+    operating_system.open(path, operating_system.O_WRONLY)
+"""
+    assert _flagged_lines(source, _is_write_call) == [9, 11, 12, 14, 16]
 
 
 # The transcript readers live on the project service for display and backup.
@@ -262,25 +305,25 @@ TRANSCRIPT_READERS = (
     "canonical_chat_backup_sources",
 )
 TASK_RUNTIME = ("runs", "agents", "providers")
+TRANSCRIPT_PATH_RESOLVERS = {"_chat_path", "rcp.runs.chat._chat_path"}
 
 
-def _reads_a_file(node: ast.AST) -> bool:
+def _reads_a_file(node: ast.AST, aliases: dict[str, str]) -> bool:
     """Any way of getting a file's bytes: Path methods, builtin `open`, or a
-    qualified builtin-style opener such as `io.open`."""
+    qualified or aliased builtin-style opener such as `io.open`."""
     if isinstance(node, ast.Attribute) and node.attr in {"read_text", "read_bytes", "open"}:
         return True
     if isinstance(node, ast.Call):
-        function = node.func
-        if isinstance(function, ast.Name) and function.id == "open":
-            return True
-        if (
-            isinstance(function, ast.Attribute)
-            and function.attr == "open"
-            and isinstance(function.value, ast.Name)
-            and function.value.id in BUILTIN_SIGNATURE_OPENERS
-        ):
-            return True
+        name, _ = _call_name(node, aliases)
+        return name in BUILTIN_OPENERS
     return False
+
+
+def _resolves_transcript_path(node: ast.AST, aliases: dict[str, str]) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    name, _ = _call_name(node, aliases)
+    return name in TRANSCRIPT_PATH_RESOLVERS or name.endswith(".chat_path")
 
 
 def test_transcript_read_detection_sees_builtin_open() -> None:
@@ -291,8 +334,25 @@ def holder(service, request):
     io.open(path).read()
     path.read_text()
 """
-    flagged = sorted({node.lineno for node in ast.walk(ast.parse(source)) if _reads_a_file(node)})
+    source = "import io\n" + source
+    flagged = [line - 1 for line in _flagged_lines(source, _reads_a_file)]
     assert flagged == [4, 5, 6]
+
+
+def test_transcript_path_detection_resolves_import_aliases() -> None:
+    source = """
+from rcp.runs.chat import _chat_path as transcript_file
+from io import open as io_open
+
+def holder(service, request):
+    path = transcript_file(service, request)
+    return io_open(path).read()
+
+def other(service, request):
+    return service.chat_path(request.session_id)
+"""
+    assert _flagged_lines(source, _resolves_transcript_path) == [6, 10]
+    assert _flagged_lines(source, _reads_a_file) == [7]
 
 
 def test_task_runtime_never_reads_chat_transcripts() -> None:
@@ -314,8 +374,7 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
     assert offenders == [], "\n".join(offenders)
 
     # Anywhere in the task runtime, the transcript path is obtained only to
-    # append to it. A function that resolves that path must not read any file;
-    # the one append helper may read back identity, and nothing else holds it.
+    # append to it. A function that resolves that path must not read any file.
     # Identity-only reads: the append helper dedupes by message UUID, and the
     # steer entry point looks up the stored human message it addresses. Neither
     # feeds transcript text to a provider.
@@ -328,23 +387,16 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
         for path in _python_files(SOURCE / package):
             module = path.relative_to(SOURCE).as_posix()
             tree = ast.parse(path.read_text(encoding="utf-8"))
+            aliases = _import_aliases(tree)
             for function in ast.walk(tree):
                 if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
                 if (module, function.name) in identity_only:
                     continue
-                resolves_transcript_path = any(
-                    isinstance(node, ast.Call)
-                    and (
-                        (isinstance(node.func, ast.Name) and node.func.id == "_chat_path")
-                        or (isinstance(node.func, ast.Attribute) and node.func.attr == "chat_path")
-                    )
-                    for node in ast.walk(function)
-                )
-                if not resolves_transcript_path:
+                if not any(_resolves_transcript_path(node, aliases) for node in ast.walk(function)):
                     continue
                 for node in ast.walk(function):
-                    if not _reads_a_file(node):
+                    if not _reads_a_file(node, aliases):
                         continue
                     entry = f"{module}::{function.name}:{node.lineno}"
                     if entry not in readers_in_path_holders:
