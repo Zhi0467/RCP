@@ -55,8 +55,8 @@ const BASELINE = fileURLToPath(
 // the paper). Another project type would replace these modules, not edit them.
 const RESEARCH_LAYER = new Set([
   "types.ts",
-  "researchType.ts",
-  "researchProjection.ts",
+  "graph/researchType.ts",
+  "graph/researchProjection.ts",
   "experimentBoard.ts",
   "experimentGuidance.ts",
   "components/ExperimentBoard.tsx",
