@@ -1,5 +1,6 @@
-# Hooks run the repo's own pinned tools: ruff comes from uv.lock, prettier from
-# web/package-lock.json. Run `uv sync` and `npm --prefix web install` first.
+# Hooks run the repo's own pinned tools: ruff and basedpyright come from uv.lock,
+# prettier and eslint from web/package-lock.json. Run `uv sync` and
+# `npm --prefix web install` first.
 #
 #   uv run pre-commit install        # enable the hook
 #   uv run pre-commit run --all-files
@@ -39,6 +40,25 @@ repos:
         types_or: [python, pyi]
         require_serial: true
 
+      # Whole-project check against `.basedpyright/baseline.json`; see the
+      # `[tool.basedpyright]` note in pyproject.toml.
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run basedpyright
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
+
+      # React's hook rules only; web/eslint.config.js explains the scope.
+      - id: eslint
+        name: eslint (react hooks)
+        entry: npm --prefix web run lint
+        language: system
+        files: ^web/src/.*\.(ts|tsx)$
+        pass_filenames: false
+        require_serial: true
+
       - id: prettier
         name: prettier
         entry: npm --prefix web exec -- prettier --write --ignore-unknown
@@ -50,6 +70,8 @@ repos:
     rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
+        # basedpyright rewrites its baseline without a final newline.
+        exclude: ^\.basedpyright/
       - id: trailing-whitespace
       - id: check-yaml
       - id: check-toml

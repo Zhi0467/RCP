@@ -27,6 +27,7 @@ rcp = "rcp.__main__:main"
 
 [dependency-groups]
 dev = [
+  "basedpyright>=1.40.2",
   "http-ece>=1.2.1",
   "pre-commit>=4.0",
   "pyinstaller>=6.21.0",
@@ -90,3 +91,14 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+# Type checking. `standard` is pyright's default strictness; basedpyright's own
+# default adds many stricter rules. Errors that predate the checker live in
+# `.basedpyright/baseline.json`, and a run fails only on errors outside it. A
+# plain run also deletes fixed errors from the baseline, so commit the shrunk
+# file. Never run `--writebaseline` to silence a new error: it adds every
+# current error back.
+[tool.basedpyright]
+include = ["src/rcp"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
