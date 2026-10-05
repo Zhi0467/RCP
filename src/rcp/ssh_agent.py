@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import base64
 import fcntl
-import hashlib
 import json
 import logging
 import os
 import pwd
-import shlex
 import signal
 import socket
 import struct
@@ -20,7 +17,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from rcp.core.models import HiddenReadKeyEvidence
 from rcp.limits import (
@@ -31,6 +28,10 @@ from rcp.limits import (
 )
 from rcp.rcp_home import private_directory, rcp_home
 from rcp.server_ops.remote_git_credentials import _public_material
+from rcp.transport import remote_ssh_agent
+
+if TYPE_CHECKING:
+    from rcp.transport.run_stage import RemoteRunStage
 
 logger = logging.getLogger(__name__)
 
@@ -66,93 +67,25 @@ def running_agent_socket() -> str | None:
     return str(agent_socket_path()) if agent_status() == "running" else None
 
 
-def _fingerprint(public: str) -> str:
-    blob = base64.b64decode(public.split()[1], validate=True)
-    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
-
-
 def confirm_key_evidence(
     *,
     private_key_paths: tuple[str, ...],
     kind: Literal["deploy_key", "ssh_identity"],
     agent_socket: str | None,
 ) -> tuple[HiddenReadKeyEvidence, ...]:
-    """Only a matching private/public pair, listed identity and signature may hide a key."""
-    listed: set[str] = set()
-    if agent_socket:
-        try:
-            result = _run(["ssh-add", "-L"], agent_socket)
-            if result.returncode == 0:
-                listed = {_fingerprint(line) for line in result.stdout.splitlines()}
-        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
-            pass
-    evidence = []
-    for name in dict.fromkeys(private_key_paths):
-        path = Path(name).expanduser().absolute()
-        fingerprint = None
-        confirmed = False
-        try:
-            public = Path(str(path) + ".pub").read_text()
-            fingerprint = _fingerprint(public)
-            if fingerprint in listed:
-                # This also detects a stale adjacent public key. Encrypted keys that
-                # cannot be checked noninteractively conservatively stay readable.
-                derived = _run(["ssh-keygen", "-y", "-P", "", "-f", str(path)])
-                if derived.returncode == 0 and _fingerprint(derived.stdout) == fingerprint:
-                    signed = _run(
-                        [
-                            "ssh-keygen",
-                            "-Y",
-                            "sign",
-                            "-U",
-                            "-f",
-                            str(path) + ".pub",
-                            "-n",
-                            "rcp-hidden-read",
-                        ],
-                        agent_socket,
-                        text="RCP identity probe\n",
-                    )
-                    confirmed = signed.returncode == 0
-        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
-            pass
-        evidence.append(
-            HiddenReadKeyEvidence(
-                path=str(path),
-                kind=kind,
-                public_key_fingerprint=fingerprint,
-                agent_confirmed=confirmed,
-                visibility="hidden" if confirmed else "readable",
-            )
+    return tuple(
+        HiddenReadKeyEvidence.model_validate(item)
+        for item in remote_ssh_agent.confirm_keys(
+            private_key_paths=private_key_paths,
+            kind=kind,
+            agent_socket=agent_socket,
+            timeout=AGENT_COMMAND_TIMEOUT_SECONDS,
         )
-    return tuple(evidence)
+    )
 
 
 def user_ssh_identity_candidates(home: Path) -> tuple[str, ...]:
-    home = Path(home)
-    root = home / ".ssh"
-    candidates = set(root.glob("id_*"))
-    try:
-        for line in (root / "config").read_text().splitlines():
-            parts = shlex.split(line.replace("=", " ", 1), comments=True)
-            if len(parts) == 2 and parts[0].lower() == "identityfile":
-                name = parts[1].replace("%d", str(home))
-                if name.startswith("~/"):
-                    name = str(home / name[2:])
-                if "%" not in name and name.lower() != "none":
-                    path = Path(name)
-                    candidates.add(path if path.is_absolute() else home / path)
-    except (OSError, ValueError):
-        pass
-    return tuple(
-        sorted(
-            str(path.absolute())
-            for path in candidates
-            if path.is_file()
-            and not path.name.endswith(".pub")
-            and path.name not in {"config", "known_hosts"}
-        )
-    )
+    return remote_ssh_agent.user_ssh_identity_candidates(home)
 
 
 class BackendSSHAgent:
@@ -310,3 +243,96 @@ class BackendSSHAgent:
         if self._lock is not None:
             os.close(self._lock)
             self._lock = None
+
+
+def confirm_remote_key_evidence(
+    *, remote_stage: RemoteRunStage, home: str
+) -> tuple[HiddenReadKeyEvidence, ...]:
+    """Confirm on the execution account; owner/check failures keep inventoried keys readable.
+
+    A transport failure before inventory raises: the caller cannot claim a checked
+    host from an empty inventory. Once inventoried, failures return readable evidence.
+    """
+    import importlib.resources
+
+    from rcp.compute_jobs.backend_context import BackendContext
+    from rcp.compute_jobs.backends import COMPUTE_BACKENDS
+    from rcp.server_ops.layout import remote_credentials_root
+
+    remote_credentials_root(home)  # Validate the execution-account path.
+    source = importlib.resources.files("rcp.transport").joinpath("remote_ssh_agent.py").read_text()
+    command = ["python3", "-c", source]
+    timeout = str(AGENT_COMMAND_TIMEOUT_SECONDS)
+    result = remote_stage._ssh([*command, "inventory", home, timeout])
+    if result.returncode:
+        raise RuntimeError("Could not inventory remote account SSH identities")
+    facts = json.loads(result.stdout)
+    fallback = tuple(
+        HiddenReadKeyEvidence(path=path, kind=kind, agent_confirmed=False, visibility="readable")
+        for kind, paths in (
+            ("deploy_key", facts["deploy_keys"]),
+            ("ssh_identity", facts["user_keys"]),
+        )
+        for path in paths
+    )
+    try:
+        started = False
+        backend_id = {"linux": "systemd_user", "darwin": "launchd"}.get(facts["platform"])
+        if facts["deploy_keys"] and not facts["running"] and backend_id is not None:
+            prepared = remote_stage._ssh_bytes(
+                [*command, "prepare", home, timeout],
+                input_data=source.encode(),
+                timeout_seconds=AGENT_COMMAND_TIMEOUT_SECONDS,
+            )
+            if prepared.returncode == 0:
+                helper = json.loads(prepared.stdout)
+
+                def runner(argv, **kwargs):
+                    # Keep the stage's SSH partition and the caller's timeout.
+                    value = remote_stage._ssh_bytes(
+                        argv,
+                        input_data=b"",
+                        timeout_seconds=kwargs["timeout"],
+                    )
+                    return subprocess.CompletedProcess(
+                        argv,
+                        value.returncode,
+                        value.stdout.decode(),
+                        value.stderr.decode(),
+                    )
+
+                context = BackendContext(
+                    execution_host="",
+                    execution_machine=remote_stage.host,
+                    compute=None,
+                    runner=runner,
+                    uid=facts["uid"],
+                    os_name=facts["platform"],
+                )
+                COMPUTE_BACKENDS[backend_id].start_account_service(
+                    str(Path(home) / ".rcp/ssh-agent"),
+                    ["python3", helper, "serve", home, timeout],
+                    context,
+                )
+                started = True
+        result = remote_stage._ssh(
+            [
+                *command,
+                "confirm",
+                home,
+                timeout,
+                timeout if started else "0",
+                str(AGENT_POLL_SECONDS),
+            ]
+        )
+        if result.returncode == 0:
+            evidence = tuple(
+                HiddenReadKeyEvidence.model_validate(item) for item in json.loads(result.stdout)
+            )
+            if {(item.path, item.kind) for item in fallback} <= {
+                (item.path, item.kind) for item in evidence
+            }:
+                return evidence
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
+        pass
+    return fallback

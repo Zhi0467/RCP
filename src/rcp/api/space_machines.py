@@ -125,6 +125,8 @@ def _machine_usage(
 def _hidden_read_projection(
     machine: SpaceMachineRecord, data_dir: Path
 ) -> MachineHiddenReadProjection:
+    from rcp.server_ops.doctor import local_hidden_read_status
+
     home = "~" if machine.host else str(Path.home())
     # Remote defaults are display templates; only launch-host resolution knows overrides.
     environment = {} if machine.host else os.environ
@@ -147,7 +149,11 @@ def _hidden_read_projection(
     return MachineHiddenReadProjection(
         default_paths=tuple(sorted(paths)),
         user_folders=tuple(machine.hidden_folders),
-        readiness=None if machine.host else cached_hidden_read_readiness(),
+        readiness=(
+            None
+            if machine.host
+            else local_hidden_read_status(cached_hidden_read_readiness(), app_data_dir=data_dir)
+        ),
     )
 
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import pwd
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -46,6 +48,48 @@ def test_identity_requires_matching_pair_and_agent_signature(agent_home, state):
         )
         assert evidence.agent_confirmed == (state == "loaded")
         assert evidence.visibility == ("hidden" if state == "loaded" else "readable")
+    finally:
+        agent.stop()
+
+
+@pytest.mark.parametrize("running", [True, False])
+@pytest.mark.parametrize("location", ["local", "ssh"])
+def test_provisioned_key_loads_into_running_account_agent(
+    agent_home, monkeypatch, running, location
+):
+    from rcp.server_ops import remote_git_credentials
+
+    account = pwd.getpwuid(os.getuid())
+    credentials = (
+        agent_home / "credentials"
+        if location == "local"
+        else agent_home / ".local/share/rcp/credentials"
+    )
+    if location == "local":
+        credentials.mkdir(mode=0o700)
+    monkeypatch.setattr(remote_git_credentials, "_account", lambda _: (account, agent_home))
+    agent = ssh_agent.BackendSSHAgent(credentials, home=agent_home)
+    if running:
+        agent.start()
+    try:
+        material = remote_git_credentials._prepare_or_inspect(
+            "prepare",
+            account.pw_name,
+            location,
+            str(credentials) if location == "local" else "-",
+            str(agent_home / "projects"),
+            str(uuid.uuid4()),
+            str(uuid.uuid4()),
+            "repository",
+        )
+        assert material["created"] is True
+        (evidence,) = ssh_agent.confirm_key_evidence(
+            private_key_paths=(material["private_key_path"],),
+            kind="deploy_key",
+            agent_socket=str(agent.socket),
+        )
+        assert evidence.agent_confirmed is running
+        assert evidence.visibility == ("hidden" if running else "readable")
     finally:
         agent.stop()
 

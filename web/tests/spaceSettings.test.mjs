@@ -425,7 +425,12 @@ for (const status of ["unhidden", "enforced", null]) {
             ? null
             : {
                 status,
-                reasons: status === "unhidden" ? ["wrapper_unavailable"] : [],
+                reasons: status === "unhidden" ? [
+                  "wrapper_unavailable",
+                  "browser_unwrapped_macos",
+                  "deploy_key_agent_unconfirmed",
+                  "ssh_key_agent_unconfirmed",
+                ] : [],
               },
       },
     };
@@ -440,6 +445,9 @@ for (const status of ["unhidden", "enforced", null]) {
       }),
     );
     assert.ok(html.includes(`data-hidden-read-status="${status ?? "unchecked"}"`));
+    for (const reason of record.hidden_read.readiness?.reasons ?? []) {
+      assert.ok(html.includes(`data-hidden-read-reason="${reason}"`));
+    }
     const defaultRow = html.match(/<li[^>]*data-hidden-default=""[^>]*>(.*?)<\/li>/)?.[1];
     assert.ok(defaultRow);
     assert.doesNotMatch(defaultRow, /<button/);

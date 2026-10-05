@@ -952,6 +952,9 @@ def test_agent_security_doctor_probes_service_account_and_warns_on_failure(tmp_p
 
 @pytest.mark.parametrize("reason", [None, "wrapper_unavailable", "userns_blocked"])
 def test_agent_security_readiness_uses_policy_hook(monkeypatch, reason):
+    monkeypatch.setattr("rcp.server_ops.doctor.sys.platform", "linux")
+    monkeypatch.setattr("rcp.ssh_agent.confirm_key_evidence", lambda **kwargs: ())
+    monkeypatch.setattr("rcp.ssh_agent.running_agent_socket", lambda: None)
     from rcp import ssh_agent
     from rcp.core.models import HiddenReadStatus
 
@@ -966,3 +969,63 @@ def test_agent_security_readiness_uses_policy_hook(monkeypatch, reason):
     observed = server_doctor.probe_agent_security()
     assert observed.ssh_agent_status == "running"
     assert observed.hidden_read == expected
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+@pytest.mark.parametrize("readable_kind", [None, "ssh_identity", "deploy_key"])
+def test_machine_security_reports_account_key_and_browser_gaps(
+    monkeypatch, tmp_path, platform, readable_kind
+):
+    from rcp.core.models import HiddenReadKeyEvidence, HiddenReadStatus
+
+    home = tmp_path / "home"
+    credentials = tmp_path / "credentials"
+    private = credentials / "projects/project/repo/id_ed25519"
+    private.parent.mkdir(parents=True)
+    private.touch()
+    user_key = home / ".ssh/id_ed25519"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(server_doctor.sys, "platform", platform)
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(home / "user.sock"))
+    monkeypatch.setattr(
+        "rcp.agents.write_scope.installed_server_storage",
+        lambda _: SimpleNamespace(credentials_root=credentials),
+    )
+    monkeypatch.setattr("rcp.ssh_agent.user_ssh_identity_candidates", lambda _: (str(user_key),))
+    monkeypatch.setattr("rcp.ssh_agent.running_agent_socket", lambda: str(home / "rcp.sock"))
+    monkeypatch.setattr("rcp.ssh_agent.agent_status", lambda: "running")
+    calls = {}
+
+    def confirm(*, private_key_paths, kind, agent_socket):
+        calls[kind] = (private_key_paths, agent_socket)
+        return tuple(
+            HiddenReadKeyEvidence(
+                path=path,
+                kind=kind,
+                public_key_fingerprint="SHA256:" + "A" * 43,
+                agent_confirmed=kind != readable_kind,
+                visibility="readable" if kind == readable_kind else "hidden",
+            )
+            for path in private_key_paths
+        )
+
+    monkeypatch.setattr("rcp.ssh_agent.confirm_key_evidence", confirm)
+    result = server_doctor.probe_agent_security(
+        app_data_dir=tmp_path / "data", hidden_read_probe=lambda: {"ready": True, "reason": None}
+    )
+    reasons = []
+    if platform == "darwin":
+        reasons.append("browser_unwrapped_macos")
+    if readable_kind:
+        reasons.append(
+            "deploy_key_agent_unconfirmed"
+            if readable_kind == "deploy_key"
+            else "ssh_key_agent_unconfirmed"
+        )
+    assert result.hidden_read == HiddenReadStatus(
+        status="unhidden" if reasons else "enforced", reasons=tuple(sorted(reasons))
+    )
+    assert calls == {
+        "ssh_identity": ((str(user_key),), str(home / "user.sock")),
+        "deploy_key": ((str(private),), str(home / "rcp.sock")),
+    }

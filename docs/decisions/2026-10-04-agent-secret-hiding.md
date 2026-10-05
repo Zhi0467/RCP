@@ -27,8 +27,14 @@ public-key SHA256 fingerprint is listed by the correct host's agent and bounded
 signing succeeds. Missing or stale public keys and failed checks mean readable
 fallback with a visible reason. Public keys, SSH configuration, and known hosts
 remain readable; parents containing exempt keys are never masked. The backend
-owns one deploy-key agent per account at a private stable socket under `~/.rcp`,
-separate from the user's agent. Remote deploy keys remain readable with warnings.
+owns one deploy-key agent per account at `~/.rcp/ssh-agent/agent.sock`, separate
+from the user's `SSH_AUTH_SOCK`. Locally, newly written deploy keys are loaded
+immediately when the agent is running. Remote accounts use the existing generic
+launch helper's systemd user unit on Linux or launchd on macOS, started on
+the first launch that needs the agent. A staged stdlib helper loads remote deploy keys and confirms both kinds
+against their respective account agents on every launch. Missing agents or
+failed checks leave keys readable; Git retains its private-key transport and
+adds the stable `IdentityAgent` when available.
 
 Linux runs browser daemons inside the same hiding policy, including inside the
 systemd job rather than around its launcher. Policy changes preserve profiles
@@ -46,7 +52,10 @@ credential folders themselves.
 ## Consequences
 
 When support is missing or user namespaces are blocked, launch unhidden and
-show the reason in the turn, Settings, and doctor. Never block a launch for
-hiding availability. An uncovered provider-native read tool also reports
+show the reason only in Settings and doctor, without per-turn warning traces or
+badges. The agent prompt retains its effective scope and status. Local Settings
+includes key evidence and the macOS browser exception; remote status stays
+unchecked until launch. Never block a launch for hiding availability. An
+uncovered provider-native read tool also reports
 unhidden. The promise is selected secrets unreadable on supported launches,
 with compatibility exceptions visible rather than silently breaking work.

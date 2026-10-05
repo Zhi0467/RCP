@@ -341,7 +341,12 @@ edit them. Refusals stay inline with the attempted action. The effective
 **Enforced** or **Unhidden** state and its reasons remain visible, including
 readable keys and the macOS browser exception; a missing projection is explicitly
 unavailable, never shown as enforced. Errors and status use the ordinary card
-hierarchy, without muted explanatory subtitles.
+hierarchy, without muted explanatory subtitles. Local status combines wrapper
+readiness with current user-key and deploy-key signing evidence and the macOS
+browser exception. Remote status is `null`, rendered as checked at launch;
+Settings does not probe remote agents. Gaps appear only here and in doctor,
+without per-turn warning traces or badges; the agent prompt retains its effective
+status.
 
 Readiness uses the same label, tone, and pending presentation as compute
 connections, with one row per offered route (scheduler and helper). There is
