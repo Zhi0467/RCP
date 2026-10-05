@@ -90,6 +90,14 @@ def host_facts(paths=()):
                 )
             ),
         ],
+        # The wrapper runs through these; a hidden folder must never cover them.
+        "runtime_paths": sorted(
+            {
+                os.path.dirname(os.path.realpath(path))
+                for path in (shutil.which("python3"), shutil.which("bwrap"), "/bin/bash")
+                if path
+            }
+        ),
         "readiness": probe_hidden_read_wrapper(),
     }
 
@@ -228,7 +236,8 @@ def install(directory, files):
         descriptor, temporary = tempfile.mkstemp(prefix="." + name + ".", dir=str(target))
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(content)
-        os.chmod(temporary, 0o400)
+        # OpenCode executes the wrapper as its SHELL; the policy stays read-only.
+        os.chmod(temporary, 0o500 if name.endswith(".py") else 0o400)
         os.replace(temporary, target / name)
 
 

@@ -323,8 +323,11 @@ def hidden_policy(monkeypatch):
                     raise Rejected("Folder overlaps a required path.")
         return result
 
+    from rcp.agents.hidden_read import SYSTEM_RUNTIME_ROOTS
+
     module = ModuleType("rcp.agents.hidden_read")
     module.validate_machine_hidden_folders = validate
+    module.SYSTEM_RUNTIME_ROOTS = SYSTEM_RUNTIME_ROOTS
     monkeypatch.setitem(sys.modules, module.__name__, module)
     return calls
 

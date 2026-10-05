@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -238,6 +239,8 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
     else:
         files = {path.name: path.read_text() for path in wrapper.parent.iterdir()}
         assert all(path.stat().st_mode & 0o222 == 0 for path in wrapper.parent.iterdir())
+        # OpenCode executes the wrapper directly as its SHELL.
+        assert os.access(wrapper, os.X_OK)
     assert HiddenReadScope.model_validate_json(files[wrapper.name + ".policy.json"]) == scope
     assert files[wrapper.name] == staged_hidden_read_source()
     if provider == "opencode":

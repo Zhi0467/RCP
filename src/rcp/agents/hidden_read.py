@@ -155,6 +155,27 @@ def _overlap(left: str, right: str) -> bool:
     return a == b or a in b.parents or b in a.parents
 
 
+# Executable and system roots: a hidden folder covering one breaks every tool call.
+SYSTEM_RUNTIME_ROOTS = (
+    "/bin",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/nix",
+    "/opt/homebrew",
+    "/private/etc",
+    "/proc",
+    "/sbin",
+    "/sys",
+    "/System",
+    "/Library/Developer",
+    "/usr",
+)
+
+
 def _validated_folders(folders: list[str], protected_roots: tuple[str, ...]) -> list[str]:
     if len(folders) > HIDDEN_READ_PATH_MAX_COUNT:
         raise HiddenFolderRejected(code="too_many_hidden_folders")
@@ -280,8 +301,12 @@ def resolve_hidden_read_scope(
         raise ValueError("hidden-read execution account changed during resolution")
     canonical = resolved["paths"]
     exempt = [canonical[key.path] for key in key_evidence if key.visibility == "readable"]
-    protected = [canonical[path] for path in protected] + [
-        str(PurePosixPath(path).parent) for path in exempt
+    protected = [
+        *(canonical[path] for path in protected),
+        *(str(PurePosixPath(path).parent) for path in exempt),
+        *SYSTEM_RUNTIME_ROOTS,
+        *resolved["runtime_paths"],
+        *(str(PurePosixPath(path).parent) for path in machine.provider_paths.values()),
     ]
     folders = _validated_folders(
         [canonical[path] for path in machine_hidden_folders], tuple(protected)

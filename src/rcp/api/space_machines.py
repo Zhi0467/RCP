@@ -270,10 +270,10 @@ def _validated_writable_paths(
 def _validated_hidden_folders(
     machine: SpaceMachineRecord, requested: list[str], catalog: ProjectCatalog
 ) -> list[str]:
-    from rcp.agents.hidden_read import validate_machine_hidden_folders
+    from rcp.agents.hidden_read import SYSTEM_RUNTIME_ROOTS, validate_machine_hidden_folders
 
     # The policy owner checks syntax and bounds before any host request.
-    paths = validate_machine_hidden_folders(requested, protected_roots=())
+    paths = validate_machine_hidden_folders(requested, protected_roots=SYSTEM_RUNTIME_ROOTS)
     if not paths:
         return []
     checkouts = [
@@ -306,6 +306,7 @@ def _validated_hidden_folders(
         str(PurePosixPath(home) / ".ssh"),
         str(PurePosixPath(home) / ".ssh/known_hosts"),
         str(PurePosixPath(home) / ".local/share/rcp/credentials"),
+        *SYSTEM_RUNTIME_ROOTS,
     ]
     if not machine.host:
         protected.extend(str(catalog.data_dir / name) for name in ("run-stage", "tools", "browser"))

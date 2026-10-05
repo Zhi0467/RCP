@@ -113,6 +113,7 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
             "os_account": "research",
             "provider_login_files": [str(tmp_path / "home/.codex/auth.json")],
             "paths": {path: os.path.realpath(path) for path in paths},
+            "runtime_paths": ["/opt/python/bin"],
             "readiness": readiness or {"ready": True, "platform": "linux", "reason": None},
         }
 
@@ -134,6 +135,16 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
             **changes,
         }
     )
+
+
+@pytest.mark.parametrize("folder", ["/usr", "/usr/local", "/opt/python"])
+def test_launch_refuses_folders_covering_runtime_executables(
+    manifest, tmp_path, monkeypatch, folder
+):
+    # System roots, plus the host's own python3/bwrap/bash folders.
+    with pytest.raises(HiddenFolderRejected) as rejected:
+        _resolve(manifest, tmp_path, monkeypatch, machine_hidden_folders=[folder])
+    assert rejected.value.code == "protected_root_overlap"
 
 
 def test_adding_folder_changes_fingerprint(manifest: Manifest, tmp_path: Path, monkeypatch) -> None:
@@ -222,6 +233,7 @@ def test_remote_canonicalization_uses_shipped_source(manifest, tmp_path, monkeyp
                     "home": "/remote/home",
                     "os_account": "remote",
                     "provider_login_files": [],
+                    "runtime_paths": ["/usr/bin"],
                     "readiness": {"ready": True, "platform": "linux", "reason": None},
                     "paths": {path: path.replace("/alias", "/remote/private") for path in paths},
                 }
