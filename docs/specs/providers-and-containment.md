@@ -651,9 +651,10 @@ the one its session began with.
 
 An agent's exact RCP-owned task stage is the sole graph-change channel. RCP
 collects `patch.json` there once the invocation ends. A conversation turn reads
-that exact name and nothing else; an ingestion run whose stage lacks it collects
-exactly one patch-shaped JSON file under another name, and refuses more than
-one. Work repository edits carry operational authority,
+that exact name and nothing else. An ingestion run and a branch merge collect
+`patch.json` when it holds a Patch; when it is missing or not patch-shaped they
+collect exactly one other patch-shaped JSON file from the stage, and refuse more
+than one. Work repository edits carry operational authority,
 not graph authority, and canonical `.research` stays outside agent write roots.
 RCP never extracts a Patch from stdout, an answer, provider directive, artifact,
 URL, or repository file.

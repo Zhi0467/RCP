@@ -76,7 +76,11 @@ def _writes_a_file(call: ast.Call) -> bool:
         if function.attr in PATH_WRITE_METHODS:
             return True
         if function.attr in PATH_SINGLE_TARGET_METHODS:
-            return len(call.args) == 1 and not call.keywords
+            positional_target = len(call.args) == 1 and not call.keywords
+            keyword_target = not call.args and [keyword.arg for keyword in call.keywords] == [
+                "target"
+            ]
+            return positional_target or keyword_target
         if function.attr != "open":
             return False
         builtin = False
@@ -133,10 +137,12 @@ def route(path, mode):
     path.symlink_to(target)
     os.symlink(source, target)
     os.link(source, target)
+    path.replace(target=target)
+    path.rename(target=target)
 """
     calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
     flagged = sorted(node.lineno for node in calls if _writes_a_file(node))
-    assert flagged == [3, 4, 9, 14, 15, 16, 17, 18]
+    assert flagged == [3, 4, 9, 14, 15, 16, 17, 18, 19, 20]
 
 
 # The transcript readers live on the project service for display and backup.
