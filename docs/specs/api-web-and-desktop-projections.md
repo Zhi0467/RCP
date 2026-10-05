@@ -287,7 +287,7 @@ published values instead of recalculating a second transition result.
 Any derivation whose inputs are all backend state belongs to the projection:
 for example, `EpisodeResponse.health`, `recommendation`, `live`, `can_*`, and
 `ExperimentControlState.graph_reasons`. Only derivations with a UI-specific
-input, such as the trust-view lens, stay client-side. `web/src/types.ts` is the
+input, such as the trust-view lens, stay client-side. `web/src/core/types.ts` is the
 single response-shape restatement. Fully projected lifecycles use opaque types,
 including `EpisodeStatus` and `AgentTaskStatus`, so client branching on the raw
 status cannot compile.
@@ -955,7 +955,7 @@ the index registration is retired, so the host does not mistake successful
 navigation for a stale tool failure.
 
 The registered tools come from one host-independent catalog
-(`web/src/toolCatalog.ts`) that works without a WebMCP host. `catalog()` is a
+(`web/src/voice/toolCatalog.ts`) that works without a WebMCP host. `catalog()` is a
 fixed list of every tool's name, description, input schema, and `confirm(args)`
 predicate, whatever the page state. `confirm` is true only for a Work Send,
 Experiment Start, Auto-research authorization, and a terminal command; it stays

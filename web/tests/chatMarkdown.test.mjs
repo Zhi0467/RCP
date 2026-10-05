@@ -3,7 +3,7 @@ import { after, test } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-import { buildGlossaryIndex } from "../src/glossary.ts";
+import { buildGlossaryIndex } from "../src/graph/glossary.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -12,7 +12,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { MarkdownAnswer } = await server.ssrLoadModule("/src/chatMarkdown.ts");
+const { MarkdownAnswer } = await server.ssrLoadModule("/src/core/chatMarkdown.ts");
 
 after(() => server.close());
 

@@ -1,5 +1,5 @@
 import { BookOpen, File, Network, X } from "lucide-react";
-import { referenceUrl, type DraftReference } from "../projectReferences";
+import { referenceUrl, type DraftReference } from "./projectReferences";
 
 const KIND_LABEL = { artifact: "Artifact", node: "Node", paper: "Paper" } as const;
 

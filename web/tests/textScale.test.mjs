@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { changeTextScale, normalizeTextScale, textScaleShortcut } from "../src/textScale.ts";
+import { changeTextScale, normalizeTextScale, textScaleShortcut } from "../src/ui/textScale.ts";
 
 test("text scale is stepped and bounded", () => {
   assert.equal(normalizeTextScale(null), 100);

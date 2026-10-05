@@ -5,7 +5,7 @@ import {
   computeProbePresentation,
   latestPersistedComputeIds,
   reconcileActiveComputeIds,
-} from "../src/compute.ts";
+} from "../src/experiments/compute.ts";
 import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
 const connections = [

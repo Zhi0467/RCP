@@ -20,19 +20,19 @@ import {
   loadTeamSessions,
   revokeTeamInvitation,
   revokeTeamSession,
-} from "../api";
-import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desktopRuntime";
-import { loadNotificationDevices, type NotificationDevice } from "../notificationDevices";
+} from "../core/api";
+import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../core/desktopRuntime";
+import { loadNotificationDevices, type NotificationDevice } from "../desktop/notificationDevices";
 import {
   DeviceNotificationControl,
   notificationStatusLabel,
   PersonalDevicesPanel,
-} from "../components/NotificationDevices";
+} from "../desktop/NotificationDevices";
 import {
   AppearancePicker,
   type AppearancePickerProps,
   type TextScaleControl,
-} from "../components/AppearancePicker";
+} from "../ui/AppearancePicker";
 import type {
   IdentityResponse,
   SpaceUserSummary,
@@ -41,7 +41,7 @@ import type {
   TeamInvitation,
   TeamInvitationIssue,
   TeamSession,
-} from "../types";
+} from "../core/types";
 
 interface Props {
   identity: IdentityResponse | null;

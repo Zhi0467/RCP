@@ -1,4 +1,4 @@
-import type { AgentTask, ProjectSnapshot } from "../types";
+import type { AgentTask, ProjectSnapshot } from "../core/types";
 
 export function projectGraphMutationsDisabled(
   project: Pick<ProjectSnapshot, "graph_mutation">,

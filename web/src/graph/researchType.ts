@@ -13,7 +13,7 @@
  * keyed by the base `node.type`.
  */
 import type { NodeEditField } from "./nodeEditing";
-import type { BaseNodeType, GraphNode, OntologyLayer } from "../types";
+import type { BaseNodeType, GraphNode, OntologyLayer } from "../core/types";
 
 type NodeTypeName = string | null | undefined;
 

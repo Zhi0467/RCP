@@ -6,8 +6,8 @@ import {
   themeChoiceLabel,
   type ColorModeChoice,
   type ThemeChoice,
-} from "../theme";
-import { TEXT_SCALE_MAX, TEXT_SCALE_MIN, type TextScaleAction } from "../textScale";
+} from "./theme";
+import { TEXT_SCALE_MAX, TEXT_SCALE_MIN, type TextScaleAction } from "./textScale";
 import "../components/AppearancePicker.css";
 
 export interface AppearancePickerProps {

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { downloadDesktopArtifact, isDesktopRuntime } from "../desktopRuntime";
-import { errorMessage } from "../errors";
+import { downloadDesktopArtifact, isDesktopRuntime } from "../core/desktopRuntime";
+import { errorMessage } from "../core/errors";
 
 export function StoredArtifactDownload({
   projectId,

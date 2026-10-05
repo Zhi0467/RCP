@@ -14,18 +14,18 @@ import {
   installMachinePower,
   uninstallMachinePower,
   updateMachinePower,
-} from "../api";
-import { useMachinePower } from "../hooks/useMachinePower";
-import { showMachinePowerCard } from "../machinePower";
-import { MachineCard } from "../components/MachineCard";
-import { ProviderLogins } from "../components/ProviderLogins";
-import { ServerSettings } from "../components/ServerSettings";
-import { TranscriptionSettings } from "../components/TranscriptionSettings";
-import { ReleaseCheckRow } from "../components/UpdateNotice";
-import { errorMessage } from "../errors";
-import { useSpaceMachines } from "../hooks/useSpaceMachines";
-import { machineHostLabel } from "../spaceMachines";
-import type { MachinePowerStatus, ProjectCacheMetrics, UpdateNotice } from "../types";
+} from "../core/api";
+import { useMachinePower } from "./useMachinePower";
+import { showMachinePowerCard } from "./machinePower";
+import { MachineCard } from "./MachineCard";
+import { ProviderLogins } from "./ProviderLogins";
+import { ServerSettings } from "./ServerSettings";
+import { TranscriptionSettings } from "../voice/TranscriptionSettings";
+import { ReleaseCheckRow } from "../desktop/UpdateNotice";
+import { errorMessage } from "../core/errors";
+import { useSpaceMachines } from "./useSpaceMachines";
+import { machineHostLabel } from "./spaceMachines";
+import type { MachinePowerStatus, ProjectCacheMetrics, UpdateNotice } from "../core/types";
 
 interface Props {
   spaceKind: "personal" | "team";

@@ -8,7 +8,7 @@ import {
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
   registerTransportFailureHandler,
-} from "../api";
+} from "../core/api";
 import {
   BACKEND_IDENTITY_EVENT,
   isDesktopRuntime,
@@ -19,8 +19,8 @@ import {
   TEAM_TRANSPORT_RECOVERED,
   verifyIdentityAfterMutationFailure,
   type BackendIdentityEventDetail,
-} from "../desktopRuntime";
-import type { Health, PublicHealth, IdentityResponse } from "../types";
+} from "../core/desktopRuntime";
+import type { Health, PublicHealth, IdentityResponse } from "../core/types";
 
 export function useActorIdentity() {
   const [identityReady, setIdentityReady] = useState(false);

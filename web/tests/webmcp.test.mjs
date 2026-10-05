@@ -45,13 +45,14 @@ const {
   stopProjectExperimentEpisode,
   webMcpSurface,
   webMcpTextResult,
-} = await server.ssrLoadModule("/src/webmcp.ts");
+} = await server.ssrLoadModule("/src/webmcp/index.ts");
 const { catalog, catalogAsFunctionTools, publishToolSurface, resolve, webMcpHostDefinitions } =
-  await server.ssrLoadModule("/src/toolCatalog.ts");
-const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } =
-  await server.ssrLoadModule("/src/voiceTerminal.ts");
-const { parseProjectHash } = await server.ssrLoadModule("/src/experimentBoard.ts");
-const { graphTargetFromHash } = await server.ssrLoadModule("/src/graphTarget.ts");
+  await server.ssrLoadModule("/src/voice/toolCatalog.ts");
+const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } = await server.ssrLoadModule(
+  "/src/voice/voiceTerminal.ts",
+);
+const { parseProjectHash } = await server.ssrLoadModule("/src/experiments/experimentBoard.ts");
+const { graphTargetFromHash } = await server.ssrLoadModule("/src/core/graphTarget.ts");
 
 after(() => server.close());
 

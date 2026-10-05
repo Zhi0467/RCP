@@ -8,7 +8,7 @@ import {
   type AppearanceChoice,
   type ColorModeChoice,
   type ThemeChoice,
-} from "../theme";
+} from "./theme";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 

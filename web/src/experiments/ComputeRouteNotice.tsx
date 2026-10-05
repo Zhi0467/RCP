@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { checkMachineCompute } from "../api";
-import type { Machine } from "../types";
+import { checkMachineCompute } from "../core/api";
+import type { Machine } from "../core/types";
 
 interface Props {
   apiBase: string;

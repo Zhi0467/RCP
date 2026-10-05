@@ -10,7 +10,7 @@ import type {
   GraphUpdateResult,
   TaskTrigger,
   SteerReceipt,
-} from "../types";
+} from "../core/types";
 
 export interface TaskTranscriptLine {
   browserStatus?: BrowserTurnStatus | null;

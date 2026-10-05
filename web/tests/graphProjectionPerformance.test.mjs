@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildNodeProjectionEmphasis } from "../src/graphProjection.ts";
+import { buildNodeProjectionEmphasis } from "../src/graph/graphProjection.ts";
 
 test("node projection classifies each edge once instead of rescanning per node", () => {
   const edges = Array.from({ length: 500 }, (_, index) => ({

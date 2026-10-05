@@ -1,9 +1,9 @@
-import { BrowserTurnNotice } from "../components/BrowserControls";
+import { BrowserTurnNotice } from "../core/BrowserControls";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { RunArtifacts } from "./RunArtifacts";
 import { artifactsForOperations } from "./runArtifacts";
-import { fetchTimelineText } from "../api";
+import { fetchTimelineText } from "../core/api";
 import {
   timelineRows,
   timelineBounds,
@@ -24,7 +24,7 @@ import type {
   EpisodeTimelineSpan,
   ExperimentLoopIndexEntry,
   GraphTargetRef,
-} from "../types";
+} from "../core/types";
 
 const groups = {
   human: "People",

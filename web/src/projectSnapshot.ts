@@ -1,13 +1,13 @@
-import { graphTargetUrl, MAIN_GRAPH } from "./graphTarget";
-import type { AgentTasksSnapshot } from "./hooks/useAgentTasks";
-import type { ChatStateSnapshot } from "./hooks/useChatState";
-import type { GraphSelectionTabSnapshot } from "./hooks/useGraphSelection";
-import type { ProjectHistorySnapshot } from "./hooks/useProjectHistory";
+import { graphTargetUrl, MAIN_GRAPH } from "./core/graphTarget";
+import type { AgentTasksSnapshot } from "./agents/useAgentTasks";
+import type { ChatStateSnapshot } from "./chat/useChatState";
+import type { GraphSelectionTabSnapshot } from "./graph/useGraphSelection";
+import type { ProjectHistorySnapshot } from "./graph/useProjectHistory";
 import {
   reconcileInactiveProjectSession,
   type ProjectSessionTabState,
-} from "./hooks/projectSession";
-import { applyHumanDraft } from "./humanDraft";
+} from "./graph/projectSession";
+import { applyHumanDraft } from "./graph/humanDraft";
 import { projectAttentionForPresentation } from "./projectAttention";
 import type {
   AgentTask,
@@ -21,7 +21,7 @@ import type {
   ProjectCard,
   ProjectSnapshot,
   WatcherRecord,
-} from "./types";
+} from "./core/types";
 
 export async function loadGraphRevision(
   fetchJson: <T>(path: string) => Promise<T>,

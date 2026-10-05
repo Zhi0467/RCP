@@ -8,8 +8,8 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { loadServerStatus } from "../api";
-import type { ServerStatus, ServerStatusSummary, UpdateNotice } from "../types";
+import { loadServerStatus } from "../core/api";
+import type { ServerStatus, ServerStatusSummary, UpdateNotice } from "../core/types";
 
 interface Props {
   loadStatus?: (refresh: boolean) => Promise<ServerStatus>;

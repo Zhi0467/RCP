@@ -3,7 +3,7 @@ export interface TextSpan {
   end: number;
 }
 
-import type { ArtifactContextRequest, ArtifactSelection } from "../types";
+import type { ArtifactContextRequest, ArtifactSelection } from "../core/types";
 
 /** One staged comment: what the human picked, and what they said about it. */
 export interface StagedChatAnnotation {

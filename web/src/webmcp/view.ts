@@ -1,4 +1,4 @@
-import { graphTargetUrl, sameGraphTarget } from "../graphTarget";
+import { graphTargetUrl, sameGraphTarget } from "../core/graphTarget";
 import type {
   GraphTargetRef,
   AgentTask,
@@ -7,8 +7,8 @@ import type {
   Episode,
   ExperimentLoopIndexEntry,
   ProjectSnapshot,
-} from "../types";
-import { episodeRunHash } from "../notificationLinks";
+} from "../core/types";
+import { episodeRunHash } from "../core/notificationLinks";
 import {
   NEVER_CONFIRM,
   type WebMcpToolDefinition,

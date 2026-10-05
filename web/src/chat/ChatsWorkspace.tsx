@@ -36,7 +36,7 @@ import {
   type AgentBoardColumn,
   type AgentBoardDrop,
 } from "./agentBoard";
-import type { GlossaryIndex } from "../glossary";
+import type { GlossaryIndex } from "../graph/glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,
   CHAT_LIST_COLLAPSED_WIDTH,
@@ -58,12 +58,12 @@ import type {
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
-} from "../types";
+} from "../core/types";
 import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
-import { ProviderMark, hasProviderLogo } from "../components/ProviderMark";
-import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../api";
+import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
+import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
 import { NodeChat } from "./NodeChat";
-import { useNarrowViewport } from "../hooks/useNarrowViewport";
+import { useNarrowViewport } from "../ui/useNarrowViewport";
 
 interface Props {
   project: ProjectSnapshot;

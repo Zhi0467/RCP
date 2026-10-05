@@ -1,4 +1,4 @@
-import type { GlossaryTerm } from "../types";
+import type { GlossaryTerm } from "../core/types";
 
 export interface GlossaryIndexEntry {
   term: string;

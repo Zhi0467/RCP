@@ -1,4 +1,9 @@
-import type { EpisodeUnfinishedJob, MergeDiffPath, MergeEpisodeBody, MergePreview } from "../types";
+import type {
+  EpisodeUnfinishedJob,
+  MergeDiffPath,
+  MergeEpisodeBody,
+  MergePreview,
+} from "../core/types";
 
 export interface MergeChoices {
   targetBranch: string;

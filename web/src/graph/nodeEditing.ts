@@ -4,7 +4,7 @@ import type {
   GraphNode,
   OntologyFieldDefinition,
   OntologyState,
-} from "../types";
+} from "../core/types";
 import { editFieldsFor } from "./researchType.ts";
 
 export interface NodeEditField {

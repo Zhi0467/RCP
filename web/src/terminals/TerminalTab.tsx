@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { SquareTerminal } from "lucide-react";
-import { api } from "../api";
-import type { TerminalRepository, TerminalSession } from "../types";
+import { api } from "../core/api";
+import type { TerminalRepository, TerminalSession } from "../core/types";
 
 export function TerminalTab({
   projectId,

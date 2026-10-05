@@ -8,7 +8,7 @@ import {
   createTeamProjectProvisioning,
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
-} from "../src/api.ts";
+} from "../src/core/api.ts";
 
 const requestBody = {
   name: "Shared paper project",

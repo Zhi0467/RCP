@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-import { listMachineDirectory, updateSpaceMachine } from "../src/api.ts";
+import { listMachineDirectory, updateSpaceMachine } from "../src/core/api.ts";
 import {
   EMPTY_PATH_PICKER,
   applyDirectoryPage,
@@ -12,14 +12,14 @@ import {
   directoryRequest,
   filterMoveIsCurrent,
   pathBreadcrumbs,
-} from "../src/pathPicker.ts";
+} from "../src/projects/pathPicker.ts";
 import {
   createPathEditor,
   projectMachineAlias,
   setupMachineSelection,
   spaceMachineForProject,
   writablePathsRequest,
-} from "../src/spaceMachines.ts";
+} from "../src/projects/spaceMachines.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -28,12 +28,10 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { SpaceSettings } = await server.ssrLoadModule("/src/views/SpaceSettings.tsx");
-const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
-const { MachineCard } = await server.ssrLoadModule("/src/components/MachineCard.tsx");
-const { LandingIdentityMenu } = await server.ssrLoadModule(
-  "/src/components/LandingIdentityMenu.tsx",
-);
+const { SpaceSettings } = await server.ssrLoadModule("/src/projects/SpaceSettings.tsx");
+const { ProjectSettings } = await server.ssrLoadModule("/src/projects/ProjectSettings.tsx");
+const { MachineCard } = await server.ssrLoadModule("/src/projects/MachineCard.tsx");
+const { LandingIdentityMenu } = await server.ssrLoadModule("/src/projects/LandingIdentityMenu.tsx");
 
 after(() => server.close());
 

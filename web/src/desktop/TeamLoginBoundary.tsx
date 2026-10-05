@@ -1,7 +1,7 @@
 import { LoaderCircle } from "lucide-react";
 import { useState } from "react";
-import { ApiError } from "../api";
-import { initialPairingCode } from "../pairingLink";
+import { ApiError } from "../core/api";
+import { initialPairingCode } from "./pairingLink";
 
 type SignInMode = "pair" | "token";
 

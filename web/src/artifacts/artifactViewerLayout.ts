@@ -1,4 +1,4 @@
-import type { Point, Size } from "../floatingWindow";
+import type { Point, Size } from "../ui/floatingWindow";
 
 export interface ViewerPlacement {
   mode: "docked" | "floating";

@@ -1,5 +1,5 @@
-import { experimentBoardHref, experimentBoardRouteToken } from "../experimentBoard.ts";
-import { sameGraphTarget } from "../graphTarget.ts";
+import { experimentBoardHref, experimentBoardRouteToken } from "../experiments/experimentBoard.ts";
+import { sameGraphTarget } from "../core/graphTarget.ts";
 import type {
   ProjectReferenceSelector,
   AgentRunConfig,
@@ -16,7 +16,7 @@ import type {
   SkillDefaults,
   StartAgentTask,
   WorktreeIntegrationOption,
-} from "../types";
+} from "../core/types";
 
 export type ChatKind = "node_chat" | "project_chat";
 

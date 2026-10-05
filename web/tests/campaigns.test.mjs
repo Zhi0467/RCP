@@ -24,7 +24,7 @@ import {
   sendEpisodeMessage,
   startEpisode,
   stopEpisode,
-} from "../src/api.ts";
+} from "../src/core/api.ts";
 import {
   autoResearchStartRefusal,
   episodeProjection,
@@ -33,7 +33,7 @@ import {
   isLiveEpisode,
   mergeEpisode,
   runsEpisodeCards,
-} from "../src/campaigns.ts";
+} from "../src/experiments/campaigns.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -42,8 +42,10 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/components/CampaignRuns.tsx");
-const { AutoResearchDialog } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
+const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/experiments/CampaignRuns.tsx");
+const { AutoResearchDialog } = await server.ssrLoadModule(
+  "/src/experiments/AutoResearchDialog.tsx",
+);
 
 after(() => server.close());
 
@@ -666,7 +668,7 @@ test("an exhausted episode waiting for admission says wrapping up", () => {
 
 test("the login notice names each signed-out account once and offers verification", async () => {
   const { ProviderLoginNotice } = await server.ssrLoadModule(
-    "/src/components/ProviderLoginNotice.tsx",
+    "/src/projects/ProviderLoginNotice.tsx",
   );
   const states = [
     {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api } from "../core/api";
 import { ArrowLeft, Check, ChevronRight, Folder, Search, X } from "lucide-react";
-import { referenceKey, type DraftReference } from "../projectReferences";
-import { ReferenceIcon } from "../components/ReferenceChip";
-import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../types";
+import { referenceKey, type DraftReference } from "../core/projectReferences";
+import { ReferenceIcon } from "../core/ReferenceChip";
+import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../core/types";
 
 type FolderId = "reports" | "artifacts" | "nodes";
 const FOLDER_LABEL: Record<FolderId, string> = {

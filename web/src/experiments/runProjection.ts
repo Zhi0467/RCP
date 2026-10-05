@@ -8,9 +8,9 @@ import type {
   GraphWatcherRecord,
   GraphNode,
   WatcherRecord,
-} from "../types";
+} from "../core/types";
 import { blockedReasonLead } from "./campaigns.ts";
-import { isControlNode } from "../researchType.ts";
+import { isControlNode } from "../graph/researchType.ts";
 
 export interface AgentTaskGroup {
   rootId: string;

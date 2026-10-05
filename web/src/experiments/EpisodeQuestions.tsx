@@ -1,5 +1,5 @@
-import { useQuestions } from "../hooks/useQuestions";
-import { QuestionCard } from "../components/QuestionCard";
+import { useQuestions } from "../chat/useQuestions";
+import { QuestionCard } from "../chat/QuestionCard";
 
 export function EpisodeQuestions({
   apiBase,

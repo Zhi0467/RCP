@@ -11,11 +11,11 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ApiError } = await server.ssrLoadModule("/src/api.ts");
+const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
 const { TeamLoginBoundary, teamLoginFailureMessage, teamPairingFailureMessage } =
-  await server.ssrLoadModule("/src/components/TeamLoginBoundary.tsx");
+  await server.ssrLoadModule("/src/desktop/TeamLoginBoundary.tsx");
 const { IdentityProvenanceSlip, TeamInvitationLedger, TeamMemberRoster, invitationCopyBlock } =
-  await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
+  await server.ssrLoadModule("/src/projects/LandingIdentityMenu.tsx");
 
 after(() => server.close());
 

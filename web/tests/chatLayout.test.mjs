@@ -8,7 +8,7 @@ import {
   chatListWidthBounds,
   clampChatListWidth,
   isChatListToggleShortcut,
-} from "../src/chatLayout.ts";
+} from "../src/chat/chatLayout.ts";
 
 test("chat list width keeps a full chat surface at desktop sizes", () => {
   assert.deepEqual(chatListWidthBounds(1200), {

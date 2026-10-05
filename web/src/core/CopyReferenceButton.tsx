@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Copy } from "lucide-react";
-import { referenceUrl } from "../projectReferences";
-import type { GraphTargetRef, ProjectReferenceSelector } from "../types";
+import { referenceUrl } from "./projectReferences";
+import type { GraphTargetRef, ProjectReferenceSelector } from "./types";
 
 export function CopyReferenceButton({
   projectId,

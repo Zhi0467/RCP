@@ -1,7 +1,7 @@
-import { UpdateNotice } from "./components/UpdateNotice";
-import { useUpdateNotice } from "./hooks/useUpdateNotice";
-import { TerminalTab } from "./components/TerminalTab";
-import { branchMergeStateLabel } from "./components/CampaignRuns";
+import { UpdateNotice } from "./desktop/UpdateNotice";
+import { useUpdateNotice } from "./desktop/useUpdateNotice";
+import { TerminalTab } from "./terminals/TerminalTab";
+import { branchMergeStateLabel } from "./experiments/CampaignRuns";
 import {
   branchOwnerEpisode,
   experimentStartTarget,
@@ -11,8 +11,8 @@ import {
   graphViewHash,
   MAIN_GRAPH,
   sameGraphTarget,
-} from "./graphTarget";
-import type { GraphEditingProps } from "./components/GraphEditingControls";
+} from "./core/graphTarget";
+import type { GraphEditingProps } from "./graph/GraphEditingControls";
 import {
   TriangleAlert,
   ArrowLeft,
@@ -47,10 +47,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { isActiveTask } from "./agentTasks";
-import { mergeProviderLogins } from "./providers";
-import { loadChatTranscript } from "./chatApi";
-import { closeArtifactViewer, openArtifact, openEpisodeReport } from "./artifactViewer";
+import { isActiveTask } from "./agents/agentTasks";
+import { mergeProviderLogins } from "./projects/providers";
+import { loadChatTranscript } from "./chat/chatApi";
+import { closeArtifactViewer, openArtifact, openEpisodeReport } from "./artifacts/artifactViewer";
 import {
   chatIndicator,
   unreadChatIdsFromReads,
@@ -60,7 +60,7 @@ import {
   unsentConversation,
   type ChatKind,
   type ConversationTurnSubmission,
-} from "./chatWorkspace";
+} from "./chat/chatWorkspace";
 import {
   api,
   archiveEpisode,
@@ -76,7 +76,7 @@ import {
   sendEpisodeMessage,
   startEpisode,
   stopEpisode,
-} from "./api";
+} from "./core/api";
 import {
   BACKEND_IDENTITY_EVENT,
   backendReconnectLabel,
@@ -87,13 +87,13 @@ import {
   returnDesktopToPersonal,
   TEAM_TRANSPORT_RECOVERED,
   type BackendIdentityEventDetail,
-} from "./desktopRuntime";
+} from "./core/desktopRuntime";
 import {
   projectGraphMutationFailureLabel,
   projectGraphMutationsDisabled,
   taskMayMutateGraph,
-} from "./graphAuthority";
-import { buildGlossaryIndex } from "./glossary";
+} from "./graph/graphAuthority";
+import { buildGlossaryIndex } from "./graph/glossary";
 import {
   experimentBoardHref,
   experimentBoardRouteToken,
@@ -104,38 +104,38 @@ import {
   projectExperimentExecution,
   projectRunsNeedsExperimentIndex,
   type ProjectHashRoute,
-} from "./experimentBoard";
+} from "./experiments/experimentBoard";
 import {
   decodeTransitionTriggerManifest,
   reduceProjectTransitionProjection,
   transitionSnapshotRefusal,
   transitionSyncCompletionDisposition,
   type ProjectTransitionProjection,
-} from "./projectTransition";
-import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./campaigns";
-import { cloneAgentTasksSnapshot, useAgentTasks } from "./hooks/useAgentTasks";
-import { useActorIdentity } from "./hooks/useActorIdentity";
+} from "./graph/projectTransition";
+import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./ui/floatingWindow";
+import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./experiments/campaigns";
+import { cloneAgentTasksSnapshot, useAgentTasks } from "./agents/useAgentTasks";
+import { useActorIdentity } from "./desktop/useActorIdentity";
 import {
   cloneChatStateSnapshot,
   experimentChatFreshnessToken,
   useChatState,
   visibleChatTranscriptIds,
   visibleUnreadChatId,
-} from "./hooks/useChatState";
-import { useDesktopShell } from "./hooks/useDesktopShell";
-import { startLiveEpisodePolling, useEpisodeDialogs } from "./hooks/useEpisodeDialogs";
-import { emptyGraph, useGraphSelection } from "./hooks/useGraphSelection";
+} from "./chat/useChatState";
+import { useDesktopShell } from "./desktop/useDesktopShell";
+import { startLiveEpisodePolling, useEpisodeDialogs } from "./experiments/useEpisodeDialogs";
+import { emptyGraph, useGraphSelection } from "./graph/useGraphSelection";
 import {
   cloneProjectHistorySnapshot,
   useProjectHistory,
   validationNoticeId,
-} from "./hooks/useProjectHistory";
+} from "./graph/useProjectHistory";
 import {
   EXPERIMENT_BOARD_POLL_DELAY_MS,
   startProjectCachePolling,
   useProjectTabs,
-} from "./hooks/useProjectTabs";
+} from "./projects/useProjectTabs";
 import {
   cachedSnapshotCanReplace,
   canonicalGraphHead,
@@ -148,30 +148,30 @@ import {
   RETAIN_ALL_PROJECT_READINESS,
   serializeProjectSessionTabState,
   trustedProjectTransitionManifest,
-} from "./hooks/projectSession";
-import { useProjectSession } from "./hooks/useProjectSession";
-import { AutoResearchDialog } from "./components/AutoResearchDialog";
-import { AgentTaskInspector } from "./components/AgentTaskInspector";
-import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
-import { ConsolidationInbox } from "./components/ConsolidationInbox";
+} from "./graph/projectSession";
+import { useProjectSession } from "./graph/useProjectSession";
+import { AutoResearchDialog } from "./experiments/AutoResearchDialog";
+import { AgentTaskInspector } from "./agents/AgentTaskInspector";
+import { AttentionRail, ProposalJudgmentSection } from "./graph/AttentionRail";
+import { ConsolidationInbox } from "./projects/ConsolidationInbox";
 import {
   CONSOLIDATION_SETTINGS_ANCHOR,
   consolidationAttentionCount,
   consolidationNeedsRenewal,
   openConsolidationItems,
   resolveConsolidationRun,
-} from "./consolidation";
-import { useConsolidation } from "./hooks/useConsolidation";
-import { useProjectDigest } from "./hooks/useProjectDigest";
-import { digestChangedNodeIds } from "./projectDigest";
-import { DetailDrawer } from "./components/DetailDrawer";
-import { DraggableWindow } from "./components/DraggableWindow";
-import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
-import { ProjectDock } from "./components/ProjectDock";
-import { RunDialog } from "./components/RunDialog";
-import { initialOwnerCode } from "./pairingLink";
-import { ProjectLocatorBoundary } from "./components/ProjectLocatorBoundary";
-import { TeamLoginBoundary } from "./components/TeamLoginBoundary";
+} from "./projects/consolidation";
+import { useConsolidation } from "./projects/useConsolidation";
+import { useProjectDigest } from "./projects/useProjectDigest";
+import { digestChangedNodeIds } from "./projects/projectDigest";
+import { DetailDrawer } from "./graph/DetailDrawer";
+import { DraggableWindow } from "./ui/DraggableWindow";
+import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
+import { ProjectDock } from "./projects/ProjectDock";
+import { RunDialog } from "./experiments/RunDialog";
+import { initialOwnerCode } from "./desktop/pairingLink";
+import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
+import { TeamLoginBoundary } from "./desktop/TeamLoginBoundary";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
@@ -197,7 +197,7 @@ import {
   unstageNodeRemoval,
   toHumanSyncRequest,
   type HumanDraft,
-} from "./humanDraft";
+} from "./graph/humanDraft";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -225,28 +225,28 @@ import type {
   TransitionPreviewResponse,
   TrustView,
   WatcherRecord,
-} from "./types";
-import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./types";
-import { ProjectLanding } from "./views/ProjectLanding";
-import { SpaceSettings } from "./views/SpaceSettings";
-import { LandingIdentityMenu } from "./components/LandingIdentityMenu";
-import { ProjectOverview } from "./views/ProjectOverview";
-import { isControlNode } from "./researchType";
-import { ProjectSetup } from "./views/ProjectSetup";
+} from "./core/types";
+import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
+import { ProjectLanding } from "./projects/ProjectLanding";
+import { SpaceSettings } from "./projects/SpaceSettings";
+import { LandingIdentityMenu } from "./projects/LandingIdentityMenu";
+import { ProjectOverview } from "./projects/ProjectOverview";
+import { isControlNode } from "./graph/researchType";
+import { ProjectSetup } from "./projects/ProjectSetup";
 import {
   parseProjectSetupRoute,
   projectMoveSetupHash,
   type ProjectSetupRoute,
-} from "./projectSetup";
+} from "./projects/projectSetup";
 import {
   changeTextScale,
   normalizeTextScale,
   TEXT_SCALE_STORAGE_KEY,
   textScaleShortcut,
   type TextScaleAction,
-} from "./textScale";
-import { useTheme } from "./hooks/useTheme";
-import { NOTICE_TIMEOUT_MS } from "./uiConstants";
+} from "./ui/textScale";
+import { useTheme } from "./ui/useTheme";
+import { NOTICE_TIMEOUT_MS } from "./core/uiConstants";
 import {
   createWebMcpToolRegistry,
   episodeStopRefusal,
@@ -265,23 +265,27 @@ import {
   type WebMcpToolRegistry,
   type WebMcpViewOwners,
   webMcpSurface,
-} from "./webmcp";
-import { publishToolSurface, webMcpHostDefinitions } from "./toolCatalog";
-import { voiceTerminalToolDefinitions } from "./voiceTerminal";
-import { openTerminalSocket } from "./terminalSocket";
-import { useVoiceAgent, type VoicePageState } from "./hooks/useVoiceAgent";
-import { VoiceButton, VoicePanel } from "./components/VoicePanel";
+} from "./webmcp/index";
+import { publishToolSurface, webMcpHostDefinitions } from "./voice/toolCatalog";
+import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
+import { openTerminalSocket } from "./terminals/terminalSocket";
+import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
+import { VoiceButton, VoicePanel } from "./voice/VoicePanel";
 
-import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
+import {
+  initialProjectHash,
+  isEditableShortcutTarget,
+  projectTabShortcut,
+} from "./projects/projectTabs";
 import {
   episodeNotificationHash,
   graphNotificationHash,
   initialNotificationLink,
   parseNotificationLink,
   type NotificationLink,
-} from "./notificationLinks";
-import { loadNotificationDevices, reconcileWebPush } from "./notificationDevices";
-import { unfinishedJobsFromError } from "./mergePanel";
+} from "./core/notificationLinks";
+import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevices";
+import { unfinishedJobsFromError } from "./graph/mergePanel";
 import {
   attentionGraphForProjection,
   decisionsAwaitingChoice,
@@ -377,36 +381,36 @@ export {
 } from "./transitionRouting";
 
 const AttentionOverview = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.AttentionOverview })),
+  import("./graph/GraphViews").then((module) => ({ default: module.AttentionOverview })),
 );
 const DagView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.DagView })),
+  import("./graph/GraphViews").then((module) => ({ default: module.DagView })),
 );
 const ExecutionView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.ExecutionView })),
+  import("./graph/GraphViews").then((module) => ({ default: module.ExecutionView })),
 );
 const ScientificView = lazy(() =>
-  import("./views/GraphViews").then((module) => ({ default: module.ScientificView })),
+  import("./graph/GraphViews").then((module) => ({ default: module.ScientificView })),
 );
 const LoadedPaperWorkspace = lazy(() =>
-  import("./views/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
+  import("./paper/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
 );
 const ProjectSettings = lazy(() =>
-  import("./views/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
+  import("./projects/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
 );
 const ChatsWorkspace = lazy(() =>
-  import("./views/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
+  import("./chat/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
 );
 const NodeChat = lazy(() =>
-  import("./components/NodeChat").then((module) => ({ default: module.NodeChat })),
+  import("./chat/NodeChat").then((module) => ({ default: module.NodeChat })),
 );
 
 const Artifacts = lazy(() =>
-  import("./views/Artifacts").then((module) => ({ default: module.Artifacts })),
+  import("./artifacts/Artifacts").then((module) => ({ default: module.Artifacts })),
 );
 
 const Terminals = lazy(() =>
-  import("./views/Terminals").then((module) => ({ default: module.Terminals })),
+  import("./terminals/Terminals").then((module) => ({ default: module.Terminals })),
 );
 
 const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> = [

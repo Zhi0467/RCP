@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { installMachineBrowser, loadMachineBrowser } from "../api";
-import { browserReason } from "../browserStatus";
-import { errorMessage } from "../errors";
-import type { MachineBrowserReadiness } from "../types";
+import { installMachineBrowser, loadMachineBrowser } from "../core/api";
+import { browserReason } from "../core/browserStatus";
+import { errorMessage } from "../core/errors";
+import type { MachineBrowserReadiness } from "../core/types";
 
 export function MachineBrowserRow({
   machineId,

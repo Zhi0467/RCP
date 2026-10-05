@@ -9,9 +9,9 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math-extended";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
-import { segmentGlossaryText, type GlossaryIndex } from "../glossary";
-import { isRepositoryFileHrefCandidate } from "../repositoryFileLinks";
-import type { GraphNode } from "../types";
+import { segmentGlossaryText, type GlossaryIndex } from "../graph/glossary";
+import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
+import type { GraphNode } from "./types";
 
 const NODE_REFERENCE_CANDIDATE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
 const NODE_REFERENCE_HREF_PREFIX = "#rcp-node=";

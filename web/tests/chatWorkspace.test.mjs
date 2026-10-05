@@ -28,8 +28,11 @@ import {
   mergeChatReads,
   unreadChatIdsFromReads,
   unsentConversation,
-} from "../src/chatWorkspace.ts";
-import { experimentIndexEntryForRoute, parseProjectHash } from "../src/experimentBoard.ts";
+} from "../src/chat/chatWorkspace.ts";
+import {
+  experimentIndexEntryForRoute,
+  parseProjectHash,
+} from "../src/experiments/experimentBoard.ts";
 
 function task(overrides) {
   return withTaskAnswers({

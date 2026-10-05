@@ -1,8 +1,8 @@
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 import { spaceRunRouteToken } from "./experimentBoard";
-import type { ResolvedTheme } from "../theme";
-import type { SpaceRunIndexEntry, SpaceRunMode } from "../types";
+import type { ResolvedTheme } from "../ui/theme";
+import type { SpaceRunIndexEntry, SpaceRunMode } from "../core/types";
 import {
   EpisodeArchiveButton,
   EpisodeAuthor,

@@ -1,4 +1,4 @@
-import { graphSessionKey, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
+import { graphSessionKey, MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type {
   GraphAttentionProjection,
   GraphHeadRef as TransitionGraphHead,
@@ -7,7 +7,7 @@ import type {
   RevisionedTransitionGraph,
   TransitionTrigger,
   TransitionTriggerManifest,
-} from "../types";
+} from "../core/types";
 
 export type {
   ProjectTransitionProjection,

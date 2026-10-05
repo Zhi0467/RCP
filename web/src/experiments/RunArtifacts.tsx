@@ -1,12 +1,12 @@
-import { MAIN_GRAPH } from "../graphTarget";
-import { setReferenceDrag } from "../projectReferences";
-import type { GraphTargetRef } from "../types";
+import { MAIN_GRAPH } from "../core/graphTarget";
+import { setReferenceDrag } from "../core/projectReferences";
+import type { GraphTargetRef } from "../core/types";
 import { useState } from "react";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../desktopRuntime";
-import { errorMessage } from "../errors";
-import { openArtifact } from "../artifactViewer";
-import type { RunArtifactEntry } from "../types";
-import { StoredArtifactDownload } from "../components/StoredArtifactDownload";
+import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
+import { errorMessage } from "../core/errors";
+import { openArtifact } from "../artifacts/artifactViewer";
+import type { RunArtifactEntry } from "../core/types";
+import { StoredArtifactDownload } from "../artifacts/StoredArtifactDownload";
 import "../styles/runArtifacts.css";
 
 export function RunArtifacts({

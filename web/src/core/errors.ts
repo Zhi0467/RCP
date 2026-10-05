@@ -1,4 +1,4 @@
-import { ApiError } from "../api";
+import { ApiError } from "./api";
 
 /** The sentence a person should read for a thrown failure.
  *

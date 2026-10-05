@@ -1,5 +1,5 @@
 import { EpisodeQuestions } from "./EpisodeQuestions";
-import { graphViewHash } from "../graphTarget";
+import { graphViewHash } from "../core/graphTarget";
 import {
   ChevronDown,
   Pause,
@@ -19,8 +19,8 @@ import {
   episodeTaskRows,
   formatTokenCount,
 } from "./campaigns";
-import { MarkdownAnswer } from "../chatMarkdown";
-import { fetchEpisodeTimeline } from "../api";
+import { MarkdownAnswer } from "../core/chatMarkdown";
+import { fetchEpisodeTimeline } from "../core/api";
 import { useRunArtifacts } from "./useRunArtifacts";
 import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
@@ -30,7 +30,7 @@ import type {
   EpisodeTimelineResponse,
   ExperimentLoopIndexEntry,
   MergeEpisodeBody,
-} from "../types";
+} from "../core/types";
 import { EpisodeMergePanel } from "./EpisodeMergePanel";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 import {

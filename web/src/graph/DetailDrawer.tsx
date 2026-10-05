@@ -1,15 +1,15 @@
-import { BrowserToggle } from "../components/BrowserControls";
-import { CopyReferenceButton } from "../components/CopyReferenceButton";
-import { MAIN_GRAPH } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import { BrowserToggle } from "../core/BrowserControls";
+import { CopyReferenceButton } from "../core/CopyReferenceButton";
+import { MAIN_GRAPH } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
-import type { GraphBranchChanges, MergeDiffPath } from "../types";
+import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
 import { Check, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { experimentGuidanceDetail } from "../experimentGuidance";
+import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
-import { DraggableWindow } from "../components/DraggableWindow";
+import { DraggableWindow } from "../ui/DraggableWindow";
 import { GlossaryText } from "./GlossaryText";
 import {
   changedNodeFields,
@@ -30,7 +30,7 @@ import type {
   GraphNode,
   OntologyState,
   ValidationMessage,
-} from "../types";
+} from "../core/types";
 import { ProxyRowsEditor } from "./ProxyRowsEditor";
 import { RelationMap } from "./RelationMap";
 

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
-import { errorMessage } from "../errors";
+import { api } from "../core/api";
+import { errorMessage } from "../core/errors";
 import { orderRunArtifacts } from "./runArtifacts";
-import type { RunArtifactEntry } from "../types";
+import type { RunArtifactEntry } from "../core/types";
 
 export function useRunArtifacts(
   apiBase: string,

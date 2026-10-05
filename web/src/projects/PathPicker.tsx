@@ -1,7 +1,7 @@
 import { ChevronRight, Folder, LoaderCircle, LockKeyhole } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { listMachineDirectory } from "../api";
-import { errorMessage } from "../errors";
+import { listMachineDirectory } from "../core/api";
+import { errorMessage } from "../core/errors";
 import {
   EMPTY_PATH_PICKER,
   applyDirectoryPage,
@@ -11,8 +11,8 @@ import {
   pathBreadcrumbs,
   type PathPickerMove,
   type PathPickerState,
-} from "../pathPicker";
-import type { MachineDirectoryListing, MachineDirectoryRequest } from "../types";
+} from "./pathPicker";
+import type { MachineDirectoryListing, MachineDirectoryRequest } from "../core/types";
 
 const FILTER_DELAY_MS = 250;
 

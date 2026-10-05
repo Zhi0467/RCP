@@ -1,8 +1,8 @@
-import { graphSessionKey } from "../graphTarget";
+import { graphSessionKey } from "../core/graphTarget";
 import { useCallback, useReducer, useRef } from "react";
 import { emptyHumanDraft, humanDraftChangeCount, type HumanDraft } from "./humanDraft";
 import type { TransitionSyncFence } from "./projectTransition";
-import type { GraphHeadRef, GraphState } from "../types";
+import type { GraphHeadRef, GraphState } from "../core/types";
 import {
   emptyProjectSessionState,
   projectSessionReducer,

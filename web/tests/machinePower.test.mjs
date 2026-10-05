@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer } from "vite";
-import { machinePowerWarnings, showMachinePowerCard } from "../src/machinePower.ts";
+import { machinePowerWarnings, showMachinePowerCard } from "../src/projects/machinePower.ts";
 import {
   installMachinePower,
   loadMachinePower,
   uninstallMachinePower,
   updateMachinePower,
-} from "../src/api.ts";
+} from "../src/core/api.ts";
 
 const status = {
   platform: "macos",
@@ -91,10 +91,10 @@ test("Settings polling follows the hold and stops on cleanup", async (t) => {
   };
   try {
     const { startMachinePowerPolling } = await server.ssrLoadModule(
-      "/src/hooks/useMachinePower.ts",
+      "/src/projects/useMachinePower.ts",
     );
     const { EXPERIMENT_BOARD_POLL_DELAY_MS } = await server.ssrLoadModule(
-      "/src/hooks/useProjectTabs.ts",
+      "/src/projects/useProjectTabs.ts",
     );
     const stop = startMachinePowerPolling(
       (next) => received.push(next),
@@ -146,10 +146,10 @@ test("Settings polling observes activation and a later latch, then stops on clea
   };
   try {
     const { startMachinePowerPolling } = await server.ssrLoadModule(
-      "/src/hooks/useMachinePower.ts",
+      "/src/projects/useMachinePower.ts",
     );
     const { EXPERIMENT_BOARD_POLL_DELAY_MS } = await server.ssrLoadModule(
-      "/src/hooks/useProjectTabs.ts",
+      "/src/projects/useProjectTabs.ts",
     );
     const stop = startMachinePowerPolling(
       (next) => received.push(next),

@@ -1,5 +1,10 @@
-import { graphSessionKey, graphTargetFromHash, graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import {
+  graphSessionKey,
+  graphTargetFromHash,
+  graphTargetUrl,
+  MAIN_GRAPH,
+} from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
   continuedExperimentRoute,
@@ -9,10 +14,21 @@ import {
   projectHashAfterViewChange,
   type ExperimentRouteIdentity,
   type ProjectHashRoute,
-} from "../experimentBoard";
-import type { DetailWindowSlot } from "../floatingWindow";
-import { projectViewportRef, type ProjectViewState, type ProjectViewportRef } from "../projectTabs";
-import type { AppView, Episode, GraphNode, GraphState, ProjectSnapshot, TrustView } from "../types";
+} from "../experiments/experimentBoard";
+import type { DetailWindowSlot } from "../ui/floatingWindow";
+import {
+  projectViewportRef,
+  type ProjectViewState,
+  type ProjectViewportRef,
+} from "../projects/projectTabs";
+import type {
+  AppView,
+  Episode,
+  GraphNode,
+  GraphState,
+  ProjectSnapshot,
+  TrustView,
+} from "../core/types";
 import type { DagViewport } from "./dagZoom";
 
 export const emptyGraph: GraphState = {

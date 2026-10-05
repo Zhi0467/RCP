@@ -5,7 +5,7 @@ import {
   isDesktopRuntime,
   setDesktopNotifications,
   testDesktopNotification,
-} from "../desktopRuntime";
+} from "../core/desktopRuntime";
 import {
   createPhonePairing,
   disableWebPush,
@@ -16,7 +16,7 @@ import {
   webPushSupported,
   type NotificationDevice,
   type PhonePairing,
-} from "../notificationDevices";
+} from "./notificationDevices";
 
 const PAIRING_POLL_MS = 3000;
 

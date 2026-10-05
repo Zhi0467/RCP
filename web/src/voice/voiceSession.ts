@@ -2,10 +2,10 @@
 // Audio goes between this page and OpenAI; RCP's backend only exchanges the SDP.
 // The page owns the lifetime: every way the session ends goes through `end`.
 
-import { createVoiceSession } from "../api.ts";
+import { createVoiceSession } from "../core/api.ts";
 import { claimMicrophone, type MicrophoneClaim } from "./microphone.ts";
 import type { VoiceFunctionCall, VoiceIdentityGate } from "./voiceExecutor.ts";
-import type { VoiceLimits, VoiceSessionResponse } from "../types";
+import type { VoiceLimits, VoiceSessionResponse } from "../core/types";
 
 /** How long `end` waits for `session.closed` before dropping the transport. */
 const VOICE_CLOSE_WAIT_MS = 2_000;

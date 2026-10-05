@@ -9,10 +9,10 @@ import {
   signOutProvider,
   startProviderSignIn,
   verifyProviderLogin,
-} from "../api";
-import { accountLabel, resumedNote, signInNote, tokenNote } from "../providerLogins";
-import type { ProviderLoginAccount, ProviderSignInStatus } from "../types";
-import { formatServerTimestamp } from "../components/ServerSettings";
+} from "../core/api";
+import { accountLabel, resumedNote, signInNote, tokenNote } from "./providerLogins";
+import type { ProviderLoginAccount, ProviderSignInStatus } from "../core/types";
+import { formatServerTimestamp } from "./ServerSettings";
 
 const SIGN_IN_POLL_MS = 2000;
 const SIGN_IN_POLL_FAILURE_LIMIT = 5;

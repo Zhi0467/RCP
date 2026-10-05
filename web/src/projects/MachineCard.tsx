@@ -1,11 +1,11 @@
 import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
-import { createSpaceMachine, updateSpaceMachine } from "../api";
-import { errorMessage } from "../errors";
-import { createPathEditor, type WritablePathEdit } from "../spaceMachines";
-import type { SpaceMachine, SpaceMachineCreateRequest } from "../types";
-import { MachineBrowserRow } from "../components/MachineBrowserRow";
-import { PathPicker } from "../components/PathPicker";
+import { createSpaceMachine, updateSpaceMachine } from "../core/api";
+import { errorMessage } from "../core/errors";
+import { createPathEditor, type WritablePathEdit } from "./spaceMachines";
+import type { SpaceMachine, SpaceMachineCreateRequest } from "../core/types";
+import { MachineBrowserRow } from "./MachineBrowserRow";
+import { PathPicker } from "./PathPicker";
 
 interface Props {
   title: string;

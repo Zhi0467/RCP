@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { verifyProviderLogin } from "../api";
-import { signedOutNote } from "../providerLogins";
-import type { ProviderLoginState } from "../types";
-import { formatServerTimestamp } from "../components/ServerSettings";
+import { verifyProviderLogin } from "../core/api";
+import { signedOutNote } from "./providerLogins";
+import type { ProviderLoginState } from "../core/types";
+import { formatServerTimestamp } from "./ServerSettings";
 
 interface Props {
   states: ProviderLoginState[];

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
-import { MAIN_GRAPH } from "../graphTarget";
-import { setReferenceDrag } from "../projectReferences";
-import type { GraphTargetRef, RunArtifactEntry } from "../types";
+import { api } from "../core/api";
+import { MAIN_GRAPH } from "../core/graphTarget";
+import { setReferenceDrag } from "../core/projectReferences";
+import type { GraphTargetRef, RunArtifactEntry } from "../core/types";
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
-import { openEpisodeReport } from "../artifactViewer";
+import { openEpisodeReport } from "../artifacts/artifactViewer";
 
 interface Props extends Omit<
   AnchorHTMLAttributes<HTMLAnchorElement>,

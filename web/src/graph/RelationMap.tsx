@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { edgeValidationFlags } from "./nodeDetail";
 import { humanize, nodeTypeLabel, presentNode } from "./nodePresentation";
 import { isBelief, isBeliefOutcomeRelation, isOutcome } from "./researchType";
-import type { Edge, GraphNode, ValidationMessage } from "../types";
+import type { Edge, GraphNode, ValidationMessage } from "../core/types";
 
 export interface RelationMapProps {
   focusedNode: GraphNode;

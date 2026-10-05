@@ -1,8 +1,8 @@
 import { TriangleAlert, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../types";
-import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
-import { RepositoryScope } from "../components/RepositoryScope";
+import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../core/types";
+import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import { RepositoryScope } from "../chat/RepositoryScope";
 
 interface Props {
   open: boolean;

@@ -1,4 +1,4 @@
-import { isActiveTask } from "./agentTasks";
+import { isActiveTask } from "./agents/agentTasks";
 import type {
   AgentExecutionProfile,
   AgentRunConfig,
@@ -6,7 +6,7 @@ import type {
   Episode,
   ExperimentControlState,
   ProjectSnapshot,
-} from "./types";
+} from "./core/types";
 
 export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): boolean {
   return (

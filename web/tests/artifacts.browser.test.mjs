@@ -313,8 +313,8 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/components/NodeChat.tsx");
-      const { ArtifactViewer } = await import("/src/components/ArtifactViewer.tsx");
+      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { ArtifactViewer } = await import("/src/artifacts/ArtifactViewer.tsx");
       const profile = {
         provider: "codex",
         model: null,
@@ -501,7 +501,7 @@ test("viewer persists placement and follows an edit through publication and Undo
     );
     const open = () =>
       page.evaluate(async () => {
-        const { openArtifact } = await import("/src/artifactViewer.ts");
+        const { openArtifact } = await import("/src/artifacts/artifactViewer.ts");
         openArtifact({ projectId: "project", artifactId: "plot" });
       });
     await open();

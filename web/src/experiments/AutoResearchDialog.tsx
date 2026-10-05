@@ -1,4 +1,4 @@
-import { BrowserToggle } from "../components/BrowserControls";
+import { BrowserToggle } from "../core/BrowserControls";
 import { LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 

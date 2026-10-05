@@ -1,4 +1,4 @@
-import { sameGraphTarget } from "../graphTarget";
+import { sameGraphTarget } from "../core/graphTarget";
 import type {
   GraphTargetRef,
   AgentRunConfig,
@@ -8,19 +8,19 @@ import type {
   ChatTranscript,
   GraphNode,
   ProjectSnapshot,
-} from "../types";
+} from "../core/types";
 import {
   resolvedChatSessionId,
   relatedChatTasks,
   resumablePausedChatTask,
   taskArtifacts,
-} from "../agentTasks";
+} from "../agents/agentTasks";
 import {
   latestPersistedChatConfig,
   type ChatKind,
   type ConversationTurnSubmission,
-} from "../chatWorkspace";
-import { filterSkillCatalogToDefaults } from "../skillPicker";
+} from "../chat/chatWorkspace";
+import { filterSkillCatalogToDefaults } from "../core/skillPicker";
 import {
   NEVER_CONFIRM,
   type WebMcpToolDefinition,

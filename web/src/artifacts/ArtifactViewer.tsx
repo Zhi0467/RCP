@@ -1,8 +1,8 @@
-import { CopyReferenceButton } from "../components/CopyReferenceButton";
-import { graphTargetFromHash } from "../graphTarget";
+import { CopyReferenceButton } from "../core/CopyReferenceButton";
+import { graphTargetFromHash } from "../core/graphTarget";
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle, PanelRight, X } from "lucide-react";
-import { api, ApiError } from "../api";
+import { api, ApiError } from "../core/api";
 import {
   closeArtifactViewer,
   openArtifact,
@@ -19,14 +19,14 @@ import {
   type ViewerPlacement,
 } from "./artifactViewerLayout";
 import { artifactPopupTarget, isPermanentArtifactError } from "./artifactViewerRequests";
-import { parseProjectHash } from "../experimentBoard";
-import { listenDesktopEvent } from "../desktopRuntime";
+import { parseProjectHash } from "../experiments/experimentBoard";
+import { listenDesktopEvent } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
-import { errorMessage } from "../errors";
-import { startLiveEpisodePolling } from "../hooks/useEpisodeDialogs";
-import { repositoryFilePreviewUrl } from "../repositoryFileLinks";
-import type { ArtifactViewerState } from "../types";
-import { DraggableWindow } from "../components/DraggableWindow";
+import { errorMessage } from "../core/errors";
+import { startLiveEpisodePolling } from "../experiments/useEpisodeDialogs";
+import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
+import type { ArtifactViewerState } from "../core/types";
+import { DraggableWindow } from "../ui/DraggableWindow";
 import "../styles/artifact-viewer.css";
 
 const placementKey = "rcp:artifact-viewer-placement";

@@ -1,7 +1,7 @@
-import { parseProjectHash } from "../experimentBoard";
-import { graphTargetFromHash } from "../graphTarget";
-import { setReferenceDrag } from "../projectReferences";
-import { CopyReferenceButton } from "../components/CopyReferenceButton";
+import { parseProjectHash } from "../experiments/experimentBoard";
+import { graphTargetFromHash } from "../core/graphTarget";
+import { setReferenceDrag } from "../core/projectReferences";
+import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { useEffect, useState, type MouseEvent } from "react";
 import {
   Download,
@@ -11,10 +11,10 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { openArtifact } from "./artifactViewer";
-import { api } from "../api";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../desktopRuntime";
+import { api } from "../core/api";
+import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
-import type { ProjectArtifact } from "../types";
+import type { ProjectArtifact } from "../core/types";
 
 // The last list per project survives tab switches; a revisit refreshes it in place.
 const cachedEntries = new Map<string, ProjectArtifact[]>();

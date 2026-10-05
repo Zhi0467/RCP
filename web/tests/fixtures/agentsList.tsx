@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { ChatsWorkspace } from "../../src/views/ChatsWorkspace";
-import { buildGlossaryIndex } from "../../src/glossary";
-import type { ChatConversation } from "../../src/chatWorkspace";
-import type { AgentTask, ChatTranscript, ProjectSnapshot } from "../../src/types";
+import { ChatsWorkspace } from "../../src/chat/ChatsWorkspace";
+import { buildGlossaryIndex } from "../../src/graph/glossary";
+import type { ChatConversation } from "../../src/chat/chatWorkspace";
+import type { AgentTask, ChatTranscript, ProjectSnapshot } from "../../src/core/types";
 import "../../src/styles.css";
 
 const profile = {

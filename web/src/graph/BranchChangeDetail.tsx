@@ -1,4 +1,4 @@
-import type { GraphBranchChanges, GraphChangeSource, MergeDiffPath } from "../types";
+import type { GraphBranchChanges, GraphChangeSource, MergeDiffPath } from "../core/types";
 import { MERGE_MARK_SEVERITY, type MergeDiffMark, mergePathMark } from "./mergePanel";
 import { humanFieldLabels, humanize } from "./nodePresentation";
 

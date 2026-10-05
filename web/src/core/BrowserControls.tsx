@@ -1,8 +1,8 @@
 import { useEffect, useId, useState } from "react";
-import { loadChatBrowser, setChatBrowser } from "../api";
-import { browserReason } from "../browserStatus";
-import { errorMessage } from "../errors";
-import type { BrowserTurnStatus } from "../types";
+import { loadChatBrowser, setChatBrowser } from "./api";
+import { browserReason } from "./browserStatus";
+import { errorMessage } from "./errors";
+import type { BrowserTurnStatus } from "./types";
 
 export function BrowserToggle({
   checked,

@@ -9,7 +9,7 @@ import {
   navigateDesktopToTeam,
   type EstablishedTeamSession,
   type TeamConnectionMetadata,
-} from "../desktopRuntime";
+} from "../core/desktopRuntime";
 
 type ConnectionState = "checking" | "available" | "unavailable";
 

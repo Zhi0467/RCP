@@ -8,14 +8,14 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { currentExperimentGuidance } from "../experimentGuidance";
-import { isBelief, isBlocker, isControlNode } from "../researchType";
+import { currentExperimentGuidance } from "../core/experimentGuidance";
+import { isBelief, isBlocker, isControlNode } from "../graph/researchType";
 import {
   editCountLabel,
   needsYouKindLabel,
   projectDigestIsEmpty,
   ranKindLabel,
-} from "../projectDigest";
+} from "./projectDigest";
 import type {
   AppView,
   GraphNode,
@@ -24,7 +24,7 @@ import type {
   ProjectSnapshot,
   Proposal,
   RevisionSummary,
-} from "../types";
+} from "../core/types";
 
 export interface DigestCardProps {
   digest: ProjectDigest | null;

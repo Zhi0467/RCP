@@ -1,8 +1,8 @@
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api } from "../api";
-import { MarkdownAnswer } from "../chatMarkdown";
-import type { SkillCatalogEntry, SkillPackageDetail } from "../types";
+import { api } from "../core/api";
+import { MarkdownAnswer } from "../core/chatMarkdown";
+import type { SkillCatalogEntry, SkillPackageDetail } from "../core/types";
 
 interface Props {
   entry: SkillCatalogEntry;

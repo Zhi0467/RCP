@@ -21,7 +21,7 @@ const {
   shouldRequestProviderReadiness,
 } = await server.ssrLoadModule("/src/App.tsx");
 const { AgentConfigControls, settleReadinessRefresh } = await server.ssrLoadModule(
-  "/src/components/AgentConfigControls.tsx",
+  "/src/core/AgentConfigControls.tsx",
 );
 
 after(() => server.close());

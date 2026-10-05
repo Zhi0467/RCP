@@ -15,21 +15,21 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, clearProjectCaches } from "../api";
-import { computeProbePresentation } from "../compute";
-import { ProjectMembers } from "../components/ProjectMembers";
-import { MachineCard } from "../components/MachineCard";
-import { ProjectNotifications } from "../components/ProjectNotifications";
-import { ProjectConsolidation } from "../components/ProjectConsolidation";
-import { ProjectLessons } from "../components/ProjectLessons";
-import { AddMachineTile, MachineTile, type MachineSignal } from "../components/MachineTile";
-import { AddProjectMachine } from "../components/AddProjectMachine";
-import { useSpaceMachines } from "../hooks/useSpaceMachines";
-import { machineHostLabel, spaceMachineForProject } from "../spaceMachines";
-import { EMPTY_SKILL_SELECTION } from "../skillPicker";
-import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
-import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
-import { SkillPackageInspector } from "../components/SkillPackageInspector";
+import { api, clearProjectCaches } from "../core/api";
+import { computeProbePresentation } from "../experiments/compute";
+import { ProjectMembers } from "./ProjectMembers";
+import { MachineCard } from "./MachineCard";
+import { ProjectNotifications } from "../desktop/ProjectNotifications";
+import { ProjectConsolidation } from "./ProjectConsolidation";
+import { ProjectLessons } from "./ProjectLessons";
+import { AddMachineTile, MachineTile, type MachineSignal } from "./MachineTile";
+import { AddProjectMachine } from "./AddProjectMachine";
+import { useSpaceMachines } from "./useSpaceMachines";
+import { machineHostLabel, spaceMachineForProject } from "./spaceMachines";
+import { EMPTY_SKILL_SELECTION } from "../core/skillPicker";
+import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import { AgentUsageWidgets } from "../agents/AgentUsageWidgets";
+import { SkillPackageInspector } from "../agents/SkillPackageInspector";
 import {
   computeConnectionNeedsSave,
   computeProbeConfigurationChanged,
@@ -45,8 +45,8 @@ import {
   settingsDraftStorageKey,
   settingsFingerprint,
   type MachineProviderPaths,
-} from "../settingsDraft";
-import type { ProjectReadinessRetention } from "../hooks/projectSession";
+} from "./settingsDraft";
+import type { ProjectReadinessRetention } from "../graph/projectSession";
 import type {
   AgentExecutionProfile,
   AgentProfileSettings,
@@ -63,7 +63,7 @@ import type {
   ProviderPathResolution,
   ProviderReadiness,
   SkillDefaults,
-} from "../types";
+} from "../core/types";
 
 interface Props {
   apiBase: string;

@@ -12,8 +12,8 @@ import {
   type Point,
   type ResizeCorner,
   type Size,
-} from "../floatingWindow";
-import { NODE_DETAIL_RESIZE_MIN_HEIGHT, NODE_DETAIL_RESIZE_MIN_WIDTH } from "../uiConstants";
+} from "./floatingWindow";
+import { NODE_DETAIL_RESIZE_MIN_HEIGHT, NODE_DETAIL_RESIZE_MIN_WIDTH } from "../core/uiConstants";
 
 import {
   floatViewer,
@@ -22,7 +22,7 @@ import {
   toggleViewerFullscreen,
   viewerRect,
   type ViewerPlacement,
-} from "../artifactViewerLayout";
+} from "../artifacts/artifactViewerLayout";
 
 let topFloatingZIndex = 110;
 

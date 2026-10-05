@@ -1,6 +1,6 @@
-import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
-import type { ChatSummary, ChatSummaryPage, ChatTranscript } from "../types";
+import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
+import type { ChatSummary, ChatSummaryPage, ChatTranscript } from "../core/types";
 
 export type ChatPageRequest = (path: string) => Promise<ChatSummaryPage>;
 

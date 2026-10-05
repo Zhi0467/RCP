@@ -17,22 +17,25 @@ const {
   graphSessionKey,
   graphTargetFromHash,
   graphViewHash,
-} = await server.ssrLoadModule("/src/graphTarget.ts");
-const { parseProjectHash, projectHashAfterViewChange } =
-  await server.ssrLoadModule("/src/experimentBoard.ts");
-const { branchGraphProjection, expandBranchContext } =
-  await server.ssrLoadModule("/src/branchGraph.ts");
+} = await server.ssrLoadModule("/src/core/graphTarget.ts");
+const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
+  "/src/experiments/experimentBoard.ts",
+);
+const { branchGraphProjection, expandBranchContext } = await server.ssrLoadModule(
+  "/src/graph/branchGraph.ts",
+);
 const {
   emptyProjectSessionState,
   projectSessionReducer,
   serializeProjectSessionTabState,
   persistProjectHumanDraft,
-} = await server.ssrLoadModule("/src/hooks/projectSession.ts");
-const { emptyHumanDraft, stageNodeEdit } = await server.ssrLoadModule("/src/humanDraft.ts");
+} = await server.ssrLoadModule("/src/graph/projectSession.ts");
+const { emptyHumanDraft, stageNodeEdit } = await server.ssrLoadModule("/src/graph/humanDraft.ts");
 const { transitionSyncCompletionDisposition } = await server.ssrLoadModule(
-  "/src/projectTransition.ts",
+  "/src/graph/projectTransition.ts",
 );
-const { loadChatSummaryPage, loadChatTranscript } = await server.ssrLoadModule("/src/chatApi.ts");
+const { loadChatSummaryPage, loadChatTranscript } =
+  await server.ssrLoadModule("/src/chat/chatApi.ts");
 
 const main = { kind: "main" };
 const branch = { kind: "branch", branch_id: "episode-branch" };
@@ -281,7 +284,7 @@ test("ordinary local drafts remain visible after restoring a branch session", as
 });
 
 test("merge review decodes one same-node content, status and standing bundle", async () => {
-  const { decodeProposal, proposalSemantics } = await server.ssrLoadModule("/src/types.ts");
+  const { decodeProposal, proposalSemantics } = await server.ssrLoadModule("/src/core/types.ts");
   const ops = [
     {
       op: "update_nodes",

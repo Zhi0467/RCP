@@ -1,6 +1,6 @@
 /** Pure composer rules for dictation through macOS or a member's service connection. */
 
-import type { ServiceConnection, ServiceConnectionPurpose } from "../types";
+import type { ServiceConnection, ServiceConnectionPurpose } from "../core/types";
 
 /** The draft range one dictation session may rewrite. */
 export interface DictationSpan {

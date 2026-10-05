@@ -1,5 +1,5 @@
-import type { DesktopBuildIdentity } from "../desktopRuntime";
-import type { UpdateNotice } from "../types";
+import type { DesktopBuildIdentity } from "../core/desktopRuntime";
+import type { UpdateNotice } from "../core/types";
 
 export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuildIdentity | null) {
   if (!notice || !notice.latest_version) return null;

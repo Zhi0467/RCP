@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchQuestions } from "../api";
-import type { AgentQuestion } from "../types";
+import { fetchQuestions } from "../core/api";
+import type { AgentQuestion } from "../core/types";
 
 /** Reuses the owner's refreshed projection and project heartbeat, without another clock. */
 export function useQuestions(

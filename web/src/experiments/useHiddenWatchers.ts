@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import type { WatcherRecord } from "../types";
+import type { WatcherRecord } from "../core/types";
 
 const changeEvent = "rcp:hidden-watchers-changed";
 

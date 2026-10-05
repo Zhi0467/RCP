@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { cancelWatcher } from "../api";
-import type { ExternalWatcherRecord } from "../types";
+import { cancelWatcher } from "../core/api";
+import type { ExternalWatcherRecord } from "../core/types";
 
 export function ExternalJobRow({
   apiBase,

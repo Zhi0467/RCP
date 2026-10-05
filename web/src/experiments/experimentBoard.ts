@@ -1,4 +1,4 @@
-import { graphTargetFromHash, graphViewHash } from "../graphTarget.ts";
+import { graphTargetFromHash, graphViewHash } from "../core/graphTarget.ts";
 import type {
   AgentTask,
   AppView,
@@ -9,7 +9,7 @@ import type {
   GraphTargetRef,
   SpaceRunIndexEntry,
   WatcherRecord,
-} from "../types";
+} from "../core/types";
 
 export interface ProjectHashRoute {
   projectId: string | null;

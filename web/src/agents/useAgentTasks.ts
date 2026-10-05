@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isActiveTask, projectActivityTask } from "./agentTasks";
-import { api } from "../api";
-import type { AgentTask } from "../types";
+import { api } from "../core/api";
+import type { AgentTask } from "../core/types";
 
 export interface AgentTasksSnapshot {
   retryTask: AgentTask | null;

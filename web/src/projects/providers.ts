@@ -1,5 +1,5 @@
-import type { ModelChoice, ProviderReadiness } from "../types";
-import type { ProviderLoginState } from "../types";
+import type { ModelChoice, ProviderReadiness } from "../core/types";
+import type { ProviderLoginState } from "../core/types";
 
 /**
  * Turning the backend provider registry into select options.

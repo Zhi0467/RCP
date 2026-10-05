@@ -11,11 +11,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule(
-  "/src/components/NodeChat.tsx",
-);
+const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 const { loadPaperSnapshot, PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
-  "/src/views/PaperWorkspace.tsx",
+  "/src/paper/PaperWorkspace.tsx",
 );
 
 after(() => server.close());

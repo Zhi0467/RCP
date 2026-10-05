@@ -1,8 +1,8 @@
 import { CircleArrowUp, LoaderCircle, Copy, Check } from "lucide-react";
 import { useState } from "react";
-import type { DesktopUpdate, DesktopBuildIdentity } from "../desktopRuntime";
-import type { UpdateNotice as NoticeData } from "../types";
-import { releaseNotice, dismissRelease, isReleaseDismissed } from "../updateNotice";
+import type { DesktopUpdate, DesktopBuildIdentity } from "../core/desktopRuntime";
+import type { UpdateNotice as NoticeData } from "../core/types";
+import { releaseNotice, dismissRelease, isReleaseDismissed } from "./updateNotice";
 
 export function UpdateNotice({
   notice,

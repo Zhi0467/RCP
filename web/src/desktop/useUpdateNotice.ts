@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { loadUpdateNotice } from "../api";
-import type { UpdateNotice } from "../types";
+import { loadUpdateNotice } from "../core/api";
+import type { UpdateNotice } from "../core/types";
 
 export const UPDATE_NOTICE_UNCHECKED_POLL_MS = 30_000;
 export const UPDATE_NOTICE_POLL_MS = 10 * 60_000;

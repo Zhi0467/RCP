@@ -1,7 +1,7 @@
 import { Plus, X } from "lucide-react";
 
 import { proxyDraftRows } from "./nodeEditing";
-import type { ExperimentProxy } from "../types";
+import type { ExperimentProxy } from "../core/types";
 
 /** Edits an Experiment's proxies as rows of "stands for" and "measured as". */
 export function ProxyRowsEditor({

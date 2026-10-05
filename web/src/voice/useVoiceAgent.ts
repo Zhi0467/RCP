@@ -6,13 +6,13 @@ import {
   loadVoiceSettings,
   registerAccessLossHandler,
   saveVoiceSettings,
-} from "../api";
+} from "../core/api";
 import { serviceConnectionFailure } from "./dictation";
-import { errorMessage } from "../errors";
+import { errorMessage } from "../core/errors";
 import { MicrophoneBusyError } from "./microphone";
-import { isControlNode } from "../researchType";
+import { isControlNode } from "../graph/researchType";
 import { catalog, catalogAsFunctionTools, resolve } from "./toolCatalog";
-import type { AgentProfile, AgentTask, ProjectSnapshot, VoiceSettings } from "../types";
+import type { AgentProfile, AgentTask, ProjectSnapshot, VoiceSettings } from "../core/types";
 import {
   createIdentityGate,
   createVoiceExecutor,
@@ -34,7 +34,7 @@ import {
   type VoiceSession,
 } from "./voiceSession";
 import { assertVoiceMayType, terminalCommandInput, terminalRepository } from "./voiceTerminal";
-import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp";
+import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp/index";
 
 const VOICE_WATCH_POLL_MS = 10_000;
 const VOICE_TRANSCRIPT_LINES = 40;

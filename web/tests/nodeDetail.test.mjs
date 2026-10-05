@@ -5,7 +5,7 @@ import {
   beliefCausePresentation,
   edgeValidationFlags,
   nodeBeliefTransitions,
-} from "../src/nodeDetail.ts";
+} from "../src/graph/nodeDetail.ts";
 
 const nodes = {
   "hyp/main": { id: "hyp/main", type: "hypothesis", title: "Main claim" },

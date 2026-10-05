@@ -1,8 +1,8 @@
-import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../api";
-import type { RevisionSummary, ValidationMessage } from "../types";
+import { api } from "../core/api";
+import type { RevisionSummary, ValidationMessage } from "../core/types";
 
 export interface ProjectHistorySnapshot {
   latestRevisionSummary: RevisionSummary | null;

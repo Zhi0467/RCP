@@ -1,4 +1,4 @@
-import type { GraphNode } from "../types";
+import type { GraphNode } from "../core/types";
 
 export type WebMcpJsonSchema = {
   type: "object";

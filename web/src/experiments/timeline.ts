@@ -4,7 +4,7 @@ import type {
   EpisodeTimelineResponse,
   EpisodeTimelineSignal,
   ExperimentLoopIndexEntry,
-} from "../types";
+} from "../core/types";
 
 export type TimelineWindow = [number, number];
 export const MIN_TIMELINE_WINDOW = 10 * 60 * 1000;

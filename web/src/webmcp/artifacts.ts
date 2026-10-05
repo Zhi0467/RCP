@@ -1,6 +1,6 @@
-import { artifactUrl, taskArtifacts } from "../agentTasks";
-import { episodeReportPreviewUrl } from "../campaigns";
-import type { AgentTask, ArtifactView, Episode, ProjectSnapshot } from "../types";
+import { artifactUrl, taskArtifacts } from "../agents/agentTasks";
+import { episodeReportPreviewUrl } from "../experiments/campaigns";
+import type { AgentTask, ArtifactView, Episode, ProjectSnapshot } from "../core/types";
 import {
   NEVER_CONFIRM,
   type WebMcpToolDefinition,

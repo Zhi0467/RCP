@@ -5,7 +5,7 @@ import type {
   SkillCatalogEntry,
   SkillDefaults,
   SkillKind,
-} from "../types";
+} from "./types";
 
 /** The slash trigger word being typed at the end of the composer. */
 const TRIGGER = /(?:^|\s)\/([A-Za-z0-9_:-]*)$/;

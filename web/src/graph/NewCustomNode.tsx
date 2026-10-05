@@ -16,7 +16,7 @@ import type {
   NewNode,
   OntologyFieldDefinition,
   OntologyState,
-} from "../types";
+} from "../core/types";
 
 interface Props {
   ontology: OntologyState;

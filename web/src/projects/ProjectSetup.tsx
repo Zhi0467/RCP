@@ -15,8 +15,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { api } from "../api";
-import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
+import { api } from "../core/api";
+import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../core/desktopRuntime";
 import {
   modelChange,
   modelOptions,
@@ -25,21 +25,21 @@ import {
   readinessFor,
   reasoningOptions,
   runtimeOptions,
-} from "../providers";
+} from "./providers";
 import {
   assertSupportedProjectCreationIntent,
   repositoryPickerPresentation,
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
   type ProjectSetupRoute,
-} from "../projectSetup";
-import { NewMachineForm } from "../components/MachineCard";
-import { AddMachineTile, MachineTile } from "../components/MachineTile";
-import { PathPicker } from "../components/PathPicker";
-import { useSpaceMachines } from "../hooks/useSpaceMachines";
-import { setupMachineSelection } from "../spaceMachines";
-import { TeamProjectSetup } from "../views/TeamProjectSetup";
-import { TransferProjectSetup } from "../views/TransferProjectSetup";
+} from "./projectSetup";
+import { NewMachineForm } from "./MachineCard";
+import { AddMachineTile, MachineTile } from "./MachineTile";
+import { PathPicker } from "./PathPicker";
+import { useSpaceMachines } from "./useSpaceMachines";
+import { setupMachineSelection } from "./spaceMachines";
+import { TeamProjectSetup } from "./TeamProjectSetup";
+import { TransferProjectSetup } from "./TransferProjectSetup";
 import type {
   AgentExecutionProfile,
   ExistingResearchAction,
@@ -53,7 +53,7 @@ import type {
   SetupPreview,
   SetupRepository,
   SpaceMachine,
-} from "../types";
+} from "../core/types";
 
 interface Props {
   projectCreation: ProjectCreationControl;

@@ -6,7 +6,7 @@ import type {
   MachineComputeConfig,
   ProviderId,
   SkillDefaults,
-} from "../types";
+} from "../core/types";
 
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 

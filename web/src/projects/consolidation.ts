@@ -1,14 +1,14 @@
 // Nightly graph consolidation and operational lessons: the project routes and
 // the small rules the Inbox and Project settings share.
 
-import { api } from "../api";
+import { api } from "../core/api";
 import type {
   ConsolidationInboxItem,
   ConsolidationNight,
   ConsolidationSchedule,
   ConsolidationView,
   Lesson,
-} from "../types";
+} from "../core/types";
 
 export const DEFAULT_CONSOLIDATION_TIME = "03:00";
 export const CONSOLIDATION_RENEWAL_WINDOW_DAYS = 3;

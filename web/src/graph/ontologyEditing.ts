@@ -7,7 +7,7 @@ import type {
   OntologyRelationDefinition,
   OntologyState,
   OntologyTypeDefinition,
-} from "../types";
+} from "../core/types";
 import { BASE_TYPE_PRESENTATION, carriesOrigin } from "./researchType.ts";
 
 /** Base ontology types in canonical order; the research layer owns the table. */

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { loadSpaceMachines } from "../api";
-import { errorMessage } from "../errors";
-import { replaceSpaceMachine } from "../spaceMachines";
-import type { SpaceMachine } from "../types";
+import { loadSpaceMachines } from "../core/api";
+import { errorMessage } from "../core/errors";
+import { replaceSpaceMachine } from "./spaceMachines";
+import type { SpaceMachine } from "../core/types";
 
 /** The space machine list, read once per mount and patched in place by each edit. */
 export function useSpaceMachines() {

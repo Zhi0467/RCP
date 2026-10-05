@@ -1,6 +1,6 @@
-import type { loadProjectReadiness } from "./api";
-import type { ProjectReadinessRetention } from "./hooks/projectSession";
-import type { ProjectSnapshot } from "./types";
+import type { loadProjectReadiness } from "./core/api";
+import type { ProjectReadinessRetention } from "./graph/projectSession";
+import type { ProjectSnapshot } from "./core/types";
 
 export const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;

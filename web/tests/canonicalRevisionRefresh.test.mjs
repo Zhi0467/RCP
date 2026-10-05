@@ -33,9 +33,9 @@ const {
   projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
-} = await server.ssrLoadModule("/src/hooks/useProjectTabs.ts");
+} = await server.ssrLoadModule("/src/projects/useProjectTabs.ts");
 const { emptyProjectSessionState, serializeProjectSessionTabState } = await server.ssrLoadModule(
-  "/src/hooks/projectSession.ts",
+  "/src/graph/projectSession.ts",
 );
 
 after(() => server.close());

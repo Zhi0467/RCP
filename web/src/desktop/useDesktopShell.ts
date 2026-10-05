@@ -10,7 +10,7 @@ import {
   desktopReconnectBackend,
   needsDesktopFolderAccessAcknowledgement,
   type DesktopUpdate,
-} from "../desktopRuntime";
+} from "../core/desktopRuntime";
 
 interface PendingDesktopProject {
   projectId: string;

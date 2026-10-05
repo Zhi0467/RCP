@@ -9,10 +9,10 @@ import {
   loadVoiceSettings,
   selectDictationService,
   updateServiceConnection,
-} from "../api";
-import { isDesktopRuntime } from "../desktopRuntime";
+} from "../core/api";
+import { isDesktopRuntime } from "../core/desktopRuntime";
 import { modelChoices, serviceConnectionFailure, voiceConnectionUpdate } from "./dictation";
-import { errorMessage } from "../errors";
+import { errorMessage } from "../core/errors";
 import type {
   ServiceConnection,
   ServiceConnectionKind,
@@ -20,8 +20,8 @@ import type {
   ServiceConnections,
   ServiceModels,
   VoiceSettings,
-} from "../types";
-import { formatServerTimestamp } from "../components/ServerSettings";
+} from "../core/types";
+import { formatServerTimestamp } from "../projects/ServerSettings";
 
 type ServiceChoice = "openai" | "groq" | "gemini" | "custom";
 

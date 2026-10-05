@@ -2,7 +2,7 @@
 // that list, test, and remove devices. A device turns on only from a tap on
 // its row, so nothing here asks for permission on page load.
 
-import { api } from "../api";
+import { api } from "../core/api";
 
 export interface NotificationDevice {
   device_id: string;

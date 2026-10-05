@@ -2,7 +2,7 @@ import type {
   MachineDirectoryEntry,
   MachineDirectoryListing,
   MachineDirectoryRequest,
-} from "../types";
+} from "../core/types";
 
 /** What the picker shows: one folder level, narrowed by a server-side filter. */
 export interface PathPickerState {

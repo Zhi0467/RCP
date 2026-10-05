@@ -11,7 +11,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { EpisodeReportLink } = await server.ssrLoadModule("/src/components/EpisodeReportLink.tsx");
+const { EpisodeReportLink } = await server.ssrLoadModule("/src/experiments/EpisodeReportLink.tsx");
 
 after(() => server.close());
 

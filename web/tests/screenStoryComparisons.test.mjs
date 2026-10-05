@@ -7,7 +7,7 @@ import {
   pickScreenStoryComparison,
   projectUsageTokens,
   screenStoryComparisonCopy,
-} from "../src/screenStoryComparisons.ts";
+} from "../src/agents/screenStoryComparisons.ts";
 
 test("comparison ledger contains only complete series and film IP entries", () => {
   assert.deepEqual(

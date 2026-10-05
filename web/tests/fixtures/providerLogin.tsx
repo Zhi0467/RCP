@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { ProviderLoginNotice } from "../../src/components/ProviderLoginNotice";
+import { ProviderLoginNotice } from "../../src/projects/ProviderLoginNotice";
 import "../../src/styles.css";
 
 createRoot(document.getElementById("root")!).render(

@@ -1,4 +1,4 @@
-import type { AgentQuestion } from "../types";
+import type { AgentQuestion } from "../core/types";
 
 export function questionIsOpen(question: AgentQuestion): boolean {
   return question.state === "pending" || question.state === "parked";

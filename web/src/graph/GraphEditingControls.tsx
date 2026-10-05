@@ -1,7 +1,7 @@
 import { TriangleAlert, Check, Link2, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
-import { api } from "../api";
-import { errorMessage } from "../errors";
+import { api } from "../core/api";
+import { errorMessage } from "../core/errors";
 import type {
   Edge,
   EdgeExpectation,
@@ -10,7 +10,7 @@ import type {
   NewNode,
   NewEdge,
   GraphState,
-} from "../types";
+} from "../core/types";
 import { humanize } from "./nodePresentation";
 import { NewCustomNode } from "./NewCustomNode";
 

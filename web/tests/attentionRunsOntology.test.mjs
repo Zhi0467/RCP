@@ -13,13 +13,13 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { AttentionOverview, ExecutionView } = await server.ssrLoadModule(
-  "/src/views/GraphViews.tsx",
+  "/src/graph/GraphViews.tsx",
 );
 const { decisionsAwaitingChoice, humanAttentionBlockers, taskRetryRequestBody } =
   await server.ssrLoadModule("/src/App.tsx");
-const { AttentionRail } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
-const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
-const { decodeGraphAttentionProjection } = await server.ssrLoadModule("/src/types.ts");
+const { AttentionRail } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
+const { ProjectSettings } = await server.ssrLoadModule("/src/projects/ProjectSettings.tsx");
+const { decodeGraphAttentionProjection } = await server.ssrLoadModule("/src/core/types.ts");
 
 after(() => server.close());
 

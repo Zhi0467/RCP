@@ -1,6 +1,6 @@
 import { Archive, ArchiveRestore, LoaderCircle } from "lucide-react";
 import { useState } from "react";
-import type { AuthorizedHuman, Episode } from "../types";
+import type { AuthorizedHuman, Episode } from "../core/types";
 
 export type ArchiveEpisodeAction = (
   projectId: string,

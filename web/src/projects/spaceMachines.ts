@@ -1,4 +1,4 @@
-import type { Machine, SpaceMachine, SpaceMachineUpdateRequest } from "../types";
+import type { Machine, SpaceMachine, SpaceMachineUpdateRequest } from "../core/types";
 
 export type WritablePathEdit = { kind: "add"; path: string } | { kind: "remove"; path: string };
 

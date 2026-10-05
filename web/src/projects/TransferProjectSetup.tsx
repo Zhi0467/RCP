@@ -12,7 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { api } from "../api";
+import { api } from "../core/api";
 import {
   advanceDesktopProjectTransfer,
   discardDesktopProjectTransferExport,
@@ -37,7 +37,7 @@ import {
   type ServerOperatorProbe,
   type TargetProviderSetupProjection,
   type TeamConnectionMetadata,
-} from "../desktopRuntime";
+} from "../core/desktopRuntime";
 import {
   modelChange,
   modelOptions,
@@ -45,14 +45,14 @@ import {
   providerOptions,
   reasoningOptions,
   runtimeOptions,
-} from "../providers";
+} from "./providers";
 import {
   formatCommandArgv,
   projectMoveSetupHash,
   routeProvedBy,
   type ProjectSetupRoute,
-} from "../projectSetup";
-import { OperatorActionPanel } from "../views/OperatorActionPanel";
+} from "./projectSetup";
+import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
   AgentTask,
@@ -60,7 +60,7 @@ import type {
   ProjectSnapshot,
   ProviderReadiness,
   SetupAgentProfile,
-} from "../types";
+} from "../core/types";
 
 type MoveSetupRoute = Extract<ProjectSetupRoute, { kind: "move" }>;
 

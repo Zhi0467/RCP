@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { loadMachinePower } from "../api";
-import { errorMessage } from "../errors";
-import type { MachinePowerStatus } from "../types";
-import { EXPERIMENT_BOARD_POLL_DELAY_MS } from "../hooks/useProjectTabs";
+import { loadMachinePower } from "../core/api";
+import { errorMessage } from "../core/errors";
+import type { MachinePowerStatus } from "../core/types";
+import { EXPERIMENT_BOARD_POLL_DELAY_MS } from "./useProjectTabs";
 
 export function startMachinePowerPolling(
   receive: (status: MachinePowerStatus) => void,

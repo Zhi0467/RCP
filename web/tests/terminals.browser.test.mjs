@@ -162,8 +162,9 @@ async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
 }
 
 test("Terminals hashes restore the project destination", async () => {
-  const { parseProjectHash, projectHashAfterViewChange } =
-    await server.ssrLoadModule("/src/experimentBoard.ts");
+  const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
+    "/src/experiments/experimentBoard.ts",
+  );
   assert.equal(parseProjectHash("#/projects/alpha?view=terminals").view, "terminals");
   assert.equal(
     projectHashAfterViewChange("#/projects/alpha", "terminals"),

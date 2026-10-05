@@ -11,7 +11,7 @@ import type {
   AgentUsageRecord,
   AgentUsageSnapshot,
   ProviderReadiness,
-} from "../types";
+} from "../core/types";
 
 const taskLabels: Record<AgentTaskKind, string> = {
   seed: "Seed",

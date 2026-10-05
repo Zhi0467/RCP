@@ -1,6 +1,6 @@
 import { ChevronDown, LoaderCircle, Network } from "lucide-react";
 import { useEffect, useState } from "react";
-import { loadMergePreview } from "../api";
+import { loadMergePreview } from "../core/api";
 import {
   type MergeChoices,
   mergeDiffCounts,
@@ -8,8 +8,8 @@ import {
   previewAnswersDraft,
   squashAllowed,
   unfinishedJobsFromError,
-} from "../mergePanel";
-import type { Episode, EpisodeUnfinishedJob, MergeEpisodeBody, MergePreview } from "../types";
+} from "../graph/mergePanel";
+import type { Episode, EpisodeUnfinishedJob, MergeEpisodeBody, MergePreview } from "../core/types";
 
 const CODE_STATUS_LABELS: Record<NonNullable<MergePreview["code"]>["status"], string> = {
   clean: "Merges cleanly",

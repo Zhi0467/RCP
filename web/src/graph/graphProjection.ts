@@ -1,5 +1,5 @@
 import { isBlocker } from "./researchType.ts";
-import type { Edge, GraphNode, GraphState, TrustView } from "../types";
+import type { Edge, GraphNode, GraphState, TrustView } from "../core/types";
 
 export type DagOntologyProjection = "all" | "belief" | "action";
 export type ProjectionEmphasis = "emphasized" | "neutral" | "dimmed";

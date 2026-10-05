@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { mergeEpisodeToMain } from "../../src/api";
-import { AutoResearchEpisodeCard } from "../../src/components/CampaignRuns";
-import type { Episode } from "../../src/types";
+import { mergeEpisodeToMain } from "../../src/core/api";
+import { AutoResearchEpisodeCard } from "../../src/experiments/CampaignRuns";
+import type { Episode } from "../../src/core/types";
 import "../../src/styles.css";
 
 const initialEpisode: Episode = await (await fetch("/fixture/episode")).json();

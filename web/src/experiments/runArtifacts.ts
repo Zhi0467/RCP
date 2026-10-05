@@ -1,4 +1,4 @@
-import type { RunArtifactEntry } from "../types";
+import type { RunArtifactEntry } from "../core/types";
 
 /** Preserve the server's run-report-first order, including child reports. */
 export function orderRunArtifacts(artifacts: readonly RunArtifactEntry[]): RunArtifactEntry[] {

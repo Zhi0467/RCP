@@ -3,13 +3,13 @@
 // They act with the member's full terminal power, so they never reach WebMCP, whose
 // host agents get no RCP confirmation card.
 
-import type { TerminalRepository, TerminalSession } from "../types";
+import type { TerminalRepository, TerminalSession } from "../core/types";
 import {
   webMcpTextResult,
   withExecute,
   type WebMcpToolDefinition,
   type WebMcpToolSpec,
-} from "../webmcp";
+} from "../webmcp/index";
 
 /** With no prompt to watch for, a run stops reading once output is quiet this long. */
 export const TERMINAL_QUIET_MS = 1_500;

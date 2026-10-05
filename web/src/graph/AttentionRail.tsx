@@ -1,7 +1,12 @@
 import { TriangleAlert, ArrowRight, Check, X } from "lucide-react";
 import type { GlossaryIndex } from "./glossary";
 import { proposalApprovalConflict, type HumanDraft, type ProposalDecision } from "./humanDraft";
-import { type GraphNode, type GraphState, type Proposal, type ProposalActionLine } from "../types";
+import {
+  type GraphNode,
+  type GraphState,
+  type Proposal,
+  type ProposalActionLine,
+} from "../core/types";
 import { GlossaryText } from "./GlossaryText";
 
 interface ProposalJudgmentSectionProps {

@@ -1,4 +1,4 @@
-import type { AppView } from "../types";
+import type { AppView } from "../core/types";
 
 export interface ProjectTab {
   id: string;

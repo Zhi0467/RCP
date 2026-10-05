@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { TriangleAlert, RefreshCw, SquareTerminal, X } from "lucide-react";
-import { api } from "../api";
-import { TerminalPane } from "../components/TerminalPane";
-import type { TerminalRepository, TerminalSession } from "../types";
+import { api } from "../core/api";
+import { TerminalPane } from "./TerminalPane";
+import type { TerminalRepository, TerminalSession } from "../core/types";
 
 export function Terminals({ projectId }: { projectId: string }) {
   const base = `/api/projects/${encodeURIComponent(projectId)}/terminals`;

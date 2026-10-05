@@ -21,7 +21,7 @@ import {
   createTeamProjectProvisioning,
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
-} from "../api";
+} from "../core/api";
 import {
   configureDesktopServerOperatorRoute,
   isDesktopRuntime,
@@ -33,7 +33,7 @@ import {
   type ServerOperatorMode,
   type ServerOperatorProbe,
   type TeamConnectionMetadata,
-} from "../desktopRuntime";
+} from "../core/desktopRuntime";
 import {
   modelChange,
   modelOptions,
@@ -42,7 +42,7 @@ import {
   readinessFor,
   reasoningOptions,
   runtimeOptions,
-} from "../providers";
+} from "./providers";
 import {
   buildTeamProvisioningRequest,
   formatCommandArgv,
@@ -50,8 +50,8 @@ import {
   projectProvisioningHash,
   projectProvisioningRequestId,
   routeProvedBy,
-} from "../projectSetup";
-import { OperatorActionPanel } from "../views/OperatorActionPanel";
+} from "./projectSetup";
+import { OperatorActionPanel } from "./OperatorActionPanel";
 import type {
   AgentExecutionProfile,
   ProjectProvisioningCreateRequest,
@@ -59,7 +59,7 @@ import type {
   ProviderReadiness,
   SetupAgentProfile,
   SetupAgents,
-} from "../types";
+} from "../core/types";
 
 interface Props {
   intentChooser: ReactNode;

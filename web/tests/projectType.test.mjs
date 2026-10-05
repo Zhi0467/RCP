@@ -40,7 +40,7 @@ import {
   orderedTypes,
   primaryField,
   typeLabel,
-} from "../src/researchType.ts";
+} from "../src/graph/researchType.ts";
 
 const WEB = fileURLToPath(new URL("..", import.meta.url));
 const SOURCE = join(WEB, "src");

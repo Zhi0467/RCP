@@ -1,4 +1,4 @@
-import type { Repository } from "../types";
+import type { Repository } from "./types";
 
 export interface RepositoryFileTarget {
   path: string;

@@ -14,8 +14,8 @@ import {
   providerOptions,
   reasoningOptions,
   runtimeOptions,
-} from "../providers";
-import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "../types";
+} from "../projects/providers";
+import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "./types";
 
 interface Props {
   project: ProjectSnapshot;

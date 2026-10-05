@@ -18,7 +18,7 @@ const {
   makeRelationModalBackgroundInert,
   relationOverlayHost,
   trapRelationModalTab,
-} = await server.ssrLoadModule("/src/components/RelationMap.tsx");
+} = await server.ssrLoadModule("/src/graph/RelationMap.tsx");
 
 after(() => server.close());
 

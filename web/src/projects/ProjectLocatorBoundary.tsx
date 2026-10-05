@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "../api";
+import { api } from "../core/api";
 
 /** A CLI locator is intent, never permission to register a project. */
 export function ProjectLocatorBoundary() {

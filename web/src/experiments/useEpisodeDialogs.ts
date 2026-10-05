@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { loadEpisodeMessages, loadEpisodes } from "../api";
+import { loadEpisodeMessages, loadEpisodes } from "../core/api";
 import { isLiveEpisode, mergeEpisode } from "./campaigns";
-import type { Episode, EpisodeMessage } from "../types";
+import type { Episode, EpisodeMessage } from "../core/types";
 
 export const LIVE_EPISODE_POLL_INTERVAL_MS = 1_500;
 

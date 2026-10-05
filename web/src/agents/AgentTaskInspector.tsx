@@ -16,7 +16,7 @@ import {
   taskKindLabel,
   taskStatusLabel,
 } from "./agentTasks";
-import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../types";
+import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../core/types";
 
 interface Props {
   tasks: AgentTask[];

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { PHONE_MAX_WIDTH_PX } from "../src/hooks/useNarrowViewport.ts";
+import { PHONE_MAX_WIDTH_PX } from "../src/ui/useNarrowViewport.ts";
 
 const TABLET_MAX_WIDTH_PX = 920;
 // Content-driven thresholds: the component each belongs to needs that width.

@@ -1,6 +1,6 @@
 import { Check, ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { Repository } from "../types";
+import type { Repository } from "../core/types";
 
 interface Props {
   repositories: Repository[];

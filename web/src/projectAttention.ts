@@ -1,8 +1,13 @@
-import type { BrowserTransitionProjection } from "./hooks/projectSession";
-import { applyHumanDraft, type HumanDraft } from "./humanDraft";
-import type { TransitionPreviewRouting } from "./projectTransition";
-import { isBlocker, isChooser } from "./researchType";
-import type { GraphAttentionProjection, GraphNode, GraphState, ProjectSnapshot } from "./types";
+import type { BrowserTransitionProjection } from "./graph/projectSession";
+import { applyHumanDraft, type HumanDraft } from "./graph/humanDraft";
+import type { TransitionPreviewRouting } from "./graph/projectTransition";
+import { isBlocker, isChooser } from "./graph/researchType";
+import type {
+  GraphAttentionProjection,
+  GraphNode,
+  GraphState,
+  ProjectSnapshot,
+} from "./core/types";
 
 export function humanAttentionBlockers(
   blockerIds: readonly string[],

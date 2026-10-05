@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { addProjectMachine } from "../api";
-import { errorMessage } from "../errors";
-import { machineHostLabel, machinesToAdd, projectMachineAlias } from "../spaceMachines";
-import type { ProjectSnapshot, SpaceMachine } from "../types";
-import { NewMachineForm } from "../components/MachineCard";
-import { AddMachineTile, MachineTile } from "../components/MachineTile";
+import { addProjectMachine } from "../core/api";
+import { errorMessage } from "../core/errors";
+import { machineHostLabel, machinesToAdd, projectMachineAlias } from "./spaceMachines";
+import type { ProjectSnapshot, SpaceMachine } from "../core/types";
+import { NewMachineForm } from "./MachineCard";
+import { AddMachineTile, MachineTile } from "./MachineTile";
 
 /** Appends a space machine to this project's manifest, picking a card or creating one. */
 export function AddProjectMachine({

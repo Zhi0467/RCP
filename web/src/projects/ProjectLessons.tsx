@@ -7,8 +7,8 @@ import {
   LESSON_TEXT_MAX_CHARS,
   lessonTextIsValid,
   loadLessons,
-} from "../consolidation";
-import type { Lesson } from "../types";
+} from "./consolidation";
+import type { Lesson } from "../core/types";
 
 // The card shows this many lessons until the member asks for the rest.
 const COLLAPSED_LESSONS = 5;

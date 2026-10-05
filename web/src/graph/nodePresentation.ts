@@ -5,7 +5,7 @@ import {
   isChooser,
   primaryField,
 } from "./researchType.ts";
-import type { GraphNode } from "../types";
+import type { GraphNode } from "../core/types";
 
 /** Reader-facing field labels; the research layer owns the table. */
 export const humanFieldLabels: Record<string, string> = FIELD_LABELS;

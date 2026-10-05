@@ -1,4 +1,4 @@
-import type { MachinePowerStatus } from "../types";
+import type { MachinePowerStatus } from "../core/types";
 
 export function showMachinePowerCard(
   spaceKind: "personal" | "team" | undefined,

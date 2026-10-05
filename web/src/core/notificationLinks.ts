@@ -6,8 +6,8 @@ import {
   AUTO_RESEARCH_ROUTE_PREFIX,
   experimentBoardHref,
   experimentBoardRouteToken,
-} from "../experimentBoard";
-import type { Episode, ExperimentLoopIndexEntry } from "../types";
+} from "../experiments/experimentBoard";
+import type { Episode, ExperimentLoopIndexEntry } from "./types";
 
 export type NotificationItemKind =
   "proposal" | "decision" | "blocker" | "episode" | "artifact" | "node" | "paper" | "consolidation";

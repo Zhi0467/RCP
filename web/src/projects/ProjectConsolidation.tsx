@@ -12,8 +12,8 @@ import {
   DEFAULT_CONSOLIDATION_TIME,
   disableConsolidation,
   enableConsolidation,
-} from "../consolidation";
-import type { ConsolidationNight, ConsolidationSchedule } from "../types";
+} from "./consolidation";
+import type { ConsolidationNight, ConsolidationSchedule } from "../core/types";
 
 interface Props {
   apiBase: string;

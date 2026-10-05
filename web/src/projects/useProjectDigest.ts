@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { loadProjectDigest, markDigestCaughtUp } from "../api";
-import { errorMessage } from "../errors";
-import { catchUpProjectDigest, createDigestRequestFence } from "../projectDigest";
-import type { ProjectDigest } from "../types";
+import { loadProjectDigest, markDigestCaughtUp } from "../core/api";
+import { errorMessage } from "../core/errors";
+import { catchUpProjectDigest, createDigestRequestFence } from "./projectDigest";
+import type { ProjectDigest } from "../core/types";
 
 /**
  * The open project's "Since you last looked" digest. Reads again when

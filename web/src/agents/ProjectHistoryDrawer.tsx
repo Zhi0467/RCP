@@ -1,8 +1,8 @@
 import { Clock3, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
 import { taskKindLabel, taskStatusLabel } from "./agentTasks";
-import type { AgentTask, RevisionSummary } from "../types";
-import { EpisodeReportLink } from "../components/EpisodeReportLink";
+import type { AgentTask, RevisionSummary } from "../core/types";
+import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
 
 interface Props {
   projectId: string;

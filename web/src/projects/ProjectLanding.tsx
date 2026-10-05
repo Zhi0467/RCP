@@ -1,7 +1,7 @@
-import { useMachinePower } from "../hooks/useMachinePower";
-import { machinePowerWarnings } from "../machinePower";
-import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
-import { loadProviderLogins } from "../api";
+import { useMachinePower } from "./useMachinePower";
+import { machinePowerWarnings } from "./machinePower";
+import { ProviderLoginNotice } from "./ProviderLoginNotice";
+import { loadProviderLogins } from "../core/api";
 import {
   Check,
   Copy,
@@ -15,15 +15,15 @@ import {
   WifiOff,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { SpaceRuns } from "../components/SpaceRuns";
-import type { AppearancePickerProps, TextScaleControl } from "../components/AppearancePicker";
-import type { ArchiveEpisodeAction } from "../components/EpisodeRunControls";
-import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
-import { ProjectDock } from "../components/ProjectDock";
-import { TeamSpaceGroups } from "../components/TeamSpaceGroups";
-import { isDesktopRuntime } from "../desktopRuntime";
-import type { ProjectTab } from "../projectTabs";
-import type { ResolvedTheme } from "../theme";
+import { SpaceRuns } from "../experiments/SpaceRuns";
+import type { AppearancePickerProps, TextScaleControl } from "../ui/AppearancePicker";
+import type { ArchiveEpisodeAction } from "../experiments/EpisodeRunControls";
+import { LandingIdentityMenu } from "./LandingIdentityMenu";
+import { ProjectDock } from "./ProjectDock";
+import { TeamSpaceGroups } from "./TeamSpaceGroups";
+import { isDesktopRuntime } from "../core/desktopRuntime";
+import type { ProjectTab } from "./projectTabs";
+import type { ResolvedTheme } from "../ui/theme";
 import type {
   MachinePowerStatus,
   ProviderLoginState,
@@ -32,8 +32,8 @@ import type {
   ProjectCreationControl,
   ProjectInvitation,
   SpaceRunIndexEntry,
-} from "../types";
-import { projectCreationPrimaryLabel } from "../projectSetup";
+} from "../core/types";
+import { projectCreationPrimaryLabel } from "./projectSetup";
 
 interface Props extends AppearancePickerProps {
   palette: ResolvedTheme;

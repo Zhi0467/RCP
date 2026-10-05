@@ -3,7 +3,7 @@ import { after, test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
 
-import { loadServerStatus } from "../src/api.ts";
+import { loadServerStatus } from "../src/core/api.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -13,7 +13,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { formatServerBytes, formatServerProjectCounts, formatServerTimestamp, shortCommit } =
-  await server.ssrLoadModule("/src/components/ServerSettings.tsx");
+  await server.ssrLoadModule("/src/projects/ServerSettings.tsx");
 
 after(() => server.close());
 

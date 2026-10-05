@@ -1,6 +1,6 @@
 import { Users } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { IdentityResponse, ProjectMember, SpaceUserSummary } from "../types";
+import type { IdentityResponse, ProjectMember, SpaceUserSummary } from "../core/types";
 
 interface Props {
   projectId: string;

@@ -22,7 +22,7 @@ const {
   consolidationNightSlots,
   lessonTextIsValid,
   openConsolidationItems,
-} = await server.ssrLoadModule("/src/consolidation.ts");
+} = await server.ssrLoadModule("/src/projects/consolidation.ts");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const now = Date.parse("2026-10-03T12:00:00Z");

@@ -1,5 +1,5 @@
-import { graphSessionKey, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import { graphSessionKey, MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import {
   humanDraftChangeCount,
   normalizeHumanDraft,
@@ -25,7 +25,7 @@ import {
   type PaperSnapshot,
   type ProjectSnapshot,
   type TransitionTriggerManifest,
-} from "../types";
+} from "../core/types";
 
 export type BrowserTransitionProjection = ProjectTransitionProjection<
   GraphState,

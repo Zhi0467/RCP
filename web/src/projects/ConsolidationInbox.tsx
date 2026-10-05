@@ -1,7 +1,7 @@
 import { TriangleAlert, ArrowRight, Bookmark, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
-import { consolidationAttentionCount } from "../consolidation";
-import type { ConsolidationInboxItem, ConsolidationSchedule } from "../types";
+import { consolidationAttentionCount } from "./consolidation";
+import type { ConsolidationInboxItem, ConsolidationSchedule } from "../core/types";
 
 interface Props {
   items: ConsolidationInboxItem[];

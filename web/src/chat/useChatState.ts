@@ -1,7 +1,7 @@
-import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, loadChatReads, markChatRead } from "../api";
+import { api, ApiError, loadChatReads, markChatRead } from "../core/api";
 import {
   loadChatSummaryPage,
   loadChatTranscript,
@@ -27,7 +27,7 @@ import type {
   ChatTranscript,
   ExperimentOperationalState,
   GraphNode,
-} from "../types";
+} from "../core/types";
 
 /** The run progress that stands in for a cross-graph chat's summary freshness. */
 export type ExperimentChatProgress = Pick<

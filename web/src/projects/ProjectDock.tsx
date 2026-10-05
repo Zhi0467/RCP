@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import type { ProjectTab } from "../projectTabs";
+import type { ProjectTab } from "./projectTabs";
 
 interface Props {
   tabs: ProjectTab[];

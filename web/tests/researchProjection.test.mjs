@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildResearchPaths } from "../src/researchProjection.ts";
+import { buildResearchPaths } from "../src/graph/researchProjection.ts";
 
 const node = (id, type) => ({ id, type, title: id, standing: "asserted", source_refs: [] });
 

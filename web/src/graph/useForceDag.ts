@@ -9,7 +9,7 @@ import {
   type SimulationNodeDatum,
 } from "d3-force";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Edge, GraphNode } from "../types";
+import type { Edge, GraphNode } from "../core/types";
 import {
   RESEARCH_STAGE_BY_NODE_TYPE,
   buildSemanticLaneLayout,

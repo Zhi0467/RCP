@@ -20,7 +20,7 @@ import {
   TEAM_SHELL_PROTOCOL_HEADER,
   TEAM_SHELL_PROTOCOL_VERSION,
   uploadChatAttachment,
-} from "../src/api.ts";
+} from "../src/core/api.ts";
 
 const teamShellProtocolOne = JSON.parse(
   readFileSync(
@@ -611,7 +611,7 @@ test("steering never retries after identity refusal or a disconnected response",
 });
 
 test("watcher cancellation preserves the response and encodes identifiers", async () => {
-  const { cancelWatcher } = await import("../src/api.ts");
+  const { cancelWatcher } = await import("../src/core/api.ts");
   const originalFetch = globalThis.fetch;
   const requests = [];
   const response = { watcher_id: "watcher/1", status: "active", cancel_requested_by: "human-1" };
@@ -683,7 +683,7 @@ test("browser clients encode owners and send strict preference and install bodie
     loadMachineBrowser,
     installMachineBrowser,
     startEpisode,
-  } = await import("../src/api.ts");
+  } = await import("../src/core/api.ts");
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (path, init) => {

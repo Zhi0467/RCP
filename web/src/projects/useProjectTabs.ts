@@ -1,21 +1,26 @@
-import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, loadExperimentEpisodes, loadProjectExperimentEpisodes, loadSpaceRuns } from "../api";
-import { experimentBoardHref } from "../experimentBoard";
+import {
+  api,
+  loadExperimentEpisodes,
+  loadProjectExperimentEpisodes,
+  loadSpaceRuns,
+} from "../core/api";
+import { experimentBoardHref } from "../experiments/experimentBoard";
 import {
   adjacentProjectTabId,
   closeProjectTab,
   openProjectTab,
   type ProjectTab,
-} from "../projectTabs";
+} from "./projectTabs";
 import type {
   Episode,
   ExperimentLoopIndexEntry,
   ProjectCard,
   ProjectSnapshot,
   SpaceRunIndexEntry,
-} from "../types";
+} from "../core/types";
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 export const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;

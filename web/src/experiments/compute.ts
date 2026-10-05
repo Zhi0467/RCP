@@ -4,7 +4,7 @@ import type {
   ComputeConnection,
   ComputeConnectionProbe,
   ComputeBackendProbe,
-} from "../types";
+} from "../core/types";
 
 export function reconcileActiveComputeIds(
   ids: readonly string[],

@@ -14,7 +14,7 @@ test("Runs warns once per checked route that cannot run jobs, only for offered r
   });
   try {
     const { ComputeRouteNotice } = await server.ssrLoadModule(
-      "/src/components/ComputeRouteNotice.tsx",
+      "/src/experiments/ComputeRouteNotice.tsx",
     );
     const probe = (ready) => ({ ready, diagnostic: "diagnostic", required_action: "fix-it" });
     const machine = (alias, jobManager, probes) => ({

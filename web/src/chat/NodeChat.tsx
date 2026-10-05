@@ -1,6 +1,6 @@
-import { MAIN_GRAPH } from "../graphTarget";
+import { MAIN_GRAPH } from "../core/graphTarget";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
-import { ReferenceChip } from "../components/ReferenceChip";
+import { ReferenceChip } from "../core/ReferenceChip";
 import {
   MAX_CHAT_ATTACHMENTS,
   extractReferences,
@@ -13,12 +13,12 @@ import {
   unlabeledArtifactIds,
   sourceReference,
   type DraftReference,
-} from "../projectReferences";
+} from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
 import { questionIsOpen, questionTranscript } from "./questions";
-import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
-import { ExternalJobRow } from "../components/ExternalJobRow";
+import { useHiddenWatchers } from "../experiments/useHiddenWatchers";
+import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
   TriangleAlert,
   ChevronUp,
@@ -62,7 +62,7 @@ import {
   steerChatTurn,
   transcribeAudio,
   uploadChatAttachment,
-} from "../api";
+} from "../core/api";
 import {
   artifactUrl,
   chatTasksMissingFromHistory,
@@ -75,7 +75,7 @@ import {
   resumablePausedChatTask,
   taskKindLabel,
   versionedArtifactContentUrl,
-} from "../agentTasks";
+} from "../agents/agentTasks";
 import {
   chatDraftStorageKey,
   chatModeStorageKey,
@@ -89,8 +89,8 @@ import {
 import {
   openArtifact as openArtifactPanel,
   openRepositoryFile as openRepositoryFilePanel,
-} from "../artifactViewer";
-import { MarkdownAnswer } from "../chatMarkdown";
+} from "../artifacts/artifactViewer";
+import { MarkdownAnswer } from "../core/chatMarkdown";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
@@ -113,22 +113,22 @@ import {
   computeProbePresentation,
   latestPersistedComputeIds,
   reconcileActiveComputeIds,
-} from "../compute";
+} from "../experiments/compute";
 import {
   chooseRecordingFormat,
   liveDictationSpan,
   serviceConnectionFailure,
   type DictationSpan,
-} from "../dictation";
-import { errorMessage } from "../errors";
-import type { GlossaryIndex } from "../glossary";
-import { claimMicrophone, type MicrophoneClaim } from "../microphone";
+} from "../voice/dictation";
+import { errorMessage } from "../core/errors";
+import type { GlossaryIndex } from "../graph/glossary";
+import { claimMicrophone, type MicrophoneClaim } from "../voice/microphone";
 import {
   graphConditionLabel,
   isExternalWatcherRecord,
   visibleChatWatchers,
   watcherLastObservedAt,
-} from "../runProjection";
+} from "../experiments/runProjection";
 import {
   downloadDesktopArtifact,
   type DictationResultEvent,
@@ -138,8 +138,8 @@ import {
   openDesktopArtifactPdf,
   startDesktopDictation,
   stopDesktopDictation,
-} from "../desktopRuntime";
-import { resolveRepositoryFileHref, turnArtifactName } from "../repositoryFileLinks";
+} from "../core/desktopRuntime";
+import { resolveRepositoryFileHref, turnArtifactName } from "../core/repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
   AgentTask,
@@ -155,15 +155,15 @@ import type {
   StartAgentTask,
   WatcherRecord,
   WorktreeIntegrationOption,
-} from "../types";
+} from "../core/types";
 import {
   CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
-} from "../uiConstants";
-import { profileRunConfig } from "../components/AgentConfigControls";
-import { SkillPicker, useSkillPicker } from "../components/SkillPicker";
+} from "../core/uiConstants";
+import { profileRunConfig } from "../core/AgentConfigControls";
+import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
-import { BrowserTurnNotice, ChatBrowserControl } from "../components/BrowserControls";
+import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {

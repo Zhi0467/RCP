@@ -1,6 +1,6 @@
-import { graphSessionKey, MAIN_GRAPH } from "../graphTarget";
+import { graphSessionKey, MAIN_GRAPH } from "../core/graphTarget";
 import { isChooser } from "./researchType";
-import type { GraphTargetRef } from "../types";
+import type { GraphTargetRef } from "../core/types";
 import {
   proposalSemantics,
   type ExperimentProxy,
@@ -10,7 +10,7 @@ import {
   type Standing,
   type NewEdge,
   type NewNode,
-} from "../types";
+} from "../core/types";
 
 export type DraftNodeValue =
   | string

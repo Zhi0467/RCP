@@ -1,11 +1,16 @@
-import { ComputeRouteNotice } from "../components/ComputeRouteNotice";
-import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
+import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
+import { ProviderLoginNotice } from "../projects/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "./branchGraph";
-import { graphSessionKey } from "../graphTarget";
+import { graphSessionKey } from "../core/graphTarget";
 import { ChangedFields, ChangeHistory } from "./BranchChangeDetail";
-import { EpisodeMergePanel } from "../components/EpisodeMergePanel";
+import { EpisodeMergePanel } from "../experiments/EpisodeMergePanel";
 import { type BranchDiffWord, branchDiffWord, mergeDiffMarks } from "./mergePanel";
-import type { GraphBranchChanges, GraphTargetRef, MergeDiffPath, MergeEpisodeBody } from "../types";
+import type {
+  GraphBranchChanges,
+  GraphTargetRef,
+  MergeDiffPath,
+  MergeEpisodeBody,
+} from "../core/types";
 
 const BRANCH_DIFF_WORDS: Record<BranchDiffWord, string> = {
   created: "Added",
@@ -84,26 +89,26 @@ import {
   type DagPosition,
 } from "./useForceDag";
 import { buildResearchPaths } from "./researchProjection";
-import { buildExperimentRun, type ExperimentRun } from "../runProjection";
+import { buildExperimentRun, type ExperimentRun } from "../experiments/runProjection";
 import {
   ExperimentRunDetail,
   experimentHealthLabel,
   experimentHealthTone,
-} from "../components/ExperimentRunDetail";
+} from "../experiments/ExperimentRunDetail";
 import { GraphEditingControls, type GraphEditingProps } from "./GraphEditingControls";
-import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../components/CampaignRuns";
+import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../experiments/CampaignRuns";
 import {
   EpisodeArchiveButton,
   EpisodeAuthor,
   type ArchiveEpisodeAction,
-} from "../components/EpisodeRunControls";
-import { runsEpisodeCards } from "../campaigns";
+} from "../experiments/EpisodeRunControls";
+import { runsEpisodeCards } from "../experiments/campaigns";
 import {
   graphTargetsEqual,
   mainExperimentRouteMatchesControl,
   projectExperimentExecution,
   type ExperimentRouteIdentity,
-} from "../experimentBoard";
+} from "../experiments/experimentBoard";
 import type {
   ProviderLoginState,
   Machine,
@@ -118,10 +123,10 @@ import type {
   Proposal,
   TrustView,
   WatcherRecord,
-} from "../types";
+} from "../core/types";
 import { nodeTypeLabel } from "./nodePresentation";
 import { RESEARCH, TYPE_LENS, isControlNode, isQuestion } from "./researchType";
-import { useNarrowViewport } from "../hooks/useNarrowViewport";
+import { useNarrowViewport } from "../ui/useNarrowViewport";
 
 export function focusRunDetail(detail: Pick<HTMLDivElement, "focus" | "scrollIntoView">): void {
   detail.focus({ preventScroll: true });

@@ -1,4 +1,4 @@
-import type { ProjectCard } from "../types";
+import type { ProjectCard } from "../core/types";
 import {
   NEVER_CONFIRM,
   type WebMcpToolDefinition,

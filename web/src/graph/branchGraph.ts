@@ -1,4 +1,4 @@
-import type { GraphBranchChanges, GraphState } from "../types";
+import type { GraphBranchChanges, GraphState } from "../core/types";
 
 /** A display lens only: callers retain the complete live graph for edits and pickers. */
 export function branchGraphProjection(

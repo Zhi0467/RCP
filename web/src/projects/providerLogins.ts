@@ -3,7 +3,7 @@ import type {
   ProviderLoginAccount,
   ProviderSignInStatus,
   ProviderResumeSummary,
-} from "../types";
+} from "../core/types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

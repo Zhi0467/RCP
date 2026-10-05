@@ -1,4 +1,4 @@
-import type { AppView, Episode, ExperimentLoopIndexEntry, GraphTargetRef } from "../types";
+import type { AppView, Episode, ExperimentLoopIndexEntry, GraphTargetRef } from "./types";
 
 export const MAIN_GRAPH: GraphTargetRef = { kind: "main" };
 

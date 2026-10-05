@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
-import { answerQuestion, dismissQuestion } from "../api";
+import { answerQuestion, dismissQuestion } from "../core/api";
 import { canSubmitQuestion, questionIsOpen, toggleQuestionChoice } from "./questions";
-import type { AgentQuestion } from "../types";
+import type { AgentQuestion } from "../core/types";
 
 export function QuestionCard({
   question,

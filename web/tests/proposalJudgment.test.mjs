@@ -11,9 +11,11 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
-const { decodeProposal, proposalSemantics } = await server.ssrLoadModule("/src/types.ts");
-const { emptyHumanDraft, stageProposalDecision } = await server.ssrLoadModule("/src/humanDraft.ts");
+const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
+const { decodeProposal, proposalSemantics } = await server.ssrLoadModule("/src/core/types.ts");
+const { emptyHumanDraft, stageProposalDecision } = await server.ssrLoadModule(
+  "/src/graph/humanDraft.ts",
+);
 
 after(() => server.close());
 

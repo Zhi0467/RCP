@@ -8,7 +8,7 @@ import {
   PROJECT_TOOLS,
   type WebMcpJsonSchema,
   type WebMcpToolDefinition,
-} from "../webmcp";
+} from "../webmcp/index";
 import { VOICE_TERMINAL_TOOLS } from "./voiceTerminal";
 
 export type CatalogTool = {

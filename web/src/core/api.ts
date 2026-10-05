@@ -55,7 +55,7 @@ import type {
   TeamSession,
   VoiceSessionResponse,
   VoiceSettings,
-} from "../types";
+} from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;

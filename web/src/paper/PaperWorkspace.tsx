@@ -1,6 +1,6 @@
-import { CopyReferenceButton } from "../components/CopyReferenceButton";
-import { MAIN_GRAPH } from "../graphTarget";
-import type { GraphTargetRef } from "../types";
+import { CopyReferenceButton } from "../core/CopyReferenceButton";
+import { MAIN_GRAPH } from "../core/graphTarget";
+import type { GraphTargetRef } from "../core/types";
 import {
   TriangleAlert,
   Check,
@@ -13,12 +13,12 @@ import {
   WifiOff,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agentTasks";
-import { api } from "../api";
-import { MarkdownAnswer } from "../chatMarkdown";
-import { profileRunConfig } from "../components/AgentConfigControls";
-import { SkillPicker, useSkillPicker } from "../components/SkillPicker";
-import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../skillPicker";
+import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agents/agentTasks";
+import { api } from "../core/api";
+import { MarkdownAnswer } from "../core/chatMarkdown";
+import { profileRunConfig } from "../core/AgentConfigControls";
+import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -26,7 +26,7 @@ import type {
   ProjectSnapshot,
   StartAgentTask,
   WritingSession,
-} from "../types";
+} from "../core/types";
 
 interface Props {
   graphTarget?: GraphTargetRef;

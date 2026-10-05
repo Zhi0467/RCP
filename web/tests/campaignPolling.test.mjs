@@ -17,7 +17,7 @@ const {
   mergeExactEpisode,
   restoreEpisodeState,
   trackEpisodeRequest,
-} = await server.ssrLoadModule("/src/hooks/useEpisodeDialogs.ts");
+} = await server.ssrLoadModule("/src/experiments/useEpisodeDialogs.ts");
 
 after(() => server.close());
 

@@ -1,10 +1,10 @@
-import { BrowserToggle } from "../components/BrowserControls";
+import { BrowserToggle } from "../core/BrowserControls";
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
-import { fetchEpisodeTimeline, loadEpisodes } from "../api";
+import { fetchEpisodeTimeline, loadEpisodes } from "../core/api";
 import { useRunArtifacts } from "./useRunArtifacts";
 import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
@@ -19,13 +19,13 @@ import {
   isExternalWatcherRecord,
   watcherLastObservedAt,
 } from "./runProjection";
-import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
+import { currentExperimentGuidance, experimentGuidanceDetail } from "../core/experimentGuidance";
 import type {
   EpisodeTask,
   EpisodeTimelineResponse,
   ExperimentLoopHealth,
   WatcherRecord,
-} from "../types";
+} from "../core/types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {

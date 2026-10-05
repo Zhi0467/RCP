@@ -11,8 +11,8 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { relatedNodeWindowAction } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
-const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
+const { relatedNodeWindowAction } = await server.ssrLoadModule("/src/graph/useGraphSelection.ts");
+const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
 
 after(() => server.close());
 

@@ -11,8 +11,8 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { DraggableWindow } = await server.ssrLoadModule("/src/components/DraggableWindow.tsx");
-const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
+const { DraggableWindow } = await server.ssrLoadModule("/src/ui/DraggableWindow.tsx");
+const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
 
 after(() => server.close());
 

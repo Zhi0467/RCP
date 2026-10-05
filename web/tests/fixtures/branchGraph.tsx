@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { DagView } from "../../src/views/GraphViews";
-import { DetailDrawer } from "../../src/components/DetailDrawer";
-import { NodeChat } from "../../src/components/NodeChat";
-import { api } from "../../src/api";
-import { graphTargetUrl } from "../../src/graphTarget";
+import { DagView } from "../../src/graph/GraphViews";
+import { DetailDrawer } from "../../src/graph/DetailDrawer";
+import { NodeChat } from "../../src/chat/NodeChat";
+import { api } from "../../src/core/api";
+import { graphTargetUrl } from "../../src/core/graphTarget";
 import {
   applyHumanDraft,
   emptyHumanDraft,
@@ -14,15 +14,15 @@ import {
   stageEdgeRemoval,
   unstageEdgeRemoval,
   toHumanSyncRequest,
-} from "../../src/humanDraft";
-import { buildGlossaryIndex } from "../../src/glossary";
+} from "../../src/graph/humanDraft";
+import { buildGlossaryIndex } from "../../src/graph/glossary";
 import type {
   AgentTask,
   GraphBranchChanges,
   GraphNode,
   GraphState,
   ProjectSnapshot,
-} from "../../src/types";
+} from "../../src/core/types";
 import "../../src/styles.css";
 
 const target = { kind: "branch", branch_id: "episode-branch" } as const;

@@ -1,12 +1,12 @@
-import type { BrowserTransitionProjection } from "./hooks/projectSession";
-import { toHumanSyncRequest, type HumanDraft, type HumanSyncRequest } from "./humanDraft";
+import type { BrowserTransitionProjection } from "./graph/projectSession";
+import { toHumanSyncRequest, type HumanDraft, type HumanSyncRequest } from "./graph/humanDraft";
 import {
   transitionHeadsEqual,
   transitionPreviewRouting,
   type StagedTransitionEdit,
   type TransitionPreviewRouting,
-} from "./projectTransition";
-import { isControlNode } from "./researchType";
+} from "./graph/projectTransition";
+import { isControlNode } from "./graph/researchType";
 import type {
   ExperimentControlState,
   GraphAttentionProjection,
@@ -17,7 +17,7 @@ import type {
   ProjectTransitionResponse,
   TransitionPreviewResponse,
   TransitionTriggerManifest,
-} from "./types";
+} from "./core/types";
 
 export function experimentStartNeedsSync(projection: BrowserTransitionProjection | null): boolean {
   return projection?.base_head != null;

@@ -1,5 +1,5 @@
 import { isOutcome } from "./researchType.ts";
-import type { BeliefTransition, Edge, GraphNode, ValidationMessage } from "../types";
+import type { BeliefTransition, Edge, GraphNode, ValidationMessage } from "../core/types";
 
 export function nodeBeliefTransitions(
   nodeId: string,

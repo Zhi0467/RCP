@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { api } from "../api";
-import type { RunArtifactEntry } from "../types";
+import { api } from "../core/api";
+import type { RunArtifactEntry } from "../core/types";
 
 export type ArtifactViewerTarget =
   | { kind: "artifact"; projectId: string; artifactId: string }

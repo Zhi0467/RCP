@@ -1,5 +1,5 @@
-import { isControlNode } from "../researchType";
-import type { AgentTask, Episode, GraphNode, ProjectSnapshot, WatcherRecord } from "../types";
+import { isControlNode } from "../graph/researchType";
+import type { AgentTask, Episode, GraphNode, ProjectSnapshot, WatcherRecord } from "../core/types";
 import {
   ALWAYS_CONFIRM,
   NEVER_CONFIRM,

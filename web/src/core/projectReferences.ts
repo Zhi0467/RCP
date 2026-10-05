@@ -1,10 +1,10 @@
-import { buildNotificationLink, parseNotificationLink } from "../notificationLinks";
+import { buildNotificationLink, parseNotificationLink } from "./notificationLinks";
 import type {
   GraphTargetRef,
   ProjectArtifact,
   ProjectReferenceSelector,
   ProjectReferenceSource,
-} from "../types";
+} from "./types";
 
 export const MAX_CHAT_ATTACHMENTS = 8;
 export interface DraftReference {

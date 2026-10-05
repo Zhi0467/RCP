@@ -1,4 +1,4 @@
-import type { Edge, GraphNode } from "../types";
+import type { Edge, GraphNode } from "../core/types";
 
 const researchTypes = new Set<GraphNode["type"]>([
   "research_question",

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { loadConsolidation } from "../consolidation";
-import type { ConsolidationView } from "../types";
+import { loadConsolidation } from "./consolidation";
+import type { ConsolidationView } from "../core/types";
 
 /** Reuses the project refresh and heartbeat that refresh the Inbox, without another clock. */
 export function useConsolidation(apiBase: string, freshness: string) {

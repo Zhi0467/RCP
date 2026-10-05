@@ -6,7 +6,7 @@ import type {
   ProjectTransferPrepareRequest,
   ServerStep,
   TargetProviderSetupProjection,
-} from "../types";
+} from "./types";
 
 export type {
   ProjectTransferBundle,
@@ -15,7 +15,7 @@ export type {
   ProjectTransferProviderIntent,
   ProjectTransferTargetProvisioningIntent,
   TargetProviderSetupProjection,
-} from "../types";
+} from "./types";
 
 export const BACKEND_IDENTITY_EVENT = "rcp:backend-identity";
 export const DESKTOP_FOLDER_ACCESS_ACK_KEY = "rcp:desktop-folder-access-acknowledgement";

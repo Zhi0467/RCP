@@ -1,13 +1,13 @@
 import { TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
-import { errorMessage } from "../errors";
-import { graphTargetUrl, MAIN_GRAPH } from "../graphTarget";
+import { api } from "../core/api";
+import { errorMessage } from "../core/errors";
+import { graphTargetUrl, MAIN_GRAPH } from "../core/graphTarget";
 import type {
   ConversationWorktreeState,
   GraphTargetRef,
   WorktreeIntegrationOption,
-} from "../types";
+} from "../core/types";
 import "../components/WorktreeControls.css";
 
 export function useConversationWorktree(

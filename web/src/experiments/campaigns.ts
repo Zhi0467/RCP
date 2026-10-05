@@ -7,7 +7,7 @@ import type {
   EpisodeRecommendationKind,
   EpisodeTaskControlKind,
   EpisodeTask,
-} from "../types";
+} from "../core/types";
 
 export type { EpisodeHealth, EpisodeRecommendationKind };
 

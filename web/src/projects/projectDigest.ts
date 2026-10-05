@@ -6,7 +6,7 @@ import type {
   ProjectDigest,
   ProjectDigestNeedsYou,
   ProjectDigestRan,
-} from "../types";
+} from "../core/types";
 
 export function projectDigestIsEmpty(digest: ProjectDigest | null): boolean {
   return (
