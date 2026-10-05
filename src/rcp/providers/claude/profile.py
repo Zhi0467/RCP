@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import uuid
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -42,6 +44,7 @@ from rcp.providers.claude.remote import (
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
 
@@ -50,7 +53,26 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
     requires_protocol_completion = True
 
     def __init__(self, profile: ProviderProfile, request: ProviderTurnRequest) -> None:
+        if request.hidden_read_scope is not None and request.legacy_command is None:
+            command = profile.command(
+                request.prompt,
+                binary=request.binary,
+                cwd=request.cwd,
+                model=request.model,
+                reasoning=request.reasoning,
+                session_id=request.session_id,
+                read_dirs=request.read_dirs,
+                write_dirs=request.write_dirs,
+                write_scope=request.write_scope,
+                capability=request.capability,
+                provider_version=request.provider_version,
+                browser_grant=request.browser_grant,
+                hidden_read_scope=request.hidden_read_scope,
+            )
+            request = replace(request, legacy_command=command)
         super().__init__(profile, request)
+        if request.hidden_read_scope is not None and request.hidden_read_scope.env_allow_list:
+            self.environment = {"CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(request.cwd)}
         self.command.extend(["--input-format", "stream-json", "--replay-user-messages"])
         # Claude has no native per-turn precondition. This token identifies only
         # this fresh process's initial input, never a resumable provider session.
@@ -416,6 +438,7 @@ class ClaudeProfile(ProviderProfile):
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
+        hidden_read_scope: HiddenReadScope | None = None,
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
@@ -456,10 +479,22 @@ class ClaudeProfile(ProviderProfile):
                     "--setting-sources",
                     "",
                     "--settings",
-                    json.dumps(_claude_write_settings(scope), separators=(",", ":")),
+                    json.dumps(
+                        _claude_write_settings(scope, hidden_read_scope, cwd), separators=(",", ":")
+                    ),
                 ]
             )
         else:
+            if hidden_read_scope is not None:
+                command.extend(
+                    [
+                        "--settings",
+                        json.dumps(
+                            _claude_hidden_read_settings(hidden_read_scope, cwd),
+                            separators=(",", ":"),
+                        ),
+                    ]
+                )
             command.extend(["--allowedTools", "WebSearch", "WebFetch"])
             if (
                 capability == "discuss"
@@ -544,7 +579,11 @@ class ClaudeProfile(ProviderProfile):
         )
 
 
-def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, object]:
+def _claude_write_settings(
+    scope: ProjectWriteScope | None = None,
+    hidden_read_scope: HiddenReadScope | None = None,
+    cwd: Path | None = None,
+) -> dict[str, object]:
     # Readiness validates these same settings with no project write authority.
     # Claude's OS sandbox stays off. Its Linux backend always unshares the
     # network namespace and remounts a minimal `/dev`, so a sandboxed Work turn
@@ -566,7 +605,7 @@ def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, 
     # every file-editing tool. A `Write(path)` rule is accepted and then ignored.
     allow_patterns = [f"Edit({_claude_absolute_pattern(path)})" for path in writable_roots]
     deny_patterns = [f"Edit({_claude_absolute_pattern(path)})" for path in protected_write_paths]
-    return {
+    settings = {
         "disableAllHooks": True,
         "permissions": {
             "defaultMode": "dontAsk",
@@ -578,6 +617,29 @@ def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, 
         "sandbox": {"enabled": False},
     }
 
+    if hidden_read_scope is not None:
+        hidden = _claude_hidden_read_settings(hidden_read_scope, cwd)
+        settings["env"] = hidden["env"]
+        settings["permissions"]["deny"].extend(hidden["permissions"]["deny"])
+    return settings
 
-def _claude_absolute_pattern(path: str) -> str:
-    return f"//{path.lstrip('/')}/**"
+
+def _shell_prefix(cwd: Path) -> str:
+    wrapper = cwd / "rcp-hidden-read.py"
+    return shlex.join(["python3", str(wrapper), "--policy", str(wrapper) + ".policy.json"])
+
+
+def _claude_hidden_read_settings(scope: HiddenReadScope, cwd: Path) -> dict[str, object]:
+    patterns = [
+        *(_claude_absolute_pattern(path) for path in scope.hidden_directories),
+        *(_claude_absolute_pattern(path, directory=False) for path in scope.hidden_files),
+        *(_claude_absolute_pattern(path, directory=False) for path in scope.hidden_globs),
+    ]
+    return {
+        "env": {"CLAUDE_CODE_SHELL_PREFIX": _shell_prefix(cwd)} if scope.env_allow_list else {},
+        "permissions": {"deny": [f"Read({pattern})" for pattern in patterns]},
+    }
+
+
+def _claude_absolute_pattern(path: str, *, directory: bool = True) -> str:
+    return f"//{path.lstrip('/')}" + ("/**" if directory else "")

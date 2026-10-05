@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import subprocess
 from dataclasses import replace
@@ -12,12 +14,12 @@ from rcp.providers.turn_fence import turn_fence
 OPENCODE = profile_for("opencode")
 
 
-def _scope() -> ProjectWriteScope:
+def _scope(capability="work_auto") -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id="project",
         execution_machine="local",
         execution_host="",
-        capability="work_auto",
+        capability=capability,
         stage_root="/home/rcp/data/stages/s",
         workspace_root="/home/rcp/data/stages/s/workspace",
         repositories=[],
@@ -206,3 +208,37 @@ def test_the_wrapper_reports_the_exit_and_refuses_a_git_work_tree(tmp_path: Path
     assert ran.returncode == 3
     assert ran.stdout.splitlines() == ["started", '{"type":"rcp.provider_exit","code":3}']
     assert refused.returncode == 64 and refused.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "capability", ["discuss", "work_auto", "orchestrate", "scratch_patch", "paper_readonly"]
+)
+def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability):
+    from rcp.core.models import HiddenReadScope, HiddenReadStatus
+
+    scope = HiddenReadScope(
+        execution_machine="local",
+        execution_host="",
+        os_account="tester",
+        hidden_directories=("/secrets",),
+        hidden_files=("/token",),
+        hidden_globs=("/backup-*",),
+        env_allow_list=("PATH",),
+        enforcement=HiddenReadStatus(
+            status="unhidden", reasons=("provider_native_tools_uncovered",)
+        ),
+    )
+    write_scope = _scope(capability) if capability in {"work_auto", "orchestrate"} else None
+    request = replace(_request(capability, scope=write_scope), hidden_read_scope=scope)
+    turn = OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(request)
+    _, permission = _launch(request)
+    assert turn.environment["SHELL"] == str(request.cwd / "rcp-hidden-read.py")
+    assert turn.environment["RCP_HIDDEN_READ_POLICY"] == turn.environment["SHELL"] + ".policy.json"
+    assert permission["read"] == {
+        "*": "allow",
+        "secrets/**": "deny",
+        "secrets": "deny",
+        "token": "deny",
+        "backup-*": "deny",
+    }
+    assert permission["grep"] == permission["glob"] == "allow"

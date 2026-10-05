@@ -5,7 +5,7 @@ import re
 import shlex
 import textwrap
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.continuation_prompt import (
@@ -18,6 +18,9 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
+
+if TYPE_CHECKING:
+    from rcp.core.models import HiddenReadScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
 from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
@@ -1636,3 +1639,10 @@ Current output instruction:
 
 {_patch_validator_rules(validator_command)}
 """
+
+
+def hidden_read_prompt(scope: HiddenReadScope) -> str:
+    """Describe the exact effective launch status, including uncovered surfaces."""
+    return "Selected-secret read policy: " + json.dumps(
+        scope.enforcement.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )

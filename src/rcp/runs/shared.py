@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -24,7 +25,7 @@ from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, Ru
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
-from rcp.core.models import GraphState, Patch
+from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
@@ -741,6 +742,60 @@ class _ProviderOutcome:
     remote_result_pending: bool = False
 
 
+async def _prepare_hidden_read_scope(
+    service: ProjectService,
+    request: RunRequest | CoachRequest,
+    *,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+    execution: AgentTaskExecution | None,
+    capability: AgentCapability,
+    data_dir: Path | None = None,
+    local_stage: Path | None = None,
+    execution_host: str = "",
+) -> HiddenReadScope:
+    """Resolve and stage the launch policy before its browser is acquired."""
+    from rcp.agents.provider_environment import (
+        ProviderProcessEnvironment,
+        prepare_hidden_read_launch,
+    )
+
+    execution_machine = request.run_on or execution_host or "unresolved"
+    try:
+        if execution is not None and execution.git_access is not None:
+            await execution.git_access.prepare(ProviderProcessEnvironment())
+        machine = service.manifest.machine_map[request.run_on]
+        execution_host = machine.host
+        card = execution.store.space_machine_for(machine.host) if execution is not None else None
+        project_id = (
+            service.history.project_id
+            or "manifest-" + hashlib.sha256(str(service.manifest.path).encode("utf-8")).hexdigest()
+        )
+        return await asyncio.to_thread(
+            prepare_hidden_read_launch,
+            manifest=service.manifest,
+            execution_machine=request.run_on,
+            provider=request.provider,
+            capability=capability,
+            stage_root=str(
+                remote_stage.root if remote_stage is not None else local_stage or workspace
+            ),
+            workspace_root=str(workspace),
+            app_data_dir=data_dir
+            or (execution.store.path.parent if execution is not None else None),
+            remote_stage=remote_stage,
+            repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+            machine_hidden_folders=list(card.hidden_folders) if card is not None else [],
+            git_access=execution.git_access if execution is not None else None,
+            browser_enabled=bool(getattr(request, "browser_requested", False)),
+        )
+    except Exception:
+        from rcp.agents.provider_environment import unhidden_read_scope
+
+        logging.getLogger(__name__).exception("Hidden-read preparation failed; running unhidden")
+        return unhidden_read_scope(execution_machine=execution_machine, host=execution_host)
+
+
 async def _stream_agent_events(
     launcher: AgentLauncher,
     request: RunRequest,
@@ -761,6 +816,9 @@ async def _stream_agent_events(
     required_session_id: str | None = None,
     supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
+    hidden_read_scope: HiddenReadScope | None = None,
+    service: ProjectService | None = None,
+    data_dir: Path | None = None,
 ) -> AsyncIterator[str]:
     """Run one provider pass, recording its outcome and forwarding wire events.
 
@@ -779,6 +837,23 @@ async def _stream_agent_events(
                 write_scope,
                 operation_id=execution.operation_id,
             )
+    if hidden_read_scope is None and service is not None:
+        hidden_read_scope = await _prepare_hidden_read_scope(
+            service,
+            request,
+            workspace=workspace,
+            remote_stage=remote_stage,
+            execution=execution,
+            capability=capability,
+            data_dir=data_dir,
+            execution_host=execution_host,
+        )
+    if hidden_read_scope is None:
+        from rcp.agents.provider_environment import unhidden_read_scope
+
+        hidden_read_scope = unhidden_read_scope(
+            execution_machine=request.run_on or execution_host or "local", host=execution_host
+        )
     remote_pid_file = (
         str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")
         if execution is not None and remote_stage is not None and remote_stage.root
@@ -866,6 +941,7 @@ async def _stream_agent_events(
             invocation_gate=invocation_gate,
             capability=capability,
             browser_grant=browser_grant,
+            hidden_read_scope=hidden_read_scope,
             binary=binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,

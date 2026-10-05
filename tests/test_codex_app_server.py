@@ -16,7 +16,7 @@ def _fake_app_server(
     tmp_path: Path,
     *,
     request_approval: bool = False,
-    permission_profile: str | None = None,
+    permission_profile: str | None = "rcp_stage",
 ) -> tuple[Path, Path]:
     executable = tmp_path / "fake-codex"
     capture = tmp_path / "app-server-capture.json"
@@ -59,7 +59,7 @@ for line in sys.stdin:
             "approvalPolicy": \"never\",
             "sandbox": {{"type": \"readOnly\"}},
         }}
-        if {permission_profile!r} is not None:
+        if {permission_profile is not None!r}:
             result[\"activePermissionProfile\"] = {{"id": {permission_profile!r}}}
         send({{"jsonrpc": \"2.0\", "id": request_id, "result": result}})
     elif method == \"turn/start\":
@@ -172,6 +172,7 @@ for line in sys.stdin:
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
                 "sandbox": {{"type": "readOnly"}},
+                "activePermissionProfile": {{"id": "rcp_stage"}},
             }},
         }})
     elif method == "turn/start":
