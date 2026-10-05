@@ -37,7 +37,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
 
     for path in (
         "/data/rcp.sqlite3-wal",
-        "/data/checkpoints/operation/payload/app-data/rcp.sqlite3",
+        "/data/run-stage/project-transfer-activation/request/rcp.sqlite3",
         "/data/run-stage/backup-123/rcp.sqlite3",
         "/data/providers/claude/token",
         "/data/service-connections/member/connections/id/key",
@@ -269,5 +269,5 @@ def test_installed_copies_and_native_tool_gap(manifest, tmp_path, monkeypatch):
         provider="opencode",
         machine_hidden_folders=[str(tmp_path / "literal[folder]")],
     )
-    assert str(tmp_path / "checkpoints") + "/**/rcp.sqlite3*" in scope.hidden_globs
+    assert str(tmp_path / "checkpoints") in scope.hidden_directories
     assert "provider_native_tools_uncovered" in scope.enforcement.reasons

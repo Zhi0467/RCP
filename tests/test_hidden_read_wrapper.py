@@ -61,38 +61,39 @@ def test_seatbelt_profile_is_allow_default_with_escaped_path_denies() -> None:
     assert "mach-lookup" not in rendered
 
 
-def test_bwrap_masks_existing_globs_and_skips_nested_or_missing_targets(tmp_path: Path) -> None:
-    root = tmp_path / "secret"
-    root.mkdir()
-    nested = root / "nested"
-    nested.mkdir()
-    (nested / "file").touch()
+def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    (data / "run-stage" / "task").mkdir(parents=True)
+    (data / "rcp.sqlite3").touch()
+    (data / "tools").mkdir()
+    (data / "providers").mkdir()
+    (data / "link").symlink_to("tools")
+    secret = data / "run-stage" / "task" / "secret"
+    secret.mkdir()
     token = tmp_path / "token"
     token.touch()
-    backup = tmp_path / "backup-123"
-    backup.mkdir()
     policy = {
-        "hidden_directories": [str(root), str(nested), str(tmp_path / "absent")],
-        "hidden_files": [str(token), str(nested / "file"), str(tmp_path / "absent-file")],
-        "hidden_globs": [str(tmp_path / "backup-*")],
+        "hidden_directories": [str(data / "providers"), str(secret), str(tmp_path / "absent")],
+        "hidden_files": [str(token), str(tmp_path / "absent-file")],
+        "hidden_globs": [str(data) + "/rcp.sqlite3*"],
     }
     argv = bwrap_argv(policy, "exit 23")
-    assert argv == [
-        "bwrap",
-        "--dev-bind",
-        "/",
-        "/",
+    data = Path(os.path.realpath(data))
+    assert argv[:4] == ["bwrap", "--dev-bind", "/", "/"]
+    assert argv[-4:] == ["--", "/bin/bash", "-c", "exit 23"]
+    mounts = argv[4:-4]
+    # The parent is emptied first, so a WAL or copy created later never appears.
+    assert mounts[:2] == ["--tmpfs", str(data)]
+    assert ["--symlink", "tools", str(data / "link")] == mounts[2:5]
+    assert ["--bind", str(data / "run-stage"), str(data / "run-stage")] == mounts[5:8]
+    assert ["--bind", str(data / "tools"), str(data / "tools")] == mounts[8:11]
+    # Masks inside a bound entry come after it; hidden or matching entries stay unbound.
+    assert mounts[11:] == [
         "--tmpfs",
-        str(backup),
-        "--tmpfs",
-        str(root),
+        os.path.realpath(secret),
         "--ro-bind",
         "/dev/null",
-        str(token),
-        "--",
-        "/bin/bash",
-        "-c",
-        "exit 23",
+        os.path.realpath(token),
     ]
 
 

@@ -111,13 +111,19 @@ def hidden_read_defaults(
     if control_socket_dir:
         directories.append(control_socket_dir)
     if app_data_dir:
-        directories.append(app_data_dir + "/providers")
+        # Globs vary only their last component, so a Linux wrapper can hide
+        # future matches too; wholly secret trees are plain directories.
+        directories.extend(
+            (
+                app_data_dir + "/providers",
+                app_data_dir + "/service-connections",
+                app_data_dir + "/run-stage/project-transfer-activation",
+            )
+        )
         globs.extend(
             (
                 glob.escape(app_data_dir) + "/rcp.sqlite3*",
                 glob.escape(app_data_dir) + "/run-stage/backup-*",
-                glob.escape(app_data_dir) + "/**/rcp.sqlite3*",
-                glob.escape(app_data_dir) + "/service-connections/*/connections/*/key",
             )
         )
     return tuple(sorted(set(directories))), tuple(sorted(set(files))), tuple(sorted(set(globs)))
@@ -242,10 +248,7 @@ def resolve_hidden_read_scope(
     if data_dir and remote_stage is None:
         storage = installed_server_storage(Path(data_dir))
         if storage:
-            globs += tuple(
-                glob.escape(root) + "/**/rcp.sqlite3*"
-                for root in (storage.update_checkpoints_root, storage.restore_operations_root)
-            )
+            directories += (storage.update_checkpoints_root, storage.restore_operations_root)
     protected = [
         stage_root,
         workspace_root,

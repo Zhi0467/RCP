@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -173,6 +174,16 @@ class HiddenReadScope(BaseModel):
         if len(values) != len(set(values)):
             raise ValueError("hidden-read entries must be unique")
         return tuple(sorted(values))
+
+    @field_validator("hidden_globs")
+    @classmethod
+    def last_component_globs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        # A Linux wrapper hides future matches by masking the literal parent.
+        for value in values:
+            parent = re.sub(r"\[[*?[]\]", "", value.rsplit("/", 1)[0])
+            if any(char in parent for char in "*?["):
+                raise ValueError("hidden glob wildcards must be in the last path component")
+        return values
 
     @field_validator("key_evidence")
     @classmethod

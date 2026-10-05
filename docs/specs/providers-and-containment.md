@@ -396,6 +396,11 @@ plus the environment allow list; OpenCode receives the shell wrapper and native
 read, grep, glob, and list denies where its rules can express them. An uncovered
 native tool makes the launch visibly unhidden. macOS shell calls use a selected
 path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
+Hidden globs vary only their last path component. On Linux the wrapper empties
+each glob's parent and binds its other existing entries back, so a match created
+after a shell or browser daemon starts, such as a WAL file or a backup, stays
+hidden. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>` on
+the execution host, outside every write root and inside the hidden set.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine and host.

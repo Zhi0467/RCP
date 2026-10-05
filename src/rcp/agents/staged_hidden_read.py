@@ -8,6 +8,7 @@ RCP_HIDDEN_READ_POLICY (or <wrapper>.policy.json). No RCP imports: Python 3.9+.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import json
 import os
@@ -150,24 +151,47 @@ def render_sandbox_profile(policy):
     return "\n".join(lines) + "\n"
 
 
+def split_glob(pattern):
+    """A glob's literal parent and its last-component pattern."""
+    parent, name = pattern.rsplit("/", 1)
+    if glob.has_magic(re.sub(r"\[[*?[]\]", "", parent)):
+        raise ValueError("hidden glob wildcards must be in the last component")
+    return re.sub(r"\[([*?[])\]", r"\1", parent) or "/", name
+
+
 def bwrap_argv(policy, command, *, executable="bwrap"):
-    directories = set(policy.get("hidden_directories", ()))
-    files = set(policy.get("hidden_files", ()))
+    # Each glob parent becomes an empty tmpfs with its other existing entries
+    # bound back, so a match created later never appears inside.
+    names = {}
     for pattern in policy.get("hidden_globs", ()):
-        for path in glob.glob(pattern, recursive=True):
-            (directories if os.path.isdir(path) else files).add(path)
-    # Mount targets are canonical on this host; avoid mounting into a parent
-    # already masked, where bwrap could no longer find the nested target.
-    directories = sorted({os.path.realpath(path) for path in directories if os.path.isdir(path)})
-    roots = []
-    for path in directories:
-        if not any(path == root or path.startswith(root + "/") for root in roots):
-            roots.append(path)
+        parent, name = split_glob(pattern)
+        if os.path.isdir(parent):
+            names.setdefault(os.path.realpath(parent), []).append(name)
+    directories = {os.path.realpath(path) for path in policy.get("hidden_directories", ())}
+    files = {os.path.realpath(path) for path in policy.get("hidden_files", ())}
+    hidden = directories | files
     argv = [executable, "--dev-bind", "/", "/"]
+    covered = []  # Roots already empty inside the sandbox.
+    for parent in sorted(names, key=lambda path: (path.count("/"), path)):
+        if any(parent == root or parent.startswith(root + "/") for root in covered):
+            continue
+        argv.extend(["--tmpfs", parent])
+        for child in sorted(os.listdir(parent)):
+            path = os.path.join(parent, child)
+            if path in hidden or any(fnmatch.fnmatchcase(child, name) for name in names[parent]):
+                covered.append(path)
+            elif os.path.islink(path):
+                argv.extend(["--symlink", os.readlink(path), path])
+            else:
+                argv.extend(["--bind", path, path])
+    roots = []
+    for path in sorted(path for path in directories if os.path.isdir(path)):
+        if not any(path == root or path.startswith(root + "/") for root in (*covered, *roots)):
+            roots.append(path)
     for path in roots:
         argv.extend(["--tmpfs", path])
-    for path in sorted({os.path.realpath(path) for path in files if os.path.isfile(path)}):
-        if not any(path == root or path.startswith(root + "/") for root in roots):
+    for path in sorted(path for path in files if os.path.isfile(path)):
+        if not any(path == root or path.startswith(root + "/") for root in (*covered, *roots)):
             argv.extend(["--ro-bind", "/dev/null", path])
     return [*argv, "--", "/bin/bash", "-c", command]
 
