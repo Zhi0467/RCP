@@ -235,7 +235,7 @@ const childRoute = {
 
 function Fixture() {
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(experimentId);
-  const [selectedRoute, setSelectedRoute] = useState(childRoute);
+  const [selectedRoute, setSelectedRoute] = useState<ExperimentRouteIdentity | null>(childRoute);
   const [stopBusyIds, setStopBusyIds] = useState(new Set<string>());
   return (
     <ExecutionView
@@ -260,7 +260,7 @@ function Fixture() {
       experimentControl={coexisting ? ({ [experimentId]: mainEntry.control } as never) : {}}
       experimentEntries={(coexisting ? [mainEntry, entry] : [entry]) as never}
       exactExperimentRoute={selectedRoute}
-      exactExperimentEntry={selectedRoute.graph_target.kind === "branch" ? (entry as never) : null}
+      exactExperimentEntry={selectedRoute?.graph_target.kind === "branch" ? (entry as never) : null}
       selectedExperimentId={selectedExperimentId}
       focusExperimentId={coexisting ? selectedExperimentId : null}
       selectedAutoResearchEpisodeId={coexisting ? null : parentEpisodeId}
@@ -270,7 +270,9 @@ function Fixture() {
       taskActionId={null}
       selectedExperimentConversation={
         selectedExperimentId ? (
-          <div data-selected-episode={selectedRoute.episode_id}>Selected child transcript</div>
+          <div data-selected-episode={selectedRoute?.episode_id ?? mainEpisode.episode_id}>
+            Selected child transcript
+          </div>
         ) : null
       }
       onInspectTask={() => undefined}
@@ -282,7 +284,7 @@ function Fixture() {
       onOperateEpisodeTask={() => Promise.resolve()}
       onSelectExperiment={(nodeId, route) => {
         setSelectedExperimentId(nodeId);
-        if (route) setSelectedRoute(route);
+        if (nodeId) setSelectedRoute(route ?? null);
       }}
       onOpenExperimentEntry={(nextEntry) => {
         window.location.hash = experimentBoardHref(

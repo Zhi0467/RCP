@@ -148,6 +148,7 @@ import type {
   ChatAttachmentDescriptor,
   ConversationMode,
   GraphNode,
+  GraphTargetRef,
   GraphUpdateRecovery,
   GraphUpdateResult,
   ProjectArtifact,
@@ -169,6 +170,7 @@ import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./Wo
 
 interface Props {
   project: ProjectSnapshot;
+  graphTarget: GraphTargetRef;
   node?: GraphNode | null;
   nodes?: Readonly<Record<string, GraphNode>>;
   glossaryIndex?: GlossaryIndex;
@@ -262,6 +264,7 @@ export function reconcileChatRunScope(
 
 export function NodeChat({
   project,
+  graphTarget,
   node,
   nodes = {},
   glossaryIndex,
@@ -537,10 +540,9 @@ export function NodeChat({
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
-  const chatGraphTarget = relatedTasks[0]?.graph_target ?? project.graph_target ?? MAIN_GRAPH;
   const watcherRows = useMemo(
-    () => visibleChatWatchers(watchers, chatId, node, chatGraphTarget),
-    [chatId, node, watchers, chatGraphTarget],
+    () => visibleChatWatchers(watchers, chatId, node, graphTarget),
+    [chatId, node, watchers, graphTarget],
   );
   const visibleWatcherRows = watcherRows.filter((watcher) => !watcherVisibility.isHidden(watcher));
   const hiddenWatchers = watcherRows.filter(watcherVisibility.isHidden);

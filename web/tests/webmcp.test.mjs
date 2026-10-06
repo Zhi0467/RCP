@@ -1881,6 +1881,9 @@ test("Experiment inspection stays available with several bounded tasks and watch
 test("Experiment Start revalidates the exact node and returns durable task identity", async () => {
   const project = projectFixture();
   const calls = [];
+  const overlaps = [
+    { episode_id: "other-loop", graph_target: { kind: "branch", branch_id: "other-branch" } },
+  ];
   const receipt = await startProjectExperiment(
     project,
     { experiment_id: "exp-1" },
@@ -1890,6 +1893,7 @@ test("Experiment Start revalidates the exact node and returns durable task ident
         operation_id: "experiment-task-1",
         episode_id: "episode-1",
         request: {},
+        live_elsewhere: overlaps,
         status_label: "Queued",
         active: true,
         queued: true,
@@ -1902,6 +1906,7 @@ test("Experiment Start revalidates the exact node and returns durable task ident
     experiment_id: "exp-1",
     task_id: "experiment-task-1",
     episode_id: "episode-1",
+    live_elsewhere: overlaps,
     accepted: true,
     status: "Queued",
     active: true,
@@ -2494,7 +2499,7 @@ test("download-only files and PDFs are listed but never sent to the visual opene
   }
 });
 
-test("Experiment inspection filters same-node watchers by the open graph target", () => {
+test("Experiment inspection filters same-node tasks and watchers by the open graph target", () => {
   const project = projectFixture();
   const targets = [
     { kind: "main" },
@@ -2507,10 +2512,31 @@ test("Experiment inspection filters same-node watchers by the open graph target"
     continuation: { control_node_id: "exp-1" },
     created_at: "2026-10-06T10:00:00Z",
   }));
+  const tasks = targets.flatMap((target, index) => [
+    {
+      status_message: "",
+      operation_id: `control-${index}`,
+      graph_target: target,
+      request: { control_node_id: "exp-1" },
+      created_at: "2026-10-06T10:00:00Z",
+    },
+    {
+      status_message: "",
+      operation_id: `chat-${index}`,
+      graph_target: target,
+      kind: "node_chat",
+      request: { node_id: "exp-1", patch_kind: "experiment_loop" },
+      created_at: "2026-10-06T10:00:00Z",
+    },
+  ]);
   targets.forEach((target, index) => {
-    const result = inspectProjectExperiment({ ...project, graph_target: target }, [], watchers, {
+    const result = inspectProjectExperiment({ ...project, graph_target: target }, tasks, watchers, {
       experiment_id: "exp-1",
     });
+    assert.deepEqual(
+      result.tasks.map((row) => row.task_id),
+      [`control-${index}`, `chat-${index}`],
+    );
     assert.deepEqual(
       result.watchers.map((row) => row.watcher_id),
       [`watch-${index}`],

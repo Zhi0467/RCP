@@ -108,9 +108,7 @@ export function reduceExperimentSelection(
     return state.focusExperimentRunId === null ? state : { ...state, focusExperimentRunId: null };
   }
   if (action.kind === "select") {
-    const retainsExactRoute =
-      action.experimentId === null ||
-      action.experimentId === state.selectedExperimentRoute?.experiment_id;
+    const retainsExactRoute = action.experimentId === null;
     return {
       ...state,
       selectedExperimentRunId: action.experimentId,
@@ -487,6 +485,25 @@ export function useGraphSelection({
     },
     [changeView, getActiveProjectId],
   );
+  const replaceExactExperimentRoute = useCallback(
+    (episodeProjectId: string, route: ExperimentRouteIdentity) => {
+      window.history.replaceState(
+        null,
+        "",
+        graphTargetUrl(
+          experimentBoardHref(episodeProjectId, route),
+          graphTargetFromHash(window.location.hash),
+        ),
+      );
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId: route.experiment_id,
+        experimentRoute: route,
+        autoResearchEpisodeId: null,
+      });
+    },
+    [],
+  );
   const replaceExactExperimentEpisode = useCallback(
     (episode: Episode) => {
       // A continuation can settle after the human switched project tabs, so the live
@@ -497,49 +514,23 @@ export function useGraphSelection({
         selectionSnapshotRef.current.selectedExperimentRoute,
       );
       if (!route) return;
-      window.history.replaceState(
-        null,
-        "",
-        graphTargetUrl(
-          experimentBoardHref(episode.project_id, route),
-          graphTargetFromHash(window.location.hash),
-        ),
-      );
-      dispatchExperimentSelection({
-        kind: "route",
-        experimentId: route.experiment_id,
-        experimentRoute: route,
-        autoResearchEpisodeId: null,
-      });
+      replaceExactExperimentRoute(episode.project_id, route);
       // The pinned route survives leaving Runs, so show the view this new URL describes
       // rather than leaving another view rendered under a Runs address.
       changeView("execution");
     },
-    [changeView, getActiveProjectId],
+    [changeView, getActiveProjectId, replaceExactExperimentRoute],
   );
   const selectExperiment = useCallback(
     (nodeId: string | null, route?: ExperimentRouteIdentity) => {
       if (projectId && nodeId && route) {
-        window.history.replaceState(
-          null,
-          "",
-          graphTargetUrl(
-            experimentBoardHref(projectId, route),
-            graphTargetFromHash(window.location.hash),
-          ),
-        );
-        dispatchExperimentSelection({
-          kind: "route",
-          experimentId: nodeId,
-          experimentRoute: route,
-          autoResearchEpisodeId: null,
-        });
+        replaceExactExperimentRoute(projectId, route);
         return;
       }
-      replaceExactRunExperimentSelection(nodeId, "select");
+      replaceExactRunExperimentSelection(nodeId, "show");
       dispatchExperimentSelection({ kind: "select", experimentId: nodeId });
     },
-    [projectId, replaceExactRunExperimentSelection],
+    [projectId, replaceExactRunExperimentSelection, replaceExactExperimentRoute],
   );
   const clearExperimentFocus = useCallback(() => {
     dispatchExperimentSelection({ kind: "clear_focus" });
