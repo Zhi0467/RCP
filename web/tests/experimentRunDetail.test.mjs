@@ -1592,3 +1592,30 @@ test("prior invocation totals stay pinned beside the edited next episode limit",
   assert.match(html, /<\/span>7/);
   assert.match(html, /experiment-run-button/);
 });
+
+test("a parent link selects and expands the newest member of its continued run", () => {
+  const parent = episode({
+    episode_id: "parent-newest",
+    mode: "auto_research",
+    run_section: "completed",
+    chain: [
+      { episode_id: "parent-original", invocation_ceiling: 3, invocations_used: 3 },
+      { episode_id: "parent-newest", invocation_ceiling: 3, invocations_used: 1 },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: { nodes: {} },
+      episodes: [parent],
+      episodeMessages: {},
+      tasks: [],
+      watchers: [],
+      experimentControl: {},
+      selectedAutoResearchEpisodeId: "parent-original",
+      stopBusyIds: new Set(),
+    }),
+  );
+  assert.match(html, /data-episode-id="parent-newest"[^>]*data-selected="true"/);
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /<details[^>]*class="episode-type-group"[^>]*open=""/);
+});

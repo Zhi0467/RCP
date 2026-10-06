@@ -1183,7 +1183,7 @@ export function ExecutionView({
   exactExperimentEntry = null,
   selectedExperimentId,
   focusExperimentId,
-  selectedAutoResearchEpisodeId = null,
+  selectedAutoResearchEpisodeId: requestedAutoResearchEpisodeId = null,
   runBusy,
   stopBusyIds,
   watcherCheckBusyId,
@@ -1279,6 +1279,13 @@ export function ExecutionView({
     new Set(experimentRuns.keys()),
     showArchived,
   );
+  const selectedAutoResearchEpisodeId =
+    orderedEpisodes.find(
+      (episode) =>
+        episode.mode === "auto_research" &&
+        (episode.episode_id === requestedAutoResearchEpisodeId ||
+          episode.chain.some((member) => member.episode_id === requestedAutoResearchEpisodeId)),
+    )?.episode_id ?? requestedAutoResearchEpisodeId;
   const visibleEpisodes = orderedEpisodes.filter((episode) => !episode.archived);
   const archivedEpisodes = orderedEpisodes.filter((episode) => episode.archived);
   const selectedExperimentEpisodeId = selectedExperimentId
@@ -1547,7 +1554,11 @@ export function ExecutionView({
                   {formatEpisodeTimestamp(episode.created_at)}
                 </time>
                 <ExperimentBranchBadge target={episode.graph_target} />
-                <ExperimentLoopMetadata projectId={episode.project_id} metadata={episode} />
+                <ExperimentLoopMetadata
+                  projectId={episode.project_id}
+                  metadata={episode}
+                  author={episode.authorized_by}
+                />
                 <EpisodeAuthor author={episode.authorized_by} />
               </span>
             </span>
@@ -1757,7 +1768,11 @@ function ExperimentEpisodeCard({
             <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
             <ExperimentBranchBadge target={episode.graph_target} />
-            <ExperimentLoopMetadata projectId={episode.project_id} metadata={episode} />
+            <ExperimentLoopMetadata
+              projectId={episode.project_id}
+              metadata={episode}
+              author={episode.authorized_by}
+            />
             <EpisodeAuthor author={episode.authorized_by} />
           </span>
         </span>

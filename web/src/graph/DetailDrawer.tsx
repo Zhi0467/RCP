@@ -1,4 +1,4 @@
-import { canStartExperiment } from "../experiments/experimentStart";
+import { canStartExperiment, experimentStartReasons } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -169,11 +169,11 @@ export function DetailDrawer({
     graph_isolation: false,
     code_worktree: false,
   });
-  const startOnNewBranch =
-    graphTarget.kind === "main" && (inheritedIsolation ?? isolation).graph_isolation;
-  const experimentStartReasons = startOnNewBranch
-    ? experimentControl?.graph_reasons
-    : experimentControl?.reasons;
+  const startReasons = experimentStartReasons(
+    experimentControl,
+    graphTarget,
+    (inheritedIsolation ?? isolation).graph_isolation,
+  );
   const [editBase, setEditBase] = useState(node);
   const [draft, setDraft] = useState<Record<string, string>>(() => nodeEditDraft(node, ontology));
   const [referenceDraft, setReferenceDraft] = useState<Record<string, string>>(() =>
@@ -670,9 +670,9 @@ export function DetailDrawer({
                     disabled={nodeMutationDisabled || experimentRunBusy}
                     onChange={setBrowserRequested}
                   />
-                  {(experimentStartReasons ?? []).length > 0 && (
+                  {startReasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
-                      {(experimentStartReasons ?? []).map((reason) => (
+                      {startReasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>

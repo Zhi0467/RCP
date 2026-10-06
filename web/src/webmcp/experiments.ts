@@ -3,6 +3,7 @@ import { isControlNode } from "../graph/researchType";
 import type {
   AgentTask,
   Episode,
+  ExperimentStartResponse,
   GraphNode,
   GraphTargetRef,
   ProjectSnapshot,
@@ -173,7 +174,10 @@ export function inspectProjectExperiment(
   };
 }
 
-type StartWebMcpExperiment = (node: GraphNode, invocationCeiling?: number) => Promise<AgentTask>;
+type StartWebMcpExperiment = (
+  node: GraphNode,
+  invocationCeiling?: number,
+) => Promise<ExperimentStartResponse>;
 
 /** A confirmed voice start passes `invocation_ceiling`; it must still be the node's own. */
 export async function startProjectExperiment(
@@ -192,6 +196,7 @@ export async function startProjectExperiment(
     experiment_id: node.id,
     task_id: task.operation_id,
     episode_id: task.episode_id ?? task.request.control_episode_id ?? null,
+    live_elsewhere: task.live_elsewhere,
     accepted: true,
     status: task.status_label,
     active: task.active,

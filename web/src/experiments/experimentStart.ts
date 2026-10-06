@@ -11,3 +11,21 @@ export function canStartExperiment(
     ? !control.node_closed && control.graph_reasons.length === 0
     : control.can_start;
 }
+
+/** The server orders reasons as graph prerequisites, closed status, then runtime gates. */
+export function experimentStartReasons(
+  control: ExperimentControlState | null | undefined,
+  target: GraphTargetRef,
+  graphIsolation = false,
+): string[] {
+  if (!control) return [];
+  return target.kind === "main" && graphIsolation
+    ? [
+        ...control.graph_reasons,
+        ...control.reasons.slice(
+          control.graph_reasons.length,
+          control.graph_reasons.length + Number(control.node_closed),
+        ),
+      ]
+    : control.reasons;
+}

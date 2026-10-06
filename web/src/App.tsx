@@ -1825,6 +1825,7 @@ export default function App() {
       resetProjectHistory(projectId, graphTarget);
       setUsage(null);
       setWatchers([]);
+      setExperimentStartOverlap(null);
       resetProjectHeader(projectId);
     }
     if (setupOpen) {
@@ -3059,6 +3060,8 @@ export default function App() {
 
   const checkExperimentWatcher = async (watcherId: string) => {
     if (!apiBase || watcherCheckId || taskStarting || taskActionId || mutationsDisabled) return;
+    const watcher = watchers.find((candidate) => candidate.watcher_id === watcherId);
+    if (watcher?.episode_id && experimentStopIds.has(watcher.episode_id)) return;
     const finishWatcherCheck = beginWatcherCheck(watcherId);
     try {
       const checked = await api<WatcherRecord>(
@@ -3179,7 +3182,7 @@ export default function App() {
     [startExperiment],
   );
   const startWebMcpExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
+    async (node: GraphNode, invocationCeiling?: number): Promise<ExperimentStartResponse> => {
       if (!project) throw new Error("No RCP project is open.");
       const pendingProjectId = project.id;
       setWebMcpExperimentStartProjectId(pendingProjectId);
@@ -3836,6 +3839,7 @@ export default function App() {
 
   const closeDockedProject = (id: string) => {
     if (!closeProjectRoute(id)) return;
+    setExperimentStartOverlap((current) => (current?.projectId === id ? null : current));
     forgetProjectViewport(id);
   };
 

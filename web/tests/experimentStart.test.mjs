@@ -132,3 +132,23 @@ test("the human start preserves and renders every overlap without adding a gate"
     globalThis.fetch = originalFetch;
   }
 });
+
+test("starter attribution is omitted only for the displayed authorizing member", () => {
+  const author = { space_id: "space-one", user_id: "member-one", display_name: "Member" };
+  for (const [starter, expectedCount] of [
+    [{ kind: "human", human: { ...author, display_name: "Old name" } }, 0],
+    [{ kind: "human", human: { ...author, user_id: "member-two" } }, 1],
+    [{ kind: "human", human: { ...author, space_id: "space-two" } }, 1],
+    [loop.started_by, 1],
+  ]) {
+    const html = renderToStaticMarkup(
+      React.createElement(ExperimentLoopMetadata, {
+        projectId: "project-one",
+        metadata: { ...loop, started_by: starter },
+        author,
+      }),
+    );
+    assert.equal([...html.matchAll(/data-starter-kind=/g)].length, expectedCount);
+    assert.equal([...html.matchAll(/data-checkout-kind=/g)].length, 1);
+  }
+});

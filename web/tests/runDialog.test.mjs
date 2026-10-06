@@ -279,6 +279,7 @@ test("a never-run Experiment shows only its next episode limit", () => {
         ontology: { types: [], fields: [], relations: [] },
         experimentControl: {
           ready: true,
+          can_start: true,
           reasons: [],
           invocations_used: 0,
           invocation_ceiling: 6,
@@ -663,7 +664,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
   assert.doesNotMatch(html, /SSH exited 255/);
   assert.doesNotMatch(html, /chat-watchers/);
   assert.equal(html.match(/chat-watcher-count/g).length, 1);
-  assert.doesNotMatch(experimentHtml, /chat-watcher-count/);
+  assert.equal(experimentHtml.match(/chat-watcher-count/g).length, 1);
   assert.match(html, /chat-turn-trigger watcher/);
   assert.doesNotMatch(html, /node-chat-line human/);
 });
@@ -1178,3 +1179,56 @@ const orchestratorOnClaude = {
     },
   },
 };
+
+test("an isolated closed experiment stays disabled with its server reason", () => {
+  const node = {
+    id: "experiment/closed",
+    type: "experiment",
+    title: "Closed",
+    status: "completed",
+    standing: "asserted",
+    source_refs: [],
+    extension_fields: {},
+    attempts: [],
+    invocation_ceiling: 3,
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossaryIndex: { entriesByInitial: new Map() },
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        graphTarget: { kind: "main", branch_id: null },
+        inheritedIsolation: { graph_isolation: true, code_worktree: false },
+        experimentControl: {
+          can_start: false,
+          node_closed: true,
+          graph_reasons: [],
+          reasons: ["closed-status-code", "source-loop-active-code"],
+          invocations_used: 0,
+          invocation_ceiling: 3,
+          invocations_remaining: 3,
+          governing_decisions: [],
+          decision_drift: [],
+        },
+        onRunExperiment() {},
+      }),
+    );
+    assert.match(html, /class="[^"]*experiment-run-button[^"]*"[^>]*disabled=""/);
+    const requirements = html.match(/<ul class="experiment-gate-reasons"[^>]*>(.*?)<\/ul>/s)?.[1];
+    assert.ok(requirements);
+    assert.deepEqual(
+      [...requirements.matchAll(/<li>(.*?)<\/li>/g)].map((match) => match[1]),
+      ["closed-status-code"],
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
