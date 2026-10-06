@@ -34,6 +34,7 @@ from rcp.storage.models import (
     normalize_space_name,
 )
 from rcp.storage.notifications import migrate_notifications, migrate_question_notifications
+from rcp.storage.question_activity import QuestionActivity
 from rcp.storage.questions import migrate_questions
 
 if TYPE_CHECKING:
@@ -85,6 +86,8 @@ class AppStoreBase:
         (39, "owner_auth_v1"),
         (40, "browser_grants_v1"),
         (41, "machine_hidden_folders_v1"),
+        (42, "machine_provider_autocompact_v1"),
+        (43, "machine_provider_shell_timeout_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -129,6 +132,7 @@ class AppStoreBase:
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
         if space_kind is not None and space_kind not in ("personal", "team"):
             raise ValueError("space kind must be 'personal' or 'team'")
+        self.question_activity = QuestionActivity()
         self.path = path
         self._read_only_snapshot = False
         self._immutable_read_only = False
@@ -139,6 +143,7 @@ class AppStoreBase:
     def initialize_team_space(cls, path: Path, name: str) -> tuple[AppStore, str]:
         database_existed = path.exists()
         store = cls.__new__(cls)
+        store.question_activity = QuestionActivity()
         store.path = path
         store._read_only_snapshot = False
         store._immutable_read_only = False
@@ -189,6 +194,7 @@ class AppStoreBase:
         if not stat.S_ISREG(mode):
             raise ValueError(f"the SQLite {description} must be a safe regular file")
         store = cls.__new__(cls)
+        store.question_activity = QuestionActivity()
         store.path = path
         store._read_only_snapshot = True
         store._immutable_read_only = immutable
@@ -781,6 +787,18 @@ class AppStoreBase:
             version=41,
             name="machine_hidden_folders_v1",
             migration=self._migrate_machine_hidden_folders,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=42,
+            name="machine_provider_autocompact_v1",
+            migration=self._migrate_machine_provider_autocompact,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=43,
+            name="machine_provider_shell_timeout_v1",
+            migration=self._migrate_machine_provider_shell_timeout,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2491,6 +2509,21 @@ class AppStoreBase:
     def _migrate_machine_hidden_folders(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(
             connection, "space_machines", "hidden_folders_json", "TEXT NOT NULL DEFAULT '[]'"
+        )
+
+    @classmethod
+    def _migrate_machine_provider_autocompact(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection, "space_machines", "provider_autocompact_json", "TEXT NOT NULL DEFAULT '{}'"
+        )
+
+    @classmethod
+    def _migrate_machine_provider_shell_timeout(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection,
+            "space_machines",
+            "provider_shell_timeout_json",
+            "TEXT NOT NULL DEFAULT '{}'",
         )
 
     @staticmethod

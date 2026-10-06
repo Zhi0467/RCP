@@ -12,6 +12,7 @@ import {
   DEFAULT_CONSOLIDATION_TIME,
   disableConsolidation,
   enableConsolidation,
+  timeZoneOptions,
 } from "./consolidation";
 import type { ConsolidationNight, ConsolidationSchedule } from "../core/types";
 
@@ -154,10 +155,15 @@ export function ProjectConsolidation({
   writesDisabled,
   onChanged,
 }: Props) {
-  const [localTime, setLocalTime] = useState(schedule?.local_time ?? DEFAULT_CONSOLIDATION_TIME);
+  // Unsaved edits; null shows the saved schedule, or the defaults before one exists.
+  const [draftTime, setDraftTime] = useState<string | null>(null);
+  const [draftZone, setDraftZone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const timezone = schedule?.timezone ?? browserTimeZone();
+  const localTime = draftTime ?? schedule?.local_time ?? DEFAULT_CONSOLIDATION_TIME;
+  const timezone = draftZone ?? schedule?.timezone ?? browserTimeZone();
+  const edited =
+    schedule !== null && (localTime !== schedule.local_time || timezone !== schedule.timezone);
   const now = useMinuteClock(schedule !== null);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -165,6 +171,8 @@ export function ProjectConsolidation({
     setError(null);
     try {
       await action();
+      setDraftTime(null);
+      setDraftZone(null);
       onChanged();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -173,9 +181,8 @@ export function ProjectConsolidation({
     }
   };
   const disabled = busy || writesDisabled || !loaded;
-  const enable = () => run(() => enableConsolidation(apiBase, localTime, browserTimeZone()));
-  const renew = () =>
-    run(() => enableConsolidation(apiBase, schedule!.local_time, schedule!.timezone));
+  // Enable, Save, and Renew all PUT the schedule, which also restarts the authorization.
+  const save = () => run(() => enableConsolidation(apiBase, localTime, timezone));
 
   return (
     <section className="settings-section project-consolidation" id={CONSOLIDATION_SETTINGS_ANCHOR}>
@@ -203,12 +210,6 @@ export function ProjectConsolidation({
               </div>
             )}
             <div>
-              <dt>Time</dt>
-              <dd>
-                {schedule.local_time} <span className="mono">{schedule.timezone}</span>
-              </dd>
-            </div>
-            <div>
               <dt>Authorized by</dt>
               <dd>{schedule.authorized_by.display_name || schedule.authorized_by.user_id}</dd>
             </div>
@@ -224,30 +225,40 @@ export function ProjectConsolidation({
           <AuthorizationBar schedule={schedule} now={now} />
           <NightStrip nights={recentNights} />
         </div>
-      ) : (
-        <div className="consolidation-enable">
-          <label>
-            Time
-            <input
-              type="time"
-              value={localTime}
-              disabled={disabled}
-              onChange={(event) => setLocalTime(event.target.value)}
-            />
-          </label>
-          <span className="mono">{timezone}</span>
-        </div>
-      )}
+      ) : null}
       <div className="project-member-actions">
+        <label>
+          Time
+          <input
+            type="time"
+            value={localTime}
+            disabled={disabled}
+            onChange={(event) => setDraftTime(event.target.value)}
+          />
+        </label>
+        <label>
+          Time zone
+          <select
+            value={timezone}
+            disabled={disabled}
+            onChange={(event) => setDraftZone(event.target.value)}
+          >
+            {timeZoneOptions(timezone).map((zone) => (
+              <option key={zone} value={zone}>
+                {zone}
+              </option>
+            ))}
+          </select>
+        </label>
         {schedule ? (
           <>
             <button
               className="button secondary compact"
               type="button"
-              disabled={disabled}
-              onClick={() => void renew()}
+              disabled={disabled || !/^\d{2}:\d{2}$/.test(localTime)}
+              onClick={() => void save()}
             >
-              Renew
+              {edited ? "Save" : "Renew"}
             </button>
             <button
               className="button secondary compact"
@@ -263,7 +274,7 @@ export function ProjectConsolidation({
             className="button secondary compact"
             type="button"
             disabled={disabled || !/^\d{2}:\d{2}$/.test(localTime)}
-            onClick={() => void enable()}
+            onClick={() => void save()}
           >
             Enable
           </button>

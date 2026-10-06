@@ -112,12 +112,21 @@ COMMAND_MAILBOX_HANDLER_MAX_RETRIES = 2
 # transient read error, before that turn's mailbox is refused for this process.
 COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS = 5
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
+SHELL_TIMEOUT_DEFAULT_SECONDS = 120
+SHELL_TIMEOUT_MIN_MINUTES = 2
+SHELL_TIMEOUT_MAX_MINUTES = 120
+COMMAND_CLIENT_WAIT_MARGIN_SECONDS = 30
 # How long one client invocation waits before it returns "not answered yet".
 # Provider shell tools kill long commands (Claude Code's Bash stops at 120 s,
 # probed 2026-09-29), so a slow command must return inside that and let the
 # agent rerun the same keyed call; RCP keeps working on the request meanwhile.
 COMMAND_CLIENT_WAIT_SECONDS = 90.0
 COMMAND_ASK_POLL_SECONDS = 2.0
+ASK_MAX_ATTEMPTS = 3
+ASK_TRACKED_CALLS = 32
+# Ask pauses 2 s between rounds; SSH mailbox polling adds up to another 2 s
+# plus transport time. 10 s tolerates that cadence without a flickering card.
+ASK_WAITING_FRESH_SECONDS = 10.0
 ASK_QUESTION_MAX_LENGTH = 8_000
 ASK_CHOICE_MAX_COUNT = 20
 ASK_CHOICE_MAX_LENGTH = 1_000
@@ -602,3 +611,11 @@ AGENT_COMMAND_TIMEOUT_SECONDS = 5.0
 AGENT_SOCKET_PATH_MAX_BYTES = 100
 AGENT_POLL_SECONDS = 0.05
 AGENT_WORKER_DRAIN_POLL_SECONDS = 1.0
+
+
+def ask_hold_seconds(shell_timeout_seconds: int | None) -> int:
+    """Leave time for the client to return before the provider kills its shell."""
+    timeout = (
+        SHELL_TIMEOUT_DEFAULT_SECONDS if shell_timeout_seconds is None else shell_timeout_seconds
+    )
+    return timeout - COMMAND_CLIENT_WAIT_MARGIN_SECONDS

@@ -16,6 +16,7 @@ from rcp.agents.command_protocol import (
     CommandResponse,
     LessonCommandRequest,
 )
+from rcp.limits import ASK_MAX_ATTEMPTS
 from rcp.runs.lesson_commands import handle_lesson
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
@@ -23,6 +24,7 @@ from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
     from rcp.runs.tasks.compute_commands import WorkComputeCommands
+    from rcp.service import RunRequest
 
 
 def handle_ask(
@@ -51,7 +53,17 @@ def handle_ask(
             status="invalid",
             message=str(exc),
         )
+    # A parked reply ends the wait at once, so it is neither an attempt nor a live wait.
+    pending = question.state == "pending" and not parked
+    if pending:
+        attempt = store.question_activity.pending(question.question_id, request.call_id)
+    else:
+        attempt = None
+        if question.state != "pending":
+            store.question_activity.forget(question.question_id)
     result = AskResult(
+        attempt=attempt,
+        max_attempts=ASK_MAX_ATTEMPTS if pending else None,
         question_id=question.question_id,
         state="parked" if parked and question.state == "pending" else question.state,
         answer=question.answer if question.state == "answered" else None,
@@ -113,16 +125,52 @@ def work_ask_authorized(execution: AgentTaskExecution | None) -> bool:
     return authority.scope.patch_kind == "work" and bool(authority.scope.chat_id)
 
 
-def work_question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
+def discuss_ask_authorized(execution: AgentTaskExecution | None) -> bool:
+    """Only human conversation Discuss turns may use the question broker."""
+    if execution is None:
+        return False
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None or task.kind not in {"node_chat", "project_chat"}:
+        return False
+    authority = task.dispatch_authority
+    return bool(
+        authority is not None
+        and authority.profile == "ordinary"
+        and authority.task_contract == "discuss"
+        and authority.scope.patch_kind is None
+        and authority.scope.chat_id
+        and task.request.get("mode") == "discuss"
+        and task.request.get("artifact_edit") is None
+        and task.authorized_by is not None
+        and task.episode_id is None
+        and task.write_scope_fingerprint is None
+        and execution.store.auto_research_child_work_for_operation(task.operation_id) is None
+    )
+
+
+def discuss_command_handler(execution: AgentTaskExecution | None) -> WorkCommandHandler:
+    """Discuss owns a single verb and never delegates to compute or graph handlers."""
+    return WorkCommandHandler(
+        execution, None, frozenset({"ask"}) if discuss_ask_authorized(execution) else frozenset()
+    )
+
+
+def question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
     """Resolve after the provider session checkpoint, never from command arguments."""
-    if not work_ask_authorized(execution):
+    if not (work_ask_authorized(execution) or discuss_ask_authorized(execution)):
         raise ValueError("This turn does not authorize human questions.")
     task = execution.store.agent_task(execution.operation_id)
     assert task is not None and task.dispatch_authority is not None
     authority = task.dispatch_authority
     episode_id = task.episode_id if authority.scope.patch_kind == "experiment_loop" else None
-    if not task.native_session_id or not task.stage_root or not task.write_scope_fingerprint:
-        raise ValueError("The asking turn has no complete native session and write binding yet.")
+    if (
+        not task.native_session_id
+        or not task.stage_root
+        or (authority.task_contract != "discuss" and not task.write_scope_fingerprint)
+    ):
+        raise ValueError(
+            "The asking turn has no complete native session and authority binding yet."
+        )
     return QuestionOrigin(
         owner_kind="episode" if episode_id else "chat",
         project_id=task.project_id,
@@ -136,6 +184,44 @@ def work_question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
         write_scope_fingerprint=task.write_scope_fingerprint,
         graph_target=task.graph_target,
     )
+
+
+def require_question_origin_binding(
+    execution: AgentTaskExecution,
+    request: RunRequest,
+    origin: QuestionOrigin,
+    *,
+    execution_host: str,
+    stage_root: str | None,
+    write_scope_fingerprint: str | None,
+) -> None:
+    """A follow-up may deliver its answer only under the asking turn's binding."""
+    task = execution.store.agent_task(execution.operation_id)
+    discuss = origin.capability == "discuss"
+    if (
+        task is None
+        or task.dispatch_authority is None
+        or task.dispatch_authority.task_contract != origin.capability
+        or request.provider != origin.provider
+        or task.request.get("provider") != origin.provider
+        or request.session_id != origin.native_session_id
+        or task.native_session_id not in {None, origin.native_session_id}
+        or execution_host != (origin.stage_host or "")
+        or stage_root != origin.stage_root
+        or request.mode != ("discuss" if discuss else "work")
+        or task.request.get("mode") != request.mode
+        or task.graph_target != origin.graph_target
+        or write_scope_fingerprint != origin.write_scope_fingerprint
+        or (
+            discuss
+            and (
+                task.write_scope_fingerprint is not None
+                or task.dispatch_authority.scope.patch_kind is not None
+            )
+        )
+        or (not discuss and not write_scope_fingerprint)
+    ):
+        raise ValueError("question_origin_binding_unavailable")
 
 
 def record_work_question_receipts(execution: AgentTaskExecution) -> None:
@@ -181,7 +267,7 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
 
 @dataclass(frozen=True)
 class WorkCommandHandler:
-    """Questions compose beside compute, never in compute's child-facing allowlist."""
+    """Dispatch one owner's resolved verbs; questions share no compute authority."""
 
     execution: AgentTaskExecution | None
     compute_commands: WorkComputeCommands | None
@@ -195,7 +281,7 @@ class WorkCommandHandler:
             return CommandResponse(request_id=request.request_id, status="invalid", message=message)
 
         if request.verb not in self.allowed_verbs:
-            return refuse("This Work owner does not authorize that command.")
+            return refuse("This turn does not authorize that command.")
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
             if (
@@ -214,9 +300,9 @@ class WorkCommandHandler:
                 or identity.authority != "broker"
                 or identity.task_id != execution.operation_id
             ):
-                return refuse("Questions require this Work turn's broker authority.")
+                return refuse("Questions require this turn's broker authority.")
             try:
-                origin = work_question_origin(execution)
+                origin = question_origin(execution)
             except ValueError as exc:
                 return refuse(str(exc))
             current_episode_id = origin.owner_id if origin.owner_kind == "episode" else None
@@ -321,7 +407,7 @@ class WorkCommandHandler:
             return response
         if self.compute_commands is not None:
             return self.compute_commands(request, identity)
-        return refuse("This Work owner does not authorize that command.")
+        return refuse("This turn does not authorize that command.")
 
 
 def work_command_handler(

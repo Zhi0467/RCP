@@ -136,3 +136,26 @@ export function setupMachineSelection(
   const matches = machines.filter((machine) => machine.host === host);
   return matches.length === 1 ? matches[0] : null;
 }
+
+export type MachineSave = (
+  machineId: string,
+  request: SpaceMachineUpdateRequest,
+) => Promise<SpaceMachine>;
+
+/**
+ * Run one machine card's writes one at a time. Each save answers with a whole
+ * record, so a slower earlier answer would otherwise replace a newer one, or bring
+ * back a card a later delete removed.
+ */
+export function createMachineWriteQueue(save: MachineSave) {
+  let last: Promise<unknown> = Promise.resolve();
+  const queue = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = last.catch(() => undefined).then(run);
+    last = next;
+    return next;
+  };
+  return {
+    save: ((machineId, request) => queue(() => save(machineId, request))) as MachineSave,
+    remove: (run: () => Promise<void>) => queue(run),
+  };
+}

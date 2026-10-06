@@ -1014,9 +1014,38 @@ export function NodeChat({
         total += item.file.size;
       }
     }
+    // Publish the preparing rows first: they block sending while the reads below run.
     setAttachments((current) => [...current, ...candidates]);
+    // A macOS screenshot thumbnail drops a file promise whose bytes can be gone by
+    // upload time. Copy them now, so a source that cannot be read fails here, named.
+    const prepared: ComposerAttachment[] = [];
+    for (const item of candidates) {
+      if (item.status !== "preparing") continue;
+      let next: ComposerAttachment;
+      try {
+        const bytes = await item.file.arrayBuffer();
+        if (bytes.byteLength !== item.file.size) throw new Error("short read");
+        next = {
+          ...item,
+          file: new globalThis.File([bytes], item.file.name, {
+            type: item.file.type,
+            lastModified: item.file.lastModified,
+          }),
+        };
+        prepared.push(next);
+      } catch {
+        next = {
+          ...item,
+          status: "error",
+          error: "Could not read this file. Save it to disk first, then attach it.",
+        };
+      }
+      setAttachments((current) =>
+        current.map((candidate) => (candidate.localId === item.localId ? next : candidate)),
+      );
+    }
 
-    const uploadCandidates = candidates.filter((candidate) => candidate.status === "preparing");
+    const uploadCandidates = prepared;
     for (const [index, item] of uploadCandidates.entries()) {
       try {
         const result = await uploadChatAttachment(
@@ -2048,7 +2077,7 @@ export function NodeChat({
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueWork={question.state === "parked" && !relatedActive}
+              continueChat={question.state === "parked" && !relatedActive}
             />
           ))}
       </div>
@@ -2390,6 +2419,7 @@ export function NodeChat({
                     key={`${project.id}:${chatId}`}
                     apiBase={questionApiBase}
                     chatId={chatId}
+                    machine={config.run_on}
                     disabled={readOnly}
                     onRequestedChange={setBrowserOn}
                   />

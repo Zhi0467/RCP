@@ -17,6 +17,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import EllipsisType
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel
@@ -813,6 +814,7 @@ async def _stream_agent_events(
     outcome: _ProviderOutcome,
     binary: str | None,
     invocation_gate: ProviderInvocationGate | None = None,
+    shell_timeout_seconds: int | None | EllipsisType = ...,
     required_session_id: str | None = None,
     supervise_remote: bool = False,
     browser_grant: BrowserGrant | None = None,
@@ -939,6 +941,7 @@ async def _stream_agent_events(
                 else None
             ),
             invocation_gate=invocation_gate,
+            shell_timeout_seconds=shell_timeout_seconds,
             capability=capability,
             browser_grant=browser_grant,
             hidden_read_scope=hidden_read_scope,

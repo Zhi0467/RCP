@@ -48,6 +48,7 @@ class QuestionResponse(BaseModel):
     owner_kind: Literal["chat", "episode"]
     owner_id: str
     operation_id: str
+    capability: str
     question: str
     choices: list[str]
     multiple: bool
@@ -58,6 +59,7 @@ class QuestionResponse(BaseModel):
     resolved_at: str | None
     withdrawn_readonly: bool
     can_answer: bool
+    agent_waiting: bool
     created_at: str
 
 
@@ -77,8 +79,12 @@ def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
         owner_kind=question.origin.owner_kind,
         owner_id=question.origin.owner_id,
         operation_id=question.origin.operation_id,
+        capability=question.origin.capability,
         state=state,
         can_answer=_can_answer(question),
+        agent_waiting=(
+            _can_answer(question) and store.question_activity.is_waiting(question.question_id)
+        ),
     )
 
 

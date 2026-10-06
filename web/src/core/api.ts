@@ -862,6 +862,13 @@ export function loadChatBrowser(apiBase: string, chatId: string): Promise<ChatBr
   return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`);
 }
 
+export function loadProjectMachineBrowser(
+  apiBase: string,
+  machineAlias: string,
+): Promise<MachineBrowserReadiness> {
+  return api(`${apiBase}/machines/${encodeURIComponent(machineAlias)}/browser`);
+}
+
 export function setChatBrowser(
   apiBase: string,
   chatId: string,

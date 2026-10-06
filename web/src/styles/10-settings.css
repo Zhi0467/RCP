@@ -3771,6 +3771,22 @@ details[open] > .view-disclosure-summary > svg:last-child {
   align-items: center;
   gap: 12px;
 }
+/* The row's buttons sit on its header line; everything else spans below. */
+.machine-browser-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.machine-browser-row > * {
+  grid-column: 1 / -1;
+}
+.machine-browser-row > header {
+  grid-column: 1;
+  grid-row: 1;
+}
+.machine-browser-row > .provider-login-notice-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+}
 .machine-browser-row p {
   margin: 0;
 }

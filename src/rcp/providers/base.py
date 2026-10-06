@@ -12,9 +12,15 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from rcp.limits import (
+    SHELL_TIMEOUT_DEFAULT_SECONDS,
+    SHELL_TIMEOUT_MAX_MINUTES,
+    SHELL_TIMEOUT_MIN_MINUTES,
+)
 from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
+    from rcp.agents.invocation_broker import ProviderInvocationGate
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
@@ -133,9 +139,15 @@ class ProviderTurnRequest:
     capability: AgentCapability
     provider_version: str | None
     browser_grant: BrowserGrant | None = None
+    invocation_gate: ProviderInvocationGate | None = None
     legacy_command: list[str] | None = None
     # None is unresolved during migration, never evidence of enforcement.
     hidden_read_scope: HiddenReadScope | None = None
+    #: The execution machine's auto-compact setting for this provider, already
+    #: canonical; empty keeps the CLI's own default.
+    autocompact: str = ""
+    # None preserves the provider default; staging has already resolved the card.
+    shell_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +266,7 @@ class _JsonlProviderTurn(ProviderTurn):
             capability=request.capability,
             provider_version=request.provider_version,
             browser_grant=request.browser_grant,
+            autocompact=request.autocompact,
         )
 
     def initial_input(self) -> bytes:
@@ -347,6 +360,28 @@ class ProviderProfile:
     session_format: SessionFormat | None = None
     #: The execution-host turn fence for each of this provider's runtime ids.
     turn_fences: dict[str, type[TurnFence]]
+    #: What a machine card's auto-compact field accepts for this CLI; None
+    #: when RCP passes this CLI no auto-compact setting.
+    autocompact_hint: str | None = None
+    shell_timeout_default_seconds: int = SHELL_TIMEOUT_DEFAULT_SECONDS
+
+    def canonical_shell_timeout(self, value: str) -> str:
+        """Canonical whole minutes for the machine card's shell timeout."""
+
+        value = value.strip()
+        if value.isascii() and value.isdecimal():
+            minutes = int(value)
+            if SHELL_TIMEOUT_MIN_MINUTES <= minutes <= SHELL_TIMEOUT_MAX_MINUTES:
+                return str(minutes)
+        raise ValueError(
+            f"Shell timeout must be whole minutes, {SHELL_TIMEOUT_MIN_MINUTES}"
+            f" to {SHELL_TIMEOUT_MAX_MINUTES}"
+        )
+
+    def canonical_autocompact(self, value: str) -> str:
+        """The machine card's auto-compact value as this CLI takes it, or ValueError."""
+
+        raise ValueError(f"{self.label} has no auto-compact setting")
 
     def session_roots(self, sources: object, *, remote: bool) -> list[str]:
         """Return this provider's configured native-session roots.
@@ -497,6 +532,7 @@ class ProviderProfile:
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError

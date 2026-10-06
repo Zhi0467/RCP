@@ -103,8 +103,14 @@ def atomic_write(path: Path, text: str) -> None:
         Path(name).unlink(missing_ok=True)
 
 
+# Written by Install while it holds the host lock. Trusted only while the lock is held,
+# so a marker left by a killed install never reports a phantom one.
+INSTALL_MARKER = "installing"
+SMOKE_OWNER_TOKEN = "install-smoke"
+
+
 @contextmanager
-def host_lock(root: Path, timeout: float):
+def host_lock(root: Path, timeout: float, *, report_install: bool = False):
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink() or root.stat().st_uid != os.getuid():
         raise UnavailableError("storage_unavailable", "Browser root is not an owned directory")
@@ -116,6 +122,14 @@ def host_lock(root: Path, timeout: float):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                # A running install holds the lock for minutes; answer now instead of waiting.
+                with suppress(FileNotFoundError):
+                    if report_install:
+                        started = (root / INSTALL_MARKER).stat().st_mtime
+                        minutes = max(0, int((time.time() - started) // 60))
+                        raise UnavailableError(
+                            "installing", f"Install started {minutes} min ago"
+                        ) from None
                 if time.monotonic() >= deadline:
                     raise UnavailableError(
                         "busy", "Another browser operation is still running"
@@ -185,11 +199,16 @@ class HostRuntime:
         }
         self.env["PLAYWRIGHT_BROWSERS_PATH"] = str(self.tools / "browsers")
         self.env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+        self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
+        if self.backend == "systemd_user":
+            # The daemon's socket lives under TMPDIR. A service with PrivateTmp (the team
+            # server) sees its own /tmp, the user manager running the daemon another; the
+            # account's runtime directory is the same for both, and for the agent's CLI.
+            self.env["TMPDIR"] = self.env["XDG_RUNTIME_DIR"]
         self.node = shutil.which("node", path=self.env.get("PATH"))
         self.npm = shutil.which("npm", path=self.env.get("PATH"))
         self.cli = self.tools / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"
         self.core = self.tools / "node_modules" / "playwright-core"
-        self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
         self.hidden_read_command: list[str] = []
         self.hidden_read_enforcement: dict | None = None
         self.hidden_read_fingerprint: str | None = None
@@ -571,6 +590,10 @@ class HostRuntime:
             if result.returncode:
                 raise UnavailableError("owner_unavailable", result.stderr.strip())
         while not self.alive(record):
+            if time.monotonic() >= self.deadline:
+                raise UnavailableError(
+                    "start_failed", "The browser daemon is running but its session never answered"
+                )
             if not self.owner_status(record):
                 log = owner_dir / "daemon.log"
                 raise UnavailableError(
@@ -668,7 +691,15 @@ class HostRuntime:
         if not self.node:
             raise UnavailableError("node_missing", "Node is missing from the execution account")
         launcher = self.tools / "bin" / "playwright-cli"
-        atomic_write(launcher, f'#!/bin/sh\nexec {shlex.join([self.node, str(self.cli)])} "$@"\n')
+        export = (
+            f"export TMPDIR={shlex.quote(self.env['TMPDIR'])}\n"
+            if self.backend == "systemd_user"
+            else ""
+        )
+        atomic_write(
+            launcher,
+            f'#!/bin/sh\n{export}exec {shlex.join([self.node, str(self.cli)])} "$@"\n',
+        )
         launcher.chmod(0o700)
         return str(launcher.parent)
 
@@ -717,11 +748,24 @@ class HostRuntime:
         return self.readiness()
 
     def install(self) -> dict:
+        # Covers the owner checks too: a stalled probe can hold the lock for minutes.
+        atomic_write(self.root / INSTALL_MARKER, "")
+        try:
+            return self._checked_install()
+        finally:
+            (self.root / INSTALL_MARKER).unlink(missing_ok=True)
+
+    def _checked_install(self) -> dict:
         self.owner_ready()
         prerequisite = self.prerequisites()
         if prerequisite:
             return prerequisite
         for record in self.records():
+            if record["owner_token"] == SMOKE_OWNER_TOKEN:
+                # A past install's own smoke daemon is no member's session: stop it
+                # rather than refusing, and before its tools are replaced.
+                self.stop_owner(record)
+                continue
             try:
                 alive = self.alive(record)
             except UnavailableError as exc:
@@ -732,6 +776,9 @@ class HostRuntime:
                 alive = self.owner_status(record)
             if alive:
                 return self.readiness_result("busy", "Close RCP browser sessions before installing")
+        return self._install()
+
+    def _install(self) -> dict:
         self.tools.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.run(
             [
@@ -748,7 +795,7 @@ class HostRuntime:
         ready = self.readiness(require_verified=False)
         if ready["status"] != "ready":
             return ready
-        token = "install-smoke"
+        token = SMOKE_OWNER_TOKEN
         record = {
             "owner_token": token,
             "session_name": "rcp-smoke-" + hashlib.sha256(str(self.root).encode()).hexdigest()[:16],
@@ -758,13 +805,33 @@ class HostRuntime:
             "leases": {},
             "last_used": time.time(),
         }
+        deadline = self.deadline
         try:
             self.save(record)
-            self.start(record, self.executable())
-        finally:
-            self.close_record(record, delete=True)
+            self.deadline = min(deadline, time.monotonic() + self.limits["start"])
+            try:
+                self.start(record, self.executable())
+            except subprocess.TimeoutExpired as exc:
+                raise UnavailableError(
+                    "start_failed", "The browser session did not answer within the start limit"
+                ) from exc
+        except BaseException:
+            # Keep the start failure: a failed cleanup stays pending, and the next
+            # Install stops the leftover smoke owner.
+            with suppress(Exception):
+                self._close_smoke(record, deadline)
+            raise
+        self._close_smoke(record, deadline)
         atomic_write(self.tools / "verified.json", json.dumps({"version": CLI_VERSION}))
         return self.readiness()
+
+    def _close_smoke(self, record: dict, deadline: float) -> None:
+        """Cleanup gets the close budget, not what the install deadline has left."""
+        self.deadline = min(deadline, time.monotonic() + self.limits["close"])
+        try:
+            self.close_record(record, delete=True)
+        finally:
+            self.deadline = deadline
 
 
 def dispatch(request: dict) -> dict:
@@ -776,7 +843,13 @@ def dispatch(request: dict) -> dict:
                 "account_mismatch", "SSH answered as a different execution account"
             )
         runtime = HostRuntime(request)
-        with host_lock(runtime.root, max(0.001, runtime.deadline - time.monotonic())):
+        with host_lock(
+            runtime.root,
+            max(0.001, runtime.deadline - time.monotonic()),
+            report_install=action in {"readiness", "install"},
+        ):
+            # Holding the lock proves no install runs; drop a marker a killed one left.
+            (runtime.root / INSTALL_MARKER).unlink(missing_ok=True)
             return getattr(runtime, action)()
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, UnavailableError) else "runtime_error"

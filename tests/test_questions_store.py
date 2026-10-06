@@ -51,7 +51,13 @@ def test_create_or_get_survives_restart_and_keeps_first_binding(store, origin) -
     first = store.create_or_get_question(
         origin=origin, key="pick", question="Which?", choices=["A"]
     )
-    later = origin.model_copy(update={"operation_id": "later-turn", "capability": "discuss"})
+    later = origin.model_copy(
+        update={
+            "operation_id": "later-turn",
+            "capability": "discuss",
+            "write_scope_fingerprint": None,
+        }
+    )
     reopened = AppStore(store.path)
     assert (
         reopened.create_or_get_question(origin=later, key="pick", question="Which?", choices=["A"])
@@ -227,3 +233,18 @@ def test_migration_upgrades_existing_database_and_preserves_existing_rows(store)
     assert migrated.list_questions() == []
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT * FROM space_identity").fetchall() == identity
+
+
+@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate", "scratch_patch"])
+def test_origin_write_scope_matches_capability(origin, capability):
+    values = {**origin.model_dump(), "capability": capability}
+    if capability == "discuss":
+        with pytest.raises(ValidationError):
+            QuestionOrigin.model_validate(values)
+        values["write_scope_fingerprint"] = None
+        assert QuestionOrigin.model_validate(values).write_scope_fingerprint is None
+    else:
+        assert QuestionOrigin.model_validate(values).write_scope_fingerprint == "scope-hash"
+        values.pop("write_scope_fingerprint")
+        with pytest.raises(ValidationError):
+            QuestionOrigin.model_validate(values)

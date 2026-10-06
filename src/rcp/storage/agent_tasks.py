@@ -292,8 +292,14 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or task.write_scope_fingerprint != origin.write_scope_fingerprint
                 or task.dispatch_authority is None
                 or task.dispatch_authority.task_contract != origin.capability
-                or task.request.get("mode") != "work"
-                or task.request.get("patch_kind", "work") != "work"
+                or task.request.get("artifact_edit") is not None
+                or task.request.get("mode")
+                != ("discuss" if origin.capability == "discuss" else "work")
+                or (
+                    task.dispatch_authority.scope.patch_kind is not None
+                    if origin.capability == "discuss"
+                    else task.request.get("patch_kind", "work") != "work"
+                )
                 or classify_terminal_error(task.error or "") == "stale_session"
             ):
                 raise ValueError("question_origin_binding_unavailable")

@@ -21,6 +21,7 @@ from rcp.config import MachineConfig, load_manifest
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.projects import ProjectCatalog
+from rcp.providers import PROVIDER_IDS, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
 from rcp.storage import AppStore
@@ -70,6 +71,41 @@ class UpdateSpaceMachineRequest(BaseModel):
     name: str | None = None
     writable_paths: list[str] | None = Field(default=None, max_length=_MAX_WRITABLE_PATHS)
     hidden_folders: list[str] | None = Field(default=None, max_length=HIDDEN_READ_PATH_MAX_COUNT)
+    #: The providers to change; an empty value restores that CLI's own default.
+    provider_autocompact: dict[str, Annotated[str, Field(max_length=16)]] | None = Field(
+        default=None, max_length=len(PROVIDER_IDS)
+    )
+
+    provider_shell_timeout: dict[str, Annotated[str, Field(max_length=16)]] | None = Field(
+        default=None, max_length=len(PROVIDER_IDS)
+    )
+
+    @field_validator("provider_shell_timeout")
+    @classmethod
+    def validate_provider_shell_timeout(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str | None] | None:
+        if value is None:
+            return None
+        result: dict[str, str | None] = {}
+        for provider, setting in value.items():
+            profile = profile_for(provider)
+            result[provider] = profile.canonical_shell_timeout(setting) if setting.strip() else None
+        return result
+
+    @field_validator("provider_autocompact")
+    @classmethod
+    def validate_provider_autocompact(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str | None] | None:
+        if value is None:
+            return None
+        return {
+            provider: (
+                profile_for(provider).canonical_autocompact(setting) if setting.strip() else None
+            )
+            for provider, setting in value.items()
+        }
 
     @field_validator("name")
     @classmethod
@@ -172,6 +208,21 @@ def _machine_view(
         "os_account": machine.os_account,
         "writable_paths": list(machine.writable_paths),
         "hidden_folders": list(machine.hidden_folders),
+        "provider_autocompact": dict(machine.provider_autocompact),
+        "provider_shell_timeout": dict(machine.provider_shell_timeout),
+        "autocompact_providers": [
+            {"provider": profile.id, "label": profile.label, "hint": profile.autocompact_hint}
+            for profile in map(profile_for, PROVIDER_IDS)
+            if profile.autocompact_hint is not None
+        ],
+        "shell_timeout_providers": [
+            {
+                "provider": profile.id,
+                "label": profile.label,
+                "default_minutes": profile.shell_timeout_default_seconds // 60,
+            }
+            for profile in map(profile_for, PROVIDER_IDS)
+        ],
         "hidden_read": _hidden_read_projection(machine, data_dir).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
@@ -428,7 +479,12 @@ def update_space_machine(
                 },
             ) from exc
     updated = store.update_space_machine(
-        machine_id, name=body.name, writable_paths=writable_paths, hidden_folders=hidden_folders
+        machine_id,
+        name=body.name,
+        writable_paths=writable_paths,
+        hidden_folders=hidden_folders,
+        provider_autocompact=body.provider_autocompact,
+        provider_shell_timeout=body.provider_shell_timeout,
     )
     return _one_machine_view(store, updated, _visible_project_ids(request, identity_access, store))
 

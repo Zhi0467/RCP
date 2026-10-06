@@ -1183,10 +1183,10 @@
   color: var(--night-moon);
 }
 /* Controls keep their own surfaces, so they keep the page's ink. */
-.project-consolidation :is(.button, input) {
+.project-consolidation :is(.button, input, select) {
   color: var(--ink);
 }
-.project-consolidation :is(button, input):focus-visible {
+.project-consolidation :is(button, input, select):focus-visible {
   outline: 2px solid var(--night-moon);
   outline-offset: 2px;
 }
@@ -1318,15 +1318,7 @@
   border-style: dotted;
   opacity: 0.45;
 }
-.project-consolidation .consolidation-enable {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  padding: 18px 20px 0;
-  font-size: 0.9rem;
-}
-.project-consolidation .consolidation-enable label {
+.project-consolidation .project-member-actions label {
   display: flex;
   align-items: center;
   gap: 0.45rem;

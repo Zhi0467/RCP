@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import uuid
 from dataclasses import replace
@@ -42,6 +43,7 @@ from rcp.providers.claude.remote import (
 )
 
 if TYPE_CHECKING:
+    from rcp.agents.invocation_broker import ProviderInvocationGate
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
@@ -67,9 +69,29 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                 provider_version=request.provider_version,
                 browser_grant=request.browser_grant,
                 hidden_read_scope=request.hidden_read_scope,
+                autocompact=request.autocompact,
             )
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
+        if request.shell_timeout_seconds is not None:
+            seconds = request.shell_timeout_seconds
+            index = self.command.index("--settings") + 1 if "--settings" in self.command else None
+            settings = json.loads(self.command[index]) if index is not None else {}
+            settings.setdefault("env", {}).update(
+                BASH_DEFAULT_TIMEOUT_MS=str(seconds * 1000),
+                BASH_MAX_TIMEOUT_MS=str(max(seconds, _BASH_MAX_TIMEOUT_DEFAULT_SECONDS) * 1000),
+            )
+            rendered = json.dumps(settings, separators=(",", ":"))
+            if index is None:
+                self.command.extend(["--settings", rendered])
+            else:
+                self.command[index] = rendered
+        if (
+            request.capability == "discuss"
+            and request.invocation_gate is not None
+            and request.invocation_gate.client_path is not None
+        ):
+            self.command = _with_discuss_client_permissions(self.command, request.invocation_gate)
         if (
             request.hidden_read_scope is not None
             and request.hidden_read_scope.account_home is not None
@@ -225,6 +247,13 @@ _CLAUDE_MODELS = tuple(
 )
 
 
+# The window `claude --autocompact` accepts besides `auto` (probed on Claude Code 2.1.287).
+_AUTOCOMPACT_MIN_TOKENS = 100_000
+_AUTOCOMPACT_MAX_TOKENS = 1_000_000
+# Claude Code's own BASH_MAX_TIMEOUT_MS default (probed on 2.1.291).
+_BASH_MAX_TIMEOUT_DEFAULT_SECONDS = 600
+
+
 class ClaudeProfile(ProviderProfile):
     @property
     def authentication(self) -> ProviderAuthentication:
@@ -240,6 +269,7 @@ class ClaudeProfile(ProviderProfile):
     remote_session_roots_field = "remote_claude_roots"
     native_update = ProviderNativeUpdate(self_update_args=("update",))
     session_format = ClaudeSessionFormat()
+    autocompact_hint = f"auto, or {_AUTOCOMPACT_MIN_TOKENS} to {_AUTOCOMPACT_MAX_TOKENS} tokens"
     legacy_runtime_id = "claude.stream-json.v1"
     default_runtime = "stream-json"
     runtime_aliases = {
@@ -427,6 +457,14 @@ class ClaudeProfile(ProviderProfile):
     def project_write_enforcement_mode(self) -> str:
         return "claude.permission-allowlist.v1"
 
+    def canonical_autocompact(self, value: str) -> str:
+        value = value.strip().lower()
+        if value == "auto":
+            return value
+        if value.isdigit() and _AUTOCOMPACT_MIN_TOKENS <= int(value) <= _AUTOCOMPACT_MAX_TOKENS:
+            return str(int(value))
+        raise ValueError(f"Claude auto-compact must be {self.autocompact_hint}")
+
     def command(
         self,
         prompt: str,
@@ -443,6 +481,7 @@ class ClaudeProfile(ProviderProfile):
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
@@ -520,6 +559,8 @@ class ClaudeProfile(ProviderProfile):
             command.extend(["--model", model])
         if reasoning:
             command.extend(["--effort", reasoning])
+        if autocompact:
+            command.extend(["--autocompact", autocompact])
         return command
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
@@ -654,3 +695,34 @@ def _claude_hidden_read_settings(scope: HiddenReadScope) -> dict[str, object]:
 
 def _claude_absolute_pattern(path: str, *, directory: bool = True) -> str:
     return f"//{path.lstrip('/')}" + ("/**" if directory else "")
+
+
+def _with_discuss_client_permissions(command: list[str], gate: ProviderInvocationGate) -> list[str]:
+    """Grant the isolated client only after denying replacement of its inputs."""
+    assert gate.client_path is not None
+    command = list(command)
+    client = shlex.join(gate.client_executable_argv())
+    # Keep the rule inside the existing allowedTools group.
+    end = command.index("--allowedTools") + 1
+    while end < len(command) and not command[end].startswith("--"):
+        end += 1
+    command.insert(end, f"Bash({client}:*)")
+    settings_index = command.index("--settings") + 1 if "--settings" in command else None
+    settings = json.loads(command[settings_index]) if settings_index is not None else {}
+    # A literal path, unlike hidden_globs. Escape only the class brackets, which could
+    # fail to match their own characters; `*` and `?` still match themselves. A
+    # backslash becomes `?`, which matches it: over-denying is the safe side, and
+    # Claude's matcher mishandles escaped `?` and backslash pairs.
+    directory = re.sub(
+        r"([\[\]])", r"\\\1", str(PurePosixPath(gate.client_path).parent).replace("\\", "?")
+    )
+    settings.setdefault("permissions", {}).setdefault("deny", []).extend(
+        f"Edit({_claude_absolute_pattern(directory, directory=descendants)})"
+        for descendants in (False, True)
+    )
+    rendered = json.dumps(settings, separators=(",", ":"))
+    if settings_index is None:
+        command.extend(["--settings", rendered])
+    else:
+        command[settings_index] = rendered
+    return command

@@ -38,9 +38,9 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
-    ask_contract,
     chat_master_contract_key,
     invoked_package_pointers,
+    live_ask_contract,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -53,9 +53,9 @@ from rcp.core.models import Patch
 from rcp.core.operations import CreateProposalsOperation
 from rcp.history import ReplayHalted
 from rcp.limits import (
-    COMMAND_CLIENT_WAIT_SECONDS,
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+    ask_hold_seconds,
 )
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
@@ -102,7 +102,7 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.questions import WorkCommandHandler
+from rcp.runs.questions import WorkCommandHandler, require_question_origin_binding
 from rcp.runs.questions import work_command_handler as _work_command_handler
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
@@ -343,14 +343,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             )
         )
     if "ask" in handler.allowed_verbs:
-        instructions.append(
-            ask_contract(
-                f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. After pending, repeat "
-                "the exact call to keep waiting when a quick answer is likely; otherwise end this "
-                "turn and the question parks. The human answers on its question card; composer "
-                "messages are separate steering."
-            )
-        )
+        instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
     if "apply" in handler.allowed_verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
@@ -428,11 +421,19 @@ def _resolve_work_execution(
     )
     request = _pinned_to_profile(request, profile)
     execution_machine = service.manifest.machine_map[profile.run_on]
+    # Read once per turn: the ask hold, the prompt, and the provider all use this value.
+    shell_timeout = (
+        execution.store.provider_shell_timeout_seconds(profile.provider, execution_machine.host)
+        if execution is not None
+        else None
+    )
     return _ResolvedWorkExecution(
         request=request,
         execution_machine_alias=execution_machine.alias,
         execution_host=execution_machine.host,
         provider_binary=execution_machine.provider_paths.get(profile.provider),
+        ask_wait_seconds=ask_hold_seconds(shell_timeout),
+        shell_timeout_seconds=shell_timeout,
     )
 
 
@@ -1615,6 +1616,8 @@ async def _settle_patch_deliverable(
                 ),
                 turn_id=f"{staged.token}:work-patch-correction:{correction_rounds}",
                 timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+                ask_wait_seconds=launch_turn.patch_inputs.validator_staged.ask_wait_seconds,
+                shell_timeout_seconds=launch_turn.patch_inputs.validator_staged.shell_timeout_seconds,
             )
             correction_lifecycle = _start_work_validator_mailbox(
                 launch_turn.service,
@@ -1804,6 +1807,8 @@ async def _settle_watch_deliverable(
             task_id=turn.execution.operation_id,
             turn_id=f"{staged.token}:watch-correction:{correction_rounds}",
             timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            ask_wait_seconds=launch_turn.patch_inputs.validator_staged.ask_wait_seconds,
+            shell_timeout_seconds=launch_turn.patch_inputs.validator_staged.shell_timeout_seconds,
             authority="broker",
             episode_id=turn.request.control_episode_id,
         )
@@ -2396,11 +2401,23 @@ async def _stream_work_run(
                 hidden_read_scope=turn.hidden_read_scope,
             )
         )
-        question_followup = bool(
-            execution is not None
-            and execution.store.question_for_followup(execution.operation_id) is not None
+        question = (
+            execution.store.question_for_followup(execution.operation_id)
+            if execution is not None
+            else None
         )
-        required_session_id = turn.request.session_id if turn.waking or question_followup else None
+        required_session_id = turn.request.session_id if turn.waking else None
+        if question is not None:
+            assert execution is not None
+            require_question_origin_binding(
+                execution,
+                turn.request,
+                question.origin,
+                execution_host=turn.execution_host,
+                stage_root=execution.stage_root,
+                write_scope_fingerprint=turn.write_scope.fingerprint,
+            )
+            required_session_id = question.origin.native_session_id
         if turn.execution_host:
             _record_work_finalization_context(turn, staged, required_session_id=required_session_id)
         resuming = turn.resuming
@@ -2566,6 +2583,9 @@ async def _stream_work_graph_repair(
                 saved_stage=True,
             )
         token = _task_token(execution)
+        shell_timeout = execution.store.provider_shell_timeout_seconds(
+            profile.provider, execution_host
+        )
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,
@@ -2575,6 +2595,8 @@ async def _stream_work_graph_repair(
             turn_id=f"{token}:work-graph-repair",
             broker=True,
             episode_id=request.control_episode_id,
+            ask_wait_seconds=ask_hold_seconds(shell_timeout),
+            shell_timeout_seconds=shell_timeout,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -3154,6 +3176,17 @@ def open_recorded_work_turn(
     """
 
     turn = _load_work_finalization_context(service, request, execution, role=role, owner=owner)
+    question = execution.store.question_for_followup(execution.operation_id)
+    if question is not None:
+        require_question_origin_binding(
+            execution,
+            turn.request,
+            question.origin,
+            execution_host=turn.execution_host,
+            stage_root=execution.stage_root,
+            write_scope_fingerprint=turn.write_scope.fingerprint,
+        )
+        turn.required_session_id = question.origin.native_session_id
     verdict = decode_recorded_turn(recorded, provider_turn_request(turn.workspace, recorded))
     refusal = refuse_recorded_session_mismatch(
         execution, turn.outcome, verdict, turn.required_session_id

@@ -32,7 +32,7 @@ from rcp.agents.command_protocol import (
     staged_command_client_source,
     validate_command_request,
 )
-from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.invocation_broker import ProviderInvocationGate, isolated_python_argv
 from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
 from rcp.limits import (
     COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
@@ -181,6 +181,8 @@ class StagedCommandMailbox:
     credential_path: str | None
     invocation_gate: ProviderInvocationGate | None = None
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
+    shell_timeout_seconds: int | None = None
 
     @property
     def workspace(self) -> str:
@@ -202,11 +204,12 @@ class StagedCommandMailbox:
             else ("--credential", self.credential_path or "")
         )
         return (
-            "python3",
-            self.client_path,
+            *isolated_python_argv(self.client_path),
             *authority,
             "--timeout",
             f"{timeout:g}",
+            "--ask-wait",
+            f"{self.ask_wait_seconds:g}",
             "--workspace",
             self.workspace,
             *arguments,
@@ -235,11 +238,15 @@ def stage_command_mailbox(
     turn_id: str,
     authority: Literal["validate_only", "broker"] | None = None,
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS,
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
+    shell_timeout_seconds: int | None = None,
 ) -> StagedCommandMailbox:
     """Clear a reusable stage and issue either broker or validate-only authority."""
 
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("command client timeout must be a positive finite number")
+    if not math.isfinite(ask_wait_seconds) or ask_wait_seconds <= 0:
+        raise ValueError("ask wait must be a positive finite number")
     if remote_stage is not None and local_input_stage is not None:
         raise ValueError("a remote command mailbox cannot use a local input stage")
     mailbox = RunStageMailbox.for_stage(local_stage=local_stage, remote_stage=remote_stage)
@@ -286,6 +293,7 @@ def stage_command_mailbox(
             invocation_gate = ProviderInvocationGate(
                 mailbox_id=credential.mailbox_id,
                 broker_path=broker_path,
+                client_path=client_path,
                 # The broker resolves `~` on the execution host.
                 socket_path=f"~/.rcp/sockets/rcp-command-{credential.mailbox_id}.sock",
                 workspace=str(mailbox.workspace),
@@ -303,6 +311,8 @@ def stage_command_mailbox(
         credential_path=credential_path,
         invocation_gate=invocation_gate,
         timeout_seconds=timeout_seconds,
+        ask_wait_seconds=ask_wait_seconds,
+        shell_timeout_seconds=shell_timeout_seconds,
     )
 
 
@@ -489,6 +499,7 @@ async def serve_command_mailbox(
                 request_id = _request_identity_from_name(name, credential.mailbox_id)
                 assert request_id is not None
                 refusal = None
+                transient = False
                 if name not in answers:
                     try:
                         request = await retry(
@@ -511,8 +522,13 @@ async def serve_command_mailbox(
                         handled = False
                     else:
                         response, handled = await handle(request)
+                        # A pending ask round is safe to answer again, and a long hold
+                        # sends thousands of them; never retain or checkpoint those.
+                        transient = (
+                            request.verb == "ask" and response.result.get("state") == "pending"
+                        )
                     answers[name] = response
-                    if checkpoint is not None:
+                    if checkpoint is not None and not transient:
                         await asyncio.to_thread(checkpoint)
                     if not handled:
                         await record(response.status, response.message or "")
@@ -526,6 +542,8 @@ async def serve_command_mailbox(
                     drain=True,
                 )
                 seen.add(name)
+                if transient:
+                    del answers[name]
                 if refusal is not None:
                     raise refusal
             await pause(poll_seconds)

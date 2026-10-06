@@ -4,6 +4,8 @@ import { browserReason } from "../core/browserStatus";
 import { errorMessage } from "../core/errors";
 import type { MachineBrowserReadiness } from "../core/types";
 
+const INSTALL_POLL_MS = 15_000;
+
 export function MachineBrowserRow({
   machineId,
   disabled,
@@ -15,6 +17,7 @@ export function MachineBrowserRow({
   const [pending, setPending] = useState<"check" | "install" | "linger" | null>("check");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [failedPolls, setFailedPolls] = useState(0);
   useEffect(() => {
     let cancelled = false;
     void loadMachineBrowser(machineId)
@@ -33,6 +36,30 @@ export function MachineBrowserRow({
       cancelled = true;
     };
   }, [machineId]);
+  // An install started earlier, maybe from another page, finishes on its own.
+  useEffect(() => {
+    if (readiness?.status !== "installing" || pending !== null) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void loadMachineBrowser(machineId).then(
+        (result) => {
+          if (cancelled) return;
+          setError(null);
+          setReadiness(result);
+        },
+        (failure) => {
+          if (cancelled) return;
+          setError(errorMessage(failure));
+          // A failed check leaves readiness unchanged; count it so polling continues.
+          setFailedPolls((count) => count + 1);
+        },
+      );
+    }, INSTALL_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [machineId, readiness, pending, failedPolls]);
   async function run(action: "check" | "install" | "linger") {
     setPending(action);
     setError(null);

@@ -44,8 +44,17 @@ class QuestionOrigin(BaseModel):
     stage_root: str = Field(min_length=1)
     stage_host: str | None = None
     capability: str = Field(min_length=1)
-    write_scope_fingerprint: str = Field(min_length=1)
+    write_scope_fingerprint: str | None = Field(default=None, min_length=1)
     graph_target: GraphTargetRef
+
+    @model_validator(mode="after")
+    def validate_write_scope(self) -> QuestionOrigin:
+        if self.capability == "discuss":
+            if self.write_scope_fingerprint is not None:
+                raise ValueError("Discuss questions cannot carry a write scope fingerprint")
+        elif self.write_scope_fingerprint is None:
+            raise ValueError("Question capability requires a write scope fingerprint")
+        return self
 
 
 class QuestionRecord(BaseModel):

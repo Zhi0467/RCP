@@ -386,10 +386,14 @@ Project members read questions through
 `GET /api/projects/{project_id}/chats/{chat_id}/questions` and
 `GET /api/projects/{project_id}/episodes/{episode_id}/questions`. Episode lists
 include predecessor questions without changing their origin. Each question
-publishes its id, owner and asking operation, text, choices, multiple-selection
-flag, state, answer, chosen choices, human resolver and time, creation time,
-`withdrawn_readonly`, and the server's `can_answer` offer. Open questions whose
-asking turn has settled, and orchestrator questions, project as `parked`.
+publishes its id, owner and asking operation, origin capability, text, choices,
+multiple-selection flag, state, answer, chosen choices, human resolver and time,
+creation time, `withdrawn_readonly`, the server's `can_answer` offer, and
+`agent_waiting`. The latter is true for an open, non-withdrawn question whose last
+pending ask round arrived less than 10 seconds ago, using the server's monotonic
+clock. This process-local freshness tolerates the remote mailbox polling cadence.
+Open questions whose asking turn has settled, and orchestrator questions, project
+as `parked`.
 
 `POST /api/projects/{project_id}/questions/{question_id}/answer` accepts only
 `answer` text and `choices`; the store validates both and records the
@@ -409,10 +413,13 @@ Node and project chats show open question cards above the composer and resolved
 cards read-only in transcript order. The composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format. A parked
-chat answer with no running turn names Work continuation on its submit control.
+chat answer with no running turn names Discuss or Work continuation on its submit
+control, matching the asking turn's capability.
 Experiment and Auto-research detail show the same cards; withdrawn cards retain
 their history with an **Episode ended** state. Question refresh follows existing
-chat and episode refresh/polling, including turn command/state changes.
+chat and episode refresh/polling, including turn command/state changes and the
+active project heartbeat. Fresh pending rounds show a cobalt **Agent is waiting**
+pill; otherwise the open card shows **Needs you**.
 Question notifications open the corresponding chat or expanded episode view.
 
 ## Episode merge API
@@ -460,6 +467,9 @@ probes and schedules a fresh background check of that machine.
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
+`GET /api/projects/{project_id}/machines/{machine_alias}/browser` returns the
+browser readiness of that machine's execution account; the composer reads it
+while a chat's Browser toggle is on and warns when it is not ready.
 
 `GET /api/projects/{project_id}/watchers` supplies the external job rows for both
 scheduler and helper work. Every external row includes its required shell check,
@@ -1489,6 +1499,19 @@ in use by any project, or whose use cannot be established, cannot be deleted,
 and host and account never change. A `PATCH` of `writable_paths` validates each
 path on its machine: absolute, an existing directory, no `:` or `$` or control
 characters, not `/`, and not inside RCP's own storage.
+A `PATCH` of `provider_autocompact` merges the given providers into the card's
+map of provider id to auto-compact setting; each provider profile validates its own value (Claude:
+`auto` or a token window, rendered as `--autocompact`; Codex: a token count,
+rendered as `model_auto_compact_token_limit`), an empty value restores the CLI
+default, and a provider without the setting is refused. The launcher reads the
+card at every launch on that machine, so an edit applies from the next turn and
+is not recorded with any turn.
+A `PATCH` of `provider_shell_timeout` uses the same per-provider merge and empty
+value removal. Claude, OpenCode and Codex accept whole minutes from 2 through
+120. The card exposes `shell_timeout_providers` entries with `provider`, `label`
+and `default_minutes`, alongside `autocompact_providers`, and uses one setting
+row component for both fields. Unset shell timeouts keep the provider default;
+the resolved value also sets the ask hold, with a 30-second margin.
 `/api/space/machines/{id}/directories` lists one directory level on the machine,
 filtered then paged, marking protected entries; project setup's folder browser
 uses the same endpoint. `GET /api/space/machines/{id}/browser` reports that

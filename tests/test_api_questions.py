@@ -24,7 +24,9 @@ def questions_api(manifest, tmp_path):
     )
 
 
-def _question(store, project_id, *, owner_kind="chat", owner_id="chat", key="ask"):
+def _question(
+    store, project_id, *, owner_kind="chat", owner_id="chat", key="ask", capability="work_auto"
+):
     return store.create_or_get_question(
         origin=QuestionOrigin(
             project_id=project_id,
@@ -34,8 +36,8 @@ def _question(store, project_id, *, owner_kind="chat", owner_id="chat", key="ask
             provider="codex",
             native_session_id="session",
             stage_root="/stage",
-            capability="work_auto",
-            write_scope_fingerprint="scope",
+            capability=capability,
+            write_scope_fingerprint=None if capability == "discuss" else "scope",
             graph_target={"kind": "main"},
         ),
         key=key,
@@ -44,12 +46,14 @@ def _question(store, project_id, *, owner_kind="chat", owner_id="chat", key="ask
     )
 
 
-def test_list_answer_retry_conflict_and_dismiss(questions_api):
+@pytest.mark.parametrize("capability", ["work_auto", "discuss"])
+def test_list_answer_retry_conflict_and_dismiss(questions_api, capability):
     app, client, store, project_id = questions_api
-    question = _question(store, project_id)
+    question = _question(store, project_id, capability=capability)
     base = f"/api/projects/{project_id}"
     listed = client.get(f"{base}/chats/chat/questions")
     assert listed.status_code == 200
+    assert listed.json()[0]["capability"] == capability
     assert [(q["question_id"], q["can_answer"], q["state"]) for q in listed.json()] == [
         (question.question_id, True, "parked")
     ]

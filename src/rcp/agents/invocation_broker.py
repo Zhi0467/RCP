@@ -9,6 +9,11 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 
 
+def isolated_python_argv(script_path: str) -> tuple[str, str, str, str]:
+    """Run staged stdlib-only code without ambient imports or site initialization."""
+    return ("python3", "-I", "-S", script_path)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderInvocationGate:
     """In-memory authority shared only with one execution-host broker wrapper."""
@@ -19,6 +24,8 @@ class ProviderInvocationGate:
     workspace: str
     response_timeout_seconds: float
     _token: str = field(repr=False)
+    # Older persisted Work gates predate exact-client Discuss grants.
+    client_path: str | None = None
     _ready_nonce: str = field(default_factory=lambda: secrets.token_hex(16), repr=False)
 
     @property
@@ -27,8 +34,7 @@ class ProviderInvocationGate:
 
     def _broker_argv(self) -> list[str]:
         return [
-            "python3",
-            self.broker_path,
+            *isolated_python_argv(self.broker_path),
             "--socket",
             self.socket_path,
             "--mailbox-id",
@@ -51,6 +57,11 @@ class ProviderInvocationGate:
             sort_keys=True,
         ).encode("utf-8")
         return document + b"\n" + prompt
+
+    def client_executable_argv(self) -> tuple[str, str, str, str]:
+        if self.client_path is None:
+            raise ValueError("This broker gate does not name a staged client")
+        return isolated_python_argv(self.client_path)
 
     def client_arguments(self) -> tuple[str, str, str, str]:
         return ("--broker", self.socket_path, "--mailbox-id", self.mailbox_id)

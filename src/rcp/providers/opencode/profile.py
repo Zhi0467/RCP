@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,7 @@ from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.opencode.remote import EXIT_MARKER, OpenCodeRunTurnFence
 
 if TYPE_CHECKING:
+    from rcp.agents.invocation_broker import ProviderInvocationGate
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.core.models import HiddenReadScope
 
@@ -85,7 +87,18 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
             )
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
-        self.environment = profile.launch_environment(request)
+        permission = _permission(
+            request.capability,
+            request.cwd,
+            request.write_dirs,
+            request.write_scope,
+            request.browser_grant,
+            request.hidden_read_scope,
+            request.invocation_gate,
+        )
+        if request.capability == "discuss" and request.invocation_gate is not None:
+            self.command[self.command.index("--agent") + 1] = _agent_name(permission)
+        self.environment = profile.launch_environment(request, permission=permission)
         self._session_seen = False
         self._completed = False
 
@@ -236,8 +249,9 @@ class OpenCodeProfile(ProviderProfile):
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
-        del prompt, read_dirs
+        del prompt, read_dirs, autocompact
         work_like = capability in {"work_auto", "orchestrate"}
         if work_like:
             _require_project_write_scope(write_scope, capability=capability, write_dirs=write_dirs)
@@ -259,17 +273,11 @@ class OpenCodeProfile(ProviderProfile):
         guard = "" if capability == "paper_readonly" else _OUTSIDE_GIT_GUARD
         return ["sh", "-c", guard + _REPORT_EXIT, *command]
 
-    def launch_environment(self, request: ProviderTurnRequest) -> dict[str, str]:
+    def launch_environment(
+        self, request: ProviderTurnRequest, *, permission: dict[str, object]
+    ) -> dict[str, str]:
         """The variables that carry this turn's rules to OpenCode."""
 
-        permission = _permission(
-            request.capability,
-            request.cwd,
-            request.write_dirs,
-            request.write_scope,
-            request.browser_grant,
-            request.hidden_read_scope,
-        )
         policy = {
             "$schema": "https://opencode.ai/config.json",
             "share": "disabled",
@@ -295,6 +303,10 @@ class OpenCodeProfile(ProviderProfile):
         ):
             wrapper = request.hidden_read_scope.wrapper_path()
             environment.update(SHELL=wrapper, RCP_HIDDEN_READ_POLICY=wrapper + ".policy.json")
+        if request.shell_timeout_seconds is not None:
+            environment["OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"] = str(
+                request.shell_timeout_seconds * 1000
+            )
         return environment
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:
@@ -359,6 +371,7 @@ def _permission(
     scope: ProjectWriteScope | None,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
+    invocation_gate: ProviderInvocationGate | None = None,
 ) -> dict[str, object]:
     # OpenCode applies the last rule that matches, so the blanket deny comes first.
     base: dict[str, object] = {"*": "deny", **dict.fromkeys(_READ_TOOLS, "allow")}
@@ -404,10 +417,20 @@ def _permission(
         # Work has an unbounded shell. Other capabilities keep their narrow
         # file-edit rules, including Discuss when its browser is granted.
         base["bash"] = "allow"
-    elif (
-        capability == "discuss" and browser_grant is not None and browser_grant.status == "granted"
-    ):
-        base["bash"] = {"*": "deny", "playwright-cli *": "allow"}
+    elif capability == "discuss":
+        bash = {"*": "deny"}
+        if browser_grant is not None and browser_grant.status == "granted":
+            bash["playwright-cli *"] = "allow"
+        if invocation_gate is not None and invocation_gate.client_path is not None:
+            client = shlex.join(invocation_gate.client_executable_argv())
+            bash[f"{client} *"] = "allow"
+            # Denies come last, including when legacy cwd contains inputs.
+            directory = str(PurePosixPath(invocation_gate.client_path).parent)
+            for pattern in (directory.lstrip("/"), _root_pattern(directory)):
+                edit.pop(pattern, None)
+                edit[pattern] = "deny"
+        if len(bash) > 1:
+            base["bash"] = bash
     return base
 
 

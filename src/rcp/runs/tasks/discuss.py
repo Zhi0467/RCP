@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -22,14 +22,17 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
+    _command_client_rule,
     chat_master_contract_key,
     invoked_package_pointers,
+    live_ask_contract,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
+from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS, ask_hold_seconds
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
@@ -61,10 +64,22 @@ from rcp.runs.chat import (
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
 from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
+from rcp.runs.question_snapshots import (
+    QuestionSnapshot,
+    question_snapshot,
+    question_snapshot_part,
+    record_question_snapshot_sent,
+)
+from rcp.runs.questions import (
+    WorkCommandHandler,
+    discuss_command_handler,
+    require_question_origin_binding,
+)
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     attach_retained_stage,
     provider_turn_request,
+    refuse_recorded_session_mismatch,
     retained_artifact_directory,
     write_recorded_patch,
 )
@@ -92,9 +107,40 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
+from rcp.runs.tasks.work_turn_runtime import (
+    WorkValidatorMailboxLifecycle,
+    load_work_mailbox_context,
+    restore_work_validator_mailbox,
+    start_work_validator_mailbox,
+)
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable
+
+
+def _discuss_execution_instructions(
+    handler: WorkCommandHandler, wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
+) -> str:
+    if "ask" not in handler.allowed_verbs:
+        return ""
+    return "Only `ask` is available in Discuss.\n" + live_ask_contract(wait_seconds)
+
+
+def resume_discuss_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> WorkValidatorMailboxLifecycle | None:
+    del service
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    handler = discuss_command_handler(execution)
+    if saved.get("ask_allowed") is not True:
+        handler = WorkCommandHandler(execution, None, frozenset())
+    return restore_work_validator_mailbox(
+        execution,
+        command_handler=handler,
+        validate=None,
+    )
 
 
 def _prepare_discuss_chat_prompt(
@@ -110,6 +156,7 @@ def _prepare_discuss_chat_prompt(
     attachment_pointers: list[dict[str, object]],
     ontology_extensions: bool,
     browser_grant: BrowserGrant,
+    question_part: str = "",
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
@@ -131,7 +178,12 @@ def _prepare_discuss_chat_prompt(
             path=edit.master_path,
         )
         node, master = "human_turn", MasterRef(path=path, bootstrap=False)
-        context_delta = {"browser": browser_prompt_line(browser_grant)}
+        context_delta = {
+            "browser": browser_prompt_line(browser_grant),
+            "discuss": {
+                "execution_instructions": ["No RCP commands are available for this artifact edit."]
+            },
+        }
     else:
         node, master, context_delta = _prepare_chat_prompt_state(
             execution,
@@ -159,6 +211,8 @@ def _prepare_discuss_chat_prompt(
     )
     if node == "session_start" and browser_grant.status != "not_requested":
         prompt += "\n\n" + browser_prompt_line(browser_grant)
+    if question_part:
+        prompt += "\n\n" + question_part
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
@@ -177,6 +231,9 @@ class _StoredDiscussFinalizationContext(BaseModel):
     workspace: str
     artifact_scope_id: str
     artifact_directory: str
+    # The question snapshot the prompt carried, so a recovered turn retires its dismissals.
+    question_snapshot_text: str | None = None
+    question_dismissal_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -197,6 +254,7 @@ class DiscussFinalizationContext:
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
     outcome: _ProviderOutcome
+    question_snapshot: QuestionSnapshot | None = None
 
 
 def _record_discuss_finalization_context(context: DiscussFinalizationContext) -> None:
@@ -214,6 +272,12 @@ def _record_discuss_finalization_context(context: DiscussFinalizationContext) ->
         workspace=str(context.workspace),
         artifact_scope_id=context.artifact_scope_id,
         artifact_directory=str(context.artifact_directory),
+        question_snapshot_text=context.question_snapshot.text
+        if context.question_snapshot is not None
+        else None,
+        question_dismissal_ids=context.question_snapshot.dismissal_ids
+        if context.question_snapshot is not None
+        else (),
     )
     content = stored.model_dump_json()
     execution.store.record_agent_task_contract(
@@ -265,6 +329,11 @@ def _load_discuss_finalization_context(
             owner="Discuss",
         ),
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
+        question_snapshot=QuestionSnapshot(
+            text=stored.question_snapshot_text, dismissal_ids=stored.question_dismissal_ids
+        )
+        if stored.question_snapshot_text is not None
+        else None,
     )
 
 
@@ -383,6 +452,11 @@ def _settle_discuss_outcome(
         outcome.failed = True
         yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
         return
+    if context.question_snapshot is not None and execution is not None:
+        # Completion proves the prompt, and the dismissals in it, reached the provider.
+        record_question_snapshot_sent(
+            execution.store, context.question_snapshot, operation_id=execution.operation_id
+        )
     if not answer:
         yield _sse(
             AgentEvent(event="error", text=f"{request.provider} finished without answering.")
@@ -464,6 +538,25 @@ async def finalize_recorded_discuss_result(
     del launcher, data_dir  # Recovery launches nothing and stages nothing.
     context = _load_discuss_finalization_context(service, request, execution)
     verdict = decode_recorded_turn(recorded, provider_turn_request(context.workspace, recorded))
+    question = execution.store.question_for_followup(execution.operation_id)
+    required_session = None
+    if question is not None:
+        require_question_origin_binding(
+            execution,
+            context.request,
+            question.origin,
+            execution_host=context.remote_stage.host if context.remote_stage else "",
+            stage_root=execution.stage_root,
+            write_scope_fingerprint=None,
+        )
+        required_session = question.origin.native_session_id
+    refusal = refuse_recorded_session_mismatch(
+        execution, context.outcome, verdict, required_session
+    )
+    if refusal:
+        for frame in refusal:
+            yield frame
+        return
     # A discarded Patch is still this turn's evidence. The stage is mutable and
     # the record is not, so restore what the host proved before reading it.
     write_recorded_patch(context.workspace, context.remote_stage, recorded)
@@ -507,10 +600,30 @@ async def stream_discuss_run(
     artifact_scope_id: str | None = None
     artifact_directory: Path | PurePosixPath | None = None
     patch_inputs = None
+    mailbox_lifecycle = None
+    snapshot = None
+    primary_error = None
     outcome = _ProviderOutcome(session_id=request.session_id)
     browser_stack = AsyncExitStack()
     try:
         try:
+            question = (
+                execution.store.question_for_followup(execution.operation_id)
+                if execution is not None
+                else None
+            )
+            required_session_id = request.session_id if request.artifact_edit else None
+            if question is not None:
+                assert execution is not None
+                require_question_origin_binding(
+                    execution,
+                    request,
+                    question.origin,
+                    execution_host=execution_host,
+                    stage_root=execution.stage_root,
+                    write_scope_fingerprint=None,
+                )
+                required_session_id = question.origin.native_session_id
             context = service.assemble_chat(request)
             if execution is not None:
                 task = execution.store.agent_task(execution.operation_id)
@@ -699,6 +812,66 @@ async def stream_discuss_run(
                 experiment_watcher_resources=experiment_resource_pointers,
                 workspace=str(workspace),
             )
+            handler = discuss_command_handler(execution)
+            if request.artifact_edit is not None:
+                handler = WorkCommandHandler(execution, None, frozenset())
+            eligible = "ask" in handler.allowed_verbs
+            retained = _retained_chat_patch_values(
+                execution, request, ontology_extensions=context.ontology_extensions
+            )
+            if eligible or (
+                retained is None
+                and (request.artifact_edit is not None or not (resuming or retry_attempt))
+            ):
+                shell_timeout = (
+                    execution.store.provider_shell_timeout_seconds(profile.provider, execution_host)
+                    if execution is not None
+                    else None
+                )
+                patch_inputs = _stage_chat_patch_inputs(
+                    local_stage,
+                    remote_stage,
+                    workspace=workspace,
+                    stage_name=stage_name,
+                    task_id=execution.operation_id if execution is not None else token,
+                    turn_id=f"{token}:discuss",
+                    broker=eligible,
+                    ask_wait_seconds=ask_hold_seconds(shell_timeout),
+                    shell_timeout_seconds=shell_timeout,
+                )
+                retained = {**(retained or {}), "patch": patch_inputs.prompt_values()}
+            instructions = ""
+            if eligible:
+                assert patch_inputs is not None
+                mailbox_lifecycle = start_work_validator_mailbox(
+                    patch_inputs.validator_staged,
+                    execution=execution,
+                    validate=None,
+                    budget=None,
+                    command_handler=handler,
+                    resume_context={"ask_allowed": "ask" in handler.allowed_verbs},
+                )
+                instructions = _discuss_execution_instructions(
+                    handler, patch_inputs.validator_staged.ask_wait_seconds
+                )
+                discuss_values["patch"] = patch_inputs.prompt_values()
+                assert execution is not None and request.chat_id is not None
+                task = execution.store.agent_task(execution.operation_id)
+                assert task is not None
+                snapshot = question_snapshot(
+                    execution.store,
+                    project_id=task.project_id,
+                    owner_kind="chat",
+                    owner_ids=[request.chat_id],
+                    operation_id=execution.operation_id,
+                )
+            question_part = (
+                question_snapshot_part(snapshot, local_stage=local_stage, remote_stage=remote_stage)
+                if snapshot is not None
+                else ""
+            )
+            # Keep multiline prose in one structured overlay value.
+            discuss_values["discuss"] = {"execution_instructions": instructions.splitlines()}
             if (resuming or retry_attempt) and request.artifact_edit is None:
                 assert request.message is not None
                 retry_diagnostics_path = (
@@ -742,6 +915,11 @@ async def stream_discuss_run(
                         invoked_provider_skills=request.resolved_provider_skills,
                         attachments=attachment_pointers,
                         compute_connections=compute_profiles,
+                        execution_instructions=(
+                            _command_client_rule(patch_inputs.command_client) + "\n" + instructions
+                            if patch_inputs is not None and instructions
+                            else ""
+                        ),
                     )
                     return contract + "\n\n" + browser_prompt_line(browser_grant)
 
@@ -761,7 +939,7 @@ async def stream_discuss_run(
                         values=discuss_values,
                     )
                     # Discuss changes no Work value, so it keeps those its session holds.
-                    current = {**discuss_values, **retained_work_values(master.values)}
+                    current = {**retained_work_values(master.values), **discuss_values}
                     continuation_contract = PromptFactory.inline_continuation(
                         mode=recovery_mode,
                         turn_mode="discuss",
@@ -773,6 +951,7 @@ async def stream_discuss_run(
                         parts=[
                             continuation_contract,
                             stage_lessons_pointer(execution, local_stage, remote_stage),
+                            question_part,
                         ],
                         master=master,
                         delta={
@@ -791,6 +970,8 @@ async def stream_discuss_run(
                 else:
                     # A handoff starts a new native session from the full Discuss contract.
                     contract = render_discuss_contract()
+                    if question_part:
+                        contract += "\n\n" + question_part
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
                         remote_stage,
@@ -814,19 +995,7 @@ async def stream_discuss_run(
             else:
                 assert request.message is not None
                 assert artifact_scope_id is not None
-                retained = _retained_chat_patch_values(
-                    execution, request, ontology_extensions=context.ontology_extensions
-                )
-                if retained is None:
-                    patch_inputs = _stage_chat_patch_inputs(
-                        local_stage,
-                        remote_stage,
-                        workspace=workspace,
-                        stage_name=stage_name,
-                        task_id=execution.operation_id if execution is not None else token,
-                        turn_id=f"{token}:discuss",
-                    )
-                    retained = {"patch": patch_inputs.prompt_values()}
+                assert retained is not None
                 patch_values = retained["patch"]
                 assert isinstance(patch_values, dict)
                 stable_prompt_values = {**discuss_values, **retained}
@@ -852,6 +1021,7 @@ async def stream_discuss_run(
                     experiment_watcher_resources=experiment_resource_pointers,
                     skill_pointers=skill_pointers,
                     compute_connections=compute_profiles,
+                    discuss_execution_instructions=instructions,
                 )
                 prompt, contract_path = _prepare_discuss_chat_prompt(
                     execution,
@@ -861,6 +1031,7 @@ async def stream_discuss_run(
                     artifact_path=str(artifact_directory),
                     master_context=master_context,
                     stable_values=stable_prompt_values,
+                    question_part=question_part,
                     browser_grant=browser_grant,
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,
@@ -898,6 +1069,7 @@ async def stream_discuss_run(
             artifact_scope_id=artifact_scope_id,
             artifact_directory=artifact_directory,
             outcome=outcome,
+            question_snapshot=snapshot,
         )
         if execution_host:
             # Only a remote turn can outlive this connection, and only a turn
@@ -913,7 +1085,7 @@ async def stream_discuss_run(
                     hidden_read_scope=hidden_read_scope,
                     workspace=workspace,
                     session_id=request.session_id,
-                    required_session_id=request.session_id if request.artifact_edit else None,
+                    required_session_id=required_session_id,
                     read_dirs=read_dirs,
                     write_dirs=[],
                     write_scope=None,
@@ -921,6 +1093,12 @@ async def stream_discuss_run(
                     execution=execution,
                     remote_stage=remote_stage,
                     capability="discuss",
+                    shell_timeout_seconds=(
+                        patch_inputs.validator_staged.shell_timeout_seconds if patch_inputs else ...
+                    ),
+                    invocation_gate=patch_inputs.validator_staged.invocation_gate
+                    if patch_inputs
+                    else None,
                     browser_grant=browser_grant,
                     outcome=outcome,
                     binary=provider_binary,
@@ -940,13 +1118,23 @@ async def stream_discuss_run(
             # The host has this turn now. Its original task waits, and the
             # reconciler settles it through the same door below.
             return
+        if mailbox_lifecycle is not None:
+            await mailbox_lifecycle.close()
         for frame in _settle_discuss_outcome(settlement):
             yield frame
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
         # There is no per-turn source cleanup; the reusable native-session stage
         # remains available to the normal stage sweeper.
         try:
-            if patch_inputs is not None:
+            if mailbox_lifecycle is not None:
+                if outcome.remote_result_pending:
+                    mailbox_lifecycle.detach()
+                else:
+                    await mailbox_lifecycle.close(primary_error=primary_error)
+            elif patch_inputs is not None:
                 await asyncio.to_thread(
                     cleanup_patch_validation_mailbox,
                     staged=patch_inputs.validator_staged,

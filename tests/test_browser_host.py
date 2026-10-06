@@ -242,6 +242,7 @@ def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
     monkeypatch.setattr(runtime, "readiness", lambda **kw: {"status": "ready"})
     monkeypatch.setattr(runtime, "executable", lambda: "/owned/chromium")
     monkeypatch.setattr(runtime, "start", lambda *a: None)
+    monkeypatch.setattr(runtime, "stop_owner", lambda record: None)
     monkeypatch.setattr(runtime, "close_record", lambda *a, **kw: None)
     installed = []
     probe_run = runtime.run
@@ -484,3 +485,67 @@ def test_agent_cli_runs_with_the_checked_node_not_the_first_on_path(tmp_path, mo
         check=True,
     )
     assert result.stdout.split() == ["checked", str(runtime.cli), "snapshot"]
+
+
+def test_readiness_answers_installing_at_once_and_ignores_a_killed_install(tmp_path):
+    import fcntl
+    import time
+
+    from rcp.browser.host import INSTALL_MARKER
+
+    root = tmp_path / "browser"
+    root.mkdir()
+    marker = root / INSTALL_MARKER
+    marker.touch()
+    with (root / "host.lock").open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        started = time.monotonic()
+        result = dispatch(request(tmp_path, action="readiness"))
+        assert result["status"] == "installing"
+        assert time.monotonic() - started < 5
+        fcntl.flock(held, fcntl.LOCK_UN)
+    # The lock is free, so the marker is stale: it is dropped, not reported.
+    assert dispatch(request(tmp_path, action="readiness"))["status"] != "installing"
+    assert not marker.exists()
+
+
+def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, monkeypatch):
+    import os
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    runtime = HostRuntime(request(tmp_path, environment={"PATH": "/usr/bin", "TMPDIR": "/tmp"}))
+    runtime.node = "/usr/bin/node"
+    runtime_dir = f"/run/user/{os.getuid()}"
+    # Probes and CLI calls use runtime.env; the daemon gets daemon_env; agents the launcher.
+    assert runtime.env["TMPDIR"] == runtime_dir
+    assert runtime.daemon_env()["TMPDIR"] == runtime_dir
+    launcher = Path(runtime.cli_launcher()) / "playwright-cli"
+    assert f"export TMPDIR={runtime_dir}\n" in launcher.read_text()
+
+
+def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, monkeypatch):
+    from rcp.browser.host import INSTALL_MARKER, SMOKE_OWNER_TOKEN
+
+    runtime = HostRuntime(request(tmp_path, action="install"))
+    smoke = {
+        "owner_token": SMOKE_OWNER_TOKEN,
+        "session_name": "smoke",
+        "handle": "smoke",
+        "workspace_dir": str(tmp_path / "workspace"),
+        "leases": {},
+    }
+    runtime.save(smoke)
+    stopped = []
+    monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "owner_ready", lambda: None)
+    monkeypatch.setattr(runtime, "alive", lambda record: True)
+    marker = runtime.root / INSTALL_MARKER
+    # The marker already covers the owner checks, which can stall on a slow probe.
+    monkeypatch.setattr(
+        runtime, "stop_owner", lambda record: stopped.append((record["handle"], marker.exists()))
+    )
+    monkeypatch.setattr(runtime, "_install", lambda: {"status": "ready"})
+    assert runtime.install()["status"] == "ready"
+    assert stopped == [("smoke", True)]
+    assert not marker.exists()

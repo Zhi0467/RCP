@@ -29,6 +29,7 @@ from rcp.api.graph_changes import (
 from rcp.api.identity import IdentityAccess
 from rcp.api.space_machines import MACHINE_ATTACHMENT_LOCK
 from rcp.background import BackgroundAgentTasks
+from rcp.browser import readiness as browser_readiness
 from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
@@ -524,6 +525,20 @@ def check_machine_compute(
         for route in ("scheduler", "helper")
         for probe in [store.compute_backend_probe(project_id, machine_alias, route)]
     }
+
+
+@router.get("/api/projects/{project_id}/machines/{machine_alias}/browser")
+def project_machine_browser(
+    project_id: str, machine_alias: str, *, catalog: CatalogDependency
+) -> dict[str, object]:
+    """Readiness of the browser a chat on this machine would get, read when it is turned on."""
+    project_id = catalog.resolve_project_id(project_id)
+    machine = get_project_service(catalog, project_id).manifest.machine_map.get(machine_alias)
+    if machine is None:
+        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
+    return browser_readiness(
+        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+    ).model_dump()
 
 
 @router.get("/api/projects/{project_id}/sources")
