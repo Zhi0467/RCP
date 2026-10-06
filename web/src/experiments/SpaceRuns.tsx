@@ -1,3 +1,4 @@
+import { ExperimentLoopMetadata } from "./ExperimentLoopMetadata";
 import { ExperimentBranchBadge } from "./ExperimentBranchBadge";
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
@@ -298,6 +299,15 @@ export function SpaceRunRow({
         </span>
         <ChevronRight className="space-run-arrow" size={16} aria-hidden="true" />
       </button>
+      {entry.mode === "experiment_loop" && (
+        <span className="space-run-loop-metadata">
+          <ExperimentLoopMetadata
+            projectId={entry.project_id}
+            metadata={entry}
+            author={entry.authorized_by}
+          />
+        </span>
+      )}
       <EpisodeArchiveButton episode={entry} onArchive={onArchive} />
     </li>
   );

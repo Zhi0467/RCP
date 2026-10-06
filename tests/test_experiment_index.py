@@ -434,6 +434,12 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert all(entry["project_name"] == manifest.name for entry in entries)
     assert all(entry["authorized_by"] == authorizer.model_dump(mode="json") for entry in entries)
     experiment = next(entry for entry in entries if entry["episode_id"] == current_episode)
+    assert experiment["started_by"]["kind"] == "human"
+    assert experiment["started_by"]["human"] == authorizer.model_dump(mode="json")
+    assert experiment["checkout"]["kind"] == "shared"
+    child_entry = next(entry for entry in entries if entry["episode_id"] == child.episode_id)
+    assert child_entry["started_by"]["kind"] == "auto_research"
+    assert child_entry["auto_research_parent_episode_id"] == parent.episode_id
     assert experiment["experiment_id"] == "exp/launched"
     assert experiment["run_section"] == "actionable"
     auto_research = next(entry for entry in entries if entry["episode_id"] == parent.episode_id)

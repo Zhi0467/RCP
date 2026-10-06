@@ -10,7 +10,7 @@ from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.api.episodes import serialize_episode
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.limits import SPACE_RUNS_COMPLETED_TTL
+from rcp.limits import LOOP_OVERLAP_MAX_BYTES, LOOP_OVERLAP_MAX_ROWS, SPACE_RUNS_COMPLETED_TTL
 from rcp.loop_status import episode_loop_metadata, loop_status_projection, other_branch_loops
 from rcp.storage import EpisodeRecord
 
@@ -34,7 +34,7 @@ def test_isolated_human_start_reports_overlap_and_preserves_main(loop):
     task = response.json()
     wait_for_task(loop.app, task["operation_id"])
     assert task["graph_target"]["kind"] == "branch"
-    assert [row["episode_id"] for row in task["live_elsewhere"]] == [loop.episode_id]
+    assert [row["episode_id"] for row in task["live_elsewhere"]["rows"]] == [loop.episode_id]
     assert loop.store.episode(loop.episode_id).stop_requested_at is None
     main = loop_status_projection(
         loop.store,
@@ -44,7 +44,7 @@ def test_isolated_human_start_reports_overlap_and_preserves_main(loop):
     )
     assert main.current is not None
     assert main.current.episode_id == loop.episode_id
-    assert [row.episode_id for row in main.live_elsewhere] == [task["episode_id"]]
+    assert [row.episode_id for row in main.live_elsewhere.rows] == [task["episode_id"]]
     refused = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
         json={"chat_id": str(uuid.uuid4())},
@@ -60,7 +60,12 @@ def test_fresh_status_and_episode_response_share_lifecycle_metadata(loop, ending
         EXPERIMENT_ID,
         graph_target=GraphTargetRef(),
     )
-    assert empty.state == "none" and empty.current is None and empty.live_elsewhere == []
+    assert (
+        empty.state == "none"
+        and empty.current is None
+        and empty.live_elsewhere.rows == []
+        and empty.live_elsewhere.omitted == 0
+    )
     loop.start_episode()
     loop.store.record_agent_task_receipt(
         "loop-root",
@@ -100,7 +105,7 @@ def test_fresh_status_and_episode_response_share_lifecycle_metadata(loop, ending
             loop.store,
             loop.project_id,
             graph_target=GraphTargetRef(kind="branch", branch_id="other"),
-        )
+        ).rows
         == []
     )
 
@@ -144,7 +149,7 @@ def test_overlap_renderer_preserves_shared_row_data(loop):
         graph_target=GraphTargetRef(kind="branch", branch_id="other"),
     )
     rendered = render_loop_overlap(rows)
-    assert json.loads(rendered.split("\n", 1)[1]) == [row.model_dump(mode="json") for row in rows]
+    assert json.loads(rendered.split("\n", 1)[1]) == rows.model_dump(mode="json", exclude_none=True)
 
 
 def test_historical_loop_without_its_task_is_explicitly_unavailable(loop):
@@ -256,10 +261,59 @@ def test_overlap_skips_terminal_metadata_but_target_status_retains_old_loop(loop
 
     monkeypatch.setattr(status_module, "episode_loop_metadata", metadata)
     rows = other_branch_loops(loop.store, loop.project_id, graph_target=GraphTargetRef())
-    assert [row.episode_id for row in rows] == ["live-elsewhere"]
+    assert [row.episode_id for row in rows.rows] == ["live-elsewhere"]
     assert metadata_ids == ["live-elsewhere"]
     status = loop_status_projection(
         loop.store, loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
     assert status.current is not None and status.current.episode_id == loop.episode_id
     assert status.state == "stopped"
+
+
+def test_overlap_caps_compact_rows_and_reports_omitted(loop, monkeypatch):
+    loop.start_episode()
+    original = loop.store.episode(loop.episode_id)
+    assert original is not None
+    for index in range(LOOP_OVERLAP_MAX_ROWS + 3):
+        loop.store.create_episode(
+            original.model_copy(
+                update={
+                    "episode_id": f"overlap-{index:03}",
+                    "status": "queued",
+                    "invocations_used": 0,
+                    "graph_target": GraphTargetRef(kind="branch", branch_id=f"branch-{index:03}"),
+                    "graph_base_head": GraphHeadRef(revision=0),
+                    "root_operation_id": None,
+                }
+            )
+        )
+    overlap = other_branch_loops(loop.store, loop.project_id, graph_target=GraphTargetRef())
+    assert len(overlap.rows) == LOOP_OVERLAP_MAX_ROWS
+    assert overlap.omitted == 3
+    payload = overlap.model_dump(mode="json", exclude_none=True)
+    assert len(json.dumps(payload).encode()) <= LOOP_OVERLAP_MAX_BYTES
+    assert set(payload["rows"][0]) == {
+        "node_id",
+        "episode_id",
+        "graph_target",
+        "state",
+        "started_by",
+        "checkout",
+    }
+    assert payload["rows"][0]["started_by"] == {"kind": "human", "id": loop.authorizer.user_id}
+    assert set(payload["rows"][0]["checkout"]) == {"kind", "repository_paths"}
+
+    import rcp.loop_status as status_module
+
+    original_metadata = status_module.episode_loop_metadata
+
+    def oversized_metadata(store, episode, **kwargs):
+        metadata = original_metadata(store, episode, **kwargs)
+        metadata.checkout.repository_paths = ["/" + "x" * LOOP_OVERLAP_MAX_BYTES]
+        return metadata
+
+    monkeypatch.setattr(status_module, "episode_loop_metadata", oversized_metadata)
+    oversized = other_branch_loops(loop.store, loop.project_id, graph_target=GraphTargetRef())
+    assert oversized.rows == []
+    assert oversized.omitted == LOOP_OVERLAP_MAX_ROWS + 3
+    assert len(json.dumps(oversized.model_dump(mode="json")).encode()) <= LOOP_OVERLAP_MAX_BYTES

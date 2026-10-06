@@ -915,7 +915,10 @@ export type SpaceRunHealthTone =
   "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
 
 /** A space-level episode summary whose lifecycle placement is decided by the backend. */
-export interface SpaceRunIndexEntry {
+export interface SpaceRunIndexEntry extends Pick<
+  EpisodeLoopMetadata,
+  "started_by" | "auto_research_parent_episode_id" | "checkout"
+> {
   episode_id: string;
   project_id: string;
   project_name: string;
@@ -2484,8 +2487,22 @@ export interface EpisodeLoopMetadata {
   checkout: LoopCheckout;
 }
 
-/** Shared row for status.other_branch_loops and start results' live_elsewhere. */
-export interface LoopStatusRow extends EpisodeLoopMetadata {
+/** Compact identity shared by every overlap consumer. */
+export interface LoopStatusRow {
+  node_id: string;
+  episode_id: string;
+  graph_target: GraphTargetRef;
+  state: "live" | "stopped" | "completed" | "unavailable";
+  started_by: { kind: EpisodeStarter["kind"]; id?: string | null };
+  checkout: Pick<LoopCheckout, "kind" | "execution_host" | "repository_paths">;
+}
+
+export interface LoopOverlap {
+  rows: LoopStatusRow[];
+  omitted: number;
+}
+
+export interface LoopCurrentStatus extends EpisodeLoopMetadata {
   node_id: string;
   episode_id: string;
   graph_target: GraphTargetRef;
@@ -2502,12 +2519,12 @@ export interface LoopStatusProjection {
   node_id: string;
   graph_target: GraphTargetRef;
   state: LoopStatusRow["state"] | "none";
-  current: LoopStatusRow | null;
-  live_elsewhere: LoopStatusRow[];
+  current: LoopCurrentStatus | null;
+  live_elsewhere: LoopOverlap;
 }
 
 export interface ExperimentStartResponse extends AgentTask {
-  live_elsewhere: LoopStatusRow[];
+  live_elsewhere: LoopOverlap;
 }
 
 export interface Episode extends EpisodeLoopMetadata {

@@ -41,6 +41,7 @@ from rcp.runs.shared import (
     _stage_context_paths,
     _swept_stage_root,
     _task_token,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work_turn_runtime import (
@@ -179,6 +180,9 @@ async def stage_work_turn(
             )
             if execution is not None:
                 execution.checkpoint_stage("", str(local_stage))
+        context = context.model_copy(
+            update=stage_branch_read_context(context, service, local_stage, remote_stage)
+        )
         token = _task_token(execution)
         layout = WorkStageLayout(
             request=request,

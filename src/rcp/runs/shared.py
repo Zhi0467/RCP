@@ -36,6 +36,7 @@ from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
+from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
 from rcp.transport.run_stage import run_stage_partition
 from rcp.transport.state import (
     _remote_turn_supervisor_script,
@@ -438,6 +439,18 @@ def _stage_or_reuse_task_input(
     safe_label = _safe_stage_name(label)
     if safe_label != label:
         raise ValueError("task input label contains unsupported characters")
+    if READ_CONTEXT_INPUT.fullmatch(label):
+        if remote_stage is not None:
+            present = remote_stage.prepare_read_context_input(label)
+            assert remote_stage.root is not None
+            target = str(remote_stage.root / "inputs" / label)
+        else:
+            assert local_stage is not None
+            present = prepare_read_context_input(str(local_stage / "inputs"), label)
+            target = str(local_stage / "inputs" / label)
+        if present:
+            return target
+        return _stage_task_input(local_stage, remote_stage, label, content, reuse=True)
     if remote_stage is not None:
         try:
             existing = remote_stage.read_input_text(label)
@@ -1146,6 +1159,35 @@ def _safe_stage_name(value: str) -> str:
     if not name:
         raise ValueError("run stage name is empty")
     return name
+
+
+def stage_branch_read_context(
+    context: RunContext | ChatContext,
+    service: ProjectService,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> dict[str, object]:
+    """Read pointers only; callers keep the task's graph target and write scope.
+
+    Call after mapping repositories to the execution host. Worktree replacement
+    may happen before or after this call. ``main_graph_path`` is an immutable task input,
+    also available to the Auto-research prompt through RunContext.
+    """
+
+    if service.history.graph_target.kind != "branch":
+        return {"main_graph_path": None, "shared_repositories": []}
+    content = (service.history.workspace.root / "graph.json").read_text(encoding="utf-8")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    path = _stage_or_reuse_task_input(
+        local_stage, remote_stage, f"main-graph-{digest}.json", content
+    )
+    return {
+        "main_graph_path": path,
+        "shared_repositories": [
+            item.model_copy(update={"path": service.manifest.repository_map[item.alias].path})
+            for item in context.repositories
+        ],
+    }
 
 
 def _stage_context_paths(

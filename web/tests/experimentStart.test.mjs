@@ -78,16 +78,19 @@ test("the human start preserves and renders every overlap without adding a gate"
     operation_id: "new-task",
     episode_id: "new-loop",
     graph_target: branch,
-    live_elsewhere: [
-      loop,
-      {
-        ...loop,
-        episode_id: "another-loop",
-        graph_target: main,
-        auto_research_parent_episode_id: null,
-        started_by: { kind: "human", human: { display_name: "member-id" } },
-      },
-    ],
+    live_elsewhere: {
+      omitted: 4,
+      rows: [
+        { ...loop, started_by: { kind: "auto_research", id: "parent-run" } },
+        {
+          ...loop,
+          episode_id: "another-loop",
+          graph_target: main,
+          auto_research_parent_episode_id: null,
+          started_by: { kind: "human", id: "member-id" },
+        },
+      ],
+    },
   };
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -118,6 +121,7 @@ test("the human start preserves and renders every overlap without adding a gate"
       [...html.matchAll(/data-overlap-episode-id="([^"]+)"/g)].map((match) => match[1]),
       ["other-loop", "another-loop"],
     );
+    assert.match(html, /data-overlap-omitted="4"/);
     assert.doesNotMatch(html, /disabled|role="alert"/);
     const routes = [...html.matchAll(/href="([^"]+)"/g)].map((match) =>
       parseProjectHash(match[1].replaceAll("&amp;", "&")),

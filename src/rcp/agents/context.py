@@ -31,6 +31,8 @@ class RunContext(BaseModel):
     refresh_delta: RefreshDelta | None = None
     graph_revision: int = Field(ge=0)
     graph_path: str
+    main_graph_path: str | None = None
+    shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
     research_md_path: str
     introduction_path: str | None
     glossary_path: str
@@ -75,6 +77,9 @@ class ChatContext(BaseModel):
     run_truth_scope: list[str]
     repositories: list[RepositoryPointer]
     graph_path: str
+    main_graph_path: str | None = None
+    shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
+    loop_status: dict[str, Any] | None = None
     research_md_path: str
     introduction_path: str | None
     glossary_path: str

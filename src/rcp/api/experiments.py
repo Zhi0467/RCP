@@ -28,7 +28,7 @@ from rcp.control import ExperimentControlState
 from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
-from rcp.loop_status import LoopStatusRow, other_branch_loops
+from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.projects import ProjectCatalog
 from rcp.runs.episodes.isolation import validate_episode_admission
 from rcp.runs.experiment_admission import (
@@ -65,7 +65,7 @@ ExperimentOperationLockDependency = Annotated[
 class ExperimentStartResponse(AgentTaskRecord):
     """The admitted task plus informational overlap on other graph targets."""
 
-    live_elsewhere: list[LoopStatusRow]
+    live_elsewhere: LoopOverlap
 
 
 def _start_response(store: AppStore, task: AgentTaskRecord, node_id: str) -> dict[str, object]:

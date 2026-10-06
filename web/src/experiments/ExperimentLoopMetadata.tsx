@@ -7,7 +7,10 @@ export function ExperimentLoopMetadata({
   author,
 }: {
   projectId: string;
-  metadata: EpisodeLoopMetadata;
+  metadata: Pick<
+    EpisodeLoopMetadata,
+    "started_by" | "auto_research_parent_episode_id" | "checkout"
+  >;
   author?: AuthorizedHuman | null;
 }) {
   const starter = metadata.started_by;

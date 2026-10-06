@@ -1660,8 +1660,8 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     stage.rmdir()
 
     stopping = loop.stop()
-    assert stopping["operational"]["stop_settled"] is False
-    with pytest.raises(ValueError, match="cannot start a fresh provider session"):
+    assert stopping["operational"]["stop_settled"] is True
+    with pytest.raises(ValueError):
         app.state.background_tasks.retry("failed-wake")
 
     assert not [

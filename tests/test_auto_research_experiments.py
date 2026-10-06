@@ -11,6 +11,12 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.agents.command_protocol import (
+    EpisodeCommandRequest,
+    EpisodeControlArguments,
+    ExperimentKickoffArguments,
+    StatusArguments,
+)
 from rcp.api.episodes import serialize_episode
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import Manifest, write_agent_settings
@@ -19,11 +25,19 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.loop_status import other_branch_loops
 from rcp.paper import PaperService
-from rcp.runs.auto_research import AutoResearchStartRequest
+from rcp.runs.auto_research import (
+    AutoResearchCommandContext,
+    AutoResearchCommandDispatcher,
+    AutoResearchCommandEffectResult,
+    AutoResearchRunRequest,
+    AutoResearchStartRequest,
+)
 from rcp.runs.auto_research_admission import (
     start_auto_research,
     start_auto_research_child_experiment,
 )
+from rcp.runs.auto_research_child_reconcile import reconcile_pending_auto_research_child_admissions
+from rcp.runs.auto_research_effects import auto_research_command_effects
 from rcp.runs.auto_research_experiments import (
     AutoResearchExperimentCoordinator,
     AutoResearchExperimentLimitInvalid,
@@ -1046,6 +1060,9 @@ def test_kickoff_coexists_with_main_and_stop_is_owned(
             child = start_child()
             main = start_main()
         assert child.disposition == "created"
+        assert [row.episode_id for row in child.live_elsewhere.rows] == (
+            [HUMAN_PREDECESSOR] if main_first else []
+        )
         assert child.operation_id is not None
         main_episode = store.episode(HUMAN_PREDECESSOR)
         child_episode = store.episode(CHILD_EXPLICIT)
@@ -1055,24 +1072,22 @@ def test_kickoff_coexists_with_main_and_stop_is_owned(
         assert child_episode.stop_requested_at is None
         [child_row] = other_branch_loops(
             store, PROJECT_ID, graph_target=main_episode.graph_target, node_id=EXPERIMENT_ID
-        )
+        ).rows
         assert child_row.episode_id == CHILD_EXPLICIT
         assert child_row.started_by.kind == "auto_research"
-        assert child_row.started_by.auto_research_episode_id == parent_id
-        assert child_row.started_by.human is None
-        assert child_row.auto_research_parent_episode_id == parent_id
+        assert child_row.started_by.id == parent_id
         child_response = serialize_episode(
             store, PROJECT_ID, child_episode, include_graph_branch=False
         )
-        assert child_response.started_by == child_row.started_by
+        assert child_response.started_by.auto_research_episode_id == child_row.started_by.id
         assert child_response.authorized_by == parent.authorized_by
         [human_row] = other_branch_loops(
             store, PROJECT_ID, graph_target=child_episode.graph_target, node_id=EXPERIMENT_ID
-        )
+        ).rows
         assert human_row.episode_id == HUMAN_PREDECESSOR
         assert human_row.started_by.kind == "human"
-        assert human_row.started_by.human == parent.authorized_by
-        assert human_row.auto_research_parent_episode_id is None
+        assert parent.authorized_by is not None
+        assert human_row.started_by.id == parent.authorized_by.user_id
         with pytest.raises(ValueError, match="outside"):
             coordinator.stop(parent_id, HUMAN_PREDECESSOR, operation_id=root_id)
         coordinator.stop(parent_id, CHILD_EXPLICIT, operation_id=root_id)
@@ -1120,3 +1135,187 @@ def test_same_target_kickoff_refuses_without_stopping_existing_child(
     assert store.episode(CHILD_FALLBACK) is None
     assert store.auto_research_child_experiment(CHILD_FALLBACK) is None
     assert store.auto_research_experiment_allowance(parent_id).used == 1
+
+
+def _command_effects(service, store, background, coordinator, parent_id, root_id):
+    parent = store.episode(parent_id)
+    root = store.agent_task(root_id)
+    assert parent is not None and root is not None
+    context = AutoResearchCommandContext(
+        episode=parent,
+        task=root,
+        request=AutoResearchRunRequest.model_validate(root.request),
+    )
+    effects = auto_research_command_effects(
+        store=store,
+        background=background,
+        validate=lambda *_args: AutoResearchCommandEffectResult(),
+        worker_request_factory=lambda *_args: RunRequest(),
+        graph_state=service.history.state,
+        execution_host="",
+        experiment_coordinator=coordinator,
+    )
+    return context, effects
+
+
+@pytest.mark.parametrize("recovered", [False, True])
+def test_kickoff_command_reports_live_elsewhere_after_admission(
+    manifest: Manifest, tmp_path: Path, recovered: bool
+) -> None:
+    from .test_auto_research_child_reconcile import _admit_command
+
+    setup = _setup(manifest, tmp_path)
+    service, store, background, coordinator, parent_id, _root_id = setup
+    context, effects = _command_effects(*setup)
+    main = background.start(
+        PROJECT_ID,
+        "node_chat",
+        _human_experiment_request(service, HUMAN_PREDECESSOR),
+        authorized_by=context.episode.authorized_by,
+    )
+    wait_for_task(store, main.operation_id, expect="succeeded")
+    key = "coexisting-kickoff"
+    child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:auto_research:{parent_id}:episode:{key}"))
+    arguments = ExperimentKickoffArguments(action="kick_off_experiment", node_id=EXPERIMENT_ID)
+    request = EpisodeCommandRequest(
+        mailbox_id="a" * 32,
+        request_id="c" * 32,
+        credential="b" * 64,
+        verb="episode",
+        idempotency_key=key,
+        arguments=arguments,
+    )
+    dispatcher = AutoResearchCommandDispatcher(store, effects)
+    if recovered:
+        _admit_command(
+            store,
+            context.episode,
+            context.task,
+            command_id="coexisting-command",
+            key=key,
+            child_id=child_id,
+            child_kind="experiment",
+            arguments=arguments.model_dump(mode="json"),
+            file_kind=None,
+            filename=None,
+            content=None,
+        )
+        reconciliation = reconcile_pending_auto_research_child_admissions(
+            store,
+            background,
+            coordinator,
+            worker_request_factory=lambda *_args: RunRequest(),
+            seat_node_type=lambda *_args: "experiment",
+        )
+        assert reconciliation.reflected == 1 and reconciliation.cancelled == 0
+        command = store.agent_command("coexisting-command")
+        assert command is not None and command.status == "ok"
+        assert command.exit_payload is not None
+        result = command.exit_payload["result"]
+    else:
+        result = dispatcher.dispatch(context.task.operation_id, request).result
+    expected = other_branch_loops(
+        store, PROJECT_ID, graph_target=context.episode.graph_target, node_id=EXPERIMENT_ID
+    ).model_dump(mode="json", exclude_none=True)
+    assert isinstance(result, dict)
+    assert result["live_elsewhere"] == expected
+    assert [row["episode_id"] for row in expected["rows"]] == [HUMAN_PREDECESSOR]
+    main_episode = store.episode(HUMAN_PREDECESSOR)
+    assert main_episode is not None and main_episode.stop_requested_at is None
+    assert store.auto_research_experiment_allowance(parent_id).used == 1
+    child = store.episode(child_id)
+    assert child is not None and child.root_operation_id is not None
+    wait_for_task(store, child.root_operation_id, expect="succeeded")
+    store.request_experiment_loop_stop(PROJECT_ID, EXPERIMENT_ID, episode_id=HUMAN_PREDECESSOR)
+    replay = dispatcher.dispatch(
+        context.task.operation_id, request.model_copy(update={"request_id": "d" * 32})
+    )
+    assert replay.result == result
+    assert store.auto_research_experiment_allowance(parent_id).used == 1
+
+
+def test_status_lists_other_branch_loops_without_granting_control(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    setup = _setup(manifest, tmp_path)
+    service, store, background, _coordinator, _parent_id, _root_id = setup
+    context, effects = _command_effects(*setup)
+    main = background.start(
+        PROJECT_ID,
+        "node_chat",
+        _human_experiment_request(service, HUMAN_PREDECESSOR),
+        authorized_by=context.episode.authorized_by,
+    )
+    wait_for_task(store, main.operation_id, expect="succeeded")
+    result = effects.status(context, StatusArguments()).result
+    assert result["other_branch_loops"] == other_branch_loops(
+        store, PROJECT_ID, graph_target=context.episode.graph_target
+    ).model_dump(mode="json", exclude_none=True)
+    overlap = result["other_branch_loops"]
+    assert isinstance(overlap, dict)
+    rows = overlap["rows"]
+    assert isinstance(rows, list)
+    assert [row["episode_id"] for row in rows] == [HUMAN_PREDECESSOR]
+    with pytest.raises(ValueError):
+        effects.episode(
+            context,
+            EpisodeControlArguments(action="stop", episode_id=HUMAN_PREDECESSOR),
+            "stop-other",
+        )
+    store.request_experiment_loop_stop(PROJECT_ID, EXPERIMENT_ID, episode_id=HUMAN_PREDECESSOR)
+    assert effects.status(context, StatusArguments()).result["other_branch_loops"] == {
+        "rows": [],
+        "omitted": 0,
+    }
+
+
+@pytest.mark.parametrize("resume_first", [False, True])
+def test_unusable_child_stop_settles_without_resume_and_allows_fresh_kickoff(
+    manifest: Manifest, tmp_path: Path, resume_first: bool
+) -> None:
+    async def failed_stream(_project_id, _kind, _request, _execution):
+        record_launched_experiment_turn(_execution.store, _execution.operation_id)
+        yield _sse(AgentEvent(event="error", text="No retained session."))
+
+    setup = _setup(manifest, tmp_path, child_stream=failed_stream)
+    _service, store, _background, _coordinator, parent_id, _root_id = setup
+    context, effects = _command_effects(*setup)
+    _admit(
+        store,
+        parent_episode_id=parent_id,
+        child_episode_id=CHILD_EXPLICIT,
+        admission_id=CHILD_EXPLICIT,
+    )
+    arguments = ExperimentKickoffArguments(action="kick_off_experiment", node_id=EXPERIMENT_ID)
+    started = effects.episode(context, arguments, CHILD_EXPLICIT)
+    operation_id = started.result["operation_id"]
+    assert isinstance(operation_id, str)
+    wait_for_task(store, operation_id, expect="failed")
+    if resume_first:
+        resumed = effects.episode(
+            context,
+            EpisodeControlArguments(action="resume", episode_id=CHILD_EXPLICIT),
+            "resume-unusable",
+        )
+        assert resumed.status == "invalid"
+        assert resumed.result["disposition"] == "resume_unavailable"
+        assert "recovery_steps" not in resumed.result
+    episode = store.experiment_episode(CHILD_EXPLICIT)
+    assert episode is not None and episode.session_diagnostic is None
+    assert store.auto_research_experiment_allowance(parent_id).used == 1
+    stopped = effects.episode(
+        context, EpisodeControlArguments(action="stop", episode_id=CHILD_EXPLICIT), "stop-unusable"
+    )
+    assert stopped.result["disposition"] == "stopped"
+    _admit(
+        store,
+        parent_episode_id=parent_id,
+        child_episode_id=CHILD_FALLBACK,
+        admission_id=CHILD_FALLBACK,
+    )
+    fresh = effects.episode(context, arguments, CHILD_FALLBACK)
+    assert fresh.result["disposition"] == "created"
+    operation_id = fresh.result["operation_id"]
+    assert isinstance(operation_id, str)
+    wait_for_task(store, operation_id, expect="failed")
+    assert store.auto_research_experiment_allowance(parent_id).used == 2

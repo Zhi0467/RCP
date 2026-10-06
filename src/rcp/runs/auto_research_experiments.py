@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from rcp.control import derive_experiment_control_state
 from rcp.core.models import Experiment
+from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_experiment_spawned,
     resume_auto_research_child_experiment,
@@ -46,6 +47,7 @@ class AutoResearchExperimentAction:
     operation_id: str | None = None
     reason: str | None = None
     replacement_command: str | None = None
+    live_elsewhere: LoopOverlap = field(default_factory=LoopOverlap)
 
 
 class AutoResearchExperimentLimitInvalid(ValueError):
@@ -142,6 +144,12 @@ class AutoResearchExperimentCoordinator:
                     else existing.state
                 ),
                 allowance=self.store.auto_research_experiment_allowance(auto_research_episode_id),
+                live_elsewhere=other_branch_loops(
+                    self.store,
+                    parent.project_id,
+                    graph_target=parent.graph_target,
+                    node_id=node_id,
+                ),
             )
         if allowance.remaining == 0:
             raise AutoResearchExperimentAllowanceReached(allowance)
@@ -194,6 +202,12 @@ class AutoResearchExperimentCoordinator:
                     status=task.status,
                     allowance=self.store.auto_research_experiment_allowance(
                         auto_research_episode_id
+                    ),
+                    live_elsewhere=other_branch_loops(
+                        self.store,
+                        parent.project_id,
+                        graph_target=parent.graph_target,
+                        node_id=node_id,
                     ),
                 )
         except ValueError:

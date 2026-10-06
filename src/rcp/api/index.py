@@ -6,7 +6,7 @@ from functools import partial
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rcp.agents import AgentLauncher
 from rcp.api.dependencies import (
@@ -41,6 +41,7 @@ from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS, SPACE_RUNS_COMPLETED_TTL
+from rcp.loop_status import EpisodeLoopMetadata, EpisodeStarter, LoopCheckout, episode_loop_metadata
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
@@ -148,6 +149,9 @@ class SpaceRunIndexEntryResponse(BaseModel):
     archived: bool = False
     can_archive: bool = False
     authorized_by: AuthorizedHuman | None = None
+    started_by: EpisodeStarter = Field(default_factory=lambda: EpisodeStarter(kind="unknown"))
+    auto_research_parent_episode_id: str | None = None
+    checkout: LoopCheckout = Field(default_factory=lambda: LoopCheckout(kind="shared"))
 
 
 @router.get("/api/projects")
@@ -577,6 +581,7 @@ def space_runs(
             entries.append(
                 _space_archived_run(
                     episode,
+                    metadata=episode_loop_metadata(store, episode),
                     project_name=record.name,
                     project_reachable=record.reachable,
                     title=title,
@@ -644,6 +649,9 @@ def _space_experiment_run(
         archived=entry.episode.archived,
         can_archive=entry.episode.can_archive,
         authorized_by=entry.episode.authorized_by,
+        started_by=entry.episode.started_by,
+        auto_research_parent_episode_id=entry.episode.auto_research_parent_episode_id,
+        checkout=entry.episode.checkout,
     )
 
 
@@ -696,12 +704,16 @@ def _space_auto_research_run(
         archived=archive_state.archived,
         can_archive=archive_state.can_archive,
         authorized_by=episode.authorized_by,
+        started_by=EpisodeStarter(
+            kind="human" if episode.authorized_by else "unknown", human=episode.authorized_by
+        ),
     )
 
 
 def _space_archived_run(
     episode: EpisodeRecord,
     *,
+    metadata: EpisodeLoopMetadata,
     project_name: str,
     project_reachable: bool | None,
     title: str | None,
@@ -725,6 +737,9 @@ def _space_archived_run(
         archived=True,
         can_archive=True,
         authorized_by=episode.authorized_by,
+        started_by=metadata.started_by,
+        auto_research_parent_episode_id=metadata.auto_research_parent_episode_id,
+        checkout=metadata.checkout,
     )
 
 

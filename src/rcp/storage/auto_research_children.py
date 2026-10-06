@@ -1360,6 +1360,12 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 payload["replacement_command"] = (
                     "spawn" if source_kind == "worker" else "episode --kick-off-experiment"
                 )
+                if source_kind == "experiment_task":
+                    payload["reason"] = (
+                        f"Stop your child with episode --stop {payload['episode_id']}, "
+                        "wait for its settlement, then use episode --kick-off-experiment "
+                        "with a new key."
+                    )
         attempt = max(1, int(task["attempt"]))
         notice = AutoResearchLifecycleNoticeRecord(
             notice_id=self._auto_research_notice_id(

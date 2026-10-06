@@ -366,6 +366,7 @@ def _experiment_outcome(
         "episode_id": action.episode_id,
         "status": action.status,
         "experiment_allowance": action.allowance.model_dump(mode="json"),
+        "live_elsewhere": action.live_elsewhere.model_dump(mode="json", exclude_none=True),
     }
     if action.operation_id is not None:
         result["operation_id"] = action.operation_id
@@ -373,7 +374,7 @@ def _experiment_outcome(
         message=(
             "Experiment episode was created and queued after recovery."
             if action.disposition == "created"
-            else "Experiment replacement was recovered."
+            else "The existing Experiment kickoff result was recovered."
         ),
         result=result,
     )

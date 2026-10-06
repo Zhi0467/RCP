@@ -1881,9 +1881,12 @@ test("Experiment inspection stays available with several bounded tasks and watch
 test("Experiment Start revalidates the exact node and returns durable task identity", async () => {
   const project = projectFixture();
   const calls = [];
-  const overlaps = [
-    { episode_id: "other-loop", graph_target: { kind: "branch", branch_id: "other-branch" } },
-  ];
+  const overlaps = {
+    rows: [
+      { episode_id: "other-loop", graph_target: { kind: "branch", branch_id: "other-branch" } },
+    ],
+    omitted: 2,
+  };
   const receipt = await startProjectExperiment(
     project,
     { experiment_id: "exp-1" },

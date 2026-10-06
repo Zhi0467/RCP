@@ -41,6 +41,7 @@ from rcp.agents.prompts import (
     chat_master_contract_key,
     invoked_package_pointers,
     live_ask_contract,
+    render_chat_read_context,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -93,6 +94,7 @@ from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
     stage_chat_experiment_watcher_resources,
+    stage_chat_loop_status,
 )
 from rcp.runs.lesson_commands import lesson_command_usage
 from rcp.runs.lessons import stage_lessons_pointer
@@ -136,6 +138,7 @@ from rcp.runs.shared import (
     _task_token,
     note_link_lost_before_provider,
     retry_original_contract_path,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import (
@@ -272,6 +275,7 @@ def _prepare_work_chat_prompt(
     launch_instructions: str,
     ontology_extensions: bool,
     question_part: str = "",
+    read_context: str = "",
     browser_grant: BrowserGrant | None = None,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
@@ -298,6 +302,7 @@ def _prepare_work_chat_prompt(
         master=master,
         lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
+        read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
             workflow_ids=request.invoked_workflow_ids,
@@ -670,6 +675,26 @@ async def _stage_work_turn(
             }
         )
 
+    async def stage_chat_resources(
+        layout: WorkStageLayout,
+    ) -> list[StagedExperimentWatcherResource]:
+        layout.context.loop_status = stage_chat_loop_status(
+            request,
+            execution,
+            layout.local_stage,
+            layout.remote_stage,
+            graph_target=service.history.graph_target,
+        )
+        return await stage_chat_experiment_watcher_resources(
+            request,
+            execution,
+            layout.local_stage,
+            layout.remote_stage,
+            workspace=layout.workspace,
+            token=layout.token,
+            clear_stale=clear_stale_handoffs,
+        )
+
     turn, staged, _ = await stage_work_turn(
         service,
         resolved,
@@ -682,15 +707,7 @@ async def _stage_work_turn(
         start_validator_mailbox=_start_work_validator_mailbox,
         bind_context=bind_conversation_worktree,
         stage_artifacts=stage_artifacts,
-        stage_experiment_resources=lambda layout: stage_chat_experiment_watcher_resources(
-            request,
-            execution,
-            layout.local_stage,
-            layout.remote_stage,
-            workspace=layout.workspace,
-            token=layout.token,
-            clear_stale=clear_stale_handoffs,
-        ),
+        stage_experiment_resources=stage_chat_resources,
         select_skills=select_skills,
     )
     return turn, staged
@@ -890,6 +907,7 @@ def _work_continuation(
     parts = [part, question_part] if question_part else [part]
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
+    parts.append(render_chat_read_context(turn.context))
     parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
     return compose(node, parts=parts, master=master, delta=delta)
 
@@ -1002,6 +1020,8 @@ def _compose_fresh_prompt(
             PromptFactory.launch_prompt(contract_path)
             + "\n\n"
             + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+            + "\n\n"
+            + render_chat_read_context(turn.context)
         )
         question_part = prepare_work_question_snapshot(turn)
         launch_path = contract_path
@@ -1037,6 +1057,7 @@ def _compose_fresh_prompt(
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
         question_part=prepare_work_question_snapshot(turn),
+        read_context=render_chat_read_context(turn.context),
         browser_grant=browser_grant,
     )
     return _ComposedWorkPrompt(
@@ -1106,6 +1127,7 @@ def _compose_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
+    prompt += "\n\n" + render_chat_read_context(turn.context)
     prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
     return _ComposedWorkPrompt(
         contract_path=contract_path,
@@ -2582,6 +2604,20 @@ async def _stream_work_graph_repair(
                 execution=execution,
                 saved_stage=True,
             )
+        context = context.model_copy(
+            update=stage_branch_read_context(context, service, local_stage, remote_stage)
+        )
+        context = context.model_copy(
+            update={
+                "loop_status": stage_chat_loop_status(
+                    request,
+                    execution,
+                    local_stage,
+                    remote_stage,
+                    graph_target=service.history.graph_target,
+                )
+            }
+        )
         token = _task_token(execution)
         shell_timeout = execution.store.provider_shell_timeout_seconds(
             profile.provider, execution_host

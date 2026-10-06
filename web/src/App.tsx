@@ -218,7 +218,7 @@ import type {
   MergeEpisodeBody,
   ExperimentControlState,
   ExperimentStartResponse,
-  LoopStatusRow,
+  LoopOverlap,
   GraphRevisionSnapshot,
   GraphNode,
   GraphState,
@@ -590,7 +590,7 @@ export default function App() {
   } = useDesktopShell(desktop);
   const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
     projectId: string;
-    loops: LoopStatusRow[];
+    loops: LoopOverlap;
   } | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<

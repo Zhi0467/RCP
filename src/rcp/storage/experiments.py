@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Iterable
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rcp.core.graph_targets import graph_target_json
@@ -15,6 +17,7 @@ from rcp.limits import (
     QUESTION_SNAPSHOT_MAX_RECORDS,
     SPACE_RUNS_COMPLETED_TTL,
 )
+from rcp.providers import classify_terminal_error
 from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.mixin_base import StoreMixinBase
@@ -2283,6 +2286,64 @@ class ExperimentStoreMixin(StoreMixinBase):
             )
         return None
 
+    def experiment_episode_resume_binding_problem(self, operation_id: str) -> str | None:
+        """Check the exact saved Experiment session and workspace without changing state."""
+
+        with self.connection() as connection:
+            return self._experiment_episode_resume_binding_problem(connection, operation_id)
+
+    @staticmethod
+    def _experiment_episode_resume_binding_problem(
+        connection: sqlite3.Connection, operation_id: str
+    ) -> str | None:
+        task = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+        if task is None:
+            return "the saved Experiment task is unavailable"
+        if task["status"] not in {"paused", "interrupted", "failed"}:
+            return "only a paused, interrupted, or failed attempt can be resumed"
+        receipts = connection.execute(
+            "SELECT category, payload_json FROM graph_run_receipts "
+            "WHERE operation_id = ? AND category IN "
+            "('provider_terminal_error', 'continuation_context_unavailable')",
+            (operation_id,),
+        ).fetchall()
+        session_limit = classify_terminal_error(task["error"] or "") == "session_limit"
+        context_unavailable = False
+        for receipt in receipts:
+            payload = json.loads(receipt["payload_json"])
+            session_limit |= (
+                receipt["category"] == "provider_terminal_error"
+                and payload.get("classification") == "session_limit"
+            )
+            context_unavailable |= (
+                receipt["category"] == "continuation_context_unavailable"
+                and payload.get("retry_required") is True
+            )
+        if session_limit:
+            return "the saved provider session reached its limit"
+        if context_unavailable:
+            return "the saved continuation context is unavailable"
+        # Experiment episodes are node chats: a persisted native session is RCP-owned.
+        if task["kind"] != "node_chat" or not task["native_session_id"] or not task["stage_root"]:
+            return "the attempt has no complete RCP-owned session and stage"
+        if task["stage_host"]:
+            from rcp.transport import RemoteRunStage
+
+            try:
+                available = RemoteRunStage(task["stage_host"]).directory_exists(task["stage_root"])
+            except Exception as exc:
+                raise OSError("The saved provider workspace could not be checked.") from exc
+            if available is None:
+                raise OSError("The saved provider workspace could not be checked.")
+        else:
+            stage = Path(task["stage_root"])
+            available = stage.is_dir() and not stage.is_symlink()
+        if available is not True:
+            return "the saved provider workspace is unavailable"
+        return None
+
     def previous_experiment_episode(
         self,
         project_id: str,
@@ -2764,19 +2825,25 @@ class ExperimentStoreMixin(StoreMixinBase):
         if unresolved:
             diagnostic = requested["session_diagnostic"]
             if not diagnostic:
-                diagnostic = next(
-                    (
-                        problem
-                        for row in unresolved
-                        if (
-                            problem := self._experiment_episode_recovery_context_problem(
-                                connection,
-                                str(row["operation_id"]),
+                for row in unresolved:
+                    diagnostic = self._experiment_episode_recovery_context_problem(
+                        connection, str(row["operation_id"])
+                    )
+                    if not diagnostic and row["status"] in {"paused", "failed", "interrupted"}:
+                        try:
+                            diagnostic = self._experiment_episode_resume_binding_problem(
+                                connection, str(row["operation_id"])
                             )
-                        )
-                    ),
-                    None,
-                )
+                        except OSError:
+                            logging.getLogger(__name__).warning(
+                                "Stop settlement could not check task %s's saved workspace; "
+                                "its recovery remains pending.",
+                                row["operation_id"],
+                                exc_info=True,
+                            )
+                            return False
+                    if diagnostic:
+                        break
                 if diagnostic:
                     now = self.now()
                     connection.execute(
