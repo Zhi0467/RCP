@@ -972,44 +972,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         assert stored is not None
         return stored
 
-    def reserve_auto_research_experiment_replacement(
-        self,
-        record: AutoResearchChildExperimentRecord,
-        *,
-        admission_id: str | None = None,
-    ) -> AutoResearchChildExperimentRecord:
-        """Persist one fresh launch intent while the existing episode stops gracefully."""
-
-        if record.state != "pending" or not record.replaces_episode_id:
-            raise ValueError(
-                "an Experiment replacement must begin pending and name its predecessor"
-            )
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            self._validate_auto_research_experiment_route(connection, record)
-            connection.execute(
-                """
-                INSERT INTO auto_research_child_experiments (
-                    child_episode_id, auto_research_episode_id, project_id,
-                    control_node_id, state, replaces_episode_id, request_json,
-                    goal_sha256, parent_operation_id, terminal_diagnostic,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                self._child_experiment_values(record),
-            )
-            self._reflect_auto_research_child_admission(
-                connection,
-                admission_id=admission_id,
-                episode_id=record.auto_research_episode_id,
-                child_kind="experiment",
-                child_id=record.child_episode_id,
-                updated_at=record.updated_at,
-            )
-        stored = self.auto_research_child_experiment(record.child_episode_id)
-        assert stored is not None
-        return stored
-
     def auto_research_child_experiment(
         self,
         child_episode_id: str,
@@ -1021,21 +983,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 WHERE child_episode_id = ?
                 """,
                 (child_episode_id,),
-            ).fetchone()
-        return self._child_experiment_record(row) if row is not None else None
-
-    def pending_auto_research_experiment_replacement(
-        self,
-        project_id: str,
-        control_node_id: str,
-    ) -> AutoResearchChildExperimentRecord | None:
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT * FROM auto_research_child_experiments
-                WHERE project_id = ? AND control_node_id = ? AND state = 'pending'
-                """,
-                (project_id, control_node_id),
             ).fetchone()
         return self._child_experiment_record(row) if row is not None else None
 
@@ -1066,34 +1013,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 (episode_id,) if newest is None else (episode_id, newest),
             ).fetchall()
         return [self._child_experiment_record(row) for row in rows]
-
-    def cancel_auto_research_experiment_replacement(
-        self,
-        child_episode_id: str,
-        *,
-        diagnostic: str,
-        initiated_by: str | None = None,
-    ) -> AutoResearchChildExperimentRecord:
-        return self._settle_auto_research_experiment_replacement(
-            child_episode_id,
-            source_event="cancelled",
-            diagnostic=diagnostic,
-            initiated_by=initiated_by,
-        )
-
-    def fail_auto_research_experiment_replacement(
-        self,
-        child_episode_id: str,
-        *,
-        diagnostic: str,
-    ) -> AutoResearchChildExperimentRecord:
-        """Terminalize a replacement that cannot start and notify its orchestrator."""
-
-        return self._settle_auto_research_experiment_replacement(
-            child_episode_id,
-            source_event="failed",
-            diagnostic=diagnostic,
-        )
 
     def terminalize_auto_research_child_experiment(
         self,
@@ -1239,63 +1158,19 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         admission_id: str | None,
     ) -> None:
         self._validate_auto_research_experiment_route(connection, record)
-        existing = connection.execute(
+        if record.state != "running" or record.replaces_episode_id is not None:
+            raise ValueError("a child Experiment launch must begin running without replacement")
+        connection.execute(
             """
-            SELECT * FROM auto_research_child_experiments WHERE child_episode_id = ?
+            INSERT INTO auto_research_child_experiments (
+                child_episode_id, auto_research_episode_id, project_id,
+                control_node_id, state, replaces_episode_id, request_json,
+                goal_sha256, parent_operation_id, terminal_diagnostic,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (record.child_episode_id,),
-        ).fetchone()
-        if existing is None:
-            if record.state != "running":
-                raise ValueError("a direct child Experiment launch must begin running")
-            connection.execute(
-                """
-                INSERT INTO auto_research_child_experiments (
-                    child_episode_id, auto_research_episode_id, project_id,
-                    control_node_id, state, replaces_episode_id, request_json,
-                    goal_sha256, parent_operation_id, terminal_diagnostic,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                self._child_experiment_values(record),
-            )
-        else:
-            stored = self._child_experiment_record(existing)
-            if stored.state != "pending" or not self._same_child_experiment_intent(stored, record):
-                raise ValueError("the child Experiment route already names another launch")
-            connection.execute(
-                """
-                UPDATE auto_research_child_experiments
-                SET state = 'running', updated_at = ?
-                WHERE child_episode_id = ? AND state = 'pending'
-                """,
-                (record.updated_at, record.child_episode_id),
-            )
-            assert stored.replaces_episode_id is not None
-            self._insert_auto_research_lifecycle_notice(
-                connection,
-                AutoResearchLifecycleNoticeRecord(
-                    notice_id=self._auto_research_notice_id(
-                        record.auto_research_episode_id,
-                        "experiment_replacement",
-                        record.child_episode_id,
-                        "advanced",
-                        1,
-                    ),
-                    episode_id=record.auto_research_episode_id,
-                    source_kind="experiment_replacement",
-                    source_id=record.child_episode_id,
-                    source_event="advanced",
-                    source_attempt=1,
-                    wake_suppressed="self_caused",
-                    payload={
-                        "episode_id": record.child_episode_id,
-                        "status": "running",
-                        "replaces_episode_id": stored.replaces_episode_id,
-                    },
-                    created_at=record.updated_at,
-                ),
-            )
+            self._child_experiment_values(record),
+        )
         self._reflect_auto_research_child_admission(
             connection,
             admission_id=admission_id,
@@ -2347,23 +2222,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             )
             for row in experiments
         )
-        replacements = connection.execute(
-            """
-            SELECT child_episode_id, state FROM auto_research_child_experiments
-            WHERE auto_research_episode_id = ? AND state = 'pending'
-            ORDER BY created_at, child_episode_id
-            """,
-            (episode_id,),
-        ).fetchall()
-        blockers.extend(
-            AutoResearchFinishBlocker(
-                kind="experiment_replacement",
-                blocker_id=str(row["child_episode_id"]),
-                state=str(row["state"]),
-                action=f"episode --key <key> --stop {row['child_episode_id']}",
-            )
-            for row in replacements
-        )
         notices = connection.execute(
             """
             SELECT notice_id, state FROM auto_research_lifecycle_notices
@@ -2505,87 +2363,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         assert stored is not None
         return stored
 
-    def _settle_auto_research_experiment_replacement(
-        self,
-        child_episode_id: str,
-        *,
-        source_event: Literal["cancelled", "failed"],
-        diagnostic: str,
-        initiated_by: str | None = None,
-    ) -> AutoResearchChildExperimentRecord:
-        detail = " ".join(diagnostic.split())[:2000]
-        if not detail:
-            raise ValueError("replacement settlement requires a diagnostic")
-        now = self.now()
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM auto_research_child_experiments WHERE child_episode_id = ?",
-                (child_episode_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(child_episode_id)
-            route = self._child_experiment_record(row)
-            if route.state == "pending":
-                connection.execute(
-                    """
-                    UPDATE auto_research_child_experiments
-                    SET state = 'cancelled', terminal_diagnostic = ?, updated_at = ?
-                    WHERE child_episode_id = ? AND state = 'pending'
-                    """,
-                    (detail, now, child_episode_id),
-                )
-            elif route.state != "cancelled" or route.terminal_diagnostic != detail:
-                raise ValueError("the Experiment replacement is no longer pending")
-            payload: dict[str, object] = {
-                "episode_id": child_episode_id,
-                "status": source_event,
-                "diagnostic": detail,
-            }
-            if route.replaces_episode_id is not None:
-                payload["replaces_episode_id"] = route.replaces_episode_id
-            notice = AutoResearchLifecycleNoticeRecord(
-                notice_id=self._auto_research_notice_id(
-                    route.auto_research_episode_id,
-                    "experiment_replacement",
-                    child_episode_id,
-                    source_event,
-                    1,
-                ),
-                episode_id=route.auto_research_episode_id,
-                source_kind="experiment_replacement",
-                source_id=child_episode_id,
-                source_event=source_event,
-                source_attempt=1,
-                wake_suppressed=(
-                    "self_caused"
-                    if source_event == "cancelled"
-                    and initiated_by is not None
-                    and initiated_by.startswith("orchestrator:")
-                    else None
-                ),
-                payload=payload,
-                created_at=now,
-            )
-            prior = connection.execute(
-                """
-                SELECT source_event FROM auto_research_lifecycle_notices
-                WHERE episode_id = ? AND source_kind = 'experiment_replacement'
-                  AND source_id = ?
-                """,
-                (route.auto_research_episode_id, child_episode_id),
-            ).fetchone()
-            if prior is not None and prior["source_event"] != source_event:
-                raise ValueError("the Experiment replacement already has another terminal outcome")
-            self._insert_auto_research_lifecycle_notice(connection, notice)
-            stored_row = connection.execute(
-                "SELECT * FROM auto_research_child_experiments WHERE child_episode_id = ?",
-                (child_episode_id,),
-            ).fetchone()
-            assert stored_row is not None
-            stored = self._child_experiment_record(stored_row)
-        return stored
-
     @staticmethod
     def _acknowledge_lifecycle_rows(
         connection: sqlite3.Connection,
@@ -2607,15 +2384,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             WHERE notice_id IN ({placeholders}) AND acknowledged_at IS NULL
             """,
             (acknowledged_at, acknowledged_by, acknowledged_operation_id, *ids),
-        )
-
-    @staticmethod
-    def _same_child_experiment_intent(
-        stored: AutoResearchChildExperimentRecord,
-        requested: AutoResearchChildExperimentRecord,
-    ) -> bool:
-        return stored.model_dump(exclude={"state", "updated_at"}) == requested.model_dump(
-            exclude={"state", "updated_at"}
         )
 
     @staticmethod

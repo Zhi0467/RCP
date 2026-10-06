@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import AuthorizedHuman
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
@@ -2279,7 +2280,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                 record.project_id,
                 record.mode,
                 record.control_node_id,
-                record.graph_target.model_dump_json(),
+                graph_target_json(record.graph_target),
                 record.graph_base_head.model_dump_json() if record.graph_base_head else None,
                 record.root_operation_id,
                 record.status,
@@ -2390,7 +2391,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         """Whether a continuation of ``episode`` would be admitted right now.
 
         The same two facts refuse it at admission: another live episode owns the
-        project (Auto-research) or the control node (Experiment), or the branch is
+        project (Auto-research) or the control node and target (Experiment), or the branch is
         being merged. The projection asks first so it offers only a callable control.
         """
 
@@ -2417,7 +2418,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                   AND status IN ('queued', 'running', 'pausing')
                 LIMIT 1
                 """,
-                (project_id, graph_target.model_dump_json()),
+                (project_id, graph_target_json(graph_target)),
             ).fetchone()
             is not None
         )
@@ -2442,10 +2443,15 @@ class EpisodeStoreMixin(StoreMixinBase):
             f"""
             SELECT * FROM episodes
             WHERE project_id = ? AND mode = 'experiment_loop' AND control_node_id = ?
-              AND status IN ({placeholders})
+              AND graph_target_json = ? AND status IN ({placeholders})
             LIMIT 1
             """,
-            (record.project_id, record.control_node_id, *_LIVE_EPISODE_STATUSES),
+            (
+                record.project_id,
+                record.control_node_id,
+                graph_target_json(record.graph_target),
+                *_LIVE_EPISODE_STATUSES,
+            ),
         ).fetchone()
 
     @staticmethod

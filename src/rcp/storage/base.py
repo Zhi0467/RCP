@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from rcp.artifacts import html_document_title
+from rcp.core.graph_targets import graph_target_json
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.artifact_imports import migrate_artifact_imports
@@ -85,6 +87,7 @@ class AppStoreBase:
         (39, "owner_auth_v1"),
         (40, "browser_grants_v1"),
         (41, "machine_hidden_folders_v1"),
+        (42, "per_target_experiment_loops_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -782,11 +785,51 @@ class AppStoreBase:
             name="machine_hidden_folders_v1",
             migration=self._migrate_machine_hidden_folders,
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=42,
+            name="per_target_experiment_loops_v1",
+            migration=self._migrate_per_target_experiment_loops,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    def _migrate_per_target_experiment_loops(self, connection: sqlite3.Connection) -> None:
+        """Retain loop history while widening live identity to the graph target."""
+        for table in ("episodes", "graph_runs", "watchers", "graph_watcher_reconciliation"):
+            rows = connection.execute(f"SELECT DISTINCT graph_target_json FROM {table}").fetchall()
+            for row in rows:
+                previous = row["graph_target_json"]
+                canonical = graph_target_json(GraphTargetRef.model_validate_json(previous))
+                if previous != canonical:
+                    connection.execute(
+                        f"UPDATE {table} SET graph_target_json = ? WHERE graph_target_json = ?",
+                        (canonical, previous),
+                    )
+        connection.execute("DROP INDEX IF EXISTS episodes_one_live_experiment_control")
+        connection.execute("DROP INDEX IF EXISTS episodes_one_live_experiment_target")
+        connection.execute("DROP INDEX IF EXISTS auto_research_pending_experiment_per_node")
+        connection.execute(
+            "CREATE UNIQUE INDEX episodes_one_live_experiment_target "
+            "ON episodes(project_id, control_node_id, graph_target_json) "
+            "WHERE mode = 'experiment_loop' "
+            "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
+        )
+        # A reserved route has no child episode. Preserve its replacement provenance;
+        # never undo an already-issued predecessor Stop or launch during migration.
+        connection.execute(
+            "UPDATE auto_research_child_experiments "
+            "SET state = 'cancelled', terminal_diagnostic = ?, updated_at = ? "
+            "WHERE state = 'pending'",
+            (
+                "Legacy replacement cancelled by per-target loop migration; "
+                "issue a fresh kickoff on the intended target.",
+                self.now(),
+            ),
+        )
 
     @staticmethod
     def _migrate_browser_grants(connection: sqlite3.Connection) -> None:

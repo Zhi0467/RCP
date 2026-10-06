@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -590,7 +591,7 @@ def test_watcher_admission_fails_closed_after_stop_or_stale_episode(store) -> No
     with pytest.raises(ValueError, match="stale episode"):
         store.admit_experiment_watcher_maintenance(stale)
 
-    store.request_experiment_loop_stop("project", "exp-one")
+    store.request_experiment_loop_stop("project", "exp-one", graph_target=GraphTargetRef())
     assert store.experiment_watcher_resources("project") == []
     with pytest.raises(ValueError, match="live, unstopped episode"):
         store.admit_experiment_watcher_maintenance(binding)
@@ -706,7 +707,7 @@ def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(store) -> N
     observer = _record("observer", origin="loop-root", continuation=continuation)
     store.create_watchers([observer])
 
-    store.request_experiment_loop_stop("project", "exp-one")
+    store.request_experiment_loop_stop("project", "exp-one", graph_target=GraphTargetRef())
     stopped_by_loop = store.watcher("observer")
     assert stopped_by_loop is not None and stopped_by_loop.stopped_by == "loop"
 
@@ -1017,8 +1018,8 @@ def test_claimed_diagnostic_group_remains_history_not_live_work(store) -> None:
         == stored
     )
     assert store.pollable_watchers(as_of="2026-08-02T00:00:00+00:00") == []
-    assert store.experiment_watcher_ids("project", "exp-one") == []
-    runtime = store.experiment_loop_runtime("project", "exp-one")
+    assert store.experiment_watcher_ids("project", "exp-one", graph_target=GraphTargetRef()) == []
+    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert runtime.detached_work_active is False
     assert runtime.watcher_degraded is False
     assert runtime.active is False
@@ -1804,11 +1805,13 @@ def test_experiment_watchers_are_found_by_the_loop_that_armed_them(store) -> Non
     store.create_watchers([bound])
     store.create_watchers([_record("watch-plain")])
 
-    assert store.experiment_watcher_ids("project", "exp/one") == ["watch-bound"]
-    assert store.experiment_watcher_ids("project", "exp/other") == []
+    assert store.experiment_watcher_ids("project", "exp/one", graph_target=GraphTargetRef()) == [
+        "watch-bound"
+    ]
+    assert store.experiment_watcher_ids("project", "exp/other", graph_target=GraphTargetRef()) == []
 
     store.stop_watchers("project", ["watch-bound"])
-    assert store.experiment_watcher_ids("project", "exp/one") == []
+    assert store.experiment_watcher_ids("project", "exp/one", graph_target=GraphTargetRef()) == []
 
 
 def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(store) -> None:
@@ -1838,7 +1841,7 @@ def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(sto
         parent_operation_id="first",
     )
     store.create_experiment_recovery_task(recovery)
-    runtime = store.experiment_loop_runtime("project", "exp-one")
+    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert runtime.invocations_used == 1
     assert runtime.episode_id == episode_id
     store.complete_agent_task("retry", applied_revision=None, result={})
@@ -1886,7 +1889,7 @@ def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceilin
     )
     store.create_watchers([watcher])
 
-    running = store.experiment_loop_runtime("project", "exp-one")
+    running = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert running.detached_work_active is True
     assert running.watcher_completion_pending is False
     assert running.paused is True
@@ -1897,7 +1900,7 @@ def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceilin
         exit_code=0,
         error=None,
     )
-    completed = store.experiment_loop_runtime("project", "exp-one")
+    completed = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert completed.detached_work_active is False
     assert completed.watcher_completion_pending is True
     assert completed.paused is True
@@ -1920,7 +1923,7 @@ def test_new_episode_adopts_remaining_watchers_without_mutating_their_origin(sto
     store.create_experiment_episode_with_invocation(root)
     store.complete_agent_task("reauthorized", applied_revision=None, result={})
 
-    runtime = store.experiment_loop_runtime("project", "exp-one")
+    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
 
     assert runtime.episode_id == new_episode
     assert runtime.invocations_used == 1
@@ -1951,7 +1954,7 @@ def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(store) -> N
     watcher = _record("pending", status="completed", continuation=_loop_continuation(episode_id))
     store.create_watchers([watcher])
 
-    runtime = store.experiment_loop_runtime("project", "exp-one")
+    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
 
     assert runtime.episode_exited is True
     assert runtime.active is False

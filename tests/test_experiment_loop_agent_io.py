@@ -580,7 +580,12 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
 
     bound_before = store.experiment_episode(episode_id)
     assert bound_before is not None
-    assert store.experiment_loop_runtime(project_id, _EXPERIMENT_ID).invocations_used == 1
+    assert (
+        store.experiment_loop_runtime(
+            project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+        ).invocations_used
+        == 1
+    )
     revision_before = service.history.state().revision
     patch_count_before = len(service.history.load_patches())
     watcher_ids_before = [item.watcher_id for item in store.watchers(project_id)]
@@ -638,7 +643,12 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     bound_after = store.experiment_episode(episode_id)
     assert bound_after is not None
     # Resume is recovery of invocation one, never another paid Experiment allocation.
-    assert store.experiment_loop_runtime(project_id, _EXPERIMENT_ID).invocations_used == 1
+    assert (
+        store.experiment_loop_runtime(
+            project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+        ).invocations_used
+        == 1
+    )
     if accepted:
         assert not [event for event in resume_events if event.event == "error"]
         assert service.history.state().revision == revision_before + 1
@@ -2645,7 +2655,9 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         project_id=project_id,
         episode_id=older_episode,
     )
-    older_stopped = store.request_experiment_loop_stop(project_id, _EXPERIMENT_ID)
+    older_stopped = store.request_experiment_loop_stop(
+        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert older_stopped is not None and older_stopped.stop_settled_at is not None
     _store_task(
         store,
@@ -2670,7 +2682,9 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         watcher_ids=[],
         context_baseline={},
     )
-    stopped = store.request_experiment_loop_stop(project_id, _EXPERIMENT_ID)
+    stopped = store.request_experiment_loop_stop(
+        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert stopped is not None and stopped.stop_requested_at is not None
     _store_task(
         store,

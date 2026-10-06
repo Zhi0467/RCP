@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.tasks import experiment_loop, work
 from rcp.service import RunRequest
 
@@ -249,7 +250,9 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
     watchers = execution.store.watchers(app.state.default_project_id)
     assert [item.check_command for item in watchers] == [launcher.watcher["check_command"]]
     assert watchers[0].status == "active"
-    runtime = execution.store.experiment_loop_runtime(app.state.default_project_id, _EXPERIMENT_ID)
+    runtime = execution.store.experiment_loop_runtime(
+        app.state.default_project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert runtime.invocations_used == 1
     assert {call["session_id"] for call in launcher.calls[1:]} == {launcher.native_session_id}
 

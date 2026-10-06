@@ -234,7 +234,7 @@ def _experiment_episode_entries(
     for record in store.projects():
         if record.project_id not in visible:
             continue
-        read_models = store.experiment_control_projection_snapshots(record.project_id)
+        read_models = store.project_experiment_control_projection_snapshots(record.project_id)
         if not read_models:
             continue
         active_graph_watchers = store.active_graph_watchers(record.project_id)
@@ -250,8 +250,10 @@ def _experiment_episode_entries(
             # Re-read under the same canonical project lock as Run/Stop so a
             # concurrent admission cannot race the quiescence decision.
             with experiment_operation_lock(record.project_id):
-                read_models = store.experiment_control_projection_snapshots(record.project_id)
-                for experiment_id, read_model in read_models.items():
+                read_models = store.project_experiment_control_projection_snapshots(
+                    record.project_id
+                )
+                for (experiment_id, _target_key), read_model in read_models.items():
                     runtime = read_model.runtime
                     episode_snapshot = read_model.episode
                     if (
@@ -267,7 +269,9 @@ def _experiment_episode_entries(
                             episode_id=episode.episode_id,
                             graph_target=episode.graph_target,
                         )
-                read_models = store.experiment_control_projection_snapshots(record.project_id)
+                read_models = store.project_experiment_control_projection_snapshots(
+                    record.project_id
+                )
 
         archive_states = store.episode_archive_states(record.project_id)
         if archive_states_by_project is not None:
@@ -279,12 +283,18 @@ def _experiment_episode_entries(
                 ExperimentControlProjectionSnapshot,
             ]
         ] = []
-        for control_node_id, read_model in read_models.items():
+        for (control_node_id, _target_key), read_model in read_models.items():
             episode_snapshot = read_model.episode
             if episode_snapshot is None:
                 continue
             runtime = read_model.runtime
             episode = episode_snapshot.episode
+            if (
+                archive_states_by_project is not None
+                and (archive_state := archive_states.get(episode.episode_id)) is not None
+                and archive_state.archived
+            ):
+                continue
             if (
                 episode.project_id != record.project_id
                 or episode.mode != "experiment_loop"

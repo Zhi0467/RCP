@@ -94,8 +94,8 @@ def resume_provider_account(
                 or not episode.control_node_id
             ):
                 continue
-            runtime = store.experiment_loop_runtime_for_target(
-                project.project_id, episode.control_node_id, episode.graph_target
+            runtime = store.experiment_loop_runtime(
+                project.project_id, episode.control_node_id, graph_target=episode.graph_target
             )
             current = store.agent_task(runtime.current_operation_id or "")
             if (

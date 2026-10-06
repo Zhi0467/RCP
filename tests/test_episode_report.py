@@ -533,6 +533,7 @@ async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_i
     read_model = store.experiment_control_projection_snapshots(
         "project",
         ["experiment-node"],
+        graph_target=GraphTargetRef(),
     )["experiment-node"]
     assert read_model.episode is not None
     assert read_model.episode.episode.episode_id == accidental_episode_id

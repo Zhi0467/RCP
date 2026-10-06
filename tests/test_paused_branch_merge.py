@@ -20,7 +20,12 @@ from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AutoResearchChildAdmissionRecord
 
 from .helpers import append_fixture_patch, wait_for_task
-from .test_auto_research_children_storage import _experiment_route, _experiment_task, _work_pair
+from .test_auto_research_children_storage import (
+    _experiment_route,
+    _experiment_task,
+    _insert_cancelled_legacy_route,
+    _work_pair,
+)
 from .test_background import _done_stream
 from .test_branch_merge_api import (
     _branch_patch,
@@ -268,7 +273,7 @@ def test_a_settled_worker_turn_neither_blocks_nor_is_retired_by_the_merge(
     assert store.agent_task(root.operation_id).can_resume
 
 
-@pytest.mark.parametrize("pending_kind", ["admission", "replacement"])
+@pytest.mark.parametrize("pending_kind", ["admission", "cancelled_legacy_route"])
 def test_a_pending_child_without_a_task_is_not_a_writer(tmp_path: Path, pending_kind: str) -> None:
     store, episode, root, _recovery = _paused_store(tmp_path)
     child_id = str(uuid.uuid4())
@@ -287,10 +292,11 @@ def test_a_pending_child_without_a_task_is_not_a_writer(tmp_path: Path, pending_
         )
     else:
         task = _experiment_task(store, child_id, episode.authorized_by, node_id="exp/replacement")
-        store.reserve_auto_research_experiment_replacement(
+        _insert_cancelled_legacy_route(
+            store,
             _experiment_route(
                 store, episode, root, task, state="pending", replaces_episode_id=str(uuid.uuid4())
-            )
+            ),
         )
     store.create_branch_merge_task(_merge_task(store, episode, str(uuid.uuid4())))
     assert store.episode(episode.episode_id).ending is None

@@ -1694,22 +1694,27 @@ def test_experiment_runtime_batch_matches_scalar_for_active_stopped_and_empty(
         control_node_id="exp/stopped",
         diagnostic="The saved native session is unavailable.",
     )
-    store.request_experiment_loop_stop(project_id, "exp/stopped")
+    store.request_experiment_loop_stop(project_id, "exp/stopped", graph_target=GraphTargetRef())
 
     runtimes = store.experiment_loop_runtimes(
         project_id,
         ["exp/active", "exp/stopped", "exp/empty"],
+        graph_target=GraphTargetRef(),
     )
     project_runtimes = store.project_experiment_loop_runtimes(project_id)
 
-    assert set(project_runtimes) == {"exp/active", "exp/stopped"}
-    assert project_runtimes["exp/active"] == runtimes["exp/active"]
-    assert project_runtimes["exp/stopped"] == runtimes["exp/stopped"]
-    assert runtimes["exp/active"] == store.experiment_loop_runtime(project_id, "exp/active")
-    assert runtimes["exp/stopped"] == store.experiment_loop_runtime(project_id, "exp/stopped")
+    assert set(project_runtimes) == {("exp/active", "main"), ("exp/stopped", "main")}
+    assert project_runtimes[("exp/active", "main")] == runtimes["exp/active"]
+    assert project_runtimes[("exp/stopped", "main")] == runtimes["exp/stopped"]
+    assert runtimes["exp/active"] == store.experiment_loop_runtime(
+        project_id, "exp/active", graph_target=GraphTargetRef()
+    )
+    assert runtimes["exp/stopped"] == store.experiment_loop_runtime(
+        project_id, "exp/stopped", graph_target=GraphTargetRef()
+    )
     assert (
         runtimes["exp/empty"]
-        == store.experiment_loop_runtime(project_id, "exp/empty")
+        == store.experiment_loop_runtime(project_id, "exp/empty", graph_target=GraphTargetRef())
         == ExperimentLoopRuntime()
     )
     assert runtimes["exp/active"].episode_id == active_episode
@@ -1744,21 +1749,27 @@ def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
         )
 
     store.select_count = 0
-    store.experiment_loop_runtimes(project_id, control_node_ids[:1])
+    store.experiment_loop_runtimes(project_id, control_node_ids[:1], graph_target=GraphTargetRef())
     one_experiment_selects = store.select_count
     store.select_count = 0
-    runtimes = store.experiment_loop_runtimes(project_id, control_node_ids)
+    runtimes = store.experiment_loop_runtimes(
+        project_id, control_node_ids, graph_target=GraphTargetRef()
+    )
     all_experiment_selects = store.select_count
 
     assert set(runtimes) == set(control_node_ids)
     assert one_experiment_selects == all_experiment_selects == 6
 
     store.select_count = 0
-    assert set(store.project_experiment_loop_runtimes(project_id)) == set(control_node_ids)
+    assert set(store.project_experiment_loop_runtimes(project_id)) == {
+        (node_id, "main") for node_id in control_node_ids
+    }
     assert store.select_count == 6
 
     store.select_count = 0
-    assert store.active_experiment_control_ids(project_id) == set(control_node_ids)
+    assert store.active_experiment_control_ids(project_id, graph_target=GraphTargetRef()) == set(
+        control_node_ids
+    )
     assert store.select_count == 6
 
 

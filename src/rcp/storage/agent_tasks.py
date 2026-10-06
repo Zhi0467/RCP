@@ -25,6 +25,7 @@ from rcp.core.authority import (
     AgentTaskAuthority,
     require_dispatch,
 )
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import (
     AuthorizedHuman,
     BranchMergeReceipt,
@@ -645,7 +646,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 record.stage_host,
                 int(record.history_only),
                 record.stage_root,
-                record.graph_target.model_dump_json(),
+                graph_target_json(record.graph_target),
                 record.write_scope_fingerprint,
                 record.estimate_seconds,
                 record.estimate_samples,
@@ -773,7 +774,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
               AND kind = 'branch_merge' AND status IN ('queued', 'running', 'pausing')
             LIMIT 1
             """,
-            (record.project_id, record.graph_target.model_dump_json()),
+            (record.project_id, graph_target_json(record.graph_target)),
         ).fetchone()
         if merging is not None:
             raise AgentTaskAdmissionConflict(
@@ -1825,6 +1826,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 connection,
                 project_id=data["project_id"],
                 control_node_id=control_node_id,
+                graph_target=GraphTargetRef.model_validate_json(data["graph_target_json"]),
                 episode_id=episode_id,
                 invocation=invocation,
                 operation_id=operation_id,
@@ -2001,7 +2003,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         finished recently stays too, so a client that saw it open also sees it
         end.
         """
-        target_json = graph_target.model_dump_json() if graph_target is not None else None
+        target_json = graph_target_json(graph_target) if graph_target is not None else None
         open_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES | AWAITING_HUMAN_AGENT_TASK_STATUSES)
         finished_since = (
             datetime.fromisoformat(self.now())
@@ -2164,7 +2166,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (
                     project_id,
-                    graph_target.model_dump_json(),
+                    graph_target_json(graph_target),
                     int(include_hidden),
                 ),
             ).fetchall()
@@ -2215,7 +2217,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
               )
             ORDER BY run.created_at, run.operation_id
             """,
-            (project_id, graph_target.model_dump_json()),
+            (project_id, graph_target_json(graph_target)),
         ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
