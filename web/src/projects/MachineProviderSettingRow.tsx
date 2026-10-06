@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { errorMessage } from "../core/errors";
-import type { SpaceMachine, SpaceMachineUpdateRequest } from "../core/types";
+import type { SpaceMachine } from "../core/types";
+import type { MachineSave } from "./spaceMachines";
 
 /** One provider setting for every turn on this machine, read at each launch. */
 export function MachineProviderSettingRow({
@@ -21,8 +22,8 @@ export function MachineProviderSettingRow({
   placeholder: string;
   hint: string;
   writesDisabled: boolean;
-  /** The card's serial save, shared by every provider row on this machine. */
-  save: (machineId: string, request: SpaceMachineUpdateRequest) => Promise<SpaceMachine>;
+  /** The card's serial save, shared by every editor on this machine card. */
+  save: MachineSave;
   onRecordChange: (machine: SpaceMachine) => void;
 }) {
   const saved = record[setting][provider] ?? "";

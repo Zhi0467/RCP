@@ -137,15 +137,18 @@ export function setupMachineSelection(
   return matches.length === 1 ? matches[0] : null;
 }
 
+export type MachineSave = (
+  machineId: string,
+  request: SpaceMachineUpdateRequest,
+) => Promise<SpaceMachine>;
+
 /**
- * Run one machine's provider-setting saves one at a time. Each answer is a whole
- * record, so a slower earlier answer would otherwise replace a newer one.
+ * Run one machine card's saves one at a time. Each answer is a whole record, so a
+ * slower earlier answer would otherwise replace a newer one.
  */
-export function createSerialMachineSave(
-  save: (machineId: string, request: SpaceMachineUpdateRequest) => Promise<SpaceMachine>,
-) {
+export function createSerialMachineSave(save: MachineSave): MachineSave {
   let last: Promise<unknown> = Promise.resolve();
-  return (machineId: string, request: SpaceMachineUpdateRequest): Promise<SpaceMachine> => {
+  return (machineId, request) => {
     const next = last.catch(() => undefined).then(() => save(machineId, request));
     last = next;
     return next;

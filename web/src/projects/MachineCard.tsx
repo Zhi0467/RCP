@@ -2,7 +2,12 @@ import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react
 import { useRef, useState, type ReactNode } from "react";
 import { createSpaceMachine, updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
-import { createPathEditor, createSerialMachineSave, type WritablePathEdit } from "./spaceMachines";
+import {
+  createPathEditor,
+  createSerialMachineSave,
+  type MachineSave,
+  type WritablePathEdit,
+} from "./spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../core/types";
 import { MachineProviderSettingRow } from "./MachineProviderSettingRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
@@ -38,7 +43,9 @@ export function MachineCard({
   children,
 }: Props) {
   const [deleting, setDeleting] = useState(false);
-  const providerSave = useRef(createSerialMachineSave(updateSpaceMachine)).current;
+  // Every save on this card queues here: each answer is a whole record, so a slower
+  // earlier answer must never land after a newer one.
+  const save = useRef(createSerialMachineSave(updateSpaceMachine)).current;
   const [error, setError] = useState<string | null>(null);
   return (
     <article
@@ -47,7 +54,12 @@ export function MachineCard({
     >
       <header>
         {level === "space" && record ? (
-          <MachineName record={record} writesDisabled={writesDisabled} onRenamed={onRecordChange} />
+          <MachineName
+            record={record}
+            writesDisabled={writesDisabled}
+            save={save}
+            onRenamed={onRecordChange}
+          />
         ) : (
           <strong>{title}</strong>
         )}
@@ -108,7 +120,7 @@ export function MachineCard({
           placeholder="CLI default"
           hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
           writesDisabled={writesDisabled}
-          save={providerSave}
+          save={save}
           onRecordChange={onRecordChange}
         />
       ))}
@@ -122,7 +134,7 @@ export function MachineCard({
           placeholder={String(option.default_minutes)}
           hint="Whole minutes, 2–120. Empty keeps the provider default."
           writesDisabled={writesDisabled}
-          save={providerSave}
+          save={save}
           onRecordChange={onRecordChange}
         />
       ))}
@@ -130,12 +142,14 @@ export function MachineCard({
         record={record}
         level={level}
         writesDisabled={writesDisabled}
+        save={save}
         onRecordChange={onRecordChange}
       />
       {record && (
         <HiddenFolders
           record={record}
           writesDisabled={writesDisabled}
+          save={save}
           onRecordChange={onRecordChange}
         />
       )}
@@ -147,18 +161,20 @@ export function WritablePaths({
   record,
   level,
   writesDisabled,
+  save,
   onRecordChange,
 }: {
   record: SpaceMachine | null;
   level: "space" | "project";
   writesDisabled: boolean;
+  save: MachineSave;
   onRecordChange: (machine: SpaceMachine) => void;
 }) {
   const [picking, setPicking] = useState(false);
   // One pending edit at a time, shared by add and remove.
   const [pending, setPending] = useState<WritablePathEdit | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const editor = useRef(createPathEditor(updateSpaceMachine)).current;
+  const editor = useRef(createPathEditor(save)).current;
   editor.sync(record);
 
   const edit = async (change: WritablePathEdit) => {
@@ -251,16 +267,18 @@ export function WritablePaths({
 export function HiddenFolders({
   record,
   writesDisabled,
+  save,
   onRecordChange,
 }: {
   record: SpaceMachine;
   writesDisabled: boolean;
+  save: MachineSave;
   onRecordChange: (machine: SpaceMachine) => void;
 }) {
   const [picking, setPicking] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const editor = useRef(createPathEditor(updateSpaceMachine, "hidden_folders")).current;
+  const editor = useRef(createPathEditor(save, "hidden_folders")).current;
   editor.sync(record);
   const projection = record.hidden_read;
   const defaults = projection?.default_paths ?? [];
@@ -374,10 +392,12 @@ function hiddenReadReason(reason: string): string {
 function MachineName({
   record,
   writesDisabled,
+  save: saveMachine,
   onRenamed,
 }: {
   record: SpaceMachine;
   writesDisabled: boolean;
+  save: MachineSave;
   onRenamed: (machine: SpaceMachine) => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -405,7 +425,7 @@ function MachineName({
     setSaving(true);
     setError(null);
     try {
-      onRenamed(await updateSpaceMachine(record.machine_id, { name }));
+      onRenamed(await saveMachine(record.machine_id, { name }));
       setDraft(null);
     } catch (failure) {
       setError(errorMessage(failure));
