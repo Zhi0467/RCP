@@ -1380,11 +1380,19 @@ test("selecting either target keeps both same-node cards and scopes busy state t
       can_stop: true,
       started_by:
         target.kind === "main"
-          ? { kind: "human", human: { display_name: "member-one" }, auto_research_episode_id: null }
+          ? {
+              kind: "human",
+              human: { space_id: "space-one", user_id: "member-one", display_name: "member-one" },
+              auto_research_episode_id: null,
+            }
           : { kind: "auto_research", human: null, auto_research_episode_id: "parent-run" },
       auto_research_parent_episode_id: target.kind === "main" ? null : "parent-run",
       checkout: { kind: target.kind === "main" ? "shared" : "worktree" },
-      authorized_by: { display_name: "authorizer-one" },
+      authorized_by: {
+        space_id: "space-one",
+        user_id: "member-one",
+        display_name: "member-one",
+      },
     });
     const runControl = control(
       { episode_id: id, episode: runEpisode, active: true, can_stop: true, can_start: false },
@@ -1451,10 +1459,11 @@ test("selecting either target keeps both same-node cards and scopes busy state t
     for (const [card, id] of cards) {
       const isSelected = id === selected.episode.episode_id;
       assert.match(card, /class="episode-author"/);
-      assert.match(
-        card,
-        new RegExp(`data-starter-kind="${id === "main-episode" ? "human" : "auto_research"}"`),
-      );
+      if (id === "main-episode") {
+        assert.doesNotMatch(card, /data-starter-kind=/);
+      } else {
+        assert.match(card, /data-starter-kind="auto_research"/);
+      }
       assert.match(
         card,
         new RegExp(`data-checkout-kind="${id === "main-episode" ? "shared" : "worktree"}"`),
