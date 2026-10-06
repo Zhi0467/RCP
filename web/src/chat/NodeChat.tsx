@@ -1014,6 +1014,22 @@ export function NodeChat({
         total += item.file.size;
       }
     }
+    // A macOS screenshot thumbnail drops a file promise whose bytes can be gone by
+    // upload time. Copy them now, so a source that cannot be read fails here, named.
+    for (const item of candidates) {
+      if (item.status !== "preparing") continue;
+      try {
+        const bytes = await item.file.arrayBuffer();
+        if (bytes.byteLength !== item.file.size) throw new Error("short read");
+        item.file = new globalThis.File([bytes], item.file.name, {
+          type: item.file.type,
+          lastModified: item.file.lastModified,
+        });
+      } catch {
+        item.status = "error";
+        item.error = "Could not read this file. Save it to disk first, then attach it.";
+      }
+    }
     setAttachments((current) => [...current, ...candidates]);
 
     const uploadCandidates = candidates.filter((candidate) => candidate.status === "preparing");
