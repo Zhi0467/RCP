@@ -366,9 +366,11 @@ episode start, continue, and mail, seed, refresh, paper coach, merge, and
 artifact edits refuse them, and question and watcher follow-ups clear them.
 
 An assistant answer also supports temporary selection comments for the next
-human turn. Pointer-selecting answer text opens a comment composer beside the
-selection when the pointer lifts, wherever it lifts; a sweep that overshoots the
-answer is clamped to the answer's text. A visible Comment command opens the same
+human turn. Finishing a selection of answer text, by pointer release wherever it
+lifts or by a touch selection settling, offers a floating Comment button below
+the selection; the selection and the platform's Copy are left untouched, and the
+composer opens only when Comment is chosen. A sweep that overshoots the answer
+is clamped to the answer's text. A visible Comment command opens the same
 floating flow with the answer in a real keyboard-selectable text control. At
 every layout width, the composer stays inside the soft-keyboard-adjusted visual
 viewport and scrolls when necessary.

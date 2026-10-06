@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
+  chatSelectionCommentPosition,
   parseStagedChatAnnotations,
   replaceTextSpan,
   stagedArtifactContext,
@@ -108,5 +109,30 @@ test("annotation composer stays beside the selection and inside the viewport", (
       { width: 320, height: 172 },
     ),
     { left: 390, top: 60 },
+  );
+});
+
+test("the selection Comment offer sits below the selection and stays on screen", () => {
+  const viewport = { left: 0, top: 0, width: 390, height: 844 };
+  const button = { width: 112, height: 44 };
+  assert.deepEqual(
+    chatSelectionCommentPosition({ left: 40, right: 300, top: 400, bottom: 420 }, viewport, button),
+    { left: 188, top: 438 },
+  );
+  // No room below: flip above the selection.
+  assert.deepEqual(
+    chatSelectionCommentPosition({ left: 40, right: 300, top: 790, bottom: 810 }, viewport, button),
+    { left: 188, top: 728 },
+  );
+  // A selection ending at either edge keeps the whole button inside the margins.
+  assert.equal(
+    chatSelectionCommentPosition({ left: 0, right: 30, top: 400, bottom: 420 }, viewport, button)
+      .left,
+    12,
+  );
+  assert.equal(
+    chatSelectionCommentPosition({ left: 0, right: 389, top: 400, bottom: 420 }, viewport, button)
+      .left,
+    266,
   );
 });

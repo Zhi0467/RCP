@@ -56,6 +56,8 @@ export interface ChatAnnotationTextControlSelection {
 
 const CHAT_ANNOTATION_COMPOSER_GAP = 10;
 const CHAT_ANNOTATION_VIEWPORT_MARGIN = 12;
+// Clears the end handle a touch platform draws just below a selection.
+const CHAT_SELECTION_COMMENT_GAP = 18;
 
 export function replaceTextSpan(current: string, span: TextSpan, replacement: string) {
   return {
@@ -206,6 +208,39 @@ export function chatAnnotationViewportMetrics(
     height,
     right: Math.max(0, layoutViewport.width - left - width),
     bottom: Math.max(0, layoutViewport.height - top - height),
+  };
+}
+
+/**
+ * Where the selection's Comment button goes: just below the end of the
+ * selection, where it does not cover the selected text or the platform's own
+ * Copy menu (shown above a selection), flipped above when there is no room
+ * below, and always inside the visible viewport.
+ */
+export function chatSelectionCommentPosition(
+  selection: { left: number; right: number; top: number; bottom: number },
+  viewport: Pick<ChatAnnotationViewportMetrics, "left" | "top" | "width" | "height">,
+  button: { width: number; height: number },
+): ChatAnnotationComposerPosition {
+  const viewportRight = viewport.left + viewport.width;
+  const viewportBottom = viewport.top + viewport.height;
+  const below = selection.bottom + CHAT_SELECTION_COMMENT_GAP;
+  const above = selection.top - button.height - CHAT_SELECTION_COMMENT_GAP;
+  const top =
+    below + button.height <= viewportBottom - CHAT_ANNOTATION_VIEWPORT_MARGIN ? below : above;
+  const left = Math.max(
+    viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN,
+    Math.min(
+      selection.right - button.width,
+      viewportRight - button.width - CHAT_ANNOTATION_VIEWPORT_MARGIN,
+    ),
+  );
+  return {
+    left,
+    top: Math.max(
+      viewport.top + CHAT_ANNOTATION_VIEWPORT_MARGIN,
+      Math.min(top, viewportBottom - button.height - CHAT_ANNOTATION_VIEWPORT_MARGIN),
+    ),
   };
 }
 

@@ -40,6 +40,9 @@
   .markdown-code-block {
     --markdown-code-copy-size: 44px;
   }
+  .chat-selection-comment {
+    min-height: 44px;
+  }
 
   /* A centred tooltip on a term near either edge would leave the screen. */
   .glossary-definition::after,

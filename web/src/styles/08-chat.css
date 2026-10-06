@@ -968,6 +968,32 @@
   justify-self: end;
   padding: 2px;
 }
+/* Offered over a finished answer selection; the composer opens only from here. */
+.chat-selection-comment {
+  align-items: center;
+  background: var(--plum);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 8px 22px rgb(var(--shadow-rgb) / 24%);
+  color: var(--sheet);
+  cursor: pointer;
+  display: inline-flex;
+  font: 650 var(--type-xs) / 1 var(--ui);
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  position: fixed;
+  user-select: none;
+  z-index: 1200;
+}
+.chat-selection-comment:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.chat-selection-comment:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
 .chat-annotation-composer {
   --chat-mode-accent: var(--plum);
   background: var(--surface);
