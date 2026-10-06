@@ -67,6 +67,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                 provider_version=request.provider_version,
                 browser_grant=request.browser_grant,
                 hidden_read_scope=request.hidden_read_scope,
+                autocompact=request.autocompact,
             )
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
@@ -225,6 +226,11 @@ _CLAUDE_MODELS = tuple(
 )
 
 
+# The window `claude --autocompact` accepts besides `auto` (probed on Claude Code 2.1.287).
+_AUTOCOMPACT_MIN_TOKENS = 100_000
+_AUTOCOMPACT_MAX_TOKENS = 1_000_000
+
+
 class ClaudeProfile(ProviderProfile):
     @property
     def authentication(self) -> ProviderAuthentication:
@@ -240,6 +246,7 @@ class ClaudeProfile(ProviderProfile):
     remote_session_roots_field = "remote_claude_roots"
     native_update = ProviderNativeUpdate(self_update_args=("update",))
     session_format = ClaudeSessionFormat()
+    autocompact_hint = f"auto, or {_AUTOCOMPACT_MIN_TOKENS} to {_AUTOCOMPACT_MAX_TOKENS} tokens"
     legacy_runtime_id = "claude.stream-json.v1"
     default_runtime = "stream-json"
     runtime_aliases = {
@@ -427,6 +434,14 @@ class ClaudeProfile(ProviderProfile):
     def project_write_enforcement_mode(self) -> str:
         return "claude.permission-allowlist.v1"
 
+    def canonical_autocompact(self, value: str) -> str:
+        value = value.strip().lower()
+        if value == "auto":
+            return value
+        if value.isdigit() and _AUTOCOMPACT_MIN_TOKENS <= int(value) <= _AUTOCOMPACT_MAX_TOKENS:
+            return str(int(value))
+        raise ValueError(f"Claude auto-compact must be {self.autocompact_hint}")
+
     def command(
         self,
         prompt: str,
@@ -443,6 +458,7 @@ class ClaudeProfile(ProviderProfile):
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
@@ -520,6 +536,8 @@ class ClaudeProfile(ProviderProfile):
             command.extend(["--model", model])
         if reasoning:
             command.extend(["--effort", reasoning])
+        if autocompact:
+            command.extend(["--autocompact", autocompact])
         return command
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:

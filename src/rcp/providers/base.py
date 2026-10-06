@@ -136,6 +136,9 @@ class ProviderTurnRequest:
     legacy_command: list[str] | None = None
     # None is unresolved during migration, never evidence of enforcement.
     hidden_read_scope: HiddenReadScope | None = None
+    #: The execution machine's auto-compact setting for this provider, already
+    #: canonical; empty keeps the CLI's own default.
+    autocompact: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,6 +257,7 @@ class _JsonlProviderTurn(ProviderTurn):
             capability=request.capability,
             provider_version=request.provider_version,
             browser_grant=request.browser_grant,
+            autocompact=request.autocompact,
         )
 
     def initial_input(self) -> bytes:
@@ -347,6 +351,14 @@ class ProviderProfile:
     session_format: SessionFormat | None = None
     #: The execution-host turn fence for each of this provider's runtime ids.
     turn_fences: dict[str, type[TurnFence]]
+    #: What a machine card's auto-compact field accepts for this CLI; None
+    #: when RCP passes this CLI no auto-compact setting.
+    autocompact_hint: str | None = None
+
+    def canonical_autocompact(self, value: str) -> str:
+        """The machine card's auto-compact value as this CLI takes it, or ValueError."""
+
+        raise ValueError(f"{self.label} has no auto-compact setting")
 
     def session_roots(self, sources: object, *, remote: bool) -> list[str]:
         """Return this provider's configured native-session roots.
@@ -497,6 +509,7 @@ class ProviderProfile:
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         """The argv that runs one turn. `prompt` arrives on stdin."""
         raise NotImplementedError

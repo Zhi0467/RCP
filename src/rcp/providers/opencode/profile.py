@@ -236,8 +236,9 @@ class OpenCodeProfile(ProviderProfile):
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
-        del prompt, read_dirs
+        del prompt, read_dirs, autocompact
         work_like = capability in {"work_auto", "orchestrate"}
         if work_like:
             _require_project_write_scope(write_scope, capability=capability, write_dirs=write_dirs)

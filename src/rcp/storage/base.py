@@ -85,6 +85,7 @@ class AppStoreBase:
         (39, "owner_auth_v1"),
         (40, "browser_grants_v1"),
         (41, "machine_hidden_folders_v1"),
+        (42, "machine_provider_autocompact_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -781,6 +782,12 @@ class AppStoreBase:
             version=41,
             name="machine_hidden_folders_v1",
             migration=self._migrate_machine_hidden_folders,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=42,
+            name="machine_provider_autocompact_v1",
+            migration=self._migrate_machine_provider_autocompact,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2491,6 +2498,12 @@ class AppStoreBase:
     def _migrate_machine_hidden_folders(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(
             connection, "space_machines", "hidden_folders_json", "TEXT NOT NULL DEFAULT '[]'"
+        )
+
+    @classmethod
+    def _migrate_machine_provider_autocompact(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection, "space_machines", "provider_autocompact_json", "TEXT NOT NULL DEFAULT '{}'"
         )
 
     @staticmethod

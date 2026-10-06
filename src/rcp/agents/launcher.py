@@ -1295,6 +1295,7 @@ class AgentLauncher:
             hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
+        autocompact = self._autocompact(provider, host)
         legacy_command = (
             self._command(
                 provider,
@@ -1311,6 +1312,7 @@ class AgentLauncher:
                 provider_version=getattr(readiness, "version", None),
                 browser_grant=browser_grant,
                 hidden_read_scope=hidden_read_scope,
+                autocompact=autocompact,
             )
             if runtime.id == profile.legacy_runtime_id
             else None
@@ -1332,6 +1334,7 @@ class AgentLauncher:
                     legacy_command=legacy_command,
                     browser_grant=browser_grant,
                     hidden_read_scope=hidden_read_scope,
+                    autocompact=autocompact,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1876,6 +1879,7 @@ class AgentLauncher:
         provider_version: str | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         return profile_for(provider).command(
             prompt,
@@ -1891,7 +1895,16 @@ class AgentLauncher:
             provider_version=provider_version,
             browser_grant=browser_grant,
             hidden_read_scope=hidden_read_scope,
+            autocompact=autocompact,
         )
+
+    def _autocompact(self, provider: str, host: str) -> str:
+        """The machine card's auto-compact setting for `provider`, read at each launch."""
+
+        if self.accounts is None:
+            return ""
+        card = self.accounts.store.space_machine_for(host)
+        return card.provider_autocompact.get(provider, "") if card is not None else ""
 
     def _discover_remote_provider(
         self, provider: str, host: str

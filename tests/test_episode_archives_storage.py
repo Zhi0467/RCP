@@ -298,6 +298,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "owner_auth_v1",
         "browser_grants_v1",
         "machine_hidden_folders_v1",
+        "machine_provider_autocompact_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

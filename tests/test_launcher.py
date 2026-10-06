@@ -1587,3 +1587,66 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
     ]
     assert events[-1].event == "done", [event.text for event in events]
     assert any(event.event == "message" for event in events)
+
+
+@pytest.mark.parametrize(
+    ("provider", "runtime", "version", "flag"),
+    [
+        ("claude", "stream-json", "2.1.287", ["--autocompact", "300000"]),
+        ("codex", "exec", "0.160.0", ["--config", "model_auto_compact_token_limit=200000"]),
+        ("codex", "app-server", "0.160.0", ["--config", "model_auto_compact_token_limit=200000"]),
+        ("opencode", None, "1.18.30", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_machine_autocompact_reaches_its_provider_argv(
+    monkeypatch, tmp_path, provider, runtime, version, flag
+) -> None:
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.ensure_space_machines([("", "", "laptop")])
+    card = store.space_machine_for("")
+    assert card is not None
+    store.update_space_machine(
+        card.machine_id,
+        provider_autocompact={"claude": "300000", "codex": "200000", "opencode": "1"},
+    )
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    monkeypatch.setattr(
+        launcher,
+        "readiness",
+        lambda *a, **kw: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            binary_path=provider,
+            version=version,
+        ),
+    )
+    profile = profile_for(provider)
+    runtime_id = profile.runtime_aliases[runtime] if runtime else profile.legacy_runtime_id
+    captured: list[list[str]] = []
+
+    class Captured(Exception):
+        pass
+
+    original = type(profile.runtime(runtime_id)).turn
+
+    def turn(self, request):
+        captured.append(original(self, request).command)
+        raise Captured
+
+    monkeypatch.setattr(type(profile.runtime(runtime_id)), "turn", turn)
+    with pytest.raises(Captured):
+        async for _ in launcher.stream(
+            provider, "task", cwd=tmp_path, capability="discuss", runtime_id=runtime_id
+        ):
+            pass
+    command = captured[0]
+    if flag is None:
+        assert not any("compact" in part for part in command)
+    else:
+        index = command.index(flag[1])
+        assert command[index - 1 : index + 1] == flag

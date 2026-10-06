@@ -4,6 +4,7 @@ import { createSpaceMachine, updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { createPathEditor, type WritablePathEdit } from "./spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../core/types";
+import { MachineAutocompactRow } from "./MachineAutocompactRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { MachineDependenciesRow } from "./MachineDependenciesRow";
 import { PathPicker } from "./PathPicker";
@@ -96,6 +97,15 @@ export function MachineCard({
           machineId={record.machine_id}
         />
       )}
+      {record?.autocompact_providers.map((option) => (
+        <MachineAutocompactRow
+          key={`${record.machine_id}:${option.provider}:autocompact`}
+          record={record}
+          option={option}
+          writesDisabled={writesDisabled}
+          onRecordChange={onRecordChange}
+        />
+      ))}
       <WritablePaths
         record={record}
         level={level}

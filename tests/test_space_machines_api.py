@@ -96,6 +96,34 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
     assert client.delete(path).status_code == 404
 
 
+def test_machine_autocompact_round_trip_and_refusal(app) -> None:
+    client = signed_in_client(app)
+    machine = _machine(client, "laptop")
+    assert {option["provider"] for option in machine["autocompact_providers"]} == {
+        "claude",
+        "codex",
+    }
+    url = f"/api/space/machines/{machine['machine_id']}"
+    saved = {"claude": "300000", "codex": "200000"}
+    response = client.patch(
+        url, json={"provider_autocompact": {"claude": " 300000 ", "codex": "200000"}}
+    )
+    assert response.json()["provider_autocompact"] == saved
+    assert client.patch(url, json={"name": "Renamed"}).json()["provider_autocompact"] == saved
+    for refused in (
+        {"claude": "99999"},
+        {"claude": "1e6"},
+        {"codex": "auto"},
+        {"codex": "0"},
+        {"opencode": "100000"},
+        {"unknown": "100000"},
+    ):
+        assert client.patch(url, json={"provider_autocompact": refused}).status_code == 422
+    assert _store(app).space_machine(str(machine["machine_id"])).provider_autocompact == saved
+    cleared = client.patch(url, json={"provider_autocompact": {"claude": "AUTO", "codex": ""}})
+    assert cleared.json()["provider_autocompact"] == {"claude": "auto"}
+
+
 def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest, tmp_path) -> None:
     client = signed_in_client(app)
     shared = tmp_path / "shared"
@@ -428,7 +456,7 @@ def test_team_member_can_edit_machine_hidden_folders(tmp_path, hidden_policy) ->
     assert store.space_machine(machine["machine_id"]).hidden_folders == [str(secret.resolve())]
 
 
-def test_machine_hidden_folders_upgrade_preserves_existing_card(app) -> None:
+def test_machine_card_column_upgrades_preserve_existing_card(app) -> None:
     from rcp.storage import AppStore
 
     store = _store(app)
@@ -436,17 +464,22 @@ def test_machine_hidden_folders_upgrade_preserves_existing_card(app) -> None:
     store.update_space_machine(machine.machine_id, writable_paths=["/shared"])
     with store.connection() as connection:
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
+        connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_name = ?",
-            ("machine_hidden_folders_v1",),
+            "DELETE FROM storage_schema_migrations WHERE migration_name IN (?, ?)",
+            ("machine_hidden_folders_v1", "machine_provider_autocompact_v1"),
         )
     upgraded = AppStore(store.path)
     card = upgraded.space_machine(machine.machine_id)
     assert card.writable_paths == ["/shared"]
     assert card.hidden_folders == []
-    upgraded.update_space_machine(machine.machine_id, hidden_folders=["/private"])
+    assert card.provider_autocompact == {}
+    upgraded.update_space_machine(
+        machine.machine_id, hidden_folders=["/private"], provider_autocompact={"claude": "auto"}
+    )
     upgraded = AppStore(store.path)
     assert upgraded.space_machine(machine.machine_id).hidden_folders == ["/private"]
+    assert upgraded.space_machine(machine.machine_id).provider_autocompact == {"claude": "auto"}
 
 
 @pytest.mark.parametrize("host", ["", "remote.example"])

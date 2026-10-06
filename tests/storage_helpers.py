@@ -18,8 +18,10 @@ def downgrade_artifacts(
         for row in connection.execute("PRAGMA table_info(space_machines)")
     ):
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
+        connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_name = 'machine_hidden_folders_v1'"
+            "DELETE FROM storage_schema_migrations WHERE migration_name IN "
+            "('machine_hidden_folders_v1', 'machine_provider_autocompact_v1')"
         )
     connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
     for table in ("chat_browser_preferences", "browser_owners", "browser_turn_status"):

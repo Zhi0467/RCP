@@ -55,6 +55,7 @@ class CodexProfile(ProviderProfile):
         installer_env=("CODEX_NON_INTERACTIVE=1",),
     )
     session_format = CodexSessionFormat()
+    autocompact_hint = "a token count"
     legacy_runtime_id = "codex.exec-json.v1"
     default_runtime = "exec"
     runtime_aliases = {
@@ -248,6 +249,12 @@ class CodexProfile(ProviderProfile):
     def project_write_enforcement_mode(self) -> str:
         return "codex.permission-profile.v1"
 
+    def canonical_autocompact(self, value: str) -> str:
+        value = value.strip()
+        if value.isdigit() and int(value) > 0:
+            return str(int(value))
+        raise ValueError(f"Codex auto-compact must be {self.autocompact_hint}")
+
     def command(
         self,
         prompt: str,
@@ -264,6 +271,7 @@ class CodexProfile(ProviderProfile):
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         del prompt, read_dirs
         command = [binary, "exec"]
@@ -280,6 +288,7 @@ class CodexProfile(ProviderProfile):
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
         command.extend(_codex_environment_config(hidden_read_scope))
+        command.extend(_codex_autocompact_config(autocompact))
         if capability in {"work_auto", "orchestrate"}:
             scope = _require_project_write_scope(
                 write_scope,
@@ -451,6 +460,12 @@ def _codex_shell_environment_policy(scope: HiddenReadScope | None) -> dict[str, 
     }
 
 
+def _codex_autocompact_config(autocompact: str) -> list[str]:
+    """The machine card's token limit; Codex has no `auto` value to pass."""
+
+    return ["--config", f"model_auto_compact_token_limit={autocompact}"] if autocompact else []
+
+
 def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
     policy = _codex_shell_environment_policy(scope)
     return [
@@ -512,6 +527,7 @@ class _CodexExecRuntime(_JsonlProviderRuntime):
                 provider_version=request.provider_version,
                 browser_grant=request.browser_grant,
                 hidden_read_scope=request.hidden_read_scope,
+                autocompact=request.autocompact,
             )
             request = replace(request, legacy_command=command)
         return super().turn(request)

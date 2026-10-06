@@ -101,6 +101,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         name: str | None = None,
         writable_paths: list[str] | None = None,
         hidden_folders: list[str] | None = None,
+        provider_autocompact: dict[str, str] | None = None,
     ) -> SpaceMachineRecord:
         # Write only the fields given, so a rename and a path edit racing on one
         # card both land.
@@ -111,6 +112,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 SET name = COALESCE(?, name),
                     writable_paths_json = COALESCE(?, writable_paths_json),
                     hidden_folders_json = COALESCE(?, hidden_folders_json),
+                    provider_autocompact_json = COALESCE(?, provider_autocompact_json),
                     updated_at = ?
                 WHERE machine_id = ?
                 """,
@@ -118,6 +120,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                     name,
                     None if writable_paths is None else json.dumps(writable_paths),
                     None if hidden_folders is None else json.dumps(hidden_folders),
+                    None if provider_autocompact is None else json.dumps(provider_autocompact),
                     self.now(),
                     machine_id,
                 ),
@@ -139,4 +142,5 @@ def _record(row: sqlite3.Row) -> SpaceMachineRecord:
     values = dict(row)
     values["writable_paths"] = json.loads(values.pop("writable_paths_json"))
     values["hidden_folders"] = json.loads(values.pop("hidden_folders_json"))
+    values["provider_autocompact"] = json.loads(values.pop("provider_autocompact_json"))
     return SpaceMachineRecord(**values)

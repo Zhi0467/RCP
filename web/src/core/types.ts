@@ -3086,10 +3086,21 @@ export interface SpaceMachine {
   os_account: string;
   writable_paths: string[];
   hidden_folders: string[];
+  /** Provider id to its auto-compact setting on this machine; absent keeps the CLI's default. */
+  provider_autocompact: Record<string, string>;
+  /** The providers whose auto-compact setting this card offers. */
+  autocompact_providers: AutocompactProvider[];
   hidden_read: MachineHiddenReadProjection;
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
   in_use: boolean | null;
+}
+
+export interface AutocompactProvider {
+  provider: string;
+  label: string;
+  /** What the field accepts, as shown beside it. */
+  hint: string;
 }
 
 export interface SpaceMachineProject {
@@ -3108,6 +3119,7 @@ export interface SpaceMachineUpdateRequest {
   name?: string;
   writable_paths?: string[];
   hidden_folders?: string[];
+  provider_autocompact?: Record<string, string>;
 }
 
 export interface MachineDirectoryRequest {
