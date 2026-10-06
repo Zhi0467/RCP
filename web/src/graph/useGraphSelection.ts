@@ -178,7 +178,7 @@ export function useGraphSelection({
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
   } = experimentSelection;
-  const [experimentStopId, setExperimentStopId] = useState<string | null>(null);
+  const [experimentStopIds, setExperimentStopIds] = useState<Set<string>>(() => new Set());
   const [watcherCheckId, setWatcherCheckId] = useState<string | null>(null);
   const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
   const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
@@ -273,7 +273,7 @@ export function useGraphSelection({
               autoResearchEpisodeId: snapshot.selectedAutoResearchEpisodeId,
             },
       );
-      setExperimentStopId(null);
+      setExperimentStopIds(new Set());
       setWatcherCheckId(null);
       setDockedNodeIds(snapshot.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
       setDagRelationFocusId(snapshot.dagRelationFocusId);
@@ -306,7 +306,7 @@ export function useGraphSelection({
         experimentRoute,
         autoResearchEpisodeId,
       });
-      setExperimentStopId(null);
+      setExperimentStopIds(new Set());
       setWatcherCheckId(null);
       setDockedNodeIds([]);
       setDagRelationFocusId(null);
@@ -518,11 +518,28 @@ export function useGraphSelection({
     [changeView, getActiveProjectId],
   );
   const selectExperiment = useCallback(
-    (nodeId: string | null) => {
+    (nodeId: string | null, route?: ExperimentRouteIdentity) => {
+      if (projectId && nodeId && route) {
+        window.history.replaceState(
+          null,
+          "",
+          graphTargetUrl(
+            experimentBoardHref(projectId, route),
+            graphTargetFromHash(window.location.hash),
+          ),
+        );
+        dispatchExperimentSelection({
+          kind: "route",
+          experimentId: nodeId,
+          experimentRoute: route,
+          autoResearchEpisodeId: null,
+        });
+        return;
+      }
       replaceExactRunExperimentSelection(nodeId, "select");
       dispatchExperimentSelection({ kind: "select", experimentId: nodeId });
     },
-    [replaceExactRunExperimentSelection],
+    [projectId, replaceExactRunExperimentSelection],
   );
   const clearExperimentFocus = useCallback(() => {
     dispatchExperimentSelection({ kind: "clear_focus" });
@@ -537,9 +554,14 @@ export function useGraphSelection({
     },
     [changeView, replaceExactRunExperimentSelection],
   );
-  const beginExperimentStop = useCallback((nodeId: string) => {
-    setExperimentStopId(nodeId);
-    return () => setExperimentStopId(null);
+  const beginExperimentStop = useCallback((episodeId: string) => {
+    setExperimentStopIds((current) => new Set(current).add(episodeId));
+    return () =>
+      setExperimentStopIds((current) => {
+        const pending = new Set(current);
+        pending.delete(episodeId);
+        return pending;
+      });
   }, []);
   const beginWatcherCheck = useCallback((watcherId: string) => {
     setWatcherCheckId(watcherId);
@@ -580,7 +602,7 @@ export function useGraphSelection({
     focusExperimentRunId,
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
-    experimentStopId,
+    experimentStopIds,
     watcherCheckId,
     dockedNodeIds,
     dagRelationFocusId,

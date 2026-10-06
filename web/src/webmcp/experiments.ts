@@ -1,5 +1,13 @@
+import { sameGraphTarget } from "../core/graphTarget";
 import { isControlNode } from "../graph/researchType";
-import type { AgentTask, Episode, GraphNode, ProjectSnapshot, WatcherRecord } from "../core/types";
+import type {
+  AgentTask,
+  Episode,
+  GraphNode,
+  GraphTargetRef,
+  ProjectSnapshot,
+  WatcherRecord,
+} from "../core/types";
 import {
   ALWAYS_CONFIRM,
   NEVER_CONFIRM,
@@ -42,9 +50,17 @@ function experimentTasks(tasks: AgentTask[], experimentId: string): AgentTask[] 
     );
 }
 
-function experimentWatchers(watchers: WatcherRecord[], experimentId: string): WatcherRecord[] {
+function experimentWatchers(
+  watchers: WatcherRecord[],
+  experimentId: string,
+  target: GraphTargetRef,
+): WatcherRecord[] {
   return watchers
-    .filter((watcher) => watcher.continuation.control_node_id === experimentId)
+    .filter(
+      (watcher) =>
+        watcher.continuation.control_node_id === experimentId &&
+        sameGraphTarget(watcher.graph_target, target),
+    )
     .sort(
       (left, right) =>
         Date.parse(right.created_at) - Date.parse(left.created_at) ||
@@ -118,7 +134,7 @@ export function inspectProjectExperiment(
   const control = project.experiment_control[node.id];
   if (!control) throw new Error(`Experiment ${node.id} has no current control projection.`);
   const relatedTasks = experimentTasks(tasks, node.id);
-  const relatedWatchers = experimentWatchers(watchers, node.id);
+  const relatedWatchers = experimentWatchers(watchers, node.id, project.graph_target);
   const startRefusal = pageStartRefusal(taskStartPending, mutationsDisabled, startRequiresSync);
   return {
     project_id: project.id,

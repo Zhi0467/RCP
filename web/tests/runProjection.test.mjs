@@ -114,6 +114,7 @@ function control(fields = {}, operationalFields = {}) {
 
 function watcher(id, nodeId, episodeId, status, fields = {}) {
   return {
+    graph_target: { kind: "main" },
     watcher_id: id,
     project_id: "project",
     origin_operation_id: `origin-${id}`,
@@ -310,9 +311,9 @@ test("graph watchers stay ungrouped and expose condition labels and evaluation t
 
   assert.equal(watcherLastObservedAt(status), "2026-08-06T03:00:00Z");
   assert.deepEqual(
-    visibleChatWatchers([status], "new-chat", experiment("experiment/grouped")).map(
-      (watcher) => watcher.watcher_id,
-    ),
+    visibleChatWatchers([status], "new-chat", experiment("experiment/grouped"), {
+      kind: "main",
+    }).map((watcher) => watcher.watcher_id),
     ["graph-status"],
   );
   assert.deepEqual(
@@ -337,7 +338,7 @@ test("Chats retain completed graph watchers only for their node or conversation"
   };
   const watchers = [loop, selfWake, { ...selfWake, watcher_id: "stopped", status: "stopped" }];
   const ids = (chatId, node) =>
-    visibleChatWatchers(watchers, chatId, node).map((item) => item.watcher_id);
+    visibleChatWatchers(watchers, chatId, node, { kind: "main" }).map((item) => item.watcher_id);
   assert.deepEqual(ids("new-chat", experiment("experiment/shared-loop")), ["loop-completed"]);
   assert.deepEqual(ids("work-chat", null), ["self-completed"]);
   assert.deepEqual(ids("other-chat", experiment("experiment/other")), []);
@@ -394,7 +395,7 @@ test("Chats project node-owned loop watchers separately from conversation self-w
     stoppedSelfWake,
   ];
 
-  const sameNodeChat = visibleChatWatchers(watchers, "maintenance-chat", node);
+  const sameNodeChat = visibleChatWatchers(watchers, "maintenance-chat", node, { kind: "main" });
   assert.deepEqual(
     sameNodeChat.map((item) => item.watcher_id),
     [
@@ -407,9 +408,9 @@ test("Chats project node-owned loop watchers separately from conversation self-w
     ],
   );
   assert.deepEqual(
-    visibleChatWatchers([...watchers, loopActive, selfWake], "maintenance-chat", node).map(
-      (item) => item.watcher_id,
-    ),
+    visibleChatWatchers([...watchers, loopActive, selfWake], "maintenance-chat", node, {
+      kind: "main",
+    }).map((item) => item.watcher_id),
     [
       "loop-active",
       "loop-degraded",
@@ -426,17 +427,21 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   );
 
   assert.deepEqual(
-    visibleChatWatchers(watchers, "maintenance-chat", null).map((item) => item.watcher_id),
-    ["self-wake", "stopped-self-wake"],
-  );
-  assert.deepEqual(
-    visibleChatWatchers(watchers, "maintenance-chat", experiment("experiment/unrelated")).map(
+    visibleChatWatchers(watchers, "maintenance-chat", null, { kind: "main" }).map(
       (item) => item.watcher_id,
     ),
     ["self-wake", "stopped-self-wake"],
   );
   assert.deepEqual(
-    visibleChatWatchers(watchers, "project-chat", null).map((item) => item.watcher_id),
+    visibleChatWatchers(watchers, "maintenance-chat", experiment("experiment/unrelated"), {
+      kind: "main",
+    }).map((item) => item.watcher_id),
+    ["self-wake", "stopped-self-wake"],
+  );
+  assert.deepEqual(
+    visibleChatWatchers(watchers, "project-chat", null, { kind: "main" }).map(
+      (item) => item.watcher_id,
+    ),
     [],
   );
 });
@@ -459,7 +464,9 @@ test("a chat retains all its external jobs after watching stops or completes", (
     { ...external("other-chat", "stopped"), chat_id: "another-chat" },
   ];
   assert.deepEqual(
-    visibleChatWatchers(watchers, "work-chat", null).map((item) => item.watcher_id),
+    visibleChatWatchers(watchers, "work-chat", null, { kind: "main" }).map(
+      (item) => item.watcher_id,
+    ),
     ["stopped-cancellable", "completed", "active"],
   );
 });
@@ -702,4 +709,40 @@ test("an authorized invocation count is the whole number the human typed", () =>
   // the human never typed.
   assert.equal(authorizedInvocationCount("9007199254740993"), null);
   assert.equal(authorizedInvocationCount("9007199254740991"), Number.MAX_SAFE_INTEGER);
+});
+
+test("chat strips and run watchers preserve exact target identity on a shared node", () => {
+  const node = experiment("experiment/shared");
+  const main = { kind: "main" };
+  const branch = { kind: "branch", branch_id: "branch-one" };
+  const other = { kind: "branch", branch_id: "branch-two" };
+  const watchers = [
+    watcher("main", node.id, "main-episode", "active", { graph_target: main }),
+    watcher("branch", node.id, "branch-episode", "active", { graph_target: branch }),
+    watcher("other", node.id, "other-episode", "active", { graph_target: other }),
+    watcher("owned", "experiment/other", null, "active", {
+      graph_target: branch,
+      chat_id: "own-chat",
+    }),
+  ];
+  const ids = (rows) => rows.map((row) => row.watcher_id);
+  assert.deepEqual(ids(visibleChatWatchers(watchers, "own-chat", node, branch)), [
+    "branch",
+    "owned",
+  ]);
+  assert.deepEqual(ids(visibleChatWatchers(watchers, "main-chat", node, main)), ["main"]);
+  for (const [target, id] of [
+    [main, "main"],
+    [branch, "branch"],
+    [other, "other"],
+  ]) {
+    const run = buildExperimentRun(
+      node,
+      control({ episode_id: `${id}-episode`, episode: { graph_target: target } }),
+      [],
+      watchers,
+    );
+    assert.deepEqual(ids(run.watchers), [id]);
+    assert.deepEqual(ids(run.currentWatchers), [id]);
+  }
 });

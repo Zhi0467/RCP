@@ -96,7 +96,7 @@ function Fixture() {
           selectedExperimentId={null}
           focusExperimentId={null}
           runBusy={false}
-          stopBusyId={null}
+          stopBusyIds={new Set()}
           watcherCheckBusyId={null}
           taskActionId={null}
           onInspectTask={noop}

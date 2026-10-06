@@ -529,9 +529,10 @@ export function NodeChat({
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
+  const chatGraphTarget = relatedTasks[0]?.graph_target ?? project.graph_target ?? MAIN_GRAPH;
   const watcherRows = useMemo(
-    () => visibleChatWatchers(watchers, chatId, node),
-    [chatId, node, watchers],
+    () => visibleChatWatchers(watchers, chatId, node, chatGraphTarget),
+    [chatId, node, watchers, chatGraphTarget],
   );
   const visibleWatcherRows = watcherRows.filter((watcher) => !watcherVisibility.isHidden(watcher));
   const hiddenWatchers = watcherRows.filter(watcherVisibility.isHidden);

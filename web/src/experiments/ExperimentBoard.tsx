@@ -1,3 +1,4 @@
+import { ExperimentBranchBadge } from "./ExperimentBranchBadge";
 import { ChevronRight, FlaskConical, WifiOff } from "lucide-react";
 import { useMemo } from "react";
 import { experimentBoardRouteToken, experimentTerminalLabel } from "./experimentBoardModel";
@@ -142,6 +143,7 @@ function ExperimentRows({
                     <WifiOff size={12} aria-hidden="true" /> Unavailable
                   </span>
                 )}
+                <ExperimentBranchBadge target={entry.graph_target} />
                 <time dateTime={lastActivityAt ?? undefined}>{formatActivity(lastActivityAt)}</time>
               </span>
               <ChevronRight className="experiment-board-row-arrow" size={16} aria-hidden="true" />

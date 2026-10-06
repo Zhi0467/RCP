@@ -444,11 +444,14 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
       ],
       experimentControl: {},
       experimentEntries: [indexed],
+      exactExperimentRoute: parseProjectHash(
+        experimentBoardHref(indexed.project_id, experimentBoardRouteToken(indexed)),
+      ).experimentRoute,
       selectedExperimentId: indexed.node.id,
       focusExperimentId: null,
       selectedAutoResearchEpisodeId: parentEpisodeId,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -625,7 +628,7 @@ test("an explicit main route becomes history when the Experiment advances concur
       selectedExperimentId: experiment.id,
       focusExperimentId: experiment.id,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -799,7 +802,7 @@ test("a stale main index entry cannot duplicate the current Experiment card", ()
       selectedExperimentId: experiment.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -892,7 +895,7 @@ test("a stale main index entry cannot replace a fresher project run", () => {
       selectedExperimentId: experiment.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -1011,7 +1014,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
       selectedExperimentId: indexed.node.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onSelectNode() {},
@@ -1086,7 +1089,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
       selectedExperimentId: terminalIndexed.node.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onSelectNode() {},
@@ -1317,4 +1320,97 @@ test("the board shows the shared report wrap-up as in-progress", () => {
   );
 
   assert.match(html, /status-pill running/);
+});
+
+test("selecting either target keeps both same-node cards and scopes busy state to its episode", () => {
+  const experiment = node("experiment/shared", "active");
+  const entries = [
+    { id: "main-episode", target: { kind: "main" } },
+    { id: "branch-episode", target: { kind: "branch", branch_id: "branch-one" } },
+  ].map(({ id, target }) => {
+    const runEpisode = episode({
+      episode_id: id,
+      control_node_id: experiment.id,
+      graph_target: target,
+      status: "running",
+      ending: null,
+      wrapup_state: "pending",
+      can_stop: true,
+    });
+    const runControl = control(
+      { episode_id: id, episode: runEpisode, active: true, can_stop: true, can_start: false },
+      { task_active: true, episode_live: true },
+    );
+    return {
+      ...entry(experiment.id, "active", runControl),
+      graph_target: target,
+      episode: runEpisode,
+    };
+  });
+  for (const selected of entries) {
+    for (const item of entries)
+      item.episode.created_at = item === selected ? "2026-10-06T10:00:00Z" : "2026-10-06T11:00:00Z";
+    const route = parseProjectHash(
+      experimentBoardHref(selected.project_id, experimentBoardRouteToken(selected)),
+    ).experimentRoute;
+    const html = renderToStaticMarkup(
+      React.createElement(ExecutionView, {
+        graph: { nodes: { [experiment.id]: experiment }, edges: {} },
+        episodes: entries.map((item) => item.episode),
+        episodeAction: null,
+        tasks: [],
+        watchers: [],
+        experimentControl: { [experiment.id]: entries[0].control },
+        experimentEntries: entries,
+        exactExperimentRoute: route,
+        exactExperimentEntry: selected.graph_target.kind === "branch" ? selected : null,
+        selectedExperimentId: experiment.id,
+        focusExperimentId: null,
+        runBusy: false,
+        stopBusyIds: new Set([selected.episode.episode_id]),
+        watcherCheckBusyId: null,
+        taskActionId: null,
+        selectedExperimentConversation: React.createElement("div", {
+          "data-selected-episode": selected.episode.episode_id,
+        }),
+        onInspectTask() {},
+        onStopEpisode() {},
+        onArchiveEpisode() {},
+        onMergeEpisode() {},
+        onContinueEpisode() {},
+        onSendEpisodeMessage() {},
+        onOperateEpisodeTask() {},
+        onSwitchEpisodeProvider() {},
+        onSelectExperiment() {},
+        onOpenExperimentEntry() {},
+        onDetailFocused() {},
+        onOpenHistory() {},
+        onRunExperiment() {},
+        onStopExperiment() {},
+        onCheckExperimentWatcher() {},
+        onStopExperimentWatcher() {},
+        onRecoverExperiment() {},
+        onSwitchExperimentProvider() {},
+        episodeReportHref: () => "#",
+      }),
+    );
+    const cards = [...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g)];
+    assert.deepEqual(
+      new Set(cards.map((match) => match[1])),
+      new Set(entries.map((item) => item.episode.episode_id)),
+    );
+    for (const [card, id] of cards) {
+      const isSelected = id === selected.episode.episode_id;
+      assert.equal(card.includes("experiment-branch-badge"), id === "branch-episode");
+      assert.equal(card.includes("data-selected-episode="), isSelected);
+      if (isSelected) {
+        assert.match(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+      } else {
+        // The sibling keeps its own enabled Stop, even while the selected episode is busy.
+        assert.match(card, /class="[^"]*experiment-stop-loop/);
+        assert.equal(entries.find((item) => item.episode.episode_id === id).control.can_stop, true);
+        assert.doesNotMatch(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+      }
+    }
+  }
 });
