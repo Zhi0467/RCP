@@ -37,6 +37,42 @@
   .icon-button {
     min-width: 44px;
   }
+  /* A 28px control with an 8px invisible margin: a 44px tap target that
+     does not take a 44px strip from every code block. */
+  .markdown-code-block {
+    --markdown-code-copy-size: 28px;
+    --markdown-code-copy-reach: 8px;
+  }
+  /* 32px with a 6px invisible margin: a 44px tap target. */
+  .chat-selection-comment {
+    --chat-selection-comment-size: 32px;
+    --chat-selection-comment-reach: 6px;
+  }
+
+  /* A tooltip anchored to the term leaves the screen for a term near either
+     edge, so on a phone the definition is a strip across the bottom instead;
+     fixed, it never widens the scroller the term sits in. */
+  .glossary-definition::after,
+  .glossary-definition:hover::after,
+  .glossary-definition:focus::after,
+  .node-detail-drawer > header .glossary-definition::after,
+  .node-detail-drawer > header .glossary-definition:hover::after,
+  .node-detail-drawer > header .glossary-definition:focus::after {
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    left: 16px;
+    max-width: none;
+    position: fixed;
+    right: 16px;
+    top: auto;
+    transform: none;
+    width: auto;
+  }
+
+  /* A 120px label column leaves too little room for a field value. */
+  .detail-list > div {
+    gap: 2px;
+    grid-template-columns: minmax(0, 1fr);
+  }
   /* The project header packs every action into one 375px row, so its icon
      buttons keep their width and gain only height. */
   .project-header-actions .icon-button {

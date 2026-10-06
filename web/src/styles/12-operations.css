@@ -1376,6 +1376,7 @@
   color: var(--oxblood);
   font-size: 0.8rem;
   margin: 0 0 8px;
+  overflow-wrap: anywhere;
 }
 
 /* Operational lessons: one row per lesson, editable in place. */

@@ -505,6 +505,7 @@
   outline-offset: 2px;
 }
 .node-window-dock-item > span:last-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -751,6 +752,10 @@
 .overview-question strong {
   display: block;
 }
+.overview-question {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .overview-question small {
   color: var(--muted);
   font-size: var(--type-3xs);
@@ -788,6 +793,9 @@
   box-shadow: 0 10px 28px rgb(var(--shadow-rgb) / 14%);
   margin-bottom: 28px;
   padding: 18px 22px 20px;
+}
+.digest-card > [role="alert"] {
+  overflow-wrap: anywhere;
 }
 .digest-card-header {
   align-items: flex-start;
@@ -829,7 +837,7 @@
 .digest-groups {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   margin-top: 16px;
 }
 .digest-group {

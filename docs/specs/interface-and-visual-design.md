@@ -288,6 +288,11 @@ closes after selecting a chat. Wider views retain the resizable list and its
 saved collapse preference; changing viewport size does not overwrite that
 preference or the saved list width.
 
+Nothing in a transcript scrolls sideways except code blocks, tables, and display
+math: long paths, URLs, and identifiers in agent answers and human messages wrap.
+Every fenced Markdown block carries a small icon-only copy control in its own
+strip, with a 44px tap target on phones, that copies the block's exact text.
+
 Selecting packages is `/` or `$` in the composer, and it is keyboard-first:
 arrows highlight, Enter selects the highlight instead of sending, and Escape
 dismisses. Project Settings holds the defaults; a composer selection applies to

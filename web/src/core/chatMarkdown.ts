@@ -1,5 +1,7 @@
 import {
+  createContext,
   createElement,
+  useContext,
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
@@ -10,6 +12,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math-extended";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
 import { segmentGlossaryText, type GlossaryIndex } from "../graph/glossary";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
 
@@ -197,65 +200,71 @@ function glossaryDefinitionPlugin(glossaryIndex?: GlossaryIndex) {
   };
 }
 
-function markdownComponents(
-  nodeIds: ReadonlySet<string>,
-  onOpenNode?: (nodeId: string) => void,
-  onOpenRepositoryFileLink?: (href: string) => void,
-): Components {
-  return {
-    a: ({ href, children, className, node: _node, ...props }: MarkdownLinkProps) => {
-      void _node;
-      const nodeId = nodeIdFromReferenceHref(href, nodeIds);
-      const repositoryFile =
-        !nodeId && Boolean(onOpenRepositoryFileLink) && isRepositoryFileHrefCandidate(href);
-      const nextClassName = [
-        className,
-        nodeId ? "chat-node-reference" : null,
-        repositoryFile ? "chat-repository-file-reference" : null,
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const onClick =
-        nodeId && onOpenNode
-          ? (event: MouseEvent<HTMLAnchorElement>) => {
-              if (event.defaultPrevented) return;
-              event.preventDefault();
-              onOpenNode(nodeId);
-            }
-          : repositoryFile && href && onOpenRepositoryFileLink
-            ? (event: MouseEvent<HTMLAnchorElement>) => {
-                if (event.defaultPrevented) return;
-                event.preventDefault();
-                onOpenRepositoryFileLink(href);
-              }
-            : undefined;
-      const onKeyDown =
-        nodeId && onOpenNode
-          ? (event: ReactKeyboardEvent<HTMLAnchorElement>) => {
-              if (event.defaultPrevented || event.key !== "Enter") return;
-              event.preventDefault();
-              onOpenNode(nodeId);
-            }
-          : undefined;
-      return createElement(
-        "a",
-        {
-          ...props,
-          href,
-          className: nextClassName || undefined,
-          "aria-label": nodeId
-            ? `Open node ${nodeId}`
-            : repositoryFile
-              ? "Open repository file preview"
-              : props["aria-label"],
-          onClick,
-          onKeyDown,
-        },
-        children,
-      );
-    },
-  };
+interface MarkdownLinkContextValue {
+  nodeIds: ReadonlySet<string>;
+  onOpenNode?: (nodeId: string) => void;
+  onOpenRepositoryFileLink?: (href: string) => void;
 }
+
+const MarkdownLinkContext = createContext<MarkdownLinkContextValue>({ nodeIds: new Set() });
+
+// One stable component type for every render: a component created per render
+// makes React replace each link's DOM on any re-render of the answer, which
+// cuts a reader's text selection that starts or ends inside a link.
+function MarkdownLink({ href, children, className, node: _node, ...props }: MarkdownLinkProps) {
+  const { nodeIds, onOpenNode, onOpenRepositoryFileLink } = useContext(MarkdownLinkContext);
+  void _node;
+  const nodeId = nodeIdFromReferenceHref(href, nodeIds);
+  const repositoryFile =
+    !nodeId && Boolean(onOpenRepositoryFileLink) && isRepositoryFileHrefCandidate(href);
+  const nextClassName = [
+    className,
+    nodeId ? "chat-node-reference" : null,
+    repositoryFile ? "chat-repository-file-reference" : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const onClick =
+    nodeId && onOpenNode
+      ? (event: MouseEvent<HTMLAnchorElement>) => {
+          if (event.defaultPrevented) return;
+          event.preventDefault();
+          onOpenNode(nodeId);
+        }
+      : repositoryFile && href && onOpenRepositoryFileLink
+        ? (event: MouseEvent<HTMLAnchorElement>) => {
+            if (event.defaultPrevented) return;
+            event.preventDefault();
+            onOpenRepositoryFileLink(href);
+          }
+        : undefined;
+  const onKeyDown =
+    nodeId && onOpenNode
+      ? (event: ReactKeyboardEvent<HTMLAnchorElement>) => {
+          if (event.defaultPrevented || event.key !== "Enter") return;
+          event.preventDefault();
+          onOpenNode(nodeId);
+        }
+      : undefined;
+  return createElement(
+    "a",
+    {
+      ...props,
+      href,
+      className: nextClassName || undefined,
+      "aria-label": nodeId
+        ? `Open node ${nodeId}`
+        : repositoryFile
+          ? "Open repository file preview"
+          : props["aria-label"],
+      onClick,
+      onKeyDown,
+    },
+    children,
+  );
+}
+
+const MARKDOWN_COMPONENTS: Components = { a: MarkdownLink, pre: MarkdownCodeBlock };
 
 interface MarkdownAnswerProps {
   text: string;
@@ -273,7 +282,7 @@ export function MarkdownAnswer({
   onOpenRepositoryFileLink,
 }: MarkdownAnswerProps) {
   const nodeIds = onOpenNode ? new Set(Object.keys(nodes)) : new Set<string>();
-  return createElement(ReactMarkdown, {
+  const markdown = createElement(ReactMarkdown, {
     children: text,
     remarkPlugins: [
       remarkGfm,
@@ -282,6 +291,11 @@ export function MarkdownAnswer({
       glossaryDefinitionPlugin(glossaryIndex),
     ],
     rehypePlugins: [[rehypeKatex, { strict: false, trust: false }]],
-    components: markdownComponents(nodeIds, onOpenNode, onOpenRepositoryFileLink),
+    components: MARKDOWN_COMPONENTS,
   });
+  return createElement(
+    MarkdownLinkContext.Provider,
+    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink } },
+    markdown,
+  );
 }

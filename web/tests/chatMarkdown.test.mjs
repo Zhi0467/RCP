@@ -28,6 +28,20 @@ test("chat Markdown renders formatting and unknown fenced languages as inert cod
   assert.match(rendered, /&lt;widget onclick=&quot;run\(\)&quot;&gt;/);
 });
 
+test("fenced Markdown blocks carry an icon-only copy control and inline code does not", () => {
+  const rendered = renderToStaticMarkup(
+    MarkdownAnswer({ text: "Run `ls` or:\n\n```sh\nls -la outputs/\n```" }),
+  );
+
+  assert.equal(rendered.match(/aria-label="Copy code block"/g)?.length, 1);
+  assert.match(
+    rendered,
+    /<div class="markdown-code-block"><pre><code class="language-sh">ls -la outputs\/\n<\/code><\/pre><button/,
+  );
+  // An answer selection must never pick up a visible control label.
+  assert.doesNotMatch(rendered, /<button[^>]*>[^<]*\w/);
+});
+
 test("chat Markdown does not execute raw HTML", () => {
   const rendered = renderToStaticMarkup(
     MarkdownAnswer({

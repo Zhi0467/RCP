@@ -56,6 +56,8 @@ export interface ChatAnnotationTextControlSelection {
 
 const CHAT_ANNOTATION_COMPOSER_GAP = 10;
 const CHAT_ANNOTATION_VIEWPORT_MARGIN = 12;
+// Close enough to read as part of the selection.
+const CHAT_SELECTION_COMMENT_GAP = 6;
 
 export function replaceTextSpan(current: string, span: TextSpan, replacement: string) {
   return {
@@ -206,6 +208,41 @@ export function chatAnnotationViewportMetrics(
     height,
     right: Math.max(0, layoutViewport.width - left - width),
     bottom: Math.max(0, layoutViewport.height - top - height),
+  };
+}
+
+/**
+ * Where the selection's Comment button goes: directly on top of the selection,
+ * centred over its first line, flipped below its last line when there is no
+ * room above, and always inside the visible viewport.
+ */
+export function chatSelectionCommentPosition(
+  selection: {
+    firstLine: { left: number; right: number; top: number };
+    bottom: number;
+  },
+  viewport: Pick<ChatAnnotationViewportMetrics, "left" | "top" | "width" | "height">,
+  button: { width: number; height: number },
+): ChatAnnotationComposerPosition {
+  const viewportRight = viewport.left + viewport.width;
+  const viewportBottom = viewport.top + viewport.height;
+  const above = selection.firstLine.top - button.height - CHAT_SELECTION_COMMENT_GAP;
+  const below = selection.bottom + CHAT_SELECTION_COMMENT_GAP;
+  const top = above >= viewport.top + CHAT_ANNOTATION_VIEWPORT_MARGIN ? above : below;
+  const centre = (selection.firstLine.left + selection.firstLine.right) / 2;
+  const left = Math.max(
+    viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN,
+    Math.min(
+      centre - button.width / 2,
+      viewportRight - button.width - CHAT_ANNOTATION_VIEWPORT_MARGIN,
+    ),
+  );
+  return {
+    left,
+    top: Math.max(
+      viewport.top + CHAT_ANNOTATION_VIEWPORT_MARGIN,
+      Math.min(top, viewportBottom - button.height - CHAT_ANNOTATION_VIEWPORT_MARGIN),
+    ),
   };
 }
 
