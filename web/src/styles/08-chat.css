@@ -317,6 +317,11 @@
   line-height: 1.62;
   margin: 0 auto 24px;
   max-width: 820px;
+  min-width: 0;
+  /* Long unbreakable tokens (paths, inline code, URLs) must wrap rather than
+     widen the transcript past a phone viewport; `pre`, tables, and display
+     math keep their own horizontal scrollers. */
+  overflow-wrap: anywhere;
   padding: 0;
   white-space: pre-wrap;
   width: 100%;
@@ -508,6 +513,7 @@
   border-collapse: collapse;
   display: block;
   max-width: 100%;
+  overflow-wrap: normal;
   overflow-x: auto;
 }
 .chat-markdown th,
