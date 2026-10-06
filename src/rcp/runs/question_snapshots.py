@@ -51,8 +51,11 @@ def _question_delivery_operations(
             or current.request.get("provider") != parent.request.get("provider")
             or current.request.get("mode") != parent.request.get("mode")
             or current.graph_target != parent.graph_target
-            or not scope
-            or scope != parent.write_scope_fingerprint
+            or (
+                scope is not None or parent.write_scope_fingerprint is not None
+                if current.request.get("mode") == "discuss"
+                else not scope or scope != parent.write_scope_fingerprint
+            )
             or not current.stage_root
             or current.stage_root != parent.stage_root
             or (current.stage_host or "") != (parent.stage_host or "")

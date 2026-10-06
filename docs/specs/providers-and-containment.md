@@ -17,7 +17,8 @@ Capabilities are fixed in code:
 - **Seed/Refresh** reads configured provider logs and project repositories and
   writes only its RCP scratch Patch.
 - **Discuss** has writable conversation scratch, read-only project reasoning,
-  public-web tools, and no active Patch contract.
+  public-web tools, and no active Patch contract. Human conversation turns receive
+  only `ask` through the broker command mailbox; artifact edits receive no commands.
 - **Work** has noninteractive project operational tools, public-web tools, exact
   project repository write roots, and one optional semantic Patch. A nightly
   consolidation turn is Work that may also commit keyed Patches inside the turn
@@ -492,9 +493,15 @@ Work and orchestrate use Claude's supported unattended `dontAsk` mode with an
 RCP-authored strict settings allow-list for the exact workspace and admitted
 repository roots. They never use `bypassPermissions`. RCP suppresses user
 settings for this enforced launch. Every Claude launch passes strict empty MCP
-configuration; supported skills remain available. A granted Discuss turn adds only
-`Bash(playwright-cli:*)` to its pre-authorized tools. Public
-WebSearch and WebFetch remain available under the provider contract.
+configuration; supported skills remain available. Discuss with a broker gate adds
+only `Bash(python3 -I -S <staged-client-path>:*)` for that gate's exact staged client.
+Its Edit denies protect the client directory itself and all descendants, including
+when an additional read directory or a legacy workspace contains it. The literal
+client directory is escaped for gitignore matching; intentional hidden-read globs
+keep their glob semantics. These denies merge with the launch's hidden-read
+settings. A browser grant separately adds
+`Bash(playwright-cli:*)`. Public WebSearch and WebFetch remain available under
+the provider contract.
 
 Claude's OS sandbox is off. Its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
@@ -539,10 +546,18 @@ path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages are outside Git. The paper coach runs
 inside the project and denies every edit and the shell outright, so it needs no
 path rules. Discuss and ingestion may edit only their workspace and their own
-write folders. Ingestion has no shell. Discuss has no shell unless the human
-granted the browser; then its ordered bash rules deny `*` and allow
-`playwright-cli *`. Command selection and launch configuration derive the same
-rules, including on resumed sessions.
+write folders. Ingestion has no shell. Discuss denies `*`, allowing only
+`python3 -I -S <staged-client-path> *` when its broker gate names that client, and
+`playwright-cli *` when the human granted the browser. Final edit denies protect the
+client directory itself and all descendants in split and legacy stages.
+Without a broker gate, including artifact edits, there is no client allowance.
+Command selection and launch configuration derive the same rules, including on resumed sessions.
+Codex Discuss retains its existing `rcp_discuss` permission profile.
+
+Every staged command client, including Work's, and its broker wrapper use Python
+`-I -S`: no script-directory or `PYTHONPATH` imports, user-site imports, or site
+initialization.
+The prompt and exact-client shell grants derive from that same executable argv.
 
 Work keeps the shell. Like Claude's rules, these bound every file-editing tool
 and do not bound the shell, so the same accepted accidental-write gap applies.
@@ -769,10 +784,12 @@ owner/key arguments reuse the question; changed arguments are invalid. The clien
 polls pending questions with fresh transport request ids under the same outer
 wait deadline. At that deadline, pending tells the caller to repeat the exact
 call or end the turn. Transport failures retain their separate `delivery`
-semantics. Only human-started Work chat turns, human-started Experiment episodes,
+semantics. Human-started Discuss and Work chats, human-started Experiment episodes,
 and the Auto-research orchestrator authorize `ask`, each from its handler's
-resolved allowed verbs; Discuss, workers, and child Work or Experiments refuse it.
-For a live Work or Experiment answer, the response carries a server-generated
+resolved allowed verbs. Discuss chat turns use the same handler and broker
+with exactly `ask`; artifact-edit Discuss turns, workers, and child Work or
+Experiments refuse it. The prompt reads the handler's same resolved verb set.
+For a live Discuss, Work, or Experiment answer, the response carries a server-generated
 receipt token persisted against that turn, question, and answer revision. Only
 after parsing the complete `answered` response does the client echo that token
 in a fresh authenticated `ask` request with the same key and arguments. This uses
@@ -809,14 +826,14 @@ task surfaces. The `lesson` verb is an operational command over RCP's own
 lesson store, separate from filesystem and graph authority; its owners are
 listed in [graph consolidation and lessons](graph-consolidation-and-lessons.md).
 
-A remote Work, Experiment, or child Work mailbox has one thread-based owner from
+A remote Discuss, Work, Experiment, or child Work mailbox has one thread-based owner from
 launch through settlement. A disconnected accepted turn transfers the owner to
 background reconciliation; its command service does not end with the stream.
 Before settlement the owner fences new requests and drains admitted work. Backend
 shutdown suspends detached owners, preserving their private restart checkpoints.
 Startup restores the same mailbox id, token, budget reservations, and completed
 responses before checking provider liveness. Concrete owners restore their exact
-launch-time policy; no new credential or authority is issued. Work and Experiment
+launch-time policy; no new credential or authority is issued. Discuss, Work, and Experiment
 checkpoints retain whether the resolved launch handler offered `ask`; restoration
 requires both that saved offer and current owner authorization. Older checkpoints
 without the offer cannot add `ask`; Work owners still receive `lesson` under

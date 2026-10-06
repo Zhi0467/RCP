@@ -1332,6 +1332,7 @@ class AgentLauncher:
                     capability=capability,
                     provider_version=getattr(readiness, "version", None),
                     legacy_command=legacy_command,
+                    invocation_gate=invocation_gate,
                     browser_grant=browser_grant,
                     hidden_read_scope=hidden_read_scope,
                     autocompact=autocompact,

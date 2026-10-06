@@ -211,3 +211,27 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
         assert restored is not None and restored.allowed_verbs == {"validate", "lesson"}
     else:
         assert restored is None
+
+
+@pytest.mark.parametrize("ask_allowed", [True, False])
+def test_discuss_mailbox_restore_preserves_only_its_resolved_ask_offer(
+    tmp_path, monkeypatch, ask_allowed
+):
+    from rcp.runs.tasks import discuss
+
+    from .test_work_questions import work_execution
+
+    execution, _ = work_execution(tmp_path, mode="discuss")
+    captured = {}
+    monkeypatch.setattr(
+        discuss, "load_work_mailbox_context", lambda _: {"ask_allowed": ask_allowed}
+    )
+    monkeypatch.setattr(
+        discuss, "restore_work_validator_mailbox", lambda _, **kwargs: captured.update(kwargs)
+    )
+    discuss.resume_discuss_command_mailbox(
+        lambda: pytest.fail("Discuss must not open the graph"), execution
+    )
+    assert captured["command_handler"].allowed_verbs == ({"ask"} if ask_allowed else set())
+    assert captured["validate"] is None
+    assert "serve" not in captured

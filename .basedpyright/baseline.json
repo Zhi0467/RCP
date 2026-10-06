@@ -4634,14 +4634,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 22,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 29,
                     "endColumn": 41,
                     "lineCount": 1
@@ -5462,22 +5454,6 @@
                 "range": {
                     "startColumn": 24,
                     "endColumn": 48,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 60,
-                    "endColumn": 84,
                     "lineCount": 1
                 }
             },

@@ -370,7 +370,9 @@ class QuestionStoreMixin(StoreMixinBase):
                 or task.status != "succeeded"
                 or task.project_id != origin.project_id
                 or task.request.get("provider") != origin.provider
-                or task.request.get("mode") != "work"
+                or task.request.get("mode")
+                != ("discuss" if origin.capability == "discuss" else "work")
+                or task.request.get("artifact_edit") is not None
                 or task.native_session_id != origin.native_session_id
                 or task.stage_root != origin.stage_root
                 or (task.stage_host or "") != (origin.stage_host or "")

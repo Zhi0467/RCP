@@ -1566,8 +1566,12 @@ def test_discarded_mailbox_cleanup_removes_only_its_own_stage_files(tmp_path, mo
 
 
 @pytest.mark.parametrize("restart", [False, True])
-def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, monkeypatch, restart):
+@pytest.mark.parametrize("validation_enabled", [False, True])
+def test_detached_mailbox_survives_worker_loop_and_backend_restart(
+    tmp_path, monkeypatch, restart, validation_enabled
+):
     from rcp.agents import AgentEvent, AgentProcessControl
+    from rcp.agents.command_protocol import CommandResponse
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
     from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
     from rcp.runs.remote_finalization import WaitingTask
@@ -1601,10 +1605,15 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
     )
     token = staged.credential.token
     validations = []
+    owner_requests = []
 
     def validate(text):
         validations.append(text)
         return PatchValidationResult(status="valid")
+
+    def handle(request, _identity):
+        owner_requests.append(request.verb)
+        return CommandResponse(request_id=request.request_id, status="invalid", message="Refused")
 
     async def disconnect(*args, **kwargs):
         kwargs["outcome"].remote_result_pending = True
@@ -1619,9 +1628,10 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
         owner = runtime.start_work_validator_mailbox(
             staged,
             execution=execution,
-            budget=PatchValidationBudget(2),
-            validate=validate,
-            resume_context={"run_truth_scope": []},
+            budget=PatchValidationBudget(2) if validation_enabled else None,
+            validate=validate if validation_enabled else None,
+            command_handler=handle,
+            resume_context={"run_truth_scope": [], "ask_allowed": True},
         )
         async for _ in runtime.stream_work_agent_events(
             None,
@@ -1666,7 +1676,9 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
         )
 
         def restore(current):
-            return runtime.restore_work_validator_mailbox(current, validate=validate)
+            return runtime.restore_work_validator_mailbox(
+                current, validate=validate if validation_enabled else None, command_handler=handle
+            )
 
         manager = BackgroundAgentTasks(store, None, resume_command_mailbox=restore)
 
@@ -1700,9 +1712,19 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
         partial.replace(workspace / f"{name}.request.json")
         response = wait_until(lambda: (workspace / f"{name}.response.json").exists())
         assert response
-        assert json.loads((workspace / f"{name}.response.json").read_text())["status"] == "ok"
-        assert validations == ["{}"]
-        assert secrets.load("first")["budget_count"] == 3
+        assert json.loads((workspace / f"{name}.response.json").read_text())["status"] == (
+            "ok" if validation_enabled else "invalid"
+        )
+        assert validations == (["{}"] if validation_enabled else [])
+        assert owner_requests == ([] if validation_enabled else ["validate"])
+        saved = secrets.load("first")
+        assert saved is not None
+        assert saved["budget_count"] == (3 if validation_enabled else None)
+        context = saved["context"]
+        assert isinstance(context, dict)
+        assert context["ask_allowed"] is True
+        if not validation_enabled:
+            assert saved["budget_requests"] is None
         assert not owner.closed
     finally:
         owner.settle()

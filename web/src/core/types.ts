@@ -3483,6 +3483,7 @@ export interface MachinePowerStatus {
 }
 
 export interface AgentQuestion {
+  capability: string;
   question_id: string;
   owner_kind: "chat" | "episode";
   owner_id: string;

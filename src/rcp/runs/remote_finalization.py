@@ -30,6 +30,7 @@ from rcp.runs.tasks.auto_research_child_work import (
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_discuss_result,
+    resume_discuss_command_mailbox,
 )
 from rcp.runs.tasks.experiment_loop import (
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
@@ -100,6 +101,7 @@ RECORDED_MAILBOX_RESUMERS: dict[
     ],
 ] = {
     WORK_FINALIZATION_CONTEXT_ROLE: resume_work_command_mailbox,
+    DISCUSS_FINALIZATION_CONTEXT_ROLE: resume_discuss_command_mailbox,
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: resume_child_work_command_mailbox,
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: resume_experiment_command_mailbox,
 }

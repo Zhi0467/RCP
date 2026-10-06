@@ -23,7 +23,12 @@ if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
-from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
+from rcp.limits import (
+    ASK_CHOICE_MAX_COUNT,
+    ASK_CHOICE_MAX_LENGTH,
+    ASK_QUESTION_MAX_LENGTH,
+    COMMAND_CLIENT_WAIT_SECONDS,
+)
 from rcp.providers import ProviderSkillReference, profile_for
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
@@ -63,7 +68,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 16
+CHAT_MASTER_CONTEXT_VERSION = 17
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -169,7 +174,7 @@ _CHANGED_VALUES_RULE = f"""A later launch in this session lists what changed und
 one `- key: value` line each, and it lists every value that differs from this contract, not only
 what changed since the launch before. A listed value replaces this contract's value for that
 launch; a key it does not list has this contract's value. The keys: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
-`work.*` the Work write roots and launch facts, and likewise `repositories`, `skills`, `settings.*`,
+`work.*` the Work write roots and launch facts, `discuss.*` the Discuss command contract, and likewise `repositories`, `skills`, `settings.*`,
 and `workspace.path`. `current.graph_revision` is the one exception: it is listed only when the
 graph changed since the last committed turn of this chat, so an omitted revision means no one else
 changed the graph, not that it returned to this contract's revision. It never means the human
@@ -235,6 +240,16 @@ def ask_contract(how_it_returns: str) -> str:
   roots, graph target, or budget. A change to an existing {protected_belief_names()} is still
   a Proposal.
 {how_it_returns}"""
+
+
+def live_ask_contract() -> str:
+    """Chat and Experiment calls share the same wait and park behavior."""
+    return ask_contract(
+        f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. After pending, repeat "
+        "the exact call to keep waiting when a quick answer is likely; otherwise end this "
+        "turn and the question parks. The human answers on its question card; composer "
+        "messages are separate steering."
+    )
 
 
 def _repository_pointers(repositories: list[dict[str, str]]) -> str:
@@ -708,7 +723,7 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v3"
+DISCUSS_POLICY_VERSION = "discuss-v4"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
 WORK_POLICY_VERSION = "work-v4"
 
@@ -850,6 +865,7 @@ class PromptFactory:
         write_scope: ProjectWriteScope | None = None,
         execution_instructions: str = "",
         auto_research_child_boundary: str = "",
+        discuss_execution_instructions: str = "",
     ) -> str:
         """Render the one master a conversation session holds for both modes.
 
@@ -872,6 +888,11 @@ class PromptFactory:
             human_request_path=None,
             artifact_path=artifact_path,
             experiment_watcher_resources=experiment_watcher_resources,
+            execution_instructions=(
+                _command_client_rule(command_client) + "\n" + discuss_execution_instructions
+                if discuss_execution_instructions
+                else ""
+            ),
             embedded=True,
         )
         work = PromptFactory.work_task_contract(
@@ -1083,6 +1104,7 @@ Output contract:
         attachments: list[dict[str, object]] | None = None,
         compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
+        execution_instructions: str = "",
     ) -> str:
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
         context = (
@@ -1137,6 +1159,8 @@ Boundary:
   remote machines, canonical RCP state, and `.research` stay read-only, and this turn has no graph
   output. If the graph looks wrong, explain the correction in the reply so the human can switch to
   Work.
+
+{execution_instructions}
 
 {REPLY_STYLE}
 

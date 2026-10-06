@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 import rcp.runs.tasks.discuss as discuss_module
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, AgentLauncher
 from rcp.runs.shared import _sse
 from rcp.service import RunRequest
 
@@ -86,7 +87,10 @@ async def _run_discuss(service, request, execution, launcher, data_dir: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_lost_discuss_link_leaves_the_turn_for_its_own_task(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("close_on_pending", [False, True])
+async def test_a_lost_discuss_link_leaves_the_turn_for_its_own_task(
+    tmp_path, monkeypatch, close_on_pending
+) -> None:
     """A pending remote result is not an unanswered turn, and settles nothing."""
 
     service, request, execution = _discuss_app(tmp_path)
@@ -95,10 +99,34 @@ async def test_a_lost_discuss_link_leaves_the_turn_for_its_own_task(tmp_path, mo
         kwargs["outcome"].remote_result_pending = True
         yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
 
-    monkeypatch.setattr(discuss_module, "_stream_agent_events", pending)
-    frames = await _run_discuss(
-        service, request, execution, ScriptedLauncher([{}], message=""), tmp_path / "data"
+    class DetachedMailbox:
+        detached = False
+        closed = False
+
+        def detach(self):
+            self.detached = True
+
+        async def close(self, **_kwargs):
+            self.closed = True
+
+    mailbox = DetachedMailbox()
+    monkeypatch.setattr(
+        discuss_module, "start_work_validator_mailbox", lambda *_args, **_kwargs: mailbox
     )
+    monkeypatch.setattr(discuss_module, "_stream_agent_events", pending)
+    stream = discuss_module.stream_discuss_run(
+        service,
+        cast(AgentLauncher, ScriptedLauncher([{}], message="")),
+        request,
+        tmp_path / "data",
+        execution,
+    )
+    if close_on_pending:
+        frames = [await anext(stream)]
+        await stream.aclose()
+    else:
+        frames = [frame async for frame in stream]
+    assert mailbox.detached and not mailbox.closed
 
     events = [json.loads(frame.removeprefix("data: "))["event"] for frame in frames]
     assert events == ["remote_result_pending"]

@@ -71,7 +71,9 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             contract = contract_path.read_text(encoding="utf-8")
             (command_text,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
             command = shlex.split(command_text)
-            validator_client = Path(command[1])
+            validator_client = next(
+                Path(argument) for argument in command if argument.endswith(".py")
+            )
             assert validator_client.read_text(encoding="utf-8") == VALIDATOR_CLIENT_SOURCE
 
             (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")

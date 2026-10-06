@@ -109,22 +109,24 @@ async def serve_patch_validation_mailbox(
     *,
     staged: StagedCommandMailbox,
     execution: AgentTaskExecution | None,
-    validate: Callable[[str], PatchValidationResult],
+    validate: Callable[[str], PatchValidationResult] | None,
     stop: asyncio.Event | threading.Event,
-    budget: PatchValidationBudget,
+    budget: PatchValidationBudget | None,
     command_handler: CommandHandler | None = None,
     responses: dict[str, CommandResponse] | None = None,
     terminal: dict[str, str] | None = None,
     checkpoint: Callable[[], None] | None = None,
     suspend: threading.Event | None = None,
 ) -> None:
-    """Serve bounded live Patch checks over the unified staged command mailbox."""
+    """Serve owner commands and optional bounded Patch checks over one mailbox."""
+    if validate is not None and budget is None:
+        raise ValueError("Patch validation requires a self-check budget")
 
     async def handle(
         request: CommandRequest,
         _identity: CommandTurnIdentity,
     ) -> CommandResponse:
-        if not isinstance(request, ValidateCommandRequest):
+        if validate is None or not isinstance(request, ValidateCommandRequest):
             if command_handler is not None:
                 return await asyncio.to_thread(command_handler, request, _identity)
             return CommandResponse(
@@ -132,6 +134,7 @@ async def serve_patch_validation_mailbox(
                 status="invalid",
                 message="This validator credential authorizes Patch validation only.",
             )
+        assert budget is not None
         count = budget.reserve(request.request_id)
         if checkpoint is not None:
             checkpoint()

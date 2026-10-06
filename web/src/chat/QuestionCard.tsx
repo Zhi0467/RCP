@@ -7,12 +7,12 @@ export function QuestionCard({
   question,
   apiBase,
   onResolved,
-  continueWork = false,
+  continueChat = false,
 }: {
   question: AgentQuestion;
   apiBase: string;
   onResolved: () => void;
-  continueWork?: boolean;
+  continueChat?: boolean;
 }) {
   const labelId = useId();
   const [text, setText] = useState("");
@@ -111,7 +111,9 @@ export function QuestionCard({
               type="submit"
               disabled={busy || !canSubmitQuestion(question, text, choices)}
             >
-              {continueWork ? "Answer and continue Work" : "Answer"}
+              {continueChat
+                ? `Answer and continue ${question.capability === "discuss" ? "Discuss" : "Work"}`
+                : "Answer"}
             </button>
           </div>
         </form>

@@ -408,3 +408,63 @@ async def test_transient_validation_retry_spends_one_budget_unit(tmp_path, monke
         stop.set()
         await server
         staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mailbox_without_validator_routes_every_request_to_owner(tmp_path, monkeypatch):
+    from rcp.agents.command_protocol import (
+        CommandResponse,
+        ValidateArguments,
+        ValidateCommandRequest,
+    )
+    from rcp.runs import patch_validator
+
+    from .test_ask_protocol import ask_request
+
+    staged = stage_patch_validation_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        task_id="task",
+        turn_id="turn",
+        authority="broker",
+        timeout_seconds=2,
+    )
+    requests = [
+        ask_request(),
+        ValidateCommandRequest(
+            mailbox_id="a" * 32,
+            request_id="b" * 32,
+            credential="c" * 64,
+            verb="validate",
+            arguments=ValidateArguments(patch="{}"),
+        ),
+    ]
+    received = []
+
+    def handle(request, identity):
+        received.append((request, identity))
+        return CommandResponse(
+            request_id=request.request_id,
+            status="ok" if request.verb == "ask" else "invalid",
+            message="Refused" if request.verb != "ask" else None,
+        )
+
+    async def serve(**kwargs):
+        assert kwargs["invocation_gate"] is staged.invocation_gate
+        for request in requests:
+            result = await kwargs["handler"](request, staged.credential.identity)
+            assert result.status == ("ok" if request.verb == "ask" else "invalid")
+
+    monkeypatch.setattr(patch_validator, "serve_command_mailbox", serve)
+    try:
+        await serve_patch_validation_mailbox(
+            staged=staged,
+            execution=None,
+            validate=None,
+            budget=None,
+            command_handler=handle,
+            stop=asyncio.Event(),
+        )
+    finally:
+        staged.cleanup()
+    assert received == [(request, staged.credential.identity) for request in requests]

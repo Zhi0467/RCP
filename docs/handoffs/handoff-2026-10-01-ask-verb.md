@@ -67,9 +67,14 @@ Why one command verb, and not MCP or the providers' own ask tools:
 - **Work-shaped turns:** node chat, project chat, and Experiment episodes a
   human started. They wait live.
 - **The Auto-research orchestrator.** It parks at once.
-- **Not:** Discuss turns (they ask in prose), Auto-research workers, and child
-  Work or child Experiments an orchestrator started. Those mail the
-  orchestrator, which asks the human. Humans talk only to the orchestrator.
+- **Human Discuss chats:** node and project chat use the same live-wait broker
+  and question cards, with exactly `ask`. Claude and OpenCode permit only the
+  exact staged `python3 -I -S <client-path> ...` command, with the client directory
+  protected from edits (plus `playwright-cli` when granted); Codex keeps its existing Discuss shell profile. Answers continue in
+  Discuss with no Patch scope or write fingerprint; Work answers continue Work.
+- **Not:** artifact-edit Discuss, consolidation, ingestion, paper coach,
+  Auto-research workers, and child Work or child Experiments an orchestrator
+  started. Auto-research children mail the orchestrator, which asks the human.
 
 Availability comes from each handler's resolved allowed verbs. The same list
 drives dispatch and the prompt text. Work capability or an episode id alone

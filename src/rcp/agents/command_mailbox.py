@@ -32,7 +32,7 @@ from rcp.agents.command_protocol import (
     staged_command_client_source,
     validate_command_request,
 )
-from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.invocation_broker import ProviderInvocationGate, isolated_python_argv
 from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
 from rcp.limits import (
     COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
@@ -202,8 +202,7 @@ class StagedCommandMailbox:
             else ("--credential", self.credential_path or "")
         )
         return (
-            "python3",
-            self.client_path,
+            *isolated_python_argv(self.client_path),
             *authority,
             "--timeout",
             f"{timeout:g}",
@@ -286,6 +285,7 @@ def stage_command_mailbox(
             invocation_gate = ProviderInvocationGate(
                 mailbox_id=credential.mailbox_id,
                 broker_path=broker_path,
+                client_path=client_path,
                 # The broker resolves `~` on the execution host.
                 socket_path=f"~/.rcp/sockets/rcp-command-{credential.mailbox_id}.sock",
                 workspace=str(mailbox.workspace),

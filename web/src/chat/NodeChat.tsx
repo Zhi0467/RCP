@@ -2077,7 +2077,7 @@ export function NodeChat({
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueWork={question.state === "parked" && !relatedActive}
+              continueChat={question.state === "parked" && !relatedActive}
             />
           ))}
       </div>

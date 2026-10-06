@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from uuid import uuid4
 
 import pytest
 
-from rcp.agents import AgentProcessControl
+from rcp.agents import AgentLauncher, AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT
-from rcp.runs.questions import record_work_question_receipts, work_command_handler
+from rcp.runs.questions import (
+    discuss_command_handler,
+    record_work_question_receipts,
+    work_command_handler,
+)
 from rcp.runs.tasks.work import _work_execution_instructions
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
@@ -38,7 +43,7 @@ def work_execution(tmp_path, *, mode="work"):
         dispatch_authority=resolve_dispatch_authority("project_chat", request),
         native_session_id="native",
         stage_root="/stage",
-        write_scope_fingerprint="a" * 64,
+        write_scope_fingerprint="a" * 64 if mode == "work" else None,
     )
     store.create_agent_task(record)
     return AgentTaskExecution(
@@ -141,30 +146,64 @@ def test_work_ask_requires_own_broker(tmp_path, authority, task_id):
     assert execution.store.list_questions() == []
 
 
-def test_discuss_refuses_ask_and_work_master_uses_resolved_verbs(tmp_path):
+def test_discuss_resolves_only_ask(tmp_path):
+    from rcp.runs.tasks.discuss import _discuss_execution_instructions
+
     execution, _ = work_execution(tmp_path, mode="discuss")
-    handler = work_command_handler(execution, None)
-    assert handler.allowed_verbs == {"validate"}
-    assert handler(ask_request(), identity()).status == "invalid"
-    turn = SimpleNamespace(execution=execution, compute_commands=None)
-    assert _work_execution_instructions(turn) == ""
+    handler = discuss_command_handler(execution)
+    assert handler.allowed_verbs == {"ask"}
+    response = handler(ask_request(), identity())
+    assert response.status == "ok"
+    question_id = response.result["question_id"]
+    assert isinstance(question_id, str)
+    question = execution.store.get_question(question_id)
+    assert question is not None
+    origin = question.origin
+    assert origin.capability == "discuss" and origin.write_scope_fingerprint is None
+    for verb in ("lesson", "launch", "validate", "apply"):
+        # Dispatch checks the resolved verb set before invoking any other owner.
+        request = ask_request().model_copy(update={"verb": verb})
+        assert handler(request, identity()).status == "invalid"
+    assert (
+        _work_execution_instructions(SimpleNamespace(execution=execution, compute_commands=None))
+        == ""
+    )
+    assert _discuss_execution_instructions(discuss_command_handler(None)) == ""
+
+
+def test_artifact_edit_discuss_has_no_ask(tmp_path):
+    import json
+
+    execution, _ = work_execution(tmp_path, mode="discuss")
+    task = execution.store.agent_task(execution.operation_id)
+    assert task is not None
+    request = dict(task.request)
+    request["artifact_edit"] = {"artifact_id": "artifact"}
+    with execution.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (json.dumps(request), task.operation_id),
+        )
+    assert discuss_command_handler(execution).allowed_verbs == frozenset()
 
 
 def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
     from rcp.runs.tasks import work
 
-    monkeypatch.setattr(work, "ask_contract", lambda _returns: "<shared-ask-contract>")
+    monkeypatch.setattr(work, "live_ask_contract", lambda: "<shared-ask-contract>")
     execution, _ = work_execution(tmp_path)
     turn = SimpleNamespace(execution=execution, compute_commands=None)
     assert "<shared-ask-contract>" in _work_execution_instructions(turn, client="rcp-client")
 
 
 @pytest.mark.parametrize("session_drift", [False, True])
-def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
-    manifest, tmp_path, session_drift
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
+    manifest, tmp_path, session_drift, mode, monkeypatch
 ):
     import json
 
+    from rcp.runs.tasks.discuss import stream_discuss_run
     from rcp.runs.tasks.work import stream_work_run
     from rcp.storage.question_models import QuestionOrigin
     from tests.helpers import (
@@ -184,8 +223,9 @@ def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
     launcher = _RecordingLauncher("origin-native-session")
 
     async def stream(_project_id, kind, request, execution):
-        async for frame in stream_work_run(
-            service, launcher, request, tmp_path / "data", execution=execution
+        run = stream_discuss_run if mode == "discuss" else stream_work_run
+        async for frame in run(
+            service, cast(AgentLauncher, launcher), request, tmp_path / "data", execution=execution
         ):
             yield frame
 
@@ -197,7 +237,7 @@ def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
             "chat_id": str(uuid4()),
             "message": "Choose the next route.",
             "run_truth_scope": ["repo-a"],
-            "mode": "work",
+            "mode": mode,
         },
     )
     assert response.status_code == 202, response.text
@@ -231,7 +271,7 @@ def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
     assert followup_id is not None, statuses
     result = wait_for_task_response(client, project_id, followup_id)
     followup = store.agent_task(followup_id)
-    assert result["status"] == ("failed" if session_drift else "succeeded"), result
+    assert result["status"] == ("failed" if session_drift else "succeeded"), result.get("error")
     assert launcher.sessions == [None, origin.native_session_id]
     assert followup.native_session_id == origin.native_session_id
     assert followup.write_scope_fingerprint == origin.write_scope_fingerprint
@@ -244,6 +284,31 @@ def test_answer_followup_work_stream_preserves_origin_and_refuses_session_drift(
     assert [(item["question_id"], item["answer"]) for item in snapshot["questions"]] == [
         (question.question_id, "Take route A")
     ]
+
+    if session_drift and mode == "discuss":
+        from rcp.runs.tasks import discuss
+
+        store.record_agent_task_receipt(
+            followup_id, "provider_terminal_error", {"classification": "stale_session"}
+        )
+        monkeypatch.setattr(
+            discuss,
+            "_stage_chat_patch_inputs",
+            lambda *_args, **_kwargs: pytest.fail(
+                "A changed question origin must fail before staging"
+            ),
+        )
+        retried = client.post(f"/api/projects/{project_id}/tasks/{followup_id}/retry", json={})
+        assert retried.status_code == 202, retried.text
+        retry_id = retried.json()["operation_id"]
+        retry_result = wait_for_task_response(client, project_id, retry_id)
+        retry_task = store.agent_task(retry_id)
+        assert retry_task is not None
+        assert retry_task.request["session_id"] is None
+        assert store.agent_task_continuation_cause(retry_id) == "handoff"
+        assert retry_result["status"] == "failed"
+        assert retry_result["error"] == "question_origin_binding_unavailable"
+        assert len(launcher.prompts) == 2
 
 
 def test_repeating_question_cannot_deliver_answer_to_changed_binding(tmp_path):

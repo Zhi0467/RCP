@@ -386,9 +386,9 @@ Project members read questions through
 `GET /api/projects/{project_id}/chats/{chat_id}/questions` and
 `GET /api/projects/{project_id}/episodes/{episode_id}/questions`. Episode lists
 include predecessor questions without changing their origin. Each question
-publishes its id, owner and asking operation, text, choices, multiple-selection
-flag, state, answer, chosen choices, human resolver and time, creation time,
-`withdrawn_readonly`, and the server's `can_answer` offer. Open questions whose
+publishes its id, owner and asking operation, origin capability, text, choices,
+multiple-selection flag, state, answer, chosen choices, human resolver and time,
+creation time, `withdrawn_readonly`, and the server's `can_answer` offer. Open questions whose
 asking turn has settled, and orchestrator questions, project as `parked`.
 
 `POST /api/projects/{project_id}/questions/{question_id}/answer` accepts only
@@ -409,7 +409,8 @@ Node and project chats show open question cards above the composer and resolved
 cards read-only in transcript order. The composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format. A parked
-chat answer with no running turn names Work continuation on its submit control.
+chat answer with no running turn names Discuss or Work continuation on its submit
+control, matching the asking turn's capability.
 Experiment and Auto-research detail show the same cards; withdrawn cards retain
 their history with an **Episode ended** state. Question refresh follows existing
 chat and episode refresh/polling, including turn command/state changes.

@@ -573,8 +573,8 @@ def start_work_validator_mailbox(
     staged: StagedCommandMailbox,
     *,
     execution: AgentTaskExecution | None,
-    budget: PatchValidationBudget,
-    validate: Callable[[str], PatchValidationResult],
+    budget: PatchValidationBudget | None,
+    validate: Callable[[str], PatchValidationResult] | None,
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
     command_handler: CommandHandler | None = None,
     resume_context: dict[str, object] | None = None,
@@ -628,8 +628,8 @@ def start_work_validator_mailbox(
                 execution.operation_id,
                 {
                     **document,
-                    "budget_count": budget.count,
-                    "budget_requests": budget.requests,
+                    "budget_count": budget.count if budget is not None else None,
+                    "budget_requests": budget.requests if budget is not None else None,
                     "terminal": terminal,
                     "responses": {
                         key: value.model_dump(mode="json") for key, value in responses.items()
@@ -677,7 +677,7 @@ def load_work_mailbox_context(execution: AgentTaskExecution) -> dict[str, object
 def restore_work_validator_mailbox(
     execution: AgentTaskExecution,
     *,
-    validate: Callable[[str], PatchValidationResult],
+    validate: Callable[[str], PatchValidationResult] | None,
     command_handler: CommandHandler | None = None,
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
 ) -> WorkValidatorMailboxLifecycle | None:
@@ -710,10 +710,16 @@ def restore_work_validator_mailbox(
         invocation_gate=ProviderInvocationGate(**saved["gate"]) if saved["gate"] else None,
         timeout_seconds=saved["timeout_seconds"],
     )
+    budget = None
+    if validate is not None:
+        count, requests = saved["budget_count"], saved["budget_requests"]
+        if not isinstance(count, int) or not isinstance(requests, dict):
+            raise ValueError("The saved command mailbox has no Patch validation budget")
+        budget = PatchValidationBudget(count, requests)
     owner = start_work_validator_mailbox(
         staged,
         execution=execution,
-        budget=PatchValidationBudget(saved["budget_count"], saved["budget_requests"]),
+        budget=budget,
         validate=validate,
         command_handler=command_handler,
         serve=serve,

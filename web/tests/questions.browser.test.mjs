@@ -21,6 +21,7 @@ test("chat question answers stay separate from steering and resolved cards enter
       owner_kind: "chat",
       owner_id: "steering-chat",
       operation_id: "task",
+      capability: "work_auto",
       question: id,
       choices: ["a", "b"],
       multiple: id === "multiple",
@@ -142,6 +143,21 @@ test("chat question answers stay separate from steering and resolved cards enter
       .locator('[data-question-id="parked"]')
       .getByRole("button", { name: "Answer and continue Work", exact: true })
       .waitFor();
+    questions.push({ ...questions[3], question_id: "discuss", capability: "discuss" });
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
+      ),
+    );
+    const discuss = page.locator('[data-question-id="discuss"]');
+    await discuss.getByRole("textbox").fill("Discuss this route");
+    await discuss.getByRole("button", { name: "Answer and continue Discuss", exact: true }).click();
+    await page.locator('.node-chat-lines [data-question-id="discuss"]').waitFor();
+    assert.deepEqual(mutations.at(-1), {
+      id: "discuss",
+      action: "answer",
+      body: { answer: "Discuss this route", choices: [] },
+    });
     questions[3].withdrawn_readonly = true;
     questions[3].can_answer = false;
     await page.evaluate(() =>

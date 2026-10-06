@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import uuid
 from dataclasses import replace
@@ -42,6 +43,7 @@ from rcp.providers.claude.remote import (
 )
 
 if TYPE_CHECKING:
+    from rcp.agents.invocation_broker import ProviderInvocationGate
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
@@ -71,6 +73,12 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             )
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
+        if (
+            request.capability == "discuss"
+            and request.invocation_gate is not None
+            and request.invocation_gate.client_path is not None
+        ):
+            self.command = _with_discuss_client_permissions(self.command, request.invocation_gate)
         if (
             request.hidden_read_scope is not None
             and request.hidden_read_scope.account_home is not None
@@ -672,3 +680,34 @@ def _claude_hidden_read_settings(scope: HiddenReadScope) -> dict[str, object]:
 
 def _claude_absolute_pattern(path: str, *, directory: bool = True) -> str:
     return f"//{path.lstrip('/')}" + ("/**" if directory else "")
+
+
+def _with_discuss_client_permissions(command: list[str], gate: ProviderInvocationGate) -> list[str]:
+    """Grant the isolated client only after denying replacement of its inputs."""
+    assert gate.client_path is not None
+    command = list(command)
+    client = shlex.join(gate.client_executable_argv())
+    # Keep the rule inside the existing allowedTools group.
+    end = command.index("--allowedTools") + 1
+    while end < len(command) and not command[end].startswith("--"):
+        end += 1
+    command.insert(end, f"Bash({client}:*)")
+    settings_index = command.index("--settings") + 1 if "--settings" in command else None
+    settings = json.loads(command[settings_index]) if settings_index is not None else {}
+    # A literal path, unlike hidden_globs. Escape only the class brackets, which could
+    # fail to match their own characters; `*` and `?` still match themselves. A
+    # backslash becomes `?`, which matches it: over-denying is the safe side, and
+    # Claude's matcher mishandles escaped `?` and backslash pairs.
+    directory = re.sub(
+        r"([\[\]])", r"\\\1", str(PurePosixPath(gate.client_path).parent).replace("\\", "?")
+    )
+    settings.setdefault("permissions", {}).setdefault("deny", []).extend(
+        f"Edit({_claude_absolute_pattern(directory, directory=descendants)})"
+        for descendants in (False, True)
+    )
+    rendered = json.dumps(settings, separators=(",", ":"))
+    if settings_index is None:
+        command.extend(["--settings", rendered])
+    else:
+        command[settings_index] = rendered
+    return command

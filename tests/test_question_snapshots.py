@@ -220,12 +220,17 @@ def test_work_followup_launch_has_fresh_snapshot_and_records_delivery(
     assert store.get_question(item.question_id).dismissal_delivered_at is not None
 
 
+@pytest.mark.parametrize("mode", ["work", "discuss"])
 @pytest.mark.parametrize("changed", [None, "session", "scope", "provider", "target", "capability"])
 def test_recovery_snapshot_carries_answers_only_through_identical_binding(
-    store, origin, human, monkeypatch, changed
+    store, origin, human, monkeypatch, changed, mode
 ):
     from types import SimpleNamespace
 
+    if mode == "discuss":
+        origin = origin.model_copy(
+            update={"capability": "discuss", "write_scope_fingerprint": None}
+        )
     item = store.create_or_get_question(origin=origin, key="answer", question="Which?")
     store.answer_question(item.question_id, answer="A", resolved_by=human)
     with store.connection() as connection:
@@ -237,9 +242,9 @@ def test_recovery_snapshot_carries_answers_only_through_identical_binding(
         project_id="project",
         kind="project_chat",
         native_session_id="session",
-        request={"provider": "codex", "mode": "work"},
+        request={"provider": "codex", "mode": mode},
         graph_target=GraphTargetRef(),
-        write_scope_fingerprint="scope",
+        write_scope_fingerprint="scope" if mode == "work" else None,
         stage_root="/stage",
         stage_host=None,
     )
@@ -250,9 +255,9 @@ def test_recovery_snapshot_carries_answers_only_through_identical_binding(
     elif changed == "scope":
         current.write_scope_fingerprint = "other"
     elif changed == "provider":
-        current.request = {"provider": "claude", "mode": "work"}
+        current.request = {"provider": "claude", "mode": mode}
     elif changed == "capability":
-        current.request = {"provider": "codex", "mode": "discuss"}
+        current.request = {"provider": "codex", "mode": "discuss" if mode == "work" else "work"}
     elif changed == "target":
         current.graph_target = GraphTargetRef(kind="branch", branch_id="other")
     records = {"recovery": current, "followup": parent}
