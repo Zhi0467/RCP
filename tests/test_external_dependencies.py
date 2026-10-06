@@ -1,9 +1,17 @@
-"""Hold `rcp.dependencies` to the Python launch sites and the server guide.
+"""Hold `rcp.dependencies` to the launch sites and the server guide.
 
-Scan literal argv heads, including assignments/builders and SSH/runner wrappers.
-Literal remote shell commands contribute their first program. ``sys.executable``
-and fully dynamic argv (configured providers, shells, interpreters, and user jobs)
-are excluded: this is a static name inventory, not an execution or prose check.
+Scan literal argv heads in Python, including assignments/builders and SSH/runner
+wrappers. Literal remote shell commands contribute their first program, and the
+shipped `.sh` scripts under `src/rcp` contribute their command words. A function
+or method named ``command``, ``argv``, ``*_command``, or ``*_argv`` that returns a
+literal argv counts as a launch, since its callers may hold it under another name
+or in another module. ``sys.executable`` and fully dynamic argv (configured
+providers, shells, interpreters, and user jobs) are excluded: this is a static
+name inventory, not an execution or prose check.
+
+Not followed: a builder named otherwise whose result reaches a runner only in
+another module, and shell scripts assembled from Python string pieces and run
+outside these runners (for example through `osascript`).
 """
 
 from __future__ import annotations
@@ -52,19 +60,44 @@ SSH_BUILDERS = {"ssh_arguments", "_strict_ssh_arguments"}
 # A literal `shutil.which("tool")` names a program RCP depends on, even when the
 # launch itself receives the resolved path.
 LOOKUPS = {"which"}
-# An `sh -c` script contributes the first word of each simple command, after
-# leading `NAME=value` assignments, and the program after find's `-exec`. Lines
-# are commands; a trailing backslash continues one. Builtins and keywords are not
-# programs. This is a bounded reading, not a shell parser.
+# Functions whose literal return value is an argv, whoever runs it.
+COMMAND_BUILDER = re.compile(r"(?:\w*_)?(?:command|argv)")
+# A shell script (an `sh -c` operand or a shipped `.sh` file) contributes the
+# first word of each simple command, after leading `NAME=value` assignments and
+# the script's own wrapper functions (those that run `"$@"`), and the program
+# after find's `-exec`. Lines, `;`, `&&`, `||`, `|`, `&`, `(`, `)`, and `$(` end
+# commands; a trailing backslash continues one. Comments, here-document bodies,
+# case patterns, `$((...))`, and `2>&1`-style redirections are dropped. A
+# `"$name"` command word is the absolute path the script assigns to `name`.
+# Builtins, keywords, and the script's functions are not programs. This is a
+# bounded reading, not a shell parser.
 SHELL_BUILTINS = {"cd", "echo", "exec", "exit", "export", "set", "trap", "wait"}
-SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "for", "do", "done", "while"}
-SHELL_KEYWORDS |= {"until", "case", "esac", "in", "!", "[", "[[", "{", "}"}
-SHELL_SEPARATOR = re.compile(r"&&|\|\||[;|&]")
+SHELL_BUILTINS |= {":", "break", "command", "continue", "kill", "local", "printf"}
+SHELL_BUILTINS |= {"read", "return", "shift", "umask", "unset"}
+SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until"}
+SHELL_KEYWORDS |= {"case", "esac", "in", "!", "{", "}"}
+# A test's operands and a `for` loop's words are not commands.
+SHELL_NOT_COMMANDS = {"[", "[[", "for"}
+SHELL_SEPARATOR = re.compile(r"&&|\|\||\$\(|[;|&()`]")
+SHELL_FUNCTION = re.compile(r"^[ \t]*([A-Za-z_]\w*)[ \t]*\(\)", re.MULTILINE)
+SHELL_PATH_ASSIGNMENT = re.compile(r"^[ \t]*([A-Za-z_]\w*)=(/[\w./-]+)[ \t]*$", re.MULTILINE)
+SHELL_VARIABLE = re.compile(r'"?\$\{?([A-Za-z_]\w*)\}?"?')
+SHELL_HEREDOC = re.compile(r"<<-?[ \t]*['\"]?(\w+)['\"]?")
+SHELL_COMMENT = re.compile(r"(^|\s)#.*$", re.MULTILINE)
+SHELL_ARITHMETIC = re.compile(r"\$\(\([^()]*\)\)")
+SHELL_DUPLICATION = re.compile(r"\d*[<>]&(?:\d+|-)?")
+# A case pattern follows `case WORD in` or `;;` and ends at its `)`.
+SHELL_CASE_PATTERN = re.compile(r"(?:\bcase\s+\S+\s+in|;;)\s*(?!\s|esac\b)\(?[^()\n]*\)")
 # Stands in for an interpolated value; a command word containing it is dynamic.
 DYNAMIC = "\0"
-# `_programs` records names only at calls to these; a file without one has none.
+# `_programs` records names only at calls to these or in command builders; a file
+# without either has none.
 LAUNCH_CALL = re.compile(
-    r"\b(?:" + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS | LOOKUPS))) + r")\s*\("
+    r"\b(?:"
+    + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS | LOOKUPS)))
+    + r")\s*\(|\bdef\s+"
+    + COMMAND_BUILDER.pattern
+    + r"\s*\("
 )
 
 
@@ -76,6 +109,56 @@ def _name(node: ast.expr) -> str:
         if isinstance(node, ast.Attribute)
         else ""
     )
+
+
+def _shell_programs(text: str) -> set[str]:
+    """Programs one shell script runs, by the bounded reading above."""
+    lines: list[str] = []
+    terminator = None
+    for line in text.splitlines():
+        if terminator is not None:
+            if line.strip() == terminator:
+                terminator = None
+            continue
+        lines.append(line)
+        heredoc = SHELL_HEREDOC.search(line)
+        if heredoc:
+            terminator = heredoc[1]
+    text = SHELL_COMMENT.sub(r"\1", "\n".join(lines)).replace("\\\n", " ")
+    text = SHELL_DUPLICATION.sub(" ", SHELL_ARITHMETIC.sub(DYNAMIC, text))
+    text = SHELL_CASE_PATTERN.sub(";", text)
+    functions = set(SHELL_FUNCTION.findall(text))
+    paths: dict[str, set[str]] = defaultdict(set)
+    for name, path in SHELL_PATH_ASSIGNMENT.findall(text):
+        paths[name].add(path)
+    commands = [command.split() for command in SHELL_SEPARATOR.split(text.replace("\n", ";"))]
+    # A function that runs its arguments passes its first operand on as a command.
+    wrappers = {
+        name
+        for name in functions
+        for body in [text[text.index(f"{name}()") :].split("\n}", 1)[0]]
+        if any(
+            words[:1] == ['"$@"']
+            for words in (part.split() for part in SHELL_SEPARATOR.split(body.replace("\n", ";")))
+        )
+    }
+    found: set[str] = set()
+    for words in commands:
+        while words and (words[0] in SHELL_KEYWORDS | wrappers or "=" in words[0]):
+            words = words[1:]
+        if not words or words[0] in SHELL_NOT_COMMANDS:
+            continue
+        candidates = words[:1] + [
+            word for flag, word in zip(words, words[1:], strict=False) if flag == "-exec"
+        ]
+        for word in candidates:
+            variable = SHELL_VARIABLE.fullmatch(word)
+            for program in sorted(paths[variable[1]]) if variable else [word]:
+                if program not in SHELL_BUILTINS | functions and re.fullmatch(
+                    r"[A-Za-z0-9_./][A-Za-z0-9_./-]*", program
+                ):
+                    found.add(Path(program).name)
+    return found
 
 
 def _programs(source: str) -> set[str]:
@@ -229,21 +312,7 @@ def _programs(source: str) -> set[str]:
                             else DYNAMIC
                             for part in value.values
                         )
-                    text = text.replace("\\\n", " ").replace("\n", ";")
-                    for command in SHELL_SEPARATOR.split(text):
-                        words = command.split()
-                        while words and (words[0] in SHELL_KEYWORDS or "=" in words[0]):
-                            words = words[1:]
-                        candidates = words[:1] + [
-                            word
-                            for flag, word in zip(words, words[1:], strict=False)
-                            if flag == "-exec"
-                        ]
-                        for word in candidates:
-                            if word not in SHELL_BUILTINS and re.fullmatch(
-                                r"[A-Za-z0-9_./][A-Za-z0-9_./-]*", word
-                            ):
-                                found.add(Path(word).name)
+                    found.update(_shell_programs(text))
                 return
 
         def remote(node: ast.expr) -> None:
@@ -297,7 +366,20 @@ def _programs(source: str) -> set[str]:
                         for value in sequence.elts:
                             bind(node.target, value)
 
+        # A joined argv appended to another string is that command's arguments.
+        appended = {
+            id(node.right)
+            for node in nodes
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
+        }
         for node in nodes:
+            if (
+                isinstance(node, ast.Return)
+                and node.value
+                and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and COMMAND_BUILDER.fullmatch(scope.name)
+            ):
+                argv(node.value)
             if isinstance(node, ast.Call):
                 name = _name(node.func)
                 if name in RUNNERS:
@@ -314,6 +396,7 @@ def _programs(source: str) -> set[str]:
                             argv(keyword.value)
                 if (
                     name == "join"
+                    and id(node) not in appended
                     and isinstance(node.func, ast.Attribute)
                     and _name(node.func.value) == "shlex"
                     and node.args
@@ -350,6 +433,9 @@ def test_external_dependency_names_match_source() -> None:
         if not LAUNCH_CALL.search(source):
             continue
         for program in _programs(source):
+            locations[program].append(str(path.relative_to(ROOT)))
+    for path in sorted((ROOT / "src/rcp").rglob("*.sh")):
+        for program in _shell_programs(path.read_text()):
             locations[program].append(str(path.relative_to(ROOT)))
     missing = sorted(locations.keys() - BY_NAME.keys())
     stale = sorted(BY_NAME.keys() - locations.keys())
@@ -410,6 +496,15 @@ wrapper = shlex.join(["joined-tool", "--wait", "sh", "-c", child])
 ComputeLaunchRequest(argv=["sh", "-c", f"echo ready; script-tool {seconds} && {dynamic}"])
 subprocess.run(["bash", "-lc", "if [ ! -d x ]; then\\n  exit 0\\nfi\\nline-tool x -exec exec-arg-tool {} + | LC_ALL=C piped-tool"])
 os.execvp("execvp-tool", ["execvp-tool", "-D"])
+client = f"{COMMAND_CLIENT} " + shlex.join(["appended-argument", "--key"])
+
+class Profile:
+    @staticmethod
+    def hold_command(pid):
+        return ["/usr/bin/builder-tool", "-w", str(pid)]
+
+def unrelated_command():
+    return Response("ordinary-data")
 """
     assert _programs(source) == {
         "assigned-tool",
@@ -435,4 +530,28 @@ os.execvp("execvp-tool", ["execvp-tool", "-D"])
         "exec-arg-tool",
         "piped-tool",
         "execvp-tool",
+        "builder-tool",
     }
+
+
+def test_shell_script_inventory_reads_command_positions() -> None:
+    script = """#!/bin/sh
+# comment-tool is prose
+tool=/usr/bin/assigned-tool
+wrap() {
+    "$@" &
+    wait "$!"
+}
+field() { printf '%s\\n' "$1"; }
+for name in "$@"; do
+    case $name in
+        pattern-word|other-word) [ -x "$name" ] || plain-tool "$name" 2>&1 ;;
+        *) value=$(wrap "$tool" -g) || field key ;;
+    esac
+done
+left=$((left - 1))
+cat-like-tool <<DOC
+heredoc-word
+DOC
+"""
+    assert _shell_programs(script) == {"assigned-tool", "plain-tool", "cat-like-tool"}

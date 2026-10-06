@@ -46,15 +46,15 @@ injection, not a separate account or a hostile same-account sandbox.
 
 The registry in `src/rcp/dependencies.py` is the one record of the external
 programs RCP starts: for each, its purpose, the roles that use it (`local`,
-`remote`, `server`, `server_install`), its platforms, and whether it is required
-or optional there. Required means an agent run on that machine cannot finish
+`remote`, `server`, `server_install`), the platforms the `local` role uses it on
+(the other roles are Linux), and whether it is required or optional there. Required means an agent run on that machine cannot finish
 without it, so a definite absence refuses the run. Optional means one feature
 stops working; the entry names that feature and the visible fallback, and a
 missing optional program never refuses a run. Every machine card shows a
 **Dependencies** row from the same check. Server install refuses a host missing
 a required program, and `doctor` reports one missing for the service account.
-`tests/test_external_dependencies.py` holds the Python launch sites and the
-server guide's apt line to the registry.
+`tests/test_external_dependencies.py` holds the Python launch sites, the
+shipped shell scripts, and the server guide's apt line to the registry.
 
 `src/rcp/dependency_check.py` reads the local machine in-process and runs the
 shipped `staged_dependency_check.sh` on a remote machine over the state

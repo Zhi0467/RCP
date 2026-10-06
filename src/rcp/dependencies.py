@@ -52,6 +52,8 @@ class Dependency:
     # For optional roles: what stops working, and what the user sees instead.
     feature: str = ""
     fallback: str = ""
+    # Where the ``local`` role uses it. Remote and server machines are Linux, so
+    # their roles ignore this field.
     platforms: frozenset[Platform] = BOTH
     # Debian/Ubuntu package that provides it.
     apt: str | None = None
@@ -72,12 +74,6 @@ class Dependency:
             raise ValueError(f"{self.name}: a role is both required and optional")
         if self.optional_on and not (self.feature and self.fallback):
             raise ValueError(f"{self.name}: optional roles need a feature and a fallback")
-        if "linux" not in self.platforms and (self.required_on | self.optional_on) & {
-            "remote",
-            "server",
-            "server_install",
-        }:
-            raise ValueError(f"{self.name}: remote and server machines are Linux")
 
 
 DEPENDENCIES: tuple[Dependency, ...] = (
@@ -127,10 +123,22 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="coreutils",
     ),
     Dependency(
+        "caffeinate",
+        "Hold an idle-sleep assertion while the backend has work on macOS.",
+        optional_on=frozenset({"local"}),
+        feature="The keep-awake idle hold.",
+        fallback="The Mac can idle-sleep during work; each pass logs the failure and retries.",
+        platforms=MACOS,
+        path="/usr/bin/caffeinate",
+    ),
+    Dependency(
         "cat",
-        "Read files from a run folder.",
+        "Read files from a run folder, and the keep-awake heartbeat on macOS.",
         required_on=frozenset({"remote"}),
-        platforms=LINUX,
+        optional_on=frozenset({"local"}),
+        feature="Lid-closed mode on macOS.",
+        fallback="Lid-closed mode is released or never turns on, with the reason; the idle hold continues.",
+        platforms=MACOS,
         apt="coreutils",
     ),
     Dependency(
@@ -139,6 +147,15 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         required_on=frozenset({"server_install"}),
         platforms=LINUX,
         apt="curl",
+    ),
+    Dependency(
+        "date",
+        "Timestamp the keep-awake watchdog's heartbeat checks.",
+        optional_on=frozenset({"local"}),
+        feature="Lid-closed mode on macOS.",
+        fallback="Lid-closed mode is released or never turns on, with the reason; the idle hold continues.",
+        platforms=MACOS,
+        path="/bin/date",
     ),
     Dependency(
         "env",
@@ -183,6 +200,15 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="coreutils",
     ),
     Dependency(
+        "ioreg",
+        "Read the lid state before the keep-awake watchdog sleeps the Mac.",
+        optional_on=frozenset({"local"}),
+        feature="Knowing the lid is open when lid-closed mode is released.",
+        fallback="The release sleeps the Mac even with its lid open.",
+        platforms=MACOS,
+        path="/usr/sbin/ioreg",
+    ),
+    Dependency(
         "launchctl",
         "Own helper jobs, the browser, and keep-awake through launchd on macOS.",
         optional_on=frozenset({"local"}),
@@ -217,6 +243,15 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="coreutils",
     ),
     Dependency(
+        "mv",
+        "Publish the keep-awake watchdog's state files atomically.",
+        optional_on=frozenset({"local"}),
+        feature="Lid-closed mode on macOS.",
+        fallback="Lid-closed mode is released or never turns on, with the reason; the idle hold continues.",
+        platforms=MACOS,
+        path="/bin/mv",
+    ),
+    Dependency(
         "node",
         "Run the pinned Playwright CLI for the agent browser.",
         optional_on=frozenset({"local", "remote"}),
@@ -241,6 +276,15 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         platforms=MACOS,
     ),
     Dependency(
+        "pmset",
+        "Set, clear, and read the kernel sleep flag, and sleep the Mac on release.",
+        optional_on=frozenset({"local"}),
+        feature="Lid-closed mode on macOS.",
+        fallback="Lid-closed mode is released or never turns on, with the reason; the idle hold continues.",
+        platforms=MACOS,
+        path="/usr/bin/pmset",
+    ),
+    Dependency(
         "printenv",
         "Read the execution account's home folder before resolving hidden paths.",
         optional_on=frozenset({"remote"}),
@@ -251,10 +295,10 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "ps",
-        "Confirm process identity when stopping a run.",
+        "Confirm process identity when stopping a run or keeping a Mac awake.",
         optional_on=frozenset({"local", "remote"}),
-        feature="Confirming that a stopped run's provider process ended.",
-        fallback="The stop is reported as unconfirmed.",
+        feature="Confirming that a stopped run's provider process ended, and lid-closed mode on macOS.",
+        fallback="The stop is reported as unconfirmed, and lid-closed mode is released.",
         apt="procps",
     ),
     Dependency(
@@ -309,11 +353,11 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "sleep",
-        "Keep the compute probe job alive while it is observed.",
-        optional_on=frozenset({"remote"}),
-        feature="The compute route probe.",
-        fallback="The compute route reports unavailable, with the reason.",
-        platforms=LINUX,
+        "Keep the compute probe job alive, and pace the keep-awake watchdog on macOS.",
+        optional_on=frozenset({"local", "remote"}),
+        feature="The compute route probe on a remote machine, and lid-closed mode on macOS.",
+        fallback="That feature is unavailable or released, with the reason.",
+        platforms=MACOS,
         apt="coreutils",
     ),
     Dependency(
@@ -356,9 +400,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "sudo",
-        "Prove the service account has no sudo authority at install.",
+        "Prove the service account has no sudo authority at install, and run the one "
+        "allowed pmset command for keep-awake on macOS.",
         required_on=frozenset({"server_install"}),
-        platforms=LINUX,
+        optional_on=frozenset({"local"}),
+        feature="Lid-closed mode on macOS.",
+        fallback="Lid-closed mode is released or never turns on, with the reason; the idle hold continues.",
+        platforms=MACOS,
         apt="sudo",
     ),
     Dependency(
@@ -436,13 +484,13 @@ if len(BY_NAME) != len(DEPENDENCIES):
 
 def required(role: Role, platform: Platform) -> tuple[Dependency, ...]:
     """Programs a machine in this role on this platform must have."""
-    if role != "local" and platform != "linux":
-        return ()
-    return tuple(d for d in DEPENDENCIES if role in d.required_on and platform in d.platforms)
+    return tuple(d for d in DEPENDENCIES if role in d.required_on and _runs(d, role, platform))
 
 
 def optional(role: Role, platform: Platform) -> tuple[Dependency, ...]:
     """Programs that only gate one feature for this role on this platform."""
-    if role != "local" and platform != "linux":
-        return ()
-    return tuple(d for d in DEPENDENCIES if role in d.optional_on and platform in d.platforms)
+    return tuple(d for d in DEPENDENCIES if role in d.optional_on and _runs(d, role, platform))
+
+
+def _runs(dependency: Dependency, role: Role, platform: Platform) -> bool:
+    return platform in dependency.platforms if role == "local" else platform == "linux"

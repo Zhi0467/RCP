@@ -9,7 +9,7 @@ import pytest
 
 from rcp import dependency_check
 from rcp.core.models import DependencyStatus, MissingProgram
-from rcp.dependencies import BY_NAME
+from rcp.dependencies import BY_NAME, optional, required
 from rcp.dependency_check import DependencyChecker, parse_output, script_check, staged_check_script
 
 NONCE = "n0nce"
@@ -19,6 +19,15 @@ def _answer(*body: str, nonce: str = NONCE) -> str:
     return "\n".join(
         [f"rcp-dependency-check begin {nonce}", *body, f"rcp-dependency-check end {nonce}", ""]
     )
+
+
+def test_platforms_bound_only_the_local_role() -> None:
+    sudo = BY_NAME["sudo"]
+    assert sudo.platforms == frozenset({"darwin"})
+    assert sudo in required("server_install", "linux")
+    assert sudo in optional("local", "darwin")
+    assert sudo not in optional("local", "linux")
+    assert sudo not in required("server_install", "darwin")
 
 
 # Layer 1: the shipped script under the machine's real `sh`.
@@ -107,6 +116,12 @@ def test_missing_optional_program_alone_is_ready_and_listed() -> None:
         BY_NAME["bwrap"].feature,
         BY_NAME["bwrap"].fallback,
     )
+
+
+def test_missing_uname_is_reported_rather_than_an_unreadable_system() -> None:
+    status = parse_output(_answer("os ", "missing uname"), NONCE, ["remote"])
+    assert status.outcome == "missing"
+    assert [p.name for p in status.missing] == ["uname"]
 
 
 def test_login_shell_answer_maps_to_its_program() -> None:
