@@ -1510,7 +1510,13 @@ export function ExecutionView({
             (member) => childExperimentsByParent.get(member.episode_id) ?? [],
           )}
           onOpenExperimentEntry={(entry) => {
-            onSelectExperiment(entry.node.id);
+            // Restore selection even when reopening this exact URL emits no hashchange.
+            onSelectExperiment(entry.node.id, {
+              experiment_id: entry.node.id,
+              episode_id: entry.episode.episode_id,
+              graph_target: entry.graph_target,
+              parent_episode_id: entry.parent_episode_id,
+            });
             onOpenExperimentEntry(entry);
           }}
           onInspectTask={onInspectTask}

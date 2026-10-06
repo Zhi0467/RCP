@@ -50,14 +50,17 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
       `http://127.0.0.1:${address.port}/tests/fixtures/indexedExperimentReopen.html${exactHash}`,
     );
 
-    await page.getByText("Selected child transcript").waitFor();
+    await page.locator('[data-selected-episode="child-experiment-episode"]').waitFor();
     await page
       .getByRole("button", { name: "Collapse Experiment loop episode Reproduce the baseline" })
       .click();
     await page
       .getByRole("button", { name: "Expand Experiment loop episode Reproduce the baseline" })
       .waitFor();
-    assert.equal(await page.getByText("Selected child transcript").count(), 0);
+    assert.equal(
+      await page.locator('[data-selected-episode="child-experiment-episode"]').count(),
+      0,
+    );
 
     await page.evaluate(() => {
       window.hashChangesAfterCollapse = 0;
@@ -69,20 +72,23 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
       .getByRole("button", { name: "Expand Experiment loop episode Reproduce the baseline" })
       .click();
 
-    await page.getByText("Selected child transcript").waitFor();
+    await page.locator('[data-selected-episode="child-experiment-episode"]').waitFor();
     assert.equal(await page.evaluate(() => window.location.hash), exactHash);
     assert.equal(await page.evaluate(() => window.hashChangesAfterCollapse), 0);
 
     await page
       .getByRole("button", { name: "Collapse Experiment loop episode Reproduce the baseline" })
       .click();
-    assert.equal(await page.getByText("Selected child transcript").count(), 0);
+    assert.equal(
+      await page.locator('[data-selected-episode="child-experiment-episode"]').count(),
+      0,
+    );
 
     const timeline = page.getByRole("region", { name: "Episode timeline" });
     await timeline.getByRole("button", { name: "Reproduce the baseline", exact: true }).click();
     await timeline.getByRole("button", { name: "Open Experiment" }).click();
 
-    await page.getByText("Selected child transcript").waitFor();
+    await page.locator('[data-selected-episode="child-experiment-episode"]').waitFor();
     assert.equal(await page.evaluate(() => window.location.hash), exactHash);
     assert.equal(await page.evaluate(() => window.hashChangesAfterCollapse), 0);
   } finally {
