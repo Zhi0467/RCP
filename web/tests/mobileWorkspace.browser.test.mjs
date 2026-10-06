@@ -100,6 +100,25 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       assert.deepEqual(await page.evaluate(sidewaysScrollers), []);
       assert.deepEqual(definition, { display: "block", position: "fixed" });
       await term.blur();
+      // A term in a node-detail header, whose desktop rule anchors below the
+      // header, uses the same on-screen strip.
+      const headerDefinition = await page.evaluate(() => {
+        const drawer = document.createElement("aside");
+        drawer.className = "detail-drawer node-detail-drawer";
+        drawer.innerHTML =
+          '<header><div><h2><dfn class="glossary-definition" tabindex="0" data-definition="A long definition for a header term.">schema</dfn></h2></div></header>';
+        document.body.append(drawer);
+        const dfn = drawer.querySelector("dfn");
+        dfn.focus();
+        const style = getComputedStyle(dfn, "::after");
+        const result = {
+          position: style.position,
+          onScreen: parseFloat(style.top) >= 0 && parseFloat(style.bottom) >= 0,
+        };
+        drawer.remove();
+        return result;
+      });
+      assert.deepEqual(headerDefinition, { position: "fixed", onScreen: true });
 
       // Touch selection settles without a pointer release: the offer follows the
       // selection itself, and nothing opens until the reader chooses Comment. The

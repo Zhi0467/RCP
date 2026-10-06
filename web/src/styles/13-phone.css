@@ -49,12 +49,16 @@
      fixed, it never widens the scroller the term sits in. */
   .glossary-definition::after,
   .glossary-definition:hover::after,
-  .glossary-definition:focus::after {
+  .glossary-definition:focus::after,
+  .node-detail-drawer > header .glossary-definition::after,
+  .node-detail-drawer > header .glossary-definition:hover::after,
+  .node-detail-drawer > header .glossary-definition:focus::after {
     bottom: calc(16px + env(safe-area-inset-bottom));
     left: 16px;
     max-width: none;
     position: fixed;
     right: 16px;
+    top: auto;
     transform: none;
     width: auto;
   }
