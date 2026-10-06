@@ -188,6 +188,45 @@ Behavior tests, one per rule:
 - The card's check returns the OS, the missing names, and the install command.
 - `doctor` reports a missing required program.
 
+### Code structure
+
+Settled with the human, mirroring hidden-read readiness:
+
+- `src/rcp/dependencies.py`: data only. The `Dependency` entries and pure
+  lookups such as "required for a remote Linux machine". No I/O.
+- `src/rcp/staged_dependency_check.sh`: a fixed POSIX script shipped in the
+  package and read through `importlib.resources`. Program names arrive as
+  arguments (`sh -s -- python3 rsync …`); the script text never varies.
+- `src/rcp/dependency_check.py`: the behavior. Local check, remote check with
+  retry, output parsing, and the cache.
+- `DependencyStatus` in `src/rcp/core/models.py` and its type in
+  `web/src/core/types.ts`, edited serially as shared contracts.
+
+`install`, `doctor`, admission, and the machine card API all call the check
+module; none keeps its own list.
+
+**Ownership and concurrency.** The app creates one `DependencyChecker` at
+startup and passes it to admission and the machine API, as it does
+`AgentLauncher`; tests inject a fake runner and a fake clock. Background tasks
+run on their own threads, so it uses threading locks: one lock per machine
+route and account, so concurrent runs on one machine share one check and
+different machines never wait on each other. Admission waits for at most one
+check, under a total deadline in `limits.py`. The project POST routes are
+synchronous handlers, so a check runs in the server's thread pool, never on
+the event loop.
+
+**Tests**, each layer proving what the others cannot, with no wording
+assertions and a test diff no larger than the source diff:
+
+1. The real script under real `sh` (dash on Linux CI) with PATH pointed at a
+   temporary folder of fake programs.
+2. The parser as a pure function, table-driven over recorded outputs.
+3. The checker with a fake runner and clock: retry then success, exhausted
+   attempts, single-flight across two threads, recheck before refusing.
+4. Admission, doctor, and the card row on behavior and data.
+
+The real SSH hop stays a manual close criterion.
+
 ### Agent rule
 
 AGENTS.md gains one line under cross-cutting rules: a new external program is
