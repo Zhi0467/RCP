@@ -1287,15 +1287,22 @@ their start time is secondary metadata and is never prefixed with a redundant
 `Episode` label. A completed type group names the mode once rather than repeating
 it on every card. Collapsed cards contain no muted recommendation or report
 commentary. Each Experiment's backend control selects its one current
-`episode_id`, so repeated work produces one card for that Experiment node. Older
-episodes remain reachable through project History instead of appearing as
-sibling Runs cards.
+`episode_id` per graph target, so repeated work on one target produces one card,
+and live loops on different targets produce one card each in the same flat
+list. Selection, Stop, and busy state follow the exact episode. Older episodes
+remain reachable through project History instead of appearing as sibling Runs
+cards.
 
-Each episode card and space run row shows a compact initials avatar and the
-recorded human authorizer's name, labelled **Started by**. This is historical
-episode attribution, including the inherited authorizer on an Auto-research
-child; it does not claim live presence or enumerate contributors. Missing legacy
-attribution never borrows the current viewer's identity.
+Each Experiment card shows its graph target (a branch badge off main), its
+checkout (shared or worktree), and who started it: a member, or Auto-research
+with a link to the parent run. Each episode card and space run row also shows a
+compact initials avatar and the recorded human authorizer's name. This is
+historical episode attribution, including the inherited authorizer on an
+Auto-research child; it does not claim live presence or enumerate contributors.
+Missing legacy attribution never borrows the current viewer's identity. The
+Run dialog lists live loops on that node on other targets as information; it
+never disables Run. A chat's watcher strip lists only watchers that chat armed
+and watchers of its own target's loop.
 
 Every unarchived episode offers **Archive**; an archived episode offers
 **Unarchive**. The [episode archive](conversations-episodes-and-watchers.md#episode-archive)
