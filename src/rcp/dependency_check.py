@@ -173,9 +173,15 @@ class DependencyChecker:
     def launch_refusal(self, host: str) -> str | None:
         """A reason to refuse an agent run on `host`, or None to admit it.
 
-        A cached ``missing`` or ``unsupported`` is rechecked before it refuses;
-        one checked during this call is not checked twice. ``not_checked`` admits.
+        A remote run also needs the local machine's programs (ssh, rsync, …), so
+        the local machine is checked first. A cached ``missing`` or
+        ``unsupported`` is rechecked before it refuses; one checked during this
+        call is not checked twice. ``not_checked`` admits.
         """
+        machines = ("", host) if host else ("",)
+        return next(filter(None, map(self._refusal, machines)), None)
+
+    def _refusal(self, host: str) -> str | None:
         result, fresh = self._lookup(host, refresh=False)
         if result.outcome in {"ready", "not_checked"}:
             return None

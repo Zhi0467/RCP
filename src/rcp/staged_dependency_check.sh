@@ -25,7 +25,8 @@ for name in "$@"; do
   case $name in
     /*) [ -x "$name" ] || printf 'missing %s\n' "$name" ;;
     login:*)
-      bash -lic 'command -v "$1"' rcp "${name#login:}" </dev/null >/dev/null 2>&1 \
+      # Registry names are fixed literals, so the name goes in the command itself.
+      bash -lic "command -v ${name#login:}" </dev/null >/dev/null 2>&1 \
         || printf 'missing %s\n' "$name" ;;
     *) command -v "$name" >/dev/null 2>&1 || printf 'missing %s\n' "$name" ;;
   esac

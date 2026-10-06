@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp import dependency_check
+from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.dependencies import BY_NAME
 from rcp.dependency_check import DependencyChecker, parse_output, script_check, staged_check_script
 
@@ -169,9 +170,18 @@ def _no_ssh_control_directory(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _checker(runner: FakeRunner, now: list[float] | None = None) -> DependencyChecker:
+def _local(outcome: str = "ready") -> DependencyStatus:
+    missing = (MissingProgram(name="ssh", purpose="x", required=True),) * (outcome == "missing")
+    return DependencyStatus(outcome=outcome, missing=missing, checked_at="t")  # type: ignore[arg-type]
+
+
+def _checker(
+    runner: FakeRunner, now: list[float] | None = None, local: str = "ready"
+) -> DependencyChecker:
     clock = now or [0.0]
-    return DependencyChecker(runner=runner, clock=lambda: clock[0], sleep=lambda _s: None)
+    return DependencyChecker(
+        runner=runner, clock=lambda: clock[0], sleep=lambda _s: None, local=lambda _r: _local(local)
+    )
 
 
 def test_dropped_connection_is_retried_to_a_definite_answer() -> None:
@@ -249,6 +259,12 @@ def test_cached_ready_answers_within_its_lifetime() -> None:
     now[0] = dependency_check.DEPENDENCY_CHECK_TTL_SECONDS * 2
     checker.status("gpu")
     assert runner.calls == 2
+
+
+def test_remote_run_is_refused_when_the_local_machine_lacks_a_program() -> None:
+    runner = FakeRunner(READY)
+    assert _checker(runner, local="missing").launch_refusal("gpu") is not None
+    assert runner.calls == 0
 
 
 def test_cold_refusal_checks_once() -> None:
