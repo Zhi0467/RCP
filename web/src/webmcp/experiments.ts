@@ -34,14 +34,19 @@ function exactExperiment(project: ProjectSnapshot, input: Record<string, unknown
   return node;
 }
 
-function experimentTasks(tasks: AgentTask[], experimentId: string): AgentTask[] {
+function experimentTasks(
+  tasks: AgentTask[],
+  experimentId: string,
+  target: GraphTargetRef,
+): AgentTask[] {
   return tasks
     .filter(
       (task) =>
-        task.request.control_node_id === experimentId ||
-        (task.kind === "node_chat" &&
-          task.request.node_id === experimentId &&
-          task.request.patch_kind === "experiment_loop"),
+        sameGraphTarget(task.graph_target, target) &&
+        (task.request.control_node_id === experimentId ||
+          (task.kind === "node_chat" &&
+            task.request.node_id === experimentId &&
+            task.request.patch_kind === "experiment_loop")),
     )
     .sort(
       (left, right) =>
@@ -133,7 +138,7 @@ export function inspectProjectExperiment(
   const node = exactExperiment(project, input);
   const control = project.experiment_control[node.id];
   if (!control) throw new Error(`Experiment ${node.id} has no current control projection.`);
-  const relatedTasks = experimentTasks(tasks, node.id);
+  const relatedTasks = experimentTasks(tasks, node.id, project.graph_target);
   const relatedWatchers = experimentWatchers(watchers, node.id, project.graph_target);
   const startRefusal = pageStartRefusal(taskStartPending, mutationsDisabled, startRequiresSync);
   return {

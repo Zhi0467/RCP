@@ -1157,6 +1157,7 @@ export function ChatsWorkspace({
           <NodeChat
             key={selected.chatId}
             project={project}
+            graphTarget={graphTarget}
             node={selected.nodeId ? (nodes[selected.nodeId] ?? null) : null}
             nodes={nodes}
             glossaryIndex={glossaryIndex}

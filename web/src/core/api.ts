@@ -22,6 +22,8 @@ import type {
   EpisodeTimelineText,
   EpisodeMode,
   ExperimentLoopIndexEntry,
+  ExperimentStartResponse,
+  AgentTaskRequest,
   IdentityResponse,
   MachineDirectoryListing,
   MachineDirectoryRequest,
@@ -479,6 +481,17 @@ export function loadEpisodes(
   if (episodeId) query.set("episode_id", episodeId);
   const suffix = query.size ? `?${query}` : "";
   return api<Episode[]>(`${apiBase}/episodes${suffix}`);
+}
+
+/** Start on the supplied graph route and retain the server's overlap receipt. */
+export function startExperimentRun(
+  path: string,
+  request: AgentTaskRequest,
+): Promise<ExperimentStartResponse> {
+  return api<ExperimentStartResponse>(path, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
 }
 
 export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {

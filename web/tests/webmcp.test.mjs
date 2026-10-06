@@ -2494,7 +2494,7 @@ test("download-only files and PDFs are listed but never sent to the visual opene
   }
 });
 
-test("Experiment inspection filters same-node watchers by the open graph target", () => {
+test("Experiment inspection filters same-node tasks and watchers by the open graph target", () => {
   const project = projectFixture();
   const targets = [
     { kind: "main" },
@@ -2507,10 +2507,31 @@ test("Experiment inspection filters same-node watchers by the open graph target"
     continuation: { control_node_id: "exp-1" },
     created_at: "2026-10-06T10:00:00Z",
   }));
+  const tasks = targets.flatMap((target, index) => [
+    {
+      status_message: "",
+      operation_id: `control-${index}`,
+      graph_target: target,
+      request: { control_node_id: "exp-1" },
+      created_at: "2026-10-06T10:00:00Z",
+    },
+    {
+      status_message: "",
+      operation_id: `chat-${index}`,
+      graph_target: target,
+      kind: "node_chat",
+      request: { node_id: "exp-1", patch_kind: "experiment_loop" },
+      created_at: "2026-10-06T10:00:00Z",
+    },
+  ]);
   targets.forEach((target, index) => {
-    const result = inspectProjectExperiment({ ...project, graph_target: target }, [], watchers, {
+    const result = inspectProjectExperiment({ ...project, graph_target: target }, tasks, watchers, {
       experiment_id: "exp-1",
     });
+    assert.deepEqual(
+      result.tasks.map((row) => row.task_id),
+      [`control-${index}`, `chat-${index}`],
+    );
     assert.deepEqual(
       result.watchers.map((row) => row.watcher_id),
       [`watch-${index}`],

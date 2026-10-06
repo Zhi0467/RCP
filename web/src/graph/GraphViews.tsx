@@ -1,3 +1,4 @@
+import { ExperimentLoopMetadata } from "../experiments/ExperimentLoopMetadata";
 import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
 import { ProviderLoginNotice } from "../projects/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "./branchGraph";
@@ -1546,6 +1547,7 @@ export function ExecutionView({
                   {formatEpisodeTimestamp(episode.created_at)}
                 </time>
                 <ExperimentBranchBadge target={episode.graph_target} />
+                <ExperimentLoopMetadata projectId={episode.project_id} metadata={episode} />
                 <EpisodeAuthor author={episode.authorized_by} />
               </span>
             </span>
@@ -1731,12 +1733,16 @@ function ExperimentEpisodeCard({
             const next = !expanded;
             setExpanded(next);
             if (next) {
-              onSelectExperiment(run.node.id, {
-                experiment_id: run.node.id,
-                episode_id: episode.episode_id,
-                graph_target: episode.graph_target,
-                parent_episode_id: indexedEntry?.parent_episode_id ?? null,
-              });
+              if (episode.graph_target.kind === "main") {
+                onSelectExperiment(run.node.id);
+              } else {
+                onSelectExperiment(run.node.id, {
+                  experiment_id: run.node.id,
+                  episode_id: episode.episode_id,
+                  graph_target: episode.graph_target,
+                  parent_episode_id: indexedEntry?.parent_episode_id ?? null,
+                });
+              }
             } else if (selected) {
               onSelectExperiment(null);
             }
@@ -1751,6 +1757,7 @@ function ExperimentEpisodeCard({
             <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
             <ExperimentBranchBadge target={episode.graph_target} />
+            <ExperimentLoopMetadata projectId={episode.project_id} metadata={episode} />
             <EpisodeAuthor author={episode.authorized_by} />
           </span>
         </span>

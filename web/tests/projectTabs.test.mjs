@@ -95,8 +95,10 @@ test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
     experimentId: null,
   });
   const reexpanded = reduceExperimentSelection(collapsed, {
-    kind: "select",
+    kind: "route",
     experimentId: route.experiment_id,
+    experimentRoute: route,
+    autoResearchEpisodeId: null,
   });
 
   assert.deepEqual(reexpanded.selectedExperimentRoute, route);
@@ -111,6 +113,26 @@ test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
     ).experimentRoute,
     route,
   );
+});
+
+test("plain node selection clears a same-node branch pin", () => {
+  const branchRoute = {
+    experiment_id: "experiment/shared",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: branchRoute.experiment_id,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: branchRoute,
+      selectedAutoResearchEpisodeId: null,
+    },
+    { kind: "select", experimentId: branchRoute.experiment_id },
+  );
+  assert.equal(selected.selectedExperimentRoute, null);
+  assert.equal(selected.selectedExperimentRunId, branchRoute.experiment_id);
 });
 
 test("selecting another card replaces an old exact branch Experiment URL", () => {

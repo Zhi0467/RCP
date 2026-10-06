@@ -1159,6 +1159,7 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
     const html = renderToStaticMarkup(
       React.createElement(NodeChat, {
         project,
+        graphTarget: { kind: "branch", branch_id: "parent-episode" },
         node: branchNode,
         nodes: { [branchNode.id]: branchNode },
         runScope: ["repo"],
@@ -1225,6 +1226,47 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
     assert.doesNotMatch(html, /chat-new-session|scope-trigger/);
     assert.match(html, /<button type="button" disabled="">/);
   });
+});
+
+test("a branch chat uses its explicit target before it has any tasks", () => {
+  const graphTarget = { kind: "branch", branch_id: "branch-one" };
+  const experiment = node("experiment/shared");
+  const props = {
+    project: {
+      id: "project-one",
+      name: "Project One",
+      graph_target: { kind: "main" },
+      agent_profiles: { node_chat: { provider: "codex", run_on: "local", permissions: {} } },
+      provider_readiness: {},
+      repositories: [],
+      project_truth_scope: [],
+    },
+    graphTarget,
+    node: experiment,
+    runScope: [],
+    tasks: [],
+    chatId: "branch-chat",
+    readOnly: true,
+    presentation: "workspace",
+  };
+  const watcher = {
+    watcher_id: "branch-watcher",
+    graph_target: graphTarget,
+    chat_id: "loop-chat",
+    status: "active",
+    continuation: { control_node_id: experiment.id, patch_kind: "experiment_loop" },
+  };
+  const ownTarget = renderToStaticMarkup(
+    React.createElement(NodeChat, { ...props, watchers: [watcher] }),
+  );
+  const otherTarget = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      ...props,
+      watchers: [{ ...watcher, graph_target: { kind: "main" } }],
+    }),
+  );
+  assert.equal((ownTarget.match(/class="chat-watcher-count/g) ?? []).length, 1);
+  assert.equal((otherTarget.match(/class="chat-watcher-count/g) ?? []).length, 0);
 });
 
 test("partial branch identity fails closed instead of selecting the same id on main", () => {
@@ -1336,6 +1378,13 @@ test("selecting either target keeps both same-node cards and scopes busy state t
       ending: null,
       wrapup_state: "pending",
       can_stop: true,
+      started_by:
+        target.kind === "main"
+          ? { kind: "human", human: { display_name: "member-one" }, auto_research_episode_id: null }
+          : { kind: "auto_research", human: null, auto_research_episode_id: "parent-run" },
+      auto_research_parent_episode_id: target.kind === "main" ? null : "parent-run",
+      checkout: { kind: target.kind === "main" ? "shared" : "worktree" },
+      authorized_by: { display_name: "authorizer-one" },
     });
     const runControl = control(
       { episode_id: id, episode: runEpisode, active: true, can_stop: true, can_start: false },
@@ -1401,6 +1450,16 @@ test("selecting either target keeps both same-node cards and scopes busy state t
     );
     for (const [card, id] of cards) {
       const isSelected = id === selected.episode.episode_id;
+      assert.match(card, /class="episode-author"/);
+      assert.match(
+        card,
+        new RegExp(`data-starter-kind="${id === "main-episode" ? "human" : "auto_research"}"`),
+      );
+      assert.match(
+        card,
+        new RegExp(`data-checkout-kind="${id === "main-episode" ? "shared" : "worktree"}"`),
+      );
+
       assert.equal(card.includes("experiment-branch-badge"), id === "branch-episode");
       assert.equal(card.includes("data-selected-episode="), isSelected);
       if (isSelected) {

@@ -1,3 +1,5 @@
+import { canStartExperiment } from "./experiments/experimentStart";
+import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
@@ -79,6 +81,7 @@ import {
   continueEpisode,
   sendEpisodeMessage,
   startEpisode,
+  startExperimentRun,
   stopEpisode,
 } from "./core/api";
 import {
@@ -214,6 +217,8 @@ import type {
   MergeDiffPath,
   MergeEpisodeBody,
   ExperimentControlState,
+  ExperimentStartResponse,
+  LoopStatusRow,
   GraphRevisionSnapshot,
   GraphNode,
   GraphState,
@@ -583,6 +588,10 @@ export default function App() {
     expandUpdate,
     dismissUpdate,
   } = useDesktopShell(desktop);
+  const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
+    projectId: string;
+    loops: LoopStatusRow[];
+  } | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
@@ -3049,15 +3058,7 @@ export default function App() {
   );
 
   const checkExperimentWatcher = async (watcherId: string) => {
-    if (
-      !apiBase ||
-      watcherCheckId ||
-      taskStarting ||
-      taskActionId ||
-      experimentStopIds.size > 0 ||
-      mutationsDisabled
-    )
-      return;
+    if (!apiBase || watcherCheckId || taskStarting || taskActionId || mutationsDisabled) return;
     const finishWatcherCheck = beginWatcherCheck(watcherId);
     try {
       const checked = await api<WatcherRecord>(
@@ -3081,7 +3082,7 @@ export default function App() {
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
-    ): Promise<AgentTask> => {
+    ): Promise<ExperimentStartResponse> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
       }
@@ -3090,7 +3091,7 @@ export default function App() {
         throw new Error("Sync staged graph changes before starting an episode.");
       }
       const control = project.experiment_control?.[node.id];
-      if (!control?.can_start) {
+      if (!canStartExperiment(control, graphTarget, isolation?.graph_isolation)) {
         throw new Error(control?.reasons.join(" ") ?? "This experiment is not ready to run.");
       }
       const finishTaskStart = beginTaskStart();
@@ -3100,23 +3101,20 @@ export default function App() {
         // would file the episode inside a human's finished Work chat.
         const chatId = window.crypto.randomUUID();
         const profile = project.agent_profiles.node_chat;
-        const task = await api<AgentTask>(
+        const task = await startExperimentRun(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
           {
-            method: "POST",
-            body: JSON.stringify({
-              provider: profile.provider,
-              model: profile.model || null,
-              reasoning: profile.reasoning,
-              run_on: profile.run_on,
-              run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
-              chat_id: chatId,
-              // Omitted unless the human reauthorized an explicit count; the
-              // backend then keeps the Experiment node's own limit.
-              ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
-              ...isolation,
-              browser_requested: browserRequested,
-            }),
+            provider: profile.provider,
+            model: profile.model || null,
+            reasoning: profile.reasoning,
+            run_on: profile.run_on,
+            run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
+            chat_id: chatId,
+            // Omitted unless the human reauthorized an explicit count; the
+            // backend then keeps the Experiment node's own limit.
+            ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
+            ...isolation,
+            browser_requested: browserRequested,
           },
         );
         const expectedTarget = experimentStartTarget(
@@ -3128,6 +3126,7 @@ export default function App() {
           throw new Error("Experiment start returned a different graph target.");
         if (!isActiveGraph(project.id)) return task;
         recordStartedTask(task);
+        setExperimentStartOverlap({ projectId: project.id, loops: task.live_elsewhere });
         setNotice(null);
         setFloatingChat(null);
         showExperiment(node.id);
@@ -4244,6 +4243,7 @@ export default function App() {
         <NodeChat
           key={selectedExperimentChatId}
           project={project}
+          graphTarget={selectedExperimentChatTarget}
           node={selectedExperimentNode}
           nodes={selectedExperimentNodes}
           glossaryIndex={glossaryIndex}
@@ -4841,6 +4841,13 @@ export default function App() {
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
           {view === "execution" && (
             <div className="combined-runs-view">
+              {experimentStartOverlap?.projectId === project.id && (
+                <ExperimentStartOverlap
+                  projectId={project.id}
+                  loops={experimentStartOverlap.loops}
+                  onDismiss={() => setExperimentStartOverlap(null)}
+                />
+              )}
               <ExecutionView
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
@@ -5127,6 +5134,7 @@ export default function App() {
             <NodeChat
               key={floatingChat.chatId}
               project={project}
+              graphTarget={project.graph_target}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
               nodes={presentedGraph.nodes}
               glossaryIndex={glossaryIndex}
