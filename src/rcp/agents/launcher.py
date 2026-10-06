@@ -1383,6 +1383,11 @@ class AgentLauncher:
             environment = self.process_environment(provider, host).with_variables(
                 turn.environment, remote=bool(host)
             )
+            shell_timeout = self._shell_timeout(provider, host)
+            if shell_timeout:
+                environment = environment.with_variables(
+                    profile.shell_timeout_environment(int(shell_timeout) * 60), remote=bool(host)
+                )
             if git_access is not None:
                 if git_access.host != host:
                     raise ValueError("Git access does not match the provider execution host.")
@@ -1906,6 +1911,18 @@ class AgentLauncher:
             return ""
         card = self.accounts.store.space_machine_for(host)
         return card.provider_autocompact.get(provider, "") if card is not None else ""
+
+    def _shell_timeout(self, provider: str, host: str) -> str:
+        if self.accounts is None:
+            return ""
+        card = self.accounts.store.space_machine_for(host)
+        return card.provider_shell_timeout.get(provider, "") if card is not None else ""
+
+    def shell_timeout_seconds(self, provider: str, host: str = "") -> int:
+        """Resolve this execution machine's shell timeout, including an unset default."""
+
+        value = self._shell_timeout(provider, host)
+        return int(value) * 60 if value else profile_for(provider).shell_timeout_default_seconds
 
     def _discover_remote_provider(
         self, provider: str, host: str

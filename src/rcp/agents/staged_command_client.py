@@ -148,6 +148,7 @@ def _parser():
     authority.add_argument("--broker")
     parser.add_argument("--mailbox-id")
     parser.add_argument("--timeout", required=True, type=float)
+    parser.add_argument("--ask-wait", type=float)
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
 
@@ -532,7 +533,15 @@ def _run(namespace):
             raise ClientInputError("mailbox id is supplied by the credential")
         mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
-    deadline = time.monotonic() + namespace.timeout
+    wait = (
+        namespace.ask_wait
+        if verb == "ask" and namespace.ask_wait is not None
+        else namespace.timeout
+    )
+    if not math.isfinite(wait) or wait <= 0:
+        raise ClientInputError("ask wait must be a positive finite number")
+    namespace.timeout = wait
+    deadline = time.monotonic() + wait
     while True:
         response = _run_round(
             namespace,

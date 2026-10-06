@@ -1593,6 +1593,7 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         task_id="first",
         turn_id="first:work",
         timeout_seconds=2,
+        ask_wait_seconds=1770,
     )
     remote = _FilesystemRemoteMailboxStage("test-host", workspace)
     staged = dataclasses.replace(staged, mailbox=RunStageMailbox(workspace, remote))
@@ -1667,6 +1668,11 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
     if restart:
         owner.suspend()
         assert not staged.credential.expired
+        saved = secrets.load("first")
+        assert saved["ask_wait_seconds"] == 1770
+        if not validation_enabled:
+            del saved["ask_wait_seconds"]
+            secrets.save("first", saved)
         execution = AgentTaskExecution(
             "first",
             store,
@@ -1692,6 +1698,9 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         monkeypatch.setattr("rcp.runs.remote_finalization.plan_remote_reconciliation", plan)
         assert manager._reconcile_remote_results()
         owner = manager._detached_mailboxes["first"]
+        assert owner.staged.ask_wait_seconds == (
+            1770 if validation_enabled else runtime.COMMAND_CLIENT_WAIT_SECONDS
+        )
         assert owner.staged.credential.token == token
         assert owner.staged.credential.mailbox_id == staged.credential.mailbox_id
     request_id = uuid.uuid4().hex
@@ -1737,6 +1746,7 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
 async def test_graph_only_repair_never_acquires_browser(
     manifest, tmp_path, monkeypatch, repair_module
 ):
+    from rcp.providers import profile_for
     from rcp.providers.browser_grant import BrowserGrant
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1782,6 +1792,9 @@ async def test_graph_only_repair_never_acquires_browser(
     grants = []
 
     class Launcher:
+        def shell_timeout_seconds(self, provider, host=""):
+            return profile_for(provider).shell_timeout_default_seconds
+
         async def stream(self, *args, browser_grant=None, **kwargs):
             grants.append(browser_grant)
             raise RuntimeError("repair provider reached")

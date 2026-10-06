@@ -86,6 +86,7 @@ class AppStoreBase:
         (40, "browser_grants_v1"),
         (41, "machine_hidden_folders_v1"),
         (42, "machine_provider_autocompact_v1"),
+        (43, "machine_provider_shell_timeout_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -788,6 +789,12 @@ class AppStoreBase:
             version=42,
             name="machine_provider_autocompact_v1",
             migration=self._migrate_machine_provider_autocompact,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=43,
+            name="machine_provider_shell_timeout_v1",
+            migration=self._migrate_machine_provider_shell_timeout,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2504,6 +2511,15 @@ class AppStoreBase:
     def _migrate_machine_provider_autocompact(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(
             connection, "space_machines", "provider_autocompact_json", "TEXT NOT NULL DEFAULT '{}'"
+        )
+
+    @classmethod
+    def _migrate_machine_provider_shell_timeout(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection,
+            "space_machines",
+            "provider_shell_timeout_json",
+            "TEXT NOT NULL DEFAULT '{}'",
         )
 
     @staticmethod

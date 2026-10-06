@@ -42,6 +42,24 @@ Capabilities are fixed in code:
 The manifest and selected skills may choose execution details or add guidance;
 they cannot widen or narrow these capabilities.
 
+## Machine provider settings
+
+The launcher reads each execution machine card at every launch. Its
+`provider_autocompact` values use each provider's validation and CLI rendering;
+unset values preserve CLI defaults. `provider_shell_timeout` accepts whole
+minutes from 2 through 120, with a default of 2 minutes for Claude, OpenCode and
+Codex. Only configured values add environment: Claude receives
+`BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`; OpenCode receives
+`OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`, all in milliseconds. Codex needs
+no shell timeout environment variable. Local and SSH launches use the same
+resolved machine settings.
+
+For live ask calls, the staged client and prompt use that shell timeout minus
+30 seconds as the ask hold (90 seconds by default). The ask hold has its
+own client argument and can exceed the ordinary command deadline; other verbs
+keep their deadline. Remote mailbox checkpoints retain the hold, and older
+checkpoints resume with the default.
+
 ## Member terminals
 
 `terminals/` owns member shell sessions separately from provider tasks. A session

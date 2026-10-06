@@ -44,6 +44,11 @@ const gpu = {
   writable_paths: ["/data/cache", "/scratch"],
   hidden_folders: ["/private"],
   provider_autocompact: { claude: "auto" },
+  provider_shell_timeout: { claude: "30" },
+  shell_timeout_providers: [
+    { provider: "claude", label: "Claude", default_minutes: 2 },
+    { provider: "codex", label: "Codex", default_minutes: 2 },
+  ],
   autocompact_providers: [{ provider: "claude", label: "Claude", hint: "auto or tokens" }],
   projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
   in_use: true,
@@ -171,6 +176,14 @@ test("both Settings levels render the same machine card with one remove per path
     assert.match(html, new RegExp(`data-machine-writable-paths="${level}"`));
     assert.equal(html.match(/data-machine-action="remove-path"/g)?.length, 2);
     assert.equal(html.match(/data-machine-action="add-path"/g)?.length, 1);
+    assert.equal(html.match(/data-provider-setting="provider_autocompact"/g)?.length, 1);
+    const timeoutInputs = html.match(
+      /<input[^>]*data-provider-setting="provider_shell_timeout"[^>]*>/g,
+    );
+    assert.equal(timeoutInputs?.length, 2);
+    assert.match(timeoutInputs[0], /value="30"/);
+    assert.match(timeoutInputs[1], /placeholder="2"/);
+    assert.match(timeoutInputs[1], /value=""/);
   }
   // The card's own name is renamed on the space page; a project names its machines itself.
   assert.equal(render("space").match(/data-machine-action="rename"/g)?.length, 1);

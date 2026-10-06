@@ -242,10 +242,10 @@ def ask_contract(how_it_returns: str) -> str:
 {how_it_returns}"""
 
 
-def live_ask_contract() -> str:
+def live_ask_contract(wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS) -> str:
     """Chat and Experiment calls share the same wait and park behavior."""
     return ask_contract(
-        f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. After pending, repeat "
+        f"- A call waits up to {wait_seconds} seconds. After pending, repeat "
         "the exact call to keep waiting when a quick answer is likely; otherwise end this "
         "turn and the question parks. The human answers on its question card; composer "
         "messages are separate steering."

@@ -55,6 +55,7 @@ from rcp.history import ReplayHalted
 from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+    ask_hold_seconds,
 )
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
@@ -342,7 +343,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             )
         )
     if "ask" in handler.allowed_verbs:
-        instructions.append(live_ask_contract())
+        instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
     if "apply" in handler.allowed_verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
@@ -1607,6 +1608,7 @@ async def _settle_patch_deliverable(
                 ),
                 turn_id=f"{staged.token}:work-patch-correction:{correction_rounds}",
                 timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+                ask_wait_seconds=launch_turn.patch_inputs.validator_staged.ask_wait_seconds,
             )
             correction_lifecycle = _start_work_validator_mailbox(
                 launch_turn.service,
@@ -1796,6 +1798,7 @@ async def _settle_watch_deliverable(
             task_id=turn.execution.operation_id,
             turn_id=f"{staged.token}:watch-correction:{correction_rounds}",
             timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            ask_wait_seconds=launch_turn.patch_inputs.validator_staged.ask_wait_seconds,
             authority="broker",
             episode_id=turn.request.control_episode_id,
         )
@@ -2355,6 +2358,13 @@ async def _stream_work_run(
 
     try:
         resolved = _resolve_work_execution(service, request, execution)
+        assert resolved.request.provider is not None
+        resolved = replace(
+            resolved,
+            ask_wait_seconds=ask_hold_seconds(
+                launcher.shell_timeout_seconds(resolved.request.provider, resolved.execution_host)
+            ),
+        )
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
@@ -2579,6 +2589,9 @@ async def _stream_work_graph_repair(
             turn_id=f"{token}:work-graph-repair",
             broker=True,
             episode_id=request.control_episode_id,
+            ask_wait_seconds=ask_hold_seconds(
+                launcher.shell_timeout_seconds(profile.provider, execution_host)
+            ),
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,

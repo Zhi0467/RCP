@@ -1,36 +1,43 @@
 import { useState } from "react";
 import { updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
-import type { AutocompactProvider, SpaceMachine } from "../core/types";
+import type { SpaceMachine } from "../core/types";
 
-/** One provider's auto-compact setting for every turn on this machine, read at each launch. */
-export function MachineAutocompactRow({
+/** One provider setting for every turn on this machine, read at each launch. */
+export function MachineProviderSettingRow({
   record,
-  option,
+  provider,
+  setting,
+  label,
+  placeholder,
+  hint,
   writesDisabled,
   onRecordChange,
 }: {
   record: SpaceMachine;
-  option: AutocompactProvider;
+  provider: string;
+  setting: "provider_autocompact" | "provider_shell_timeout";
+  label: string;
+  placeholder: string;
+  hint: string;
   writesDisabled: boolean;
   onRecordChange: (machine: SpaceMachine) => void;
 }) {
-  const saved = record.provider_autocompact[option.provider] ?? "";
+  const saved = record[setting][provider] ?? "";
   const [draft, setDraft] = useState(saved);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const value = draft.trim();
-  const label = `${option.label} auto-compact`;
   async function save() {
     setSaving(true);
     setError(null);
     try {
       const updated = await updateSpaceMachine(record.machine_id, {
         // The server merges per provider, so concurrent row saves never erase each other.
-        provider_autocompact: { [option.provider]: value },
+        [setting]: { [provider]: value },
       });
       onRecordChange(updated);
-      setDraft(updated.provider_autocompact[option.provider] ?? "");
+      setDraft(updated[setting][provider] ?? "");
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -44,9 +51,11 @@ export function MachineAutocompactRow({
         <input
           value={draft}
           maxLength={16}
-          placeholder="CLI default"
+          placeholder={placeholder}
+          title={hint}
           aria-label={label}
-          data-autocompact-provider={option.provider}
+          data-provider-setting={setting}
+          data-provider={provider}
           disabled={writesDisabled || saving}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -64,7 +73,6 @@ export function MachineAutocompactRow({
           Save
         </button>
       </div>
-      <p>Accepts {option.hint}. Empty keeps the CLI's default.</p>
       {error && <p role="alert">{error}</p>}
     </section>
   );

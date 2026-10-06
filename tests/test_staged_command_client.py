@@ -2006,7 +2006,8 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         task_id="work-task",
         turn_id="work-turn",
         authority="broker",
-        timeout_seconds=5,
+        timeout_seconds=1,
+        ask_wait_seconds=5,
     )
     seen = []
 
@@ -2067,8 +2068,9 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
     }
 
 
+@pytest.mark.parametrize("hold", [1, 1770])
 @pytest.mark.parametrize("state", ["pending", "answered"])
-def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, state) -> None:
+def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, state, hold) -> None:
     from rcp.agents import staged_command_client as client
 
     elapsed = [0.0]
@@ -2077,12 +2079,12 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
     monkeypatch.setattr(
         client.time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds)
     )
-    monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0.4)
+    monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", hold * 0.4)
 
     def round_trip(_namespace, _broker, content, request_id, deadline):
         request = json.loads(content)
         requests.append((request, deadline))
-        elapsed[0] += 0.1
+        elapsed[0] += hold * 0.1
         return client._handle_response(
             {
                 "request_id": request_id,
@@ -2110,6 +2112,8 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
             "a" * 32,
             "--timeout",
             "1",
+            "--ask-wait",
+            str(hold),
             "--workspace",
             str(tmp_path),
             "ask",
@@ -2120,13 +2124,13 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
         ]
     )
     assert code == 0
-    assert elapsed[0] <= 1
+    assert elapsed[0] <= hold
     if state == "pending":
-        assert elapsed[0] == 1
+        assert elapsed[0] == hold
     assert len(requests) == (3 if state == "answered" else 2)
     if state == "answered":
         assert requests[2][0]["receipt_token"] == "f" * 64
-    assert {deadline for _, deadline in requests} == {1}
+    assert {deadline for _, deadline in requests} == {hold}
     assert len({request["request_id"] for request, _ in requests}) == len(requests)
     assert json.loads(capsys.readouterr().out)["result"] == {
         "state": state,

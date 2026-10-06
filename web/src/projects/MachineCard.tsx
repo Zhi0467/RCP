@@ -4,7 +4,7 @@ import { createSpaceMachine, updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { createPathEditor, type WritablePathEdit } from "./spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../core/types";
-import { MachineAutocompactRow } from "./MachineAutocompactRow";
+import { MachineProviderSettingRow } from "./MachineProviderSettingRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { MachineDependenciesRow } from "./MachineDependenciesRow";
 import { PathPicker } from "./PathPicker";
@@ -98,10 +98,27 @@ export function MachineCard({
         />
       )}
       {record?.autocompact_providers.map((option) => (
-        <MachineAutocompactRow
+        <MachineProviderSettingRow
           key={`${record.machine_id}:${option.provider}:autocompact`}
           record={record}
-          option={option}
+          provider={option.provider}
+          setting="provider_autocompact"
+          label={`${option.label} auto-compact`}
+          placeholder="CLI default"
+          hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
+          writesDisabled={writesDisabled}
+          onRecordChange={onRecordChange}
+        />
+      ))}
+      {record?.shell_timeout_providers.map((option) => (
+        <MachineProviderSettingRow
+          key={`${record.machine_id}:${option.provider}:shell-timeout`}
+          record={record}
+          provider={option.provider}
+          setting="provider_shell_timeout"
+          label={`${option.label} Shell timeout (minutes)`}
+          placeholder={String(option.default_minutes)}
+          hint="Whole minutes, 2–120. Empty keeps the provider default."
           writesDisabled={writesDisabled}
           onRecordChange={onRecordChange}
         />

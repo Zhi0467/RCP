@@ -149,6 +149,9 @@ class OpenCodeProfile(ProviderProfile):
     # The version whose edit-rule matching RCP's rules were probed against.
     work_like_minimum_version = (1, 18, 30)
 
+    def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
+        return {"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": str(seconds * 1000)}
+
     def validate_readiness_version(
         self,
         actual: str | None,

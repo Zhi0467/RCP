@@ -201,6 +201,7 @@ async def stage_work_turn(
                 turn_id=f"{token}:work",
                 broker=True,
                 episode_id=request.control_episode_id,
+                ask_wait_seconds=resolved.ask_wait_seconds,
             )
         )
         handoff = prepare_handoffs(layout)

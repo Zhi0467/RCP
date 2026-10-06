@@ -450,6 +450,13 @@ class ClaudeProfile(ProviderProfile):
             return str(int(value))
         raise ValueError(f"Claude auto-compact must be {self.autocompact_hint}")
 
+    def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
+        milliseconds = str(seconds * 1000)
+        return {
+            "BASH_DEFAULT_TIMEOUT_MS": milliseconds,
+            "BASH_MAX_TIMEOUT_MS": milliseconds,
+        }
+
     def command(
         self,
         prompt: str,

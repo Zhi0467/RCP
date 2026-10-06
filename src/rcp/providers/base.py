@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from rcp.limits import (
+    SHELL_TIMEOUT_DEFAULT_SECONDS,
+    SHELL_TIMEOUT_MAX_MINUTES,
+    SHELL_TIMEOUT_MIN_MINUTES,
+)
 from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
@@ -356,6 +361,25 @@ class ProviderProfile:
     #: What a machine card's auto-compact field accepts for this CLI; None
     #: when RCP passes this CLI no auto-compact setting.
     autocompact_hint: str | None = None
+    shell_timeout_default_seconds: int = SHELL_TIMEOUT_DEFAULT_SECONDS
+
+    def canonical_shell_timeout(self, value: str) -> str:
+        """Canonical whole minutes for the machine card's shell timeout."""
+
+        value = value.strip()
+        if value.isascii() and value.isdecimal():
+            minutes = int(value)
+            if SHELL_TIMEOUT_MIN_MINUTES <= minutes <= SHELL_TIMEOUT_MAX_MINUTES:
+                return str(minutes)
+        raise ValueError(
+            f"Shell timeout must be whole minutes, {SHELL_TIMEOUT_MIN_MINUTES}"
+            f" to {SHELL_TIMEOUT_MAX_MINUTES}"
+        )
+
+    def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
+        """Provider-native shell limits; some providers only use RCP's ask hold."""
+
+        return {}
 
     def canonical_autocompact(self, value: str) -> str:
         """The machine card's auto-compact value as this CLI takes it, or ValueError."""

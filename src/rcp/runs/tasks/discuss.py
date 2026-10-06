@@ -32,6 +32,7 @@ from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
+from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS, ask_hold_seconds
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
@@ -116,10 +117,12 @@ from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 
-def _discuss_execution_instructions(handler: WorkCommandHandler) -> str:
+def _discuss_execution_instructions(
+    handler: WorkCommandHandler, wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
+) -> str:
     if "ask" not in handler.allowed_verbs:
         return ""
-    return "Only `ask` is available in Discuss.\n" + live_ask_contract()
+    return "Only `ask` is available in Discuss.\n" + live_ask_contract(wait_seconds)
 
 
 def resume_discuss_command_mailbox(
@@ -807,6 +810,9 @@ async def stream_discuss_run(
                     task_id=execution.operation_id if execution is not None else token,
                     turn_id=f"{token}:discuss",
                     broker=eligible,
+                    ask_wait_seconds=ask_hold_seconds(
+                        launcher.shell_timeout_seconds(profile.provider, execution_host)
+                    ),
                 )
                 retained = {**(retained or {}), "patch": patch_inputs.prompt_values()}
             instructions = ""
@@ -820,7 +826,9 @@ async def stream_discuss_run(
                     command_handler=handler,
                     resume_context={"ask_allowed": "ask" in handler.allowed_verbs},
                 )
-                instructions = _discuss_execution_instructions(handler)
+                instructions = _discuss_execution_instructions(
+                    handler, patch_inputs.validator_staged.ask_wait_seconds
+                )
                 discuss_values["patch"] = patch_inputs.prompt_values()
                 assert execution is not None and request.chat_id is not None
                 task = execution.store.agent_task(execution.operation_id)

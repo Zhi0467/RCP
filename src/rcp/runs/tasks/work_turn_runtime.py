@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import subprocess
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -27,6 +28,7 @@ from rcp.config import AgentSurface
 from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import HiddenReadScope, Patch
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
@@ -238,6 +240,7 @@ class ResolvedWorkExecution:
     execution_machine_alias: str
     execution_host: str
     provider_binary: str | None
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -619,6 +622,7 @@ def start_work_validator_mailbox(
         "credential_path": staged.credential_path,
         "gate": asdict(staged.invocation_gate) if staged.invocation_gate else None,
         "timeout_seconds": staged.timeout_seconds,
+        "ask_wait_seconds": staged.ask_wait_seconds,
         "context": resume_context,
     }
 
@@ -702,6 +706,9 @@ def restore_work_validator_mailbox(
     mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote)
     if str(mailbox.workspace) != saved["workspace"]:
         raise ValueError("The saved command mailbox workspace changed")
+    ask_wait = saved.get("ask_wait_seconds", COMMAND_CLIENT_WAIT_SECONDS)
+    if not isinstance(ask_wait, (int, float)) or not math.isfinite(ask_wait) or ask_wait <= 0:
+        raise ValueError("The saved command mailbox has an invalid ask wait")
     staged = StagedCommandMailbox(
         mailbox=mailbox,
         credential=CommandTurnCredential(identity, saved["mailbox_id"], saved["token"]),
@@ -709,6 +716,7 @@ def restore_work_validator_mailbox(
         credential_path=saved["credential_path"],
         invocation_gate=ProviderInvocationGate(**saved["gate"]) if saved["gate"] else None,
         timeout_seconds=saved["timeout_seconds"],
+        ask_wait_seconds=ask_wait,
     )
     budget = None
     if validate is not None:
