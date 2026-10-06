@@ -182,6 +182,7 @@ class StagedCommandMailbox:
     invocation_gate: ProviderInvocationGate | None = None
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS
     ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
+    shell_timeout_seconds: int | None = None
 
     @property
     def workspace(self) -> str:
@@ -238,6 +239,7 @@ def stage_command_mailbox(
     authority: Literal["validate_only", "broker"] | None = None,
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS,
     ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
+    shell_timeout_seconds: int | None = None,
 ) -> StagedCommandMailbox:
     """Clear a reusable stage and issue either broker or validate-only authority."""
 
@@ -310,6 +312,7 @@ def stage_command_mailbox(
         invocation_gate=invocation_gate,
         timeout_seconds=timeout_seconds,
         ask_wait_seconds=ask_wait_seconds,
+        shell_timeout_seconds=shell_timeout_seconds,
     )
 
 

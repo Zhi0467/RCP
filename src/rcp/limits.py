@@ -613,6 +613,9 @@ AGENT_POLL_SECONDS = 0.05
 AGENT_WORKER_DRAIN_POLL_SECONDS = 1.0
 
 
-def ask_hold_seconds(shell_timeout_seconds: int) -> int:
+def ask_hold_seconds(shell_timeout_seconds: int | None) -> int:
     """Leave time for the client to return before the provider kills its shell."""
-    return shell_timeout_seconds - COMMAND_CLIENT_WAIT_MARGIN_SECONDS
+    timeout = (
+        SHELL_TIMEOUT_DEFAULT_SECONDS if shell_timeout_seconds is None else shell_timeout_seconds
+    )
+    return timeout - COMMAND_CLIENT_WAIT_MARGIN_SECONDS

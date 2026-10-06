@@ -160,6 +160,7 @@ def _stage_chat_patch_inputs(
     broker: bool = False,
     episode_id: str | None = None,
     ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
+    shell_timeout_seconds: int | None = None,
 ) -> _ChatPatchInputs:
     """Stage stable schema plus one turn-scoped unified validator credential."""
 
@@ -182,6 +183,7 @@ def _stage_chat_patch_inputs(
         authority="broker" if broker else "validate_only",
         episode_id=episode_id,
         ask_wait_seconds=ask_wait_seconds,
+        shell_timeout_seconds=shell_timeout_seconds,
     )
     validator_command = validator_staged.client_command("validate", patch_path)
     return _ChatPatchInputs(

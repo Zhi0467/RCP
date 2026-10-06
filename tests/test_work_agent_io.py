@@ -1594,6 +1594,7 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         turn_id="first:work",
         timeout_seconds=2,
         ask_wait_seconds=1770,
+        shell_timeout_seconds=1800,
     )
     remote = _FilesystemRemoteMailboxStage("test-host", workspace)
     staged = dataclasses.replace(staged, mailbox=RunStageMailbox(workspace, remote))
@@ -1670,8 +1671,10 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         assert not staged.credential.expired
         saved = secrets.load("first")
         assert saved["ask_wait_seconds"] == 1770
+        assert saved["shell_timeout_seconds"] == 1800
         if not validation_enabled:
             del saved["ask_wait_seconds"]
+            del saved["shell_timeout_seconds"]
             secrets.save("first", saved)
         execution = AgentTaskExecution(
             "first",
@@ -1701,6 +1704,7 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         assert owner.staged.ask_wait_seconds == (
             1770 if validation_enabled else runtime.COMMAND_CLIENT_WAIT_SECONDS
         )
+        assert owner.staged.shell_timeout_seconds == (1800 if validation_enabled else None)
         assert owner.staged.credential.token == token
         assert owner.staged.credential.mailbox_id == staged.credential.mailbox_id
     request_id = uuid.uuid4().hex

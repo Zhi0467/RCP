@@ -146,6 +146,8 @@ class ProviderTurnRequest:
     #: The execution machine's auto-compact setting for this provider, already
     #: canonical; empty keeps the CLI's own default.
     autocompact: str = ""
+    # None preserves the provider default; staging has already resolved the card.
+    shell_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -375,11 +377,6 @@ class ProviderProfile:
             f"Shell timeout must be whole minutes, {SHELL_TIMEOUT_MIN_MINUTES}"
             f" to {SHELL_TIMEOUT_MAX_MINUTES}"
         )
-
-    def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
-        """Provider-native shell limits; some providers only use RCP's ask hold."""
-
-        return {}
 
     def canonical_autocompact(self, value: str) -> str:
         """The machine card's auto-compact value as this CLI takes it, or ValueError."""

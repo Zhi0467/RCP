@@ -73,6 +73,19 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             )
             request = replace(request, legacy_command=command)
         super().__init__(profile, request)
+        if request.shell_timeout_seconds is not None:
+            seconds = request.shell_timeout_seconds
+            index = self.command.index("--settings") + 1 if "--settings" in self.command else None
+            settings = json.loads(self.command[index]) if index is not None else {}
+            settings.setdefault("env", {}).update(
+                BASH_DEFAULT_TIMEOUT_MS=str(seconds * 1000),
+                BASH_MAX_TIMEOUT_MS=str(max(seconds, _BASH_MAX_TIMEOUT_DEFAULT_SECONDS) * 1000),
+            )
+            rendered = json.dumps(settings, separators=(",", ":"))
+            if index is None:
+                self.command.extend(["--settings", rendered])
+            else:
+                self.command[index] = rendered
         if (
             request.capability == "discuss"
             and request.invocation_gate is not None
@@ -451,13 +464,6 @@ class ClaudeProfile(ProviderProfile):
         if value.isdigit() and _AUTOCOMPACT_MIN_TOKENS <= int(value) <= _AUTOCOMPACT_MAX_TOKENS:
             return str(int(value))
         raise ValueError(f"Claude auto-compact must be {self.autocompact_hint}")
-
-    def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
-        # Raise the default; never lower the per-command maximum below Claude's own.
-        return {
-            "BASH_DEFAULT_TIMEOUT_MS": str(seconds * 1000),
-            "BASH_MAX_TIMEOUT_MS": str(max(seconds, _BASH_MAX_TIMEOUT_DEFAULT_SECONDS) * 1000),
-        }
 
     def command(
         self,
