@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Experiment loops are per graph branch](handoff-2026-10-06-per-branch-experiment-loops.md)
+  — design settled 2026-10-06; implementation in progress on its PR.
 - [Graph dreaming: nightly consolidation and operational lessons](handoff-2026-10-03-graph-dreaming.md)
   — design settled 2026-10-02; implementation in progress on its PR.
 - [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
