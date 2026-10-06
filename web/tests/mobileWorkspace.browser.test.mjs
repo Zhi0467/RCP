@@ -89,6 +89,18 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
         "python extract_probes.py --input outputs/model_stats/main_rollout_stats_rebuild_20260424_lcb_first_dp4 --output outputs/model_stats/main_rollout_stats_rebuild_20260424_lcb_first_dp4_probes",
         "Copy takes the block's exact text, without a trailing newline",
       );
+      // A glossary definition opened from a term near the right edge stays on
+      // screen and does not widen the transcript.
+      const term = page.locator(".chat-annotatable-answer .glossary-definition").first();
+      await term.focus();
+      const definition = await term.evaluate((element) => {
+        const style = getComputedStyle(element, "::after");
+        return { display: style.display, position: style.position };
+      });
+      assert.deepEqual(await page.evaluate(sidewaysScrollers), []);
+      assert.deepEqual(definition, { display: "block", position: "fixed" });
+      await term.blur();
+
       // Touch selection settles without a pointer release: the offer follows the
       // selection itself, and nothing opens until the reader chooses Comment. The
       // selection ends inside a link: showing the offer re-renders the answer,

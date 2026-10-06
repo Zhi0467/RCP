@@ -109,7 +109,13 @@ function Fixture() {
         nodes={{}}
         experimentEntries={[]}
         graphTarget={{ kind: "main" }}
-        glossaryIndex={buildGlossaryIndex({})}
+        glossaryIndex={buildGlossaryIndex({
+          schema: {
+            term: "schema",
+            plain_definition:
+              "The agreed layout of every trajectory bundle: compressed rollouts, token ids, labels, and the JSON metadata that names them.",
+          },
+        } as never)}
         runScope={[]}
         tasks={[]}
         watchers={[]}

@@ -44,12 +44,19 @@
     min-height: 44px;
   }
 
-  /* A centred tooltip on a term near either edge would leave the screen. */
+  /* A tooltip anchored to the term leaves the screen for a term near either
+     edge, so on a phone the definition is a strip across the bottom instead;
+     fixed, it never widens the scroller the term sits in. */
   .glossary-definition::after,
   .glossary-definition:hover::after,
   .glossary-definition:focus::after {
-    left: 0;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    left: 16px;
+    max-width: none;
+    position: fixed;
+    right: 16px;
     transform: none;
+    width: auto;
   }
 
   /* A 120px label column leaves too little room for a field value. */
