@@ -64,6 +64,7 @@ from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
 from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
+    QuestionSnapshot,
     question_snapshot,
     question_snapshot_part,
     record_question_snapshot_sent,
@@ -227,6 +228,9 @@ class _StoredDiscussFinalizationContext(BaseModel):
     workspace: str
     artifact_scope_id: str
     artifact_directory: str
+    # The question snapshot the prompt carried, so a recovered turn retires its dismissals.
+    question_snapshot_text: str | None = None
+    question_dismissal_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -247,6 +251,7 @@ class DiscussFinalizationContext:
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
     outcome: _ProviderOutcome
+    question_snapshot: QuestionSnapshot | None = None
 
 
 def _record_discuss_finalization_context(context: DiscussFinalizationContext) -> None:
@@ -264,6 +269,12 @@ def _record_discuss_finalization_context(context: DiscussFinalizationContext) ->
         workspace=str(context.workspace),
         artifact_scope_id=context.artifact_scope_id,
         artifact_directory=str(context.artifact_directory),
+        question_snapshot_text=context.question_snapshot.text
+        if context.question_snapshot is not None
+        else None,
+        question_dismissal_ids=context.question_snapshot.dismissal_ids
+        if context.question_snapshot is not None
+        else (),
     )
     content = stored.model_dump_json()
     execution.store.record_agent_task_contract(
@@ -315,6 +326,11 @@ def _load_discuss_finalization_context(
             owner="Discuss",
         ),
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
+        question_snapshot=QuestionSnapshot(
+            text=stored.question_snapshot_text, dismissal_ids=stored.question_dismissal_ids
+        )
+        if stored.question_snapshot_text is not None
+        else None,
     )
 
 
@@ -433,6 +449,11 @@ def _settle_discuss_outcome(
         outcome.failed = True
         yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
         return
+    if context.question_snapshot is not None and execution is not None:
+        # Completion proves the prompt, and the dismissals in it, reached the provider.
+        record_question_snapshot_sent(
+            execution.store, context.question_snapshot, operation_id=execution.operation_id
+        )
     if not answer:
         yield _sse(
             AgentEvent(event="error", text=f"{request.provider} finished without answering.")
@@ -1036,6 +1057,7 @@ async def stream_discuss_run(
             artifact_scope_id=artifact_scope_id,
             artifact_directory=artifact_directory,
             outcome=outcome,
+            question_snapshot=snapshot,
         )
         if execution_host:
             # Only a remote turn can outlive this connection, and only a turn
@@ -1083,10 +1105,6 @@ async def stream_discuss_run(
             return
         if mailbox_lifecycle is not None:
             await mailbox_lifecycle.close()
-        if snapshot is not None and outcome.completed and execution is not None:
-            record_question_snapshot_sent(
-                execution.store, snapshot, operation_id=execution.operation_id
-            )
         for frame in _settle_discuss_outcome(settlement):
             yield frame
     except BaseException as exc:

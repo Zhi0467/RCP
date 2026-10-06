@@ -91,10 +91,12 @@ export function ChatBrowserControl({
     if (!requested || !machine) return;
     let cancelled = false;
     // A failed check shows nothing new here; the turn itself reports an unavailable
-    // browser. Counting it keeps the re-check timer running past a transient failure.
+    // browser. Counting failures keeps re-checking until one check succeeds.
     void loadProjectMachineBrowser(apiBase, machine).then(
       (readiness) => {
-        if (!cancelled) setChecked({ machine, readiness });
+        if (cancelled) return;
+        setChecked({ machine, readiness });
+        setFailedChecks(0);
       },
       () => {
         if (!cancelled) setFailedChecks((count) => count + 1);
@@ -108,13 +110,14 @@ export function ChatBrowserControl({
     requested && checked?.machine === machine && checked.readiness.status !== "ready"
       ? browserReason(checked.readiness.status)
       : null;
-  // Installing from Settings finishes elsewhere; keep checking while the warning shows.
+  // Installing from Settings finishes elsewhere; keep checking while the warning shows
+  // or while the last check failed, including a first check that never succeeded.
   const warningCode = warning?.code ?? null;
   useEffect(() => {
-    if (!warningCode) return;
+    if (!requested || (!warningCode && failedChecks === 0)) return;
     const timer = window.setTimeout(() => setRecheck((count) => count + 1), RECHECK_MS);
     return () => window.clearTimeout(timer);
-  }, [warningCode, checked, failedChecks]);
+  }, [requested, warningCode, checked, failedChecks]);
   async function change(value?: boolean) {
     setPending(true);
     setError(null);

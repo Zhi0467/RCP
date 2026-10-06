@@ -8,6 +8,7 @@ message continue the same provider conversation, and the turn's artifacts.
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import cast
 
@@ -15,8 +16,12 @@ import pytest
 
 import rcp.runs.tasks.discuss as discuss_module
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
+from rcp.runs.question_snapshots import question_snapshot
 from rcp.runs.shared import _sse
 from rcp.service import RunRequest
+from rcp.storage import QuestionOrigin
 
 from .helpers import create_named_app
 from .test_api import ScriptedLauncher, _chat_task_execution
@@ -148,9 +153,40 @@ async def test_a_recorded_discuss_pass_answers_its_original_chat(tmp_path) -> No
     service, request, execution = _discuss_app(tmp_path)
     execution.checkpoint_stage("", str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
-    discuss_module._record_discuss_finalization_context(
-        _retained_context(service, request, execution)
+    task = execution.store.agent_task(execution.operation_id)
+    assert task is not None and request.chat_id is not None
+    dismissed = execution.store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="chat",
+            project_id=task.project_id,
+            owner_id=request.chat_id,
+            operation_id="earlier-turn",
+            provider="codex",
+            native_session_id="session",
+            stage_root="/stage",
+            capability="discuss",
+            graph_target=GraphTargetRef(),
+        ),
+        key="dismissed",
+        question="Still?",
     )
+    execution.store.dismiss_question(
+        dismissed.question_id,
+        resolved_by=AuthorizedHuman(
+            space_id=str(uuid.uuid4()), user_id=str(uuid.uuid4()), display_name="Human"
+        ),
+    )
+    snapshot = question_snapshot(
+        execution.store,
+        project_id=task.project_id,
+        owner_kind="chat",
+        owner_ids=[request.chat_id],
+        operation_id=execution.operation_id,
+    )
+    assert snapshot.dismissal_ids == (dismissed.question_id,)
+    retained = _retained_context(service, request, execution)
+    retained.question_snapshot = snapshot
+    discuss_module._record_discuss_finalization_context(retained)
     launcher = ScriptedLauncher([{}], message="must not launch")
 
     frames = [
@@ -180,6 +216,8 @@ async def test_a_recorded_discuss_pass_answers_its_original_chat(tmp_path) -> No
         "recorded-thread"
     ]
     assert launcher.calls == 0
+    # The recovered prompt carried the dismissal, so later turns stop repeating it.
+    assert execution.store.get_question(dismissed.question_id).dismissal_delivered_at is not None
 
 
 @pytest.mark.asyncio
