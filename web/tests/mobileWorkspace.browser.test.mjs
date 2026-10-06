@@ -81,7 +81,16 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
         "Long agent tokens wrap; only code blocks and tables scroll sideways",
       );
       const copy = page.getByRole("button", { name: "Copy code block" });
-      assert.ok((await copy.boundingBox()).width >= 44, "The copy control is a phone tap target");
+      // A small control whose invisible margin still makes a 44px tap target.
+      const copyBox = await copy.boundingBox();
+      assert.ok(copyBox.width <= 32, `The copy control stays small, got ${copyBox.width}px`);
+      assert.ok(
+        await page.evaluate(({ x, y, width }) => {
+          const outside = document.elementFromPoint(x - 6, y + 2);
+          return outside?.closest(".markdown-code-copy") !== null && width + 16 >= 44;
+        }, copyBox),
+        "A tap just outside the visible control still reaches it",
+      );
       await copy.click();
       await page.getByRole("button", { name: "Copied" }).waitFor();
       assert.equal(

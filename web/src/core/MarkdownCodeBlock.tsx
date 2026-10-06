@@ -35,7 +35,7 @@ export function MarkdownCodeBlock({ node: _node, ...props }: MarkdownPreProps) {
           );
         }}
       >
-        {status === "copied" ? <Check size={14} /> : <Copy size={14} />}
+        {status === "copied" ? <Check size={13} /> : <Copy size={13} />}
       </button>
     </div>
   );

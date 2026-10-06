@@ -37,8 +37,11 @@
   .icon-button {
     min-width: 44px;
   }
+  /* A 28px control with an 8px invisible margin: a 44px tap target that
+     does not take a 44px strip from every code block. */
   .markdown-code-block {
-    --markdown-code-copy-size: 44px;
+    --markdown-code-copy-size: 28px;
+    --markdown-code-copy-reach: 8px;
   }
   .chat-selection-comment {
     min-height: 44px;
