@@ -90,17 +90,27 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
         "Copy takes the block's exact text, without a trailing newline",
       );
       // Touch selection settles without a pointer release: the offer follows the
-      // selection itself, and nothing opens until the reader chooses Comment.
-      await page.evaluate(() => {
-        const text = document.querySelector(".chat-annotatable-answer p").firstChild;
+      // selection itself, and nothing opens until the reader chooses Comment. The
+      // selection ends inside a link: showing the offer re-renders the answer,
+      // and the reader's selection must survive that unchanged to stay copyable.
+      const selected = await page.evaluate(() => {
+        const paragraph = document.querySelector(".chat-annotatable-answer p");
         const range = document.createRange();
-        range.setStart(text, 4);
-        range.setEnd(text, 20);
+        range.setStart(paragraph.firstChild, 4);
+        range.setEnd(paragraph.querySelector("a").firstChild, 20);
         window.getSelection().removeAllRanges();
         window.getSelection().addRange(range);
+        return window.getSelection().toString();
       });
       const offer = page.getByRole("button", { name: "Comment", exact: true });
       await offer.waitFor();
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      assert.equal(await page.evaluate(() => window.getSelection().toString()), selected);
+      assert.equal(
+        await page.evaluate(() => document.activeElement.matches("input, textarea")),
+        false,
+        "No field takes focus, which would clear a touch selection",
+      );
       const offerBox = await offer.boundingBox();
       assert.ok(offerBox.height >= 44, "Comment is a phone tap target");
       assert.ok(offerBox.x >= 0 && offerBox.x + offerBox.width <= viewport.width);
