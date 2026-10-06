@@ -3,6 +3,7 @@ import { ProviderLoginNotice } from "../projects/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "./branchGraph";
 import { graphSessionKey } from "../core/graphTarget";
 import { ChangedFields, ChangeHistory } from "./BranchChangeDetail";
+import { ExperimentBranchBadge } from "../experiments/ExperimentBranchBadge";
 import { EpisodeMergePanel } from "../experiments/EpisodeMergePanel";
 import { type BranchDiffWord, branchDiffWord, mergeDiffMarks } from "./mergePanel";
 import type {
@@ -104,9 +105,8 @@ import {
 } from "../experiments/EpisodeRunControls";
 import { runsEpisodeCards } from "../experiments/campaigns";
 import {
-  graphTargetsEqual,
+  currentExperimentEntries,
   mainExperimentRouteMatchesControl,
-  projectExperimentExecution,
   type ExperimentRouteIdentity,
 } from "../experiments/experimentBoardModel";
 import type {
@@ -1133,7 +1133,7 @@ interface ExecutionProps {
   focusExperimentId: string | null;
   selectedAutoResearchEpisodeId?: string | null;
   runBusy: boolean;
-  stopBusyId: string | null;
+  stopBusyIds: ReadonlySet<string>;
   watcherCheckBusyId: string | null;
   taskActionId: string | null;
   selectedExperimentConversation?: ReactNode;
@@ -1153,7 +1153,7 @@ interface ExecutionProps {
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSwitchEpisodeProvider: (task: AgentTask) => void;
-  onSelectExperiment: (nodeId: string | null) => void;
+  onSelectExperiment: (nodeId: string | null, route?: ExperimentRouteIdentity) => void;
   onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onDetailFocused: () => void;
   onOpenHistory: () => void;
@@ -1162,7 +1162,7 @@ interface ExecutionProps {
     invocationCeiling?: number,
     browserRequested?: boolean,
   ) => void;
-  onStopExperiment: (nodeId: string, episodeId?: string) => void;
+  onStopExperiment: (nodeId: string, episodeId: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
   onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
@@ -1184,7 +1184,7 @@ export function ExecutionView({
   focusExperimentId,
   selectedAutoResearchEpisodeId = null,
   runBusy,
-  stopBusyId,
+  stopBusyIds,
   watcherCheckBusyId,
   taskActionId,
   selectedExperimentConversation,
@@ -1220,21 +1220,23 @@ export function ExecutionView({
   const selectedDetailRef = useRef<HTMLDivElement>(null);
   const selectedAutoResearchDetailRef = useRef<HTMLDivElement>(null);
   const focusedAutoResearchEpisodeId = useRef<string | null>(null);
-  const exactProjection = projectExperimentExecution(
-    Object.values(graph.nodes),
-    tasks,
-    watchers,
-    experimentControl,
-    exactExperimentRoute,
-    exactExperimentEntry,
-  );
+  const staleMainRoute =
+    exactExperimentRoute?.graph_target.kind === "main" &&
+    !mainExperimentRouteMatchesControl(
+      exactExperimentRoute,
+      experimentControl[exactExperimentRoute.experiment_id],
+    )
+      ? exactExperimentRoute
+      : null;
   const experimentNodes = new Map(
-    exactProjection.nodes.filter((node) => isControlNode(node.type)).map((node) => [node.id, node]),
+    Object.values(graph.nodes)
+      .filter((node) => isControlNode(node.type))
+      .map((node) => [node.id, node]),
   );
   const experimentRuns = new Map<string, ExperimentRun>();
   const experimentEntriesByEpisode = new Map<string, ExperimentLoopIndexEntry>();
   experimentNodes.forEach((node, nodeId) => {
-    const control = exactProjection.experimentControl[nodeId];
+    const control = experimentControl[nodeId];
     if (!control) {
       throw new Error(`Experiment ${nodeId} is missing its backend control projection.`);
     }
@@ -1242,32 +1244,13 @@ export function ExecutionView({
       throw new Error(`Experiment ${nodeId} has an incomplete backend control projection.`);
     }
     if (!control?.episode_id) return;
-    experimentRuns.set(
-      control.episode_id,
-      buildExperimentRun(node, control, exactProjection.tasks, exactProjection.watchers),
-    );
+    experimentRuns.set(control.episode_id, buildExperimentRun(node, control, tasks, watchers));
   });
-  const indexedEntries = (
-    exactExperimentEntry ? [...experimentEntries, exactExperimentEntry] : experimentEntries
-  ).filter((entry) => {
-    if (
-      exactExperimentRoute &&
-      entry.node.id === exactExperimentRoute.experiment_id &&
-      entry.episode.episode_id !== exactExperimentRoute.episode_id
-    ) {
-      return false;
-    }
-    if (entry.graph_target.kind !== "main") return true;
-    return mainExperimentRouteMatchesControl(
-      {
-        experiment_id: entry.node.id,
-        episode_id: entry.episode.episode_id,
-        graph_target: entry.graph_target,
-        parent_episode_id: entry.parent_episode_id,
-      },
-      exactProjection.experimentControl[entry.node.id],
-    );
-  });
+  const indexedEntries = currentExperimentEntries(
+    experimentEntries,
+    experimentControl,
+    exactExperimentEntry,
+  );
   indexedEntries.forEach((entry) => {
     if (
       entry.control.episode_id !== entry.episode.episode_id ||
@@ -1277,17 +1260,14 @@ export function ExecutionView({
         `Experiment ${entry.node.id} index entry does not identify one exact episode.`,
       );
     }
+    experimentEntriesByEpisode.set(entry.episode.episode_id, entry);
     if (entry.graph_target.kind === "main" && experimentRuns.has(entry.episode.episode_id)) {
       return;
     }
-    const exactWatchers = watchers.filter((watcher) =>
-      graphTargetsEqual(watcher.graph_target, entry.graph_target),
-    );
     experimentRuns.set(
       entry.episode.episode_id,
-      buildExperimentRun(entry.node, entry.control, entry.episode.tasks, exactWatchers),
+      buildExperimentRun(entry.node, entry.control, entry.episode.tasks, watchers),
     );
-    experimentEntriesByEpisode.set(entry.episode.episode_id, entry);
   });
   // The cached graph control owns lifecycle state. The episode reads own the
   // current archive preference, including for main cards built from that cache.
@@ -1300,6 +1280,11 @@ export function ExecutionView({
   );
   const visibleEpisodes = orderedEpisodes.filter((episode) => !episode.archived);
   const archivedEpisodes = orderedEpisodes.filter((episode) => episode.archived);
+  const selectedExperimentEpisodeId = selectedExperimentId
+    ? (exactExperimentRoute?.episode_id ??
+      experimentControl[selectedExperimentId]?.episode_id ??
+      null)
+    : null;
   const requestedEpisodeId =
     selectedAutoResearchEpisodeId ?? exactExperimentRoute?.episode_id ?? null;
   const requestedEpisode = requestedEpisodeId ? episodesById.get(requestedEpisodeId) : undefined;
@@ -1351,16 +1336,18 @@ export function ExecutionView({
   }, [requestedEpisodeId, requestedEpisodeArchived]);
 
   useEffect(() => {
-    if (
-      exactProjection.staleMainRoute ||
-      !focusExperimentId ||
-      focusExperimentId !== selectedExperimentId
-    ) {
+    if (staleMainRoute || !focusExperimentId || focusExperimentId !== selectedExperimentId) {
       return;
     }
     selectedDetailRef.current?.focus();
     onDetailFocused();
-  }, [exactProjection.staleMainRoute, focusExperimentId, onDetailFocused, selectedExperimentId]);
+  }, [
+    staleMainRoute,
+    focusExperimentId,
+    onDetailFocused,
+    selectedExperimentId,
+    selectedExperimentEpisodeId,
+  ]);
 
   useEffect(() => {
     if (!selectedAutoResearchEpisodeId) {
@@ -1402,7 +1389,7 @@ export function ExecutionView({
           Show archived
         </label>
       </div>
-      {exactProjection.staleMainRoute ? (
+      {staleMainRoute ? (
         <div className="run-route-history" role="status">
           <strong>The requested Experiment episode is now in History.</strong>
           <button className="button secondary compact" type="button" onClick={onOpenHistory}>
@@ -1558,6 +1545,7 @@ export function ExecutionView({
                 <time dateTime={episode.created_at}>
                   {formatEpisodeTimestamp(episode.created_at)}
                 </time>
+                <ExperimentBranchBadge target={episode.graph_target} />
                 <EpisodeAuthor author={episode.authorized_by} />
               </span>
             </span>
@@ -1587,44 +1575,43 @@ export function ExecutionView({
         episode={episode}
         run={run}
         initiallyExpanded={
-          !exactProjection.staleMainRoute &&
-          (initiallyExpanded || selectedExperimentId === run.node.id)
+          !staleMainRoute &&
+          (initiallyExpanded || selectedExperimentEpisodeId === episode.episode_id)
         }
-        selected={!exactProjection.staleMainRoute && selectedExperimentId === run.node.id}
+        selected={!staleMainRoute && selectedExperimentEpisodeId === episode.episode_id}
         detailRef={
-          !exactProjection.staleMainRoute && selectedExperimentId === run.node.id
+          !staleMainRoute && selectedExperimentEpisodeId === episode.episode_id
             ? selectedDetailRef
             : undefined
         }
         runBusy={runBusy}
-        stopBusy={stopBusyId === run.node.id}
+        stopBusy={stopBusyIds.has(episode.episode_id)}
         watcherCheckBusyId={watcherCheckBusyId}
         taskActionId={taskActionId}
         archiveDisabled={episodeAction !== null}
         onArchive={onArchiveEpisode}
         mergeBusy={episodeAction === `merge:${episode.episode_id}`}
         onMerge={onMergeEpisode}
-        experimentConversation={selectedExperimentConversation}
+        experimentConversation={
+          selectedExperimentEpisodeId === episode.episode_id
+            ? selectedExperimentConversation
+            : undefined
+        }
         indexedEntry={indexedEntry}
         watchedByParentAutoResearch={watchedByParentAutoResearch}
-        exactBranchEntry={
-          indexedEntry?.graph_target.kind === "branch"
-            ? indexedEntry
-            : exactProjection.exactBranchEntry
-        }
+        exactBranchEntry={indexedEntry?.graph_target.kind === "branch" ? indexedEntry : null}
         providerLabels={providerLabels}
         experimentStartsDisabled={experimentStartsDisabled}
         mutationsDisabled={
           mutationsDisabled ||
           runBusy ||
-          Boolean(stopBusyId) ||
+          stopBusyIds.has(episode.episode_id) ||
           Boolean(taskActionId) ||
           Boolean(watcherCheckBusyId)
         }
         onInspectTask={onInspectTask}
         onContinueEpisode={onContinueEpisode}
         onSelectExperiment={onSelectExperiment}
-        onOpenExperimentEntry={onOpenExperimentEntry}
         onRunExperiment={onRunExperiment}
         onStopExperiment={onStopExperiment}
         onCheckExperimentWatcher={onCheckExperimentWatcher}
@@ -1672,7 +1659,6 @@ function ExperimentEpisodeCard({
   mutationsDisabled,
   onSelectExperiment,
   onInspectTask,
-  onOpenExperimentEntry,
   onRunExperiment,
   onStopExperiment,
   onCheckExperimentWatcher,
@@ -1702,15 +1688,14 @@ function ExperimentEpisodeCard({
   providerLabels: Record<string, string>;
   experimentStartsDisabled: boolean;
   mutationsDisabled: boolean;
-  onSelectExperiment: (nodeId: string | null) => void;
+  onSelectExperiment: (nodeId: string | null, route?: ExperimentRouteIdentity) => void;
   onInspectTask: (operationId: string) => void;
-  onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onRunExperiment: (
     node: GraphNode,
     invocationCeiling?: number,
     browserRequested?: boolean,
   ) => void;
-  onStopExperiment: (nodeId: string, episodeId?: string) => void;
+  onStopExperiment: (nodeId: string, episodeId: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
   onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
@@ -1724,9 +1709,6 @@ function ExperimentEpisodeCard({
   const title = run.node.title;
   const episodeTimestamp = formatEpisodeTimestamp(episode.created_at);
   const isExactBranchEpisode = exactBranchEntry?.episode?.episode_id === episode.episode_id;
-  const exactEpisodeId = isExactBranchEpisode
-    ? (exactBranchEntry?.episode?.episode_id ?? exactBranchEntry?.control.episode_id)
-    : null;
 
   useEffect(() => {
     if (selected) setExpanded(true);
@@ -1748,8 +1730,16 @@ function ExperimentEpisodeCard({
           onClick={() => {
             const next = !expanded;
             setExpanded(next);
-            onSelectExperiment(next ? run.node.id : null);
-            if (next && indexedEntry) onOpenExperimentEntry(indexedEntry);
+            if (next) {
+              onSelectExperiment(run.node.id, {
+                experiment_id: run.node.id,
+                episode_id: episode.episode_id,
+                graph_target: episode.graph_target,
+                parent_episode_id: indexedEntry?.parent_episode_id ?? null,
+              });
+            } else if (selected) {
+              onSelectExperiment(null);
+            }
           }}
         />
         <span className="campaign-run-identity">
@@ -1760,6 +1750,7 @@ function ExperimentEpisodeCard({
           <span className="campaign-run-meta">
             <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
+            <ExperimentBranchBadge target={episode.graph_target} />
             <EpisodeAuthor author={episode.authorized_by} />
           </span>
         </span>
@@ -1795,7 +1786,7 @@ function ExperimentEpisodeCard({
             onContinue={(episodeId, invocationCeiling) =>
               void onContinueEpisode(episodeId, invocationCeiling)
             }
-            onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
+            onStopLoop={() => onStopExperiment(run.node.id, episode.episode_id)}
             onCheckWatcher={onCheckExperimentWatcher}
             onStopWatcher={onStopExperimentWatcher}
             onRecover={(action) => {

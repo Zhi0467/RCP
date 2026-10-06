@@ -297,6 +297,22 @@ export function experimentIndexEntryForRoute(
   return matches.length === 1 ? matches[0] : null;
 }
 
+/** Selection changes detail, never the project-wide inventory of current loops. */
+export function currentExperimentEntries(
+  entries: ExperimentLoopIndexEntry[],
+  experimentControl: Record<string, ExperimentControlState>,
+  exactEntry: ExperimentLoopIndexEntry | null,
+): ExperimentLoopIndexEntry[] {
+  return (exactEntry ? [...entries, exactEntry] : entries).filter(
+    (entry) =>
+      entry.graph_target.kind !== "main" ||
+      mainExperimentRouteMatchesControl(
+        experimentRouteIdentity(entry),
+        experimentControl[entry.node.id],
+      ),
+  );
+}
+
 export function projectExperimentExecution(
   nodes: GraphNode[],
   tasks: AgentTask[],

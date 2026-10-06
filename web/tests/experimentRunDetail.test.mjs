@@ -286,6 +286,7 @@ function recoveryTask(fields = {}) {
 
 function episode(fields = {}) {
   return {
+    graph_target: { kind: "main" },
     episode_id: "episode-1",
     project_id: "project",
     mode: "experiment_loop",
@@ -851,7 +852,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -1227,7 +1228,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},

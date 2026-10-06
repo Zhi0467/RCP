@@ -714,7 +714,7 @@ export default function App() {
     focusExperimentRunId,
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
-    experimentStopId,
+    experimentStopIds,
     watcherCheckId,
     dockedNodeIds,
     dagRelationFocusId,
@@ -3013,16 +3013,18 @@ export default function App() {
   };
 
   const requestExperimentStop = useCallback(
-    async (nodeId: string, episodeId: string | null = null): Promise<void> => {
+    async (nodeId: string, episodeId: string): Promise<void> => {
       if (!apiBase) throw new Error("No RCP project is open.");
-      if (experimentStopId) throw new Error("Another Experiment Stop is already being submitted.");
-      const finishExperimentStop = beginExperimentStop(nodeId);
+      if (!episodeId) throw new Error("An exact episode is required to stop an Experiment loop.");
+      if (experimentStopIds.has(episodeId))
+        throw new Error("This Experiment Stop is already being submitted.");
+      const finishExperimentStop = beginExperimentStop(episodeId);
       try {
         await api<unknown>(graphPath(experimentStopPath(apiBase, nodeId, episodeId)), {
           method: "POST",
         });
         try {
-          await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
+          await Promise.all([reload(), refreshExperimentLoops()]);
         } catch (error) {
           setNotice({
             kind: "error",
@@ -3033,10 +3035,10 @@ export default function App() {
         finishExperimentStop();
       }
     },
-    [apiBase, graphPath, beginExperimentStop, experimentStopId, refreshExperimentLoops, reload],
+    [apiBase, graphPath, beginExperimentStop, experimentStopIds, refreshExperimentLoops, reload],
   );
   const stopExperimentLoop = useCallback(
-    async (nodeId: string, episodeId: string | null = null) => {
+    async (nodeId: string, episodeId: string) => {
       try {
         await requestExperimentStop(nodeId, episodeId);
       } catch (error) {
@@ -3052,7 +3054,7 @@ export default function App() {
       watcherCheckId ||
       taskStarting ||
       taskActionId ||
-      experimentStopId ||
+      experimentStopIds.size > 0 ||
       mutationsDisabled
     )
       return;
@@ -3669,7 +3671,7 @@ export default function App() {
           episodes,
           requestExperimentStop,
           stopAutoResearchEpisode,
-          experimentStopId !== null || Boolean(episodeAction?.startsWith("stop:")),
+          experimentStopIds.size > 0 || Boolean(episodeAction?.startsWith("stop:")),
         ),
         ...projectViewToolDefinitions(project, tasks, episodes, webMcpViewOwners, {
           ...webMcpArtifactSource,
@@ -3691,7 +3693,7 @@ export default function App() {
     episodeAction,
     episodes,
     experimentStartRequiresSync,
-    experimentStopId,
+    experimentStopIds,
     loadWebMcpConversation,
     mutationsDisabled,
     projectIndexWebMcpAvailable,
@@ -4860,7 +4862,7 @@ export default function App() {
                 focusExperimentId={focusExperimentRunId}
                 selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
                 runBusy={taskStarting}
-                stopBusyId={experimentStopId}
+                stopBusyIds={experimentStopIds}
                 watcherCheckBusyId={watcherCheckId}
                 taskActionId={taskActionId}
                 selectedExperimentConversation={selectedExperimentConversation}
@@ -4889,9 +4891,7 @@ export default function App() {
                 onRunExperiment={(node, invocationCeiling, browserRequested) =>
                   void runExperiment(node, invocationCeiling, undefined, browserRequested)
                 }
-                onStopExperiment={(nodeId, episodeId) =>
-                  void stopExperimentLoop(nodeId, episodeId ?? null)
-                }
+                onStopExperiment={(nodeId, episodeId) => void stopExperimentLoop(nodeId, episodeId)}
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
                 onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
                 onRecoverExperiment={(task, action) => void operateTask(task, action, false)}

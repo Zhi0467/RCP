@@ -1778,6 +1778,7 @@ test("Experiment inspection compacts backend decisions and scopes work and watch
     episode_id: "episode-1",
   };
   const watcher = {
+    graph_target: { kind: "main" },
     watcher_id: "watcher-1",
     continuation: { control_node_id: "exp-1" },
     episode_id: "episode-1",
@@ -1837,6 +1838,7 @@ test("Experiment inspection stays available with several bounded tasks and watch
     episode_id: `episode-${index}`,
   }));
   const watchers = Array.from({ length: 4 }, (_, index) => ({
+    graph_target: { kind: "main" },
     watcher_id: `watcher-${index}`,
     continuation: { control_node_id: "exp-1" },
     episode_id: `episode-${index}`,
@@ -2490,4 +2492,28 @@ test("download-only files and PDFs are listed but never sent to the visual opene
     );
     assert.equal(opened, false);
   }
+});
+
+test("Experiment inspection filters same-node watchers by the open graph target", () => {
+  const project = projectFixture();
+  const targets = [
+    { kind: "main" },
+    { kind: "branch", branch_id: "one" },
+    { kind: "branch", branch_id: "two" },
+  ];
+  const watchers = targets.map((target, index) => ({
+    watcher_id: `watch-${index}`,
+    graph_target: target,
+    continuation: { control_node_id: "exp-1" },
+    created_at: "2026-10-06T10:00:00Z",
+  }));
+  targets.forEach((target, index) => {
+    const result = inspectProjectExperiment({ ...project, graph_target: target }, [], watchers, {
+      experiment_id: "exp-1",
+    });
+    assert.deepEqual(
+      result.watchers.map((row) => row.watcher_id),
+      [`watch-${index}`],
+    );
+  });
 });

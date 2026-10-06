@@ -1,3 +1,4 @@
+import { ExperimentBranchBadge } from "./ExperimentBranchBadge";
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 import { spaceRunRouteToken } from "./experimentBoardModel";
@@ -289,6 +290,9 @@ export function SpaceRunRow({
             <span className="space-run-unavailable">
               <WifiOff size={12} aria-hidden="true" /> Unavailable
             </span>
+          )}
+          {entry.mode === "experiment_loop" && (
+            <ExperimentBranchBadge target={entry.graph_target} />
           )}
           <time dateTime={entry.started_at}>{formatActivity(entry.started_at)}</time>
         </span>
