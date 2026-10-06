@@ -421,11 +421,19 @@ def _resolve_work_execution(
     )
     request = _pinned_to_profile(request, profile)
     execution_machine = service.manifest.machine_map[profile.run_on]
+    # Read once per turn: the ask hold, the prompt, and the provider all use this value.
+    shell_timeout = (
+        execution.store.provider_shell_timeout_seconds(profile.provider, execution_machine.host)
+        if execution is not None
+        else None
+    )
     return _ResolvedWorkExecution(
         request=request,
         execution_machine_alias=execution_machine.alias,
         execution_host=execution_machine.host,
         provider_binary=execution_machine.provider_paths.get(profile.provider),
+        ask_wait_seconds=ask_hold_seconds(shell_timeout),
+        shell_timeout_seconds=shell_timeout,
     )
 
 
@@ -2360,15 +2368,6 @@ async def _stream_work_run(
 
     try:
         resolved = _resolve_work_execution(service, request, execution)
-        assert resolved.request.provider is not None
-        shell_timeout = launcher.shell_timeout_seconds(
-            resolved.request.provider, resolved.execution_host
-        )
-        resolved = replace(
-            resolved,
-            ask_wait_seconds=ask_hold_seconds(shell_timeout),
-            shell_timeout_seconds=shell_timeout,
-        )
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
@@ -2584,7 +2583,9 @@ async def _stream_work_graph_repair(
                 saved_stage=True,
             )
         token = _task_token(execution)
-        shell_timeout = launcher.shell_timeout_seconds(profile.provider, execution_host)
+        shell_timeout = execution.store.provider_shell_timeout_seconds(
+            profile.provider, execution_host
+        )
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,

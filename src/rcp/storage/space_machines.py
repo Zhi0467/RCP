@@ -38,6 +38,13 @@ class SpaceMachineStoreMixin(StoreMixinBase):
             ).fetchone()
         return _record(row) if row else None
 
+    def provider_shell_timeout_seconds(self, provider: str, host: str) -> int | None:
+        """This machine's configured shell timeout for `provider`; None keeps its default."""
+
+        card = self.space_machine_for(host)
+        value = card.provider_shell_timeout.get(provider, "") if card is not None else ""
+        return int(value) * 60 if value else None
+
     def ensure_space_machines(self, machines: Iterable[tuple[str, str, str]]) -> list[str]:
         """Insert a card for each host the space lacks; return hosts whose account conflicts.
 

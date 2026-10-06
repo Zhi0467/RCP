@@ -1920,9 +1920,7 @@ class AgentLauncher:
 
         if self.accounts is None:
             return None
-        card = self.accounts.store.space_machine_for(host)
-        value = card.provider_shell_timeout.get(provider, "") if card is not None else ""
-        return int(value) * 60 if value else None
+        return self.accounts.store.provider_shell_timeout_seconds(provider, host)
 
     def _discover_remote_provider(
         self, provider: str, host: str

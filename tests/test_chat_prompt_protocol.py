@@ -21,7 +21,7 @@ from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
 from rcp.core.models import AuthorizedHuman
-from rcp.providers import ProviderSkillReference, profile_for
+from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -43,10 +43,6 @@ from .helpers import create_named_app as create_app
 
 
 class _RecordingLauncher:
-    @staticmethod
-    def shell_timeout_seconds(provider: str, host: str = "") -> int:
-        return profile_for(provider).shell_timeout_default_seconds
-
     def __init__(self, native_session_id: str) -> None:
         self.native_session_id = native_session_id
         self.prompts: list[str] = []

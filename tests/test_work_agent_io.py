@@ -1750,7 +1750,6 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
 async def test_graph_only_repair_never_acquires_browser(
     manifest, tmp_path, monkeypatch, repair_module
 ):
-    from rcp.providers import profile_for
     from rcp.providers.browser_grant import BrowserGrant
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1796,9 +1795,6 @@ async def test_graph_only_repair_never_acquires_browser(
     grants = []
 
     class Launcher:
-        def shell_timeout_seconds(self, provider, host=""):
-            return profile_for(provider).shell_timeout_default_seconds
-
         async def stream(self, *args, browser_grant=None, **kwargs):
             grants.append(browser_grant)
             raise RuntimeError("repair provider reached")

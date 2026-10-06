@@ -2462,15 +2462,6 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
 
     try:
         resolved = _resolve_work_execution(service, request, execution)
-        assert resolved.request.provider is not None
-        shell_timeout = launcher.shell_timeout_seconds(
-            resolved.request.provider, resolved.execution_host
-        )
-        resolved = replace(
-            resolved,
-            ask_wait_seconds=ask_hold_seconds(shell_timeout),
-            shell_timeout_seconds=shell_timeout,
-        )
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
@@ -2718,7 +2709,9 @@ async def _stream_work_graph_repair(
                 saved_stage=True,
             )
         token = _task_token(execution)
-        shell_timeout = launcher.shell_timeout_seconds(profile.provider, execution_host)
+        shell_timeout = execution.store.provider_shell_timeout_seconds(
+            profile.provider, execution_host
+        )
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,

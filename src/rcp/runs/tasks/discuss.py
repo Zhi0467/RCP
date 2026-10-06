@@ -823,7 +823,11 @@ async def stream_discuss_run(
                 retained is None
                 and (request.artifact_edit is not None or not (resuming or retry_attempt))
             ):
-                shell_timeout = launcher.shell_timeout_seconds(profile.provider, execution_host)
+                shell_timeout = (
+                    execution.store.provider_shell_timeout_seconds(profile.provider, execution_host)
+                    if execution is not None
+                    else None
+                )
                 patch_inputs = _stage_chat_patch_inputs(
                     local_stage,
                     remote_stage,
