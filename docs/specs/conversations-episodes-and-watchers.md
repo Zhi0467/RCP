@@ -367,9 +367,9 @@ artifact edits refuse them, and question and watcher follow-ups clear them.
 
 An assistant answer also supports temporary selection comments for the next
 human turn. Finishing a selection of answer text, by pointer release wherever it
-lifts or by a touch selection settling, offers a floating Comment button below
-the selection; the selection and the platform's Copy are left untouched, and the
-composer opens only when Comment is chosen. A sweep that overshoots the answer
+lifts or by a touch selection settling, offers a floating Comment button on
+top of the selection; the selection and the platform's Copy are left untouched,
+and the composer opens only when Comment is chosen. A sweep that overshoots the answer
 is clamped to the answer's text. A visible Comment command opens the same
 floating flow with the answer in a real keyboard-selectable text control. At
 every layout width, the composer stays inside the soft-keyboard-adjusted visual

@@ -152,7 +152,13 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
     assert.equal(await composer.count(), 0);
     assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
     const offerBox = await offer.boundingBox();
-    assert.ok(offerBox && offerBox.y >= box.y, "Comment sits below the selection, not over it");
+    const selectionTop = await page.evaluate(
+      () => window.getSelection().getRangeAt(0).getClientRects()[0].top,
+    );
+    assert.ok(
+      offerBox && offerBox.y + offerBox.height <= selectionTop,
+      "Comment sits on top of the selection without covering it",
+    );
 
     await offer.click();
     await composer.waitFor({ state: "visible", timeout: 2000 });
@@ -201,11 +207,10 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
     await page.setViewportSize({ width: 360, height: 520 });
     await page.waitForFunction(() => {
       const button = document.querySelector(".chat-selection-comment");
-      const rects = window.getSelection().getRangeAt(0).getClientRects();
-      const end = rects[rects.length - 1];
-      if (!button || !end) return false;
+      const first = window.getSelection().getRangeAt(0).getClientRects()[0];
+      if (!button || !first) return false;
       const box = button.getBoundingClientRect();
-      return box.right <= window.innerWidth && Math.abs(box.top - (end.bottom + 18)) < 2;
+      return box.right <= window.innerWidth && Math.abs(box.bottom + 14 - first.top) < 2;
     });
   } finally {
     await browser?.close();

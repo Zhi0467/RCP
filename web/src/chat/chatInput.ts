@@ -56,8 +56,8 @@ export interface ChatAnnotationTextControlSelection {
 
 const CHAT_ANNOTATION_COMPOSER_GAP = 10;
 const CHAT_ANNOTATION_VIEWPORT_MARGIN = 12;
-// Clears the end handle a touch platform draws just below a selection.
-const CHAT_SELECTION_COMMENT_GAP = 18;
+// Clears the handle a touch platform draws at either end of a selection.
+const CHAT_SELECTION_COMMENT_GAP = 14;
 
 export function replaceTextSpan(current: string, span: TextSpan, replacement: string) {
   return {
@@ -212,26 +212,28 @@ export function chatAnnotationViewportMetrics(
 }
 
 /**
- * Where the selection's Comment button goes: just below the end of the
- * selection, where it does not cover the selected text or the platform's own
- * Copy menu (shown above a selection), flipped above when there is no room
- * below, and always inside the visible viewport.
+ * Where the selection's Comment button goes: directly on top of the selection,
+ * centred over its first line, flipped below its last line when there is no
+ * room above, and always inside the visible viewport.
  */
 export function chatSelectionCommentPosition(
-  selection: { left: number; right: number; top: number; bottom: number },
+  selection: {
+    firstLine: { left: number; right: number; top: number };
+    bottom: number;
+  },
   viewport: Pick<ChatAnnotationViewportMetrics, "left" | "top" | "width" | "height">,
   button: { width: number; height: number },
 ): ChatAnnotationComposerPosition {
   const viewportRight = viewport.left + viewport.width;
   const viewportBottom = viewport.top + viewport.height;
+  const above = selection.firstLine.top - button.height - CHAT_SELECTION_COMMENT_GAP;
   const below = selection.bottom + CHAT_SELECTION_COMMENT_GAP;
-  const above = selection.top - button.height - CHAT_SELECTION_COMMENT_GAP;
-  const top =
-    below + button.height <= viewportBottom - CHAT_ANNOTATION_VIEWPORT_MARGIN ? below : above;
+  const top = above >= viewport.top + CHAT_ANNOTATION_VIEWPORT_MARGIN ? above : below;
+  const centre = (selection.firstLine.left + selection.firstLine.right) / 2;
   const left = Math.max(
     viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN,
     Math.min(
-      selection.right - button.width,
+      centre - button.width / 2,
       viewportRight - button.width - CHAT_ANNOTATION_VIEWPORT_MARGIN,
     ),
   );

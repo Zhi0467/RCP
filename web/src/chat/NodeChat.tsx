@@ -1248,8 +1248,8 @@ export function NodeChat({
       if (annotationComposerOpenRef.current) return setSelectionComment(null);
       const range = annotatableAnswerSelectionRange(window.getSelection(), chatLinesRef.current);
       const rects = range?.getClientRects();
-      const last = rects?.item(rects.length - 1) ?? range?.getBoundingClientRect();
-      if (!range || !last) {
+      const firstLine = rects?.item(0) ?? range?.getBoundingClientRect();
+      if (!range || !firstLine) {
         setSelectionComment(null);
         return;
       }
@@ -1261,7 +1261,7 @@ export function NodeChat({
       setSelectionComment({
         range,
         position: chatSelectionCommentPosition(
-          last,
+          { firstLine, bottom: range.getBoundingClientRect().bottom },
           viewport,
           button?.width ? button : { width: 112, height: 44 },
         ),

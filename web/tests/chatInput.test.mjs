@@ -112,27 +112,16 @@ test("annotation composer stays beside the selection and inside the viewport", (
   );
 });
 
-test("the selection Comment offer sits below the selection and stays on screen", () => {
+test("the selection Comment offer sits on top of the selection and stays on screen", () => {
   const viewport = { left: 0, top: 0, width: 390, height: 844 };
   const button = { width: 112, height: 44 };
-  assert.deepEqual(
-    chatSelectionCommentPosition({ left: 40, right: 300, top: 400, bottom: 420 }, viewport, button),
-    { left: 188, top: 438 },
-  );
-  // No room below: flip above the selection.
-  assert.deepEqual(
-    chatSelectionCommentPosition({ left: 40, right: 300, top: 790, bottom: 810 }, viewport, button),
-    { left: 188, top: 728 },
-  );
-  // A selection ending at either edge keeps the whole button inside the margins.
-  assert.equal(
-    chatSelectionCommentPosition({ left: 0, right: 30, top: 400, bottom: 420 }, viewport, button)
-      .left,
-    12,
-  );
-  assert.equal(
-    chatSelectionCommentPosition({ left: 0, right: 389, top: 400, bottom: 420 }, viewport, button)
-      .left,
-    266,
-  );
+  const at = (left, right, top, bottom) =>
+    chatSelectionCommentPosition({ firstLine: { left, right, top }, bottom }, viewport, button);
+  // Centred above the first line of a two-line selection.
+  assert.deepEqual(at(40, 300, 400, 460), { left: 114, top: 342 });
+  // No room above: below the selection's last line instead.
+  assert.deepEqual(at(40, 300, 30, 70), { left: 114, top: 84 });
+  // A selection at either edge keeps the whole button inside the margins.
+  assert.equal(at(0, 30, 400, 420).left, 12);
+  assert.equal(at(300, 389, 400, 420).left, 266);
 });
