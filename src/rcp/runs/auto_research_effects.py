@@ -27,6 +27,7 @@ from rcp.agents.command_protocol import (
     WatchGraphCommandRequest,
 )
 from rcp.core.models import GraphState
+from rcp.loop_status import other_branch_loops
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandEffectResult,
@@ -209,6 +210,12 @@ def auto_research_command_effects(
                 "The Auto-research episode status is no longer available."
             )
         result = project_auto_research_episode(store, episode.episode_id).status_result()
+        result["other_branch_loops"] = [
+            row.model_dump(mode="json")
+            for row in other_branch_loops(
+                store, episode.project_id, graph_target=episode.graph_target
+            )
+        ]
         if arguments.worker_id is not None:
             route, leaf = _worker_leaf(store, context, arguments.worker_id)
             result["worker"] = _worker_status(store, route, leaf)
@@ -521,20 +528,27 @@ def auto_research_command_effects(
             result["reason"] = action.reason
         if action.replacement_command is not None:
             result["replacement_command"] = action.replacement_command
+        if isinstance(arguments, ExperimentKickoffArguments):
+            result["live_elsewhere"] = [
+                row.model_dump(mode="json") for row in action.live_elsewhere
+            ]
+        if action.disposition == "resume_unavailable":
+            result["recovery_steps"] = [
+                {"action": "stop", "episode_id": action.episode_id},
+                {"action": "wait_for_settlement", "episode_id": action.episode_id},
+                {"action": "kick_off_experiment"},
+            ]
         status = "invalid" if action.disposition == "resume_unavailable" else "ok"
         message = {
             "created": "Experiment episode was created and queued.",
-            "replacement_pending": (
-                "Experiment replacement was reserved while the prior episode stops gracefully."
-            ),
             "stopping": "Experiment episode is stopping gracefully.",
             "stopped": "Experiment episode is stopped.",
-            "cancelled": "Pending Experiment replacement was cancelled.",
             "existing": "The existing Experiment kickoff result was recovered.",
             "resumed": "Experiment episode resumed its exact saved allocation.",
             "resume_unavailable": (
                 action.reason
-                or "Experiment Resume is unavailable; kick off a fresh replacement episode."
+                or "Experiment Resume is unavailable; stop your child, wait for settlement, "
+                "then kick off a fresh episode."
             ),
         }[action.disposition]
         return AutoResearchCommandEffectResult(

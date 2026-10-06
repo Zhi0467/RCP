@@ -1521,12 +1521,24 @@ def resume_auto_research_child_experiment(
     if problem is None:
         problem = tasks.store.experiment_episode_recovery_context_problem(previous.operation_id)
     if problem is not None:
+        if route.state == "running" and previous.status in {"paused", "interrupted", "failed"}:
+            # Stop settlement must know why this retained attempt cannot resume.
+            tasks.store.record_experiment_episode_diagnostic(
+                episode_id=child_episode_id,
+                project_id=route.project_id,
+                control_node_id=route.control_node_id,
+                diagnostic=problem,
+            )
         return AutoResearchChildResumeResult(
             disposition="resume_unavailable",
             child_kind="experiment",
             child_id=child_episode_id,
             current_operation_id=previous.operation_id,
-            reason=problem,
+            reason=(
+                f"{problem}. Stop your child with episode --stop {child_episode_id}, "
+                "wait for its settlement, then use episode --kick-off-experiment "
+                "with a new key."
+            ),
             replacement_command="episode --kick-off-experiment",
         )
     assert previous.native_session_id is not None

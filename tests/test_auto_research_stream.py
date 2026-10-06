@@ -10,6 +10,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -2995,12 +2996,24 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
 
 def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     from rcp.agents.auto_research_prompt import (
+        auto_research_orchestrator_continuation_contract,
         auto_research_orchestrator_task_contract,
         auto_research_prompt_values,
     )
     from rcp.agents.continuation_prompt import MasterRef, changed_since_master
     from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.loop_status import EpisodeStarter, LoopCheckout, LoopStatusRow
 
+    loop = LoopStatusRow(
+        node_id="exp/overlap",
+        episode_id="main-loop",
+        graph_target=GraphTargetRef(),
+        state="live",
+        status="running",
+        created_at="2026-01-01T00:00:00Z",
+        started_by=EpisodeStarter(kind="unknown"),
+        checkout=LoopCheckout(kind="shared"),
+    )
     package_path = "/stage/inputs/bundle/graph-audit"
     pointers = [
         {
@@ -3012,7 +3025,12 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
             "path": package_path,
         }
     ]
-    common = dict(
+    common: dict[str, Any] = dict(
+        main_graph_path="/stage/inputs/main-graph-snapshot.json",
+        shared_repositories=[
+            {"alias": "repo-a", "host": "execution.example", "path": "/shared/repo"}
+        ],
+        other_branch_loops=[loop],
         graph_path="/s/graph.json",
         research_path="/s/research.md",
         patch_path="/s/patch.json",
@@ -3033,6 +3051,15 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     fresh = auto_research_orchestrator_task_contract(
         project_name="project", skill_pointers=pointers, **common
     )
+    continued = auto_research_orchestrator_continuation_contract(
+        original_contract_path="/stage/inputs/original.md", mode="continuation", **common
+    )
+    for contract in (fresh, continued):
+        assert common["main_graph_path"] in contract
+        assert "/shared/repo" in contract
+        assert [loop.model_dump(mode="json")] in [
+            json.loads(line) for line in contract.splitlines() if line.startswith("[{")
+        ]
     assert package_path in fresh
     assert graph_rules(edits=True, ontology_extensions=False) in fresh
     # A continuation sends the packages again only when one of them changed.
@@ -3045,6 +3072,11 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     upgraded = auto_research_prompt_values(
         skill_pointers=[{**pointers[0], "version": "1.1.0"}], **common
     )
+    assert unchanged["main_graph_path"] == common["main_graph_path"]
+    assert unchanged["shared_repositories"] == common["shared_repositories"]
+    assert unchanged["other_branch_loops"] == [loop.model_dump(mode="json")]
+    cleared = {**unchanged, "other_branch_loops": []}
+    assert changed_since_master(master, cleared) == {"other_branch_loops": []}
     assert changed_since_master(master, unchanged) is None
     assert changed_since_master(master, upgraded) == {
         "skills": {"graph-audit": {"version": "1.1.0"}}
@@ -3126,6 +3158,37 @@ async def test_isolated_orchestrator_launch_uses_owner_worktree(
     binding = isolation.worktree
     assert launcher.write_scopes[0].repository_roots == [binding.worktree_path]
     assert binding.worktree_path in launcher.contracts[0]
+    snapshots = list(launcher.workspaces[0].glob("inputs/main-graph-*.json"))
+    assert len(snapshots) == 1
+    assert str(snapshots[0]) in launcher.contracts[0]
+    assert json.loads(snapshots[0].read_text()) == json.loads(
+        (service.history.workspace.root / "graph.json").read_text()
+    )
+    assert snapshots[0].stat().st_mode & 0o222 == 0
+    assert str(repository) in launcher.contracts[0]
     assert Path(binding.worktree_path, "notes.txt").read_text() == "episode edit\n"
     assert (repository / "notes.txt").read_text() == "initial\n"
     assert store.episode_isolation_state("project", episode.episode_id).status == "ready"
+
+
+def test_orchestrator_context_consumes_staged_main_graph_pointer(manifest, tmp_path) -> None:
+    main_service = _service(manifest, tmp_path)
+    service, _store, _episode, root, _worker = _setup_branch_auto_research(
+        main_service, tmp_path / "store"
+    )
+    stage_path = tmp_path / "stage"
+    stage_path.mkdir()
+    stage = auto_research_stream_module._WorkerStage(
+        local=stage_path, remote=None, workspace=stage_path, execution_host="", provider_binary=None
+    )
+    request = AutoResearchRunRequest.model_validate(root.request)
+    context = auto_research_stream_module._auto_research_context(service, request, stage)
+    assert context.main_graph_path is not None
+    snapshot = Path(context.main_graph_path)
+    assert snapshot.is_relative_to(stage_path / "inputs")
+    assert json.loads(snapshot.read_text()) == main_service.history.state().model_dump(mode="json")
+    assert snapshot.stat().st_mode & 0o222 == 0
+    assert context.graph_path != context.main_graph_path
+    assert [(item.alias, item.path) for item in context.shared_repositories] == [
+        (item.alias, manifest.repository_map[item.alias].path) for item in context.repositories
+    ]

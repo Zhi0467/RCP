@@ -43,10 +43,12 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
+from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
+from rcp.loop_status import other_branch_loops
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research import (
@@ -103,6 +105,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _swept_stage_root,
     _task_token,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.work import (
     _apply_work_patch,
@@ -1205,9 +1208,12 @@ def _auto_research_context(
         }
         context = context.model_copy(update=updates)
     elif stage.remote is not None:
-        context = context.model_copy(
+        return context.model_copy(
             update=_stage_context_paths(context, service, stage.remote, request.run_on or "")
         )
+    context = context.model_copy(
+        update=stage_branch_read_context(context, service, stage.local, stage.remote)
+    )
     return context
 
 
@@ -1454,7 +1460,17 @@ def _orchestrator_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
+    shared_repositories = [
+        {"alias": item.alias, "host": item.host, "path": item.path}
+        for item in context.shared_repositories
+    ]
+    loops = other_branch_loops(
+        execution.store, turn.task.project_id, graph_target=turn.task.graph_target
+    )
     values = auto_research_prompt_values(
+        main_graph_path=context.main_graph_path,
+        shared_repositories=shared_repositories,
+        other_branch_loops=loops,
         graph_path=context.graph_path,
         research_path=context.research_md_path,
         repositories=repositories,
@@ -1497,6 +1513,9 @@ def _orchestrator_prompt(
             )
         return auto_research_orchestrator_task_contract(
             project_name=context.project_name,
+            main_graph_path=context.main_graph_path,
+            shared_repositories=shared_repositories,
+            other_branch_loops=loops,
             graph_path=context.graph_path,
             research_path=context.research_md_path,
             repositories=repositories,
@@ -1524,6 +1543,9 @@ def _orchestrator_prompt(
                 remote_stage,
             ),
             mode="retry",
+            main_graph_path=context.main_graph_path,
+            shared_repositories=shared_repositories,
+            other_branch_loops=loops,
             graph_path=context.graph_path,
             research_path=context.research_md_path,
             repositories=repositories,
@@ -1549,7 +1571,7 @@ def _orchestrator_prompt(
             retry_diagnostics_path=_retry_diagnostics_path(
                 execution, local_stage, remote_stage, token
             ),
-        )
+        ) + [render_loop_overlap(loops)]
 
     contract_path, prompt, master = _actor_launch_prompt(
         execution,
