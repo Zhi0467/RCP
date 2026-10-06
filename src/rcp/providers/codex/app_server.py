@@ -17,6 +17,7 @@ from rcp.providers.base import (
     _require_provider_version,
 )
 from rcp.providers.codex.profile import (
+    _codex_autocompact_config,
     _codex_discuss_permission_profile,
     _codex_environment_config,
     _codex_permission_profile,
@@ -92,6 +93,7 @@ class _CodexAppServerTurn(ProviderTurn):
             'web_search="live"',
         ]
         command.extend(_codex_environment_config(request.hidden_read_scope))
+        command.extend(_codex_autocompact_config(request.autocompact))
         if request.capability in {"work_auto", "orchestrate"}:
             scope = _require_project_write_scope(
                 request.write_scope,

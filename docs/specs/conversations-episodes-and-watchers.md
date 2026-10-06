@@ -255,20 +255,38 @@ cleared fail-closed before a new turn that could misattribute them. A committed
 native chat-session context retains that stage, including its immutable master
 context, even while no turn is active.
 
-Human-started Work chats and Experiment invocations may use the staged `ask`
+Human-started Discuss and Work chats and Experiment invocations may use the staged `ask`
 command for missing information. The human answers on the question card; the
 composer remains steering. Answers are human input, never approval or changes to
-capability, write roots, graph target, or budget. Discuss and Auto-research child
-Work and Experiments cannot ask directly.
+capability, write roots, graph target, or budget. Discuss resolves only `ask`,
+with no graph commands or write scope. Artifact-edit Discuss turns, consolidation,
+ingestion, paper coach, Auto-research workers, and child Work and Experiments
+cannot ask directly.
 
-A call waits for the bounded client interval; repeating identical arguments keeps
-waiting, while ending the turn parks the question. An answered response counts as
-received only after the client acknowledges its response token and the receiving
-task settles successfully on the original native session and authority binding.
+A call waits for the bounded client interval. Its random `call_id` stays outside
+arguments and survives every fresh request round. Live pending replies carry
+`attempt` and `max_attempts` (3); a parked reply carries neither and counts no
+attempt, and clients without an id omit `attempt`. A thread-safe,
+process-local record retains the last 32 distinct calls per question and their
+attempt numbers; restarting RCP resets this advisory count.
+If the answer blocks work, repeat the exact call to keep waiting. Otherwise,
+continue other work and repeat it later to check. After the third unanswered
+attempt, stop asking and end the turn; the question remains on the human's card
+and their answer resumes the conversation. Prefer one blocking shell wait; if
+polling an unfinished command, use waits of about five minutes.
+An answered response counts as received only after the client acknowledges its
+response token and the receiving task settles successfully on the original native
+session and authority binding.
 Failed or disconnected turns retain delivery eligibility. After full settlement
-and at startup, an unreceived chat answer admits at most one Work follow-up, transactionally claimed
+and at startup, an unreceived chat answer admits at most one same-mode follow-up, transactionally claimed
 with task insertion, pinned to the asking turn's native session, authority, write
-scope and target. Occupied or paused sessions defer admission; unusable bindings
+scope and target. Discuss answers continue Discuss with no Patch scope or write
+fingerprint; Work answers continue Work with the original write fingerprint.
+Before launch and recorded settlement, both owners check the complete origin
+against the current provider, native session, resolved execution host, stage,
+mode/capability, graph target, and write binding. A clean-session handoff or
+provider-changing Retry cannot redeliver an answer under a different binding.
+Occupied or paused sessions defer admission; unusable bindings
 remain visible. Each answer is projected once as a human chat message through
 StateWorkspace using its question id and answer revision. Its follow-up turn's id
 derives from the same pair, so the projected answer names that turn before it is
@@ -348,9 +366,11 @@ episode start, continue, and mail, seed, refresh, paper coach, merge, and
 artifact edits refuse them, and question and watcher follow-ups clear them.
 
 An assistant answer also supports temporary selection comments for the next
-human turn. Pointer-selecting answer text opens a comment composer beside the
-selection when the pointer lifts, wherever it lifts; a sweep that overshoots the
-answer is clamped to the answer's text. A visible Comment command opens the same
+human turn. Finishing a selection of answer text, by pointer release wherever it
+lifts or by a touch selection settling, offers a floating Comment button on
+top of the selection; the selection and the platform's Copy are left untouched,
+and the composer opens only when Comment is chosen. A sweep that overshoots the answer
+is clamped to the answer's text. A visible Comment command opens the same
 floating flow with the answer in a real keyboard-selectable text control. At
 every layout width, the composer stays inside the soft-keyboard-adjusted visual
 viewport and scrolls when necessary.

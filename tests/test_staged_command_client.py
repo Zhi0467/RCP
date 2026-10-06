@@ -1996,6 +1996,24 @@ async def test_stop_during_response_outage_finishes_with_saved_permanent_reason(
     assert not list(tmp_path.glob("*.closed.json"))
 
 
+def test_ask_call_id_is_covered_by_broker_signature():
+    from rcp.agents.command_mailbox import CommandTurnCredential, CommandTurnIdentity
+    from rcp.agents.staged_command_broker import _signed
+    from tests.test_ask_protocol import ask_request
+
+    credential = CommandTurnCredential.issue(CommandTurnIdentity(None, "task", "turn", "broker"))
+    credential.activate()
+    request = ask_request(mailbox_id=credential.mailbox_id, call_id="first").model_dump(
+        exclude={"credential"}
+    )
+    signed = _signed(request, credential.token)
+    document = json.dumps(signed)
+    assert credential.accepts(validate_command_request(document), document)
+    signed["call_id"] = "second"
+    tampered = json.dumps(signed)
+    assert not credential.accepts(validate_command_request(tampered), tampered)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["answered", "dismissed"])
 async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, state) -> None:
@@ -2006,9 +2024,11 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         task_id="work-task",
         turn_id="work-turn",
         authority="broker",
-        timeout_seconds=5,
+        timeout_seconds=1,
+        ask_wait_seconds=5,
     )
     seen = []
+    responses = {}
 
     def handler(request, _identity):
         seen.append(request)
@@ -2018,14 +2038,17 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     stop = asyncio.Event()
-    async with staged.invocation_gate.serve_current_session():
+    gate = staged.invocation_gate
+    assert gate is not None
+    async with gate.serve_current_session():
         server = asyncio.create_task(
             serve_command_mailbox(
                 staged=staged,
                 handler=handler,
                 stop=stop,
                 poll_seconds=0.01,
-                invocation_gate=staged.invocation_gate,
+                invocation_gate=gate,
+                responses=responses,
             )
         )
         try:
@@ -2055,6 +2078,8 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         assert seen[2].receipt_token == "f" * 64
         assert seen[2].request_id not in {seen[0].request_id, seen[1].request_id}
         assert seen[2].arguments == seen[1].arguments
+    assert seen[0].call_id
+    assert {request.call_id for request in seen} == {seen[0].call_id}
     assert seen[0].receipt_token is None
     assert seen[1].receipt_token is None
     assert seen[0].request_id != seen[1].request_id
@@ -2065,10 +2090,15 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         "choices": ["A", "B"],
         "multiple": True,
     }
+    # A long hold sends thousands of pending rounds: none stays on disk or in the record.
+    assert not any(seen[0].request_id in name for name in os.listdir(staged.workspace))
+    assert not any(seen[0].request_id in name for name in responses)
+    assert any(seen[1].request_id in name for name in os.listdir(staged.workspace))
 
 
+@pytest.mark.parametrize("hold", [1, 1770])
 @pytest.mark.parametrize("state", ["pending", "answered"])
-def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, state) -> None:
+def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, state, hold) -> None:
     from rcp.agents import staged_command_client as client
 
     elapsed = [0.0]
@@ -2077,12 +2107,12 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
     monkeypatch.setattr(
         client.time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds)
     )
-    monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0.4)
+    monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", hold * 0.4)
 
     def round_trip(_namespace, _broker, content, request_id, deadline):
         request = json.loads(content)
         requests.append((request, deadline))
-        elapsed[0] += 0.1
+        elapsed[0] += hold * 0.1
         return client._handle_response(
             {
                 "request_id": request_id,
@@ -2110,6 +2140,8 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
             "a" * 32,
             "--timeout",
             "1",
+            "--ask-wait",
+            str(hold),
             "--workspace",
             str(tmp_path),
             "ask",
@@ -2120,13 +2152,15 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
         ]
     )
     assert code == 0
-    assert elapsed[0] <= 1
+    assert elapsed[0] <= hold
     if state == "pending":
-        assert elapsed[0] == 1
+        assert elapsed[0] == hold
     assert len(requests) == (3 if state == "answered" else 2)
     if state == "answered":
         assert requests[2][0]["receipt_token"] == "f" * 64
-    assert {deadline for _, deadline in requests} == {1}
+    assert requests[0][0]["call_id"]
+    assert len({request["call_id"] for request, _ in requests}) == 1
+    assert {deadline for _, deadline in requests} == {hold}
     assert len({request["request_id"] for request, _ in requests}) == len(requests)
     assert json.loads(capsys.readouterr().out)["result"] == {
         "state": state,

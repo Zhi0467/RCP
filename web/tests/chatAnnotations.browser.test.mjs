@@ -116,7 +116,7 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
   }
 });
 
-test("a pointer selection opens the composer even when the pointer is released outside the answer", async () => {
+test("a pointer selection offers Comment, keeps the selection copyable, and opens the composer only on request", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -144,14 +144,74 @@ test("a pointer selection opens the composer even when the pointer is released o
     await page.mouse.move(box.x + 160, box.y + box.height + 60, { steps: 4 });
     await page.mouse.up();
 
+    // Releasing offers Comment without opening the composer or moving focus, so
+    // the platform's Copy still acts on the reader's selection.
+    const offer = page.getByRole("button", { name: "Comment", exact: true });
+    await offer.waitFor({ state: "visible", timeout: 2000 });
     const composer = page.getByRole("form", { name: "Add annotation" });
+    assert.equal(await composer.count(), 0);
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+    const offerBox = await offer.boundingBox();
+    const selectionTop = await page.evaluate(
+      () => window.getSelection().getRangeAt(0).getClientRects()[0].top,
+    );
+    assert.ok(
+      offerBox && offerBox.y + offerBox.height <= selectionTop,
+      "Comment sits on top of the selection without covering it",
+    );
+
+    await offer.click();
     await composer.waitFor({ state: "visible", timeout: 2000 });
+    assert.equal(await offer.count(), 0, "The offer gives way to the composer");
     // The sweep overshot into the Comment button; the staged text stops at the answer's end.
-    const selectedText = await page.evaluate(() => window.getSelection()?.toString().trim());
     assert.equal(
-      selectedText,
+      (await composer.locator("blockquote").innerText()).trim(),
       "he reported improvement needs a stronger comparison and a variance estimate.",
     );
+
+    // Dismissing the composer does not bring the offer straight back.
+    await page.getByRole("textbox", { name: "Comment", exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(
+        () => document.activeElement?.closest(".chat-annotation-composer") !== null,
+      ),
+      true,
+      "Choosing Comment puts focus in the composer",
+    );
+    await page.keyboard.press("Escape");
+    await composer.waitFor({ state: "detached" });
+    assert.equal(await offer.count(), 0);
+
+    // Collapsing the selection withdraws the offer.
+    await page.mouse.move(box.x + 12, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.move(box.x + 12, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 120, box.y + box.height / 2, { steps: 3 });
+    await page.mouse.up();
+    await offer.waitFor();
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await offer.waitFor({ state: "detached" });
+
+    // A selection that survives a resize keeps its offer beside it, on screen.
+    await page.evaluate(() => {
+      const text = document.querySelector(".chat-annotatable-answer p").firstChild;
+      const range = document.createRange();
+      range.setStart(text, text.length - 20);
+      range.setEnd(text, text.length - 1);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    });
+    await offer.waitFor();
+    await page.setViewportSize({ width: 360, height: 520 });
+    await page.waitForFunction(() => {
+      const button = document.querySelector(".chat-selection-comment");
+      const first = window.getSelection().getRangeAt(0).getClientRects()[0];
+      if (!button || !first) return false;
+      const box = button.getBoundingClientRect();
+      return box.right <= window.innerWidth && Math.abs(box.bottom + 6 - first.top) < 2;
+    });
   } finally {
     await browser?.close();
     await server.close();

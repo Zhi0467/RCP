@@ -167,7 +167,9 @@ def _text_page(body: str, *, truncated: bool) -> tuple[str, str]:
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
         "body{margin:24px;font:15px/1.5 system-ui;overflow-wrap:anywhere}"
-        "pre{white-space:pre-wrap}.line{display:block;min-height:1.5em;padding-left:4.5em}"
+        "pre{white-space:pre-wrap}table{border-collapse:collapse;display:block;overflow-x:auto}"
+        "th,td{border:1px solid GrayText;padding:4px 8px;text-align:left;vertical-align:top}"
+        ".line{display:block;min-height:1.5em;padding-left:4.5em}"
         ".line::before{content:attr(id);display:inline-block;width:4em;margin-left:-4.5em;color:GrayText;user-select:none}"
         "</style></head><body>" + marker + body + "</body></html>",
         ARTIFACT_TEXT_CSP,
@@ -176,7 +178,7 @@ def _text_page(body: str, *, truncated: bool) -> tuple[str, str]:
 
 def markdown_document(data: bytes) -> tuple[str, str]:
     text, truncated = _preview_text(data)
-    renderer = MarkdownIt("commonmark", {"html": False})
+    renderer = MarkdownIt("commonmark", {"html": False}).enable("table")
 
     def link_open(tokens, index, options, env):
         return ""

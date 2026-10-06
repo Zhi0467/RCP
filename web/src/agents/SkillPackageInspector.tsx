@@ -59,7 +59,11 @@ export function SkillPackageInspector({ entry, onClose }: Props) {
         )}
         <div className="skill-inspector-body">
           {error && <p className="error-text">{error}</p>}
-          {detail && <MarkdownAnswer text={detail.body} />}
+          {detail && (
+            <div className="chat-markdown">
+              <MarkdownAnswer text={detail.body} />
+            </div>
+          )}
         </div>
       </div>
     </div>

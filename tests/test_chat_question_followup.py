@@ -11,13 +11,14 @@ from tests.test_auto_research_children_storage import _identity, _project
 from tests.test_watchers import _completed_chat_turn, _task
 
 
-def _answered(store):
+def _answered(store, *, mode="work"):
     _project(store)
     record = _task(store, "origin", []).model_copy(
         update={
             "request": {
                 **_task(store, "origin", []).request,
                 "trigger": "human",
+                "mode": mode,
             }
         }
     )
@@ -39,14 +40,15 @@ def _answered(store):
     )
     store.complete_agent_task("origin", applied_revision=None, result={})
     task = store.agent_task("origin")
-    store.bind_agent_task_write_scope(
-        task.operation_id,
-        project_id=task.project_id,
-        stage_host=task.stage_host or "",
-        stage_root=task.stage_root,
-        fingerprint="a" * 64,
-        continuation_binding=False,
-    )
+    if mode == "work":
+        store.bind_agent_task_write_scope(
+            task.operation_id,
+            project_id=task.project_id,
+            stage_host=task.stage_host or "",
+            stage_root=task.stage_root,
+            fingerprint="a" * 64,
+            continuation_binding=False,
+        )
     question = store.create_or_get_question(
         origin=QuestionOrigin(
             owner_kind="chat",
@@ -58,7 +60,7 @@ def _answered(store):
             stage_root=task.stage_root,
             stage_host=task.stage_host,
             capability=task.dispatch_authority.task_contract,
-            write_scope_fingerprint="a" * 64,
+            write_scope_fingerprint="a" * 64 if mode == "work" else None,
             graph_target=task.graph_target,
         ),
         key="choice",
@@ -129,9 +131,10 @@ def test_answer_turn_takes_the_chat_browser_choice_at_admission(tmp_path, browse
     assert task.request["browser_requested"] is browser_requested
 
 
-def test_answer_claim_is_atomic_under_duplicate_and_restart_admission(tmp_path):
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_answer_claim_is_atomic_under_duplicate_and_restart_admission(tmp_path, mode):
     store = AppStore(tmp_path / "store.sqlite3")
-    question = _answered(store)
+    question = _answered(store, mode=mode)
     reopened = AppStore(store.path)
     with ThreadPoolExecutor(max_workers=2) as pool:
         tasks = list(
@@ -141,6 +144,13 @@ def test_answer_claim_is_atomic_under_duplicate_and_restart_admission(tmp_path):
         )
     admitted = [task for task in tasks if task is not None]
     assert len(admitted) == 1
+    followup = admitted[0]
+    assert followup.dispatch_authority is not None
+    assert followup.request["mode"] == mode
+    assert followup.dispatch_authority.task_contract == question.origin.capability
+    if mode == "discuss":
+        assert followup.dispatch_authority.scope.patch_kind is None
+        assert followup.write_scope_fingerprint is None
     assert AppStore(store.path).admit_chat_question_followup(question.question_id) is None
 
 
@@ -171,7 +181,7 @@ def test_failed_insert_rolls_back_answer_claim(tmp_path, monkeypatch):
     assert store.get_question(question.question_id).followup_operation_id is None
 
 
-def _project_chat_question(manifest, tmp_path):
+def _project_chat_question(manifest, tmp_path, *, mode="work"):
     import json
     from uuid import uuid4
 
@@ -180,7 +190,7 @@ def _project_chat_question(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "app-data")
     service = app.state.service
     store = AppStore(tmp_path / "question-store.sqlite3")
-    question = _answered(store)
+    question = _answered(store, mode=mode)
     chat_id = str(uuid4())
     task = store.agent_task("origin")
     request = {**task.request, "chat_id": chat_id, "chat_scope": "project", "node_id": None}
@@ -275,12 +285,13 @@ def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
     assert answer.operation_id is None
 
 
-def test_answer_follows_its_asking_prompt(manifest, tmp_path):
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_answer_follows_its_asking_prompt(manifest, tmp_path, mode):
     from types import SimpleNamespace
 
     from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer
 
-    service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
+    service, store, question, chat_id = _project_chat_question(manifest, tmp_path, mode=mode)
     project_chat_question_answer(service, store, question)
     project_chat_question_answer(service, AppStore(store.path), question)
     request = RunRequest.model_validate(store.agent_task("origin").request)
@@ -293,6 +304,7 @@ def test_answer_follows_its_asking_prompt(manifest, tmp_path):
         execution=SimpleNamespace(store=store, operation_id="origin"),
     )
     messages = service.chat_transcript(chat_id).messages
+    assert all(item.mode == mode for item in messages)
     expected = [("user", request.message), ("user", "Use route A"), ("assistant", "Done")]
     assert [(item.role, item.text) for item in messages] == expected
     by_time = sorted(messages, key=lambda item: item.timestamp)
@@ -439,3 +451,32 @@ def test_recovery_retains_answer_origin_before_scope_is_bound(tmp_path):
     inherited = store.question_for_followup(recovery.operation_id)
     assert inherited.question_id == question.question_id
     assert inherited.origin == question.origin
+
+
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_question_receipt_keeps_asking_mode(tmp_path, mode):
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store, mode=mode)
+    store.record_agent_task_receipt(
+        "origin",
+        "question_answer_acknowledged",
+        {"question_id": question.question_id, "answer_revision": 1, "request_id": "client"},
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json,'$.mode',?) "
+            "WHERE operation_id='origin'",
+            ("work" if mode == "discuss" else "discuss",),
+        )
+    assert not store.record_question_continuation_receipt(
+        question.question_id, answer_revision=1, operation_id="origin", request_id="client"
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json,'$.mode',?) "
+            "WHERE operation_id='origin'",
+            (mode,),
+        )
+    assert store.record_question_continuation_receipt(
+        question.question_id, answer_revision=1, operation_id="origin", request_id="client"
+    )

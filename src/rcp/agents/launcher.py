@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
+from types import EllipsisType
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -1131,6 +1132,7 @@ class AgentLauncher:
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        shell_timeout_seconds: int | None | EllipsisType = ...,
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1148,6 +1150,9 @@ class AgentLauncher:
                 browser_grant.hidden_read_enforcement if browser_grant is not None else None
             ),
         )
+        # Omitted resolves at launch; explicit None is a staged, unset value.
+        if shell_timeout_seconds is ...:
+            shell_timeout_seconds = self.shell_timeout_seconds(provider, host)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
@@ -1182,6 +1187,7 @@ class AgentLauncher:
                         git_access=git_access,
                         browser_grant=browser_grant,
                         hidden_read_scope=hidden_read_scope,
+                        shell_timeout_seconds=shell_timeout_seconds,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1231,6 +1237,7 @@ class AgentLauncher:
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        shell_timeout_seconds: int | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1295,6 +1302,7 @@ class AgentLauncher:
             hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
+        autocompact = self._autocompact(provider, host)
         legacy_command = (
             self._command(
                 provider,
@@ -1311,6 +1319,7 @@ class AgentLauncher:
                 provider_version=getattr(readiness, "version", None),
                 browser_grant=browser_grant,
                 hidden_read_scope=hidden_read_scope,
+                autocompact=autocompact,
             )
             if runtime.id == profile.legacy_runtime_id
             else None
@@ -1330,8 +1339,11 @@ class AgentLauncher:
                     capability=capability,
                     provider_version=getattr(readiness, "version", None),
                     legacy_command=legacy_command,
+                    invocation_gate=invocation_gate,
                     browser_grant=browser_grant,
                     hidden_read_scope=hidden_read_scope,
+                    autocompact=autocompact,
+                    shell_timeout_seconds=shell_timeout_seconds,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1876,6 +1888,7 @@ class AgentLauncher:
         provider_version: str | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        autocompact: str = "",
     ) -> list[str]:
         return profile_for(provider).command(
             prompt,
@@ -1891,7 +1904,23 @@ class AgentLauncher:
             provider_version=provider_version,
             browser_grant=browser_grant,
             hidden_read_scope=hidden_read_scope,
+            autocompact=autocompact,
         )
+
+    def _autocompact(self, provider: str, host: str) -> str:
+        """The machine card's auto-compact setting for `provider`, read at each launch."""
+
+        if self.accounts is None:
+            return ""
+        card = self.accounts.store.space_machine_for(host)
+        return card.provider_autocompact.get(provider, "") if card is not None else ""
+
+    def shell_timeout_seconds(self, provider: str, host: str = "") -> int | None:
+        """Resolve the configured timeout once; None preserves the provider default."""
+
+        if self.accounts is None:
+            return None
+        return self.accounts.store.provider_shell_timeout_seconds(provider, host)
 
     def _discover_remote_provider(
         self, provider: str, host: str

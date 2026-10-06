@@ -6,6 +6,7 @@ import json
 import shlex
 import threading
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -19,6 +20,7 @@ from rcp.agents.prompts import (
 from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
+from rcp.core.models import AuthorizedHuman
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
@@ -49,12 +51,22 @@ class _RecordingLauncher:
         self.launch_kwargs: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
+        if kwargs["capability"] == "discuss" and kwargs.get("invocation_gate") is not None:
+            gate = kwargs.get("invocation_gate")
+            assert gate is not None
+            argv = shlex.split(current_command_client(prompt))
+            authority = list(gate.client_arguments())
+            prefix = list(gate.client_executable_argv())
+            assert argv[: len(prefix)] == prefix
+            assert argv[len(prefix) : len(prefix) + len(authority)] == authority
         if kwargs["capability"] == "work_auto":
             # This turn's launches run through its own gate, named by the current client.
             argv = shlex.split(current_command_client(prompt))
             gate = kwargs["invocation_gate"]
             authority = list(gate.client_arguments())
-            assert argv[2 : 2 + len(authority)] == authority
+            prefix = list(gate.client_executable_argv())
+            assert argv[: len(prefix)] == prefix
+            assert argv[len(prefix) : len(prefix) + len(authority)] == authority
             assert argv[argv.index("--workspace") + 1] == str(kwargs["cwd"])
             launch = f"{COMMAND_CLIENT} " + shlex.join(
                 ["launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--"]
@@ -77,6 +89,7 @@ def _execution(
     project_id: str,
     request: RunRequest,
     native_session_id: str | None = None,
+    human: bool = False,
 ) -> AgentTaskExecution:
     now = store.now()
     task_kind = "node_chat" if request.chat_scope == "node" else "project_chat"
@@ -92,6 +105,11 @@ def _execution(
             status_message="running",
             native_session_id=native_session_id,
             dispatch_authority=resolve_dispatch_authority(task_kind, request),
+            authorized_by=AuthorizedHuman(
+                space_id=str(uuid4()), user_id=str(uuid4()), display_name="Human"
+            )
+            if human
+            else None,
         )
     )
     store.record_agent_task_receipt(
@@ -368,6 +386,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
     execution = _execution(
         store,
         operation_id="discuss-master-first",
+        human=True,
         project_id=project_id,
         request=request,
         native_session_id=session_id,
@@ -384,6 +403,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         pass
 
     assert launcher.sessions == [None]
+    assert launcher.launch_kwargs[0]["invocation_gate"] is not None
     prompt = launcher.prompts[0]
     artifact_directory = launcher.workspaces[0] / "turns" / execution.operation_id / "artifacts"
     assert str(artifact_directory) in prompt
@@ -412,6 +432,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         "patch",
         "workspace",
         "browser",
+        "discuss",
     }
     # The revision is the one graph fact the session tracks, so a human Sync
     # between turns can reach the conversation as a compact delta.
@@ -826,8 +847,9 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
+@pytest.mark.parametrize("first_mode", ["discuss", "work"])
 def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settings(
-    manifest, tmp_path, legacy_layout: bool
+    manifest, tmp_path, legacy_layout: bool, first_mode: str
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -858,7 +880,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
             "chat_id": chat_id,
             "message": "First discuss this.",
             "run_truth_scope": ["repo-a"],
-            "mode": "discuss",
+            "mode": first_mode,
         },
     )
     assert first.status_code == 202, first.text
@@ -879,7 +901,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
             "message": work_message,
             "session_id": session_id,
             "run_truth_scope": ["repo-a"],
-            "mode": "work",
+            "mode": "work" if first_mode == "discuss" else "discuss",
             "reasoning": "high",
             "invoked_skill_ids": ["graph-audit"],
         },
@@ -899,6 +921,10 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     delta = changed_values(launcher.prompts[1])
     assert delta["settings.reasoning"] == "high"
     assert not any(key.startswith(("repositories", "skills")) for key in delta)
+
+    if first_mode == "work":
+        assert json.loads(delta["discuss.execution_instructions"])
+        assert launcher.launch_kwargs[1]["write_scope"] is None
 
 
 @pytest.mark.asyncio

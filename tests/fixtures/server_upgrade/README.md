@@ -66,3 +66,9 @@ lessons and nightly graph consolidation added their tables (storage migrations
 36 and 37). It also carries the question, chat projection, and artifact policy
 migrations that followed the previous boundary. It is built by the exact
 boundary source from the preceding immutable fixture.
+
+`pre-provider-autocompact-v17-dfb553b` retains the last shape before machine
+cards gained a per-provider auto-compact map (storage migration 42). It also
+carries the owner sign-in, browser grant, and machine hidden-folder migrations
+that followed the previous boundary. It is built by the exact boundary source
+from the preceding immutable fixture.

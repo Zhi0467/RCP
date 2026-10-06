@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import hashlib
 import hmac
@@ -496,6 +497,16 @@ def _handle(
             response = _read_response(
                 os.path.join(workspace, response_name), request_id, response_timeout
             )
+            result = response.get("result")
+            if (
+                value.get("verb") == "ask"
+                and isinstance(result, dict)
+                and result.get("state") == "pending"
+            ):
+                # A long hold polls thousands of rounds; keep only rounds in flight.
+                for item in (name, response_name):
+                    with contextlib.suppress(OSError):
+                        os.unlink(os.path.join(workspace, item))
     except BrokerUnavailable as exc:
         response = _unavailable(request_id, exc, written)
     except (BrokerError, ValueError) as exc:

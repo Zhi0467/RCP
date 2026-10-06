@@ -1187,6 +1187,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   color: var(--coral);
   font-size: var(--type-xs);
   margin: 0;
+  overflow-wrap: anywhere;
   padding: 0 14px 6px;
 }
 .agent-row-body {
@@ -1373,6 +1374,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   justify-content: space-between;
   margin-top: 6px;
   padding: 6px 6px 6px 10px;
+}
+/* The status label can carry a failure path; the Resume button stays in view. */
+.conversation-header-banner > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .conversation-header[data-state="stopped"] .conversation-header-banner {
   background: color-mix(in srgb, var(--agent-stopped) 16%, var(--sheet));
@@ -3770,6 +3776,22 @@ details[open] > .view-disclosure-summary > svg:last-child {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+/* The row's buttons sit on its header line; everything else spans below. */
+.machine-browser-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.machine-browser-row > * {
+  grid-column: 1 / -1;
+}
+.machine-browser-row > header {
+  grid-column: 1;
+  grid-row: 1;
+}
+.machine-browser-row > .provider-login-notice-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
 }
 .machine-browser-row p {
   margin: 0;

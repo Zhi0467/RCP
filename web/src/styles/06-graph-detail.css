@@ -21,6 +21,7 @@
 }
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   justify-content: flex-end;
   padding: 9px 10px;
@@ -36,7 +37,7 @@
   border-radius: 7px;
   display: grid;
   gap: 8px;
-  grid-template-columns: 17px 1fr 14px;
+  grid-template-columns: 17px minmax(0, 1fr) 14px;
   margin: 7px 0;
   padding: 9px;
   text-align: left;
@@ -47,6 +48,7 @@
 }
 .attention-item strong {
   display: block;
+  overflow-wrap: anywhere;
 }
 .attention-item strong {
   font-size: var(--type-xs);
@@ -160,6 +162,10 @@
   justify-content: space-between;
   padding: 20px 22px 16px;
 }
+.detail-drawer > header > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
 .detail-drawer > header[data-drag-handle],
 .chat-dock > header[data-drag-handle] {
   cursor: grab;
@@ -186,6 +192,7 @@
   font-weight: 550;
   line-height: 1.15;
   margin: 4px 0 8px;
+  overflow-wrap: anywhere;
 }
 .node-meta {
   align-items: center;
@@ -206,6 +213,8 @@
 .drawer-content {
   flex: 1;
   overflow: auto;
+  /* Node fields, paths, and run messages wrap; `pre` keeps its own scroller. */
+  overflow-wrap: anywhere;
   padding: 5px 22px 30px;
 }
 .drawer-content section {
@@ -225,7 +234,7 @@
 .detail-list > div {
   display: grid;
   gap: 12px;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 120px minmax(0, 1fr);
   padding: 5px 0;
 }
 .detail-list dt {
@@ -429,13 +438,17 @@
   transition:
     opacity 100ms ease,
     transform 100ms ease;
-  visibility: hidden;
+  /* Not merely invisible: a hidden box near the right edge still widens its
+     scroller on a phone. */
+  display: none;
+  overflow-wrap: anywhere;
   white-space: normal;
   width: max-content;
   z-index: 40;
 }
 .glossary-definition:hover::after,
 .glossary-definition:focus::after {
+  display: block;
   opacity: 1;
   transform: translate(-50%, 0);
   visibility: visible;
@@ -1060,7 +1073,7 @@ button.relation-map-node:hover {
   border-radius: 7px;
   display: grid;
   gap: 8px;
-  grid-template-columns: 8px 1fr;
+  grid-template-columns: 8px minmax(0, 1fr);
   margin-bottom: 4px;
   padding: 9px 8px;
   text-align: left;
@@ -1272,7 +1285,7 @@ button.relation-map-node:hover {
   color: var(--muted);
   display: grid;
   gap: 9px;
-  grid-template-columns: 13px 1fr;
+  grid-template-columns: 13px minmax(0, 1fr);
   margin-left: 6px;
   padding: 0 0 14px 12px;
 }

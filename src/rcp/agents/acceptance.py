@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from types import EllipsisType
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
@@ -176,6 +177,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        shell_timeout_seconds: int | None | EllipsisType = ...,
     ) -> AsyncGenerator[AgentEvent, None]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -204,6 +206,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     git_access=git_access,
                     browser_grant=browser_grant,
                     hidden_read_scope=hidden_read_scope,
+                    shell_timeout_seconds=shell_timeout_seconds,
                 ):
                     yield event
             return
@@ -221,6 +224,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             supervisor_path,
             operation_id,
             hidden_read_scope,
+            shell_timeout_seconds,
         )
         resolved_cwd = cwd.resolve()
         stable_session = session_id or str(

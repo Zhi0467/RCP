@@ -1,8 +1,8 @@
 import { useEffect, useId, useState } from "react";
-import { loadChatBrowser, setChatBrowser } from "./api";
+import { loadChatBrowser, loadProjectMachineBrowser, setChatBrowser } from "./api";
 import { browserReason } from "./browserStatus";
 import { errorMessage } from "./errors";
-import type { BrowserTurnStatus } from "./types";
+import type { BrowserTurnStatus, MachineBrowserReadiness } from "./types";
 
 export function BrowserToggle({
   checked,
@@ -45,15 +45,20 @@ export function BrowserToggle({
   );
 }
 
+const RECHECK_MS = 15_000;
+
 // The caller keys this by project and chat, so a late response cannot change another chat.
 export function ChatBrowserControl({
   apiBase,
   chatId,
+  machine,
   disabled = false,
   onRequestedChange,
 }: {
   apiBase: string;
   chatId: string;
+  /** The project machine alias the next turn runs on, whose browser is checked while on. */
+  machine: string;
   disabled?: boolean;
   onRequestedChange?: (requested: boolean) => void;
 }) {
@@ -76,6 +81,43 @@ export function ChatBrowserControl({
       cancelled = true;
     };
   }, [apiBase, chatId]);
+  const [checked, setChecked] = useState<{
+    machine: string;
+    readiness: MachineBrowserReadiness;
+  } | null>(null);
+  const [recheck, setRecheck] = useState(0);
+  const [failedChecks, setFailedChecks] = useState(0);
+  useEffect(() => {
+    if (!requested || !machine) return;
+    let cancelled = false;
+    // A failed check shows nothing new here; the turn itself reports an unavailable
+    // browser. Counting failures keeps re-checking until one check succeeds.
+    void loadProjectMachineBrowser(apiBase, machine).then(
+      (readiness) => {
+        if (cancelled) return;
+        setChecked({ machine, readiness });
+        setFailedChecks(0);
+      },
+      () => {
+        if (!cancelled) setFailedChecks((count) => count + 1);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, machine, requested, recheck]);
+  const warning =
+    requested && checked?.machine === machine && checked.readiness.status !== "ready"
+      ? browserReason(checked.readiness.status)
+      : null;
+  // Installing from Settings finishes elsewhere; keep checking while the warning shows
+  // or while the last check failed, including a first check that never succeeded.
+  const warningCode = warning?.code ?? null;
+  useEffect(() => {
+    if (!requested || (!warningCode && failedChecks === 0)) return;
+    const timer = window.setTimeout(() => setRecheck((count) => count + 1), RECHECK_MS);
+    return () => window.clearTimeout(timer);
+  }, [requested, warningCode, checked, failedChecks]);
   async function change(value?: boolean) {
     setPending(true);
     setError(null);
@@ -108,6 +150,12 @@ export function ChatBrowserControl({
         onChange={(value) => void change(value)}
       />
       {pending && <p role="status">Saving Browser preference…</p>}
+      {warning && (
+        <p role="status" className="chat-browser-warning">
+          {warning.reason}
+          {warning.fix ? ` ${warning.fix}` : ""}
+        </p>
+      )}
       {error && <p role="alert">{error}</p>}
       {error && (
         <button

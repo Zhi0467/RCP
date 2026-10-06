@@ -52,6 +52,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
+    COMMAND_CLIENT_WAIT_SECONDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
@@ -158,6 +159,8 @@ def _stage_chat_patch_inputs(
     turn_id: str,
     broker: bool = False,
     episode_id: str | None = None,
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
+    shell_timeout_seconds: int | None = None,
 ) -> _ChatPatchInputs:
     """Stage stable schema plus one turn-scoped unified validator credential."""
 
@@ -179,6 +182,8 @@ def _stage_chat_patch_inputs(
         timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
         authority="broker" if broker else "validate_only",
         episode_id=episode_id,
+        ask_wait_seconds=ask_wait_seconds,
+        shell_timeout_seconds=shell_timeout_seconds,
     )
     validator_command = validator_staged.client_command("validate", patch_path)
     return _ChatPatchInputs(
@@ -209,8 +214,8 @@ def chat_prompt_values(
     Discuss, Work, and their recoveries and corrections build their values here, so a
     continuation's changed values are always taken against the same shape. ``patch``
     holds the Patch outputs and command client, and ``work`` what only a Work turn
-    resolves: its write roots and its launch facts. A Discuss launch keeps both as its
-    session last had them.
+    resolves: its write roots and its launch facts. Discuss retains Work values but
+    replaces the command client when it stages its own question broker.
     """
 
     values: dict[str, object] = {
@@ -251,7 +256,7 @@ def chat_prompt_values(
 
 
 def retained_work_values(values: Mapping[str, object] | None) -> dict[str, object]:
-    """The Work-only entries a Discuss launch keeps unchanged from its session's values."""
+    """Session Work values; Discuss replaces patch values when it stages a fresh client."""
 
     return {key: values[key] for key in ("patch", "work") if values and key in values}
 
@@ -1904,7 +1909,7 @@ def project_chat_question_answer(
                         if question.origin.owner_kind == "chat"
                         else None
                     ),
-                    "mode": "work",
+                    "mode": request.mode,
                     "trigger": "human",
                     "type": "user",
                     "role": "user",

@@ -21,10 +21,12 @@ test("chat question answers stay separate from steering and resolved cards enter
       owner_kind: "chat",
       owner_id: "steering-chat",
       operation_id: "task",
+      capability: "work_auto",
       question: id,
       choices: ["a", "b"],
       multiple: id === "multiple",
       state: "pending",
+      agent_waiting: true,
       answer: null,
       chosen_choices: [],
       resolved_by: null,
@@ -74,6 +76,14 @@ test("chat question answers stay separate from steering and resolved cards enter
     await page.evaluate(() => window.setSteeringFixture({ updated_at: "2026-09-05T12:00:02Z" }));
     await changedOwnerRead;
     assert.equal(questionReads, 2);
+    await single.getByText("Agent is waiting", { exact: true }).waitFor();
+    questions[0].agent_waiting = false;
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
+      ),
+    );
+    await single.getByText("Needs you", { exact: true }).waitFor();
     await single.getByRole("button", { name: "a", exact: true }).click();
     await page
       .locator('.node-chat-lines [data-question-id="single"][data-question-state="answered"]')
@@ -142,6 +152,21 @@ test("chat question answers stay separate from steering and resolved cards enter
       .locator('[data-question-id="parked"]')
       .getByRole("button", { name: "Answer and continue Work", exact: true })
       .waitFor();
+    questions.push({ ...questions[3], question_id: "discuss", capability: "discuss" });
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
+      ),
+    );
+    const discuss = page.locator('[data-question-id="discuss"]');
+    await discuss.getByRole("textbox").fill("Discuss this route");
+    await discuss.getByRole("button", { name: "Answer and continue Discuss", exact: true }).click();
+    await page.locator('.node-chat-lines [data-question-id="discuss"]').waitFor();
+    assert.deepEqual(mutations.at(-1), {
+      id: "discuss",
+      action: "answer",
+      body: { answer: "Discuss this route", choices: [] },
+    });
     questions[3].withdrawn_readonly = true;
     questions[3].can_answer = false;
     await page.evaluate(() =>

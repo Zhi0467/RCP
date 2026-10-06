@@ -46,6 +46,21 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-machine provider shell timeout, fresh and historical in-place upgrades.
+        "103947657c32d80b70e02605eb95dacaf6cc967915bf9601bdb90a1cefefac6c",
+        "84147ee5ae320f2e40579fb1c94a383001d821300d17a3e52e0f1a2fe437364c",
+        "1e606e0ddffab108acda70383c9e5b973b45e5f0728014ae97ddf5f9ebb54ffc",
+        "ed1c957137dde8f9fb9b75f8f6b3d47618817fe11f17a596283898825ec41f92",
+        "34dbdaeafdfc40a5c8c570d619658841e4854e720d38272b2fb92eb898ee8fbf",
+        "d5c70abef062848663243b2aa7355524af723ffc823d958c86e78bbcbc227091",
+        "0e14969ecc0a1d8b27c1a0edfdf5ff93371cc94e35be13cd532c5c6ef0d0c0da",
+        "143daa3ff673b756334f537fefe1f13b1c419ee8863f5276af755f2309d420a9",
+        "e04ae8c4c6e357ce7425791ae8e8c34e3fd73838fc3a972a37f537a2d4b55f07",
+        # Per-machine provider auto-compact, fresh and upgraded in place.
+        "3e2a828c726a6d7e43ff7a411f51ef120f0da60907ad449a68a621e2505f33c9",
+        "9194bbf346b5f6d3b817491af2189bbd3f3a38bff88c0c32fc22da7e069dc307",
+        # The pre-provider-autocompact boundary as an upgraded server reached it.
+        "fc64408d0239dcaaadd8566c5a2d71a7174356d9b466111f9a3016190020fe82",
         # Per-machine hidden folders, fresh and upgraded in place.
         "bfc5386ccc7def478a8ff8f9eb01dbd9a32e6b8d3c77d7a871acdde5bb582f34",
         "c499a49066e8111b6f6ef4e47e0327e1af514d8c77c0181c9fbc342b55df8026",

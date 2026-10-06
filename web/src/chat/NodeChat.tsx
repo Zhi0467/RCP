@@ -96,6 +96,7 @@ import {
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
   chatAnnotationViewportMetrics,
+  chatSelectionCommentPosition,
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
@@ -391,6 +392,12 @@ export function NodeChat({
   const [annotationViewport, setAnnotationViewport] =
     useState<ChatAnnotationViewportMetrics | null>(null);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
+  // A finished selection inside an answer offers Comment; the composer opens
+  // only when the reader asks, so the platform's Copy stays usable.
+  const [selectionComment, setSelectionComment] = useState<{
+    range: Range;
+    position: ChatAnnotationComposerPosition;
+  } | null>(null);
   const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
@@ -471,6 +478,7 @@ export function NodeChat({
   const annotationCommentRef = useRef<HTMLTextAreaElement | null>(null);
   const annotationSelectionRef = useRef<HTMLTextAreaElement | null>(null);
   const annotationComposerRef = useRef<HTMLFormElement | null>(null);
+  const selectionCommentRef = useRef<HTMLButtonElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
@@ -567,6 +575,8 @@ export function NodeChat({
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
   const annotationComposerOpen = annotationComposer !== null;
+  const annotationComposerOpenRef = useRef(annotationComposerOpen);
+  annotationComposerOpenRef.current = annotationComposerOpen;
   const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
   const dictating = dictationState !== "idle" && dictationState !== "error";
   const dictationStatus =
@@ -678,6 +688,21 @@ export function NodeChat({
     observer.observe(composer);
     return () => observer.disconnect();
   }, [annotationComposer, annotationViewport]);
+
+  // The composer stays hidden until it is placed, and a hidden field cannot take
+  // focus, so the step's field is focused once the composer becomes visible.
+  const annotationComposerPlaced = Boolean(annotationComposer?.position);
+  const annotationComposerStep = annotationComposer?.step;
+  useEffect(() => {
+    if (!annotationComposerPlaced) return;
+    if (annotationComposerRef.current?.contains(document.activeElement)) return;
+    const field =
+      annotationComposerStep === "select"
+        ? annotationSelectionRef.current
+        : annotationCommentRef.current;
+    field?.focus();
+    if (annotationComposerStep === "select") field?.setSelectionRange(0, 0);
+  }, [annotationComposerPlaced, annotationComposerStep]);
 
   useEffect(() => {
     if (lastChatIdRef.current !== chatId) {
@@ -1015,9 +1040,38 @@ export function NodeChat({
         total += item.file.size;
       }
     }
+    // Publish the preparing rows first: they block sending while the reads below run.
     setAttachments((current) => [...current, ...candidates]);
+    // A macOS screenshot thumbnail drops a file promise whose bytes can be gone by
+    // upload time. Copy them now, so a source that cannot be read fails here, named.
+    const prepared: ComposerAttachment[] = [];
+    for (const item of candidates) {
+      if (item.status !== "preparing") continue;
+      let next: ComposerAttachment;
+      try {
+        const bytes = await item.file.arrayBuffer();
+        if (bytes.byteLength !== item.file.size) throw new Error("short read");
+        next = {
+          ...item,
+          file: new globalThis.File([bytes], item.file.name, {
+            type: item.file.type,
+            lastModified: item.file.lastModified,
+          }),
+        };
+        prepared.push(next);
+      } catch {
+        next = {
+          ...item,
+          status: "error",
+          error: "Could not read this file. Save it to disk first, then attach it.",
+        };
+      }
+      setAttachments((current) =>
+        current.map((candidate) => (candidate.localId === item.localId ? next : candidate)),
+      );
+    }
 
-    const uploadCandidates = candidates.filter((candidate) => candidate.status === "preparing");
+    const uploadCandidates = prepared;
     for (const [index, item] of uploadCandidates.entries()) {
       try {
         const result = await uploadChatAttachment(
@@ -1182,20 +1236,83 @@ export function NodeChat({
 
   // The pointer often lifts outside the answer that was swept, so the release is
   // observed on the document and the answer is resolved from the selection itself.
-  const openAnnotationComposerRef = useRef(openAnnotationComposer);
-  openAnnotationComposerRef.current = openAnnotationComposer;
+  // Touch selection (long press, dragged handles) settles without a pointerup, so
+  // a selection change made while no pointer is down refreshes the offer too.
   useEffect(() => {
-    if (readOnly) return;
-    const onPointerUp = (event: PointerEvent) => {
-      // Clicks inside the open composer must not restart it over the same selection.
-      if (event.target instanceof Node && annotationComposerRef.current?.contains(event.target))
-        return;
+    if (readOnly) {
+      setSelectionComment(null);
+      return;
+    }
+    let pointerDown = false;
+    const refresh = () => {
+      // The composer re-selects the staged text; that is not a new offer.
+      if (annotationComposerOpenRef.current) return setSelectionComment(null);
       const range = annotatableAnswerSelectionRange(window.getSelection(), chatLinesRef.current);
-      if (range) openAnnotationComposerRef.current(range);
+      const rects = range?.getClientRects();
+      const firstLine = rects?.item(0) ?? range?.getBoundingClientRect();
+      if (!range || !firstLine) {
+        setSelectionComment(null);
+        return;
+      }
+      const button = selectionCommentRef.current?.getBoundingClientRect();
+      const viewport = chatAnnotationViewportMetrics(
+        { width: window.innerWidth, height: window.innerHeight },
+        window.visualViewport,
+      );
+      setSelectionComment({
+        range,
+        position: chatSelectionCommentPosition(
+          { firstLine, bottom: range.getBoundingClientRect().bottom },
+          viewport,
+          button?.width ? button : { width: 96, height: 32 },
+        ),
+      });
+    };
+    const insideOwnControls = (target: EventTarget | null) =>
+      target instanceof Node &&
+      Boolean(
+        annotationComposerRef.current?.contains(target) ||
+        selectionCommentRef.current?.contains(target),
+      );
+    const onPointerDown = (event: PointerEvent) => {
+      if (!insideOwnControls(event.target)) pointerDown = true;
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      pointerDown = false;
+      // Clicks inside the open composer or on Comment must not restart the offer.
+      if (insideOwnControls(event.target)) return;
+      refresh();
+    };
+    const onPointerCancel = () => {
+      pointerDown = false;
+    };
+    const onSelectionChange = () => {
+      if (!pointerDown) refresh();
+    };
+    const onViewportChange = () => {
+      if (!pointerDown) refresh();
     };
     // Capture phase: a release over a window resize corner stops propagation.
+    document.addEventListener("pointerdown", onPointerDown, { capture: true });
     document.addEventListener("pointerup", onPointerUp, { capture: true });
-    return () => document.removeEventListener("pointerup", onPointerUp, { capture: true });
+    document.addEventListener("pointercancel", onPointerCancel, { capture: true });
+    document.addEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("scroll", onViewportChange, { capture: true, passive: true });
+    // A resize, rotation, or soft keyboard moves the selection under a fixed offer.
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", onViewportChange);
+    viewport?.addEventListener("resize", onViewportChange);
+    viewport?.addEventListener("scroll", onViewportChange);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, { capture: true });
+      document.removeEventListener("pointerup", onPointerUp, { capture: true });
+      document.removeEventListener("pointercancel", onPointerCancel, { capture: true });
+      document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("scroll", onViewportChange, { capture: true });
+      window.removeEventListener("resize", onViewportChange);
+      viewport?.removeEventListener("resize", onViewportChange);
+      viewport?.removeEventListener("scroll", onViewportChange);
+    };
   }, [readOnly]);
 
   const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {
@@ -2049,7 +2166,7 @@ export function NodeChat({
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueWork={question.state === "parked" && !relatedActive}
+              continueChat={question.state === "parked" && !relatedActive}
             />
           ))}
       </div>
@@ -2391,6 +2508,7 @@ export function NodeChat({
                     key={`${project.id}:${chatId}`}
                     apiBase={questionApiBase}
                     chatId={chatId}
+                    machine={config.run_on}
                     disabled={readOnly}
                     onRequestedChange={setBrowserOn}
                   />
@@ -2523,6 +2641,28 @@ export function NodeChat({
           </div>
         </div>
       )}
+      {selectionComment && !annotationComposer && typeof document !== "undefined"
+        ? createPortal(
+            <button
+              ref={selectionCommentRef}
+              type="button"
+              className="chat-selection-comment"
+              style={{ left: selectionComment.position.left, top: selectionComment.position.top }}
+              disabled={submitting}
+              // Keep the selection while pressing, so the staged text is what was shown.
+              onPointerDown={(event) => event.preventDefault()}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const { range } = selectionComment;
+                setSelectionComment(null);
+                openAnnotationComposer(range);
+              }}
+            >
+              <MessageCirclePlus size={13} /> Comment
+            </button>,
+            document.body,
+          )
+        : null}
       {annotationComposer && typeof document !== "undefined"
         ? createPortal(
             <form

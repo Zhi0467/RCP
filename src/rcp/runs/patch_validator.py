@@ -26,6 +26,7 @@ from rcp.agents.command_protocol import (
 )
 from rcp.background import AgentTaskExecution
 from rcp.limits import (
+    COMMAND_CLIENT_WAIT_SECONDS,
     COMPUTE_COMMAND_TIMEOUT_SECONDS,
     PATCH_SELF_CHECK_MAX_COUNT,
     PATCH_SELF_CHECK_POLL_SECONDS,
@@ -68,6 +69,8 @@ def stage_patch_validation_mailbox(
     timeout_seconds: float,
     authority: Literal["validate_only", "broker"] = "validate_only",
     episode_id: str | None = None,
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
+    shell_timeout_seconds: int | None = None,
 ) -> StagedCommandMailbox:
     """Stage the command client with the authority selected by its concrete owner."""
 
@@ -79,6 +82,8 @@ def stage_patch_validation_mailbox(
         remote_stage=remote_stage,
         local_input_stage=local_input_stage,
         episode_id=episode_id,
+        ask_wait_seconds=ask_wait_seconds,
+        shell_timeout_seconds=shell_timeout_seconds,
         authority=authority,
         task_id=task_id,
         turn_id=turn_id,
@@ -109,22 +114,24 @@ async def serve_patch_validation_mailbox(
     *,
     staged: StagedCommandMailbox,
     execution: AgentTaskExecution | None,
-    validate: Callable[[str], PatchValidationResult],
+    validate: Callable[[str], PatchValidationResult] | None,
     stop: asyncio.Event | threading.Event,
-    budget: PatchValidationBudget,
+    budget: PatchValidationBudget | None,
     command_handler: CommandHandler | None = None,
     responses: dict[str, CommandResponse] | None = None,
     terminal: dict[str, str] | None = None,
     checkpoint: Callable[[], None] | None = None,
     suspend: threading.Event | None = None,
 ) -> None:
-    """Serve bounded live Patch checks over the unified staged command mailbox."""
+    """Serve owner commands and optional bounded Patch checks over one mailbox."""
+    if validate is not None and budget is None:
+        raise ValueError("Patch validation requires a self-check budget")
 
     async def handle(
         request: CommandRequest,
         _identity: CommandTurnIdentity,
     ) -> CommandResponse:
-        if not isinstance(request, ValidateCommandRequest):
+        if validate is None or not isinstance(request, ValidateCommandRequest):
             if command_handler is not None:
                 return await asyncio.to_thread(command_handler, request, _identity)
             return CommandResponse(
@@ -132,6 +139,7 @@ async def serve_patch_validation_mailbox(
                 status="invalid",
                 message="This validator credential authorizes Patch validation only.",
             )
+        assert budget is not None
         count = budget.reserve(request.request_id)
         if checkpoint is not None:
             checkpoint()

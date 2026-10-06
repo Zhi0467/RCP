@@ -101,6 +101,7 @@
 }
 .chat-line {
   border-left: 2px solid var(--cobalt);
+  overflow-wrap: anywhere;
   font-family: var(--editorial);
   font-size: var(--type-md);
   line-height: 1.55;
@@ -233,6 +234,8 @@
 .chat-dock > header > strong {
   display: block;
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .chat-watcher-count {
   align-items: center;
@@ -317,6 +320,11 @@
   line-height: 1.62;
   margin: 0 auto 24px;
   max-width: 820px;
+  min-width: 0;
+  /* Long unbreakable tokens (paths, inline code, URLs) must wrap rather than
+     widen the transcript past a phone viewport; `pre`, tables, and display
+     math keep their own horizontal scrollers. */
+  overflow-wrap: anywhere;
   padding: 0;
   white-space: pre-wrap;
   width: 100%;
@@ -435,7 +443,12 @@
   border: 1px solid color-mix(in srgb, var(--cobalt) 35%, var(--line));
   color: var(--cobalt-dark);
 }
+/* Every MarkdownAnswer surface (chat, paper preview, campaign instruction,
+   skill body): long paths and URLs wrap, while `pre`, tables, and display math
+   keep their own horizontal scrollers. */
 .chat-markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
   white-space: normal;
 }
 .chat-markdown > :first-child {
@@ -490,6 +503,54 @@
   overflow: auto;
   padding: 9px 10px;
 }
+/* Shared by every MarkdownAnswer surface. The control sits over the block's
+   corner rather than inside the scroller, so it stays put while the code
+   scrolls sideways. */
+.markdown-code-block {
+  --markdown-code-copy-size: 22px;
+  --markdown-code-copy-reach: 0px;
+  margin: 7px 0;
+  position: relative;
+}
+/* The control gets its own strip at the top of the block, so it never covers
+   code and never overhangs a one-line block. */
+.markdown-code-block > pre {
+  margin: 0;
+  padding-top: calc(var(--markdown-code-copy-size) + 8px);
+}
+.markdown-code-copy {
+  align-items: center;
+  background: color-mix(in srgb, var(--sheet) 88%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  color: var(--walnut);
+  cursor: pointer;
+  display: inline-flex;
+  height: var(--markdown-code-copy-size);
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  user-select: none;
+  width: var(--markdown-code-copy-size);
+}
+/* An invisible margin keeps a small control easy to tap on a phone. */
+.markdown-code-copy::before {
+  content: "";
+  inset: calc(-1 * var(--markdown-code-copy-reach));
+  position: absolute;
+}
+.markdown-code-copy:hover {
+  background: var(--sheet);
+}
+.markdown-code-copy:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 1px;
+}
+.markdown-code-copy.failed {
+  color: var(--red);
+}
 .chat-markdown pre code {
   font-family: var(--mono);
   white-space: pre;
@@ -508,6 +569,7 @@
   border-collapse: collapse;
   display: block;
   max-width: 100%;
+  overflow-wrap: normal;
   overflow-x: auto;
 }
 .chat-markdown th,
@@ -914,6 +976,38 @@
   justify-self: end;
   padding: 2px;
 }
+/* Offered over a finished answer selection; the composer opens only from here. */
+.chat-selection-comment {
+  align-items: center;
+  background: var(--plum);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 5px 14px rgb(var(--shadow-rgb) / 24%);
+  color: var(--sheet);
+  cursor: pointer;
+  display: inline-flex;
+  font: 650 var(--type-2xs) / 1 var(--ui);
+  gap: 5px;
+  height: var(--chat-selection-comment-size, 26px);
+  padding: 0 10px;
+  position: fixed;
+  user-select: none;
+  z-index: 1200;
+}
+/* An invisible margin keeps the compact control easy to tap on a phone. */
+.chat-selection-comment::before {
+  content: "";
+  inset: calc(-1 * var(--chat-selection-comment-reach, 0px));
+  position: absolute;
+}
+.chat-selection-comment:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.chat-selection-comment:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
 .chat-annotation-composer {
   --chat-mode-accent: var(--plum);
   background: var(--surface);
@@ -1295,6 +1389,7 @@
   font-size: var(--type-xs);
   left: 50%;
   max-width: min(620px, 90vw);
+  overflow-wrap: anywhere;
   padding: 9px 13px;
   position: fixed;
   transform: translateX(-50%);
@@ -1328,7 +1423,7 @@
   display: grid;
   gap: 10px;
   min-width: 0;
-  padding: 14px;
+  padding: 14px 16px;
   margin: 10px 0;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1340,29 +1435,123 @@
   gap: 10px;
   min-width: 0;
 }
-.question-card textarea {
-  width: 100%;
-  min-width: 0;
-  resize: vertical;
+.question-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .question-state {
   font-size: 12px;
   font-weight: 600;
+  color: var(--muted);
 }
-.question-choices,
+.question-card[data-question-state="pending"] .question-state,
+.question-card[data-question-state="parked"] .question-state {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: var(--ink);
+}
+.question-card[data-agent-waiting="true"] .question-state {
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+}
+.question-dismiss {
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.question-dismiss:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.question-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.question-choices {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.question-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+.question-choice:hover:not(:disabled) {
+  border-color: var(--cobalt);
+}
+.question-choice:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.question-choice[aria-pressed="true"] {
+  border-color: var(--cobalt);
+  background: color-mix(in srgb, var(--cobalt) 10%, transparent);
+}
+.question-choice-key {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.question-choice[aria-pressed="true"] .question-choice-key {
+  border-color: var(--cobalt);
+  color: var(--cobalt);
+}
 .question-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 8px;
+  min-width: 0;
 }
-.question-choices .button,
+.question-actions textarea {
+  flex: 1;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 34px;
+  min-height: 34px;
+  max-height: 160px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  field-sizing: content;
+  resize: vertical;
+}
+.question-actions textarea:focus {
+  border-color: var(--cobalt);
+  outline: none;
+}
 .question-actions .button {
+  flex: none;
+  min-height: 34px;
   white-space: normal;
-  max-width: 100%;
-}
-.question-choices [aria-pressed="true"] {
-  outline: 2px solid var(--cobalt);
-  outline-offset: 1px;
 }
 .question-answer {
   white-space: pre-wrap;
@@ -1608,6 +1797,12 @@
   color: var(--muted);
   font-size: var(--type-2xs);
   margin: 3px 0 0;
+}
+.chat-browser-control > p.chat-browser-warning {
+  background: var(--amber-soft);
+  border-radius: 6px;
+  color: var(--ink);
+  padding: 4px 6px;
 }
 .chat-option > label {
   align-items: center;

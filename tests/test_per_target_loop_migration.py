@@ -51,7 +51,7 @@ def _legacy_database(path: Path) -> AppStore:
             "ON auto_research_child_experiments(project_id, control_node_id) "
             "WHERE state = 'pending'"
         )
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 42")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 44")
         connection.execute(
             "UPDATE episodes SET stop_requested_at = ?, stop_initiated_by = 'legacy-actor' "
             "WHERE episode_id = 'live-main'",
@@ -88,8 +88,8 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     previous.close()
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
-        41,
-        42,
+        43,
+        44,
         ("per_target_experiment_loops_v1",),
     )
     readonly.close()
@@ -153,7 +153,7 @@ def test_per_target_migration_failure_rolls_back_and_reopens(tmp_path: Path, mon
             connection.execute(
                 "SELECT MAX(migration_version) FROM storage_schema_migrations"
             ).fetchone()[0]
-            == 41
+            == 43
         )
         assert (
             connection.execute("SELECT state FROM auto_research_child_experiments").fetchone()[0]
@@ -168,4 +168,4 @@ def test_per_target_migration_failure_rolls_back_and_reopens(tmp_path: Path, mon
         assert target != graph_target_json(GraphTargetRef())
         assert json.loads(target) == GraphTargetRef().model_dump()
     reopened = AppStore(path)
-    assert reopened.storage_schema_ledger_head() == 42
+    assert reopened.storage_schema_ledger_head() == 44

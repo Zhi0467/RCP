@@ -153,6 +153,9 @@ def test_restore_schema_registry_covers_current_and_immutable_upgrade_boundaries
             )
             in SUPPORTED_RESTORE_DATABASE_SCHEMAS
         )
+        upgraded = AppStore(database)
+        assert _database_schema_sha256(upgraded) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+        upgraded.close()
 
 
 def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
@@ -248,6 +251,8 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     with store.connection() as connection:
         connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
+        connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
+        connection.execute("ALTER TABLE space_machines DROP COLUMN provider_shell_timeout_json")
         for table in (
             "owner_credentials",
             "owner_sign_in_codes",

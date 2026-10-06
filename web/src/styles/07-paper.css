@@ -86,6 +86,8 @@
 }
 .paper-save-error span {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .paper-inline-error {
   background: var(--red-soft);

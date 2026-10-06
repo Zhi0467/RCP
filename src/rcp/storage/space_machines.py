@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import SpaceMachineRecord
@@ -37,6 +37,13 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 (host,),
             ).fetchone()
         return _record(row) if row else None
+
+    def provider_shell_timeout_seconds(self, provider: str, host: str) -> int | None:
+        """This machine's configured shell timeout for `provider`; None keeps its default."""
+
+        card = self.space_machine_for(host)
+        value = card.provider_shell_timeout.get(provider, "") if card is not None else ""
+        return int(value) * 60 if value else None
 
     def ensure_space_machines(self, machines: Iterable[tuple[str, str, str]]) -> list[str]:
         """Insert a card for each host the space lacks; return hosts whose account conflicts.
@@ -101,9 +108,12 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         name: str | None = None,
         writable_paths: list[str] | None = None,
         hidden_folders: list[str] | None = None,
+        provider_autocompact: Mapping[str, str | None] | None = None,
+        provider_shell_timeout: Mapping[str, str | None] | None = None,
     ) -> SpaceMachineRecord:
         # Write only the fields given, so a rename and a path edit racing on one
-        # card both land.
+        # card both land. Provider settings merge per provider (None removes one), so
+        # two providers saved at once both land too.
         with self.connection() as connection:
             updated = connection.execute(
                 """
@@ -111,6 +121,12 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 SET name = COALESCE(?, name),
                     writable_paths_json = COALESCE(?, writable_paths_json),
                     hidden_folders_json = COALESCE(?, hidden_folders_json),
+                    provider_autocompact_json = COALESCE(
+                        json_patch(provider_autocompact_json, ?), provider_autocompact_json
+                    ),
+                    provider_shell_timeout_json = COALESCE(
+                        json_patch(provider_shell_timeout_json, ?), provider_shell_timeout_json
+                    ),
                     updated_at = ?
                 WHERE machine_id = ?
                 """,
@@ -118,6 +134,8 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                     name,
                     None if writable_paths is None else json.dumps(writable_paths),
                     None if hidden_folders is None else json.dumps(hidden_folders),
+                    None if provider_autocompact is None else json.dumps(provider_autocompact),
+                    None if provider_shell_timeout is None else json.dumps(provider_shell_timeout),
                     self.now(),
                     machine_id,
                 ),
@@ -139,4 +157,6 @@ def _record(row: sqlite3.Row) -> SpaceMachineRecord:
     values = dict(row)
     values["writable_paths"] = json.loads(values.pop("writable_paths_json"))
     values["hidden_folders"] = json.loads(values.pop("hidden_folders_json"))
+    values["provider_autocompact"] = json.loads(values.pop("provider_autocompact_json"))
+    values["provider_shell_timeout"] = json.loads(values.pop("provider_shell_timeout_json"))
     return SpaceMachineRecord(**values)

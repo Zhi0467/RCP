@@ -1587,3 +1587,183 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
     ]
     assert events[-1].event == "done", [event.text for event in events]
     assert any(event.event == "message" for event in events)
+
+
+@pytest.mark.parametrize(
+    ("provider", "runtime", "version", "flag"),
+    [
+        ("claude", "stream-json", "2.1.287", ["--autocompact", "300000"]),
+        ("codex", "exec", "0.160.0", ["--config", "model_auto_compact_token_limit=200000"]),
+        ("codex", "app-server", "0.160.0", ["--config", "model_auto_compact_token_limit=200000"]),
+        ("opencode", None, "1.18.30", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_machine_autocompact_reaches_its_provider_argv(
+    monkeypatch, tmp_path, provider, runtime, version, flag
+) -> None:
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.ensure_space_machines([("", "", "laptop")])
+    card = store.space_machine_for("")
+    assert card is not None
+    store.update_space_machine(
+        card.machine_id,
+        provider_autocompact={"claude": "300000", "codex": "200000", "opencode": "1"},
+    )
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    monkeypatch.setattr(
+        launcher,
+        "readiness",
+        lambda *a, **kw: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            binary_path=provider,
+            version=version,
+        ),
+    )
+    profile = profile_for(provider)
+    runtime_id = profile.runtime_aliases[runtime] if runtime else profile.legacy_runtime_id
+    captured: list[list[str]] = []
+
+    class Captured(Exception):
+        pass
+
+    original = type(profile.runtime(runtime_id)).turn
+
+    def turn(self, request):
+        captured.append(original(self, request).command)
+        raise Captured
+
+    monkeypatch.setattr(type(profile.runtime(runtime_id)), "turn", turn)
+    with pytest.raises(Captured):
+        async for _ in launcher.stream(
+            provider, "task", cwd=tmp_path, capability="discuss", runtime_id=runtime_id
+        ):
+            pass
+    command = captured[0]
+    if flag is None:
+        assert not any("compact" in part for part in command)
+    else:
+        index = command.index(flag[1])
+        assert command[index - 1 : index + 1] == flag
+
+
+@pytest.mark.parametrize("host", ["", "compute"])
+@pytest.mark.parametrize("configured", [None, 120, 1800])
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize(
+    ("provider", "version", "runtime_id", "variables"),
+    [
+        ("claude", "2.1.287", "stream-json", {"BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"}),
+        ("opencode", "1.18.30", "run-json", {"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"}),
+        ("codex", "0.160.0", "exec", set()),
+        ("codex", "0.160.0", "app-server", set()),
+    ],
+)
+@pytest.mark.asyncio
+async def test_machine_shell_timeout_reaches_provider_environment(
+    monkeypatch, tmp_path, host, configured, staged, provider, version, runtime_id, variables
+) -> None:
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.storage import AppStore
+
+    names = {
+        "BASH_DEFAULT_TIMEOUT_MS",
+        "BASH_MAX_TIMEOUT_MS",
+        "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS",
+    }
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.ensure_space_machines([(host, "", "Execution machine")])
+    card = store.space_machine_for(host)
+    assert card is not None
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    assert launcher.shell_timeout_seconds(provider, host) is None
+    if configured:
+        store.update_space_machine(
+            card.machine_id, provider_shell_timeout={provider: str(configured // 60)}
+        )
+    resolved_timeout = launcher.shell_timeout_seconds(provider, host)
+    assert resolved_timeout == configured
+    if staged:
+        store.update_space_machine(
+            card.machine_id, provider_shell_timeout={provider: "2" if configured == 1800 else "30"}
+        )
+
+    runtime_id = profile_for(provider).runtime_aliases[runtime_id]
+    original_turn = type(profile_for(provider).runtime(runtime_id)).turn
+
+    def capture_turn(self, request):
+        assert request.shell_timeout_seconds == resolved_timeout
+        if provider == "claude":
+            command = request.legacy_command
+            assert command is not None
+            index = command.index("--settings") + 1
+            settings = json.loads(command[index])
+            settings.setdefault("env", {})["EXISTING_SETTING"] = "preserved"
+            command[index] = json.dumps(settings)
+        turn = original_turn(self, request)
+        if provider == "claude":
+            settings = json.loads(turn.command[turn.command.index("--settings") + 1])
+            env = settings.get("env", {})
+            assert env["EXISTING_SETTING"] == "preserved"
+            assert {name: env[name] for name in names if name in env} == (
+                {
+                    "BASH_DEFAULT_TIMEOUT_MS": str(configured * 1000),
+                    "BASH_MAX_TIMEOUT_MS": str(max(configured, 600) * 1000),
+                }
+                if configured
+                else {}
+            )
+        return turn
+
+    monkeypatch.setattr(type(profile_for(provider).runtime(runtime_id)), "turn", capture_turn)
+    monkeypatch.setattr(launcher, "_login_refusal", lambda *_: None)
+    monkeypatch.setattr(
+        launcher,
+        "readiness",
+        lambda *a, **kw: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            binary_path=provider,
+            version=version,
+        ),
+    )
+
+    class Captured(Exception):
+        pass
+
+    async def capture(*command, **kwargs):
+        expected = variables if configured and provider == "opencode" else set()
+        if host:
+            payload = shlex.split(command[-1])[-1]
+            for name in names:
+                assert (f"export {name}=" in payload) == (name in expected)
+                if name in expected:
+                    assert f"export {name}={configured * 1000}" in payload
+            assert kwargs["env"] is None
+        else:
+            environment = kwargs["env"] or {}
+            assert {name: environment[name] for name in names if name in environment} == {
+                name: str(configured * 1000) for name in expected
+            }
+        raise Captured
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    with pytest.raises(Captured):
+        async for _ in launcher.stream(
+            provider,
+            "task",
+            cwd=tmp_path,
+            host=host,
+            capability="discuss",
+            runtime_id=runtime_id,
+            shell_timeout_seconds=resolved_timeout if staged else ...,
+        ):
+            pass

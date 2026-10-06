@@ -15,6 +15,7 @@ import {
 } from "../src/projects/pathPickerModel.ts";
 import {
   createPathEditor,
+  createMachineWriteQueue,
   projectMachineAlias,
   setupMachineSelection,
   spaceMachineForProject,
@@ -43,6 +44,13 @@ const gpu = {
   os_account: "alice",
   writable_paths: ["/data/cache", "/scratch"],
   hidden_folders: ["/private"],
+  provider_autocompact: { claude: "auto" },
+  provider_shell_timeout: { claude: "30" },
+  shell_timeout_providers: [
+    { provider: "claude", label: "Claude", default_minutes: 2 },
+    { provider: "codex", label: "Codex", default_minutes: 2 },
+  ],
+  autocompact_providers: [{ provider: "claude", label: "Claude", hint: "auto or tokens" }],
   projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
   in_use: true,
 };
@@ -169,6 +177,14 @@ test("both Settings levels render the same machine card with one remove per path
     assert.match(html, new RegExp(`data-machine-writable-paths="${level}"`));
     assert.equal(html.match(/data-machine-action="remove-path"/g)?.length, 2);
     assert.equal(html.match(/data-machine-action="add-path"/g)?.length, 1);
+    assert.equal(html.match(/data-provider-setting="provider_autocompact"/g)?.length, 1);
+    const timeoutInputs = html.match(
+      /<input[^>]*data-provider-setting="provider_shell_timeout"[^>]*>/g,
+    );
+    assert.equal(timeoutInputs?.length, 2);
+    assert.match(timeoutInputs[0], /value="30"/);
+    assert.match(timeoutInputs[1], /placeholder="2"/);
+    assert.match(timeoutInputs[1], /value=""/);
   }
   // The card's own name is renamed on the space page; a project names its machines itself.
   assert.equal(render("space").match(/data-machine-action="rename"/g)?.length, 1);
@@ -455,3 +471,32 @@ for (const status of ["unhidden", "enforced", null]) {
     assert.equal((html.match(/data-machine-action="remove-hidden-folder"/g) ?? []).length, 1);
   });
 }
+
+test("machine-card writes run one at a time, deletes included", async () => {
+  const started = [];
+  const finishes = [];
+  const { save, remove } = createMachineWriteQueue((machineId, request) => {
+    started.push(request);
+    return new Promise((resolve) => finishes.push(() => resolve({ ...gpu, ...request })));
+  });
+  const first = save(gpu.machine_id, { provider_autocompact: { claude: "200000" } });
+  const second = save(gpu.machine_id, { provider_shell_timeout: { claude: "30" } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // The second save waits, so its answer is built on top of the first one's.
+  assert.equal(started.length, 1);
+  finishes[0]();
+  await first;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(started.length, 2);
+  let removed = false;
+  const removal = remove(async () => {
+    removed = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // A delete waits for the save ahead of it, so no late answer brings the card back.
+  assert.equal(removed, false);
+  finishes[1]();
+  assert.deepEqual((await second).provider_shell_timeout, { claude: "30" });
+  await removal;
+  assert.equal(removed, true);
+});

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import subprocess
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -27,6 +28,7 @@ from rcp.config import AgentSurface
 from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import HiddenReadScope, Patch
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
@@ -238,6 +240,8 @@ class ResolvedWorkExecution:
     execution_machine_alias: str
     execution_host: str
     provider_binary: str | None
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
+    shell_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -552,6 +556,7 @@ async def stream_work_agent_events(
                 outcome=outcome,
                 binary=binary,
                 invocation_gate=validator_staged.invocation_gate,
+                shell_timeout_seconds=validator_staged.shell_timeout_seconds,
                 required_session_id=required_session_id,
                 supervise_remote=supervise_remote,
                 browser_grant=browser_grant,
@@ -573,8 +578,8 @@ def start_work_validator_mailbox(
     staged: StagedCommandMailbox,
     *,
     execution: AgentTaskExecution | None,
-    budget: PatchValidationBudget,
-    validate: Callable[[str], PatchValidationResult],
+    budget: PatchValidationBudget | None,
+    validate: Callable[[str], PatchValidationResult] | None,
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
     command_handler: CommandHandler | None = None,
     resume_context: dict[str, object] | None = None,
@@ -619,6 +624,8 @@ def start_work_validator_mailbox(
         "credential_path": staged.credential_path,
         "gate": asdict(staged.invocation_gate) if staged.invocation_gate else None,
         "timeout_seconds": staged.timeout_seconds,
+        "ask_wait_seconds": staged.ask_wait_seconds,
+        "shell_timeout_seconds": staged.shell_timeout_seconds,
         "context": resume_context,
     }
 
@@ -628,8 +635,8 @@ def start_work_validator_mailbox(
                 execution.operation_id,
                 {
                     **document,
-                    "budget_count": budget.count,
-                    "budget_requests": budget.requests,
+                    "budget_count": budget.count if budget is not None else None,
+                    "budget_requests": budget.requests if budget is not None else None,
                     "terminal": terminal,
                     "responses": {
                         key: value.model_dump(mode="json") for key, value in responses.items()
@@ -677,7 +684,7 @@ def load_work_mailbox_context(execution: AgentTaskExecution) -> dict[str, object
 def restore_work_validator_mailbox(
     execution: AgentTaskExecution,
     *,
-    validate: Callable[[str], PatchValidationResult],
+    validate: Callable[[str], PatchValidationResult] | None,
     command_handler: CommandHandler | None = None,
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
 ) -> WorkValidatorMailboxLifecycle | None:
@@ -702,6 +709,12 @@ def restore_work_validator_mailbox(
     mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote)
     if str(mailbox.workspace) != saved["workspace"]:
         raise ValueError("The saved command mailbox workspace changed")
+    ask_wait = saved.get("ask_wait_seconds", COMMAND_CLIENT_WAIT_SECONDS)
+    if not isinstance(ask_wait, (int, float)) or not math.isfinite(ask_wait) or ask_wait <= 0:
+        raise ValueError("The saved command mailbox has an invalid ask wait")
+    shell_timeout = saved.get("shell_timeout_seconds")
+    if shell_timeout is not None and (type(shell_timeout) is not int or shell_timeout <= 0):
+        raise ValueError("The saved command mailbox has an invalid shell timeout")
     staged = StagedCommandMailbox(
         mailbox=mailbox,
         credential=CommandTurnCredential(identity, saved["mailbox_id"], saved["token"]),
@@ -709,11 +722,19 @@ def restore_work_validator_mailbox(
         credential_path=saved["credential_path"],
         invocation_gate=ProviderInvocationGate(**saved["gate"]) if saved["gate"] else None,
         timeout_seconds=saved["timeout_seconds"],
+        ask_wait_seconds=ask_wait,
+        shell_timeout_seconds=shell_timeout,
     )
+    budget = None
+    if validate is not None:
+        count, requests = saved["budget_count"], saved["budget_requests"]
+        if not isinstance(count, int) or not isinstance(requests, dict):
+            raise ValueError("The saved command mailbox has no Patch validation budget")
+        budget = PatchValidationBudget(count, requests)
     owner = start_work_validator_mailbox(
         staged,
         execution=execution,
-        budget=PatchValidationBudget(saved["budget_count"], saved["budget_requests"]),
+        budget=budget,
         validate=validate,
         command_handler=command_handler,
         serve=serve,

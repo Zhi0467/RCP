@@ -7,12 +7,12 @@ export function QuestionCard({
   question,
   apiBase,
   onResolved,
-  continueWork = false,
+  continueChat = false,
 }: {
   question: AgentQuestion;
   apiBase: string;
   onResolved: () => void;
-  continueWork?: boolean;
+  continueChat?: boolean;
 }) {
   const labelId = useId();
   const [text, setText] = useState("");
@@ -41,18 +41,35 @@ export function QuestionCard({
       className="question-card"
       aria-labelledby={labelId}
       data-question-id={question.question_id}
+      data-agent-waiting={open && question.agent_waiting}
       data-question-state={question.withdrawn_readonly ? "ended" : question.state}
     >
-      <strong id={labelId}>{question.question}</strong>
-      <span className="question-state">
-        {question.withdrawn_readonly
-          ? "Episode ended"
-          : open
-            ? "Needs you"
-            : question.state === "answered"
-              ? "Answered"
-              : "Dismissed"}
-      </span>
+      <header className="question-header">
+        <span className="question-state">
+          {question.withdrawn_readonly
+            ? "Episode ended"
+            : open
+              ? question.agent_waiting
+                ? "Agent is waiting"
+                : "Needs you"
+              : question.state === "answered"
+                ? "Answered"
+                : "Dismissed"}
+        </span>
+        {open && (
+          <button
+            className="question-dismiss"
+            type="button"
+            disabled={busy}
+            onClick={() => void resolve("dismiss")}
+          >
+            Dismiss
+          </button>
+        )}
+      </header>
+      <strong id={labelId} className="question-text">
+        {question.question}
+      </strong>
       {open ? (
         <form
           onSubmit={(event) => {
@@ -62,10 +79,10 @@ export function QuestionCard({
         >
           {question.choices.length > 0 && (
             <div className="question-choices">
-              {question.choices.map((choice) => (
+              {question.choices.map((choice, index) => (
                 <button
                   key={choice}
-                  className="button compact"
+                  className="question-choice"
                   type="button"
                   disabled={disabled}
                   aria-pressed={question.multiple ? choices.includes(choice) : undefined}
@@ -75,33 +92,31 @@ export function QuestionCard({
                       : void resolve("answer", [choice])
                   }
                 >
-                  {choice}
+                  <span className="question-choice-key" aria-hidden="true">
+                    {choiceKey(index)}
+                  </span>
+                  <span>{choice}</span>
                 </button>
               ))}
             </div>
           )}
-          <textarea
-            aria-label="Question answer"
-            rows={2}
-            value={text}
-            disabled={disabled}
-            onChange={(event) => setText(event.target.value)}
-          />
           <div className="question-actions">
+            <textarea
+              aria-label="Question answer"
+              rows={1}
+              placeholder={question.choices.length ? "Or type your own answer" : "Your answer"}
+              value={text}
+              disabled={disabled}
+              onChange={(event) => setText(event.target.value)}
+            />
             <button
               className="button primary compact"
               type="submit"
               disabled={busy || !canSubmitQuestion(question, text, choices)}
             >
-              {continueWork ? "Answer and continue Work" : "Answer"}
-            </button>
-            <button
-              className="button compact"
-              type="button"
-              disabled={busy}
-              onClick={() => void resolve("dismiss")}
-            >
-              Dismiss
+              {continueChat
+                ? `Answer and continue ${question.capability === "discuss" ? "Discuss" : "Work"}`
+                : "Answer"}
             </button>
           </div>
         </form>
@@ -134,4 +149,9 @@ export function QuestionCard({
       {error && <div role="alert">{error}</div>}
     </section>
   );
+}
+
+/** A, B, … Z, then 27, 28, …: a key the reader can name aloud. */
+function choiceKey(index: number): string {
+  return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
