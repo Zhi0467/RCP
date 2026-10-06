@@ -10,7 +10,7 @@ from rcp.agents import AgentLauncher, AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
-from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT
+from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT, ASK_MAX_ATTEMPTS, ASK_WAITING_FRESH_SECONDS
 from rcp.runs.questions import (
     discuss_command_handler,
     record_work_question_receipts,
@@ -19,6 +19,7 @@ from rcp.runs.questions import (
 from rcp.runs.tasks.work import _work_execution_instructions
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.question_activity import QuestionActivity
 from tests.helpers import signed_in_client
 
 from .test_ask_protocol import ask_request
@@ -55,6 +56,47 @@ def identity(authority="broker", task_id="turn"):
     return CommandTurnIdentity(
         episode_id=None, task_id=task_id, turn_id="turn", authority=authority
     )
+
+
+@pytest.mark.parametrize("resolution", ["answered", "dismissed"])
+def test_pending_attempts_count_calls_not_rounds(tmp_path, resolution):
+    execution, human = work_execution(tmp_path)
+    handler = work_command_handler(execution, None)
+    for call_id, attempt in [("first", 1), ("first", 1), ("second", 2), ("first", 1), (None, None)]:
+        response = handler(ask_request(call_id=call_id), identity())
+        assert response.result.get("attempt") == attempt
+        assert ("attempt" in response.result) == (call_id is not None)
+        assert response.result["max_attempts"] == ASK_MAX_ATTEMPTS
+    question_id = response.result["question_id"]
+    if resolution == "answered":
+        execution.store.answer_question(question_id, answer="A", resolved_by=human)
+    else:
+        execution.store.dismiss_question(question_id, resolved_by=human)
+    result = handler(ask_request(call_id="third"), identity()).result
+    assert result["state"] == resolution
+    assert "attempt" not in result and "max_attempts" not in result
+
+
+def test_question_view_waiting_expires_and_resets_on_pending_round(tmp_path):
+    from rcp.api.questions import _serialize
+
+    execution, human = work_execution(tmp_path)
+    elapsed = [0.0]
+    execution.store.question_activity = QuestionActivity(clock=lambda: elapsed[0])
+    handler = work_command_handler(execution, None)
+    request = ask_request(call_id="first")
+    question_id = handler(request, identity()).result["question_id"]
+
+    def view():
+        return _serialize(execution.store, execution.store.get_question(question_id))
+
+    assert view().agent_waiting
+    elapsed[0] = ASK_WAITING_FRESH_SECONDS
+    assert not view().agent_waiting
+    handler(request, identity())
+    assert view().agent_waiting
+    execution.store.answer_question(question_id, answer="A", resolved_by=human)
+    assert not view().agent_waiting
 
 
 def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):

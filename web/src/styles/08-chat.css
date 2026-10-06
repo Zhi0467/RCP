@@ -1358,6 +1358,10 @@
   background: var(--amber-soft);
   color: var(--ink);
 }
+.question-card[data-agent-waiting="true"] .question-state {
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+}
 .question-dismiss {
   padding: 2px 4px;
   border: 0;

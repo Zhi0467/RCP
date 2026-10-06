@@ -16,6 +16,7 @@ from rcp.agents.command_protocol import (
     CommandResponse,
     LessonCommandRequest,
 )
+from rcp.limits import ASK_MAX_ATTEMPTS
 from rcp.runs.lesson_commands import handle_lesson
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
@@ -52,7 +53,13 @@ def handle_ask(
             status="invalid",
             message=str(exc),
         )
+    pending = question.state == "pending"
+    attempt = (
+        store.question_activity.pending(question.question_id, request.call_id) if pending else None
+    )
     result = AskResult(
+        attempt=attempt,
+        max_attempts=ASK_MAX_ATTEMPTS if pending else None,
         question_id=question.question_id,
         state="parked" if parked and question.state == "pending" else question.state,
         answer=question.answer if question.state == "answered" else None,

@@ -59,6 +59,7 @@ class QuestionResponse(BaseModel):
     resolved_at: str | None
     withdrawn_readonly: bool
     can_answer: bool
+    agent_waiting: bool
     created_at: str
 
 
@@ -81,6 +82,9 @@ def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
         capability=question.origin.capability,
         state=state,
         can_answer=_can_answer(question),
+        agent_waiting=(
+            _can_answer(question) and store.question_activity.is_waiting(question.question_id)
+        ),
     )
 
 
