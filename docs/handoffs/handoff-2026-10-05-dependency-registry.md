@@ -16,59 +16,71 @@ with the source. Nothing else is held to it:
 - No one says which programs are required and which are optional.
 - Server `install` and `doctor` each keep their own hand-written list.
 - The server guide's apt line is edited by hand; `bwrap` was missing until #265.
-- No setup or admission check covers a host's basic tools. Some owners check
-  their own tool when it is used (the rsync transfer contract, the git worktree
-  version gate); python3, tar, and mkdir on an execution host are not checked
-  at all. A missing tool surfaces as a shell error partway through a run.
+- No setup or admission check covers a machine's basic tools. Some owners
+  check their own tool when it is used (the rsync transfer contract, the git
+  worktree version gate); python3, tar, and mkdir on a remote machine are not
+  checked at all. A missing tool surfaces as a shell error partway through a run.
 - The desktop backend checks provider CLIs during project setup, but not git
   or the other programs it runs.
 
 ## Settled decisions
 
-1. **One registry in code** declares each external program once: the roles and
-   platforms it applies to, whether it is required or optional there, and how
-   to install it.
-2. **Required** means checked up front. An agent launch onto a host missing a
-   required program is refused before allocation, with the missing names and
-   the install command.
+1. **One registry in code** declares each external program once: what it is
+   for, the machines and operating systems it applies to, whether it is
+   required or optional there, and how to install it.
+2. **Required means an agent run on that machine cannot finish without it.**
+   An agent launch onto a machine missing a required program is refused
+   before anything is created, with the missing names and the install command.
 3. **Optional** means the entry names the feature it gates and the visible
-   fallback. Feature owners keep their own readiness probes.
+   fallback. A missing optional program never refuses a run. Feature owners
+   keep their own readiness probes.
 4. **The machine card offers a copyable install command**, never an install
-   button. RCP normally has no root on someone's GPU host.
-5. **Basic tools that no setup check covers today become required** on the
-   hosts that run them.
-6. **Every missing optional program is visible on the machine card.** The
-   Dependencies row lists it with the feature it gates and its fallback.
-   No per-run warning is added; missing secret hiding also stays in
-   Settings and `doctor`, as today.
-7. **The refusal covers agent runs only.** Terminals, compute jobs, and state
+   button. RCP normally has no root on someone's GPU machine.
+5. **Every missing program is visible on the machine card.** The
+   Dependencies row lists missing required programs and missing optional
+   ones with their feature and fallback. No per-run warning is added; missing
+   secret hiding also stays in Settings and `doctor`, as today.
+6. **The refusal covers agent runs only.** Terminals, compute jobs, and state
    sync keep their existing owner checks (terminal unavailable, the compute
    probe, the rsync contract with its tar fallback).
-8. **The code is the only internal record.** The registry replaces the
+7. **The code is the only internal record.** The registry replaces the
    spec's dependency table; the spec keeps a pointer to it. Public docs
    still list what a user installs (the server guide's apt line, the
    README's Mac prerequisites), and CI holds them to the registry.
-9. **One PR**, landing before 0.4.12 is promoted.
-10. **The check learns the OS first.** A machine that is neither Linux nor
-    macOS is refused as unsupported. Linux distributions RCP has not been
-    tested on (for example Rocky or CentOS on a GPU cluster) are allowed
-    with a "not tested" note on the card, never refused for that reason.
+8. **Supported operating systems.** The local machine, where the RCP backend
+   runs, is macOS or Linux: the Mac app, a source run, or a team server. A
+   remote machine must be Linux. Anything else is refused as unsupported.
+   Linux distributions RCP has not been tested on (for example Rocky or CentOS
+   on a GPU cluster) are allowed with a "not tested" note, never refused for
+   that reason.
+9. **Refuse only when sure.** An unreachable machine or an unclear answer is
+   *not checked*, which never refuses. Dropped connections are retried with a
+   bounded backoff first.
+10. **One PR**, landing before 0.4.12 is promoted.
 
 ## Design
 
 ### Registry
 
-A new module `src/rcp/dependencies.py` holds one frozen entry per program:
+A new module `src/rcp/dependencies.py` holds one frozen entry per program,
+written to be read by people:
 
 - `name`
-- `required_on` and `optional_on`: sets of roles. Roles are `desktop`,
-  `server_install` (root bootstrap before the service account exists),
-  `server` (the service account at runtime), and `execution_host`.
+- `purpose`: one line on what RCP uses it for, on every entry
+- `required_on` and `optional_on`: sets of roles
+- for optional roles: `feature` (what stops working) and `fallback` (what the
+  user sees instead)
 - `platforms`: `linux`, `darwin`, or both
-- for optional roles: `feature` and `fallback` text
-- `install`: per platform, either an apt package name or a short instruction
-  (for example `xcode-select --install` for git on macOS, or "see the server
+- `install`: per platform, an apt package name or a short instruction (for
+  example `xcode-select --install` for git on macOS, or "see the server
   guide's uv step" for uv)
+
+The roles:
+
+- `local`: the machine running the RCP backend, macOS or Linux.
+- `remote`: a Linux machine RCP reaches over SSH to run agents and jobs.
+- `server`: the extra programs an installed team server's service account needs.
+- `server_install`: programs the root installer needs before that account exists.
 
 The registry declares presence and tier only. Version and feature contracts
 stay with their owners: the git ≥2.38 worktree gate, the rsync transfer
@@ -79,48 +91,48 @@ The tier of each program is in the table at the end.
 
 ### Presence check
 
-One shipped helper runs `command -v` for the programs a role requires on that
-platform and returns the missing names. It runs through each existing
-execution adapter, so it sees the same account and PATH as the real work:
+**Local machine.** No script and no shell: the backend reads
+`platform.system()`, `/etc/os-release` on Linux, and `shutil.which` for each
+program, with its own PATH (the Mac app repairs it at startup).
 
-- **Desktop:** in the backend process, with its own PATH (the desktop shell
-  already repairs it at startup).
-- **Execution host:** over the same plain SSH route the state transport uses,
-  not the provider's login shell.
-- **Server:** `install` runs it as root for `server_install`, then as the
-  service account for `server`. `doctor` runs the `server` set as the service
-  account. Their version checks stay as they are.
+**Remote machine.** One SSH command over the same plain route the state
+transport uses, so it sees the account and PATH that real runs see. It sends a
+short POSIX `sh` script from a source module on stdin to `sh -s`. The script
+prints, between begin and end lines carrying a per-call nonce, the OS family
+(`uname -s`), the distribution from `/etc/os-release`, and each required
+program that `command -v` cannot find. A non-Linux answer is *unsupported*.
 
-The helper reports the OS family (`uname -s`) and, on Linux, the
-distribution from `/etc/os-release`, then checks the programs required for
-that platform. The tested distributions are one constant in the registry
-module. The apt install command is offered only on Debian and Ubuntu;
-elsewhere the card lists the package names.
+**Team server.** `install` runs the local check as root for
+`server_install`, then as the service account for `local` and `server`.
+`doctor` runs the service account's check. Their version checks stay as they
+are.
 
-### Robustness on remote hosts
+The tested distributions are one constant in the registry module. The apt
+install command is offered only on Debian and Ubuntu; elsewhere the card lists
+the package names.
 
-Remote hosts differ: login shells print banners, some accounts use tcsh or
+### Robustness on remote machines
+
+Remote machines differ: login shells print banners, some accounts use tcsh or
 fish, HPC sites load tools with `module load`, and SSH drops. A false
-"missing" blocks launches that would have worked, so it is worse than no
-check. The rules:
+"missing" blocks runs that would have worked, so it is worse than no check.
 
-1. **Refuse only on a definite answer.** The check has three outcomes:
-   *ready*, *missing: …*, and *not checked* (unreachable, timeout, or output
-   that does not parse). Only *missing* refuses a launch. *Not checked* lets
-   the launch proceed as today and shows the reason on the card.
-2. **POSIX `sh`, shipped from source.** The helper is a script in a source
-   module, sent on stdin to `sh -s`. It never relies on the account's login
-   shell syntax.
-3. **Framed output.** The script prints its result between begin and end
-   lines carrying a per-call nonce. Anything outside them, such as rc-file
-   banners, is ignored. A missing frame is *not checked*, never *missing*.
-4. **The real route's PATH.** It runs over the same plain SSH route the state
-   transport uses, which is where python3, rsync, tar, and mkdir run. Programs
-   the code starts by absolute path (`/bin/bash`, `/usr/bin/sandbox-exec`)
-   are checked at that path, not on PATH.
-5. **Fresh before refusing.** Results are cached per host route and account
-   with a short time-to-live. A cached *missing* is rechecked before it
-   refuses, so a fixed host is never stuck and a stale result never blocks.
+1. **Three outcomes.** *Ready*, *missing: …* (or *unsupported*), and *not
+   checked*. Only a definite *missing* or *unsupported* refuses a run. *Not
+   checked* lets the run proceed as today and shows the reason on the card.
+2. **Bounded retry.** A dropped connection or timeout is retried with the
+   state transfer's backoff and its transient-failure classifier
+   (`transport/state_transfer.py`), within limits kept in `limits.py`. When
+   the attempts run out, the result is *not checked*.
+3. **POSIX `sh`, shipped from source.** The script never relies on the
+   account's login shell syntax.
+4. **Framed output.** Only the lines between the begin and end lines count;
+   rc-file banners outside them are ignored. A missing frame is *not checked*.
+5. **Absolute paths.** Programs the code starts by absolute path
+   (`/bin/bash`) are checked at that path, not on PATH.
+6. **Fresh before refusing.** Results are cached per machine route and
+   account with a short time-to-live. A cached *missing* is rechecked before
+   it refuses, so a fixed machine is never stuck.
 
 Tests feed the parser recorded outputs: a banner before the frame, a
 truncated frame, a timeout, exit 255, and a tcsh-style login shell. Each must
@@ -130,17 +142,16 @@ produce *not checked*, never *missing*.
 
 Every machine card, local and remote, gets a **Dependencies** row next to the
 browser row, following the same pattern: it requests the check when the card
-mounts and on **Check again**, and shows missing required programs, missing
-optional programs with their fallback, and a copy button for the install
-command.
+mounts and on **Check again**. It shows the OS (with "not tested" when that
+applies), missing required programs, missing optional programs with their
+feature and fallback, and a copy button for the install command.
 
 ### Launch refusal
 
 `BackgroundAgentTasks.admit_provider_task` in `src/rcp/background.py` already
 refuses an ineligible execution account before any durable allocation. It
-gains the dependency check for the launch's execution host: a cached verdict
-if fresh, otherwise a probe. A host with a missing required program is refused
-with the reason. An unreachable host keeps today's behavior.
+gains the dependency check for the run's machine: a fresh cached result, or a
+new check. A definite *missing* or *unsupported* refuses with the reason.
 
 This covers Discuss, Work, Experiment, Auto-research roots, children, wakes,
 and retries, ingestion, coaching, artifact edits, and reports. One path
@@ -159,42 +170,37 @@ launches; it does not claim to find every program. It grows to:
    (`setsid` in the remote launch wrapper, `sleep` in the compute probe,
    remote `ssh-agent`), each with a fixture.
 2. The server guide's apt line contains the apt package of every program
-   required on `server` or `server_install` for Linux.
-3. Every optional entry has feature and fallback text.
+   required on `server` or `server_install`.
+3. Every entry has a purpose, and every optional entry has feature and
+   fallback text.
 
 The spec's dependency table is deleted; its contract and probe notes that
 still matter move into the owning modules' docstrings or registry entries.
 The README's Mac section names Git through the Command Line Tools, the one
-required desktop program macOS does not ship.
+required local program macOS does not ship.
 
 Behavior tests, one per rule:
 
-- Admission refuses a launch onto a host missing a required program, from a
-  cold cache, and reports unreachable separately.
+- Admission refuses a run onto a machine missing a required program, from a
+  cold cache; an unreachable machine is *not checked* and is not refused.
+- A remote macOS machine is refused as unsupported.
 - The chat question follow-up is refused before its task exists.
-- The card's check returns the missing names and the install command.
+- The card's check returns the OS, the missing names, and the install command.
 - `doctor` reports a missing required program.
 
 ### Agent rule
 
 AGENTS.md gains one line under cross-cutting rules: a new external program is
-declared in `rcp/dependencies.py` with its roles, platforms, and tier; required
-programs are checked up front and refuse agent launches when missing; optional
-ones name their feature and a visible fallback, and their owner keeps the
-readiness probe.
-
-## Known gap found by the review
-
-Every remote provider launch with a pid file runs `setsid --wait`
-(`src/rcp/agents/launcher.py`, `_remote_login_command`, since 2026-09-10).
-`setsid` is util-linux and absent on macOS. With this PR, a remote macOS
-execution host will be refused with "missing: setsid" instead of failing at
-launch. Making remote macOS launches work again is a separate fix.
+declared in `rcp/dependencies.py` with its purpose, roles, platforms, and tier;
+required programs are checked up front and refuse agent runs when missing;
+optional ones name their feature and a visible fallback, and their owner keeps
+the readiness probe.
 
 ## Not in scope
 
-- Installing packages on any host.
+- Installing packages on any machine.
 - Bundling system tools into the Mac app.
+- Remote macOS machines. The remote launch wrapper uses Linux `setsid`.
 - Dependency refusal for terminals, compute jobs, and state sync.
 - Checking that release notes mention a new prerequisite.
 
@@ -204,58 +210,60 @@ launch. Making remote macOS launches work again is a separate fix.
 - On a disposable data directory, a remote machine with `rsync` hidden from
   the SSH PATH shows it under **Dependencies** with the apt command, and a
   chat launch onto it is refused with that reason. Restoring PATH and
-  **Check again** clears it.
-- The desktop machine card shows **Dependencies** as ready on this Mac.
+  **Check again** clears it. Blocking SSH to it shows *not checked* and does
+  not refuse.
+- The Mac app's local machine card shows **Dependencies** as ready.
 - `rcp server doctor` on a disposable server reports a missing required program.
 - A fresh 0.4.12 candidate passes the desktop checks before promotion.
 
 ## Tiers
 
-R = required, O = optional (fallback in the last column), — = not used in that
-role. L/M = Linux/macOS only. The three columns are desktop, server
-(`server_install` marked "install"), and execution host.
+R = required, O = optional (feature → fallback in the last column), — = not
+used there. L/M = Linux or macOS only. Local is macOS or Linux; remote is
+Linux. Server lists only what an installed team server adds; "install" marks
+`server_install`.
 
-| Program | Desktop | Server | Execution host | Required for / optional feature → fallback |
+| Program | Local | Server | Remote | Purpose; optional feature → fallback |
 |---|---|---|---|---|
 | `age` | — | R | — | Protected backup encryption |
 | `age-keygen` | — | R | — | Backup identity creation and readback |
-| `apt-get` | — | O | — | Browser library install → failure reported with the admin command |
-| `bash` | R | R | R | Provider and watcher shells, terminal shell |
-| `bwrap` | O/L | O | O/L | Secret hiding → launch runs unhidden; Settings and doctor say so |
-| `cat` | — | — | R | Remote setup and stage reads |
+| `apt-get` | — | O | — | Browser system libraries → failure shown with the admin command |
+| `bash` | R | — | R | Provider and watcher shells, terminal shell |
+| `bwrap` | O/L | — | O | Secret hiding → runs unhidden; Settings, doctor, and card say so |
+| `cat` | — | — | R | Run folder reads |
 | `curl` | — | R install | — | Server install and provider updates |
-| `env` | R | R | R | Account and command environments |
-| `findmnt` | O/L | O | O/L | Mirrored terminals → terminal unavailable |
-| `getent` | — | R install | — | Account policy proof at install |
-| `git` | R | R | R | Repository operations; owner keeps the worktree version gate |
-| `id` | R | R | R | Execution-account identity |
-| `launchctl` | O/M | — | O/M | Browser, helper jobs, keep-awake → that feature unavailable |
-| `ldd` | O/L | O | O/L | Browser libraries → browser unavailable with the reason |
-| `loginctl` | O/L | R | O/L | Server account lifecycle; elsewhere linger → feature unavailable with the admin command |
-| `mkdir` | — | — | R | Remote stage and state preparation |
-| `node` | O | O | O | Browser → cannot be turned on without Node 20+ |
-| `npm` | O | O | O | Browser install, source web build → that operation fails with the reason |
+| `env` | R | — | R | Account and command environments |
+| `findmnt` | O/L | — | O | Mirrored terminals → terminal unavailable |
+| `getent` | — | R install | — | Account policy proof |
+| `git` | R | — | R | Repository operations; owner keeps the version gate |
+| `id` | R | — | R | Execution-account identity |
+| `launchctl` | O/M | — | — | Browser, helper jobs, keep-awake → that feature unavailable |
+| `ldd` | O/L | — | O | Browser libraries → browser unavailable with the reason |
+| `loginctl` | O/L | R | O | Server account lifecycle; elsewhere linger → feature unavailable with the admin command |
+| `mkdir` | — | — | R | Run folder preparation |
+| `node` | O | — | O | Browser → cannot be turned on without Node 20+ |
+| `npm` | O | — | O | Browser install, source web build → that operation fails with the reason |
 | `osascript` | O/M | — | — | Keep-awake install → error shown, nothing changed |
-| `printenv` | — | — | O | Hidden-read home lookup → launch runs unhidden with the reason |
-| `ps` | R | R | R | Process identity and stopping |
+| `printenv` | — | — | O | Hidden-read home lookup → runs unhidden with the reason |
+| `ps` | O | — | O | Stopping a run → stop reported as unconfirmed |
 | `python3` | — | — | R | Shipped remote helpers |
-| `rm` | — | — | R | Remote staged handoff cleanup |
-| `rsync` | R | R | R | Transfers; owner keeps its contract and tar fallback |
+| `rm` | — | — | R | Run folder cleanup |
+| `rsync` | R | — | R | Transfers; owner keeps its contract and tar fallback |
 | `runuser` | — | R install | — | Privileged account operations |
-| `sandbox-exec` | O/M | — | O/M | Secret hiding → launch runs unhidden; Settings says so |
-| `setsid` | — | — | R/L | Remote provider launch wrapper (see known gap) |
-| `sh` | R | R | R | Command wrappers and scripts |
-| `sleep` | — | — | R | Compute probe job |
-| `ssh` | R | R | R | Remote transport and Git transport |
-| `ssh-add` | O | O | O | Agent-held deploy keys → keys stay readable, with the reason |
-| `ssh-agent` | O | O | O | Agent-held deploy keys → keys stay readable, with the reason |
-| `ssh-keygen` | O | R | O | Repository key setup on that host → refused with the reason |
-| `sudo` | — | R install | — | Privilege policy proof at install |
-| `systemctl` | O/L | R | O/L | Server service lifecycle; elsewhere terminals and helper jobs → unavailable |
-| `systemd-run` | O/L | O | O/L | Terminals, browser, helper jobs → unavailable |
+| `sandbox-exec` | O/M | — | — | Secret hiding → runs unhidden; Settings says so |
+| `setsid` | — | — | R | Remote provider launch wrapper |
+| `sh` | R | — | R | Command wrappers and scripts |
+| `sleep` | — | — | O | Compute probe job → compute route unavailable with the reason |
+| `ssh` | R | — | R | Remote transport and Git transport |
+| `ssh-add` | O | — | O | Agent-held deploy keys → keys stay readable, with the reason |
+| `ssh-agent` | O | — | O | Agent-held deploy keys → keys stay readable, with the reason |
+| `ssh-keygen` | O | R | O | Repository key setup → refused with the reason |
+| `sudo` | — | R install | — | Privilege policy proof |
+| `systemctl` | O/L | R | O | Server service lifecycle; elsewhere terminals and helper jobs → unavailable |
+| `systemd-run` | O/L | — | O | Terminals, browser, helper jobs → unavailable |
 | `tar` | — | — | R | Remote archive extraction |
 | `test` | — | — | R | Remote shell predicates |
-| `true` | R | R | R | Route and wrapper probes |
-| `uname` | R | R | R | Host OS identity |
+| `true` | R | — | R | Route and wrapper probes |
+| `uname` | R | — | R | OS identity |
 | `useradd` | — | R install | — | Service account creation |
 | `uv` | — | R | — | Managed server runtime; installed by the server guide's uv step |
