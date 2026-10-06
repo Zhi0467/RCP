@@ -17,6 +17,7 @@ export function MachineBrowserRow({
   const [pending, setPending] = useState<"check" | "install" | "linger" | null>("check");
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [failedPolls, setFailedPolls] = useState(0);
   useEffect(() => {
     let cancelled = false;
     void loadMachineBrowser(machineId)
@@ -42,10 +43,15 @@ export function MachineBrowserRow({
     const timer = window.setTimeout(() => {
       void loadMachineBrowser(machineId).then(
         (result) => {
-          if (!cancelled) setReadiness(result);
+          if (cancelled) return;
+          setError(null);
+          setReadiness(result);
         },
         (failure) => {
-          if (!cancelled) setError(errorMessage(failure));
+          if (cancelled) return;
+          setError(errorMessage(failure));
+          // A failed check leaves readiness unchanged; count it so polling continues.
+          setFailedPolls((count) => count + 1);
         },
       );
     }, INSTALL_POLL_MS);
@@ -53,7 +59,7 @@ export function MachineBrowserRow({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [machineId, readiness, pending]);
+  }, [machineId, readiness, pending, failedPolls]);
   async function run(action: "check" | "install" | "linger") {
     setPending(action);
     setError(null);

@@ -1014,25 +1014,38 @@ export function NodeChat({
         total += item.file.size;
       }
     }
+    // Publish the preparing rows first: they block sending while the reads below run.
+    setAttachments((current) => [...current, ...candidates]);
     // A macOS screenshot thumbnail drops a file promise whose bytes can be gone by
     // upload time. Copy them now, so a source that cannot be read fails here, named.
+    const prepared: ComposerAttachment[] = [];
     for (const item of candidates) {
       if (item.status !== "preparing") continue;
+      let next: ComposerAttachment;
       try {
         const bytes = await item.file.arrayBuffer();
         if (bytes.byteLength !== item.file.size) throw new Error("short read");
-        item.file = new globalThis.File([bytes], item.file.name, {
-          type: item.file.type,
-          lastModified: item.file.lastModified,
-        });
+        next = {
+          ...item,
+          file: new globalThis.File([bytes], item.file.name, {
+            type: item.file.type,
+            lastModified: item.file.lastModified,
+          }),
+        };
+        prepared.push(next);
       } catch {
-        item.status = "error";
-        item.error = "Could not read this file. Save it to disk first, then attach it.";
+        next = {
+          ...item,
+          status: "error",
+          error: "Could not read this file. Save it to disk first, then attach it.",
+        };
       }
+      setAttachments((current) =>
+        current.map((candidate) => (candidate.localId === item.localId ? next : candidate)),
+      );
     }
-    setAttachments((current) => [...current, ...candidates]);
 
-    const uploadCandidates = candidates.filter((candidate) => candidate.status === "preparing");
+    const uploadCandidates = prepared;
     for (const [index, item] of uploadCandidates.entries()) {
       try {
         const result = await uploadChatAttachment(
