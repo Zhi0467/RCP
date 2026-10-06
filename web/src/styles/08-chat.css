@@ -982,17 +982,23 @@
   background: var(--plum);
   border: 0;
   border-radius: 999px;
-  box-shadow: 0 8px 22px rgb(var(--shadow-rgb) / 24%);
+  box-shadow: 0 5px 14px rgb(var(--shadow-rgb) / 24%);
   color: var(--sheet);
   cursor: pointer;
   display: inline-flex;
-  font: 650 var(--type-xs) / 1 var(--ui);
-  gap: 6px;
-  min-height: 34px;
-  padding: 0 14px;
+  font: 650 var(--type-2xs) / 1 var(--ui);
+  gap: 5px;
+  height: var(--chat-selection-comment-size, 26px);
+  padding: 0 10px;
   position: fixed;
   user-select: none;
   z-index: 1200;
+}
+/* An invisible margin keeps the compact control easy to tap on a phone. */
+.chat-selection-comment::before {
+  content: "";
+  inset: calc(-1 * var(--chat-selection-comment-reach, 0px));
+  position: absolute;
 }
 .chat-selection-comment:disabled {
   cursor: default;

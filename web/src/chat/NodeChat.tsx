@@ -1263,7 +1263,7 @@ export function NodeChat({
         position: chatSelectionCommentPosition(
           { firstLine, bottom: range.getBoundingClientRect().bottom },
           viewport,
-          button?.width ? button : { width: 112, height: 44 },
+          button?.width ? button : { width: 96, height: 32 },
         ),
       });
     };
@@ -2657,7 +2657,7 @@ export function NodeChat({
                 openAnnotationComposer(range);
               }}
             >
-              <MessageCirclePlus size={15} /> Comment
+              <MessageCirclePlus size={13} /> Comment
             </button>,
             document.body,
           )

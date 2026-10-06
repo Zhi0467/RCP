@@ -152,7 +152,16 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
         "No field takes focus, which would clear a touch selection",
       );
       const offerBox = await offer.boundingBox();
-      assert.ok(offerBox.height >= 44, "Comment is a phone tap target");
+      assert.ok(offerBox.height <= 32, `Comment stays compact, got ${offerBox.height}px`);
+      assert.ok(
+        await page.evaluate(
+          ({ x, y, width }) =>
+            document.elementFromPoint(x + width / 2, y - 4)?.closest(".chat-selection-comment") !==
+            null,
+          offerBox,
+        ),
+        "A tap just outside Comment still reaches it",
+      );
       assert.ok(offerBox.x >= 0 && offerBox.x + offerBox.width <= viewport.width);
       assert.equal(await page.getByRole("form", { name: "Add annotation" }).count(), 0);
       await page.evaluate(() => window.getSelection().removeAllRanges());

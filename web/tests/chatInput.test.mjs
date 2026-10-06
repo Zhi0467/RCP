@@ -118,9 +118,9 @@ test("the selection Comment offer sits on top of the selection and stays on scre
   const at = (left, right, top, bottom) =>
     chatSelectionCommentPosition({ firstLine: { left, right, top }, bottom }, viewport, button);
   // Centred above the first line of a two-line selection.
-  assert.deepEqual(at(40, 300, 400, 460), { left: 114, top: 342 });
+  assert.deepEqual(at(40, 300, 400, 460), { left: 114, top: 350 });
   // No room above: below the selection's last line instead.
-  assert.deepEqual(at(40, 300, 30, 70), { left: 114, top: 84 });
+  assert.deepEqual(at(40, 300, 30, 70), { left: 114, top: 76 });
   // A selection at either edge keeps the whole button inside the margins.
   assert.equal(at(0, 30, 400, 420).left, 12);
   assert.equal(at(300, 389, 400, 420).left, 266);

@@ -210,7 +210,7 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
       const first = window.getSelection().getRangeAt(0).getClientRects()[0];
       if (!button || !first) return false;
       const box = button.getBoundingClientRect();
-      return box.right <= window.innerWidth && Math.abs(box.bottom + 14 - first.top) < 2;
+      return box.right <= window.innerWidth && Math.abs(box.bottom + 6 - first.top) < 2;
     });
   } finally {
     await browser?.close();

@@ -43,8 +43,10 @@
     --markdown-code-copy-size: 28px;
     --markdown-code-copy-reach: 8px;
   }
+  /* 32px with a 6px invisible margin: a 44px tap target. */
   .chat-selection-comment {
-    min-height: 44px;
+    --chat-selection-comment-size: 32px;
+    --chat-selection-comment-reach: 6px;
   }
 
   /* A tooltip anchored to the term leaves the screen for a term near either

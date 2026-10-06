@@ -56,8 +56,8 @@ export interface ChatAnnotationTextControlSelection {
 
 const CHAT_ANNOTATION_COMPOSER_GAP = 10;
 const CHAT_ANNOTATION_VIEWPORT_MARGIN = 12;
-// Clears the handle a touch platform draws at either end of a selection.
-const CHAT_SELECTION_COMMENT_GAP = 14;
+// Close enough to read as part of the selection.
+const CHAT_SELECTION_COMMENT_GAP = 6;
 
 export function replaceTextSpan(current: string, span: TextSpan, replacement: string) {
   return {
