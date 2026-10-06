@@ -120,7 +120,10 @@ def test_machine_autocompact_round_trip_and_refusal(app) -> None:
     ):
         assert client.patch(url, json={"provider_autocompact": refused}).status_code == 422
     assert _store(app).space_machine(str(machine["machine_id"])).provider_autocompact == saved
-    cleared = client.patch(url, json={"provider_autocompact": {"claude": "AUTO", "codex": ""}})
+    # Saves merge per provider, so one row's save never erases another's.
+    merged = client.patch(url, json={"provider_autocompact": {"claude": "AUTO"}})
+    assert merged.json()["provider_autocompact"] == {"claude": "auto", "codex": "200000"}
+    cleared = client.patch(url, json={"provider_autocompact": {"codex": ""}})
     assert cleared.json()["provider_autocompact"] == {"claude": "auto"}
 
 

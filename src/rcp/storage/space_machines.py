@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import SpaceMachineRecord
@@ -101,10 +101,11 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         name: str | None = None,
         writable_paths: list[str] | None = None,
         hidden_folders: list[str] | None = None,
-        provider_autocompact: dict[str, str] | None = None,
+        provider_autocompact: Mapping[str, str | None] | None = None,
     ) -> SpaceMachineRecord:
         # Write only the fields given, so a rename and a path edit racing on one
-        # card both land.
+        # card both land. Auto-compact merges per provider (None removes one), so
+        # two providers saved at once both land too.
         with self.connection() as connection:
             updated = connection.execute(
                 """
@@ -112,7 +113,9 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 SET name = COALESCE(?, name),
                     writable_paths_json = COALESCE(?, writable_paths_json),
                     hidden_folders_json = COALESCE(?, hidden_folders_json),
-                    provider_autocompact_json = COALESCE(?, provider_autocompact_json),
+                    provider_autocompact_json = COALESCE(
+                        json_patch(provider_autocompact_json, ?), provider_autocompact_json
+                    ),
                     updated_at = ?
                 WHERE machine_id = ?
                 """,

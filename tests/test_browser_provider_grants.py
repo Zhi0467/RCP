@@ -187,8 +187,10 @@ def test_staged_client_and_next_broker_ignore_workspace_input_and_site_imports(t
         "PATH": str(python_home / "bin") + os.pathsep + os.environ.get("PATH", ""),
         "PYTHONPATH": str(workspace),
     }
-    # Prove the inherited site configuration would execute without isolation.
-    subprocess.run(["python3", "-c", "pass"], env=environment, check=True)
+    # Prove an inherited import path would run workspace code without isolation. The
+    # planted sitecustomize stays as a second vector; whether a venv's site runs it
+    # depends on the interpreter build, so it is not the precondition.
+    subprocess.run(["python3", "-c", "import argparse"], cwd=tmp_path, env=environment, check=True)
     assert marker.exists()
     marker.unlink()
     result = subprocess.run(

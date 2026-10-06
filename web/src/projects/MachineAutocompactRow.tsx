@@ -26,7 +26,8 @@ export function MachineAutocompactRow({
     setError(null);
     try {
       const updated = await updateSpaceMachine(record.machine_id, {
-        provider_autocompact: { ...record.provider_autocompact, [option.provider]: value },
+        // The server merges per provider, so concurrent row saves never erase each other.
+        provider_autocompact: { [option.provider]: value },
       });
       onRecordChange(updated);
       setDraft(updated.provider_autocompact[option.provider] ?? "");

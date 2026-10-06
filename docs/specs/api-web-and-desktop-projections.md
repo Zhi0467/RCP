@@ -1493,8 +1493,8 @@ in use by any project, or whose use cannot be established, cannot be deleted,
 and host and account never change. A `PATCH` of `writable_paths` validates each
 path on its machine: absolute, an existing directory, no `:` or `$` or control
 characters, not `/`, and not inside RCP's own storage.
-A `PATCH` of `provider_autocompact` replaces the card's map of provider id to
-auto-compact setting; each provider profile validates its own value (Claude:
+A `PATCH` of `provider_autocompact` merges the given providers into the card's
+map of provider id to auto-compact setting; each provider profile validates its own value (Claude:
 `auto` or a token window, rendered as `--autocompact`; Codex: a token count,
 rendered as `model_auto_compact_token_limit`), an empty value restores the CLI
 default, and a provider without the setting is refused. The launcher reads the

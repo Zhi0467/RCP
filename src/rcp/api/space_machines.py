@@ -71,20 +71,23 @@ class UpdateSpaceMachineRequest(BaseModel):
     name: str | None = None
     writable_paths: list[str] | None = Field(default=None, max_length=_MAX_WRITABLE_PATHS)
     hidden_folders: list[str] | None = Field(default=None, max_length=HIDDEN_READ_PATH_MAX_COUNT)
-    #: The whole provider map; an empty value restores that CLI's own default.
+    #: The providers to change; an empty value restores that CLI's own default.
     provider_autocompact: dict[str, Annotated[str, Field(max_length=16)]] | None = Field(
         default=None, max_length=len(PROVIDER_IDS)
     )
 
     @field_validator("provider_autocompact")
     @classmethod
-    def validate_provider_autocompact(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+    def validate_provider_autocompact(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str | None] | None:
         if value is None:
             return None
         return {
-            provider: profile_for(provider).canonical_autocompact(setting)
+            provider: (
+                profile_for(provider).canonical_autocompact(setting) if setting.strip() else None
+            )
             for provider, setting in value.items()
-            if setting.strip()
         }
 
     @field_validator("name")
