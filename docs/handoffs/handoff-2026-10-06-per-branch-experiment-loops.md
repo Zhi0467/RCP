@@ -1,9 +1,10 @@
 # Experiment loops are per graph branch
 
 Date: 2026-10-06
-Status: design settled with the human on 2026-10-06 in a grilling session.
-Not yet implemented. Implementation runs in this PR as parallel slices after
-one xhigh design review.
+Status: design settled with the human on 2026-10-06 in a grilling session and
+reviewed once by an xhigh design pass the same day; its corrections are folded
+in below and raised no human questions. Not yet implemented. Implementation runs
+in this PR: slice 1 first, then slices 2–4 in parallel.
 
 Close this handoff when all of these hold:
 
@@ -37,10 +38,10 @@ episode, and each reader filters by it differently.
 | 1 | One live loop per node, across all branches | index `episodes_one_live_experiment_control` (`storage/base.py`), `_live_predecessor_id` (`runs/auto_research_experiments.py`), spec |
 | 2 | The orchestrator cannot see loops on other branches | `status` lists only its own children |
 | 3 | The kickoff hides the replacement | `kick_off` replacement path, `wake_suppressed=self_caused` |
-| 4 | The replaced loop's chat is never told | no per-turn loop status; the node-attached resource drops the node once a newer loop lives on another branch, so the chat reads a stale staged file |
+| 4 | The replaced loop's chat is never told | no per-turn loop status; resource discovery is already exact-target but omits stopped loops by design, so the chat keeps reading an old staged file |
 | 5 | The chat watcher strip matches by node only | `visibleChatWatchers` (`web/src/experiments/runProjection.ts`) |
 | 6 | Run cards show no branch, starter, or checkout | `ExperimentRunDetail.tsx`, `SpaceRuns.tsx` |
-| 7 | A branch's view hides its own loop once a newer loop lives elsewhere | `experiment_loop_runtime` "globally newest" display contract and `experiment_watcher_resources` (`storage/experiments.py`) |
+| 7 | A target's view hides its own loop once a newer loop lives elsewhere | the "globally newest" runtime, batch, and snapshot projections (`storage/experiments.py`), their node-keyed consumers (`projects.py`, `api/index.py`, `api/sync.py`), and the newest-root recovery and repair queries |
 
 ## Settled design
 
@@ -49,13 +50,18 @@ episode, and each reader filters by it differently.
 1. **A loop belongs to project + node + graph target.** At most one live loop per
    node per target. The unique index, admission, and every runtime lookup key on
    the target. One lookup replaces the "globally newest" and "for target" pair.
-2. **The orchestrator has full authority on its own branch and none elsewhere.**
-   It reads other branches and asks the human (`ask`). There is no new verb and
-   no approve-then-RCP-acts path. The replacement path is removed: a kickoff
-   never stops, adopts, or waits on another target's loop.
+2. **The orchestrator keeps its existing authority, limited to its branch and
+   its own children.** It cannot stop or adopt any loop it did not start, even a
+   human loop on its own branch. It reads other branches and asks the human
+   (`ask`). There is no new verb and no approve-then-RCP-acts path. The
+   replacement path is removed: a kickoff never stops, adopts, or waits on
+   another loop. To restart its own child it stops that child, waits for
+   settlement, and kicks off again; recovery advice says so.
 3. **Overlap is information, never a gate.** A start on a node that has a live
    loop on another target succeeds, for humans and the orchestrator alike. The
-   start result and the human Run dialog list the other live loops.
+   start result and the human Run dialog list the other live loops. A human
+   isolated start checks readiness against the branch it will create, so a live
+   main loop no longer blocks it.
 4. **Code isolation is unchanged.** Worktrees stay optional as today, and
    Auto-research resolves its code choice as today.
 
@@ -68,23 +74,30 @@ episode, and each reader filters by it differently.
    enforcement.
 6. **Orchestrator `status` gains `other_branch_loops`**, one compact row per live
    loop off its branch across the project: node, episode, target, started by,
-   state, checkout (`shared` or `worktree`). The kickoff result carries the same
-   rows for its node as `live_elsewhere`.
+   state, and checkout. Checkout is `shared` or `worktree` plus execution host
+   and repository path, so "same checkout" can be judged. The kickoff result,
+   including a recovered kickoff, carries the same rows for its node as
+   `live_elsewhere`.
 7. **Node chats get a small loop-status block on every turn**, rendered from the
    same projection the run card uses: this target's loop (live, stopped, or
    completed; who started it; when and by whom it stopped), live loops on other
    targets for this node, and a watcher-state file refreshed for this target.
-   It replaces nothing the human sees; the run cards already show it.
+   It includes an explicit no-loop state, refreshes on resumed sessions and
+   watcher-driven turns, and grants no watcher-maintenance authority: stopped
+   loops stay out of the maintenance resources.
 8. **Branch agents get read pointers only.** The prompt names the shared
    checkout path, says other code branches are readable through Git, and names
-   main's `graph.json`, staged read-only beside the branch graph. No other
-   branch's graph is staged.
+   main's `graph.json`, staged as an immutable task input with execution-host
+   paths. No other branch's graph is staged. Write scopes, the graph target, and
+   Patch collection do not change; the shared checkout is not added as a root.
 
 ### Web
 
 9. **One card per loop, in a flat list.** Each card shows a branch badge,
    who started it (a member, or Auto-research with a link to the parent run),
-   and its checkout.
+   and its checkout. Selection, Stop, and busy state use the exact episode, not
+   the node. The authorizing member stays recorded separately from the
+   starting Auto-research run and from the isolation owner.
 10. **The chat watcher strip shows only this chat's watchers and its own
     target's loop watchers.** Cancel can no longer reach another branch's loop.
 
@@ -97,44 +110,75 @@ episode, and each reader filters by it differently.
 
 ## Migration
 
-- A new storage migration replaces `episodes_one_live_experiment_control` with
-  a unique index on `(project_id, control_node_id, graph_target_json)` for live
-  `experiment_loop` rows. Old rows satisfy the wider key, so the rebuild cannot
-  fail on existing data. `graph_target_json` is written in one canonical form;
-  the slice verifies that before relying on it.
-- A child route left in `pending` with `replaces_episode_id` was waiting for a
-  predecessor that the new rule no longer stops. On upgrade it starts through
-  ordinary per-target admission, or fails with a recorded diagnostic. It never
-  waits forever.
-- `replaces_episode_id` stays as a read-only historical column. Transfer
-  records keep carrying it.
+- A versioned storage migration drops `episodes_one_live_experiment_control`
+  and creates a unique index on `(project_id, control_node_id,
+  graph_target_json)` for live `experiment_loop` rows. It also drops the
+  pending-replacement unique index. `CREATE INDEX IF NOT EXISTS` would keep the
+  old definition, so the drop is explicit, and a test asserts the old indexes are
+  absent after fresh creation and after upgrade.
+- `graph_target_json` is not canonical today: ordinary inserts and transfer
+  imports serialize the same target with different key order. The migration
+  rewrites existing values to one form, every writer uses one serializer, and
+  raw-equality queries rely on it.
+- A child route left `pending` with `replaces_episode_id` is settled in the
+  migration transaction as cancelled and never launched, with a recorded
+  diagnostic and its provenance kept. The orchestrator can kick off again
+  normally. No provider launches during migration, and an already recorded
+  predecessor Stop is never undone. Transfer export and import accept a
+  cancelled never-launched route without an episode.
+- `replaces_episode_id` and historical replacement notices stay as read-only
+  history.
+- Evidence: rehearsal and upgrade of a pre-change database, fresh-schema
+  equivalence, reopen, retained live episodes, tasks, watchers and budgets,
+  mixed JSON encodings, and a transfer round trip with a cancelled route.
 
 ## Implementation slices
 
-Slice 1 is the shared contract and lands first. Slices 2–4 then run in
+Slice 1 owns every shared contract and lands first. Slices 2–4 then run in
 parallel worktrees branched from slice 1, each owning only its files.
 
-1. **Storage, admission, API projection.** The migration; one target-keyed
-   runtime lookup and its callers (`api/experiment_controls.py`,
-   `api/experiments.py`, `watchers.py`, `runs/provider_login.py`);
-   `experiment_watcher_resources` per target; the `other_branch_loops` row
-   model; Episode response fields for starter and checkout; matching
-   `web/src/core/types.ts`. Tests: two live loops on one node across targets;
-   same-target refusal; upgrade of a pre-change database.
-2. **Auto-research.** Remove the replacement path and its pending advance;
-   kickoff `live_elsewhere`; `status.other_branch_loops`; orchestrator prompt
-   rule and pointers. Owns `runs/auto_research*.py`,
-   `storage/auto_research_children.py`, `agents/auto_research_prompt.py`.
-   Tests: kickoff beside a live main loop leaves it running; status lists it.
-3. **Loop and chat prompts.** Status block for node chats; interference rule
-   for Experiment-loop prompts; branch pointers and the staged main
-   `graph.json`. Owns `agents/prompts.py`, `agents/experiment_loop_prompt.py`,
-   `agents/context.py`, `runs/experiment_loop.py`, `runs/tasks/*.py` staging.
-   Tests check structure and staged files, never wording.
-4. **Web.** Card labels, Run-dialog overlap list, watcher strip filter. Owns
-   `web/src/experiments/*`, `web/src/chat/NodeChat.tsx`. Tests in
-   `web/tests/`.
+1. **Storage, migration, transfer, projections, APIs.** The migration and
+   serializer above; a target-required runtime lookup plus an all-target
+   snapshot that never collapses node identities; target-scoped admission,
+   continuation, recovery, and graph-repair queries; Stop entry points that
+   require a target or exact episode; one shared loop-status projection (live,
+   stopped, completed, none; starter, Auto-research parent, stop actor and time,
+   checkout identity); `other_branch_loops` and `live_elsewhere` row models; the
+   human start response with its overlap list; the interference-rule renderer
+   shared by slices 2 and 3; Episode response fields; `web/src/core/types.ts`.
+   Removes the replacement path from storage and settles legacy pending routes.
+   Owns `storage/*`, `transfer/records.py`, `projects.py`, `api/*` including
+   `api/app.py` startup wiring, `runs/provider_login.py`, `runs/episodes/*`,
+   `watchers.py`. Tests: two admitted live loops on one node across targets,
+   started in either order, each recovered, stopped, and delivered a completed
+   watcher group independently; same-target refusal; a human isolated start
+   beside a live main loop; the migration evidence above.
+2. **Auto-research.** Kickoff without replacement; `live_elsewhere` in normal
+   and recovered kickoff results; `status.other_branch_loops`; recovery advice
+   (stop own child, settle, kick off); orchestrator prompt rule and pointers.
+   Owns `runs/auto_research*.py`, `runs/tasks/auto_research_stream.py`,
+   `agents/auto_research_prompt.py`. Tests: kickoff beside a live main loop
+   leaves it running; status lists it.
+3. **Loop and chat prompts.** Status block for node chats on every turn kind;
+   interference rule for Experiment-loop prompts; branch pointers and the staged
+   main `graph.json`. Owns `agents/prompts.py`, `agents/experiment_loop_prompt.py`,
+   `agents/context.py`, `runs/experiment_loop.py`, `runs/chat.py`,
+   `runs/shared.py`, and `runs/tasks/*.py` except `auto_research_stream.py`.
+   Tests check structure and staged files for live, stopped, completed, and
+   no-loop states, never wording.
+4. **Web.** Card labels, exact-episode selection and Stop, Run-dialog overlap
+   list, watcher strip filtered by target and chat, WebMCP exact-target
+   inspection. Owns `web/src/experiments/*`, `web/src/chat/NodeChat.tsx`,
+   `web/src/App.tsx`, `web/src/graph/DetailDrawer.tsx`,
+   `web/src/graph/GraphViews.tsx`, `web/src/webmcp/experiments.ts`,
+   `web/src/core/api.ts`. Tests in `web/tests/`.
 
-Docs (Claude): `auto-research-and-branch-merge.md` (the project-global rule and
-replacement text), `conversations-episodes-and-watchers.md`,
-`api-web-and-desktop-projections.md`, and this handoff's status.
+Test files follow their slice; slice 1 also owns
+`test_auto_research_children_storage.py` and converts the replacement tests in
+`test_auto_research_experiments.py` before slice 2 starts.
+
+Docs (Claude): `auto-research-and-branch-merge.md` (the project-global rule,
+replacement, recovery advice, and pending-route Finish text),
+`conversations-episodes-and-watchers.md` (target-scoped continuation),
+`api-web-and-desktop-projections.md` (one card per loop, "Started by"), and
+this handoff's status.

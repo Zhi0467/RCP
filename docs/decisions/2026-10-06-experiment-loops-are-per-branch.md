@@ -5,9 +5,10 @@ Confirmed by the human 2026-10-06.
 ## Decision
 
 An Experiment loop belongs to its project, node, and graph target. Each target
-holds at most one live loop per node. An Auto-research orchestrator acts only on
-its own branch. It reads other branches and asks the human about them, and it
-cannot stop, replace, or adopt a loop it did not start.
+holds at most one live loop per node. An Auto-research orchestrator keeps its
+existing authority, limited to its branch and its own children. It reads other
+branches and asks the human about them, and it cannot stop, replace, or adopt a
+loop it did not start.
 
 Overlap between targets is shown, not prevented: starts succeed, and every loop
 agent is told which loops run elsewhere on its node and asked to check with the
