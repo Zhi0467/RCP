@@ -96,6 +96,52 @@ class HiddenReadStatus(BaseModel):
         return self
 
 
+class MissingProgram(BaseModel):
+    """One program a machine lacks, described from `rcp.dependencies`."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    name: str
+    purpose: str
+    required: bool
+    # Optional programs only: what stops working, and what the user sees instead.
+    feature: str = ""
+    fallback: str = ""
+
+
+class DependencyStatus(BaseModel):
+    """One machine checked against `rcp.dependencies`.
+
+    Only a definite ``missing`` or ``unsupported`` refuses an agent run.
+    ``not_checked`` (unreachable, timed out, or an unreadable answer) never does.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    outcome: Literal["ready", "missing", "unsupported", "not_checked"]
+    # OS family and `/etc/os-release` ID, when the check got that far.
+    platform: str | None = None
+    distribution: str | None = None
+    # False only for a Linux distribution RCP has not been tested on.
+    tested: bool = True
+    missing: tuple[MissingProgram, ...] = ()
+    # An apt line on Debian and Ubuntu; otherwise None and `install_notes` lists steps.
+    install_command: str | None = None
+    install_notes: tuple[str, ...] = ()
+    # Why the check is unsupported or not checked.
+    reason: str | None = None
+    checked_at: str
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> DependencyStatus:
+        missing_required = any(program.required for program in self.missing)
+        if (self.outcome == "missing") != missing_required:
+            raise ValueError("missing is the outcome exactly when a required program is absent")
+        if self.outcome in {"unsupported", "not_checked"} and not self.reason:
+            raise ValueError(f"{self.outcome} requires a reason")
+        return self
+
+
 class HiddenReadKeyEvidence(BaseModel):
     """Launch-host evidence, never private key bytes.
 

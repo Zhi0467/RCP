@@ -2,6 +2,7 @@ import type { MachineSettingsRecord } from "../projects/spaceMachines";
 import type {
   ChatBrowserPreference,
   MachineBrowserReadiness,
+  DependencyStatus,
   AgentQuestion,
   AnswerQuestionRequest,
   UpdateNotice,
@@ -874,6 +875,14 @@ export function setChatBrowser(
 
 export function loadMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {
   return api(`/api/space/machines/${encodeURIComponent(machineId)}/browser`);
+}
+
+export function loadMachineDependencies(
+  machineId: string,
+  refresh = false,
+): Promise<DependencyStatus> {
+  const query = refresh ? "?refresh=1" : "";
+  return api(`/api/space/machines/${encodeURIComponent(machineId)}/dependencies${query}`);
 }
 
 export function installMachineBrowser(machineId: string): Promise<MachineBrowserReadiness> {

@@ -1,4 +1,4 @@
-"""Keep external program names in the operations spec aligned with Python launch sites.
+"""Hold `rcp.dependencies` to the Python launch sites and the server guide.
 
 Scan literal argv heads, including assignments/builders and SSH/runner wrappers.
 Literal remote shell commands contribute their first program. ``sys.executable``
@@ -13,6 +13,8 @@ import re
 import shlex
 from collections import defaultdict
 from pathlib import Path
+
+from rcp.dependencies import BY_NAME, UBUNTU_BASE_PACKAGES, required
 
 ROOT = Path(__file__).resolve().parents[1]
 # Concrete subprocess adapters, including injected subprocess runners and the
@@ -38,15 +40,28 @@ RUNNERS = {
     "facility_probe",
     "launch",
     "execv",
+    "execvp",
     "run_rsync",
     "_probe",
     "_target",
     "_target_result",
+    # A compute job's argv is launched by its backend profile.
+    "ComputeLaunchRequest",
 }
 SSH_BUILDERS = {"ssh_arguments", "_strict_ssh_arguments"}
 # A literal `shutil.which("tool")` names a program RCP depends on, even when the
 # launch itself receives the resolved path.
 LOOKUPS = {"which"}
+# An `sh -c` script contributes the first word of each simple command, after
+# leading `NAME=value` assignments, and the program after find's `-exec`. Lines
+# are commands; a trailing backslash continues one. Builtins and keywords are not
+# programs. This is a bounded reading, not a shell parser.
+SHELL_BUILTINS = {"cd", "echo", "exec", "exit", "export", "set", "trap", "wait"}
+SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "for", "do", "done", "while"}
+SHELL_KEYWORDS |= {"until", "case", "esac", "in", "!", "[", "[[", "{", "}"}
+SHELL_SEPARATOR = re.compile(r"&&|\|\||[;|&]")
+# Stands in for an interpolated value; a command word containing it is dynamic.
+DYNAMIC = "\0"
 # `_programs` records names only at calls to these; a file without one has none.
 LAUNCH_CALL = re.compile(
     r"\b(?:" + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS | LOOKUPS))) + r")\s*\("
@@ -152,6 +167,8 @@ def _programs(source: str) -> set[str]:
                                 candidate.value, str
                             ):
                                 found.add(Path(candidate.value).name)
+                                if Path(candidate.value).name in {"sh", "bash"}:
+                                    shell(value.elts[1:])
                                 if Path(candidate.value).name == "ssh":
                                     # Skip options/operands and destination to reach the
                                     # command, without mistaking a literal host for a tool.
@@ -188,6 +205,46 @@ def _programs(source: str) -> set[str]:
                                         if command is not None:
                                             remote(command)
                                         break
+
+        def shell(operands: list[ast.expr]) -> None:
+            # Only the operand after a literal `-c`-style flag is a script.
+            for flag, script in zip(operands, operands[1:], strict=False):
+                if not (
+                    isinstance(flag, ast.Constant)
+                    and isinstance(flag.value, str)
+                    and re.fullmatch(r"-[a-z]*c", flag.value)
+                ):
+                    continue
+                for value in resolve(script):
+                    if isinstance(value, (ast.List, ast.Tuple)):
+                        argv(value)
+                        continue
+                    text = ""
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                        text = value.value
+                    elif isinstance(value, ast.JoinedStr):
+                        text = "".join(
+                            part.value
+                            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                            else DYNAMIC
+                            for part in value.values
+                        )
+                    text = text.replace("\\\n", " ").replace("\n", ";")
+                    for command in SHELL_SEPARATOR.split(text):
+                        words = command.split()
+                        while words and (words[0] in SHELL_KEYWORDS or "=" in words[0]):
+                            words = words[1:]
+                        candidates = words[:1] + [
+                            word
+                            for flag, word in zip(words, words[1:], strict=False)
+                            if flag == "-exec"
+                        ]
+                        for word in candidates:
+                            if word not in SHELL_BUILTINS and re.fullmatch(
+                                r"[A-Za-z0-9_./][A-Za-z0-9_./-]*", word
+                            ):
+                                found.add(Path(word).name)
+                return
 
         def remote(node: ast.expr) -> None:
             if (
@@ -256,6 +313,14 @@ def _programs(source: str) -> set[str]:
                         if keyword.arg in {"args", "argv"}:
                             argv(keyword.value)
                 if (
+                    name == "join"
+                    and isinstance(node.func, ast.Attribute)
+                    and _name(node.func.value) == "shlex"
+                    and node.args
+                ):
+                    # A literal argv joined into a shell command string.
+                    argv(node.args[0])
+                if (
                     name in LOOKUPS
                     and node.args
                     and isinstance(node.args[0], ast.Constant)
@@ -286,18 +351,28 @@ def test_external_dependency_names_match_source() -> None:
             continue
         for program in _programs(source):
             locations[program].append(str(path.relative_to(ROOT)))
-    spec = (ROOT / "docs/specs/server-and-machine-operations.md").read_text()
-    section = spec.split("## External dependencies\n", 1)[1].split("\n## ", 1)[0]
-    rows = re.findall(r"^\| `([^`]+)` \|", section, re.MULTILINE)
-    missing = sorted(locations.keys() - set(rows))
-    stale = sorted(set(rows) - locations.keys())
-    assert len(rows) == len(set(rows)), "Duplicate dependency rows"
+    missing = sorted(locations.keys() - BY_NAME.keys())
+    stale = sorted(BY_NAME.keys() - locations.keys())
     assert not missing and not stale, (
-        "Missing external programs:\n"
+        "Programs missing from rcp.dependencies:\n"
         + "\n".join(f"  {name}: {', '.join(locations[name])}" for name in missing)
-        + "\nTable programs absent from source: "
+        + "\nRegistry programs absent from source: "
         + ", ".join(stale)
     )
+
+
+def test_server_guide_installs_every_required_linux_package() -> None:
+    guide = (ROOT / "docs/server.md").read_text()
+    lines = re.findall(r"^sudo apt-get install --yes (.+)$", guide, re.MULTILINE)
+    assert len(lines) == 1
+    listed = set(lines[0].split())
+    needed = {
+        dependency.apt
+        for role in ("server_install", "server", "local")
+        for dependency in required(role, "linux")
+        if dependency.apt is not None
+    }
+    assert not needed - UBUNTU_BASE_PACKAGES - listed
 
 
 def test_inventory_follows_literal_launches_and_excludes_dynamic_commands() -> None:
@@ -331,6 +406,10 @@ subprocess.Popen([configured_binary, "--version"])
 unrelated(["ordinary-data"])
 shutil.which("looked-up-tool")
 shutil.which(configured_tool)
+wrapper = shlex.join(["joined-tool", "--wait", "sh", "-c", child])
+ComputeLaunchRequest(argv=["sh", "-c", f"echo ready; script-tool {seconds} && {dynamic}"])
+subprocess.run(["bash", "-lc", "if [ ! -d x ]; then\\n  exit 0\\nfi\\nline-tool x -exec exec-arg-tool {} + | LC_ALL=C piped-tool"])
+os.execvp("execvp-tool", ["execvp-tool", "-D"])
 """
     assert _programs(source) == {
         "assigned-tool",
@@ -349,4 +428,11 @@ shutil.which(configured_tool)
         "rsync",
         "loop-tool",
         "looked-up-tool",
+        "joined-tool",
+        "script-tool",
+        "bash",
+        "line-tool",
+        "exec-arg-tool",
+        "piped-tool",
+        "execvp-tool",
     }

@@ -7,9 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.server_ops import install as server_install
 from rcp.server_ops.install import HostFacts, InstallRefused
 from rcp.server_ops.layout import ServerLayout
+
+_READY = DependencyStatus(outcome="ready", platform="linux", checked_at="2026-10-05T00:00:00Z")
 
 
 def test_service_account_commands_clear_invoking_credentials_and_use_fixed_home(
@@ -89,7 +92,7 @@ def test_supported_host_preflight_checks_exact_versions_without_installing_tools
         "is_dir",
         lambda path: True if path == Path("/run/systemd/system") else original_is_dir(path),
     )
-    monkeypatch.setattr(server_install.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(server_install, "local_check", lambda _roles: _READY)
 
     def fake_require(argv, _error, **_kwargs):
         stdout = ""
@@ -119,7 +122,7 @@ def test_host_preflight_refuses_when_systemd_manager_is_not_reachable(monkeypatc
         "is_dir",
         lambda path: True if path == Path("/run/systemd/system") else original_is_dir(path),
     )
-    monkeypatch.setattr(server_install.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(server_install, "local_check", lambda _roles: _READY)
 
     def fake_require(argv, error, **_kwargs):
         if argv[:3] == ("systemctl", "show", "--property=Version"):
@@ -130,6 +133,43 @@ def test_host_preflight_refuses_when_systemd_manager_is_not_reachable(monkeypatc
 
     with pytest.raises(InstallRefused):
         server_install.LinuxInstallMachine().validate_host()
+
+
+def test_host_preflight_refuses_a_missing_required_program_from_the_registry(
+    monkeypatch,
+) -> None:
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        server_install,
+        "_read_os_release",
+        lambda _path: {"ID": "ubuntu", "VERSION_ID": "24.04"},
+    )
+    monkeypatch.setattr(server_install.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        Path,
+        "is_dir",
+        lambda path: True if path == Path("/run/systemd/system") else original_is_dir(path),
+    )
+    checked: list[set[str]] = []
+
+    def missing_rsync(roles):
+        checked.append(set(roles))
+        return DependencyStatus(
+            outcome="missing",
+            platform="linux",
+            missing=(MissingProgram(name="rsync", purpose="Transfer.", required=True),),
+            checked_at="2026-10-05T00:00:00Z",
+        )
+
+    def no_version_checks(argv, _error, **_kwargs):
+        raise AssertionError(f"version check {argv} ran before the presence refusal")
+
+    monkeypatch.setattr(server_install, "local_check", missing_rsync)
+    monkeypatch.setattr(server_install, "_require_command", no_version_checks)
+
+    with pytest.raises(InstallRefused, match="rsync"):
+        server_install.LinuxInstallMachine().validate_host()
+    assert checked == [{"server_install", "server", "local"}]
 
 
 @pytest.mark.parametrize(
@@ -327,6 +367,49 @@ def test_root_process_drops_inherited_sudo_identity(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("status", "missing"),
+    [
+        (
+            DependencyStatus(
+                outcome="missing",
+                platform="linux",
+                missing=(MissingProgram(name="rsync", purpose="Transfer.", required=True),),
+                checked_at="2026-10-05T00:00:00Z",
+            ),
+            ("rsync",),
+        ),
+        (
+            DependencyStatus(
+                outcome="not_checked", reason="no frame", checked_at="2026-10-05T00:00:00Z"
+            ),
+            (),
+        ),
+    ],
+)
+def test_service_tooling_refuses_programs_missing_or_unchecked_for_the_service_account(
+    monkeypatch, status, missing
+) -> None:
+    layouts: list[ServerLayout] = []
+
+    def check(layout):
+        layouts.append(layout)
+        return status
+
+    def no_tool_runs(_account, argv, **_kwargs):
+        raise AssertionError(f"{argv} ran before the presence refusal")
+
+    machine = server_install.LinuxInstallMachine()
+    monkeypatch.setattr(server_install.pwd, "getpwnam", lambda _name: SimpleNamespace())
+    monkeypatch.setattr(server_install, "service_account_dependencies", check)
+    monkeypatch.setattr(server_install, "_run_as_account", no_tool_runs)
+
+    with pytest.raises(InstallRefused) as refused:
+        machine._validate_service_tooling()
+    assert refused.value.missing == missing
+    assert layouts == [machine.layout]
+
+
 def test_service_tooling_installs_and_rechecks_managed_python_for_fresh_account(
     monkeypatch,
 ) -> None:
@@ -353,6 +436,7 @@ def test_service_tooling_installs_and_rechecks_managed_python_for_fresh_account(
 
     monkeypatch.setattr(server_install.pwd, "getpwnam", lambda _name: account)
     monkeypatch.setattr(server_install, "_run_as_account", fake_run)
+    monkeypatch.setattr(server_install, "service_account_dependencies", lambda _layout: _READY)
 
     server_install.LinuxInstallMachine()._validate_service_tooling()
 

@@ -13,8 +13,20 @@ if TYPE_CHECKING:
     from rcp.watchers import WatcherDelivery
 
 
-class ProviderSignedOut(ValueError):
+class AdmissionRefused(ValueError):
+    """An admission refusal that defers work without creating a row or debiting.
+
+    Admission callers catch this base to keep pending wakes and reserved
+    allocations for a later attempt.
+    """
+
+
+class ProviderSignedOut(AdmissionRefused):
     """The execution account needs a verified provider sign-in."""
+
+
+class MachineDependenciesMissing(AdmissionRefused):
+    """The execution machine lacks a required program or is unsupported."""
 
 
 def provider_login_host(manifest: Manifest, run_on: str | None) -> str:

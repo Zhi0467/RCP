@@ -155,6 +155,11 @@ conversations spec; 11 `ProviderStreamEvent`.
   relations. `tests/test_project_types.py` and `web/tests/projectType.test.mjs`
   hold every other file to a falling count
   ([decision](docs/decisions/2026-10-04-the-kernel-asks-node-type-questions.md)).
+- A new external program is declared in `src/rcp/dependencies.py` with its
+  purpose, roles, platforms, and tier. Required programs are checked up front
+  and refuse agent runs when missing; optional ones name their feature and
+  visible fallback, and their owner keeps the readiness probe. CI holds the
+  source and the server install line to the registry.
 
 ## Documentation lifecycle
 

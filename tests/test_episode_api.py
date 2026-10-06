@@ -746,6 +746,8 @@ def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
         "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
         missing_remote_stage,
     )
+    # The race is in the stage probe; the fictional host's dependency check is not.
+    monkeypatch.setattr(app.state.dependency_checker, "launch_refusal", lambda _host: None)
 
     with signed_in_client(app) as client:
         episode, root = create_recoverable_auto_episode(

@@ -10,10 +10,11 @@ import pytest
 import rcp.storage.experiments as experiments_storage
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
+from rcp.runs.provider_login import MachineDependenciesMissing
 from rcp.runs.question_snapshots import question_snapshot
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AppStore, EpisodeInvocationCeilingReached
-from rcp.storage.question_models import QuestionOrigin
+from rcp.storage.question_models import QuestionOrigin, question_followup_operation_id
 
 from .test_experiment_episode_storage import _admit_root, _bind, _identity, _task
 from .test_experiment_loop_recorded_finalization import (
@@ -65,6 +66,10 @@ async def test_question_parks_empty_experiment_handoff_without_graph_pause(manif
     assert execution.store.experiment_has_question_continuation(
         execution.store.agent_task(execution.operation_id).project_id, _EPISODE_ID
     )
+
+
+def _admit_any(*_args, **_kwargs) -> None:
+    return None
 
 
 def _ready_answer(tmp_path: Path, *, ceiling=2):
@@ -304,22 +309,50 @@ def test_continuation_keeps_human_prompt_and_claimed_answer_distinct(
 def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_path):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     launches = []
-    tasks = SimpleNamespace(store=store, launch_admitted=launches.append)
+    tasks = SimpleNamespace(
+        store=store, admit_provider_task=_admit_any, launch_admitted=launches.append
+    )
     first = reconcile_experiment_question_answers(tasks)
     claimed = store.get_question(question.question_id).followup_operation_id
     assert claimed is not None and first[question.question_id] == claimed
     restarted = SimpleNamespace(
-        store=AppStore(tmp_path / "rcp.sqlite3"), launch_admitted=launches.append
+        store=AppStore(tmp_path / "rcp.sqlite3"),
+        admit_provider_task=_admit_any,
+        launch_admitted=launches.append,
     )
     assert reconcile_experiment_question_answers(restarted)[question.question_id] == claimed
     assert launches == [claimed, claimed]
     assert store.episode(episode_id).invocations_used == 2
 
 
+def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path):
+    store, episode_id, question, _ = _ready_answer(tmp_path)
+    followup = question_followup_operation_id(question.question_id, question.answer_revision)
+    launches = []
+
+    def refuse(*_args, **_kwargs):
+        raise MachineDependenciesMissing("missing")
+
+    tasks = SimpleNamespace(
+        store=store, admit_provider_task=refuse, launch_admitted=launches.append
+    )
+    reconcile_experiment_question_answers(tasks)
+    assert launches == []
+    assert store.get_question(question.question_id).followup_operation_id is None
+    assert store.agent_task(followup) is None
+    assert store.episode(episode_id).invocations_used == 1
+    tasks.admit_provider_task = _admit_any
+    claimed = reconcile_experiment_question_answers(tasks)[question.question_id]
+    assert launches == [claimed]
+    assert store.episode(episode_id).invocations_used == 2
+
+
 def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path):
     store, _, question, _ = _ready_answer(tmp_path)
     launches = []
-    tasks = SimpleNamespace(store=store, launch_admitted=launches.append)
+    tasks = SimpleNamespace(
+        store=store, admit_provider_task=_admit_any, launch_admitted=launches.append
+    )
     assert reconcile_experiment_question_answers(tasks, project_id="other-project") == {}
     assert launches == []
     project_id = question.origin.project_id

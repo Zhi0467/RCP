@@ -33,6 +33,11 @@ def prepare(root: Path) -> dict[str, str]:
         remote_bin / "bash",
         '#!/bin/sh\nexec /bin/bash --noprofile --norc -c "$2"\n',
     )
+    # The simulated host stands in for a Linux machine, which remote work requires.
+    _script(
+        remote_bin / "uname",
+        '#!/bin/sh\nif [ "$1" = -s ]; then echo Linux; else exec /usr/bin/uname "$@"; fi\n',
+    )
     _script(
         remote_bin / "setsid",
         f"#!{sys.executable}\n"

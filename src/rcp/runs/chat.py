@@ -1955,11 +1955,20 @@ def reconcile_chat_question_answers(
             if question.client_receipt_revision is not None:
                 statuses[question.question_id] = "received"
                 continue
-            task = (
-                store.agent_task(question.followup_operation_id)
-                if question.followup_operation_id
-                else store.admit_chat_question_followup(question.question_id)
-            )
+            if question.followup_operation_id:
+                task = store.agent_task(question.followup_operation_id)
+            else:
+                if origin_task is not None:
+                    # Provider admission precedes the follow-up row, as on every
+                    # other path; a refusal leaves the answer unclaimed.
+                    background_tasks.admit_provider_task(
+                        origin_task.project_id,
+                        RunRequest.model_validate(origin_task.request),
+                        execution_host=(
+                            (origin_task.stage_host or "") if origin_task.stage_root else None
+                        ),
+                    )
+                task = store.admit_chat_question_followup(question.question_id)
             if task is not None and task.status == "queued":
                 background_tasks.launch_admitted(task.operation_id)
             current = store.agent_task(task.operation_id) if task is not None else None

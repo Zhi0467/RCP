@@ -9,7 +9,6 @@ import platform
 import pwd
 import re
 import shlex
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import BinaryIO, Literal
 from uuid import uuid4
 
+from rcp.dependency_check import local_check
 from rcp.limits import (
     SERVER_INSTALL_ACCOUNT_TIMEOUT_SECONDS,
     SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
@@ -32,6 +32,7 @@ from rcp.server_ops.config import (
     load_installed_server_config,
     write_installed_server_config,
 )
+from rcp.server_ops.doctor import service_account_dependencies
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout, server_service_unit_text
 from rcp.server_ops.models import ServerCommandRequest, ServerPlanEvent
 
@@ -43,7 +44,14 @@ _CONFIG_DIRECTORY_MODE = 0o750
 
 
 class InstallRefused(RuntimeError):
-    """A safe bootstrap refusal suitable for operator output."""
+    """A safe bootstrap refusal suitable for operator output.
+
+    `missing` names required programs absent for the refused account, when known.
+    """
+
+    def __init__(self, message: str, *, missing: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.missing = missing
 
 
 @dataclass(frozen=True)
@@ -147,25 +155,13 @@ class LinuxInstallMachine:
                 "systemd is not the running service manager. Boot this Ubuntu host with systemd "
                 "and rerun the same install command."
             )
-        for command in (
-            "age",
-            "age-keygen",
-            "curl",
-            "git",
-            "loginctl",
-            "runuser",
-            "ssh",
-            "ssh-keygen",
-            "sudo",
-            "systemctl",
-            "useradd",
-            "uv",
-        ):
-            if shutil.which(command) is None:
-                raise InstallRefused(
-                    f"Required tool {command} is missing. Install it for all users, then rerun "
-                    "the same server install command."
-                )
+        status = local_check(("server_install", "server", "local"))
+        missing = [program.name for program in status.missing if program.required]
+        if missing:
+            raise InstallRefused(
+                f"Required tools are missing: {', '.join(missing)}. Install them for all users, "
+                "then rerun the same server install command."
+            )
         _require_command(("systemctl", "--version"), "systemd could not be executed")
         manager = _require_command(
             ("systemctl", "show", "--property=Version", "--value"),
@@ -330,6 +326,20 @@ class LinuxInstallMachine:
 
     def _validate_service_tooling(self) -> None:
         account = pwd.getpwnam(self.layout.service_account)
+        # Install runs on the server itself, so an unreadable answer is a real fault.
+        presence = service_account_dependencies(self.layout)
+        missing = tuple(program.name for program in presence.missing if program.required)
+        if missing:
+            raise InstallRefused(
+                f"Required tools are missing for rcp: {', '.join(missing)}. Install them for "
+                "all users, then rerun the same server install command.",
+                missing=missing,
+            )
+        if presence.outcome in {"unsupported", "not_checked"}:
+            raise InstallRefused(
+                f"Required tools could not be checked for rcp: {presence.reason}. Correct the "
+                "host and rerun the same server install command."
+            )
         checks = (
             (("git", "--version"), "Git is not executable as rcp."),
             (("ssh", "-V"), "SSH is not executable as rcp."),

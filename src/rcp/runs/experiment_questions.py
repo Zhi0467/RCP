@@ -111,6 +111,13 @@ def reconcile_experiment_question_answers(
                 dispatch_authority=resolve_dispatch_authority("node_chat", request),
                 runtime_id=asking.runtime_id,
             )
+            # Provider admission precedes the claim, as on every other path; a
+            # refusal leaves the answer unclaimed and the invocation budget unspent.
+            tasks.admit_provider_task(
+                record.project_id,
+                request,
+                execution_host=(record.stage_host or "") if record.stage_root else None,
+            )
             admitted = store.create_experiment_question_invocation(
                 record, question_id=question.question_id, answer_revision=question.answer_revision
             )

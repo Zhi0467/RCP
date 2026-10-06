@@ -3021,6 +3021,28 @@ export interface HiddenReadStatus {
   readonly reasons: readonly HiddenReadReason[];
 }
 
+/** One program a machine lacks; optional ones carry their feature and fallback. */
+export interface MissingProgram {
+  readonly name: string;
+  readonly purpose: string;
+  readonly required: boolean;
+  readonly feature: string;
+  readonly fallback: string;
+}
+
+/** A machine checked against the backend's dependency registry. */
+export interface DependencyStatus {
+  readonly outcome: "ready" | "missing" | "unsupported" | "not_checked";
+  readonly platform: string | null;
+  readonly distribution: string | null;
+  readonly tested: boolean;
+  readonly missing: readonly MissingProgram[];
+  readonly install_command: string | null;
+  readonly install_notes: readonly string[];
+  readonly reason: string | null;
+  readonly checked_at: string;
+}
+
 export interface HiddenReadKeyEvidence {
   readonly path: string;
   readonly kind: "deploy_key" | "ssh_identity";

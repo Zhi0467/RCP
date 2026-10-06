@@ -21,6 +21,12 @@ These are manual drives the closed handoffs left unexecuted. Each needs real
 hardware, a real provider login, or a disposable server, so no unit test
 stands in for it. Run one on disposable data, then delete its line here.
 
+- Machine dependencies: on a disposable remote Linux account missing a
+  required program (for example `rsync` off the SSH PATH), confirm the machine
+  card lists it with the apt command and a chat sent to that machine is refused
+  before any task exists; restore it and **Check again** clears it. On a
+  disposable team server, confirm `rcp server install` and `rcp server doctor`
+  report a missing required program for the service account.
 - Machine writable paths: on a disposable team server, pick a shared dataset
   folder with the folder picker on a machine card, then write into it from a new
   terminal, a Codex Work turn, and a systemd compute job; confirm a write into
