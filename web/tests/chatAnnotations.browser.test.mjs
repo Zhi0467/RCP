@@ -187,6 +187,26 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
     await offer.waitFor();
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
     await offer.waitFor({ state: "detached" });
+
+    // A selection that survives a resize keeps its offer beside it, on screen.
+    await page.evaluate(() => {
+      const text = document.querySelector(".chat-annotatable-answer p").firstChild;
+      const range = document.createRange();
+      range.setStart(text, text.length - 20);
+      range.setEnd(text, text.length - 1);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+    });
+    await offer.waitFor();
+    await page.setViewportSize({ width: 360, height: 520 });
+    await page.waitForFunction(() => {
+      const button = document.querySelector(".chat-selection-comment");
+      const rects = window.getSelection().getRangeAt(0).getClientRects();
+      const end = rects[rects.length - 1];
+      if (!button || !end) return false;
+      const box = button.getBoundingClientRect();
+      return box.right <= window.innerWidth && Math.abs(box.top - (end.bottom + 18)) < 2;
+    });
   } finally {
     await browser?.close();
     await server.close();

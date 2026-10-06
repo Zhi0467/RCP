@@ -1288,7 +1288,7 @@ export function NodeChat({
     const onSelectionChange = () => {
       if (!pointerDown) refresh();
     };
-    const onScroll = () => {
+    const onViewportChange = () => {
       if (!pointerDown) refresh();
     };
     // Capture phase: a release over a window resize corner stops propagation.
@@ -1296,13 +1296,21 @@ export function NodeChat({
     document.addEventListener("pointerup", onPointerUp, { capture: true });
     document.addEventListener("pointercancel", onPointerCancel, { capture: true });
     document.addEventListener("selectionchange", onSelectionChange);
-    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    document.addEventListener("scroll", onViewportChange, { capture: true, passive: true });
+    // A resize, rotation, or soft keyboard moves the selection under a fixed offer.
+    const viewport = window.visualViewport;
+    window.addEventListener("resize", onViewportChange);
+    viewport?.addEventListener("resize", onViewportChange);
+    viewport?.addEventListener("scroll", onViewportChange);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, { capture: true });
       document.removeEventListener("pointerup", onPointerUp, { capture: true });
       document.removeEventListener("pointercancel", onPointerCancel, { capture: true });
       document.removeEventListener("selectionchange", onSelectionChange);
-      document.removeEventListener("scroll", onScroll, { capture: true });
+      document.removeEventListener("scroll", onViewportChange, { capture: true });
+      window.removeEventListener("resize", onViewportChange);
+      viewport?.removeEventListener("resize", onViewportChange);
+      viewport?.removeEventListener("scroll", onViewportChange);
     };
   }, [readOnly]);
 
