@@ -35,6 +35,7 @@ from rcp.agents.experiment_loop_prompt import (
     EXPERIMENT_LOOP_POLICY_VERSION,
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
+    experiment_loop_read_context,
     experiment_loop_task_contract,
     experiment_loop_turn_message,
     experiment_loop_wake_message,
@@ -57,6 +58,7 @@ from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
+from rcp.loop_status import other_branch_loops
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
@@ -750,6 +752,22 @@ def _question_snapshot_part(turn: WorkTurn) -> str:
     )
 
 
+def _loop_read_context(turn: WorkTurn) -> str:
+    execution = turn.execution
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    loops = (
+        other_branch_loops(
+            execution.store,
+            task.project_id,
+            graph_target=task.graph_target,
+            node_id=turn.request.control_node_id,
+        )
+        if execution is not None and task is not None
+        else []
+    )
+    return experiment_loop_read_context(turn.context, loops)
+
+
 def _record_continuation_prompt(
     turn: WorkTurn,
     phase: LaunchPhase,
@@ -773,7 +791,11 @@ def _record_continuation_prompt(
     question_part = _question_snapshot_part(turn)
     if question_part:
         parts = [*parts, question_part]
-    parts = [*parts, stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)]
+    parts = [
+        *parts,
+        _loop_read_context(turn),
+        stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
+    ]
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
@@ -1049,7 +1071,7 @@ def _experiment_start_contract(
             "Experiment invocation, retaining this session, target, scope and Stop fence. "
             "At the ceiling, further work requires human reauthorization.\n"
         )
-    return contract
+    return contract + "\n\n" + _loop_read_context(turn)
 
 
 def _compose_fresh_prompt(

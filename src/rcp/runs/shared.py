@@ -1145,6 +1145,35 @@ def _safe_stage_name(value: str) -> str:
     return name
 
 
+def stage_branch_read_context(
+    context: RunContext | ChatContext,
+    service: ProjectService,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> dict[str, object]:
+    """Read pointers only; callers keep the task's graph target and write scope.
+
+    Call after mapping repositories to the execution host and before replacing
+    them with worktree pointers. ``main_graph_path`` is an immutable task input,
+    also available to the Auto-research prompt through RunContext.
+    """
+
+    if service.history.graph_target.kind != "branch":
+        return {"main_graph_path": None, "shared_repositories": []}
+    content = (service.history.workspace.root / "graph.json").read_text(encoding="utf-8")
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    path = _stage_or_reuse_task_input(
+        local_stage, remote_stage, f"main-graph-{digest}.json", content
+    )
+    return {
+        "main_graph_path": path,
+        "shared_repositories": [
+            item.model_copy(update={"path": service.manifest.repository_map[item.alias].path})
+            for item in context.repositories
+        ],
+    }
+
+
 def _stage_context_paths(
     context: RunContext | ChatContext,
     service: ProjectService,

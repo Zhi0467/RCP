@@ -41,6 +41,7 @@ from rcp.agents.prompts import (
     ask_contract,
     chat_master_contract_key,
     invoked_package_pointers,
+    render_chat_read_context,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -272,6 +273,7 @@ def _prepare_work_chat_prompt(
     launch_instructions: str,
     ontology_extensions: bool,
     question_part: str = "",
+    read_context: str = "",
     browser_grant: BrowserGrant | None = None,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
@@ -298,6 +300,7 @@ def _prepare_work_chat_prompt(
         master=master,
         lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
+        read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
             workflow_ids=request.invoked_workflow_ids,
@@ -760,7 +763,7 @@ def _work_contract_text(
             f"task-{staged.token}-human-request.txt",
             turn.request.message,
         )
-    return PromptFactory.work_task_contract(
+    contract = PromptFactory.work_task_contract(
         execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
@@ -790,6 +793,7 @@ def _work_contract_text(
         attachments=staged.attachment_pointers,
         compute_connections=compute_profiles,
     )
+    return contract + "\n\n" + render_chat_read_context(turn.context)
 
 
 def _stage_work_contract(
@@ -889,6 +893,7 @@ def _work_continuation(
     parts = [part, question_part] if question_part else [part]
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
+    parts.append(render_chat_read_context(turn.context))
     parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
     return compose(node, parts=parts, master=master, delta=delta)
 
@@ -1036,6 +1041,7 @@ def _compose_fresh_prompt(
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
         question_part=prepare_work_question_snapshot(turn),
+        read_context=render_chat_read_context(turn.context),
         browser_grant=browser_grant,
     )
     return _ComposedWorkPrompt(

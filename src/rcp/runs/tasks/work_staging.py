@@ -33,7 +33,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
-from rcp.runs.experiment_loop import StagedExperimentWatcherResource
+from rcp.runs.experiment_loop import StagedExperimentWatcherResource, stage_chat_loop_status
 from rcp.runs.patch_validator import PatchValidationBudget
 from rcp.runs.shared import (
     _protected_run_stage_roots,
@@ -41,6 +41,7 @@ from rcp.runs.shared import (
     _stage_context_paths,
     _swept_stage_root,
     _task_token,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.work_turn_runtime import (
@@ -179,6 +180,20 @@ async def stage_work_turn(
             )
             if execution is not None:
                 execution.checkpoint_stage("", str(local_stage))
+        context = context.model_copy(
+            update=stage_branch_read_context(context, service, local_stage, remote_stage)
+        )
+        context = context.model_copy(
+            update={
+                "loop_status": stage_chat_loop_status(
+                    request,
+                    execution,
+                    local_stage,
+                    remote_stage,
+                    graph_target=service.history.graph_target,
+                )
+            }
+        )
         token = _task_token(execution)
         layout = WorkStageLayout(
             request=request,
