@@ -1191,6 +1191,8 @@
   box-shadow: 0 4px 15px rgb(var(--shadow-rgb) / 8%);
   margin-bottom: 12px;
   overflow: hidden;
+  /* Proposed actions carry paths and ids; clipped text would be unreadable. */
+  overflow-wrap: anywhere;
 }
 .proposal-topline {
   align-items: center;

@@ -10,6 +10,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math-extended";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
 import { segmentGlossaryText, type GlossaryIndex } from "../graph/glossary";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
 
@@ -254,6 +255,7 @@ function markdownComponents(
         children,
       );
     },
+    pre: MarkdownCodeBlock,
   };
 }
 

@@ -436,7 +436,9 @@ export function AutoResearchEpisodeCard({
           {episode.starting_instruction && (
             <div className="campaign-starting-instruction">
               <span className="field-label">Starting instruction</span>
-              <MarkdownAnswer text={episode.starting_instruction} />
+              <div className="chat-markdown">
+                <MarkdownAnswer text={episode.starting_instruction} />
+              </div>
             </div>
           )}
 

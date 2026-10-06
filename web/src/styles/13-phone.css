@@ -37,6 +37,23 @@
   .icon-button {
     min-width: 44px;
   }
+  .markdown-code-block {
+    --markdown-code-copy-size: 44px;
+  }
+
+  /* A centred tooltip on a term near either edge would leave the screen. */
+  .glossary-definition::after,
+  .glossary-definition:hover::after,
+  .glossary-definition:focus::after {
+    left: 0;
+    transform: none;
+  }
+
+  /* A 120px label column leaves too little room for a field value. */
+  .detail-list > div {
+    gap: 2px;
+    grid-template-columns: minmax(0, 1fr);
+  }
   /* The project header packs every action into one 375px row, so its icon
      buttons keep their width and gain only height. */
   .project-header-actions .icon-button {

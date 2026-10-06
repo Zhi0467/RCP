@@ -38,6 +38,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       { width: 360, height: 780 },
     ]) {
       const page = await browser.newPage({ viewport, reducedMotion: "reduce" });
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
@@ -78,6 +79,15 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
         await page.evaluate(sidewaysScrollers),
         [],
         "Long agent tokens wrap; only code blocks and tables scroll sideways",
+      );
+      const copy = page.getByRole("button", { name: "Copy code block" });
+      assert.ok((await copy.boundingBox()).width >= 44, "The copy control is a phone tap target");
+      await copy.click();
+      await page.getByRole("button", { name: "Copied" }).waitFor();
+      assert.equal(
+        await page.evaluate(() => navigator.clipboard.readText()),
+        "python extract_probes.py --input outputs/model_stats/main_rollout_stats_rebuild_20260424_lcb_first_dp4 --output outputs/model_stats/main_rollout_stats_rebuild_20260424_lcb_first_dp4_probes",
+        "Copy takes the block's exact text, without a trailing newline",
       );
       await composer.fill("A draft survives opening the conversation list.");
       await chatToggle.focus();

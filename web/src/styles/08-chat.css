@@ -101,6 +101,7 @@
 }
 .chat-line {
   border-left: 2px solid var(--cobalt);
+  overflow-wrap: anywhere;
   font-family: var(--editorial);
   font-size: var(--type-md);
   line-height: 1.55;
@@ -233,6 +234,8 @@
 .chat-dock > header > strong {
   display: block;
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .chat-watcher-count {
   align-items: center;
@@ -440,7 +443,12 @@
   border: 1px solid color-mix(in srgb, var(--cobalt) 35%, var(--line));
   color: var(--cobalt-dark);
 }
+/* Every MarkdownAnswer surface (chat, paper preview, campaign instruction,
+   skill body): long paths and URLs wrap, while `pre`, tables, and display math
+   keep their own horizontal scrollers. */
 .chat-markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
   white-space: normal;
 }
 .chat-markdown > :first-child {
@@ -494,6 +502,46 @@
   max-width: 100%;
   overflow: auto;
   padding: 9px 10px;
+}
+/* Shared by every MarkdownAnswer surface. The control sits over the block's
+   corner rather than inside the scroller, so it stays put while the code
+   scrolls sideways. */
+.markdown-code-block {
+  --markdown-code-copy-size: 28px;
+  margin: 7px 0;
+  position: relative;
+}
+/* The control gets its own strip at the top of the block, so it never covers
+   code and never overhangs a one-line block. */
+.markdown-code-block > pre {
+  margin: 0;
+  padding-top: calc(var(--markdown-code-copy-size) + 10px);
+}
+.markdown-code-copy {
+  align-items: center;
+  background: color-mix(in srgb, var(--sheet) 88%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  color: var(--walnut);
+  cursor: pointer;
+  display: inline-flex;
+  height: var(--markdown-code-copy-size);
+  justify-content: center;
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  user-select: none;
+  width: var(--markdown-code-copy-size);
+}
+.markdown-code-copy:hover {
+  background: var(--sheet);
+}
+.markdown-code-copy:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 1px;
+}
+.markdown-code-copy.failed {
+  color: var(--red);
 }
 .chat-markdown pre code {
   font-family: var(--mono);
@@ -1301,6 +1349,7 @@
   font-size: var(--type-xs);
   left: 50%;
   max-width: min(620px, 90vw);
+  overflow-wrap: anywhere;
   padding: 9px 13px;
   position: fixed;
   transform: translateX(-50%);
