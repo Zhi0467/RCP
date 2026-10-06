@@ -37,12 +37,18 @@ with the source. Nothing else is held to it:
    button. RCP normally has no root on someone's GPU host.
 5. **Basic tools that no setup check covers today become required** on the
    hosts that run them.
-6. **No new warning UI for optional fallbacks.** Missing secret hiding stays
-   visible in Settings and `doctor`, as today, and now also in the
-   Dependencies row.
+6. **Every missing optional program is visible on the machine card.** The
+   Dependencies row lists it with the feature it gates and its fallback.
+   No per-run warning is added; missing secret hiding also stays in
+   Settings and `doctor`, as today.
 7. **The refusal covers agent runs only.** Terminals, compute jobs, and state
    sync keep their existing owner checks (terminal unavailable, the compute
    probe, the rsync contract with its tar fallback).
+8. **The code is the only internal record.** The registry replaces the
+   spec's dependency table; the spec keeps a pointer to it. Public docs
+   still list what a user installs (the server guide's apt line, the
+   README's Mac prerequisites), and CI holds them to the registry.
+9. **One PR**, landing before 0.4.12 is promoted.
 
 ## Design
 
@@ -142,10 +148,14 @@ launches; it does not claim to find every program. It grows to:
    every registry entry is used. The scanner learns the forms it misses today
    (`setsid` in the remote launch wrapper, `sleep` in the compute probe,
    remote `ssh-agent`), each with a fixture.
-2. The spec table matches the registry: roles, platforms, and tiers.
-3. The server guide's apt line contains the apt package of every program
+2. The server guide's apt line contains the apt package of every program
    required on `server` or `server_install` for Linux.
-4. Every optional entry has feature and fallback text.
+3. Every optional entry has feature and fallback text.
+
+The spec's dependency table is deleted; its contract and probe notes that
+still matter move into the owning modules' docstrings or registry entries.
+The README's Mac section names Git through the Command Line Tools, the one
+required desktop program macOS does not ship.
 
 Behavior tests, one per rule:
 
