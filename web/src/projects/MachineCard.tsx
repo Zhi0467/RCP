@@ -4,7 +4,7 @@ import { createSpaceMachine, updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
 import {
   createPathEditor,
-  createSerialMachineSave,
+  createMachineWriteQueue,
   type MachineSave,
   type WritablePathEdit,
 } from "./spaceMachines";
@@ -43,9 +43,9 @@ export function MachineCard({
   children,
 }: Props) {
   const [deleting, setDeleting] = useState(false);
-  // Every save on this card queues here: each answer is a whole record, so a slower
-  // earlier answer must never land after a newer one.
-  const save = useRef(createSerialMachineSave(updateSpaceMachine)).current;
+  // Every write on this card queues here, so no earlier answer lands after a newer one.
+  const writes = useRef(createMachineWriteQueue(updateSpaceMachine)).current;
+  const save = writes.save;
   const [error, setError] = useState<string | null>(null);
   return (
     <article
@@ -79,7 +79,7 @@ export function MachineCard({
                 setDeleting(true);
                 setError(null);
                 try {
-                  await onDelete();
+                  await writes.remove(onDelete);
                 } catch (failure) {
                   setError(errorMessage(failure));
                   setDeleting(false);

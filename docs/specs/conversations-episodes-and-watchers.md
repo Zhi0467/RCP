@@ -264,8 +264,9 @@ ingestion, paper coach, Auto-research workers, and child Work and Experiments
 cannot ask directly.
 
 A call waits for the bounded client interval. Its random `call_id` stays outside
-arguments and survives every fresh request round. Pending and parked replies carry
-`attempt` and `max_attempts` (3); clients without an id omit `attempt`. A thread-safe,
+arguments and survives every fresh request round. Live pending replies carry
+`attempt` and `max_attempts` (3); a parked reply carries neither and counts no
+attempt, and clients without an id omit `attempt`. A thread-safe,
 process-local record retains the last 32 distinct calls per question and their
 attempt numbers; restarting RCP resets this advisory count.
 If the answer blocks work, repeat the exact call to keep waiting. Otherwise,

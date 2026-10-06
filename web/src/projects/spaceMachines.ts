@@ -143,14 +143,19 @@ export type MachineSave = (
 ) => Promise<SpaceMachine>;
 
 /**
- * Run one machine card's saves one at a time. Each answer is a whole record, so a
- * slower earlier answer would otherwise replace a newer one.
+ * Run one machine card's writes one at a time. Each save answers with a whole
+ * record, so a slower earlier answer would otherwise replace a newer one, or bring
+ * back a card a later delete removed.
  */
-export function createSerialMachineSave(save: MachineSave): MachineSave {
+export function createMachineWriteQueue(save: MachineSave) {
   let last: Promise<unknown> = Promise.resolve();
-  return (machineId, request) => {
-    const next = last.catch(() => undefined).then(() => save(machineId, request));
+  const queue = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = last.catch(() => undefined).then(run);
     last = next;
     return next;
+  };
+  return {
+    save: ((machineId, request) => queue(() => save(machineId, request))) as MachineSave,
+    remove: (run: () => Promise<void>) => queue(run),
   };
 }

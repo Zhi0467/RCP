@@ -15,7 +15,7 @@ import {
 } from "../src/projects/pathPickerModel.ts";
 import {
   createPathEditor,
-  createSerialMachineSave,
+  createMachineWriteQueue,
   projectMachineAlias,
   setupMachineSelection,
   spaceMachineForProject,
@@ -472,10 +472,10 @@ for (const status of ["unhidden", "enforced", null]) {
   });
 }
 
-test("provider-setting saves on one machine run one at a time, in order", async () => {
+test("machine-card writes run one at a time, deletes included", async () => {
   const started = [];
   const finishes = [];
-  const save = createSerialMachineSave((machineId, request) => {
+  const { save, remove } = createMachineWriteQueue((machineId, request) => {
     started.push(request);
     return new Promise((resolve) => finishes.push(() => resolve({ ...gpu, ...request })));
   });
@@ -488,6 +488,15 @@ test("provider-setting saves on one machine run one at a time, in order", async 
   await first;
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(started.length, 2);
+  let removed = false;
+  const removal = remove(async () => {
+    removed = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  // A delete waits for the save ahead of it, so no late answer brings the card back.
+  assert.equal(removed, false);
   finishes[1]();
   assert.deepEqual((await second).provider_shell_timeout, { claude: "30" });
+  await removal;
+  assert.equal(removed, true);
 });
