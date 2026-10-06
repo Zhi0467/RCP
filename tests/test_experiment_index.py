@@ -367,14 +367,14 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
     monkeypatch.setattr(app.state.service.history, "state", refuse_current_state_read)
 
     store = app.state.background_tasks.store
-    original = store.experiment_control_projection_snapshots
+    original = store.project_experiment_control_projection_snapshots
     calls: list[tuple[str, GraphTargetRef | None]] = []
 
     def capture(requested_project_id, *args, **kwargs):
         calls.append((requested_project_id, kwargs.get("graph_target")))
         return original(requested_project_id, *args, **kwargs)
 
-    monkeypatch.setattr(store, "experiment_control_projection_snapshots", capture)
+    monkeypatch.setattr(store, "project_experiment_control_projection_snapshots", capture)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
@@ -1038,14 +1038,19 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         ],
     )
     assert parent.graph_base_head is not None
-    assert store.experiment_loop_runtime(project_id, "exp/launched").episode_id == child.episode_id
+    assert (
+        store.experiment_loop_runtime(
+            project_id, "exp/launched", graph_target=parent.graph_target
+        ).episode_id
+        == child.episode_id
+    )
     assert (
         store.experiment_loop_runtime(
             project_id,
             "exp/launched",
             graph_target=GraphTargetRef(),
         ).episode_id
-        is None
+        == main_episode_id
     )
     assert (
         store.experiment_loop_runtime(
@@ -1072,8 +1077,11 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         cached = client.get(f"/api/projects/{project_id}")
         assert cached.status_code == 200
         assert cached.json()["graph"]["nodes"]["exp/launched"]["current_summary"] == ""
-        assert cached.json()["experiment_control"]["exp/launched"]["episode_id"] is None
-        assert cached.json()["experiment_control"]["exp/launched"]["episode"] is None
+        assert cached.json()["experiment_control"]["exp/launched"]["episode_id"] == main_episode_id
+        assert (
+            cached.json()["experiment_control"]["exp/launched"]["episode"]["episode_id"]
+            == main_episode_id
+        )
 
         main_state = service.history.state()
         main_node = main_state.nodes["exp/launched"]
@@ -1092,8 +1100,8 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         )
         assert preview.status_code == 200, preview.text
         preview_control = preview.json()["projection"]["experiment_control"]["exp/launched"]
-        assert preview_control["episode_id"] is None
-        assert preview_control["episode"] is None
+        assert preview_control["episode_id"] == main_episode_id
+        assert preview_control["episode"]["episode_id"] == main_episode_id
 
         invalid_main_run = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/run",
@@ -1116,8 +1124,12 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
 
         experiment_index = client.get("/api/episodes", params={"mode": "experiment_loop"})
         assert experiment_index.status_code == 200
-        assert len(experiment_index.json()) == 1
-        entry = experiment_index.json()[0]
+        assert len(experiment_index.json()) == 2
+        entry = next(
+            item
+            for item in experiment_index.json()
+            if item["episode"]["episode_id"] == child.episode_id
+        )
         indexed_child = entry["episode"]
         assert indexed_child["episode_id"] == child.episode_id
         assert indexed_child["graph_target"] == parent.graph_target.model_dump(mode="json")
@@ -1132,10 +1144,12 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert entry["node"]["current_summary"] == "Visible only on the episode branch."
         assert entry["control"]["episode_id"] == child.episode_id
 
-        ambiguous_stop = client.post(
+        main_stop = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop", json={}
         )
-        assert ambiguous_stop.status_code == 404
+        assert main_stop.status_code == 200
+        assert main_stop.json()["episode_id"] == main_episode_id
+        assert store.episode(child.episode_id).stop_requested_at is None
         exact_stop = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop",
             params={"episode_id": child.episode_id},
@@ -1468,7 +1482,7 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
 
     monkeypatch.setattr(
         app.state.background_tasks.store,
-        "experiment_control_projection_snapshots",
+        "project_experiment_control_projection_snapshots",
         fail_runtime_projection,
     )
     response = signed_in_client(app, raise_server_exceptions=False).get(

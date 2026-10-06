@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
 from rcp.storage.digest import append_question_attention
@@ -1081,6 +1082,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                     connection,
                     project_id=record.project_id,
                     control_node_id=node_id,
+                    graph_target=record.graph_target,
                     episode_id=episode_id,
                     invocation=invocation,
                     operation_id=record.parent_operation_id,
@@ -1228,10 +1230,17 @@ class ExperimentStoreMixin(StoreMixinBase):
             WHERE project_id = ? AND parent_operation_id IS NULL
               AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
               AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(graph_target_json, '$.kind') = ?
+              AND json_extract(graph_target_json, '$.branch_id') IS ?
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
-            (record.project_id, parent_request["control_node_id"]),
+            (
+                record.project_id,
+                parent_request["control_node_id"],
+                record.graph_target.kind,
+                record.graph_target.branch_id,
+            ),
         ).fetchone()
         if newest_root is None:
             raise ValueError("The loop episode root is no longer available.")
@@ -1268,6 +1277,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         *,
         project_id: str,
         control_node_id: str,
+        graph_target: GraphTargetRef,
         episode_id: str,
         invocation: int,
         operation_id: str,
@@ -1281,10 +1291,12 @@ class ExperimentStoreMixin(StoreMixinBase):
             WHERE project_id = ? AND parent_operation_id IS NULL
               AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
               AND json_extract(request_json, '$.control_node_id') = ?
+              AND json_extract(graph_target_json, '$.kind') = ?
+              AND json_extract(graph_target_json, '$.branch_id') IS ?
             ORDER BY created_at DESC, rowid DESC
             LIMIT 1
             """,
-            (project_id, control_node_id),
+            (project_id, control_node_id, graph_target.kind, graph_target.branch_id),
         ).fetchone()
         if newest_root is None or newest_root["episode_id"] != episode_id:
             raise ValueError("Only the newest Experiment episode can repair its graph update.")
@@ -1465,7 +1477,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             {control_node_id},
             graph_target=binding.graph_target,
             _connection=connection,
-        ).get(control_node_id)
+        ).get((control_node_id, binding.graph_target.key))
         if runtime is not None and (
             runtime.task_active
             or runtime.detached_work_active
@@ -1586,11 +1598,11 @@ class ExperimentStoreMixin(StoreMixinBase):
 
         if not observers:
             return
-        graph_target_json = binding.graph_target.model_dump_json()
+        serialized_target = graph_target_json(binding.graph_target)
         candidates = [
             self._experiment_observer_identity(
                 binding.project_id,
-                graph_target_json,
+                serialized_target,
                 binding.node_id,
                 binding.execution_host,
                 item.cwd,
@@ -1635,7 +1647,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             [
                 cls._experiment_observer_identity(
                     record.project_id,
-                    record.graph_target.model_dump_json(),
+                    graph_target_json(record.graph_target),
                     record.node_id,
                     record.execution_host,
                     record.cwd,
@@ -2000,8 +2012,10 @@ class ExperimentStoreMixin(StoreMixinBase):
         )
         return hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
-    def experiment_watcher_ids(self, project_id: str, control_node_id: str) -> list[str]:
-        """Live watchers armed by a bounded loop on one experiment."""
+    def experiment_watcher_ids(
+        self, project_id: str, control_node_id: str, *, graph_target: GraphTargetRef
+    ) -> list[str]:
+        """Live watchers armed by a bounded loop on one exact target."""
 
         return [
             record.watcher_id
@@ -2011,6 +2025,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                 or (record.status == "completed" and not record.notified)
             )
             and record.continuation.control_node_id == control_node_id
+            and record.graph_target == graph_target
         ]
 
     def experiment_handoff_has_live_watcher_after_stops(
@@ -2654,10 +2669,8 @@ class ExperimentStoreMixin(StoreMixinBase):
 
         The intent is written under the same write lock a watcher claim takes, so
         a claim that committed first becomes the current turn and anything later
-        finds the loop already stopped. Omitting exact identity preserves the
-        legacy newest-episode selection, while callers that already resolved an
-        episode must pass it so a different target cannot win between validation
-        and mutation.
+        finds the loop already stopped. A caller supplies an exact episode or
+        target so another branch cannot win between validation and mutation.
         """
 
         with self.connection() as connection:
@@ -2969,6 +2982,8 @@ class ExperimentStoreMixin(StoreMixinBase):
         episode_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
     ) -> tuple[str, GraphTargetRef] | None:
+        if episode_id is None and graph_target is None:
+            raise ValueError("Stop requires an exact episode or graph target.")
         row = connection.execute(
             """
             SELECT episode_id, graph_target_json FROM episodes
@@ -3003,45 +3018,22 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         control_node_id: str,
         *,
-        graph_target: GraphTargetRef | None = None,
-    ) -> ExperimentLoopRuntime:
-        """Project the globally newest episode, optionally only on one target.
-
-        This is the display/cache contract: when a newer same-node episode lives
-        on another target it returns an empty runtime instead of reviving older
-        operational state. Target-bound operations use
-        :meth:`experiment_loop_runtime_for_target` instead.
-        """
-
-        return self.experiment_loop_runtimes(
-            project_id,
-            [control_node_id],
-            graph_target=graph_target,
-        )[control_node_id]
-
-    def experiment_loop_runtime_for_target(
-        self,
-        project_id: str,
-        control_node_id: str,
         graph_target: GraphTargetRef,
     ) -> ExperimentLoopRuntime:
-        """Derive the newest episode on one exact target for operational authority."""
+        """Derive the newest episode on one exact target."""
 
-        projected = self._project_experiment_loop_runtimes(
-            project_id,
-            {control_node_id},
-            graph_target=graph_target,
-        )
-        return projected.get(control_node_id, ExperimentLoopRuntime())
+        return self.experiment_loop_runtimes(
+            project_id, [control_node_id], graph_target=graph_target
+        )[control_node_id]
 
     def experiment_loop_runtimes(
         self,
         project_id: str,
         control_node_ids: Iterable[str],
         *,
-        graph_target: GraphTargetRef | None = None,
+        graph_target: GraphTargetRef,
     ) -> dict[str, ExperimentLoopRuntime]:
-        """Derive current runtimes, optionally only when newest belongs to one target."""
+        """Derive current runtimes within one graph target."""
 
         requested = tuple(dict.fromkeys(control_node_ids))
         if not requested:
@@ -3049,10 +3041,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN")
             return self._experiment_loop_runtimes_in_connection(
-                connection,
-                project_id,
-                requested,
-                graph_target=graph_target,
+                connection, project_id, requested, graph_target=graph_target
             )
 
     def experiment_control_projection_snapshots(
@@ -3060,55 +3049,67 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         control_node_ids: Iterable[str] | None = None,
         *,
-        graph_target: GraphTargetRef | None = None,
+        graph_target: GraphTargetRef,
     ) -> dict[str, ExperimentControlProjectionSnapshot]:
-        """Read complete Experiment control inputs from one SQLite snapshot."""
+        """Read target-local control inputs from one coherent SQLite snapshot."""
 
-        requested = None if control_node_ids is None else tuple(dict.fromkeys(control_node_ids))
-        if requested == ():
+        requested = None if control_node_ids is None else set(control_node_ids)
+        if requested == set():
             return {}
         with self.connection() as connection:
             connection.execute("BEGIN")
-            if requested is None:
-                runtimes = self._project_experiment_loop_runtimes(
-                    project_id,
-                    None,
-                    _connection=connection,
+            runtimes = self._project_experiment_loop_runtimes(
+                project_id, requested, graph_target=graph_target, _connection=connection
+            )
+            return {
+                node_id: self._experiment_control_projection_snapshot_in_connection(
+                    connection, project_id, node_id, runtime
                 )
-            else:
-                runtimes = self._experiment_loop_runtimes_in_connection(
-                    connection,
-                    project_id,
-                    requested,
-                    graph_target=graph_target,
+                for (node_id, _target_key), runtime in runtimes.items()
+            }
+
+    def project_experiment_control_projection_snapshots(
+        self, project_id: str
+    ) -> dict[tuple[str, str], ExperimentControlProjectionSnapshot]:
+        """Read every current (node, target) without collapsing branch identities."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            runtimes = self._project_experiment_loop_runtimes(
+                project_id, None, _connection=connection
+            )
+            return {
+                key: self._experiment_control_projection_snapshot_in_connection(
+                    connection, project_id, key[0], runtime
                 )
-            snapshots: dict[str, ExperimentControlProjectionSnapshot] = {}
-            for control_node_id, runtime in runtimes.items():
-                episode_snapshot = (
-                    self._experiment_episode_projection_snapshot_in_connection(
-                        connection,
-                        project_id,
-                        control_node_id,
-                        runtime.episode_id,
-                    )
-                    if runtime.episode_id is not None
-                    else None
+                for key, runtime in runtimes.items()
+            }
+
+    def _experiment_control_projection_snapshot_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        runtime: ExperimentLoopRuntime,
+    ) -> ExperimentControlProjectionSnapshot:
+        episode_snapshot = (
+            self._experiment_episode_projection_snapshot_in_connection(
+                connection, project_id, control_node_id, runtime.episode_id
+            )
+            if runtime.episode_id is not None
+            else None
+        )
+        return ExperimentControlProjectionSnapshot(
+            runtime=runtime,
+            episode=episode_snapshot,
+            latest_report_episode_id=(
+                self._latest_experiment_report_episode_id_in_connection(
+                    connection, project_id, control_node_id, episode_snapshot.episode.graph_target
                 )
-                snapshots[control_node_id] = ExperimentControlProjectionSnapshot(
-                    runtime=runtime,
-                    episode=episode_snapshot,
-                    latest_report_episode_id=(
-                        self._latest_experiment_report_episode_id_in_connection(
-                            connection,
-                            project_id,
-                            control_node_id,
-                            episode_snapshot.episode.graph_target,
-                        )
-                        if episode_snapshot is not None
-                        else None
-                    ),
-                )
-            return snapshots
+                if episode_snapshot is not None
+                else None
+            ),
+        )
 
     @staticmethod
     def _latest_experiment_report_episode_id_in_connection(
@@ -3129,7 +3130,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             ORDER BY episode_reports.created_at DESC, episodes.episode_id DESC
             LIMIT 1
             """,
-            (project_id, control_node_id, graph_target.model_dump_json()),
+            (project_id, control_node_id, graph_target_json(graph_target)),
         ).fetchone()
         return str(row["episode_id"]) if row is not None else None
 
@@ -3139,39 +3140,14 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         requested: tuple[str, ...],
         *,
-        graph_target: GraphTargetRef | None,
+        graph_target: GraphTargetRef,
     ) -> dict[str, ExperimentLoopRuntime]:
-        requested_set = set(requested)
-        if graph_target is None:
-            projected = self._project_experiment_loop_runtimes(
-                project_id,
-                requested_set,
-                _connection=connection,
-            )
-        else:
-            newest_targets = self._newest_experiment_targets(
-                project_id,
-                requested_set,
-                _connection=connection,
-            )
-            visible = {
-                control_node_id
-                for control_node_id, target in newest_targets.items()
-                if target == graph_target
-            }
-            projected = (
-                self._project_experiment_loop_runtimes(
-                    project_id,
-                    visible,
-                    graph_target=graph_target,
-                    _connection=connection,
-                )
-                if visible
-                else {}
-            )
+        projected = self._project_experiment_loop_runtimes(
+            project_id, set(requested), graph_target=graph_target, _connection=connection
+        )
         return {
-            control_node_id: projected.get(control_node_id, ExperimentLoopRuntime())
-            for control_node_id in requested
+            node_id: projected.get((node_id, graph_target.key), ExperimentLoopRuntime())
+            for node_id in requested
         }
 
     def _experiment_episode_projection_snapshot_in_connection(
@@ -3242,46 +3218,10 @@ class ExperimentStoreMixin(StoreMixinBase):
             report=(self._episode_report_record(report_row) if report_row is not None else None),
         )
 
-    def _newest_experiment_targets(
-        self,
-        project_id: str,
-        requested: set[str] | None,
-        *,
-        _connection: sqlite3.Connection | None = None,
-    ) -> dict[str, GraphTargetRef]:
-        if _connection is None:
-            with self.connection() as connection:
-                return self._newest_experiment_targets(
-                    project_id,
-                    requested,
-                    _connection=connection,
-                )
-        rows = _connection.execute(
-            """
-            SELECT control_node_id, graph_target_json
-            FROM episodes
-            WHERE project_id = ? AND mode = 'experiment_loop'
-            ORDER BY created_at DESC, episode_id DESC
-            """,
-            (project_id,),
-        ).fetchall()
-        newest: dict[str, GraphTargetRef] = {}
-        for row in rows:
-            control_node_id = row["control_node_id"]
-            if not isinstance(control_node_id, str) or not control_node_id:
-                continue
-            if requested is not None and control_node_id not in requested:
-                continue
-            newest.setdefault(
-                control_node_id,
-                GraphTargetRef.model_validate_json(row["graph_target_json"]),
-            )
-        return newest
-
     def project_experiment_loop_runtimes(
         self,
         project_id: str,
-    ) -> dict[str, ExperimentLoopRuntime]:
+    ) -> dict[tuple[str, str], ExperimentLoopRuntime]:
         """Derive every current Experiment runtime without paging episode history."""
 
         return self._project_experiment_loop_runtimes(project_id, None)
@@ -3293,7 +3233,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         *,
         graph_target: GraphTargetRef | None = None,
         _connection: sqlite3.Connection | None = None,
-    ) -> dict[str, ExperimentLoopRuntime]:
+    ) -> dict[tuple[str, str], ExperimentLoopRuntime]:
         """Load the generic parents plus mode ledgers and group them in memory."""
 
         if _connection is None:
@@ -3388,24 +3328,25 @@ class ExperimentStoreMixin(StoreMixinBase):
         episodes = {
             str(row["episode_id"]): self._experiment_episode_record(row) for row in episode_rows
         }
-        parents_by_control: dict[str, EpisodeRecord | None] = {}
+        parents_by_control: dict[tuple[str, str], EpisodeRecord] = {}
         for row in parent_rows:
             parent = self._episode_record(row)
             assert parent.control_node_id is not None
             if graph_target is not None and parent.graph_target != graph_target:
                 continue
-            parents_by_control.setdefault(parent.control_node_id, parent)
-        control_node_ids = (
-            set(tasks_by_control) | set(watchers_by_control) | set(parents_by_control)
-            if requested is None
-            else requested
-        )
-        projected: dict[str, ExperimentLoopRuntime] = {}
+            if requested is not None and parent.control_node_id not in requested:
+                continue
+            parents_by_control.setdefault((parent.control_node_id, parent.graph_target.key), parent)
+        control_keys = set(parents_by_control)
+        if requested is not None and graph_target is not None:
+            control_keys.update((node_id, graph_target.key) for node_id in requested)
+        projected: dict[tuple[str, str], ExperimentLoopRuntime] = {}
         wake_diagnostics = self._auto_research_experiment_wake_diagnostics(_connection, project_id)
-        for control_node_id in control_node_ids:
-            parent = parents_by_control.get(control_node_id)
+        for control_key in control_keys:
+            control_node_id = control_key[0]
+            parent = parents_by_control.get(control_key)
             try:
-                projected[control_node_id] = self._derive_experiment_loop_runtime(
+                projected[control_key] = self._derive_experiment_loop_runtime(
                     tasks_by_control.get(control_node_id, []),
                     watchers_by_control.get(control_node_id, []),
                     receipt_categories,
@@ -3413,7 +3354,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                     parent,
                 )
                 if parent is not None and parent.episode_id in wake_diagnostics:
-                    projected[control_node_id] = projected[control_node_id].model_copy(
+                    projected[control_key] = projected[control_key].model_copy(
                         update={
                             "watcher_delivery_diagnostic": wake_diagnostics[parent.episode_id],
                         }
@@ -3425,7 +3366,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                 if parent is None:
                     raise
                 diagnostic = f"Stored Experiment runtime is inconsistent: {exc}"
-                projected[control_node_id] = ExperimentLoopRuntime(
+                projected[control_key] = ExperimentLoopRuntime(
                     episode_id=parent.episode_id,
                     invocations_used=max(parent.invocations_used, 1),
                     invocation_ceiling=parent.invocation_ceiling,
@@ -3706,23 +3647,14 @@ class ExperimentStoreMixin(StoreMixinBase):
         self,
         project_id: str,
         *,
-        graph_target: GraphTargetRef | None = None,
+        graph_target: GraphTargetRef,
     ) -> set[str]:
-        """Return live controls, optionally only when the newest episode owns one target."""
+        """Return controls live on the exact target."""
 
         projected = self._project_experiment_loop_runtimes(
-            project_id,
-            None,
-            graph_target=graph_target,
+            project_id, None, graph_target=graph_target
         )
-        if graph_target is not None:
-            newest_targets = self._newest_experiment_targets(project_id, None)
-            projected = {
-                control_node_id: runtime
-                for control_node_id, runtime in projected.items()
-                if newest_targets.get(control_node_id) == graph_target
-            }
-        return {control_node_id for control_node_id, runtime in projected.items() if runtime.active}
+        return {node_id for (node_id, _target_key), runtime in projected.items() if runtime.active}
 
     def completed_experiment_watcher_group(
         self,

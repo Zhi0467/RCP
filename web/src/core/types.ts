@@ -2461,7 +2461,56 @@ export interface AutoResearchRecoverySummary {
   next_attempt_at: string | null;
 }
 
-export interface Episode {
+export interface EpisodeStarter {
+  kind: "human" | "auto_research" | "unknown";
+  human: AuthorizedHuman | null;
+  auto_research_episode_id: string | null;
+}
+
+export interface LoopCheckout {
+  kind: "shared" | "worktree";
+  available: boolean;
+  execution_host: string | null;
+  repository_paths: string[];
+  repository_alias: string | null;
+  isolation_owner_episode_id: string | null;
+}
+
+export interface EpisodeLoopMetadata {
+  started_by: EpisodeStarter;
+  auto_research_parent_episode_id: string | null;
+  stop_initiated_by: string | null;
+  stop_settled_at: string | null;
+  checkout: LoopCheckout;
+}
+
+/** Shared row for status.other_branch_loops and start results' live_elsewhere. */
+export interface LoopStatusRow extends EpisodeLoopMetadata {
+  node_id: string;
+  episode_id: string;
+  graph_target: GraphTargetRef;
+  state: "live" | "stopped" | "completed" | "unavailable";
+  status: EpisodeStatus;
+  ending: EpisodeEnding | null;
+  created_at: string;
+  stop_requested_at: string | null;
+  ended_at: string | null;
+  diagnostic: string | null;
+}
+
+export interface LoopStatusProjection {
+  node_id: string;
+  graph_target: GraphTargetRef;
+  state: LoopStatusRow["state"] | "none";
+  current: LoopStatusRow | null;
+  live_elsewhere: LoopStatusRow[];
+}
+
+export interface ExperimentStartResponse extends AgentTask {
+  live_elsewhere: LoopStatusRow[];
+}
+
+export interface Episode extends EpisodeLoopMetadata {
   browser_requested: boolean;
   code_worktree: boolean;
   graph_isolation: boolean;

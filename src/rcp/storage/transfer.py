@@ -12,7 +12,9 @@ from pydantic import BaseModel, JsonValue
 
 from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.artifacts import html_document_title
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import EpisodeIsolation, EpisodeIsolationState
+from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.artifact_models import Artifact, ArtifactVersion
 from rcp.storage.artifacts import insert_artifact, write_artifact_file
 from rcp.storage.mixin_base import StoreMixinBase
@@ -1851,7 +1853,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     _task_result_history(task),
                     task.attempt,
                     task.parent_operation_id,
-                    _canonical_json(task.graph_target.model_dump(mode="json")),
+                    graph_target_json(
+                        GraphTargetRef.model_validate(task.graph_target.model_dump())
+                    ),
                     space_id,
                     user_id,
                     display_name,
@@ -2024,7 +2028,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     watcher.chat_id,
                     watcher.node_id,
                     watcher.episode_id,
-                    _canonical_json(watcher.graph_target.model_dump(mode="json")),
+                    graph_target_json(
+                        GraphTargetRef.model_validate(watcher.graph_target.model_dump())
+                    ),
                     graph_condition_json,
                     continuation_json,
                     watcher.status,
@@ -2077,7 +2083,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     records.project_id,
                     episode.mode,
                     episode.control_node_id,
-                    _canonical_json(episode.graph_target.model_dump(mode="json")),
+                    graph_target_json(
+                        GraphTargetRef.model_validate(episode.graph_target.model_dump())
+                    ),
                     (
                         _canonical_json(episode.graph_base_head.model_dump(mode="json"))
                         if episode.graph_base_head is not None

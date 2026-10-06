@@ -545,7 +545,7 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
     assert response.can_continue
     assert response.run_section == "actionable"
     assert "report_attempts_used" not in payload
-    assert "stop_settled_at" not in payload
+    assert payload["stop_settled_at"] is None
     assert "reports" not in payload
     assert "html" not in payload["report"]
     assert "visible" not in payload["tasks"][0]

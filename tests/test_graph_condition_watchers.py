@@ -747,7 +747,9 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
         assert wake.request["trigger"] == "watcher"
         assert wake.request["control_invocation"] == 2
         assert wake.request["watcher_ids"] == ["sync-graph"]
-        runtime = store.experiment_loop_runtime(project_id, "exp/one")
+        runtime = store.experiment_loop_runtime(
+            project_id, "exp/one", graph_target=GraphTargetRef()
+        )
         assert runtime.invocations_used == 2
         assert runtime.invocation_ceiling - runtime.invocations_used == 0
     finally:
@@ -2446,7 +2448,7 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(store) -> None:
     queued = store.create_experiment_watcher_invocation(wake, ["budgeted-graph"])
 
     assert queued is not None
-    runtime = store.experiment_loop_runtime("project", "exp/one")
+    runtime = store.experiment_loop_runtime("project", "exp/one", graph_target=GraphTargetRef())
     assert runtime.invocations_used == 2
     assert runtime.invocation_ceiling - runtime.invocations_used == 0
 

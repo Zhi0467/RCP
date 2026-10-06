@@ -112,40 +112,6 @@ def _experiment_control(
     return runtime, _experiment_control_from_runtime(state, experiment_id, runtime)
 
 
-def _experiment_control_for_target(
-    store: AppStore,
-    project_id: str,
-    state: GraphState,
-    experiment_id: str,
-    *,
-    graph_target: GraphTargetRef,
-) -> tuple[ExperimentLoopRuntime, ExperimentControlState]:
-    """Derive and reconcile one exact target-bound operational runtime.
-
-    The caller owns the canonical project operation lock whenever reconciliation
-    can write. The helper stays non-locking so Stop can use it without reentry.
-    """
-
-    runtime = store.experiment_loop_runtime_for_target(
-        project_id,
-        experiment_id,
-        graph_target,
-    )
-    if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active:
-        store.settle_experiment_loop_stop(
-            project_id,
-            experiment_id,
-            episode_id=runtime.episode_id,
-            graph_target=graph_target,
-        )
-        runtime = store.experiment_loop_runtime_for_target(
-            project_id,
-            experiment_id,
-            graph_target,
-        )
-    return runtime, _experiment_control_from_runtime(state, experiment_id, runtime)
-
-
 def _experiment_control_from_runtime(
     state: GraphState,
     experiment_id: str,
@@ -497,7 +463,6 @@ def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentO
 
 __all__ = [
     "_experiment_control",
-    "_experiment_control_for_target",
     "_experiment_control_from_runtime",
     "_experiment_control_response",
     "_experiment_operational_state",

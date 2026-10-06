@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.storage import (
     AgentTaskRecord,
@@ -220,7 +221,7 @@ def test_one_live_parent_per_experiment_survives_a_turn_that_wakes_nothing(
 
     stranded = store.episode(first_id)
     assert stranded is not None and stranded.status == "running" and stranded.ending is None
-    runtime = store.experiment_loop_runtime("project", "exp-one")
+    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert not runtime.active and not runtime.paused and not runtime.task_active
     assert runtime.episode_live
 
@@ -229,11 +230,16 @@ def test_one_live_parent_per_experiment_survives_a_turn_that_wakes_nothing(
             _task(store, "loop-root-2", str(uuid.uuid4()), ceiling=10)
         )
 
-    assert store.request_experiment_loop_stop("project", "exp-one") is not None
+    assert (
+        store.request_experiment_loop_stop("project", "exp-one", graph_target=GraphTargetRef())
+        is not None
+    )
     released = store.episode(first_id)
     assert released is not None
     assert released.status == "stopped" and released.ending == "stopped"
-    assert not store.experiment_loop_runtime("project", "exp-one").episode_live
+    assert not store.experiment_loop_runtime(
+        "project", "exp-one", graph_target=GraphTargetRef()
+    ).episode_live
 
     store.create_experiment_episode_with_invocation(
         _task(store, "loop-root-3", str(uuid.uuid4()), ceiling=10)
@@ -248,7 +254,9 @@ def test_live_episode_stage_is_protected_after_its_current_task_settles(tmp_path
 
     assert store.protected_run_stage_roots("") == ("/tmp/exact-experiment-stage",)
 
-    settled = store.request_experiment_loop_stop("project", "exp-one")
+    settled = store.request_experiment_loop_stop(
+        "project", "exp-one", graph_target=GraphTargetRef()
+    )
     assert settled is not None
     episode = store.episode(episode_id)
     assert episode is not None and episode.status == "stopped"
@@ -530,11 +538,13 @@ def test_watcher_claim_spends_once_and_exhausts_only_after_task_settles(
     assert episode is not None and episode.invocations_used == 2
     assert episode.ending is None
     assert store.watcher("evaluation-done").notification_operation_id == "watcher-wake"
-    assert not store.experiment_loop_runtime("project", "exp-one").paused
+    assert not store.experiment_loop_runtime(
+        "project", "exp-one", graph_target=GraphTargetRef()
+    ).paused
 
     store.complete_agent_task("watcher-wake", applied_revision=None, result={})
     _bind(store, episode_id, "watcher-wake", invocation=2)
-    runtime = store.experiment_loop_runtime("project", "exp-one")
+    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert runtime.paused
     assert not runtime.task_active
     assert store.episode(episode_id).ending is None
@@ -713,13 +723,15 @@ def test_stop_fences_then_skips_report_only_after_quiescence(tmp_path: Path) -> 
         ]
     )
 
-    stopping = store.request_experiment_loop_stop("project", "exp-one")
+    stopping = store.request_experiment_loop_stop(
+        "project", "exp-one", graph_target=GraphTargetRef()
+    )
     assert stopping is not None and stopping.stop_requested_at is not None
     assert stopping.stop_settled_at is None
     assert store.episode(episode_id).status == "stopping"
 
     store.complete_agent_task("loop-root", applied_revision=None, result={})
-    settled = store.settle_experiment_loop_stop("project", "exp-one")
+    settled = store.settle_experiment_loop_stop("project", "exp-one", graph_target=GraphTargetRef())
     assert settled is not None and settled.stop_settled_at is not None
     episode = store.episode(episode_id)
     wrapup = store.episode_wrapup(episode_id)

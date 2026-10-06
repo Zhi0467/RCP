@@ -60,6 +60,8 @@ from rcp.storage import (
     ProjectRecord,
 )
 
+from .test_auto_research_children_storage import _experiment_task
+
 MAILBOX_ID = "a" * 32
 CREDENTIAL = "b" * 64
 _RUN_TRUTH_SCOPE = ["repo-a"]
@@ -766,25 +768,28 @@ def test_transient_goal_snapshot_read_leaves_kickoff_key_for_exact_retry(tmp_pat
         assert context.command_file.text == goal
         episode_calls.append(planned_effect_id)
         now = store.now()
-        route = store.reserve_auto_research_experiment_replacement(
-            AutoResearchChildExperimentRecord(
-                child_episode_id=planned_effect_id,
-                auto_research_episode_id=auto_research.episode_id,
-                project_id=auto_research.project_id,
-                control_node_id=arguments.node_id,
-                state="pending",
-                replaces_episode_id="predecessor",
-                request={"goal": goal, "invocation_limit": arguments.invocation_limit},
-                goal_sha256=context.command_file.sha256,
-                parent_operation_id=context.task.operation_id,
-                created_at=now,
-                updated_at=now,
+        route = AutoResearchChildExperimentRecord(
+            child_episode_id=planned_effect_id,
+            auto_research_episode_id=auto_research.episode_id,
+            project_id=auto_research.project_id,
+            control_node_id=arguments.node_id,
+            state="running",
+            request={"goal": goal, "invocation_limit": arguments.invocation_limit},
+            goal_sha256=context.command_file.sha256,
+            parent_operation_id=context.task.operation_id,
+            created_at=now,
+            updated_at=now,
+        )
+        store.create_experiment_episode_with_invocation(
+            _experiment_task(
+                store, planned_effect_id, auto_research.authorized_by, node_id=arguments.node_id
             ),
-            admission_id=planned_effect_id,
+            auto_research_route=route,
+            auto_research_admission_id=planned_effect_id,
         )
         return AutoResearchCommandEffectResult(
             result={
-                "disposition": "replacement_pending",
+                "disposition": "created",
                 "episode_id": route.child_episode_id,
             }
         )
@@ -1744,25 +1749,28 @@ def test_completed_unavailable_experiment_kickoff_keeps_and_reflects_admission(
         existing = store.auto_research_child_experiment(planned_effect_id)
         if existing is None:
             now = store.now()
-            existing = store.reserve_auto_research_experiment_replacement(
-                AutoResearchChildExperimentRecord(
-                    child_episode_id=planned_effect_id,
-                    auto_research_episode_id=auto_research.episode_id,
-                    project_id=auto_research.project_id,
-                    control_node_id=arguments.node_id,
-                    state="pending",
-                    replaces_episode_id="predecessor",
-                    request={"goal": "bounded goal", "invocation_limit": None},
-                    goal_sha256=hashlib.sha256(b"bounded goal").hexdigest(),
-                    parent_operation_id=context.task.operation_id,
-                    created_at=now,
-                    updated_at=now,
+            existing = AutoResearchChildExperimentRecord(
+                child_episode_id=planned_effect_id,
+                auto_research_episode_id=auto_research.episode_id,
+                project_id=auto_research.project_id,
+                control_node_id=arguments.node_id,
+                state="running",
+                request={"goal": "bounded goal", "invocation_limit": None},
+                goal_sha256=hashlib.sha256(b"bounded goal").hexdigest(),
+                parent_operation_id=context.task.operation_id,
+                created_at=now,
+                updated_at=now,
+            )
+            store.create_experiment_episode_with_invocation(
+                _experiment_task(
+                    store, planned_effect_id, auto_research.authorized_by, node_id=arguments.node_id
                 ),
-                admission_id=planned_effect_id,
+                auto_research_route=existing,
+                auto_research_admission_id=planned_effect_id,
             )
         return AutoResearchCommandEffectResult(
             result={
-                "disposition": "replacement_pending",
+                "disposition": "created",
                 "episode_id": existing.child_episode_id,
             }
         )

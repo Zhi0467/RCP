@@ -365,6 +365,37 @@ def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> Non
     }
 
 
+@pytest.mark.parametrize("branch_first", [False, True])
+def test_experiment_live_admission_and_continuation_are_target_scoped(tmp_path, branch_first):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    targets = [GraphTargetRef(), GraphTargetRef(kind="branch", branch_id="branch")]
+    if branch_first:
+        targets.reverse()
+    for index, target in enumerate(targets):
+        episode = _episode(store, f"episode-{index}", ceiling=3).model_copy(
+            update={
+                "graph_target": target,
+                "graph_base_head": GraphHeadRef(revision=0) if target.kind == "branch" else None,
+            }
+        )
+        task = _operational_task(store, f"operation-{index}", episode_id=episode.episode_id)
+        task = task.model_copy(update={"graph_target": target})
+        store.create_episode_with_invocation(episode, task)
+        assert not store.continuation_slot_open(episode)
+        with pytest.raises(ValueError, match="live parent"):
+            store.create_episode(episode.model_copy(update={"episode_id": f"duplicate-{index}"}))
+    assert len(store.episodes("project")) == 2
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'stopped', ending = 'stopped', "
+            "wrapup_state = 'skipped' WHERE episode_id = 'episode-0'"
+        )
+    first = store.episode("episode-0")
+    assert first is not None and store.continuation_slot_open(first)
+    second = store.episode("episode-1")
+    assert second is not None and not store.continuation_slot_open(second)
+
+
 def test_episode_and_first_invocation_are_one_exact_atomic_pair(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode = _episode(store, "episode")

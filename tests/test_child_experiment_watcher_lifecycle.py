@@ -176,8 +176,8 @@ def test_child_experiment_watcher_refusal_retains_completion_without_callback_er
     assert [task.operation_id for task in store.agent_tasks(parent.project_id)] == task_ids
     assert launches == []
     assert not any(record.levelno >= logging.ERROR for record in caplog.records)
-    runtime = store.experiment_loop_runtime_for_target(
-        child.project_id, child.request["control_node_id"], child.graph_target
+    runtime = store.experiment_loop_runtime(
+        child.project_id, str(child.request["control_node_id"]), graph_target=child.graph_target
     )
     node = Experiment(
         type="experiment",
@@ -202,8 +202,8 @@ def test_child_experiment_watcher_refusal_retains_completion_without_callback_er
 def test_running_parent_child_experiment_watcher_claims_and_launches_once(tmp_path, monkeypatch):
     store, parent, _root, child, watcher, launches, poller = _waiting_child(tmp_path, monkeypatch)
     before = store.auto_research_experiment_allowance(parent.episode_id).used
-    runtime = store.experiment_loop_runtime_for_target(
-        child.project_id, child.request["control_node_id"], child.graph_target
+    runtime = store.experiment_loop_runtime(
+        child.project_id, str(child.request["control_node_id"]), graph_target=child.graph_target
     )
     assert runtime.watcher_delivery_diagnostic is None
 

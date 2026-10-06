@@ -1800,155 +1800,40 @@ def test_apply_results_are_immutable_and_ordered_per_turn(tmp_path) -> None:
         )
 
 
-def test_pending_experiment_replacement_terminal_outcomes_notify_atomically(tmp_path) -> None:
+@pytest.mark.parametrize("state", ["pending", "running"])
+def test_child_launch_cannot_reserve_or_activate_replacement(tmp_path, state) -> None:
     store, parent, root = _setup_parent(tmp_path)
-    cancelled_task = _experiment_task(
-        store,
-        str(uuid.uuid4()),
-        parent.authorized_by,
-        node_id="exp/cancelled",
+    task = _experiment_task(store, str(uuid.uuid4()), parent.authorized_by, node_id="exp/one")
+    route = _experiment_route(
+        store, parent, root, task, state=state, replaces_episode_id="historical-predecessor"
     )
-    cancelled_route = _experiment_route(
-        store,
-        parent,
-        root,
-        cancelled_task,
-        state="pending",
-        replaces_episode_id="old-cancelled",
-    )
-    store.reserve_auto_research_experiment_replacement(cancelled_route)
-
-    cancelled = store.cancel_auto_research_experiment_replacement(
-        cancelled_route.child_episode_id,
-        diagnostic="The orchestrator cancelled replacement.",
-        initiated_by=f"orchestrator:{root.operation_id}",
-    )
-
-    assert cancelled.state == "cancelled"
-    cancelled_notice = store.auto_research_lifecycle_notices(parent.episode_id)[0]
-    assert cancelled_notice.source_kind == "experiment_replacement"
-    assert cancelled_notice.source_event == "cancelled"
-    assert cancelled_notice.wake_suppressed == "self_caused"
-
-    failed_task = _experiment_task(
-        store,
-        str(uuid.uuid4()),
-        parent.authorized_by,
-        node_id="exp/failed",
-    )
-    failed_route = _experiment_route(
-        store,
-        parent,
-        root,
-        failed_task,
-        state="pending",
-        replaces_episode_id="old-failed",
-    )
-    store.reserve_auto_research_experiment_replacement(failed_route)
-    failed = store.fail_auto_research_experiment_replacement(
-        failed_route.child_episode_id,
-        diagnostic="The node never became ready.",
-    )
-
-    assert failed.state == "cancelled"
-    pending = store.pending_auto_research_lifecycle_notices(parent.episode_id)
-    assert len(pending) == 1
-    assert pending[0].source_event == "failed"
-    assert pending[0].wake_suppressed is None
-    assert [
-        (notice.source_id, notice.source_event)
-        for notice in store.auto_research_lifecycle_notices(parent.episode_id)
-    ] == [
-        (cancelled_route.child_episode_id, "cancelled"),
-        (failed_route.child_episode_id, "failed"),
-    ]
+    before = store.auto_research_experiment_allowance(parent.episode_id)
+    with pytest.raises(ValueError, match="without replacement"):
+        store.create_experiment_episode_with_invocation(task, auto_research_route=route)
+    assert task.episode_id is not None
+    assert store.episode(task.episode_id) is None
+    assert store.auto_research_child_experiment(task.episode_id) is None
+    assert store.auto_research_experiment_allowance(parent.episode_id) == before
 
 
-def test_pending_experiment_replacement_activation_notifies_atomically(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store, parent, root = _setup_parent(tmp_path)
-    direct_task = _experiment_task(
-        store,
-        str(uuid.uuid4()),
-        parent.authorized_by,
-        node_id="exp/direct",
+def _insert_cancelled_legacy_route(store, route) -> None:
+    """Fixture for a pre-upgrade replacement retained only as history."""
+    record = route.model_copy(
+        update={
+            "state": "cancelled",
+            "terminal_diagnostic": "Legacy replacement cancelled during upgrade.",
+        }
     )
-    store.create_experiment_episode_with_invocation(
-        direct_task,
-        auto_research_route=_experiment_route(store, parent, root, direct_task),
-    )
-    assert store.auto_research_lifecycle_notices(parent.episode_id) == []
-
-    replacement_task = _experiment_task(
-        store,
-        str(uuid.uuid4()),
-        parent.authorized_by,
-        node_id="exp/replacement",
-    )
-    replacement_route = _experiment_route(
-        store,
-        parent,
-        root,
-        replacement_task,
-        state="pending",
-        replaces_episode_id="predecessor-episode",
-    )
-    store.reserve_auto_research_experiment_replacement(replacement_route)
-    original_insert = store._insert_auto_research_lifecycle_notice
-
-    def fail_advanced_notice(connection, notice):
-        if notice.source_kind == "experiment_replacement" and notice.source_event == "advanced":
-            raise RuntimeError("synthetic lifecycle failure")
-        return original_insert(connection, notice)
-
-    monkeypatch.setattr(store, "_insert_auto_research_lifecycle_notice", fail_advanced_notice)
-    with pytest.raises(RuntimeError, match="synthetic lifecycle failure"):
-        store.create_experiment_episode_with_invocation(
-            replacement_task,
-            auto_research_route=replacement_route.model_copy(update={"state": "running"}),
+    with store.connection() as connection:
+        connection.execute(
+            """INSERT INTO auto_research_child_experiments (
+                child_episode_id, auto_research_episode_id, project_id,
+                control_node_id, state, replaces_episode_id, request_json,
+                goal_sha256, parent_operation_id, terminal_diagnostic,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            store._child_experiment_values(record),
         )
-
-    rolled_back = store.auto_research_child_experiment(replacement_task.episode_id)
-    assert rolled_back is not None and rolled_back.state == "pending"
-    assert store.episode(replacement_task.episode_id) is None
-    assert store.auto_research_lifecycle_notices(parent.episode_id) == []
-
-    monkeypatch.setattr(store, "_insert_auto_research_lifecycle_notice", original_insert)
-    store.create_experiment_episode_with_invocation(
-        replacement_task,
-        auto_research_route=replacement_route.model_copy(update={"state": "running"}),
-    )
-
-    notices = store.auto_research_lifecycle_notices(parent.episode_id)
-    assert len(notices) == 1
-    notice = notices[0]
-    assert notice.wake_suppressed == "self_caused"
-    assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == []
-    assert (
-        notice.source_kind,
-        notice.source_id,
-        notice.source_event,
-        notice.source_attempt,
-    ) == (
-        "experiment_replacement",
-        replacement_task.episode_id,
-        "advanced",
-        1,
-    )
-    assert notice.payload == {
-        "episode_id": replacement_task.episode_id,
-        "status": "running",
-        "replaces_episode_id": "predecessor-episode",
-    }
-
-    with pytest.raises(ValueError, match="already in use"):
-        store.create_experiment_episode_with_invocation(
-            replacement_task,
-            auto_research_route=replacement_route.model_copy(update={"state": "running"}),
-        )
-    assert store.auto_research_lifecycle_notices(parent.episode_id) == [notice]
 
 
 def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) -> None:
@@ -1979,7 +1864,7 @@ def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) 
         state="pending",
         replaces_episode_id="prior-episode",
     )
-    store.reserve_auto_research_experiment_replacement(pending_route)
+    _insert_cancelled_legacy_route(store, pending_route)
     notice = _worker_notice(
         store,
         parent.episode_id,
@@ -2031,7 +1916,6 @@ def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) 
     assert {blocker.kind for blocker in blockers} == {
         "spawned_work",
         "experiment_episode",
-        "experiment_replacement",
         "lifecycle_notice",
         "child_admission",
     }
@@ -2275,7 +2159,8 @@ def test_project_deletion_removes_every_auto_research_child_registry(tmp_path) -
         parent.authorized_by,
         node_id="exp/pending-delete",
     )
-    store.reserve_auto_research_experiment_replacement(
+    _insert_cancelled_legacy_route(
+        store,
         _experiment_route(
             store,
             parent,
@@ -2283,7 +2168,7 @@ def test_project_deletion_removes_every_auto_research_child_registry(tmp_path) -
             pending_task,
             state="pending",
             replaces_episode_id=child_id,
-        )
+        ),
     )
     store.record_auto_research_child_admission(
         _admission(

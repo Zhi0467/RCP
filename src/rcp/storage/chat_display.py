@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.storage.mixin_base import StoreMixinBase
@@ -194,7 +195,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                   AND display.archived_at IS NULL
                 GROUP BY 1
                 """,
-                (project_id, graph_target.model_dump_json()),
+                (project_id, graph_target_json(graph_target)),
             ).fetchall()
             archived = connection.execute(
                 "SELECT chat_id FROM chat_display "
