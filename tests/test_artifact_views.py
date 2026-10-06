@@ -39,6 +39,12 @@ def test_text_previews_are_script_free_and_escape_source(kind: str) -> None:
     assert "sandbox" in csp and "allow-scripts" not in csp
 
 
+def test_markdown_renders_gfm_tables() -> None:
+    document, _ = artifact_views.markdown_document(b"| a | b |\n|---|---|\n| 1 | 2 |\n")
+    tags = [tag for tag, _ in Elements(document).tags]
+    assert tags.count("th") == 2 and tags.count("td") == 2
+
+
 @pytest.mark.parametrize("kind", ["markdown", "text"])
 @pytest.mark.parametrize("budget", ["bytes", "lines"])
 def test_render_budgets_bound_source_before_parsing(monkeypatch, kind: str, budget: str) -> None:
