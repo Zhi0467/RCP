@@ -1996,6 +1996,24 @@ async def test_stop_during_response_outage_finishes_with_saved_permanent_reason(
     assert not list(tmp_path.glob("*.closed.json"))
 
 
+def test_ask_call_id_is_covered_by_broker_signature():
+    from rcp.agents.command_mailbox import CommandTurnCredential, CommandTurnIdentity
+    from rcp.agents.staged_command_broker import _signed
+    from tests.test_ask_protocol import ask_request
+
+    credential = CommandTurnCredential.issue(CommandTurnIdentity(None, "task", "turn", "broker"))
+    credential.activate()
+    request = ask_request(mailbox_id=credential.mailbox_id, call_id="first").model_dump(
+        exclude={"credential"}
+    )
+    signed = _signed(request, credential.token)
+    document = json.dumps(signed)
+    assert credential.accepts(validate_command_request(document), document)
+    signed["call_id"] = "second"
+    tampered = json.dumps(signed)
+    assert not credential.accepts(validate_command_request(tampered), tampered)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["answered", "dismissed"])
 async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, state) -> None:
@@ -2055,6 +2073,8 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         assert seen[2].receipt_token == "f" * 64
         assert seen[2].request_id not in {seen[0].request_id, seen[1].request_id}
         assert seen[2].arguments == seen[1].arguments
+    assert seen[0].call_id
+    assert {request.call_id for request in seen} == {seen[0].call_id}
     assert seen[0].receipt_token is None
     assert seen[1].receipt_token is None
     assert seen[0].request_id != seen[1].request_id
@@ -2126,6 +2146,8 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
     assert len(requests) == (3 if state == "answered" else 2)
     if state == "answered":
         assert requests[2][0]["receipt_token"] == "f" * 64
+    assert requests[0][0]["call_id"]
+    assert len({request["call_id"] for request, _ in requests}) == 1
     assert {deadline for _, deadline in requests} == {1}
     assert len({request["request_id"] for request, _ in requests}) == len(requests)
     assert json.loads(capsys.readouterr().out)["result"] == {

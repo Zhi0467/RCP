@@ -118,6 +118,11 @@ COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
 # agent rerun the same keyed call; RCP keeps working on the request meanwhile.
 COMMAND_CLIENT_WAIT_SECONDS = 90.0
 COMMAND_ASK_POLL_SECONDS = 2.0
+ASK_MAX_ATTEMPTS = 3
+ASK_TRACKED_CALLS = 32
+# Ask pauses 2 s between rounds; SSH mailbox polling adds up to another 2 s
+# plus transport time. 10 s tolerates that cadence without a flickering card.
+ASK_WAITING_FRESH_SECONDS = 10.0
 ASK_QUESTION_MAX_LENGTH = 8_000
 ASK_CHOICE_MAX_COUNT = 20
 ASK_CHOICE_MAX_LENGTH = 1_000

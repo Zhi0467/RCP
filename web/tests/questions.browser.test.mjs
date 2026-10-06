@@ -26,6 +26,7 @@ test("chat question answers stay separate from steering and resolved cards enter
       choices: ["a", "b"],
       multiple: id === "multiple",
       state: "pending",
+      agent_waiting: true,
       answer: null,
       chosen_choices: [],
       resolved_by: null,
@@ -75,6 +76,14 @@ test("chat question answers stay separate from steering and resolved cards enter
     await page.evaluate(() => window.setSteeringFixture({ updated_at: "2026-09-05T12:00:02Z" }));
     await changedOwnerRead;
     assert.equal(questionReads, 2);
+    await single.getByText("Agent is waiting", { exact: true }).waitFor();
+    questions[0].agent_waiting = false;
+    await page.evaluate(() =>
+      window.dispatchEvent(
+        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
+      ),
+    );
+    await single.getByText("Needs you", { exact: true }).waitFor();
     await single.getByRole("button", { name: "a", exact: true }).click();
     await page
       .locator('.node-chat-lines [data-question-id="single"][data-question-state="answered"]')

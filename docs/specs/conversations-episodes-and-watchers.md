@@ -263,10 +263,19 @@ with no graph commands or write scope. Artifact-edit Discuss turns, consolidatio
 ingestion, paper coach, Auto-research workers, and child Work and Experiments
 cannot ask directly.
 
-A call waits for the bounded client interval; repeating identical arguments keeps
-waiting, while ending the turn parks the question. An answered response counts as
-received only after the client acknowledges its response token and the receiving
-task settles successfully on the original native session and authority binding.
+A call waits for the bounded client interval. Its random `call_id` stays outside
+arguments and survives every fresh request round. Pending and parked replies carry
+`attempt` and `max_attempts` (3); clients without an id omit `attempt`. A thread-safe,
+process-local record retains the last 32 distinct calls per question and their
+attempt numbers; restarting RCP resets this advisory count.
+If the answer blocks work, repeat the exact call to keep waiting. Otherwise,
+continue other work and repeat it later to check. After the third unanswered
+attempt, stop asking and end the turn; the question remains on the human's card
+and their answer resumes the conversation. Prefer one blocking shell wait; if
+polling an unfinished command, use waits of about five minutes.
+An answered response counts as received only after the client acknowledges its
+response token and the receiving task settles successfully on the original native
+session and authority binding.
 Failed or disconnected turns retain delivery eligibility. After full settlement
 and at startup, an unreceived chat answer admits at most one same-mode follow-up, transactionally claimed
 with task insertion, pinned to the asking turn's native session, authority, write

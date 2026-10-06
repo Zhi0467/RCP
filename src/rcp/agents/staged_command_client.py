@@ -533,6 +533,7 @@ def _run(namespace):
         mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
     deadline = time.monotonic() + namespace.timeout
+    call_id = uuid.uuid4().hex if verb == "ask" else None
     while True:
         response = _run_round(
             namespace,
@@ -544,6 +545,7 @@ def _run(namespace):
             arguments,
             broker if namespace.broker is not None else None,
             deadline,
+            call_id=call_id,
         )
         if not isinstance(response, dict):
             return response
@@ -570,6 +572,7 @@ def _run(namespace):
                             broker if namespace.broker is not None else None,
                             deadline,
                             receipt_token=receipt_token,
+                            call_id=call_id,
                         )
                     except (ClientInputError, OSError) as exc:
                         _client_failure(
@@ -584,12 +587,30 @@ def _run(namespace):
         if remaining > 0:
             time.sleep(min(COMMAND_ASK_POLL_SECONDS, remaining))
         if time.monotonic() >= deadline:
-            response["message"] = (
-                "The question is still pending. Repeat the exact same call to keep waiting, "
-                "or end the turn so the question parks."
-            )
+            response["message"] = _pending_guidance(response["result"])
             _print_json(_display_response(response, verb))
             return OK
+
+
+def _pending_guidance(result):
+    attempt = result.get("attempt")
+    max_attempts = result.get("max_attempts")
+    counted = isinstance(attempt, int) and isinstance(max_attempts, int)
+    progress = f"Attempt {attempt} of {max_attempts}. " if counted else ""
+    stop = (
+        "Stop asking and end your turn; the question stays on the human's card "
+        "and their answer resumes this conversation."
+    )
+    if counted and attempt >= max_attempts:
+        return progress + stop
+    guidance = (
+        "The question is still pending. If the answer blocks your work, repeat the exact "
+        "same call to keep waiting. If it does not block, carry on with other work and "
+        "repeat the call later to check. "
+    )
+    if isinstance(max_attempts, int):
+        guidance += f"After attempt {max_attempts} with no answer: " + stop
+    return progress + guidance
 
 
 def _run_round(
@@ -604,6 +625,7 @@ def _run_round(
     deadline,
     *,
     receipt_token=None,
+    call_id=None,
 ):
     request_id = uuid.uuid4().hex
     closed = _closed_response(workspace, mailbox_id, request_id)
@@ -619,6 +641,8 @@ def _run_round(
         "idempotency_key": key,
         "arguments": arguments,
     }
+    if call_id is not None:
+        request["call_id"] = call_id
     if receipt_token is not None:
         request["receipt_token"] = receipt_token
     request_content = _encoded_request(request)

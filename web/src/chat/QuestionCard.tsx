@@ -41,6 +41,7 @@ export function QuestionCard({
       className="question-card"
       aria-labelledby={labelId}
       data-question-id={question.question_id}
+      data-agent-waiting={open && question.agent_waiting}
       data-question-state={question.withdrawn_readonly ? "ended" : question.state}
     >
       <header className="question-header">
@@ -48,7 +49,9 @@ export function QuestionCard({
           {question.withdrawn_readonly
             ? "Episode ended"
             : open
-              ? "Needs you"
+              ? question.agent_waiting
+                ? "Agent is waiting"
+                : "Needs you"
               : question.state === "answered"
                 ? "Answered"
                 : "Dismissed"}

@@ -26,6 +26,7 @@ from rcp.core.project_types import project_type_of
 from rcp.limits import (
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
+    ASK_MAX_ATTEMPTS,
     ASK_QUESTION_MAX_LENGTH,
     COMMAND_CLIENT_WAIT_SECONDS,
 )
@@ -245,10 +246,14 @@ def ask_contract(how_it_returns: str) -> str:
 def live_ask_contract() -> str:
     """Chat and Experiment calls share the same wait and park behavior."""
     return ask_contract(
-        f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. After pending, repeat "
-        "the exact call to keep waiting when a quick answer is likely; otherwise end this "
-        "turn and the question parks. The human answers on its question card; composer "
-        "messages are separate steering."
+        f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. If pending and the answer "
+        "blocks your work, repeat the exact same call to keep waiting. If it does not block, "
+        "carry on with other work and repeat the call later to check. "
+        f"After attempt {ASK_MAX_ATTEMPTS} with no answer, stop asking and end your turn; "
+        "the question stays on the human's card and their answer resumes this conversation. "
+        "The human answers on its question card; composer messages are separate steering.\n"
+        "- A single blocking wait is always preferred over polling. If your shell returns "
+        "before a command finishes and you choose to poll it, use long waits of about 5 minutes."
     )
 
 

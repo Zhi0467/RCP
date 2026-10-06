@@ -388,8 +388,12 @@ Project members read questions through
 include predecessor questions without changing their origin. Each question
 publishes its id, owner and asking operation, origin capability, text, choices,
 multiple-selection flag, state, answer, chosen choices, human resolver and time,
-creation time, `withdrawn_readonly`, and the server's `can_answer` offer. Open questions whose
-asking turn has settled, and orchestrator questions, project as `parked`.
+creation time, `withdrawn_readonly`, the server's `can_answer` offer, and
+`agent_waiting`. The latter is true for an open, non-withdrawn question whose last
+pending ask round arrived less than 10 seconds ago, using the server's monotonic
+clock. This process-local freshness tolerates the remote mailbox polling cadence.
+Open questions whose asking turn has settled, and orchestrator questions, project
+as `parked`.
 
 `POST /api/projects/{project_id}/questions/{question_id}/answer` accepts only
 `answer` text and `choices`; the store validates both and records the
@@ -413,7 +417,9 @@ chat answer with no running turn names Discuss or Work continuation on its submi
 control, matching the asking turn's capability.
 Experiment and Auto-research detail show the same cards; withdrawn cards retain
 their history with an **Episode ended** state. Question refresh follows existing
-chat and episode refresh/polling, including turn command/state changes.
+chat and episode refresh/polling, including turn command/state changes and the
+active project heartbeat. Fresh pending rounds show a cobalt **Agent is waiting**
+pill; otherwise the open card shows **Needs you**.
 Question notifications open the corresponding chat or expanded episode view.
 
 ## Episode merge API
