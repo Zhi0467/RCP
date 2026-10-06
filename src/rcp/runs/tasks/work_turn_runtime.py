@@ -241,6 +241,7 @@ class ResolvedWorkExecution:
     execution_host: str
     provider_binary: str | None
     ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
+    shell_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -555,6 +556,7 @@ async def stream_work_agent_events(
                 outcome=outcome,
                 binary=binary,
                 invocation_gate=validator_staged.invocation_gate,
+                shell_timeout_seconds=validator_staged.shell_timeout_seconds,
                 required_session_id=required_session_id,
                 supervise_remote=supervise_remote,
                 browser_grant=browser_grant,
@@ -623,6 +625,7 @@ def start_work_validator_mailbox(
         "gate": asdict(staged.invocation_gate) if staged.invocation_gate else None,
         "timeout_seconds": staged.timeout_seconds,
         "ask_wait_seconds": staged.ask_wait_seconds,
+        "shell_timeout_seconds": staged.shell_timeout_seconds,
         "context": resume_context,
     }
 
@@ -709,6 +712,9 @@ def restore_work_validator_mailbox(
     ask_wait = saved.get("ask_wait_seconds", COMMAND_CLIENT_WAIT_SECONDS)
     if not isinstance(ask_wait, (int, float)) or not math.isfinite(ask_wait) or ask_wait <= 0:
         raise ValueError("The saved command mailbox has an invalid ask wait")
+    shell_timeout = saved.get("shell_timeout_seconds")
+    if shell_timeout is not None and (type(shell_timeout) is not int or shell_timeout <= 0):
+        raise ValueError("The saved command mailbox has an invalid shell timeout")
     staged = StagedCommandMailbox(
         mailbox=mailbox,
         credential=CommandTurnCredential(identity, saved["mailbox_id"], saved["token"]),
@@ -717,6 +723,7 @@ def restore_work_validator_mailbox(
         invocation_gate=ProviderInvocationGate(**saved["gate"]) if saved["gate"] else None,
         timeout_seconds=saved["timeout_seconds"],
         ask_wait_seconds=ask_wait,
+        shell_timeout_seconds=shell_timeout,
     )
     budget = None
     if validate is not None:

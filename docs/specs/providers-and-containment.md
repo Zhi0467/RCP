@@ -44,21 +44,28 @@ they cannot widen or narrow these capabilities.
 
 ## Machine provider settings
 
-The launcher reads each execution machine card at every launch. Its
-`provider_autocompact` values use each provider's validation and CLI rendering;
-unset values preserve CLI defaults. `provider_shell_timeout` accepts whole
-minutes from 2 through 120, with a default of 2 minutes for Claude, OpenCode and
-Codex. Only configured values add environment: Claude receives
-`BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`; OpenCode receives
-`OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS`, all in milliseconds. Codex needs
-no shell timeout environment variable. Local and SSH launches use the same
-resolved machine settings.
+The launcher reads each execution machine card's `provider_autocompact` at
+launch using provider-owned validation and CLI rendering; unset values preserve
+CLI defaults. `provider_shell_timeout` accepts whole minutes from 2 through 120,
+with a default of 2 minutes for Claude, OpenCode and Codex. A turn with a staged
+command mailbox resolves its configured shell timeout once at staging and carries
+that value through every launch, including Patch corrections. Unset remains
+unset even if the card changes later. Launches without a staged mailbox resolve
+it once at launch.
+
+Claude renders configured `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`
+into the `--settings` JSON's `env`, preserving other entries and overriding
+user/project/local settings. The maximum is at least Claude's 600-second default.
+OpenCode renders `OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS` in its process
+environment. All values are milliseconds; Codex renders no timeout variable.
+Local and SSH launches use the same resolved value.
 
 For live ask calls, the staged client and prompt use that shell timeout minus
 30 seconds as the ask hold (90 seconds by default). The ask hold has its
 own client argument and can exceed the ordinary command deadline; other verbs
-keep their deadline. Remote mailbox checkpoints retain the hold, and older
-checkpoints resume with the default.
+keep their deadline. Remote mailbox checkpoints retain both the configured
+timeout and the hold. Missing checkpoint fields use an unset timeout and the
+default hold.
 
 ## Member terminals
 

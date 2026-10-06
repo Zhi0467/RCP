@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
+from types import EllipsisType
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -1131,6 +1132,7 @@ class AgentLauncher:
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        shell_timeout_seconds: int | None | EllipsisType = ...,
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1148,6 +1150,9 @@ class AgentLauncher:
                 browser_grant.hidden_read_enforcement if browser_grant is not None else None
             ),
         )
+        # Omitted resolves at launch; explicit None is a staged, unset value.
+        if shell_timeout_seconds is ...:
+            shell_timeout_seconds = self.shell_timeout_seconds(provider, host)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
         last_failure: _PrePromptRuntimeFailure | None = None
         for index, runtime in enumerate(runtimes):
@@ -1182,6 +1187,7 @@ class AgentLauncher:
                         git_access=git_access,
                         browser_grant=browser_grant,
                         hidden_read_scope=hidden_read_scope,
+                        shell_timeout_seconds=shell_timeout_seconds,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1231,6 +1237,7 @@ class AgentLauncher:
         git_access: ProviderGitAccess | None = None,
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
+        shell_timeout_seconds: int | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1336,6 +1343,7 @@ class AgentLauncher:
                     browser_grant=browser_grant,
                     hidden_read_scope=hidden_read_scope,
                     autocompact=autocompact,
+                    shell_timeout_seconds=shell_timeout_seconds,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1383,11 +1391,6 @@ class AgentLauncher:
             environment = self.process_environment(provider, host).with_variables(
                 turn.environment, remote=bool(host)
             )
-            shell_timeout = self._shell_timeout(provider, host)
-            if shell_timeout:
-                environment = environment.with_variables(
-                    profile.shell_timeout_environment(int(shell_timeout) * 60), remote=bool(host)
-                )
             if git_access is not None:
                 if git_access.host != host:
                     raise ValueError("Git access does not match the provider execution host.")
@@ -1912,17 +1915,14 @@ class AgentLauncher:
         card = self.accounts.store.space_machine_for(host)
         return card.provider_autocompact.get(provider, "") if card is not None else ""
 
-    def _shell_timeout(self, provider: str, host: str) -> str:
+    def shell_timeout_seconds(self, provider: str, host: str = "") -> int | None:
+        """Resolve the configured timeout once; None preserves the provider default."""
+
         if self.accounts is None:
-            return ""
+            return None
         card = self.accounts.store.space_machine_for(host)
-        return card.provider_shell_timeout.get(provider, "") if card is not None else ""
-
-    def shell_timeout_seconds(self, provider: str, host: str = "") -> int:
-        """Resolve this execution machine's shell timeout, including an unset default."""
-
-        value = self._shell_timeout(provider, host)
-        return int(value) * 60 if value else profile_for(provider).shell_timeout_default_seconds
+        value = card.provider_shell_timeout.get(provider, "") if card is not None else ""
+        return int(value) * 60 if value else None
 
     def _discover_remote_provider(
         self, provider: str, host: str

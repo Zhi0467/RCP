@@ -149,9 +149,6 @@ class OpenCodeProfile(ProviderProfile):
     # The version whose edit-rule matching RCP's rules were probed against.
     work_like_minimum_version = (1, 18, 30)
 
-    def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
-        return {"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": str(seconds * 1000)}
-
     def validate_readiness_version(
         self,
         actual: str | None,
@@ -306,6 +303,10 @@ class OpenCodeProfile(ProviderProfile):
         ):
             wrapper = request.hidden_read_scope.wrapper_path()
             environment.update(SHELL=wrapper, RCP_HIDDEN_READ_POLICY=wrapper + ".policy.json")
+        if request.shell_timeout_seconds is not None:
+            environment["OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"] = str(
+                request.shell_timeout_seconds * 1000
+            )
         return environment
 
     def decode_event(self, value: object, raw: str) -> ProviderStreamEvent:

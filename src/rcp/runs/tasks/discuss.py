@@ -823,6 +823,7 @@ async def stream_discuss_run(
                 retained is None
                 and (request.artifact_edit is not None or not (resuming or retry_attempt))
             ):
+                shell_timeout = launcher.shell_timeout_seconds(profile.provider, execution_host)
                 patch_inputs = _stage_chat_patch_inputs(
                     local_stage,
                     remote_stage,
@@ -831,9 +832,8 @@ async def stream_discuss_run(
                     task_id=execution.operation_id if execution is not None else token,
                     turn_id=f"{token}:discuss",
                     broker=eligible,
-                    ask_wait_seconds=ask_hold_seconds(
-                        launcher.shell_timeout_seconds(profile.provider, execution_host)
-                    ),
+                    ask_wait_seconds=ask_hold_seconds(shell_timeout),
+                    shell_timeout_seconds=shell_timeout,
                 )
                 retained = {**(retained or {}), "patch": patch_inputs.prompt_values()}
             instructions = ""
@@ -1089,6 +1089,9 @@ async def stream_discuss_run(
                     execution=execution,
                     remote_stage=remote_stage,
                     capability="discuss",
+                    shell_timeout_seconds=(
+                        patch_inputs.validator_staged.shell_timeout_seconds if patch_inputs else ...
+                    ),
                     invocation_gate=patch_inputs.validator_staged.invocation_gate
                     if patch_inputs
                     else None,

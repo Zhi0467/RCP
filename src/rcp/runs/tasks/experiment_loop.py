@@ -1509,6 +1509,7 @@ async def _settle_watch_deliverable(
                 turn_id=f"{staged.token}:watch-correction:{correction_rounds}",
                 timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
                 ask_wait_seconds=launch_turn.patch_inputs.validator_staged.ask_wait_seconds,
+                shell_timeout_seconds=launch_turn.patch_inputs.validator_staged.shell_timeout_seconds,
             )
             correction_lifecycle = _start_work_validator_mailbox(
                 turn.service,
@@ -1800,6 +1801,7 @@ async def _apply_experiment_loop_turn(
                 turn_id=(f"{staged.token}:loop-patch-correction:{loop_patch_correction_rounds}"),
                 timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
                 ask_wait_seconds=launch_turn.patch_inputs.validator_staged.ask_wait_seconds,
+                shell_timeout_seconds=launch_turn.patch_inputs.validator_staged.shell_timeout_seconds,
             )
             loop_validator_lifecycle = _start_work_validator_mailbox(
                 turn.service,
@@ -2461,11 +2463,13 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
     try:
         resolved = _resolve_work_execution(service, request, execution)
         assert resolved.request.provider is not None
+        shell_timeout = launcher.shell_timeout_seconds(
+            resolved.request.provider, resolved.execution_host
+        )
         resolved = replace(
             resolved,
-            ask_wait_seconds=ask_hold_seconds(
-                launcher.shell_timeout_seconds(resolved.request.provider, resolved.execution_host)
-            ),
+            ask_wait_seconds=ask_hold_seconds(shell_timeout),
+            shell_timeout_seconds=shell_timeout,
         )
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -2714,6 +2718,7 @@ async def _stream_work_graph_repair(
                 saved_stage=True,
             )
         token = _task_token(execution)
+        shell_timeout = launcher.shell_timeout_seconds(profile.provider, execution_host)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,
@@ -2723,9 +2728,8 @@ async def _stream_work_graph_repair(
             turn_id=f"{token}:work-graph-repair",
             broker=True,
             episode_id=request.control_episode_id,
-            ask_wait_seconds=ask_hold_seconds(
-                launcher.shell_timeout_seconds(profile.provider, execution_host)
-            ),
+            ask_wait_seconds=ask_hold_seconds(shell_timeout),
+            shell_timeout_seconds=shell_timeout,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,

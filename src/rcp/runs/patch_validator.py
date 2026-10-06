@@ -70,6 +70,7 @@ def stage_patch_validation_mailbox(
     authority: Literal["validate_only", "broker"] = "validate_only",
     episode_id: str | None = None,
     ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
+    shell_timeout_seconds: int | None = None,
 ) -> StagedCommandMailbox:
     """Stage the command client with the authority selected by its concrete owner."""
 
@@ -82,6 +83,7 @@ def stage_patch_validation_mailbox(
         local_input_stage=local_input_stage,
         episode_id=episode_id,
         ask_wait_seconds=ask_wait_seconds,
+        shell_timeout_seconds=shell_timeout_seconds,
         authority=authority,
         task_id=task_id,
         turn_id=turn_id,
