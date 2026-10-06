@@ -283,3 +283,16 @@ def test_cached_missing_is_rechecked_before_refusing() -> None:
     now[0] = 2.0
     assert checker.launch_refusal("gpu") is None
     assert runner.calls == 3
+
+
+def test_host_without_a_shell_is_missing_sh() -> None:
+    status = _checker(FakeRunner((127, ()))).status("gpu")
+    assert status.outcome == "missing"
+    assert [p.name for p in status.missing] == ["sh"]
+
+
+def test_route_that_cannot_start_is_not_checked() -> None:
+    def no_ssh(argv: list[str], script: str, timeout: float) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError(argv[0])
+
+    assert script_check(lambda argv: argv, ["remote"], runner=no_ssh).outcome == "not_checked"

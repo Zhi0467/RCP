@@ -445,7 +445,9 @@ ControlProbe = Callable[[ServerMetadata, int], ServerControlProbeResult]
 def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
     """The service account's own PATH, as `rcp.service` sets it, against the registry.
 
-    Root-only: doctor and install both read presence through this one route.
+    Doctor and install both read presence through this one route. Root (install,
+    `rcp-supervisor`) switches account with `runuser`, which refuses any other
+    caller; doctor run as the service account already is that account.
     """
     account = layout.service_account
     home = layout.service_home
@@ -455,12 +457,11 @@ def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
         if line.startswith("Environment=PATH=")
     )
 
+    switch = [] if _current_account() == account else ["runuser", "--user", account, "--"]
+
     def as_service_account(argv: list[str]) -> list[str]:
         return [
-            "runuser",
-            "--user",
-            account,
-            "--",
+            *switch,
             "env",
             "-i",
             f"HOME={home}",
@@ -472,6 +473,13 @@ def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
         ]
 
     return script_check(as_service_account, ("local", "server"))
+
+
+def _current_account() -> str | None:
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        return None
 
 
 def prepare_doctor_command(

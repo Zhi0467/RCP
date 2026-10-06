@@ -64,7 +64,8 @@ other answer is *unsupported*. A Linux distribution RCP has not been tested on
 is allowed with a "not tested" note. Only a definite *missing* or *unsupported*
 refuses an agent run, at `admit_provider_task` before anything is created; an
 unreachable machine, a timeout, or an unreadable answer is *not checked* and
-admits. Dropped connections retry with the state transfer's backoff. A definite
+admits. Exit 127 means the machine itself could not start `sh`, so it reports
+`sh` missing. Dropped connections retry with the state transfer's backoff. A definite
 result is reused for ten minutes, *not checked* for one, and a cached *missing*
 is checked again before it refuses.
 

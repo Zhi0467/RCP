@@ -51,6 +51,7 @@ Runner = Callable[[list[str], str, float], subprocess.CompletedProcess[str]]
 Route = Callable[[list[str]], list[str]]
 
 _FRAME = "rcp-dependency-check"
+_COMMAND_NOT_FOUND = 127
 _PLATFORMS: dict[str, Platform] = {"Linux": "linux", "Darwin": "darwin"}
 
 
@@ -83,10 +84,15 @@ def script_check(
             # Plain "timed out" is the transfer classifier's transient wording;
             # its "timed out after" (a whole-transfer timeout) is permanent.
             return subprocess.CompletedProcess(argv, 124, "", "dependency check timed out")
-        except OSError as exc:
-            return subprocess.CompletedProcess(argv, 127, "", str(exc))
 
-    result = retrying(argv[0], "check", attempt, label="dependency", sleep=sleep)
+    try:
+        result = retrying(argv[0], "check", attempt, label="dependency", sleep=sleep)
+    except OSError as exc:
+        return _not_checked(f"The check could not start: {exc}")
+    if result.returncode == _COMMAND_NOT_FOUND:
+        # The route started and its last hop could not find `sh` itself
+        # (SSH exits 255 for its own failures), so the shell is definitely absent.
+        return _status(roles, "linux", None, [], {"sh"})
     if result.returncode:
         stderr = (result.stderr or "").strip()[-STATE_TRANSFER_STDERR_BYTES:]
         return _not_checked(f"The check exited {result.returncode}: {stderr}")

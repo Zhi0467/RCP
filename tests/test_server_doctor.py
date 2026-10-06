@@ -1066,3 +1066,21 @@ def test_machine_security_reports_account_key_and_browser_gaps(
         "ssh_identity": ((str(user_key),), str(home / "user.sock")),
         "deploy_key": ((str(private),), str(home / "rcp.sock")),
     }
+
+
+@pytest.mark.parametrize("caller", ["root", "service"])
+def test_service_dependency_probe_switches_account_only_from_another_caller(monkeypatch, caller):
+    layout = server_doctor.DEFAULT_SERVER_LAYOUT
+    routes = []
+    monkeypatch.setattr(
+        server_doctor,
+        "_current_account",
+        lambda: layout.service_account if caller == "service" else "root",
+    )
+    monkeypatch.setattr(
+        server_doctor, "script_check", lambda route, roles: routes.append(route(["sh"]))
+    )
+    server_doctor.service_account_dependencies(layout)
+    (argv,) = routes
+    assert (argv[0] == "runuser") == (caller == "root")
+    assert argv[argv.index("env") :][-1] == "sh"
