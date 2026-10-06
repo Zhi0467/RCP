@@ -525,7 +525,7 @@ def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, mo
 
 
 def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, monkeypatch):
-    from rcp.browser.host import SMOKE_OWNER_TOKEN
+    from rcp.browser.host import INSTALL_MARKER, SMOKE_OWNER_TOKEN
 
     runtime = HostRuntime(request(tmp_path, action="install"))
     smoke = {
@@ -540,7 +540,12 @@ def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, mon
     monkeypatch.setattr(runtime, "prerequisites", lambda: None)
     monkeypatch.setattr(runtime, "owner_ready", lambda: None)
     monkeypatch.setattr(runtime, "alive", lambda record: True)
-    monkeypatch.setattr(runtime, "stop_owner", lambda record: stopped.append(record["handle"]))
+    marker = runtime.root / INSTALL_MARKER
+    # The marker already covers the owner checks, which can stall on a slow probe.
+    monkeypatch.setattr(
+        runtime, "stop_owner", lambda record: stopped.append((record["handle"], marker.exists()))
+    )
     monkeypatch.setattr(runtime, "_install", lambda: {"status": "ready"})
     assert runtime.install()["status"] == "ready"
-    assert stopped == ["smoke"]
+    assert stopped == [("smoke", True)]
+    assert not marker.exists()

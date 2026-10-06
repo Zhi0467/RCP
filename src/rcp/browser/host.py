@@ -748,6 +748,14 @@ class HostRuntime:
         return self.readiness()
 
     def install(self) -> dict:
+        # Covers the owner checks too: a stalled probe can hold the lock for minutes.
+        atomic_write(self.root / INSTALL_MARKER, "")
+        try:
+            return self._checked_install()
+        finally:
+            (self.root / INSTALL_MARKER).unlink(missing_ok=True)
+
+    def _checked_install(self) -> dict:
         self.owner_ready()
         prerequisite = self.prerequisites()
         if prerequisite:
@@ -768,11 +776,7 @@ class HostRuntime:
                 alive = self.owner_status(record)
             if alive:
                 return self.readiness_result("busy", "Close RCP browser sessions before installing")
-        atomic_write(self.root / INSTALL_MARKER, "")
-        try:
-            return self._install()
-        finally:
-            (self.root / INSTALL_MARKER).unlink(missing_ok=True)
+        return self._install()
 
     def _install(self) -> dict:
         self.tools.mkdir(mode=0o700, parents=True, exist_ok=True)
