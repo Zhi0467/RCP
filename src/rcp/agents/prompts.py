@@ -222,6 +222,8 @@ def ask_contract(how_it_returns: str) -> str:
     return f"""Asking the human:
 - `{COMMAND_CLIENT} ask --key <key> --question <text> [--choice <text> ...] [--multiple]`
   asks the human one question. Ask only for information or a preference you cannot get yourself.
+  Whenever you need the human's input, preference, or design decision, use `ask` rather than a
+  question in your answer prose: one decision per call, with choices when the options are known.
   The question is at most {ASK_QUESTION_MAX_LENGTH} characters, with at most
   {ASK_CHOICE_MAX_COUNT} choices of at most {ASK_CHOICE_MAX_LENGTH} characters; `--multiple`
   needs choices. The human may always answer in free text.
