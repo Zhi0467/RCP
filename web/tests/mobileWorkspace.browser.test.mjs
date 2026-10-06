@@ -3,6 +3,25 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+// Elements that scroll horizontally, other than the boxes meant to: code
+// blocks, tables, display math, and the DAG canvas.
+function sidewaysScrollers() {
+  return [...document.querySelectorAll("body *")]
+    .filter((element) => {
+      if (element.closest("pre, table, .katex-display, .dag-scroll")) return false;
+      const { overflowX } = getComputedStyle(element);
+      return (
+        ["auto", "scroll", "hidden"].includes(overflowX) &&
+        element.scrollWidth > element.clientWidth + 1 &&
+        !element.matches("[style*='text-overflow'], .ellipsis")
+      );
+    })
+    .map(
+      (element) =>
+        `${element.className || element.tagName}: ${element.scrollWidth}>${element.clientWidth}`,
+    );
+}
+
 test("narrow Chats and DAG keep the working surface primary behind accessible disclosures", async (t) => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
@@ -54,6 +73,12 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const composerWidth = (await composer.boundingBox()).width;
       assert.ok(composerWidth >= viewport.width - 50, "Composer uses the full narrow column");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), viewport.width);
+      await page.locator(".chat-markdown table").waitFor();
+      assert.deepEqual(
+        await page.evaluate(sidewaysScrollers),
+        [],
+        "Long agent tokens wrap; only code blocks and tables scroll sideways",
+      );
       await composer.fill("A draft survives opening the conversation list.");
       await chatToggle.focus();
       await page.keyboard.press("Enter");
