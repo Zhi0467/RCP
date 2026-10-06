@@ -237,6 +237,8 @@ _CLAUDE_MODELS = tuple(
 # The window `claude --autocompact` accepts besides `auto` (probed on Claude Code 2.1.287).
 _AUTOCOMPACT_MIN_TOKENS = 100_000
 _AUTOCOMPACT_MAX_TOKENS = 1_000_000
+# Claude Code's own BASH_MAX_TIMEOUT_MS default (probed on 2.1.291).
+_BASH_MAX_TIMEOUT_DEFAULT_SECONDS = 600
 
 
 class ClaudeProfile(ProviderProfile):
@@ -451,10 +453,10 @@ class ClaudeProfile(ProviderProfile):
         raise ValueError(f"Claude auto-compact must be {self.autocompact_hint}")
 
     def shell_timeout_environment(self, seconds: int) -> dict[str, str]:
-        milliseconds = str(seconds * 1000)
+        # Raise the default; never lower the per-command maximum below Claude's own.
         return {
-            "BASH_DEFAULT_TIMEOUT_MS": milliseconds,
-            "BASH_MAX_TIMEOUT_MS": milliseconds,
+            "BASH_DEFAULT_TIMEOUT_MS": str(seconds * 1000),
+            "BASH_MAX_TIMEOUT_MS": str(max(seconds, _BASH_MAX_TIMEOUT_DEFAULT_SECONDS) * 1000),
         }
 
     def command(

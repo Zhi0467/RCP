@@ -37,6 +37,11 @@ class QuestionActivity:
                     del activity.calls[next(iter(activity.calls))]
             return activity.calls[call_id]
 
+    def forget(self, question_id: str) -> None:
+        """Drop a resolved question so the record holds only open ones."""
+        with self._lock:
+            self._questions.pop(question_id, None)
+
     def is_waiting(self, question_id: str) -> bool:
         with self._lock:
             activity = self._questions.get(question_id)

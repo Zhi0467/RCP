@@ -46,11 +46,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
-from rcp.limits import (
-    AUTO_RESEARCH_LIFECYCLE_MAX_BYTES,
-    PATCH_CORRECTION_MAX_ROUNDS,
-    ask_hold_seconds,
-)
+from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research import (
@@ -283,7 +279,6 @@ async def stream_auto_research_orchestrator_run(
             label=skill_bundle_label(orchestrator_selection),
             reuse_existing=True,
         )
-        assert turn.request.provider is not None
         expected_turn_id = f"{execution.operation_id}:orchestrator"
         staged_commands = stage_command_mailbox(
             local_stage=stage.local,
@@ -291,9 +286,6 @@ async def stream_auto_research_orchestrator_run(
             episode_id=turn.request.episode_id,
             task_id=execution.operation_id,
             turn_id=expected_turn_id,
-            ask_wait_seconds=ask_hold_seconds(
-                launcher.shell_timeout_seconds(turn.request.provider, stage.execution_host)
-            ),
         )
         async with _worker_mailbox_lifecycle(
             staged_commands,

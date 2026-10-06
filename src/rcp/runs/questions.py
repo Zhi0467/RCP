@@ -53,10 +53,14 @@ def handle_ask(
             status="invalid",
             message=str(exc),
         )
-    pending = question.state == "pending"
-    attempt = (
-        store.question_activity.pending(question.question_id, request.call_id) if pending else None
-    )
+    # A parked reply ends the wait at once, so it is neither an attempt nor a live wait.
+    pending = question.state == "pending" and not parked
+    if pending:
+        attempt = store.question_activity.pending(question.question_id, request.call_id)
+    else:
+        attempt = None
+        if question.state != "pending":
+            store.question_activity.forget(question.question_id)
     result = AskResult(
         attempt=attempt,
         max_attempts=ASK_MAX_ATTEMPTS if pending else None,

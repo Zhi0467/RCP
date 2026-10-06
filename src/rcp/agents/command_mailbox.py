@@ -496,6 +496,7 @@ async def serve_command_mailbox(
                 request_id = _request_identity_from_name(name, credential.mailbox_id)
                 assert request_id is not None
                 refusal = None
+                transient = False
                 if name not in answers:
                     try:
                         request = await retry(
@@ -518,8 +519,13 @@ async def serve_command_mailbox(
                         handled = False
                     else:
                         response, handled = await handle(request)
+                        # A pending ask round is safe to answer again, and a long hold
+                        # sends thousands of them; never retain or checkpoint those.
+                        transient = (
+                            request.verb == "ask" and response.result.get("state") == "pending"
+                        )
                     answers[name] = response
-                    if checkpoint is not None:
+                    if checkpoint is not None and not transient:
                         await asyncio.to_thread(checkpoint)
                     if not handled:
                         await record(response.status, response.message or "")
@@ -533,6 +539,8 @@ async def serve_command_mailbox(
                     drain=True,
                 )
                 seen.add(name)
+                if transient:
+                    del answers[name]
                 if refusal is not None:
                     raise refusal
             await pause(poll_seconds)

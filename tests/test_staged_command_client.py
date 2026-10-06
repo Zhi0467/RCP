@@ -2028,6 +2028,7 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         ask_wait_seconds=5,
     )
     seen = []
+    responses = {}
 
     def handler(request, _identity):
         seen.append(request)
@@ -2037,14 +2038,17 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     stop = asyncio.Event()
-    async with staged.invocation_gate.serve_current_session():
+    gate = staged.invocation_gate
+    assert gate is not None
+    async with gate.serve_current_session():
         server = asyncio.create_task(
             serve_command_mailbox(
                 staged=staged,
                 handler=handler,
                 stop=stop,
                 poll_seconds=0.01,
-                invocation_gate=staged.invocation_gate,
+                invocation_gate=gate,
+                responses=responses,
             )
         )
         try:
@@ -2086,6 +2090,10 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         "choices": ["A", "B"],
         "multiple": True,
     }
+    # A long hold sends thousands of pending rounds: none stays on disk or in the record.
+    assert not any(seen[0].request_id in name for name in os.listdir(staged.workspace))
+    assert not any(seen[0].request_id in name for name in responses)
+    assert any(seen[1].request_id in name for name in os.listdir(staged.workspace))
 
 
 @pytest.mark.parametrize("hold", [1, 1770])
