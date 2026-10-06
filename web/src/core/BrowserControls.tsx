@@ -45,6 +45,8 @@ export function BrowserToggle({
   );
 }
 
+const RECHECK_MS = 15_000;
+
 // The caller keys this by project and chat, so a late response cannot change another chat.
 export function ChatBrowserControl({
   apiBase,
@@ -83,6 +85,7 @@ export function ChatBrowserControl({
     machine: string;
     readiness: MachineBrowserReadiness;
   } | null>(null);
+  const [recheck, setRecheck] = useState(0);
   useEffect(() => {
     if (!requested || !machine) return;
     let cancelled = false;
@@ -96,11 +99,18 @@ export function ChatBrowserControl({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, machine, requested]);
+  }, [apiBase, machine, requested, recheck]);
   const warning =
     requested && checked?.machine === machine && checked.readiness.status !== "ready"
       ? browserReason(checked.readiness.status)
       : null;
+  // Installing from Settings finishes elsewhere; keep checking while the warning shows.
+  const warningCode = warning?.code ?? null;
+  useEffect(() => {
+    if (!warningCode) return;
+    const timer = window.setTimeout(() => setRecheck((count) => count + 1), RECHECK_MS);
+    return () => window.clearTimeout(timer);
+  }, [warningCode, checked]);
   async function change(value?: boolean) {
     setPending(true);
     setError(null);

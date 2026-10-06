@@ -809,12 +809,29 @@ class HostRuntime:
         try:
             self.save(record)
             self.deadline = min(deadline, time.monotonic() + self.limits["start"])
-            self.start(record, self.executable())
-        finally:
-            self.deadline = deadline
-            self.close_record(record, delete=True)
+            try:
+                self.start(record, self.executable())
+            except subprocess.TimeoutExpired as exc:
+                raise UnavailableError(
+                    "start_failed", "The browser session did not answer within the start limit"
+                ) from exc
+        except BaseException:
+            # Keep the start failure: a failed cleanup stays pending, and the next
+            # Install stops the leftover smoke owner.
+            with suppress(Exception):
+                self._close_smoke(record, deadline)
+            raise
+        self._close_smoke(record, deadline)
         atomic_write(self.tools / "verified.json", json.dumps({"version": CLI_VERSION}))
         return self.readiness()
+
+    def _close_smoke(self, record: dict, deadline: float) -> None:
+        """Cleanup gets the close budget, not what the install deadline has left."""
+        self.deadline = min(deadline, time.monotonic() + self.limits["close"])
+        try:
+            self.close_record(record, delete=True)
+        finally:
+            self.deadline = deadline
 
 
 def dispatch(request: dict) -> dict:
