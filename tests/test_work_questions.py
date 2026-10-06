@@ -230,12 +230,45 @@ def test_artifact_edit_discuss_has_no_ask(tmp_path):
 
 
 def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
+    from rcp.agents.command_mailbox import stage_command_mailbox
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.limits import ask_hold_seconds
     from rcp.runs.tasks import work
 
-    monkeypatch.setattr(work, "live_ask_contract", lambda: "<shared-ask-contract>")
     execution, _ = work_execution(tmp_path)
-    turn = SimpleNamespace(execution=execution, compute_commands=None)
-    assert "<shared-ask-contract>" in _work_execution_instructions(turn, client="rcp-client")
+    store = execution.store
+    store.ensure_space_machines([("", "", "Execution machine")])
+    card = store.space_machine_for("")
+    store.update_space_machine(card.machine_id, provider_shell_timeout={"codex": "30"})
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    hold = ask_hold_seconds(launcher.shell_timeout_seconds("codex"))
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=None,
+        task_id="work-task",
+        turn_id="turn",
+        ask_wait_seconds=hold,
+    )
+    rendered = []
+    contract = work.live_ask_contract
+
+    def render(wait):
+        rendered.append(wait)
+        return contract(wait)
+
+    monkeypatch.setattr(work, "live_ask_contract", render)
+    turn = SimpleNamespace(
+        execution=execution,
+        compute_commands=None,
+        patch_inputs=SimpleNamespace(validator_staged=staged),
+    )
+    prompt = _work_execution_instructions(turn, client="rcp-client")
+    argv = staged.client_argv()
+    assert rendered == [hold]
+    assert float(argv[argv.index("--ask-wait") + 1]) == hold
+    assert str(hold) in prompt
+    staged.cleanup()
 
 
 @pytest.mark.parametrize("session_drift", [False, True])

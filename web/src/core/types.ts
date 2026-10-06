@@ -3088,8 +3088,11 @@ export interface SpaceMachine {
   hidden_folders: string[];
   /** Provider id to its auto-compact setting on this machine; absent keeps the CLI's default. */
   provider_autocompact: Record<string, string>;
+  /** Provider id to shell timeout in minutes; absent keeps the provider default. */
+  provider_shell_timeout: Record<string, string>;
   /** The providers whose auto-compact setting this card offers. */
   autocompact_providers: AutocompactProvider[];
+  shell_timeout_providers: ShellTimeoutProvider[];
   hidden_read: MachineHiddenReadProjection;
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
@@ -3101,6 +3104,12 @@ export interface AutocompactProvider {
   label: string;
   /** What the field accepts, as shown beside it. */
   hint: string;
+}
+
+export interface ShellTimeoutProvider {
+  provider: string;
+  label: string;
+  default_minutes: number;
 }
 
 export interface SpaceMachineProject {
@@ -3120,6 +3129,7 @@ export interface SpaceMachineUpdateRequest {
   writable_paths?: string[];
   hidden_folders?: string[];
   provider_autocompact?: Record<string, string>;
+  provider_shell_timeout?: Record<string, string>;
 }
 
 export interface MachineDirectoryRequest {

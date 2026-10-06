@@ -2,9 +2,9 @@ import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react
 import { useRef, useState, type ReactNode } from "react";
 import { createSpaceMachine, updateSpaceMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
-import { createPathEditor, type WritablePathEdit } from "./spaceMachines";
+import { createPathEditor, createSerialMachineSave, type WritablePathEdit } from "./spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../core/types";
-import { MachineAutocompactRow } from "./MachineAutocompactRow";
+import { MachineProviderSettingRow } from "./MachineProviderSettingRow";
 import { MachineBrowserRow } from "./MachineBrowserRow";
 import { MachineDependenciesRow } from "./MachineDependenciesRow";
 import { PathPicker } from "./PathPicker";
@@ -38,6 +38,7 @@ export function MachineCard({
   children,
 }: Props) {
   const [deleting, setDeleting] = useState(false);
+  const providerSave = useRef(createSerialMachineSave(updateSpaceMachine)).current;
   const [error, setError] = useState<string | null>(null);
   return (
     <article
@@ -98,11 +99,30 @@ export function MachineCard({
         />
       )}
       {record?.autocompact_providers.map((option) => (
-        <MachineAutocompactRow
+        <MachineProviderSettingRow
           key={`${record.machine_id}:${option.provider}:autocompact`}
           record={record}
-          option={option}
+          provider={option.provider}
+          setting="provider_autocompact"
+          label={`${option.label} auto-compact`}
+          placeholder="CLI default"
+          hint={`Accepts ${option.hint}. Empty keeps the CLI's default.`}
           writesDisabled={writesDisabled}
+          save={providerSave}
+          onRecordChange={onRecordChange}
+        />
+      ))}
+      {record?.shell_timeout_providers.map((option) => (
+        <MachineProviderSettingRow
+          key={`${record.machine_id}:${option.provider}:shell-timeout`}
+          record={record}
+          provider={option.provider}
+          setting="provider_shell_timeout"
+          label={`${option.label} shell timeout (minutes)`}
+          placeholder={String(option.default_minutes)}
+          hint="Whole minutes, 2–120. Empty keeps the provider default."
+          writesDisabled={writesDisabled}
+          save={providerSave}
           onRecordChange={onRecordChange}
         />
       ))}

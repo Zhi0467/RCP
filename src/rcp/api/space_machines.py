@@ -76,6 +76,23 @@ class UpdateSpaceMachineRequest(BaseModel):
         default=None, max_length=len(PROVIDER_IDS)
     )
 
+    provider_shell_timeout: dict[str, Annotated[str, Field(max_length=16)]] | None = Field(
+        default=None, max_length=len(PROVIDER_IDS)
+    )
+
+    @field_validator("provider_shell_timeout")
+    @classmethod
+    def validate_provider_shell_timeout(
+        cls, value: dict[str, str] | None
+    ) -> dict[str, str | None] | None:
+        if value is None:
+            return None
+        result: dict[str, str | None] = {}
+        for provider, setting in value.items():
+            profile = profile_for(provider)
+            result[provider] = profile.canonical_shell_timeout(setting) if setting.strip() else None
+        return result
+
     @field_validator("provider_autocompact")
     @classmethod
     def validate_provider_autocompact(
@@ -192,10 +209,19 @@ def _machine_view(
         "writable_paths": list(machine.writable_paths),
         "hidden_folders": list(machine.hidden_folders),
         "provider_autocompact": dict(machine.provider_autocompact),
+        "provider_shell_timeout": dict(machine.provider_shell_timeout),
         "autocompact_providers": [
             {"provider": profile.id, "label": profile.label, "hint": profile.autocompact_hint}
             for profile in map(profile_for, PROVIDER_IDS)
             if profile.autocompact_hint is not None
+        ],
+        "shell_timeout_providers": [
+            {
+                "provider": profile.id,
+                "label": profile.label,
+                "default_minutes": profile.shell_timeout_default_seconds // 60,
+            }
+            for profile in map(profile_for, PROVIDER_IDS)
         ],
         "hidden_read": _hidden_read_projection(machine, data_dir).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
@@ -458,6 +484,7 @@ def update_space_machine(
         writable_paths=writable_paths,
         hidden_folders=hidden_folders,
         provider_autocompact=body.provider_autocompact,
+        provider_shell_timeout=body.provider_shell_timeout,
     )
     return _one_machine_view(store, updated, _visible_project_ids(request, identity_access, store))
 

@@ -39,7 +39,7 @@ from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.paper import WritingSession
-from rcp.providers import ProviderSkill, ProviderUsage
+from rcp.providers import ProviderSkill, ProviderUsage, profile_for
 from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
@@ -290,7 +290,13 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
     assert request.node_id is None
 
 
-class FakeLauncher:
+class _DefaultProviderSettings:
+    @staticmethod
+    def shell_timeout_seconds(provider: str, host: str = "") -> int:
+        return profile_for(provider).shell_timeout_default_seconds
+
+
+class FakeLauncher(_DefaultProviderSettings):
     def __init__(self, events: list[AgentEvent]) -> None:
         self.events = events
         self.calls = 0
@@ -620,7 +626,7 @@ def test_watcher_poll_delivery_failure_does_not_starve_later_auto_research_episo
     assert mail_attempts == [lifecycle_attempts[1]]
 
 
-class ScriptedLauncher:
+class ScriptedLauncher(_DefaultProviderSettings):
     """Provider stub that writes files into the run's scratch folder.
 
     One script entry per launch, mapping file name to content; the last entry
@@ -4222,7 +4228,7 @@ async def test_chat_launch_exception_keeps_workspace_without_transcript_projecti
 ) -> None:
     app, service = _seeded_project(manifest, tmp_path)
 
-    class ExplodingLauncher:
+    class ExplodingLauncher(_DefaultProviderSettings):
         async def stream(self, *_args, browser_grant=None, **kwargs):
             self.workspace = Path(kwargs["cwd"])
             self.projection = self.workspace / "inputs" / "conversations"
@@ -4885,7 +4891,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
     session_id = str(uuid.uuid4())
     patch = refresh_patch("rq/written-before-the-pause").model_copy(update={"kind": "work"})
 
-    class PausingChatLauncher:
+    class PausingChatLauncher(_DefaultProviderSettings):
         def __init__(self) -> None:
             self.sessions: list[str | None] = []
             self.capabilities: list[str] = []
@@ -4969,7 +4975,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
 ) -> None:
     app, service = _seeded_project(manifest, tmp_path)
 
-    class RetryLauncher:
+    class RetryLauncher(_DefaultProviderSettings):
         def __init__(self) -> None:
             self.calls = 0
             self.workspaces: list[Path] = []

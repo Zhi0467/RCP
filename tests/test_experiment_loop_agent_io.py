@@ -15,6 +15,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.providers import profile_for
 from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.runs.experiment_loop import (
     _watcher_state,
@@ -372,6 +373,9 @@ _TURN_VALUES = {
 
 
 class _LoopLauncher:
+    def shell_timeout_seconds(self, provider, host=""):
+        return profile_for(provider).shell_timeout_default_seconds
+
     def __init__(self, native_session_id: str, watcher_cwd: Path, *, write_handoff: bool) -> None:
         self.native_session_id = native_session_id
         self.watcher_cwd = watcher_cwd
@@ -689,6 +693,9 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
     class DuplicateThenCorrectedLauncher:
         """First handoff observes one job twice; the correction observes it once."""
 
+        def shell_timeout_seconds(self, provider, host=""):
+            return profile_for(provider).shell_timeout_default_seconds
+
         def __init__(self) -> None:
             self.contracts: list[str] = []
             self.diagnostics: list[str] = []
@@ -767,6 +774,9 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
     )
 
     class PatchOnlyCorrectionLauncher:
+        def shell_timeout_seconds(self, provider, host=""):
+            return profile_for(provider).shell_timeout_default_seconds
+
         def __init__(self) -> None:
             self.contracts: list[str] = []
 
@@ -1291,6 +1301,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 
 class _UndeliveredLauncher:
     """A provider link that drops before the session receives the prompt."""
+
+    def shell_timeout_seconds(self, provider, host=""):
+        return profile_for(provider).shell_timeout_default_seconds
 
     def __init__(self) -> None:
         self.contracts: list[str] = []

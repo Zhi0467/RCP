@@ -181,6 +181,7 @@ class StagedCommandMailbox:
     credential_path: str | None
     invocation_gate: ProviderInvocationGate | None = None
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
 
     @property
     def workspace(self) -> str:
@@ -206,6 +207,8 @@ class StagedCommandMailbox:
             *authority,
             "--timeout",
             f"{timeout:g}",
+            "--ask-wait",
+            f"{self.ask_wait_seconds:g}",
             "--workspace",
             self.workspace,
             *arguments,
@@ -234,11 +237,14 @@ def stage_command_mailbox(
     turn_id: str,
     authority: Literal["validate_only", "broker"] | None = None,
     timeout_seconds: float = COMMAND_MAILBOX_TIMEOUT_SECONDS,
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
 ) -> StagedCommandMailbox:
     """Clear a reusable stage and issue either broker or validate-only authority."""
 
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("command client timeout must be a positive finite number")
+    if not math.isfinite(ask_wait_seconds) or ask_wait_seconds <= 0:
+        raise ValueError("ask wait must be a positive finite number")
     if remote_stage is not None and local_input_stage is not None:
         raise ValueError("a remote command mailbox cannot use a local input stage")
     mailbox = RunStageMailbox.for_stage(local_stage=local_stage, remote_stage=remote_stage)
@@ -303,6 +309,7 @@ def stage_command_mailbox(
         credential_path=credential_path,
         invocation_gate=invocation_gate,
         timeout_seconds=timeout_seconds,
+        ask_wait_seconds=ask_wait_seconds,
     )
 
 

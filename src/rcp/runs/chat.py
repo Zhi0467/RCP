@@ -52,6 +52,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
+    COMMAND_CLIENT_WAIT_SECONDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
@@ -158,6 +159,7 @@ def _stage_chat_patch_inputs(
     turn_id: str,
     broker: bool = False,
     episode_id: str | None = None,
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
 ) -> _ChatPatchInputs:
     """Stage stable schema plus one turn-scoped unified validator credential."""
 
@@ -179,6 +181,7 @@ def _stage_chat_patch_inputs(
         timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
         authority="broker" if broker else "validate_only",
         episode_id=episode_id,
+        ask_wait_seconds=ask_wait_seconds,
     )
     validator_command = validator_staged.client_command("validate", patch_path)
     return _ChatPatchInputs(

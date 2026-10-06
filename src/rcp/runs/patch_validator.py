@@ -26,6 +26,7 @@ from rcp.agents.command_protocol import (
 )
 from rcp.background import AgentTaskExecution
 from rcp.limits import (
+    COMMAND_CLIENT_WAIT_SECONDS,
     COMPUTE_COMMAND_TIMEOUT_SECONDS,
     PATCH_SELF_CHECK_MAX_COUNT,
     PATCH_SELF_CHECK_POLL_SECONDS,
@@ -68,6 +69,7 @@ def stage_patch_validation_mailbox(
     timeout_seconds: float,
     authority: Literal["validate_only", "broker"] = "validate_only",
     episode_id: str | None = None,
+    ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS,
 ) -> StagedCommandMailbox:
     """Stage the command client with the authority selected by its concrete owner."""
 
@@ -79,6 +81,7 @@ def stage_patch_validation_mailbox(
         remote_stage=remote_stage,
         local_input_stage=local_input_stage,
         episode_id=episode_id,
+        ask_wait_seconds=ask_wait_seconds,
         authority=authority,
         task_id=task_id,
         turn_id=turn_id,

@@ -3672,6 +3672,9 @@ class SpaceMachineRecord(BaseModel):
     provider_autocompact: dict[str, Annotated[str, Field(min_length=1, max_length=16)]] = Field(
         default_factory=dict
     )
+    provider_shell_timeout: dict[str, Annotated[str, Field(min_length=1, max_length=16)]] = Field(
+        default_factory=dict
+    )
     created_at: str
     updated_at: str
 

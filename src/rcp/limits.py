@@ -112,6 +112,10 @@ COMMAND_MAILBOX_HANDLER_MAX_RETRIES = 2
 # transient read error, before that turn's mailbox is refused for this process.
 COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS = 5
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
+SHELL_TIMEOUT_DEFAULT_SECONDS = 120
+SHELL_TIMEOUT_MIN_MINUTES = 2
+SHELL_TIMEOUT_MAX_MINUTES = 120
+COMMAND_CLIENT_WAIT_MARGIN_SECONDS = 30
 # How long one client invocation waits before it returns "not answered yet".
 # Provider shell tools kill long commands (Claude Code's Bash stops at 120 s,
 # probed 2026-09-29), so a slow command must return inside that and let the
@@ -607,3 +611,8 @@ AGENT_COMMAND_TIMEOUT_SECONDS = 5.0
 AGENT_SOCKET_PATH_MAX_BYTES = 100
 AGENT_POLL_SECONDS = 0.05
 AGENT_WORKER_DRAIN_POLL_SECONDS = 1.0
+
+
+def ask_hold_seconds(shell_timeout_seconds: int) -> int:
+    """Leave time for the client to return before the provider kills its shell."""
+    return shell_timeout_seconds - COMMAND_CLIENT_WAIT_MARGIN_SECONDS

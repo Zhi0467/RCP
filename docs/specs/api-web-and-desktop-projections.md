@@ -1506,6 +1506,12 @@ rendered as `model_auto_compact_token_limit`), an empty value restores the CLI
 default, and a provider without the setting is refused. The launcher reads the
 card at every launch on that machine, so an edit applies from the next turn and
 is not recorded with any turn.
+A `PATCH` of `provider_shell_timeout` uses the same per-provider merge and empty
+value removal. Claude, OpenCode and Codex accept whole minutes from 2 through
+120. The card exposes `shell_timeout_providers` entries with `provider`, `label`
+and `default_minutes`, alongside `autocompact_providers`, and uses one setting
+row component for both fields. Unset shell timeouts keep the provider default;
+the resolved value also sets the ask hold, with a 30-second margin.
 `/api/space/machines/{id}/directories` lists one directory level on the machine,
 filtered then paged, marking protected entries; project setup's folder browser
 uses the same endpoint. `GET /api/space/machines/{id}/browser` reports that

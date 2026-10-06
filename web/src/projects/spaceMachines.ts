@@ -136,3 +136,18 @@ export function setupMachineSelection(
   const matches = machines.filter((machine) => machine.host === host);
   return matches.length === 1 ? matches[0] : null;
 }
+
+/**
+ * Run one machine's provider-setting saves one at a time. Each answer is a whole
+ * record, so a slower earlier answer would otherwise replace a newer one.
+ */
+export function createSerialMachineSave(
+  save: (machineId: string, request: SpaceMachineUpdateRequest) => Promise<SpaceMachine>,
+) {
+  let last: Promise<unknown> = Promise.resolve();
+  return (machineId: string, request: SpaceMachineUpdateRequest): Promise<SpaceMachine> => {
+    const next = last.catch(() => undefined).then(() => save(machineId, request));
+    last = next;
+    return next;
+  };
+}

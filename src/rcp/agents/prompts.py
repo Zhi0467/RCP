@@ -243,10 +243,10 @@ def ask_contract(how_it_returns: str) -> str:
 {how_it_returns}"""
 
 
-def live_ask_contract() -> str:
+def live_ask_contract(wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS) -> str:
     """Chat and Experiment calls share the same wait and park behavior."""
     return ask_contract(
-        f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. If pending and the answer "
+        f"- A call waits up to {wait_seconds:g} seconds. If pending and the answer "
         "blocks your work, repeat the exact same call to keep waiting. If it does not block, "
         "carry on with other work and repeat the call later to check. "
         f"After attempt {ASK_MAX_ATTEMPTS} with no answer, stop asking and end your turn; "
