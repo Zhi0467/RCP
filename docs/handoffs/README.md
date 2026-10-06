@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Declare every external program as required or optional](handoff-2026-10-05-dependency-registry.md)
+  — design settled 2026-10-05; not started.
 - [Graph dreaming: nightly consolidation and operational lessons](handoff-2026-10-03-graph-dreaming.md)
   — design settled 2026-10-02; implementation in progress on its PR.
 - [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
