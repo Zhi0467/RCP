@@ -112,6 +112,6 @@ test("the card's countdown, authorization share, and night strip", () => {
 
 test("the time zone picker lists every zone and keeps an unlisted current one", () => {
   const zones = timeZoneOptions("America/New_York");
-  assert.ok(zones.length > 100 && zones.includes("Asia/Tokyo"));
+  assert.ok(zones.length > 100 && zones.includes("Asia/Tokyo") && zones.includes("UTC"));
   assert.equal(timeZoneOptions("Not/Listed")[0], "Not/Listed");
 });

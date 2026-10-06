@@ -142,8 +142,8 @@ export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
 
-/** Every IANA zone the browser knows, with `current` kept even when it is an alias. */
+/** Every IANA zone the browser knows, plus UTC (which it omits) and `current` even as an alias. */
 export function timeZoneOptions(current: string): string[] {
-  const zones = Intl.supportedValuesOf("timeZone");
+  const zones = ["UTC", ...Intl.supportedValuesOf("timeZone")];
   return zones.includes(current) ? zones : [current, ...zones];
 }
