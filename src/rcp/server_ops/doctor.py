@@ -16,7 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Literal, Protocol
+from typing import BinaryIO, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -379,7 +379,7 @@ def probe_agent_security(
     hidden_read_probe: Callable[[], WrapperReadiness] | None = None,
     app_data_dir: Path | None = None,
 ) -> AgentSecurityReadiness:
-    """Read the calling account; used under runuser by installed-server doctor."""
+    """Read the calling account; installed-server doctor runs it as the service account."""
     from rcp.ssh_agent import agent_status
 
     status = agent_status()
@@ -445,9 +445,7 @@ ControlProbe = Callable[[ServerMetadata, int], ServerControlProbeResult]
 def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
     """The service account's own PATH, as `rcp.service` sets it, against the registry.
 
-    Doctor and install both read presence through this one route. Root (install,
-    `rcp-supervisor`) switches account with `runuser`, which refuses any other
-    caller; doctor run as the service account already is that account.
+    Doctor and install both read presence through this one route.
     """
     account = layout.service_account
     home = layout.service_home
@@ -457,11 +455,9 @@ def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
         if line.startswith("Environment=PATH=")
     )
 
-    switch = [] if _current_account() == account else ["runuser", "--user", account, "--"]
-
     def as_service_account(argv: list[str]) -> list[str]:
         return [
-            *switch,
+            *_switch_account(account),
             "env",
             "-i",
             f"HOME={home}",
@@ -473,6 +469,16 @@ def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
         ]
 
     return script_check(as_service_account, ("local", "server"))
+
+
+def _switch_account(account: str) -> list[str]:
+    """The prefix that runs a command as `account` from this caller.
+
+    Root (install, `rcp-supervisor`, a root doctor) switches with `runuser`,
+    which refuses any other caller; doctor run as the service account
+    (`sudo -u rcp -H`) already is that account and needs no prefix.
+    """
+    return [] if _current_account() == account else ["runuser", "--user", account, "--"]
 
 
 def _current_account() -> str | None:
@@ -1179,10 +1185,7 @@ class LinuxServerDoctorMachine:
         try:
             result = self._runner(
                 (
-                    "runuser",
-                    "--user",
-                    self.layout.service_account,
-                    "--",
+                    *_switch_account(self.layout.service_account),
                     "env",
                     "-i",
                     f"HOME={self.layout.service_home}",
@@ -1214,14 +1217,11 @@ class LinuxServerDoctorMachine:
             + repr(str(self.layout.data_dir))
             + ")).model_dump_json())"
         )
-        # Doctor is root; browser readiness belongs to the execution account.
+        # Browser readiness belongs to the execution account.
         # The shared service resolves Node/npm through that account's login shell.
         result = self._runner(
             (
-                "runuser",
-                "--user",
-                self.layout.service_account,
-                "--",
+                *_switch_account(self.layout.service_account),
                 "env",
                 "-i",
                 f"HOME={self.layout.service_home}",
@@ -1480,9 +1480,15 @@ def _validate_selected_receipt(selected: dict, layout: ServerLayout) -> None:
         raise ValueError("mismatched selected identity")
 
 
+class InstalledReleaseIdentity(NamedTuple):
+    version: str | None
+    pinned: bool
+    supervisor_version: str | None
+
+
 def read_installed_release_identity(
     layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
-) -> tuple[str | None, bool]:
+) -> InstalledReleaseIdentity:
     """Read only the selected identity and pin, without running machine probes."""
     try:
         config = load_installed_server_config(layout.config_path)
@@ -1493,8 +1499,10 @@ def read_installed_release_identity(
         selected = _read_root_document(layout.selected_release_receipt)
         _validate_selected_receipt(selected, layout)
     except (OSError, ValueError):
-        return None, pinned
-    return selected["release_tag"][1:], pinned
+        return InstalledReleaseIdentity(None, pinned, None)
+    return InstalledReleaseIdentity(
+        selected["release_tag"][1:], pinned, selected["supervisor_version"]
+    )
 
 
 def _member_removal_problems(

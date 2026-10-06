@@ -894,6 +894,7 @@ def test_shared_selected_identity_uses_receipt_validation(tmp_path, monkeypatch,
     assert server_doctor.read_installed_release_identity(layout) == (
         "0.3.2" if valid else None,
         pin is not None,
+        document["supervisor_version"] if valid else None,
     )
     problems = []
     machine = LinuxServerDoctorMachine(layout)
@@ -928,7 +929,18 @@ def test_cli_doctor_release_failure_is_separate_from_source_health(monkeypatch):
     assert fields["release_check_status"] == "failed"
 
 
-def test_browser_doctor_uses_execution_account_and_shared_service(tmp_path):
+def _as_caller(monkeypatch, caller):
+    """Make doctor's caller root or the service account; return the expected prefix."""
+    account = server_doctor.DEFAULT_SERVER_LAYOUT.service_account
+    monkeypatch.setattr(
+        server_doctor, "_current_account", lambda: account if caller == "service" else "root"
+    )
+    return ("runuser", "--user", account, "--") if caller == "root" else ()
+
+
+@pytest.mark.parametrize("caller", ["root", "service"])
+def test_browser_doctor_uses_execution_account_and_shared_service(monkeypatch, tmp_path, caller):
+    prefix = _as_caller(monkeypatch, caller)
     calls = []
 
     def runner(argv, **kwargs):
@@ -942,7 +954,7 @@ def test_browser_doctor_uses_execution_account_and_shared_service(tmp_path):
     readiness = machine._inspect_browser()
     assert readiness.status == "ready"
     argv = calls.pop()
-    assert argv[:4] == ("runuser", "--user", machine.layout.service_account, "--")
+    assert argv[: len(prefix) + 2] == (*prefix, "env", "-i")
     assert f"HOME={machine.layout.service_home}" in argv
     import shlex
 
@@ -951,9 +963,14 @@ def test_browser_doctor_uses_execution_account_and_shared_service(tmp_path):
     assert "from rcp.browser import readiness" in invocation[3]
 
 
+@pytest.mark.parametrize("caller", ["root", "service"])
 @pytest.mark.parametrize("outcome", ["ready", "failed", "invalid", "timeout"])
-def test_agent_security_doctor_probes_service_account_and_warns_on_failure(tmp_path, outcome):
+def test_agent_security_doctor_probes_service_account_and_warns_on_failure(
+    monkeypatch, tmp_path, outcome, caller
+):
     from rcp.core.models import HiddenReadStatus
+
+    prefix = _as_caller(monkeypatch, caller)
 
     expected = server_doctor.AgentSecurityReadiness(
         ssh_agent_status="running",
@@ -976,7 +993,7 @@ def test_agent_security_doctor_probes_service_account_and_warns_on_failure(tmp_p
     machine._selected = {"release_directory": str(tmp_path)}
     result = machine._inspect_agent_security()
     argv = calls.pop()
-    assert argv[:4] == ("runuser", "--user", machine.layout.service_account, "--")
+    assert argv[: len(prefix) + 2] == (*prefix, "env", "-i")
     assert f"HOME={machine.layout.service_home}" in argv
     assert str(tmp_path / ".venv/bin/python") in argv
     if outcome == "ready":

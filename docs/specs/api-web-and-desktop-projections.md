@@ -1699,7 +1699,9 @@ its cache is older than 10 minutes: space, status
 `unknown`), current and latest versions, check times, companion readiness, a
 locally built download URL, and the update command. The one update surface,
 shown on the project index, setup screens, and every project view, renders it:
-a team space shows `sudo rcp server update`; a source checkout shows
+a team space shows `sudo rcp server update`, preceded by
+`sudo rcp server supervisor update &&` when the release's supervisor wheel is
+newer than the installed receipt's supervisor version; a source checkout shows
 `scripts/update-from-source vX.Y.Z` (with `--desktop` from a source app); a
 prebuilt app shows a Download button only once the companion is confirmed.
 A published prebuilt app has the Tauri updater enabled and checks it at launch

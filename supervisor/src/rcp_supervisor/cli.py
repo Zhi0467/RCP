@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rcp_supervisor import __version__
-from rcp_supervisor.errors import SupervisorError
+from rcp_supervisor.errors import SupervisorError, SupervisorUpdateRequired
 from rcp_supervisor.events import os_account
 from rcp_supervisor.install import install_release
 from rcp_supervisor.releases import fetch_release, verify_release
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if arguments.command == "server":
         from rcp_supervisor import driver
-        from rcp_supervisor.events import EventEmitter, plan
+        from rcp_supervisor.events import EventEmitter, failure_recovery, plan
 
         command = f"server {arguments.server_command}"
         if arguments.server_command == "supervisor":
@@ -187,7 +187,18 @@ def main(argv: list[str] | None = None) -> int:
             if emitter.state in {"pending", "running"}:
                 # A failure is a usable breakpoint: the bounded cause, the retained
                 # deployment state, and exact diagnostic/continue commands.
-                emitter.emit("failed", str(exc), fields=driver.safe_state_fields())
+                actions = resume = None
+                if isinstance(exc, SupervisorUpdateRequired) and emitter.invocation:
+                    actions, resume = failure_recovery(
+                        emitter.invocation, first=["server", "supervisor", "update"]
+                    )
+                emitter.emit(
+                    "failed",
+                    str(exc),
+                    fields=driver.safe_state_fields(),
+                    actions=actions,
+                    resume_argv=resume,
+                )
             else:
                 print(str(exc), file=sys.stderr)
             return 1

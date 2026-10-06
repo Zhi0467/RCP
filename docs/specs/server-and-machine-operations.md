@@ -46,15 +46,15 @@ injection, not a separate account or a hostile same-account sandbox.
 
 The registry in `src/rcp/dependencies.py` is the one record of the external
 programs RCP starts: for each, its purpose, the roles that use it (`local`,
-`remote`, `server`, `server_install`), its platforms, and whether it is required
-or optional there. Required means an agent run on that machine cannot finish
+`remote`, `server`, `server_install`), the platforms the `local` role uses it on
+(the other roles are Linux), and whether it is required or optional there. Required means an agent run on that machine cannot finish
 without it, so a definite absence refuses the run. Optional means one feature
 stops working; the entry names that feature and the visible fallback, and a
 missing optional program never refuses a run. Every machine card shows a
 **Dependencies** row from the same check. Server install refuses a host missing
 a required program, and `doctor` reports one missing for the service account.
-`tests/test_external_dependencies.py` holds the Python launch sites and the
-server guide's apt line to the registry.
+`tests/test_external_dependencies.py` holds the Python launch sites, the
+shipped shell scripts, and the server guide's apt line to the registry.
 
 `src/rcp/dependency_check.py` reads the local machine in-process and runs the
 shipped `staged_dependency_check.sh` on a remote machine over the state
@@ -605,8 +605,8 @@ The root-owned current pointer must agree with it before application launch.
 `server update` displays an exact `vX.Y.Z:manifest-sha256` target for operator
 confirmation. Preparation uses a new isolated service-owned release directory;
 no failed preparation overwrites an existing directory. A newer required
-supervisor version must be installed first through `server supervisor update`.
-That command validates a separate root-owned runtime and atomically switches its
+supervisor version must be installed first through `server supervisor update`;
+that refusal's next actions name it before the rerun. That command validates a separate root-owned runtime and atomically switches its
 pointer under the same operation lock, without rolling back application data.
 
 ### Application boundary and local checkpoint

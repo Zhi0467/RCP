@@ -85,15 +85,19 @@ def plan(command: str) -> dict:
     }
 
 
-def failure_recovery(invocation: list[str]) -> tuple[list[dict], list[str]]:
+def failure_recovery(
+    invocation: list[str], *, first: list[str] | None = None
+) -> tuple[list[dict], list[str]]:
     """Exact commands for a failed convergent operation: rerun, diagnose, inspect.
 
     Every installed server command verifies before it changes anything, so the
     same invocation is its own continue command, and the machine-readable rerun
     is its complete diagnostic record. The operator never rebuilds these from prose.
+    `first` is a public-wrapper command the failure needs before that rerun.
     """
     resume = ["sudo", PUBLIC_WRAPPER, *invocation]
-    actions = [{"kind": "command", "argv": [*resume, "--machine-readable"]}]
+    actions = [{"kind": "command", "argv": ["sudo", PUBLIC_WRAPPER, *first]}] if first else []
+    actions.append({"kind": "command", "argv": [*resume, "--machine-readable"]})
     inspect = ["sudo", "-u", "rcp", "-H", PUBLIC_WRAPPER, "server", "doctor"]
     if inspect != resume:
         actions.append({"kind": "command", "argv": inspect})

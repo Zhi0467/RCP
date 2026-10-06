@@ -1457,13 +1457,15 @@ def create_app(
 
     current_version = build_identity().base_version
     pinned = False
+    supervisor_version = None
     if space_kind == "team":
-        current_version, pinned = read_installed_release_identity(server_layout)
+        current_version, pinned, supervisor_version = read_installed_release_identity(server_layout)
     release_check = ReleaseCheck(
         space_kind,
         current_version,
         pinned=pinned,
         source_checkout=source_checkout_root() is not None,
+        supervisor_version=supervisor_version,
     )
 
     server_status_composition = ServerStatusComposition(

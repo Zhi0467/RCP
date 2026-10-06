@@ -110,15 +110,17 @@ def parse_output(stdout: str, nonce: str, roles: Collection[Role]) -> Dependency
     for line in lines[start + 1 : lines.index(end, start)]:
         key, _, value = line.partition(" ")
         fields.setdefault(key, []).append(value.strip())
-    system = (fields.get("os") or [""])[0]
-    if not system:
-        return _not_checked("The machine did not report its operating system.")
-    if system != "Linux":
-        return _unsupported(system, "RCP runs remote work on Linux only.")
     by_probe = {_probe_name(d): d for d in _dependencies(roles, "linux")}
     absent = fields.get("missing", [])
     if any(name not in by_probe for name in absent):
         return _not_checked("The machine reported a program that was not asked for.")
+    system = (fields.get("os") or [""])[0]
+    # Without `uname` the script cannot name the system; that absence is itself
+    # the definite answer, read as Linux like the missing-shell answer above.
+    if not system and "uname" not in absent:
+        return _not_checked("The machine did not report its operating system.")
+    if system and system != "Linux":
+        return _unsupported(system, "RCP runs remote work on Linux only.")
     distribution = (fields.get("id") or [None])[0]
     like = " ".join(fields.get("id_like", [])).split()
     return _status(roles, "linux", distribution, like, {by_probe[name].name for name in absent})
