@@ -59,6 +59,9 @@ class Dependency:
     note: str | None = None
     # Set when the code starts it by this absolute path rather than from PATH.
     path: str | None = None
+    # Resolved inside the provider's interactive login shell on a remote machine,
+    # so its presence is checked there rather than on the plain SSH route.
+    login_shell: bool = False
 
     def __post_init__(self) -> None:
         if not self.purpose:
@@ -103,10 +106,9 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "bash",
-        "Login shell for provider discovery, watchers, and terminals.",
+        "Login shell for provider discovery and watchers; terminals check /bin/bash themselves.",
         required_on=frozenset({"local", "remote"}),
         apt="bash",
-        path="/bin/bash",
     ),
     Dependency(
         "bwrap",
@@ -297,6 +299,7 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         required_on=frozenset({"remote"}),
         platforms=LINUX,
         apt="util-linux",
+        login_shell=True,
     ),
     Dependency(
         "sh",

@@ -449,6 +449,11 @@ def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
     """
     account = layout.service_account
     home = layout.service_home
+    path = next(
+        line.removeprefix("Environment=PATH=")
+        for line in server_service_unit_text().splitlines()
+        if line.startswith("Environment=PATH=")
+    )
 
     def as_service_account(argv: list[str]) -> list[str]:
         return [
@@ -461,7 +466,7 @@ def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
             f"HOME={home}",
             f"USER={account}",
             f"LOGNAME={account}",
-            f"PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            f"PATH={path}",
             "LANG=C.UTF-8",
             *argv,
         ]

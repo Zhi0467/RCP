@@ -108,9 +108,31 @@ def test_missing_optional_program_alone_is_ready_and_listed() -> None:
     )
 
 
-def test_absolute_path_answer_maps_to_its_program() -> None:
-    status = parse_output(_answer("os Linux", "id ubuntu", "missing /bin/bash"), NONCE, ["remote"])
-    assert [p.name for p in status.missing] == ["bash"]
+def test_login_shell_answer_maps_to_its_program() -> None:
+    status = parse_output(
+        _answer("os Linux", "id ubuntu", "missing login:setsid"), NONCE, ["remote"]
+    )
+    assert [p.name for p in status.missing] == ["setsid"]
+
+
+def test_real_script_looks_up_login_names_in_the_login_shell() -> None:
+    result = subprocess.run(
+        ["sh", "-s", "--", NONCE, "login:sh", "login:rcp-no-such-program"],
+        input=staged_check_script(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    missing = [line for line in result.stdout.splitlines() if line.startswith("missing ")]
+    assert missing == ["missing login:rcp-no-such-program"]
+
+
+def test_undecodable_banner_bytes_do_not_break_the_check() -> None:
+    def with_banner(argv: list[str]) -> list[str]:
+        return ["sh", "-c", 'printf "\\377\\376 motd\\n"; exec "$@"', "banner", *argv]
+
+    # The frame is still read: Linux gives ready or missing, macOS unsupported.
+    assert script_check(with_banner, ["remote"]).outcome != "not_checked"
 
 
 # Layer 3: the checker's retry, single flight, cache, and recheck.
@@ -227,6 +249,12 @@ def test_cached_ready_answers_within_its_lifetime() -> None:
     now[0] = dependency_check.DEPENDENCY_CHECK_TTL_SECONDS * 2
     checker.status("gpu")
     assert runner.calls == 2
+
+
+def test_cold_refusal_checks_once() -> None:
+    runner = FakeRunner(MISSING)
+    assert _checker(runner).launch_refusal("gpu") is not None
+    assert runner.calls == 1
 
 
 def test_cached_missing_is_rechecked_before_refusing() -> None:

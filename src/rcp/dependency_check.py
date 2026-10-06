@@ -37,6 +37,7 @@ from rcp.dependencies import (
 )
 from rcp.limits import (
     DEPENDENCY_CHECK_ATTEMPT_TIMEOUT_SECONDS,
+    DEPENDENCY_CHECK_LOCK_WAIT_SECONDS,
     DEPENDENCY_CHECK_NOT_CHECKED_TTL_SECONDS,
     DEPENDENCY_CHECK_TTL_SECONDS,
     STATE_TRANSFER_STDERR_BYTES,
@@ -167,37 +168,19 @@ class DependencyChecker:
 
     def status(self, host: str, *, refresh: bool = False) -> DependencyStatus:
         """The cached result when fresh, otherwise a new check."""
-        asked = self._clock()
-        with self._lock:
-            host_lock = self._host_locks.setdefault(host, threading.Lock())
-        with host_lock:
-            with self._lock:
-                latest = self._results.get(host)
-            if latest is not None:
-                finished, result = latest
-                # A check that finished after this call began answers it, even
-                # a refresh; otherwise only a result still within its lifetime does.
-                lifetime = (
-                    DEPENDENCY_CHECK_NOT_CHECKED_TTL_SECONDS
-                    if result.outcome == "not_checked"
-                    else DEPENDENCY_CHECK_TTL_SECONDS
-                )
-                if finished > asked or (not refresh and asked - finished < lifetime):
-                    return result
-            result = self._check(host)
-            with self._lock:
-                self._results[host] = (self._clock(), result)
-            return result
+        return self._lookup(host, refresh=refresh)[0]
 
     def launch_refusal(self, host: str) -> str | None:
         """A reason to refuse an agent run on `host`, or None to admit it.
 
-        A cached ``missing`` or ``unsupported`` is rechecked before it refuses.
-        ``not_checked`` admits.
+        A cached ``missing`` or ``unsupported`` is rechecked before it refuses;
+        one checked during this call is not checked twice. ``not_checked`` admits.
         """
-        if self.status(host).outcome in {"ready", "not_checked"}:
+        result, fresh = self._lookup(host, refresh=False)
+        if result.outcome in {"ready", "not_checked"}:
             return None
-        result = self.status(host, refresh=True)
+        if not fresh:
+            result, _ = self._lookup(host, refresh=True)
         machine = host or "This machine"
         if result.outcome == "unsupported":
             return f"{machine} is not supported: {result.reason}"
@@ -206,6 +189,36 @@ class DependencyChecker:
         names = ", ".join(p.name for p in result.missing if p.required)
         install = f" Install with: {result.install_command}" if result.install_command else ""
         return f"{machine} is missing required programs: {names}.{install}"
+
+    def _lookup(self, host: str, *, refresh: bool) -> tuple[DependencyStatus, bool]:
+        """The result for `host`, and whether it was checked during this call."""
+        asked = self._clock()
+        with self._lock:
+            host_lock = self._host_locks.setdefault(host, threading.Lock())
+        if not host_lock.acquire(timeout=DEPENDENCY_CHECK_LOCK_WAIT_SECONDS):
+            return _not_checked("Another check of this machine did not finish in time."), True
+        try:
+            with self._lock:
+                latest = self._results.get(host)
+            if latest is not None:
+                finished, result = latest
+                # A check that finished after this call began answers it, even
+                # a refresh; otherwise only a result still within its lifetime does.
+                if finished > asked:
+                    return result, True
+                lifetime = (
+                    DEPENDENCY_CHECK_NOT_CHECKED_TTL_SECONDS
+                    if result.outcome == "not_checked"
+                    else DEPENDENCY_CHECK_TTL_SECONDS
+                )
+                if not refresh and asked - finished < lifetime:
+                    return result, False
+            result = self._check(host)
+            with self._lock:
+                self._results[host] = (self._clock(), result)
+            return result, True
+        finally:
+            host_lock.release()
 
     def _check(self, host: str) -> DependencyStatus:
         if not host:
@@ -219,8 +232,15 @@ class DependencyChecker:
 
 
 def _run(argv: list[str], script: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    # A login banner may hold any bytes; only the framed lines must decode.
     return subprocess.run(
-        argv, input=script, capture_output=True, text=True, timeout=timeout, check=False
+        argv,
+        input=script,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=timeout,
+        check=False,
     )
 
 
@@ -233,6 +253,8 @@ def _dependencies(roles: Iterable[Role], family: Platform) -> list[Dependency]:
 
 
 def _probe_name(dependency: Dependency) -> str:
+    if dependency.login_shell:
+        return f"login:{dependency.name}"
     return dependency.path or dependency.name
 
 

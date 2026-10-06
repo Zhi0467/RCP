@@ -592,6 +592,8 @@ HIDDEN_READ_REASON_MAX_COUNT = 16
 DEPENDENCY_CHECK_TTL_SECONDS = 600.0
 DEPENDENCY_CHECK_NOT_CHECKED_TTL_SECONDS = 60.0
 DEPENDENCY_CHECK_ATTEMPT_TIMEOUT_SECONDS = 10.0
+# A caller waits at most this long for another check of the same machine.
+DEPENDENCY_CHECK_LOCK_WAIT_SECONDS = 45.0
 
 # Selected-secret wrapper readiness and account SSH-agent operations.
 HIDDEN_READ_READINESS_TTL_SECONDS = 30.0
