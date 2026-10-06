@@ -62,7 +62,8 @@ curl -fsSL https://raw.githubusercontent.com/Zhi0467/RCP/main/scripts/install-ma
 
 It installs the latest release to `/Applications/RCP.app`, and the app opens
 with no approval step. Run it again to reinstall. Once installed, the app
-updates itself from its **Update** button.
+updates itself from its **Update** button. RCP needs Git, which comes with
+Apple's Command Line Tools (`xcode-select --install`).
 
 Or download `RCP-vX.Y.Z-macos-arm64.zip` from the latest `desktop-vX.Y.Z`
 pre-release on the [releases page](https://github.com/Zhi0467/RCP/releases),

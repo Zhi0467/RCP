@@ -221,7 +221,11 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         patch.setattr(service.history.workspace, "transaction", unexpected_publication)
         with store.connection() as connection:
             connection.execute("UPDATE graph_runs SET status='running' WHERE operation_id='origin'")
-        statuses = reconcile_chat_question_answers(AppStore(store.path), None, lambda _: service)
+        statuses = reconcile_chat_question_answers(
+            AppStore(store.path),
+            SimpleNamespace(admit_provider_task=lambda *_args, **_kwargs: None),
+            lambda _: service,
+        )
         assert statuses == {question.question_id: "question_origin_unsettled"}
         project_chat_question_answer(service, AppStore(store.path), question)
     store.complete_agent_task("origin", applied_revision=None, result={})
@@ -381,7 +385,10 @@ def test_restart_reconciliation_requires_client_acknowledgement(tmp_path, monkey
     launches = []
     statuses = reconcile_chat_question_answers(
         AppStore(store.path),
-        SimpleNamespace(launch_admitted=launches.append),
+        SimpleNamespace(
+            launch_admitted=launches.append,
+            admit_provider_task=lambda *_args, **_kwargs: None,
+        ),
         lambda _: SimpleNamespace(for_graph_target=lambda target: None),
     )
     assert statuses == {question.question_id: "received" if delivered else "admitted"}

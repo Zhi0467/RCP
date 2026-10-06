@@ -7,7 +7,7 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     auto_research_failure_signal,
 )
-from rcp.runs.provider_login import ProviderSignedOut
+from rcp.runs.provider_login import AdmissionRefused
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ def reconcile_due_auto_research_recoveries(
                     background._request_from_record(task),
                     execution_host=(task.stage_host or "") if task.stage_root else None,
                 )
-            except ProviderSignedOut:
+            except AdmissionRefused:
                 continue
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)

@@ -22,7 +22,7 @@ from rcp.runs.auto_research_admission import (
 )
 from rcp.runs.auto_research_lifecycle import auto_research_lifecycle_delivery
 from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
-from rcp.runs.provider_login import ProviderSignedOut
+from rcp.runs.provider_login import AdmissionRefused
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -361,7 +361,7 @@ def deliver_pending_auto_research_lifecycle(
         AutoResearchActorBusy,
         EpisodeInvocationCeilingReached,
         EpisodeNotRunning,
-        ProviderSignedOut,
+        AdmissionRefused,
     ):
         return None
     return task.operation_id if task is not None else None
@@ -494,7 +494,7 @@ def deliver_pending_auto_research_mail(
                 operation_id=operation_id,
                 created_at=created_at,
             )
-        except (EpisodeInvocationCeilingReached, EpisodeNotRunning, ProviderSignedOut):
+        except (EpisodeInvocationCeilingReached, EpisodeNotRunning, AdmissionRefused):
             return None
         return task.operation_id if task is not None else None
     binding = background.store.auto_research_actor_binding(recipient_task_id)
@@ -537,7 +537,7 @@ def deliver_pending_auto_research_mail(
         AutoResearchActorBusy,
         EpisodeInvocationCeilingReached,
         EpisodeNotRunning,
-        ProviderSignedOut,
+        AdmissionRefused,
     ):
         return None
     return task.operation_id if task is not None else None
@@ -787,6 +787,6 @@ def deliver_auto_research_watcher_group(
             parent_operation_id=binding.current_operation_id,
             wake_admission=admit,
         )
-    except (EpisodeInvocationCeilingReached, EpisodeNotRunning, ProviderSignedOut):
+    except (EpisodeInvocationCeilingReached, EpisodeNotRunning, AdmissionRefused):
         return None
     return task.operation_id if task is not None else None

@@ -3784,3 +3784,25 @@ details[open] > .view-disclosure-summary > svg:last-child {
   overflow-wrap: anywhere;
   user-select: all;
 }
+.machine-dependencies-row ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.machine-dependencies-row li code {
+  margin-right: 6px;
+  font-weight: 650;
+}
+.machine-dependencies-required {
+  padding: 8px 10px;
+  border: 1px solid var(--coral);
+  border-radius: 8px;
+  background: var(--red-soft);
+  color: var(--walnut);
+}
+.machine-dependencies-untested {
+  color: color-mix(in srgb, var(--mustard) 55%, var(--ink));
+  font-weight: 650;
+}

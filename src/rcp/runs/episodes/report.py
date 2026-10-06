@@ -17,7 +17,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from rcp.machine_sleep import seconds_until_automatic_launch
-from rcp.runs.provider_login import ProviderSignedOut
+from rcp.runs.provider_login import AdmissionRefused
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.storage import AgentTaskRecord
 
@@ -60,7 +60,7 @@ def start_episode_report(
             tasks.admit_provider_task(
                 episode.project_id, report_request, execution_host=report_request.execution_host
             )
-        except ProviderSignedOut:
+        except AdmissionRefused:
             return None
     task = store.requeue_interrupted_episode_report_allocation(episode_id)
     if task.status != "queued":

@@ -21,7 +21,8 @@ from typing import BinaryIO, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from rcp.agents.staged_hidden_read import WrapperReadiness
-from rcp.core.models import HiddenReadStatus
+from rcp.core.models import DependencyStatus, HiddenReadStatus
+from rcp.dependency_check import script_check
 from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS, SERVER_SUPERVISOR_PROJECTION_MAX_BYTES
 from rcp.release_check import ReleaseCheck, ReleaseStatus
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -441,6 +442,33 @@ MetadataReader = Callable[[Path], ServerMetadata]
 ControlProbe = Callable[[ServerMetadata, int], ServerControlProbeResult]
 
 
+def service_account_dependencies(layout: ServerLayout) -> DependencyStatus:
+    """The service account's own PATH, as `rcp.service` sets it, against the registry.
+
+    Root-only: doctor and install both read presence through this one route.
+    """
+    account = layout.service_account
+    home = layout.service_home
+
+    def as_service_account(argv: list[str]) -> list[str]:
+        return [
+            "runuser",
+            "--user",
+            account,
+            "--",
+            "env",
+            "-i",
+            f"HOME={home}",
+            f"USER={account}",
+            f"LOGNAME={account}",
+            f"PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG=C.UTF-8",
+            *argv,
+        ]
+
+    return script_check(as_service_account, ("local", "server"))
+
+
 def prepare_doctor_command(
     request: ServerCommandRequest,
     identity: CallerIdentity,
@@ -553,6 +581,7 @@ class LinuxServerDoctorMachine:
         agent_security_probe: Callable[[], AgentSecurityReadiness] | None = None,
         service_identity: tuple[int, int] | None = None,
         root_identity: tuple[int, int] = (0, 0),
+        dependency_check: Callable[[], DependencyStatus] | None = None,
     ) -> None:
         self.layout = layout
         self._config_loader = config_loader or load_installed_server_config
@@ -563,6 +592,7 @@ class LinuxServerDoctorMachine:
         self._agent_security_probe = agent_security_probe or self._inspect_agent_security
         self._service_identity = service_identity
         self._root_identity = root_identity
+        self._dependency_check = dependency_check or self._check_service_dependencies
         self._selected: dict | None = None
 
     def inspect(self) -> ServerDoctorReport:
@@ -1231,9 +1261,20 @@ class LinuxServerDoctorMachine:
             versions.append("python=unavailable")
         else:
             versions.append(f"python={_version_token(python_value)}")
+        presence = self._dependency_check()
+        for program in presence.missing:
+            if program.required:
+                ready = False
+                add_problem(f"required program {program.name} is missing for the service account")
+        if presence.outcome in {"unsupported", "not_checked"}:
+            ready = False
+            add_problem("required programs could not be checked for the service account")
         if not ready:
             add_problem("one or more installed runtime dependencies are unavailable or unsupported")
         return ready, ",".join(versions)
+
+    def _check_service_dependencies(self) -> DependencyStatus:
+        return service_account_dependencies(self.layout)
 
     def _inspect_backup(
         self,

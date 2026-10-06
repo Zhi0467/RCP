@@ -526,6 +526,22 @@ def machine_browser(
     ).model_dump()
 
 
+@router.get("/api/space/machines/{machine_id}/dependencies")
+def machine_dependencies(
+    machine_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    refresh: bool = False,
+) -> dict[str, object]:
+    """The machine's programs against `rcp.dependencies`; the card asks per machine."""
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    checker = request.app.state.dependency_checker
+    return checker.status(machine.host, refresh=refresh).model_dump(mode="json")
+
+
 @router.post("/api/space/machines/{machine_id}/browser/install")
 def install_machine_browser(
     machine_id: str,

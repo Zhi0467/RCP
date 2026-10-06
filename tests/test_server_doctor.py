@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.__main__ import build_parser
+from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.server_ops import backup as backup_owner
 from rcp.server_ops import doctor as server_doctor
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunOutcome
@@ -50,6 +51,9 @@ from .helpers import create_named_app
 INSTALLATION_ID = "123e4567-e89b-42d3-a456-426614174000"
 SPACE_ID = "123e4567-e89b-42d3-b456-426614174001"
 COMMIT = "a" * 40
+_DEPENDENCIES_READY = DependencyStatus(
+    outcome="ready", platform="linux", checked_at="2026-10-05T00:00:00Z"
+)
 OTHER_COMMIT = "b" * 40
 WEB_BUILD_ID = "sha256:" + ("c" * 64)
 IDENTITY = CallerIdentity(uid=501, username="rcp", host="lab.example")
@@ -490,6 +494,37 @@ def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: s
     assert problems == ["service account linger is not enabled; rerun rcp server install"]
 
 
+def test_doctor_reports_a_missing_required_program_from_the_registry(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    missing = DependencyStatus(
+        outcome="missing",
+        platform="linux",
+        missing=(
+            MissingProgram(name="rsync", purpose="Transfer.", required=True),
+            MissingProgram(
+                name="bwrap", purpose="Hide.", required=False, feature="f", fallback="b"
+            ),
+        ),
+        checked_at="2026-10-05T00:00:00Z",
+    )
+    runner = _HealthyRunner(layout=layout, commit=COMMIT, pid=os.getpid())
+    results = {}
+    for name, status in (("ready", _DEPENDENCIES_READY), ("missing", missing)):
+        machine = LinuxServerDoctorMachine(
+            layout, runner=runner, dependency_check=lambda s=status: s
+        )
+        machine._selected = {"release_directory": str(tmp_path / "release")}
+        problems: list[str] = []
+        ready, _versions = machine._inspect_dependencies(COMMIT, problems.append)
+        results[name] = (ready, problems)
+
+    assert results["ready"] == (True, [])
+    ready, problems = results["missing"]
+    assert ready is False
+    assert [problem for problem in problems if "rsync" in problem]
+    assert not [problem for problem in problems if "bwrap" in problem]
+
+
 @pytest.mark.parametrize("hidden_reason", [None, "wrapper_unavailable", "userns_blocked"])
 def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     tmp_path: Path,
@@ -585,6 +620,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             runner=runner,
             service_identity=(uid, gid),
             root_identity=(uid, gid),
+            dependency_check=lambda: _DEPENDENCIES_READY,
         )
         # Root ancestry is exercised by projection-reader tests; this temporary
         # complete workflow deliberately uses an unprivileged test-owned tree.
@@ -606,6 +642,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             runner=runner,
             service_identity=(uid, gid),
             root_identity=(uid, gid),
+            dependency_check=lambda: _DEPENDENCIES_READY,
         )
         broken._read_root_document = lambda path: json.loads(path.read_text())
         broken_report = broken.inspect()

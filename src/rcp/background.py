@@ -25,6 +25,7 @@ from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.dependency_check import DependencyChecker
 from rcp.limits import (
     AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS,
     AGENT_TRANSPORT_RETRY_LIMIT,
@@ -64,7 +65,12 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
-from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
+from rcp.runs.provider_login import (
+    AdmissionRefused,
+    MachineDependenciesMissing,
+    ProviderSignedOut,
+    provider_login_host,
+)
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.task_policy import (
@@ -410,8 +416,11 @@ class BackgroundAgentTasks:
         recorded_stream: RecordedAgentTaskStream | None = None,
         resume_command_mailbox: Callable[[AgentTaskExecution], TaskCommandMailbox | None]
         | None = None,
+        dependency_checker: DependencyChecker | None = None,
     ) -> None:
         self.store = store
+        # The app passes its one checker; a bare engine (tests) skips the check.
+        self.dependency_checker = dependency_checker
         self.stream = stream
         self.on_stream_closed = on_stream_closed
         self.on_task_settled = on_task_settled
@@ -489,6 +498,10 @@ class BackgroundAgentTasks:
             host,
         ):
             raise ProviderSignedOut(reason)
+        if self.dependency_checker is not None and (
+            reason := self.dependency_checker.launch_refusal(host)
+        ):
+            raise MachineDependenciesMissing(reason)
 
     def plan_startup_recovery(self) -> StartupRecoveryPlan:
         """Describe recovery work without changing a row or resolving a stage."""
@@ -1665,7 +1678,7 @@ class BackgroundAgentTasks:
                 request,
                 execution_host=(record.stage_host or "") if record.stage_root else None,
             )
-        except ProviderSignedOut:
+        except AdmissionRefused:
             return record
 
         intent = self.store.agent_task_admission_intent(operation_id)

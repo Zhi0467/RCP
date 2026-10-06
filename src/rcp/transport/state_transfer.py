@@ -307,7 +307,7 @@ def _apply_tree(staged: Path, target: Path, excludes: set[str]) -> None:
 def pull_tar(
     host: str, remote_root: str | Path, local_root: Path, excludes: Sequence[str]
 ) -> subprocess.CompletedProcess[str]:
-    return _retrying(host, "pull", lambda: _pull_tar_once(host, remote_root, local_root, excludes))
+    return retrying(host, "pull", lambda: _pull_tar_once(host, remote_root, local_root, excludes))
 
 
 def _pull_tar_once(
@@ -363,7 +363,7 @@ def push_tar(
     partition: str | None = None,
     timeout: float = STATE_TRANSFER_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
-    return _retrying(
+    return retrying(
         host,
         phase,
         lambda: _push_tar_once(
@@ -419,7 +419,7 @@ def run_rsync(
     cwd: Path | None = None,
     timeout: float = STATE_TRANSFER_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
-    return _retrying(host, phase, lambda: _run_rsync_once(host, arguments, cwd, timeout))
+    return retrying(host, phase, lambda: _run_rsync_once(host, arguments, cwd, timeout))
 
 
 def _run_rsync_once(
@@ -485,10 +485,20 @@ def _transient(result: subprocess.CompletedProcess[str]) -> bool:
     )
 
 
-def _retrying(
-    host: str, phase: str, attempt: Callable[[], subprocess.CompletedProcess[str]]
+def retrying(
+    host: str,
+    phase: str,
+    attempt: Callable[[], subprocess.CompletedProcess[str]],
+    *,
+    label: str = "state",
+    sleep: Callable[[float], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Rerun one whole transfer after a dropped stream; every attempt is idempotent."""
+    """Rerun one whole idempotent attempt after a dropped stream or connection.
+
+    `label` names the operation in logs and the combined failure text; `sleep`
+    defaults to `time.sleep`, looked up at call time.
+    """
+    sleep = sleep or time.sleep
     delay = STATE_TRANSFER_RETRY_INITIAL_SECONDS
     failures: list[str] = []
     for number in range(1, STATE_TRANSFER_ATTEMPTS + 1):
@@ -501,21 +511,22 @@ def _retrying(
         if number == STATE_TRANSFER_ATTEMPTS:
             break
         _LOG.warning(
-            "State %s with %s failed (exit %s), retrying in %.1fs: %s",
+            "%s %s with %s failed (exit %s), retrying in %.1fs: %s",
+            label.capitalize(),
             phase,
             host,
             result.returncode,
             delay,
             stderr,
         )
-        time.sleep(delay)
+        sleep(delay)
         delay = min(delay * 2, STATE_TRANSFER_RETRY_MAX_SECONDS)
     if len(failures) > 1:
         result = subprocess.CompletedProcess(
             result.args,
             result.returncode,
             result.stdout,
-            f"state {phase} with {host} failed after {len(failures)} attempts\n"
+            f"{label} {phase} with {host} failed after {len(failures)} attempts\n"
             + "\n".join(failures),
         )
     return result

@@ -97,6 +97,7 @@ from rcp.config import load_manifest
 from rcp.consolidation import ConsolidationPoller
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.transition_models import GraphTargetRef
+from rcp.dependency_check import DependencyChecker
 from rcp.digest import DigestProjector
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -1070,6 +1071,8 @@ def create_app(
 
         return resume_recorded_command_mailbox(service_for_validation, execution)
 
+    # One per process: admission and the machine card share its cache.
+    dependency_checker = DependencyChecker()
     background_tasks = BackgroundAgentTasks(
         store,
         background_task_stream,
@@ -1078,6 +1081,7 @@ def create_app(
         runtime_admission_gate=background_admission_gate,
         recorded_stream=background_recorded_task_stream,
         resume_command_mailbox=background_resume_command_mailbox,
+        dependency_checker=dependency_checker,
     )
     machine_power = (
         MachinePowerController(
@@ -2080,6 +2084,7 @@ def create_app(
     app.state.space_id = space_id
     app.state.space_kind = space_kind
     app.state.launcher = launcher
+    app.state.dependency_checker = dependency_checker
     app.state.agent_mode = agent_mode
     app.state.startup_effect_fence = startup_effect_fence
     app.state.startup_recovery_plan = None

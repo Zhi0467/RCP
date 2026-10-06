@@ -586,8 +586,11 @@ HIDDEN_READ_REASON_MAX_COUNT = 16
 # Machine dependency check (`rcp.dependency_check`). A ready result is reused this
 # long; a missing one is always rechecked before it refuses a run. Remote checks
 # retry with the state-transfer attempts and backoff, each attempt bounded by this
-# timeout, so admission waits at most about three timeouts plus the backoff.
+# timeout, so admission waits at most about three timeouts plus the backoff. An
+# unreachable (not checked) result is reused briefly so runs sent to a dead machine
+# do not each wait out the retries; it admits either way.
 DEPENDENCY_CHECK_TTL_SECONDS = 600.0
+DEPENDENCY_CHECK_NOT_CHECKED_TTL_SECONDS = 60.0
 DEPENDENCY_CHECK_ATTEMPT_TIMEOUT_SECONDS = 10.0
 
 # Selected-secret wrapper readiness and account SSH-agent operations.

@@ -118,6 +118,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="bubblewrap",
     ),
     Dependency(
+        "basename",
+        "Name the newest patch on a remote machine during state sync.",
+        required_on=frozenset({"remote"}),
+        platforms=LINUX,
+        apt="coreutils",
+    ),
+    Dependency(
         "cat",
         "Read files from a run folder.",
         required_on=frozenset({"remote"}),
@@ -136,6 +143,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         "Start commands with an explicit environment.",
         required_on=frozenset({"local", "remote"}),
         apt="coreutils",
+    ),
+    Dependency(
+        "find",
+        "List a remote machine's patch log during state sync.",
+        required_on=frozenset({"remote"}),
+        platforms=LINUX,
+        apt="findutils",
     ),
     Dependency(
         "findmnt",
@@ -300,6 +314,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="coreutils",
     ),
     Dependency(
+        "sort",
+        "Order a remote machine's patch log during state sync.",
+        required_on=frozenset({"remote"}),
+        platforms=LINUX,
+        apt="coreutils",
+    ),
+    Dependency(
         "ssh",
         "Reach remote machines and carry Git transport.",
         required_on=frozenset({"local", "remote"}),
@@ -355,6 +376,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         fallback="That feature is unavailable, with the reason.",
         platforms=LINUX,
         apt="systemd",
+    ),
+    Dependency(
+        "tail",
+        "Pick the newest entry of a remote machine's patch log during state sync.",
+        required_on=frozenset({"remote"}),
+        platforms=LINUX,
+        apt="coreutils",
     ),
     Dependency(
         "tar",
