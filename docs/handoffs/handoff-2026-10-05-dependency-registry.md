@@ -49,6 +49,10 @@ with the source. Nothing else is held to it:
    still list what a user installs (the server guide's apt line, the
    README's Mac prerequisites), and CI holds them to the registry.
 9. **One PR**, landing before 0.4.12 is promoted.
+10. **The check learns the OS first.** A machine that is neither Linux nor
+    macOS is refused as unsupported. Linux distributions RCP has not been
+    tested on (for example Rocky or CentOS on a GPU cluster) are allowed
+    with a "not tested" note on the card, never refused for that reason.
 
 ## Design
 
@@ -86,6 +90,12 @@ execution adapter, so it sees the same account and PATH as the real work:
 - **Server:** `install` runs it as root for `server_install`, then as the
   service account for `server`. `doctor` runs the `server` set as the service
   account. Their version checks stay as they are.
+
+The helper reports the OS family (`uname -s`) and, on Linux, the
+distribution from `/etc/os-release`, then checks the programs required for
+that platform. The tested distributions are one constant in the registry
+module. The apt install command is offered only on Debian and Ubuntu;
+elsewhere the card lists the package names.
 
 ### Robustness on remote hosts
 
