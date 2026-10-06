@@ -138,6 +138,7 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
 .comment-float>*{pointer-events:auto}
 .composer,.tray-panel{width:min(340px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;overflow:auto}
 .tray{display:flex;flex-direction:column-reverse;align-items:flex-end;gap:8px}
+.tray-panel{display:flex;flex-direction:column;max-height:calc(100vh - 92px)}#items{flex:0 1 auto;min-height:0;overflow:auto}#hint,.tray-panel>.actions{flex:none}
 .tray summary{list-style:none;position:relative;display:grid;place-items:center;width:36px;height:36px;border-radius:50%;border:1px solid var(--rule);background:var(--panel);color:var(--ink);box-shadow:var(--raised),var(--shadow);cursor:pointer}
 .tray summary::-webkit-details-marker{display:none}.tray[open] summary{color:var(--accent)}
 .badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:11px;line-height:18px;text-align:center}
