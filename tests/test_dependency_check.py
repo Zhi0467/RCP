@@ -92,7 +92,9 @@ def test_missing_required_program_carries_install_guidance(release: list[str], a
         assert status.install_notes == ()
     else:
         assert status.install_command is None
-        assert set(status.install_notes) == {"python3", "rsync"}
+        # One step per package, each naming it.
+        assert len(status.install_notes) == 2
+        assert all(any(p in n for n in status.install_notes) for p in ("python3", "rsync"))
 
 
 def test_missing_optional_program_alone_is_ready_and_listed() -> None:

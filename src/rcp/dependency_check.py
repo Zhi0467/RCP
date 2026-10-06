@@ -276,7 +276,7 @@ def _status(
         packages = " ".join(sorted({d.apt for d in lost if d.apt}))
         install_command = f"sudo apt-get install --yes {packages}"
     elif lost:
-        notes = tuple(dict.fromkeys(d.note or d.apt or d.name for d in lost))
+        notes = tuple(dict.fromkeys(d.note or f"Install {d.apt or d.name}." for d in lost))
     return DependencyStatus(
         outcome="missing" if any(p.required for p in missing) else "ready",
         platform=family,

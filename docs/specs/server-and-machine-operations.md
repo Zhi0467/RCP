@@ -56,6 +56,18 @@ a required program, and `doctor` reports one missing for the service account.
 `tests/test_external_dependencies.py` holds the Python launch sites and the
 server guide's apt line to the registry.
 
+`src/rcp/dependency_check.py` reads the local machine in-process and runs the
+shipped `staged_dependency_check.sh` on a remote machine over the state
+transport's SSH route, reading only lines between per-call nonce markers. The
+local machine may be macOS or Linux; a remote machine must be Linux, and any
+other answer is *unsupported*. A Linux distribution RCP has not been tested on
+is allowed with a "not tested" note. Only a definite *missing* or *unsupported*
+refuses an agent run, at `admit_provider_task` before anything is created; an
+unreachable machine, a timeout, or an unreadable answer is *not checked* and
+admits. Dropped connections retry with the state transfer's backoff. A definite
+result is reused for ten minutes, *not checked* for one, and a cached *missing*
+is checked again before it refuses.
+
 The registry records presence only. Version and feature contracts stay with
 their owners: the Git 2.38 worktree gate, Node.js 20 for the browser, the
 `bwrap` and Seatbelt probes, the `systemd-run` 254 expansion option, and age
