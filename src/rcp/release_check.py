@@ -25,6 +25,7 @@ API_BASE = f"https://api.github.com/repos/{REPOSITORY}/releases"
 _VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", re.ASCII)
 _COMMIT = re.compile(r"[0-9a-f]{40}", re.ASCII)
 _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*", re.ASCII)
+_SUPERVISOR_WHEEL = re.compile(rf"rcp_supervisor-({_VERSION.pattern})-py3-none-any\.whl", re.ASCII)
 _GITHUB_HOSTS = {
     "api.github.com",
     "github.com",
@@ -160,6 +161,21 @@ def _checkout_head() -> str | None:
     return result.stdout.strip()
 
 
+def _supervisor_version(data: dict) -> str | None:
+    """The supervisor version a release bundles, from its one supervisor wheel."""
+    assets = data.get("assets")
+    if not isinstance(assets, list):
+        return None
+    versions = {
+        match[1]
+        for asset in assets
+        if isinstance(asset, dict)
+        and isinstance(asset.get("name"), str)
+        and (match := _SUPERVISOR_WHEEL.fullmatch(asset["name"]))
+    }
+    return versions.pop() if len(versions) == 1 else None
+
+
 def _companion_ready(data: dict, version: str, commit: str) -> bool:
     if (
         data.get("draft") is not False
@@ -189,6 +205,7 @@ class ReleaseCheck:
         *,
         pinned: bool = False,
         source_checkout: bool = False,
+        supervisor_version: str | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._check_lock = threading.Lock()
@@ -196,6 +213,10 @@ class ReleaseCheck:
         self._thread: threading.Thread | None = None
         self._pinned = pinned
         self._confirmed: tuple[str, str] | None = None
+        # The installed receipt's supervisor version is a lower bound: a supervisor
+        # updated since then only makes the extra step a harmless no-op.
+        self._installed_supervisor = base_version(supervisor_version)
+        self._release_supervisor: str | None = None
         self._notice = UpdateNotice(
             space=space,
             status="unchecked",
@@ -206,6 +227,7 @@ class ReleaseCheck:
     def snapshot(self) -> UpdateNotice:
         with self._lock:
             notice = self._notice
+            release_supervisor = self._release_supervisor
         status = notice.status
         if os.environ.get("RCP_UPDATE_CHECK") == "off":
             status = "off"
@@ -217,6 +239,12 @@ class ReleaseCheck:
         if status == "update_available":
             if notice.space == "team":
                 command = "sudo rcp server update"
+                # The update refuses until the supervisor is at least the release's.
+                if release_supervisor is not None and (
+                    self._installed_supervisor is None
+                    or _numbers(release_supervisor) > _numbers(self._installed_supervisor)
+                ):
+                    command = f"sudo rcp server supervisor update && {command}"
             elif notice.source_checkout:
                 command = f"scripts/update-from-source v{notice.latest_version}"
         return notice.model_copy(update={"status": status, "update_command": command})
@@ -254,7 +282,7 @@ class ReleaseCheck:
             return self.snapshot()
         checked = datetime.now(UTC)
         try:
-            version, commit, ready = asyncio.run(self._lookup(companion))
+            version, commit, ready, supervisor = asyncio.run(self._lookup(companion))
         except (httpx.HTTPError, OSError, ValueError, TimeoutError, KeyError) as exc:
             reason = _failure_reason(exc)
             _LOG.warning("Release check failed (%s): %s", type(exc).__name__, reason)
@@ -269,6 +297,7 @@ class ReleaseCheck:
         else:
             at_release = self._notice.source_checkout and _checkout_head() == commit
             with self._lock:
+                self._release_supervisor = supervisor
                 current = self._notice.current_version
                 newer = current is not None and _numbers(version) > _numbers(current)
                 self._notice = self._notice.model_copy(
@@ -287,7 +316,7 @@ class ReleaseCheck:
                 )
         return self.snapshot()
 
-    async def _lookup(self, companion: bool) -> tuple[str, str, bool]:
+    async def _lookup(self, companion: bool) -> tuple[str, str, bool, str | None]:
         async with asyncio.timeout(limits.RELEASE_CHECK_DEADLINE_SECONDS):
             async with httpx.AsyncClient(
                 timeout=limits.RELEASE_CHECK_DEADLINE_SECONDS,
@@ -300,7 +329,8 @@ class ReleaseCheck:
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
             ) as client:
-                version, commit = _stable(await _metadata(client, f"{API_BASE}/latest"))
+                latest = await _metadata(client, f"{API_BASE}/latest")
+                version, commit = _stable(latest)
                 ready = self._confirmed == (version, commit)
                 current = self.snapshot().current_version
                 if (
@@ -318,7 +348,7 @@ class ReleaseCheck:
                         ready = _companion_ready(data, version, commit)
                         if ready:
                             self._confirmed = (version, commit)
-                return version, commit, ready
+                return version, commit, ready, _supervisor_version(latest)
 
     def start(self) -> None:
         if self._thread is not None or os.environ.get("RCP_UPDATE_CHECK") == "off":

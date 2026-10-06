@@ -14,7 +14,7 @@ from pathlib import Path
 
 from rcp_supervisor import __version__
 from rcp_supervisor.bootstrap import bootstrap
-from rcp_supervisor.errors import SupervisorError
+from rcp_supervisor.errors import SupervisorError, SupervisorUpdateRequired
 from rcp_supervisor.events import EventEmitter
 from rcp_supervisor.install import install_operator_console, install_supervisor
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
@@ -248,7 +248,7 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 def _require_supervisor(release: VerifiedRelease) -> None:
     if _version_tuple(release.supervisor_version) > _version_tuple(__version__):
-        raise SupervisorError(
+        raise SupervisorUpdateRequired(
             "Update the independent supervisor from the followed release before updating RCP."
         )
 

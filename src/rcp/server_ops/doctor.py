@@ -16,7 +16,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Literal, Protocol
+from typing import BinaryIO, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -1480,9 +1480,15 @@ def _validate_selected_receipt(selected: dict, layout: ServerLayout) -> None:
         raise ValueError("mismatched selected identity")
 
 
+class InstalledReleaseIdentity(NamedTuple):
+    version: str | None
+    pinned: bool
+    supervisor_version: str | None
+
+
 def read_installed_release_identity(
     layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
-) -> tuple[str | None, bool]:
+) -> InstalledReleaseIdentity:
     """Read only the selected identity and pin, without running machine probes."""
     try:
         config = load_installed_server_config(layout.config_path)
@@ -1493,8 +1499,10 @@ def read_installed_release_identity(
         selected = _read_root_document(layout.selected_release_receipt)
         _validate_selected_receipt(selected, layout)
     except (OSError, ValueError):
-        return None, pinned
-    return selected["release_tag"][1:], pinned
+        return InstalledReleaseIdentity(None, pinned, None)
+    return InstalledReleaseIdentity(
+        selected["release_tag"][1:], pinned, selected["supervisor_version"]
+    )
 
 
 def _member_removal_problems(

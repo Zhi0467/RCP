@@ -894,6 +894,7 @@ def test_shared_selected_identity_uses_receipt_validation(tmp_path, monkeypatch,
     assert server_doctor.read_installed_release_identity(layout) == (
         "0.3.2" if valid else None,
         pin is not None,
+        document["supervisor_version"] if valid else None,
     )
     problems = []
     machine = LinuxServerDoctorMachine(layout)

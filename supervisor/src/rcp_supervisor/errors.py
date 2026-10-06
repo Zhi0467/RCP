@@ -38,6 +38,10 @@ class SupervisorError(RuntimeError):
     """An actionable supervisor failure, suitable for the operator event stream."""
 
 
+class SupervisorUpdateRequired(SupervisorError):
+    """The followed release needs a newer supervisor before the application updates."""
+
+
 class ApplicationCommandError(SupervisorError):
     """A failed command with bounded stdout available to its result decoder."""
 

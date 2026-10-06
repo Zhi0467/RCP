@@ -97,6 +97,21 @@ def test_numeric_version_comparison(github, version, status):
 
 
 @pytest.mark.parametrize(
+    ("installed", "assets", "first"),
+    [
+        ("0.1.10", ["rcp_supervisor-0.1.11-py3-none-any.whl"], True),
+        ("0.1.11", ["rcp_supervisor-0.1.11-py3-none-any.whl"], False),
+        ("0.1.10", [], False),
+    ],
+)
+def test_team_command_updates_an_older_supervisor_first(github, installed, assets, first):
+    github[0]["/latest"] = (200, stable(assets=[{"name": n, "state": "uploaded"} for n in assets]))
+    notice = ReleaseCheck("team", "0.4.9", supervisor_version=installed).check()
+    steps = ["sudo rcp server supervisor update"] if first else []
+    assert notice.update_command.split(" && ") == [*steps, "sudo rcp server update"]
+
+
+@pytest.mark.parametrize(
     "changes",
     [{"prerelease": True}, {"draft": True}, {"tag_name": "vbad"}, {"target_commitish": "main"}],
 )
@@ -211,7 +226,7 @@ def test_team_pin_and_cache_only_authenticated_routes(github, tmp_path, monkeypa
     store, _ = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team")
     member = store.preprovision_team_member("Member")
     monkeypatch.setattr(
-        "rcp.api.app.read_installed_release_identity", lambda _layout: ("0.4.9", True)
+        "rcp.api.app.read_installed_release_identity", lambda _layout: ("0.4.9", True, "0.1.0")
     )
     app = create_app(data_dir=tmp_path)
     checker = app.state.services.release_check
@@ -269,7 +284,7 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
 
     monkeypatch.setattr("rcp.__version__", "0.4.9")
     monkeypatch.setattr(
-        "rcp.api.app.read_installed_release_identity", lambda _layout: ("0.4.9", False)
+        "rcp.api.app.read_installed_release_identity", lambda _layout: ("0.4.9", False, "0.1.0")
     )
     monkeypatch.setattr(limits, "RELEASE_CHECK_START_DELAY_SECONDS", 0.01)
     resolver = None

@@ -117,6 +117,22 @@ def test_failure_carries_exact_diagnostic_and_continue_commands(monkeypatch, cap
     }
 
 
+def test_supervisor_refusal_offers_supervisor_update_before_the_rerun(monkeypatch, capsys):
+    def refuse(*_args, **_kwargs):
+        driver._require_supervisor(SimpleNamespace(supervisor_version="999.0.0"))
+
+    monkeypatch.setattr(driver, "update", refuse)
+    monkeypatch.setattr(driver, "safe_state_fields", lambda: [])
+    assert cli.main([*INVOCATION, "--machine-readable"]) == 1
+    step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
+    resume = ("sudo", "/usr/local/bin/rcp", *INVOCATION)
+    assert step.resume_argv == resume
+    assert [action.argv for action in step.actions][:2] == [
+        ("sudo", "/usr/local/bin/rcp", "server", "supervisor", "update"),
+        (*resume, "--machine-readable"),
+    ]
+
+
 def test_failing_root_doctor_offers_service_account_inspection():
     actions, resume = failure_recovery(["server", "doctor"])
     assert resume == ["sudo", "/usr/local/bin/rcp", "server", "doctor"]
