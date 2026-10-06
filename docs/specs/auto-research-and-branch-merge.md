@@ -80,8 +80,8 @@ An orchestrator kickoff reuses normal readiness on its own branch. It never
 stops, adopts, or waits on a loop it did not start, on any target. A loop live
 on another target does not block the kickoff; the result lists it as
 `live_elsewhere`, and `status` lists every live loop off the orchestrator's
-branch as `other_branch_loops` (node, episode, target, starter, state,
-checkout). Every loop agent is told to ask the human when its work could
+branch as `other_branch_loops`. Both are compact and capped: `{rows, omitted}`
+with one row per loop (node, episode, target, starter, state, checkout). Every loop agent is told to ask the human when its work could
 interfere with another branch's episodes, for example the same node and the
 same checkout. To restart its own child, the orchestrator stops it, waits for
 settlement, and kicks off again. Routes left pending by the retired replacement

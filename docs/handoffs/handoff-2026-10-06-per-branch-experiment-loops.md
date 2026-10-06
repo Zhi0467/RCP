@@ -3,8 +3,13 @@
 Date: 2026-10-06
 Status: design settled with the human on 2026-10-06 in a grilling session and
 reviewed once by an xhigh design pass the same day; its corrections are folded
-in below and raised no human questions. Not yet implemented. Implementation runs
-in this PR: slice 1 first, then slices 2–4 in parallel.
+in below and raised no human questions. Implemented on 2026-10-06 in this PR:
+all four slices landed, each reviewed once with its fixes applied, and focused
+Python and Web suites pass, including the broker-socket and browser cases the
+Codex sandbox blocks. Overlap rows are compact and capped (`{rows, omitted}`,
+`LOOP_OVERLAP_MAX_ROWS` and `LOOP_OVERLAP_MAX_BYTES` in `limits.py`). Still
+open: the close criteria below on a served app with real providers, and a
+migration rehearsal on a copy of real team-server data.
 
 Close this handoff when all of these hold:
 
