@@ -43,6 +43,8 @@ const gpu = {
   os_account: "alice",
   writable_paths: ["/data/cache", "/scratch"],
   hidden_folders: ["/private"],
+  provider_autocompact: { claude: "auto" },
+  autocompact_providers: [{ provider: "claude", label: "Claude", hint: "auto or tokens" }],
   projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
   in_use: true,
 };

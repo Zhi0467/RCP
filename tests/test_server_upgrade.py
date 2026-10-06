@@ -129,6 +129,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (39,),
             (40,),
             (41,),
+            (42,),
         ]
 
         plan = connection.execute(
