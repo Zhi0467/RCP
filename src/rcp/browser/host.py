@@ -106,6 +106,7 @@ def atomic_write(path: Path, text: str) -> None:
 # Written by Install while it holds the host lock. Trusted only while the lock is held,
 # so a marker left by a killed install never reports a phantom one.
 INSTALL_MARKER = "installing"
+SMOKE_OWNER_TOKEN = "install-smoke"
 
 
 @contextmanager
@@ -752,6 +753,11 @@ class HostRuntime:
         if prerequisite:
             return prerequisite
         for record in self.records():
+            if record["owner_token"] == SMOKE_OWNER_TOKEN:
+                # A past install's own smoke daemon is no member's session: stop it
+                # rather than refusing, and before its tools are replaced.
+                self.stop_owner(record)
+                continue
             try:
                 alive = self.alive(record)
             except UnavailableError as exc:
@@ -785,7 +791,7 @@ class HostRuntime:
         ready = self.readiness(require_verified=False)
         if ready["status"] != "ready":
             return ready
-        token = "install-smoke"
+        token = SMOKE_OWNER_TOKEN
         record = {
             "owner_token": token,
             "session_name": "rcp-smoke-" + hashlib.sha256(str(self.root).encode()).hexdigest()[:16],
@@ -798,8 +804,6 @@ class HostRuntime:
         deadline = self.deadline
         try:
             self.save(record)
-            # A smoke daemon an interrupted install left behind still holds the unit name.
-            self.stop_owner(record)
             self.deadline = min(deadline, time.monotonic() + self.limits["start"])
             self.start(record, self.executable())
         finally:

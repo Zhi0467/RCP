@@ -522,3 +522,25 @@ def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, mo
     assert runtime.daemon_env()["TMPDIR"] == runtime_dir
     launcher = Path(runtime.cli_launcher()) / "playwright-cli"
     assert f"export TMPDIR={runtime_dir}\n" in launcher.read_text()
+
+
+def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, monkeypatch):
+    from rcp.browser.host import SMOKE_OWNER_TOKEN
+
+    runtime = HostRuntime(request(tmp_path, action="install"))
+    smoke = {
+        "owner_token": SMOKE_OWNER_TOKEN,
+        "session_name": "smoke",
+        "handle": "smoke",
+        "workspace_dir": str(tmp_path / "workspace"),
+        "leases": {},
+    }
+    runtime.save(smoke)
+    stopped = []
+    monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    monkeypatch.setattr(runtime, "owner_ready", lambda: None)
+    monkeypatch.setattr(runtime, "alive", lambda record: True)
+    monkeypatch.setattr(runtime, "stop_owner", lambda record: stopped.append(record["handle"]))
+    monkeypatch.setattr(runtime, "_install", lambda: {"status": "ready"})
+    assert runtime.install()["status"] == "ready"
+    assert stopped == ["smoke"]
