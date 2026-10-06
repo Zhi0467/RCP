@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import logging
+from datetime import UTC, datetime
 from functools import partial
 from typing import Annotated, Literal, cast
 
@@ -39,7 +40,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
-from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS, SPACE_RUNS_COMPLETED_TTL
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
@@ -63,7 +64,10 @@ from rcp.storage import (
     NodeStatusGraphCondition,
     ProjectActiveTaskConflict,
 )
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.transport import StateUnavailable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 membership_router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -111,7 +115,6 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     episode: EpisodeResponse
 
 
-SPACE_RUNS_COMPLETED_TTL = timedelta(days=7)
 SpaceRunMode = Literal["experiment_loop", "auto_research"]
 SpaceRunSection = Literal["actionable", "running", "completed"]
 SpaceRunTone = Literal[
@@ -290,12 +293,6 @@ def _experiment_episode_entries(
             runtime = read_model.runtime
             episode = episode_snapshot.episode
             if (
-                archive_states_by_project is not None
-                and (archive_state := archive_states.get(episode.episode_id)) is not None
-                and archive_state.archived
-            ):
-                continue
-            if (
                 episode.project_id != record.project_id
                 or episode.mode != "experiment_loop"
                 or episode.control_node_id != control_node_id
@@ -358,9 +355,9 @@ def _experiment_episode_entries(
                 if state is None:
                     continue
             else:
-                if main_service is None:
-                    main_service = get_project_service(catalog, record.project_id)
                 try:
+                    if main_service is None:
+                        main_service = get_project_service(catalog, record.project_id)
                     target_service = (
                         main_service
                         if target.kind == "main"
@@ -376,12 +373,20 @@ def _experiment_episode_entries(
                     )
                     state = materialization.state
                     graph_head = target_service.history.head_ref(materialization)
-                except (KeyError, OSError, StateUnavailable, ValueError) as exc:
-                    raise HTTPException(status_code=503, detail=str(exc)) from exc
-                if graph_head.target != target:
-                    raise ValueError(
-                        "Experiment graph projection returned a different target head."
+                    if graph_head.target != target:
+                        raise ValueError(
+                            "Experiment graph projection returned a different target head."
+                        )
+                except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
+                    if any(item[0].episode.status in _LIVE_EPISODE_STATUSES for item in group):
+                        raise HTTPException(status_code=503, detail=str(exc)) from exc
+                    logger.warning(
+                        "Skipping unavailable historical Experiment branch %s in project %s: %s",
+                        target.key,
+                        record.project_id,
+                        exc,
                     )
+                    continue
 
             for episode_snapshot, runtime, read_model in group:
                 episode = episode_snapshot.episode
@@ -405,14 +410,6 @@ def _experiment_episode_entries(
                     and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
                     for watcher in active_graph_watchers
                 )
-                if target.kind == "branch":
-                    binding_episode_id = (
-                        parent_episode_id
-                        if route is not None
-                        else episode.isolation_owner_episode_id or episode.episode_id
-                    )
-                    if not episode_on_branch(store, binding_episode_id, target.branch_id):
-                        raise ValueError("Branch-target Experiment lost its graph binding.")
                 if target.kind == "main":
                     controls = (
                         completed_cached.get("experiment_control") if completed_cached else None
@@ -433,21 +430,40 @@ def _experiment_episode_entries(
                     )
                     control = control.model_copy(update={"episode": serialized_episode})
                 else:
-                    serialized_episode = serialize_episode(
-                        store,
-                        record.project_id,
-                        episode,
-                        branch_summary=branch_summary,
-                        projection_snapshot=episode_snapshot,
-                        archive_state=archive_state,
-                    )
-                    control = _experiment_control_response(
-                        state,
-                        node.id,
-                        runtime,
-                        serialized_episode,
-                        latest_report_episode_id=read_model.latest_report_episode_id,
-                    )
+                    try:
+                        assert target.branch_id is not None
+                        binding_episode_id = (
+                            parent_episode_id
+                            if route is not None
+                            else episode.isolation_owner_episode_id or episode.episode_id
+                        )
+                        if not episode_on_branch(store, binding_episode_id, target.branch_id):
+                            raise ValueError("Branch-target Experiment lost its graph binding.")
+                        serialized_episode = serialize_episode(
+                            store,
+                            record.project_id,
+                            episode,
+                            branch_summary=branch_summary,
+                            projection_snapshot=episode_snapshot,
+                            archive_state=archive_state,
+                        )
+                        control = _experiment_control_response(
+                            state,
+                            node.id,
+                            runtime,
+                            serialized_episode,
+                            latest_report_episode_id=read_model.latest_report_episode_id,
+                        )
+                    except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
+                        if episode.status in _LIVE_EPISODE_STATUSES:
+                            raise HTTPException(status_code=503, detail=str(exc)) from exc
+                        logger.warning(
+                            "Skipping unavailable historical Experiment episode %s on %s: %s",
+                            episode.episode_id,
+                            target.key,
+                            exc,
+                        )
+                        continue
                 entries.append(
                     ExperimentLoopIndexEntryResponse(
                         project_id=record.project_id,

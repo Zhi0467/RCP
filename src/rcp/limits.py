@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 # Operational storage retention and query bounds.
+SPACE_RUNS_COMPLETED_TTL = timedelta(days=7)
 EPISODE_TIMELINE_EVENT_LIMIT = 400
 EPISODE_TIMELINE_PREVIEW_MAX_LENGTH = 500
 EPISODE_TIMELINE_HEADLINE_MAX_LENGTH = 240

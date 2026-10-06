@@ -2386,7 +2386,7 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
     stage = tmp_path / "maintenance-stage"
     workspace = stage / "workspace"
     workspace.mkdir(parents=True)
-    stale = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
+    stale = workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
     stale.write_text("stale", encoding="utf-8")
 
     resources = await stage_chat_experiment_watcher_resources(
@@ -2404,7 +2404,9 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
     assert resource.resource.control_node_id == _EXPERIMENT_ID
     assert resource.resource.episode_id == episode_id
     assert resource.resource.execution_host == "episode.example"
-    assert resource.watch_path == str(workspace / experiment_watcher_output_name(_EXPERIMENT_ID))
+    assert resource.watch_path == str(
+        workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
+    )
     assert not stale.exists()
     state = json.loads(Path(resource.watcher_state_path).read_text(encoding="utf-8"))
     assert [item["watcher_id"] for item in state] == ["resource-active"]
@@ -2537,7 +2539,7 @@ async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_pat
     execution = _execution(store, project_id, "maintenance-work", request)
     workspace = tmp_path / "unstaged-workspace"
     workspace.mkdir()
-    guessed = workspace / experiment_watcher_output_name("exp/outside-scope")
+    guessed = workspace / experiment_watcher_output_name("exp/outside-scope", GraphTargetRef())
     guessed.write_text('{"external":[],"graph":[]}', encoding="utf-8")
 
     frames, session_id, paused = await _process_experiment_watcher_maintenance(
@@ -2606,7 +2608,7 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
     )
     workspace = tmp_path / "retry-workspace"
     workspace.mkdir()
-    survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
+    survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
     survivor_text = '{"external":[{"stop_watcher_id":"w-1","reason":"Superseded"}],"graph":[]}'
     survivor.write_text(survivor_text, encoding="utf-8")
     predecessor_digest = hashlib.sha256(survivor_text.encode("utf-8")).hexdigest()

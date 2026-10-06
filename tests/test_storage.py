@@ -1701,7 +1701,12 @@ def test_experiment_runtime_batch_matches_scalar_for_active_stopped_and_empty(
         ["exp/active", "exp/stopped", "exp/empty"],
         graph_target=GraphTargetRef(),
     )
-    project_runtimes = store.project_experiment_loop_runtimes(project_id)
+    project_runtimes = {
+        key: snapshot.runtime
+        for key, snapshot in store.project_experiment_control_projection_snapshots(
+            project_id
+        ).items()
+    }
 
     assert set(project_runtimes) == {("exp/active", "main"), ("exp/stopped", "main")}
     assert project_runtimes[("exp/active", "main")] == runtimes["exp/active"]
@@ -1759,12 +1764,6 @@ def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
 
     assert set(runtimes) == set(control_node_ids)
     assert one_experiment_selects == all_experiment_selects == 6
-
-    store.select_count = 0
-    assert set(store.project_experiment_loop_runtimes(project_id)) == {
-        (node_id, "main") for node_id in control_node_ids
-    }
-    assert store.select_count == 6
 
     store.select_count = 0
     assert store.active_experiment_control_ids(project_id, graph_target=GraphTargetRef()) == set(
@@ -3881,3 +3880,60 @@ def test_active_project_agent_tasks_skip_finished_history(tmp_path) -> None:
         )
     assert [task.operation_id for task in store.active_project_agent_tasks(project_id)] == ["live"]
     assert len(store.all_project_agent_tasks(project_id)) == 2
+
+
+def test_all_target_snapshot_retains_only_live_newest_or_recent_episodes(tmp_path, monkeypatch):
+    from rcp.core.transition_models import GraphHeadRef
+    from rcp.limits import SPACE_RUNS_COMPLETED_TTL
+
+    from .test_episode_storage import _episode
+
+    store = AppStore(tmp_path / "retention.sqlite3")
+    now = datetime.fromisoformat(store.now())
+    monkeypatch.setattr(store, "now", lambda: now.isoformat())
+    cutoff = now - SPACE_RUNS_COMPLETED_TTL
+    cases = [
+        ("expired", "experiment-node", "completed", cutoff - timedelta(seconds=1)),
+        ("boundary", "experiment-node", "completed", cutoff),
+        ("live", "experiment-node", "running", None),
+        ("newest", "experiment-node", "completed", cutoff - timedelta(seconds=1)),
+        ("only-on-node", "other-node", "completed", cutoff - timedelta(seconds=1)),
+    ]
+    for index, (episode_id, node_id, _status, ended_at) in enumerate(cases):
+        store.create_episode(
+            _episode(store, episode_id, control_node_id=node_id).model_copy(
+                update={
+                    "graph_target": GraphTargetRef(kind="branch", branch_id=episode_id),
+                    "graph_base_head": GraphHeadRef(revision=0),
+                    "created_at": (
+                        cutoff - timedelta(days=2) + timedelta(seconds=index)
+                    ).isoformat(),
+                }
+            )
+        )
+        if ended_at is not None:
+            store.end_episode_without_report(episode_id, ending="completed")
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE episodes SET ended_at = ? WHERE episode_id = ?",
+                    (ended_at.isoformat(), episode_id),
+                )
+    hydrated = []
+    original = store._experiment_episode_projection_snapshot_in_connection
+
+    def hydrate(connection, project_id, node_id, episode_id):
+        hydrated.append(episode_id)
+        return original(connection, project_id, node_id, episode_id)
+
+    monkeypatch.setattr(store, "_experiment_episode_projection_snapshot_in_connection", hydrate)
+    snapshots = store.project_experiment_control_projection_snapshots("project")
+    expected = {"boundary", "live", "newest", "only-on-node"}
+    assert {snapshot.runtime.episode_id for snapshot in snapshots.values()} == expected
+    assert set(hydrated) == expected
+    # A direct target read still exposes its own old stopped/completed loop.
+    direct = store.experiment_control_projection_snapshots(
+        "project",
+        ["experiment-node"],
+        graph_target=GraphTargetRef(kind="branch", branch_id="expired"),
+    )
+    assert direct["experiment-node"].runtime.episode_id == "expired"

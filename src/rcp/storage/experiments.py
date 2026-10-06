@@ -5,11 +5,16 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.limits import EPISODE_RECEIPT_MAX_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
+from rcp.limits import (
+    EPISODE_RECEIPT_MAX_BYTES,
+    QUESTION_SNAPSHOT_MAX_RECORDS,
+    SPACE_RUNS_COMPLETED_TTL,
+)
 from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.mixin_base import StoreMixinBase
@@ -1858,9 +1863,9 @@ class ExperimentStoreMixin(StoreMixinBase):
         control_node_id: str,
         *,
         expected_episode_id: str | None = None,
-        graph_target: GraphTargetRef | None = None,
+        graph_target: GraphTargetRef,
     ) -> ExperimentWatcherResourceRecord:
-        target = graph_target or GraphTargetRef()
+        target = graph_target
         root_row = connection.execute(
             """
             SELECT kind, request_json, graph_target_json FROM graph_runs
@@ -2011,22 +2016,6 @@ class ExperimentStoreMixin(StoreMixinBase):
             separators=(",", ":"),
         )
         return hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
-
-    def experiment_watcher_ids(
-        self, project_id: str, control_node_id: str, *, graph_target: GraphTargetRef
-    ) -> list[str]:
-        """Live watchers armed by a bounded loop on one exact target."""
-
-        return [
-            record.watcher_id
-            for record in self.watchers(project_id)
-            if (
-                (record.status in {"active", "degraded"} and not record.notified)
-                or (record.status == "completed" and not record.notified)
-            )
-            and record.continuation.control_node_id == control_node_id
-            and record.graph_target == graph_target
-        ]
 
     def experiment_handoff_has_live_watcher_after_stops(
         self,
@@ -3218,14 +3207,6 @@ class ExperimentStoreMixin(StoreMixinBase):
             report=(self._episode_report_record(report_row) if report_row is not None else None),
         )
 
-    def project_experiment_loop_runtimes(
-        self,
-        project_id: str,
-    ) -> dict[tuple[str, str], ExperimentLoopRuntime]:
-        """Derive every current Experiment runtime without paging episode history."""
-
-        return self._project_experiment_loop_runtimes(project_id, None)
-
     def _project_experiment_loop_runtimes(
         self,
         project_id: str,
@@ -3329,12 +3310,26 @@ class ExperimentStoreMixin(StoreMixinBase):
             str(row["episode_id"]): self._experiment_episode_record(row) for row in episode_rows
         }
         parents_by_control: dict[tuple[str, str], EpisodeRecord] = {}
+        newest_nodes: set[str] = set()
+        completed_since = datetime.fromisoformat(self.now()) - SPACE_RUNS_COMPLETED_TTL
         for row in parent_rows:
             parent = self._episode_record(row)
             assert parent.control_node_id is not None
             if graph_target is not None and parent.graph_target != graph_target:
                 continue
             if requested is not None and parent.control_node_id not in requested:
+                continue
+            newest_on_node = parent.control_node_id not in newest_nodes
+            newest_nodes.add(parent.control_node_id)
+            if (
+                graph_target is None
+                and parent.status not in _LIVE_EPISODE_STATUSES
+                and not newest_on_node
+                and (
+                    parent.ended_at is None
+                    or datetime.fromisoformat(parent.ended_at) < completed_since
+                )
+            ):
                 continue
             parents_by_control.setdefault((parent.control_node_id, parent.graph_target.key), parent)
         control_keys = set(parents_by_control)
@@ -3661,7 +3656,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         control_node_id: str,
         *,
-        graph_target: GraphTargetRef | None = None,
+        graph_target: GraphTargetRef,
     ) -> list[StoredWatcherRecord] | None:
         """Return the oldest frozen group a human may reauthorize.
 
@@ -3669,7 +3664,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         watcher configuration, including model, reasoning, and package pointers.
         """
 
-        target = graph_target or GraphTargetRef()
+        target = graph_target
         with self.connection() as connection:
             units = self._ready_watcher_delivery_units(connection)
         groups: dict[tuple[object, ...], list[StoredWatcherRecord]] = {}

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 
 from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.api.episodes import serialize_episode
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.limits import SPACE_RUNS_COMPLETED_TTL
 from rcp.loop_status import episode_loop_metadata, loop_status_projection, other_branch_loops
 from rcp.storage import EpisodeRecord
 
@@ -170,3 +172,94 @@ def test_historical_loop_without_its_task_is_explicitly_unavailable(loop):
     assert status.state == "unavailable"
     assert status.current is not None and status.current.diagnostic is not None
     assert not status.current.checkout.available
+
+
+def test_loop_metadata_queries_only_root_receipts_when_serializing_many_turns(loop, monkeypatch):
+    loop.start_episode()
+    root = loop.store.agent_task("loop-root")
+    assert root is not None
+    episode = loop.store.episode(loop.episode_id)
+    assert episode is not None
+    loop.store.record_agent_task_receipt(
+        root.operation_id,
+        "agent_launch",
+        {
+            "execution_host": "",
+            "canonical_repository_roots": ["/checkout/project"],
+        },
+    )
+    reads = []
+    original = loop.store.agent_task_receipts_by_category
+
+    def receipts(operation_id, category):
+        reads.append(operation_id)
+        return original(operation_id, category)
+
+    monkeypatch.setattr(loop.store, "agent_task_receipts_by_category", receipts)
+    tasks = [root] + [root.model_copy(update={"operation_id": f"turn-{i}"}) for i in range(50)]
+    metadata = episode_loop_metadata(loop.store, episode, tasks=tasks)
+    assert reads == [root.operation_id]
+    assert metadata.checkout.available
+    assert metadata.checkout.repository_paths == ["/checkout/project"]
+
+
+def test_overlap_skips_terminal_metadata_but_target_status_retains_old_loop(loop, monkeypatch):
+    loop.start_episode()
+    loop.stop()
+    old = (
+        datetime.fromisoformat(loop.store.now()) - SPACE_RUNS_COMPLETED_TTL - timedelta(days=1)
+    ).isoformat()
+    with loop.store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET ended_at = ? WHERE episode_id = ?", (old, loop.episode_id)
+        )
+    branch = GraphTargetRef(kind="branch", branch_id="elsewhere")
+    episode = loop.store.episode(loop.episode_id)
+    assert episode is not None
+    loop.store.create_episode(
+        episode.model_copy(
+            update={
+                "episode_id": "live-elsewhere",
+                "graph_target": branch,
+                "status": "queued",
+                "invocations_used": 0,
+                "graph_base_head": GraphHeadRef(revision=0),
+                "wrapup_state": "not_started",
+                "ending": None,
+                "ended_at": None,
+                "stop_requested_at": None,
+                "stop_settled_at": None,
+                "root_operation_id": None,
+                "created_at": loop.store.now(),
+            }
+        )
+    )
+    import rcp.loop_status as status_module
+
+    from .test_episode_storage import _episode
+
+    loop.store.create_episode(
+        _episode(
+            loop.store,
+            "terminal-elsewhere",
+            project_id=loop.project_id,
+            control_node_id="other-node",
+        )
+    )
+    loop.store.end_episode_without_report("terminal-elsewhere", ending="completed")
+    metadata_ids = []
+    original = status_module.episode_loop_metadata
+
+    def metadata(store, episode, **kwargs):
+        metadata_ids.append(episode.episode_id)
+        return original(store, episode, **kwargs)
+
+    monkeypatch.setattr(status_module, "episode_loop_metadata", metadata)
+    rows = other_branch_loops(loop.store, loop.project_id, graph_target=GraphTargetRef())
+    assert [row.episode_id for row in rows] == ["live-elsewhere"]
+    assert metadata_ids == ["live-elsewhere"]
+    status = loop_status_projection(
+        loop.store, loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
+    assert status.current is not None and status.current.episode_id == loop.episode_id
+    assert status.state == "stopped"

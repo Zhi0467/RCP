@@ -126,7 +126,11 @@ def test_parent_wake_diagnostics_use_a_constant_number_of_projection_reads(tmp_p
             task, auto_research_route=_experiment_route(store, parent, root, task)
         )
         store.select_count = 0
-        runtimes = store.project_experiment_loop_runtimes(parent.project_id)
+        runtimes = store.experiment_loop_runtimes(
+            parent.project_id,
+            [f"exp/child-{child_index}" for child_index in range(index + 1)],
+            graph_target=parent.graph_target,
+        )
         select_counts.append(store.select_count)
         assert len(runtimes) == index + 1
         exhausted = index + 1 == allowance.remaining

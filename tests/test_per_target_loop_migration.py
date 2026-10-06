@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,11 @@ def _legacy_database(path: Path) -> AppStore:
     )
     store.create_episode(_episode(store, "parent", mode="auto_research"))
     with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO auto_research_episodes (episode_id, created_at, updated_at) "
+            "VALUES ('parent', ?, ?)",
+            (store.now(), store.now()),
+        )
         connection.execute("DROP INDEX episodes_one_live_experiment_target")
         connection.execute(
             "CREATE UNIQUE INDEX episodes_one_live_experiment_control "
@@ -70,11 +76,13 @@ def _legacy_database(path: Path) -> AppStore:
             ('{ "branch_id": null, "kind": "main" }', store.now()),
         )
         for table in ("episodes", "graph_runs", "watchers"):
-            connection.execute(
-                f"UPDATE {table} SET graph_target_json = ? "
-                "WHERE json_extract(graph_target_json, '$.kind') = 'main'",
-                ('{ "branch_id": null, "kind": "main" }',),
-            )
+            for row in connection.execute(
+                f"SELECT DISTINCT graph_target_json FROM {table}"
+            ).fetchall():
+                connection.execute(
+                    f"UPDATE {table} SET graph_target_json = ? WHERE graph_target_json = ?",
+                    (json.dumps(json.loads(row[0]), sort_keys=True, indent=2), row[0]),
+                )
     return store
 
 
@@ -116,7 +124,10 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
         assert "auto_research_pending_experiment_per_node" not in indexes
         for table in ("episodes", "graph_runs", "watchers", "graph_watcher_reconciliation"):
             for row in connection.execute(f"SELECT graph_target_json FROM {table}"):
-                assert row[0] == graph_target_json(GraphTargetRef.model_validate_json(row[0]))
+                assert (
+                    row[0].encode()
+                    == GraphTargetRef.model_validate_json(row[0]).model_dump_json().encode()
+                )
         fresh = AppStore(tmp_path / "fresh.sqlite3")
         with fresh.connection() as fresh_connection:
             assert upgraded._storage_schema(connection) == fresh._storage_schema(fresh_connection)
@@ -162,6 +173,10 @@ def test_per_target_migration_failure_rolls_back_and_reopens(tmp_path: Path, mon
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE name = 'episodes_one_live_experiment_control'"
         ).fetchone()
+        assert (
+            connection.execute("SELECT COUNT(*) FROM auto_research_lifecycle_notices").fetchone()[0]
+            == 0
+        )
         target = connection.execute(
             "SELECT graph_target_json FROM episodes WHERE episode_id = 'live-main'"
         ).fetchone()[0]
@@ -169,3 +184,43 @@ def test_per_target_migration_failure_rolls_back_and_reopens(tmp_path: Path, mon
         assert json.loads(target) == GraphTargetRef().model_dump()
     reopened = AppStore(path)
     assert reopened.storage_schema_ledger_head() == 44
+
+
+def test_migration_cancellation_wakes_parent_once_without_launching(tmp_path: Path):
+    path = tmp_path / "legacy.sqlite3"
+    store = _legacy_database(path)
+    with store.connection() as connection:
+        connection.execute("UPDATE episodes SET status = 'running' WHERE episode_id = 'parent'")
+        before_tasks = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    store.close()
+    upgraded = AppStore(path)
+    notices = upgraded.pending_auto_research_lifecycle_notices("parent")
+    assert len(notices) == 1
+    notice = notices[0]
+    assert notice.notice_id == str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "rcp:auto-research-lifecycle:parent:experiment_replacement:never-launched:cancelled:1",
+        )
+    )
+    route = upgraded.auto_research_child_experiment("never-launched")
+    assert route is not None
+    assert notice.payload == {
+        "episode_id": route.child_episode_id,
+        "status": "cancelled",
+        "diagnostic": route.terminal_diagnostic,
+        "replaces_episode_id": "live-main",
+    }
+    assert (notice.source_kind, notice.source_event, notice.source_attempt) == (
+        "experiment_replacement",
+        "cancelled",
+        1,
+    )
+    assert notice.state == "pending" and notice.wake_suppressed is None
+    assert upgraded.pending_auto_research_lifecycle_episode_ids() == ["parent"]
+    assert upgraded.episode(route.child_episode_id) is None
+    with upgraded.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before_tasks
+    upgraded.close()
+    reopened = AppStore(path)
+    assert reopened.pending_auto_research_lifecycle_notices("parent") == notices

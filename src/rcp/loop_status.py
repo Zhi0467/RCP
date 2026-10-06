@@ -109,7 +109,9 @@ def episode_loop_metadata(
                 store.agent_task(episode.root_operation_id) if episode.root_operation_id else None
             )
             tasks = [root] if root is not None else []
-        for task in reversed(tasks):
+        for task in tasks:
+            if task.operation_id != episode.root_operation_id:
+                continue
             receipts = store.agent_task_receipts_by_category(task.operation_id, "agent_launch")
             for receipt in reversed(receipts):
                 roots = receipt.payload.get("canonical_repository_roots")
@@ -183,18 +185,16 @@ def other_branch_loops(
     """Live loops off this target; optionally restrict to kickoff's node."""
 
     snapshots = store.project_experiment_control_projection_snapshots(project_id)
-    rows = [_loop_status_row(store, snapshot) for snapshot in snapshots.values()]
-    rows.sort(
-        key=lambda row: (row.node_id, row.graph_target.key, row.episode_id) if row else ("", "", "")
-    )
-    return [
+    rows = [
         row
-        for row in rows
-        if row is not None
-        and row.state == "live"
-        and row.graph_target != graph_target
-        and (node_id is None or row.node_id == node_id)
+        for snapshot in snapshots.values()
+        if snapshot.episode is not None
+        and snapshot.episode.episode.status in _LIVE_EPISODE_STATUSES
+        and snapshot.episode.episode.graph_target != graph_target
+        and (node_id is None or snapshot.episode.episode.control_node_id == node_id)
+        if (row := _loop_status_row(store, snapshot)) is not None
     ]
+    return sorted(rows, key=lambda row: (row.node_id, row.graph_target.key, row.episode_id))
 
 
 def loop_status_projection(
@@ -204,25 +204,18 @@ def loop_status_projection(
     *,
     graph_target: GraphTargetRef,
 ) -> LoopStatusProjection:
-    """Fresh status, including an explicit empty state, from one runtime snapshot."""
+    """Fresh target-local status, including empty state, plus live overlap rows."""
 
-    snapshots = store.project_experiment_control_projection_snapshots(project_id)
-    current = None
-    elsewhere = []
-    for (control_id, _target_key), snapshot in snapshots.items():
-        if control_id != node_id:
-            continue
-        row = _loop_status_row(store, snapshot)
-        if row is None:
-            continue
-        if row.graph_target == graph_target:
-            current = row
-        elif row.state == "live":
-            elsewhere.append(row)
+    snapshot = store.experiment_control_projection_snapshots(
+        project_id, [node_id], graph_target=graph_target
+    ).get(node_id)
+    current = _loop_status_row(store, snapshot) if snapshot is not None else None
     return LoopStatusProjection(
         node_id=node_id,
         graph_target=graph_target,
         state=current.state if current else "none",
         current=current,
-        live_elsewhere=sorted(elsewhere, key=lambda row: (row.graph_target.key, row.episode_id)),
+        live_elsewhere=other_branch_loops(
+            store, project_id, graph_target=graph_target, node_id=node_id
+        ),
     )

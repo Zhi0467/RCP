@@ -1299,6 +1299,7 @@ class TransferRecordBundle(_StrictTransferRecord):
             )
             never_launched = (
                 child.state == "cancelled"
+                and child.replaces_episode_id is not None
                 and child.terminal_diagnostic is not None
                 and not child.invocations
             )

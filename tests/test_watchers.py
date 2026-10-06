@@ -1018,7 +1018,6 @@ def test_claimed_diagnostic_group_remains_history_not_live_work(store) -> None:
         == stored
     )
     assert store.pollable_watchers(as_of="2026-08-02T00:00:00+00:00") == []
-    assert store.experiment_watcher_ids("project", "exp-one", graph_target=GraphTargetRef()) == []
     runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
     assert runtime.detached_work_active is False
     assert runtime.watcher_degraded is False
@@ -1791,27 +1790,6 @@ def test_a_human_release_takes_a_watcher_out_of_the_polling_set(store) -> None:
     # A stopped watcher is already accounted for, so it can never wake a turn.
     assert store.watcher("watch-degraded").notified is True
     assert store.completed_watcher_groups() == []
-
-
-def test_experiment_watchers_are_found_by_the_loop_that_armed_them(store) -> None:
-    bound = _record("watch-bound")
-    bound = bound.model_copy(
-        update={
-            "continuation": _loop_continuation(
-                str(uuid.uuid4()), node_id="exp/one", revision=None, ceiling=2
-            )
-        }
-    )
-    store.create_watchers([bound])
-    store.create_watchers([_record("watch-plain")])
-
-    assert store.experiment_watcher_ids("project", "exp/one", graph_target=GraphTargetRef()) == [
-        "watch-bound"
-    ]
-    assert store.experiment_watcher_ids("project", "exp/other", graph_target=GraphTargetRef()) == []
-
-    store.stop_watchers("project", ["watch-bound"])
-    assert store.experiment_watcher_ids("project", "exp/one", graph_target=GraphTargetRef()) == []
 
 
 def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(store) -> None:

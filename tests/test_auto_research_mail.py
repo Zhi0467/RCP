@@ -978,7 +978,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
         experiment_id
     ]
 
-    output_name = experiment_watcher_output_name(experiment_id)
+    output_name = experiment_watcher_output_name(experiment_id, GraphTargetRef())
     launcher = ScriptedLauncher(
         [
             {

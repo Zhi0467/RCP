@@ -141,11 +141,11 @@ class StagedExperimentWatcherResource:
 
 def experiment_watcher_output_name(
     control_node_id: str,
-    graph_target: GraphTargetRef | None = None,
+    graph_target: GraphTargetRef,
 ) -> str:
     """Return the stable physical filename that selects one Experiment resource."""
 
-    target = graph_target or GraphTargetRef()
+    target = graph_target
     digest = hashlib.sha256(f"{target.key}\0{control_node_id}".encode()).hexdigest()
     return f"{_EXPERIMENT_WATCH_OUTPUT_PREFIX}{digest}{_EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
 

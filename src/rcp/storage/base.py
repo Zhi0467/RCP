@@ -12,11 +12,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from rcp.artifacts import html_document_title
-from rcp.core.graph_targets import graph_target_json
-from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.artifact_imports import migrate_artifact_imports
@@ -27,6 +25,7 @@ from rcp.storage.digest import migrate_digest
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.lessons import migrate_operational_lessons
 from rcp.storage.models import (
+    AutoResearchLifecycleNoticeRecord,
     SpaceKind,
     SpaceUserRecord,
     _canonical_space_id,
@@ -818,15 +817,14 @@ class AppStoreBase:
     def _migrate_per_target_experiment_loops(self, connection: sqlite3.Connection) -> None:
         """Retain loop history while widening live identity to the graph target."""
         for table in ("episodes", "graph_runs", "watchers", "graph_watcher_reconciliation"):
-            rows = connection.execute(f"SELECT DISTINCT graph_target_json FROM {table}").fetchall()
-            for row in rows:
-                previous = row["graph_target_json"]
-                canonical = graph_target_json(GraphTargetRef.model_validate_json(previous))
-                if previous != canonical:
-                    connection.execute(
-                        f"UPDATE {table} SET graph_target_json = ? WHERE graph_target_json = ?",
-                        (canonical, previous),
-                    )
+            canonical = (
+                "json_object('kind', json_extract(graph_target_json, '$.kind'), "
+                "'branch_id', json_extract(graph_target_json, '$.branch_id'))"
+            )
+            connection.execute(
+                f"UPDATE {table} SET graph_target_json = {canonical} "
+                f"WHERE graph_target_json != {canonical}"
+            )
         connection.execute("DROP INDEX IF EXISTS episodes_one_live_experiment_control")
         connection.execute("DROP INDEX IF EXISTS episodes_one_live_experiment_target")
         connection.execute("DROP INDEX IF EXISTS auto_research_pending_experiment_per_node")
@@ -838,16 +836,48 @@ class AppStoreBase:
         )
         # A reserved route has no child episode. Preserve its replacement provenance;
         # never undo an already-issued predecessor Stop or launch during migration.
+        now = self.now()
+        diagnostic = (
+            "Legacy replacement cancelled by per-target loop migration; "
+            "issue a fresh kickoff on the intended target."
+        )
+        routes = connection.execute(
+            "SELECT * FROM auto_research_child_experiments WHERE state = 'pending'"
+        ).fetchall()
         connection.execute(
             "UPDATE auto_research_child_experiments "
             "SET state = 'cancelled', terminal_diagnostic = ?, updated_at = ? "
             "WHERE state = 'pending'",
-            (
-                "Legacy replacement cancelled by per-target loop migration; "
-                "issue a fresh kickoff on the intended target.",
-                self.now(),
-            ),
+            (diagnostic, now),
         )
+        store = cast("AppStore", self)
+        for route in routes:
+            payload = {
+                "episode_id": route["child_episode_id"],
+                "status": "cancelled",
+                "diagnostic": diagnostic,
+            }
+            if route["replaces_episode_id"] is not None:
+                payload["replaces_episode_id"] = route["replaces_episode_id"]
+            store._insert_auto_research_lifecycle_notice(
+                connection,
+                AutoResearchLifecycleNoticeRecord(
+                    notice_id=store._auto_research_notice_id(
+                        route["auto_research_episode_id"],
+                        "experiment_replacement",
+                        route["child_episode_id"],
+                        "cancelled",
+                        1,
+                    ),
+                    episode_id=route["auto_research_episode_id"],
+                    source_kind="experiment_replacement",
+                    source_id=route["child_episode_id"],
+                    source_event="cancelled",
+                    source_attempt=1,
+                    payload=payload,
+                    created_at=now,
+                ),
+            )
 
     @staticmethod
     def _migrate_browser_grants(connection: sqlite3.Connection) -> None:

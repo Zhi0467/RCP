@@ -2040,3 +2040,68 @@ def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize("failure", ["load", "binding", "summary"])
+@pytest.mark.parametrize("live", [False, True])
+def test_index_skips_only_nonlive_branch_failures(
+    manifest, tmp_path, monkeypatch, caplog, failure, live
+):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, main_id = _seed_indexed_project(app)
+    _parent, child = _record_branch_target_child_experiment(app)
+    store = app.state.background_tasks.store
+    assert child.root_operation_id is not None
+    store.complete_agent_task(child.root_operation_id, applied_revision=None, result={})
+    if not live:
+        store.end_episode_without_report(child.episode_id, ending="completed")
+    with signed_in_client(app) as client:
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+        if failure == "load":
+
+            def unavailable(*args, **kwargs):
+                raise OSError("fixture branch unavailable")
+
+            monkeypatch.setattr(app.state.service, "for_graph_target", unavailable)
+        elif failure == "binding":
+            monkeypatch.setattr(api_index_module, "episode_on_branch", lambda *args: False)
+        else:
+
+            def unbound(*args, **kwargs):
+                raise ValueError("fixture missing branch owner")
+
+            monkeypatch.setattr(api_index_module, "graph_branch_summary", unbound)
+        response = client.get("/api/episodes?mode=experiment_loop")
+    if live:
+        assert response.status_code == 503
+    else:
+        assert response.status_code == 200
+        assert [row["episode"]["episode_id"] for row in response.json()] == [main_id]
+        assert any(
+            record.name == "rcp.api.index" and child.graph_target.key in record.getMessage()
+            for record in caplog.records
+        )
+
+
+def test_runs_keeps_archived_current_episode_projection(manifest, tmp_path, monkeypatch):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, episode_id = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    store.end_episode_without_report(episode_id, ending="completed")
+    actor = authorized_human(store)
+    store.set_episode_archived(project_id, episode_id, actor.user_id, archived=True)
+    historical = api_index_module._space_archived_run
+
+    def archived_row(episode, **kwargs):
+        assert episode.episode_id != episode_id
+        return historical(episode, **kwargs)
+
+    monkeypatch.setattr(api_index_module, "_space_archived_run", archived_row)
+    with signed_in_client(app) as client:
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+        response = client.get("/api/space/runs")
+    assert response.status_code == 200
+    rows = [row for row in response.json() if row["episode_id"] == episode_id]
+    assert len(rows) == 1
+    assert rows[0]["archived"] is True
+    assert rows[0]["experiment_id"] == "exp/launched"

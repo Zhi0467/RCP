@@ -627,6 +627,17 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     assert len(history.commands) == 1
     assert "native-auto-session" not in bundle.model_dump_json()
 
+    invalid = bundle.model_dump(mode="json")
+    invalid_parent = next(item for item in invalid["episodes"] if item["episode_id"] == episode_id)
+    invalid_route = next(
+        item
+        for item in invalid_parent["auto_research"]["child_experiments"]
+        if item["child_episode_id"] == cancelled_id
+    )
+    invalid_route["replaces_episode_id"] = None
+    with pytest.raises(ValueError):
+        type(bundle).model_validate(invalid)
+
     # The import storage path retains a cancelled route without fabricating its episode.
     target = AppStore(tmp_path / "imported.sqlite3")
     project = store.project(project_id)
