@@ -141,3 +141,9 @@ export function lessonTextIsValid(text: string): boolean {
 export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }
+
+/** Every IANA zone the browser knows, with `current` kept even when it is an alias. */
+export function timeZoneOptions(current: string): string[] {
+  const zones = Intl.supportedValuesOf("timeZone");
+  return zones.includes(current) ? zones : [current, ...zones];
+}

@@ -22,6 +22,7 @@ const {
   consolidationNightSlots,
   lessonTextIsValid,
   openConsolidationItems,
+  timeZoneOptions,
 } = await server.ssrLoadModule("/src/projects/consolidation.ts");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -107,4 +108,10 @@ test("the card's countdown, authorization share, and night strip", () => {
   const long = consolidationNightSlots([20, 21, 22, 23, 24, 25, 26, 27, 28].map(night));
   assert.equal(long[0].occurrence_date, "2026-09-22");
   assert.equal(long.at(-1).occurrence_date, "2026-09-28");
+});
+
+test("the time zone picker lists every zone and keeps an unlisted current one", () => {
+  const zones = timeZoneOptions("America/New_York");
+  assert.ok(zones.length > 100 && zones.includes("Asia/Tokyo"));
+  assert.equal(timeZoneOptions("Not/Listed")[0], "Not/Listed");
 });

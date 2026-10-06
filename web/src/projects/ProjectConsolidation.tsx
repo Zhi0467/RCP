@@ -12,6 +12,7 @@ import {
   DEFAULT_CONSOLIDATION_TIME,
   disableConsolidation,
   enableConsolidation,
+  timeZoneOptions,
 } from "./consolidation";
 import type { ConsolidationNight, ConsolidationSchedule } from "../core/types";
 
@@ -157,7 +158,7 @@ export function ProjectConsolidation({
   const [localTime, setLocalTime] = useState(schedule?.local_time ?? DEFAULT_CONSOLIDATION_TIME);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const timezone = schedule?.timezone ?? browserTimeZone();
+  const [timezone, setTimezone] = useState(() => schedule?.timezone ?? browserTimeZone());
   const now = useMinuteClock(schedule !== null);
 
   const run = async (action: () => Promise<unknown>) => {
@@ -173,7 +174,7 @@ export function ProjectConsolidation({
     }
   };
   const disabled = busy || writesDisabled || !loaded;
-  const enable = () => run(() => enableConsolidation(apiBase, localTime, browserTimeZone()));
+  const enable = () => run(() => enableConsolidation(apiBase, localTime, timezone));
   const renew = () =>
     run(() => enableConsolidation(apiBase, schedule!.local_time, schedule!.timezone));
 
@@ -235,7 +236,20 @@ export function ProjectConsolidation({
               onChange={(event) => setLocalTime(event.target.value)}
             />
           </label>
-          <span className="mono">{timezone}</span>
+          <label>
+            Time zone
+            <select
+              value={timezone}
+              disabled={disabled}
+              onChange={(event) => setTimezone(event.target.value)}
+            >
+              {timeZoneOptions(timezone).map((zone) => (
+                <option key={zone} value={zone}>
+                  {zone}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
       <div className="project-member-actions">

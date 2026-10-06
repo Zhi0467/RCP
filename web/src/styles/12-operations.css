@@ -1183,10 +1183,10 @@
   color: var(--night-moon);
 }
 /* Controls keep their own surfaces, so they keep the page's ink. */
-.project-consolidation :is(.button, input) {
+.project-consolidation :is(.button, input, select) {
   color: var(--ink);
 }
-.project-consolidation :is(button, input):focus-visible {
+.project-consolidation :is(button, input, select):focus-visible {
   outline: 2px solid var(--night-moon);
   outline-offset: 2px;
 }
