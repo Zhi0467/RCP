@@ -2390,6 +2390,7 @@ export function NodeChat({
                     key={`${project.id}:${chatId}`}
                     apiBase={questionApiBase}
                     chatId={chatId}
+                    machine={config.run_on}
                     disabled={readOnly}
                     onRequestedChange={setBrowserOn}
                   />

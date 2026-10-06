@@ -1609,6 +1609,12 @@
   font-size: var(--type-2xs);
   margin: 3px 0 0;
 }
+.chat-browser-control > p.chat-browser-warning {
+  background: var(--amber-soft);
+  border-radius: 6px;
+  color: var(--ink);
+  padding: 4px 6px;
+}
 .chat-option > label {
   align-items: center;
   display: flex;

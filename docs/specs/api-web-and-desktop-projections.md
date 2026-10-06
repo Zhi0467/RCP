@@ -460,6 +460,9 @@ probes and schedules a fresh background check of that machine.
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
+`GET /api/projects/{project_id}/machines/{machine_alias}/browser` returns the
+browser readiness of that machine's execution account; the composer reads it
+while a chat's Browser toggle is on and warns when it is not ready.
 
 `GET /api/projects/{project_id}/watchers` supplies the external job rows for both
 scheduler and helper work. Every external row includes its required shell check,

@@ -142,6 +142,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/machines"),
     (("POST",), "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve"),
     (("POST",), "/api/projects/{project_id}/machines/{machine_alias}/compute/check"),
+    (("GET",), "/api/projects/{project_id}/machines/{machine_alias}/browser"),
     (("GET",), "/api/projects/{project_id}/chat-display"),
     (("GET",), "/api/projects/{project_id}/chats/{chat_id}/browser"),
     (("PUT",), "/api/projects/{project_id}/chats/{chat_id}/browser"),

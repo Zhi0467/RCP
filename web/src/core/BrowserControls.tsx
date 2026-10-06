@@ -1,8 +1,8 @@
 import { useEffect, useId, useState } from "react";
-import { loadChatBrowser, setChatBrowser } from "./api";
+import { loadChatBrowser, loadProjectMachineBrowser, setChatBrowser } from "./api";
 import { browserReason } from "./browserStatus";
 import { errorMessage } from "./errors";
-import type { BrowserTurnStatus } from "./types";
+import type { BrowserTurnStatus, MachineBrowserReadiness } from "./types";
 
 export function BrowserToggle({
   checked,
@@ -49,11 +49,14 @@ export function BrowserToggle({
 export function ChatBrowserControl({
   apiBase,
   chatId,
+  machine,
   disabled = false,
   onRequestedChange,
 }: {
   apiBase: string;
   chatId: string;
+  /** The project machine alias the next turn runs on, whose browser is checked while on. */
+  machine: string;
   disabled?: boolean;
   onRequestedChange?: (requested: boolean) => void;
 }) {
@@ -76,6 +79,28 @@ export function ChatBrowserControl({
       cancelled = true;
     };
   }, [apiBase, chatId]);
+  const [checked, setChecked] = useState<{
+    machine: string;
+    readiness: MachineBrowserReadiness;
+  } | null>(null);
+  useEffect(() => {
+    if (!requested || !machine) return;
+    let cancelled = false;
+    // A failed check shows nothing here; the turn itself reports an unavailable browser.
+    void loadProjectMachineBrowser(apiBase, machine).then(
+      (readiness) => {
+        if (!cancelled) setChecked({ machine, readiness });
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, machine, requested]);
+  const warning =
+    requested && checked?.machine === machine && checked.readiness.status !== "ready"
+      ? browserReason(checked.readiness.status)
+      : null;
   async function change(value?: boolean) {
     setPending(true);
     setError(null);
@@ -108,6 +133,12 @@ export function ChatBrowserControl({
         onChange={(value) => void change(value)}
       />
       {pending && <p role="status">Saving Browser preference…</p>}
+      {warning && (
+        <p role="status" className="chat-browser-warning">
+          {warning.reason}
+          {warning.fix ? ` ${warning.fix}` : ""}
+        </p>
+      )}
       {error && <p role="alert">{error}</p>}
       {error && (
         <button

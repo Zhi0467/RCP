@@ -86,6 +86,25 @@ def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch)
     assert client.post(f"{url}/machines/missing/compute/check", json={}).status_code == 422
 
 
+def test_project_machine_browser_reads_that_machines_account(compute_api, manifest, monkeypatch):
+    from rcp.browser import BrowserReadiness
+
+    app, client, url = compute_api
+    laptop = load_manifest(manifest.path).machine_map["laptop"]
+    calls = []
+
+    def readiness(*, host, os_account, data_dir):
+        calls.append((host, os_account, data_dir))
+        return BrowserReadiness(status="not_installed")
+
+    monkeypatch.setattr("rcp.api.project_state.browser_readiness", readiness)
+    response = client.get(f"{url}/machines/laptop/browser")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "not_installed"
+    assert calls == [(laptop.host, laptop.os_account, app.state.catalog.data_dir)]
+    assert client.get(f"{url}/machines/missing/browser").status_code == 422
+
+
 def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_api, manifest):
     app, client, url = compute_api
     store = app.state.services.store
