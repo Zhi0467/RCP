@@ -198,11 +198,16 @@ class HostRuntime:
         }
         self.env["PLAYWRIGHT_BROWSERS_PATH"] = str(self.tools / "browsers")
         self.env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+        self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
+        if self.backend == "systemd_user":
+            # The daemon's socket lives under TMPDIR. A service with PrivateTmp (the team
+            # server) sees its own /tmp, the user manager running the daemon another; the
+            # account's runtime directory is the same for both, and for the agent's CLI.
+            self.env["TMPDIR"] = self.env["XDG_RUNTIME_DIR"]
         self.node = shutil.which("node", path=self.env.get("PATH"))
         self.npm = shutil.which("npm", path=self.env.get("PATH"))
         self.cli = self.tools / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"
         self.core = self.tools / "node_modules" / "playwright-core"
-        self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
         self.hidden_read_command: list[str] = []
         self.hidden_read_enforcement: dict | None = None
         self.hidden_read_fingerprint: str | None = None
@@ -584,6 +589,10 @@ class HostRuntime:
             if result.returncode:
                 raise UnavailableError("owner_unavailable", result.stderr.strip())
         while not self.alive(record):
+            if time.monotonic() >= self.deadline:
+                raise UnavailableError(
+                    "start_failed", "The browser daemon is running but its session never answered"
+                )
             if not self.owner_status(record):
                 log = owner_dir / "daemon.log"
                 raise UnavailableError(
@@ -681,7 +690,15 @@ class HostRuntime:
         if not self.node:
             raise UnavailableError("node_missing", "Node is missing from the execution account")
         launcher = self.tools / "bin" / "playwright-cli"
-        atomic_write(launcher, f'#!/bin/sh\nexec {shlex.join([self.node, str(self.cli)])} "$@"\n')
+        export = (
+            f"export TMPDIR={shlex.quote(self.env['TMPDIR'])}\n"
+            if self.backend == "systemd_user"
+            else ""
+        )
+        atomic_write(
+            launcher,
+            f'#!/bin/sh\n{export}exec {shlex.join([self.node, str(self.cli)])} "$@"\n',
+        )
         launcher.chmod(0o700)
         return str(launcher.parent)
 
@@ -778,10 +795,15 @@ class HostRuntime:
             "leases": {},
             "last_used": time.time(),
         }
+        deadline = self.deadline
         try:
             self.save(record)
+            # A smoke daemon an interrupted install left behind still holds the unit name.
+            self.stop_owner(record)
+            self.deadline = min(deadline, time.monotonic() + self.limits["start"])
             self.start(record, self.executable())
         finally:
+            self.deadline = deadline
             self.close_record(record, delete=True)
         atomic_write(self.tools / "verified.json", json.dumps({"version": CLI_VERSION}))
         return self.readiness()

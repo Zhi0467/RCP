@@ -1705,7 +1705,10 @@ headless configuration, persistent profile, and output directory. Ambient
 attachment, headed, profile, and storage-state settings are overridden. Launch
 environment overrides are removed. The pinned daemon entry point runs directly
 under launchd or a lingering systemd user manager, so the OS owns the daemon
-rather than its short-lived CLI launcher. A missing process owner makes the
+rather than its short-lived CLI launcher. On Linux the daemon, RCP's probes, and
+the agent's CLI launcher share `TMPDIR=$XDG_RUNTIME_DIR`, because a service with
+`PrivateTmp` (the team server) and the user manager see different `/tmp`
+directories and the session socket lives under `TMPDIR`. A missing process owner makes the
 browser unavailable; a systemd account without linger reports `linger_disabled`
 before an install is offered.
 

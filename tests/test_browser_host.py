@@ -242,6 +242,7 @@ def test_install_repairs_broken_cli_only_when_os_owners_are_stopped(
     monkeypatch.setattr(runtime, "readiness", lambda **kw: {"status": "ready"})
     monkeypatch.setattr(runtime, "executable", lambda: "/owned/chromium")
     monkeypatch.setattr(runtime, "start", lambda *a: None)
+    monkeypatch.setattr(runtime, "stop_owner", lambda record: None)
     monkeypatch.setattr(runtime, "close_record", lambda *a, **kw: None)
     installed = []
     probe_run = runtime.run
@@ -506,3 +507,18 @@ def test_readiness_answers_installing_at_once_and_ignores_a_killed_install(tmp_p
     # The lock is free, so the marker is stale: it is dropped, not reported.
     assert dispatch(request(tmp_path, action="readiness"))["status"] != "installing"
     assert not marker.exists()
+
+
+def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, monkeypatch):
+    import os
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    runtime = HostRuntime(request(tmp_path, environment={"PATH": "/usr/bin", "TMPDIR": "/tmp"}))
+    runtime.node = "/usr/bin/node"
+    runtime_dir = f"/run/user/{os.getuid()}"
+    # Probes and CLI calls use runtime.env; the daemon gets daemon_env; agents the launcher.
+    assert runtime.env["TMPDIR"] == runtime_dir
+    assert runtime.daemon_env()["TMPDIR"] == runtime_dir
+    launcher = Path(runtime.cli_launcher()) / "playwright-cli"
+    assert f"export TMPDIR={runtime_dir}\n" in launcher.read_text()
