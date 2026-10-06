@@ -226,7 +226,7 @@ export function ProjectConsolidation({
           <NightStrip nights={recentNights} />
         </div>
       ) : null}
-      <div className="consolidation-enable">
+      <div className="project-member-actions">
         <label>
           Time
           <input
@@ -250,8 +250,6 @@ export function ProjectConsolidation({
             ))}
           </select>
         </label>
-      </div>
-      <div className="project-member-actions">
         {schedule ? (
           <>
             <button
