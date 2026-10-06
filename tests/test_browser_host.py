@@ -484,3 +484,25 @@ def test_agent_cli_runs_with_the_checked_node_not_the_first_on_path(tmp_path, mo
         check=True,
     )
     assert result.stdout.split() == ["checked", str(runtime.cli), "snapshot"]
+
+
+def test_readiness_answers_installing_at_once_and_ignores_a_killed_install(tmp_path):
+    import fcntl
+    import time
+
+    from rcp.browser.host import INSTALL_MARKER
+
+    root = tmp_path / "browser"
+    root.mkdir()
+    marker = root / INSTALL_MARKER
+    marker.touch()
+    with (root / "host.lock").open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        started = time.monotonic()
+        result = dispatch(request(tmp_path, action="readiness"))
+        assert result["status"] == "installing"
+        assert time.monotonic() - started < 5
+        fcntl.flock(held, fcntl.LOCK_UN)
+    # The lock is free, so the marker is stale: it is dropped, not reported.
+    assert dispatch(request(tmp_path, action="readiness"))["status"] != "installing"
+    assert not marker.exists()

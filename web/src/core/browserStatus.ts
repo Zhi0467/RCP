@@ -5,6 +5,10 @@ const reasons: Record<string, { label: string; reason: string; fix?: string }> =
     reason: "The browser is not installed.",
     fix: "Install it from the machine card.",
   },
+  installing: {
+    label: "Installing…",
+    reason: "The browser is being installed on this machine.",
+  },
   node_missing: {
     label: "Node missing",
     reason: "Node.js is missing.",

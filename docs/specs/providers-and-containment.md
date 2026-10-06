@@ -1727,7 +1727,9 @@ profile together with that owner's page snapshots and logs. A confirmed profile 
 workspace is retired, with its profile, only after its OS owner is proven
 stopped, because a new stage gets a new owner; a live or unknown owner remains
 fenced without blocking other owners' acquisition. A partly written install
-reads as not installed, so Install can repair it.
+reads as not installed, so Install can repair it. While Install holds the host
+lock, readiness and a second Install answer `installing` at once instead of
+waiting for the lock; the machine card re-checks until it settles.
 Closing an active owner waits for its last lease to finish. Idle timeout
 is passed in milliseconds from the seconds-based limit. Failed remote cleanup
 and release remain durable and retry on later ensure or install calls, one

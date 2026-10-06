@@ -103,8 +103,13 @@ def atomic_write(path: Path, text: str) -> None:
         Path(name).unlink(missing_ok=True)
 
 
+# Written by Install while it holds the host lock. Trusted only while the lock is held,
+# so a marker left by a killed install never reports a phantom one.
+INSTALL_MARKER = "installing"
+
+
 @contextmanager
-def host_lock(root: Path, timeout: float):
+def host_lock(root: Path, timeout: float, *, report_install: bool = False):
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink() or root.stat().st_uid != os.getuid():
         raise UnavailableError("storage_unavailable", "Browser root is not an owned directory")
@@ -116,6 +121,14 @@ def host_lock(root: Path, timeout: float):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                # A running install holds the lock for minutes; answer now instead of waiting.
+                with suppress(FileNotFoundError):
+                    if report_install:
+                        started = (root / INSTALL_MARKER).stat().st_mtime
+                        minutes = max(0, int((time.time() - started) // 60))
+                        raise UnavailableError(
+                            "installing", f"Install started {minutes} min ago"
+                        ) from None
                 if time.monotonic() >= deadline:
                     raise UnavailableError(
                         "busy", "Another browser operation is still running"
@@ -732,6 +745,13 @@ class HostRuntime:
                 alive = self.owner_status(record)
             if alive:
                 return self.readiness_result("busy", "Close RCP browser sessions before installing")
+        atomic_write(self.root / INSTALL_MARKER, "")
+        try:
+            return self._install()
+        finally:
+            (self.root / INSTALL_MARKER).unlink(missing_ok=True)
+
+    def _install(self) -> dict:
         self.tools.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.run(
             [
@@ -776,7 +796,13 @@ def dispatch(request: dict) -> dict:
                 "account_mismatch", "SSH answered as a different execution account"
             )
         runtime = HostRuntime(request)
-        with host_lock(runtime.root, max(0.001, runtime.deadline - time.monotonic())):
+        with host_lock(
+            runtime.root,
+            max(0.001, runtime.deadline - time.monotonic()),
+            report_install=action in {"readiness", "install"},
+        ):
+            # Holding the lock proves no install runs; drop a marker a killed one left.
+            (runtime.root / INSTALL_MARKER).unlink(missing_ok=True)
             return getattr(runtime, action)()
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         code = exc.code if isinstance(exc, UnavailableError) else "runtime_error"

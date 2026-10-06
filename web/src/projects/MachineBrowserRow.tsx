@@ -4,6 +4,8 @@ import { browserReason } from "../core/browserStatus";
 import { errorMessage } from "../core/errors";
 import type { MachineBrowserReadiness } from "../core/types";
 
+const INSTALL_POLL_MS = 15_000;
+
 export function MachineBrowserRow({
   machineId,
   disabled,
@@ -33,6 +35,25 @@ export function MachineBrowserRow({
       cancelled = true;
     };
   }, [machineId]);
+  // An install started earlier, maybe from another page, finishes on its own.
+  useEffect(() => {
+    if (readiness?.status !== "installing" || pending !== null) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void loadMachineBrowser(machineId).then(
+        (result) => {
+          if (!cancelled) setReadiness(result);
+        },
+        (failure) => {
+          if (!cancelled) setError(errorMessage(failure));
+        },
+      );
+    }, INSTALL_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [machineId, readiness, pending]);
   async function run(action: "check" | "install" | "linger") {
     setPending(action);
     setError(null);
