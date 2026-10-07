@@ -107,7 +107,12 @@ test("attention decoding validates shape and referenced graph member types", () 
     pending_proposal_ids: ["proposal"],
     decisions_awaiting_choice_ids: ["decision"],
     open_blocker_ids: ["blocker"],
-    proposal_actions: { proposal: [{ text: "Review this Proposal." }] },
+    proposal_actions: {
+      proposal: [
+        { text: "Review this Proposal." },
+        { label: "statement", before: "Old wording.", text: "New wording." },
+      ],
+    },
     decision_prior_choices: {},
   };
 

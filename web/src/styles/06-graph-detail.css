@@ -19,6 +19,13 @@
   line-height: 1.42;
   margin: 0;
 }
+.proposal-action-node {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+}
+.proposal-field-change {
+  margin-top: 10px;
+}
 .card-actions {
   display: flex;
   flex-wrap: wrap;

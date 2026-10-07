@@ -94,7 +94,7 @@ def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
         "decisions_awaiting_choice_ids": ["dec/revisit"],
         "open_blocker_ids": ["blk/asserted"],
         "proposal_actions": {
-            "prop/pending": [{"label": None, "text": "Choose."}],
+            "prop/pending": [{"label": None, "text": "Choose.", "before": None}],
         },
         "decision_prior_choices": {},
     }
@@ -187,6 +187,60 @@ def test_graph_attention_projection_expands_proposal_removal_incident_relations(
     assert len(project_graph_attention(state).proposal_actions["prop/remove"]) == 2
 
 
+def test_graph_attention_projection_pairs_each_changed_field_with_its_current_value() -> None:
+    state = GraphState(
+        nodes={
+            "hyp/vague": Hypothesis(
+                id="hyp/vague",
+                type="hypothesis",
+                title="Replanning may help",
+                statement="Replanning may help.",
+                status="active",
+            )
+        },
+        proposals={
+            "prop/sharpen": Proposal.model_validate(
+                {
+                    "id": "prop/sharpen",
+                    "title": "Sharpen the hypothesis",
+                    "card": {"decision_needed": "Approve the sharper wording."},
+                    "ops": [
+                        {
+                            "op": "update_nodes",
+                            "intent": "content_change",
+                            "nodes": [
+                                {
+                                    "id": "hyp/vague",
+                                    "changes": {
+                                        "title": "Replanning restores plasticity",
+                                        "statement": "Replanning restores plasticity after shifts.",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        },
+    )
+
+    assert project_graph_attention(state).model_dump(mode="json")["proposal_actions"] == {
+        "prop/sharpen": [
+            {"label": "Node", "text": "Replanning may help", "before": None},
+            {
+                "label": "title",
+                "text": "Replanning restores plasticity",
+                "before": "Replanning may help",
+            },
+            {
+                "label": "statement",
+                "text": "Replanning restores plasticity after shifts.",
+                "before": "Replanning may help.",
+            },
+        ]
+    }
+
+
 @pytest.mark.parametrize(
     "operation",
     [
@@ -215,7 +269,9 @@ def test_graph_attention_falls_back_for_historical_empty_proposal_operations(
     )
 
     assert project_graph_attention(state).model_dump(mode="json")["proposal_actions"] == {
-        "prop/historical": [{"label": None, "text": "Review the original proposal."}]
+        "prop/historical": [
+            {"label": None, "text": "Review the original proposal.", "before": None}
+        ]
     }
 
 

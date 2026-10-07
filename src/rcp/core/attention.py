@@ -161,18 +161,14 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
         if node is not None:
             lines = [ProposalActionLine(label="Node", text=node.title)]
             node_payload = node.model_dump(mode="json")
-            for field, proposed in update.changes.items():
-                label = _compact_label(field)
-                lines.extend(
-                    [
-                        ProposalActionLine(
-                            label=f"Current {label}", text=_display_value(node_payload.get(field))
-                        ),
-                        ProposalActionLine(
-                            label=f"Proposed {label}", text=_display_value(proposed)
-                        ),
-                    ]
+            lines.extend(
+                ProposalActionLine(
+                    label=_compact_label(field),
+                    before=_field_value(node_payload.get(field)),
+                    text=_field_value(proposed),
                 )
+                for field, proposed in update.changes.items()
+            )
     elif isinstance(operation, ProposalRemovalOperation):
         if not operation.node_ids:
             return fallback
@@ -259,6 +255,11 @@ def _relation_text(state: GraphState, source: str, target: str, relation: str) -
 
 def _compact_label(value: str) -> str:
     return value.replace("_", " ")
+
+
+def _field_value(value: Any) -> str:
+    """A field value set apart by the card's diff layout, so prose needs no quotes."""
+    return value if isinstance(value, str) and value else _display_value(value)
 
 
 def _display_value(value: Any) -> str:

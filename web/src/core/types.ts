@@ -1329,9 +1329,10 @@ export function decodeGraphAttentionProjection(
       lines.some(
         (line) =>
           !isPlainRecord(line) ||
-          !hasExactKeys(line, Object.hasOwn(line, "label") ? ["label", "text"] : ["text"]) ||
+          !hasOnlyKeys(line, ["label", "text", "before"], ["text"]) ||
           !isNonEmptyString(line.text) ||
-          (Object.hasOwn(line, "label") && line.label !== null && !isNonEmptyString(line.label)),
+          (Object.hasOwn(line, "label") && line.label !== null && !isNonEmptyString(line.label)) ||
+          (Object.hasOwn(line, "before") && line.before !== null && !isNonEmptyString(line.before)),
       )
     ) {
       throw new Error(`Project attention projection has invalid action for ${proposalId}.`);
@@ -1829,6 +1830,8 @@ export interface GraphAttentionProjection {
 export interface ProposalActionLine {
   label?: string | null;
   text: string;
+  /** A field change's current value; `text` is then the proposed value. */
+  before?: string | null;
 }
 
 export interface ProjectCounts {

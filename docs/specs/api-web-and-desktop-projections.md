@@ -326,7 +326,9 @@ status cannot compile.
 Project snapshots and transition projections publish exact graph-attention
 membership as pending Proposal ids, Decisions awaiting choice, and asserted
 open Blocker ids. Pending Proposals additionally publish their ordered action
-lines, including incident relations removed with a node. Counts are lengths of
+lines, including incident relations removed with a node. A field-change line
+carries the node's current value as `before` and the proposed value as `text`;
+the card shows it as branch diffs show a changed field. Counts are lengths of
 that same projection. The browser maps those ids and action lines onto the graph
 it is presenting; Inbox, Overview, and Runs never reapply the membership or
 Proposal-operation predicates. A backend preview supplies both the candidate

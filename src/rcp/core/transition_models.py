@@ -40,10 +40,15 @@ class GraphHeadRef(_StrictTransitionModel):
 
 
 class ProposalActionLine(_StrictTransitionModel):
-    """One backend-rendered line describing a pending Proposal's exact effect."""
+    """One backend-rendered line describing a pending Proposal's exact effect.
+
+    A field change carries the current value in ``before`` and the proposed one
+    in ``text``, so the card can show it the way branch diffs show a field.
+    """
 
     label: str | None = None
     text: str
+    before: str | None = None
 
 
 class GraphAttentionProjection(_StrictTransitionModel):

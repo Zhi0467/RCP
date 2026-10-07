@@ -109,12 +109,7 @@ export function ProposalJudgmentSection({
               <div>
                 <dt>Proposed action</dt>
                 <dd>
-                  {proposedAction.map((line, index) => (
-                    <div key={`${line.label ?? "action"}-${index}`}>
-                      {line.label && <strong>{line.label}: </strong>}
-                      <GlossaryText text={line.text} glossaryIndex={glossaryIndex} />
-                    </div>
-                  ))}
+                  <ProposedAction lines={proposedAction} glossaryIndex={glossaryIndex} />
                 </dd>
               </div>
             </dl>
@@ -149,6 +144,56 @@ export function ProposalJudgmentSection({
         );
       })}
     </section>
+  );
+}
+
+/**
+ * Field changes read like a branch diff: each field once, the current value
+ * struck through above the proposed one. Other lines stay labelled text.
+ */
+function ProposedAction({
+  lines,
+  glossaryIndex,
+}: {
+  lines: ProposalActionLine[];
+  glossaryIndex: GlossaryIndex;
+}) {
+  const hasFieldChanges = lines.some((line) => line.before != null);
+  return (
+    <>
+      {lines.map((line, index) => {
+        const key = `${line.label ?? "action"}-${index}`;
+        if (line.before != null)
+          return (
+            <div className="branch-change-field proposal-field-change" key={key}>
+              <span className="eyebrow">{line.label}</span>
+              <p className="branch-change-value main-before">
+                <span>Now</span>{" "}
+                <s>
+                  <GlossaryText text={line.before} glossaryIndex={glossaryIndex} />
+                </s>
+              </p>
+              <p className="branch-change-value branch">
+                <span>Proposed</span>{" "}
+                <GlossaryText text={line.text} glossaryIndex={glossaryIndex} />
+              </p>
+            </div>
+          );
+        // Beside field changes the node line only names what they change.
+        if (hasFieldChanges && line.label === "Node")
+          return (
+            <div className="proposal-action-node" key={key}>
+              <GlossaryText text={line.text} glossaryIndex={glossaryIndex} />
+            </div>
+          );
+        return (
+          <div key={key}>
+            {line.label && <strong>{line.label}: </strong>}
+            <GlossaryText text={line.text} glossaryIndex={glossaryIndex} />
+          </div>
+        );
+      })}
+    </>
   );
 }
 
