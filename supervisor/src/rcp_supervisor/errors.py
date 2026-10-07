@@ -45,6 +45,7 @@ class SupervisorUpdateRequired(SupervisorError):
 class ApplicationCommandError(SupervisorError):
     """A failed command with bounded stdout available to its result decoder."""
 
-    def __init__(self, message: str, output: bytes) -> None:
+    def __init__(self, message: str, output: bytes, diagnostic: str = "") -> None:
         super().__init__(message)
         self.output = output
+        self.diagnostic = diagnostic

@@ -144,8 +144,18 @@ def install_hook() -> None:
     (site / "sitecustomize.py").chmod(0o644)
 
 
-def select(bundle: Path, *, observe: bool = False, fail: bool = False) -> dict:
-    write_json(ROOT / "selection.json", {"bundle": str(bundle), "observe": observe, "fail": fail})
+def select(
+    bundle: Path, *, observe: bool = False, fail: bool = False, reject_project: str | None = None
+) -> dict:
+    write_json(
+        ROOT / "selection.json",
+        {
+            "bundle": str(bundle),
+            "observe": observe,
+            "fail": fail,
+            "reject_project": reject_project,
+        },
+    )
     return json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
 
 
@@ -162,6 +172,133 @@ def operator(*arguments: str, expected: int = 0) -> subprocess.CompletedProcess:
         stream.write(result.stdout)
     assert result.returncode == expected, result.stdout + result.stderr
     return result
+
+
+def step_fields(result: subprocess.CompletedProcess) -> list[dict]:
+    return json.loads(result.stdout.splitlines()[-1])["step"]["fields"]
+
+
+def service_pid() -> int:
+    return int(run(["systemctl", "show", "rcp.service", "--property=MainPID", "--value"]).stdout)
+
+
+def candidate_rehearses() -> bool:
+    """This interpreter runs the candidate wheel; ask it as the supervisor would."""
+    capability = json.loads(
+        run([sys.executable, "-I", "-m", "rcp.server_ops.deployment", "capabilities"]).stdout
+    )
+    return "update-rehearsal" in capability["commands"]
+
+
+def dry_run() -> dict:
+    """The unconfirmed update rehearses on a copy and changes nothing it serves from."""
+    roots = (
+        Path("/home/rcp/rcp-server/update-checkpoints"),
+        Path("/home/rcp/rcp-server/releases"),
+    )
+    before = {
+        "pid": service_pid(),
+        "selected": Path("/etc/rcp/supervisor/selected.json").read_bytes(),
+        "current": os.readlink("/etc/rcp/current"),
+        "entries": {str(root): sorted(path.name for path in root.iterdir()) for root in roots},
+    }
+    fields = step_fields(operator("update", expected=3))
+    after = {
+        "pid": service_pid(),
+        "selected": Path("/etc/rcp/supervisor/selected.json").read_bytes(),
+        "current": os.readlink("/etc/rcp/current"),
+        "entries": {str(root): sorted(path.name for path in root.iterdir()) for root in roots},
+    }
+    assert after == before, (before, after)
+    wait_health()
+    verdict = next(field["value"] for field in fields if field["name"] == "update_rehearsal")
+    assert verdict == "ready", fields
+    return {
+        "verdict": verdict,
+        "warnings": [field["value"] for field in fields if field["name"] == "update_warning"],
+        "service_unchanged": True,
+    }
+
+
+def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
+    """Admit an answered question's follow-up through the store's own path."""
+    from rcp.storage import AgentTaskRecord, AppStore
+
+    if not hasattr(AppStore, "admit_chat_question_followup"):
+        return {"followup": "unsupported"}
+    from rcp.core.models import AuthorizedHuman
+    from rcp.service import RunRequest, resolve_dispatch_authority
+    from rcp.storage.question_models import QuestionOrigin
+
+    store = AppStore(data_dir / "rcp.sqlite3")
+    member = store.space_user(fixture["member_id"])
+    assert member is not None
+    actor = AuthorizedHuman(
+        space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
+    )
+    operation_id = str(uuid.uuid4())
+    run_request = RunRequest(
+        provider="codex",
+        run_on="server",
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Which comparison?",
+        mode="discuss",
+    )
+    stage = str(data_dir / "run-stage" / operation_id)
+    task = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=fixture["project_id"],
+            kind="project_chat",
+            status="queued",
+            request=run_request.model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Queued",
+            authorized_by=actor,
+            dispatch_authority=resolve_dispatch_authority("project_chat", run_request),
+        )
+    )
+    store.mark_agent_task_running(operation_id)
+    store.checkpoint_agent_task(
+        operation_id, native_session_id="upgrade-session", stage_host="", stage_root=stage
+    )
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    question = store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="chat",
+            project_id=task.project_id,
+            owner_id=run_request.chat_id,
+            operation_id=operation_id,
+            provider="codex",
+            native_session_id="upgrade-session",
+            stage_root=stage,
+            stage_host="",
+            capability="discuss",
+            graph_target=task.graph_target,
+        ),
+        key="comparison",
+        question="Which comparison?",
+    )
+    store.answer_question(question.question_id, answer="Compare both.", resolved_by=actor)
+    followup = store.admit_chat_question_followup(question.question_id)
+    assert followup is not None
+    # Settle it so no service launch or maintenance drain depends on a provider.
+    store.complete_agent_task(followup.operation_id, applied_revision=None, result={})
+    close = getattr(store, "close", None)
+    if close is not None:
+        close()
+    return {"followup": "seeded", "operation_id": followup.operation_id}
+
+
+def assert_followup(fixture: dict, followup: dict) -> None:
+    if followup["followup"] == "unsupported":
+        return
+    path = f"/api/projects/{fixture['project_id']}/tasks/{followup['operation_id']}"
+    with request(path, cookie=session(fixture)) as response:
+        assert json.load(response)["operation_id"] == followup["operation_id"]
+    followup["served_after_update"] = True
 
 
 def backup() -> None:
@@ -268,6 +405,11 @@ def seed_turn_artifact(data_dir: Path, fixture: dict, label: str) -> dict:
         "artifact_id": descriptor.artifact_id,
         "sha256": hashlib.sha256(content).hexdigest(),
     }
+
+
+def seed_followup() -> None:
+    fixture = json.loads((ROOT / "state/fixture.json").read_text())
+    write_json(ROOT / "state/question-followup.json", seed_question_followup(DATA, fixture))
 
 
 def seed_artifact(label: str) -> None:
@@ -530,8 +672,28 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     service([old_python, "-I", str(SCRIPT), "seed-base-artifact"])
     base_artifact = json.loads((ROOT / "state/base-artifact.json").read_text())
     keep_artifact(fixture, base_artifact)
-    select(candidate, observe=True)
-    operator("update", "--confirm-target", confirmation)
+    # Written after the last outgoing backup: historical backups rejected its identity.
+    run(["systemctl", "stop", "rcp.service"])
+    service([old_python, "-I", str(SCRIPT), "seed-question-followup"])
+    run(["systemctl", "start", "rcp.service"])
+    wait_health()
+    followup = json.loads((ROOT / "state/question-followup.json").read_text())
+    rehearses = candidate_rehearses()
+    select(candidate)
+    rehearsal = dry_run() if rehearses else {"verdict": "not advertised"}
+    # A candidate that rehearses also reports backup rejections as warnings.
+    rejected = fixture["project_id"] if rehearses else None
+    select(candidate, observe=True, reject_project=rejected)
+    committed = operator("update", "--confirm-target", confirmation)
+    update_warnings = [
+        field["value"] for field in step_fields(committed) if field["name"] == "update_warning"
+    ]
+    if rejected is not None:
+        assert any(rejected in line for line in update_warnings), update_warnings
+    current = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
+    (site,) = (Path(current["release_directory"]) / ".venv/lib").glob("python*/site-packages")
+    for path in site.glob("rcp_installed_upgrade_inject.*"):
+        path.unlink()
     maintenance_receipt = ROOT / "maintenance-capture.json"
     base_kept_project_uncaptured = "unknown"
     if maintenance_receipt.is_file():
@@ -575,7 +737,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         )
     assert_serves(fixture, version)
     assert_kept_artifact(fixture, base_artifact)
-    current = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
+    assert_followup(fixture, followup)
     candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
     service([candidate_python, "-I", str(SCRIPT), "seed-candidate-artifact"])
     candidate_artifact = json.loads((ROOT / "state/candidate-artifact.json").read_text())
@@ -608,6 +770,14 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             "kept_artifacts": {"base": base_artifact, "candidate": candidate_artifact},
             "base_maintenance_kept_project_uncaptured": base_kept_project_uncaptured,
             "backup_after_candidate_keep": "protected",
+            "question_followup": followup,
+            "dry_run": rehearsal,
+            "injected_backup_rejection": {
+                "project_id": rejected,
+                "update_warnings": update_warnings,
+                "committed": True,
+                "project_served_after_update": rejected is not None,
+            },
             "port": PORT,
         },
     )
@@ -621,6 +791,7 @@ def main() -> None:
         "scratch-check",
         "seed-base-artifact",
         "seed-candidate-artifact",
+        "seed-question-followup",
     }:
         if (
             sys.platform != "linux"
@@ -633,6 +804,8 @@ def main() -> None:
             setup()
         elif sys.argv[1] == "seed":
             seed()
+        elif sys.argv[1] == "seed-question-followup":
+            seed_followup()
         elif sys.argv[1] in {"seed-base-artifact", "seed-candidate-artifact"}:
             seed_artifact(sys.argv[1].removeprefix("seed-").removesuffix("-artifact"))
         else:

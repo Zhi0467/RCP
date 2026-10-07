@@ -86,6 +86,7 @@ def test_installed_fault_observes_real_snapshot_and_exact_restore(tmp_path, monk
     monkeypatch.setattr(sys, "path", sys.path.copy())
     # Restore instrumentation after the test; these are the only production hooks.
     monkeypatch.setattr(driver, "followed_release", driver.followed_release)
+    monkeypatch.setattr(driver, "prepare_release", driver.prepare_release)
     monkeypatch.setattr(Coordinator, "__init__", Coordinator.__init__)
     receipt = tmp_path / "sqlite-capture.json"
     receipt.write_text('{"projects": []}')
