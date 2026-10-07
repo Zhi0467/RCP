@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import stat
@@ -9,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from rcp_supervisor import cli, driver
-from rcp_supervisor.errors import SupervisorError
+from rcp_supervisor.errors import ApplicationCommandError, SupervisorError
 from rcp_supervisor.events import EventEmitter
 from rcp_supervisor.operations import OperationBusy
 
@@ -180,28 +179,91 @@ def test_invalid_journal_never_takes_live_lock_bypass(monkeypatch):
         driver.recover(startup=True)
 
 
-def test_update_displays_bound_target_before_any_install_or_admission(monkeypatch, capsys):
+class DryRunRuntime:
+    """Supplies only what a dry run may touch; maintenance or selection would raise."""
+
+    def __init__(self, root: Path, outcome: str) -> None:
+        self.paths = driver.Paths(data_dir=root / "data", checkpoints_root=root / "checkpoints")
+        self.paths.checkpoints_root.mkdir()
+        self.outcome = outcome
+        self.requests: list[tuple[str, dict | None]] = []
+
+    remove_retained = driver.SystemRuntime.remove_retained
+
+    def filesystem(self, action, request):
+        if action == "workspace":
+            Path(request["directory"]).mkdir()
+            return {"directory": request["directory"]}
+        if action == "install":
+            directory = Path(request["releases_root"]) / "9"
+            directory.mkdir()
+            return {"release_directory": str(directory)}
+        assert action == "remove"
+        assert Path(request["directory"]).parent == Path(request["root"])
+        shutil.rmtree(request["directory"])
+        return {"status": "removed"}
+
+    def application(self, release, action, request=None, **_):
+        assert release["release_directory"].startswith(str(self.paths.checkpoints_root))
+        self.requests.append((action, request))
+        if action == "capabilities":
+            return {"commands": ["prepare"] + (["update-rehearsal"] * (self.outcome != "older"))}
+        assert request["data_dir"] == str(self.paths.data_dir)
+        assert Path(request["output_dir"]).parent.parent == self.paths.checkpoints_root
+        if self.outcome == "refused":
+            raise ApplicationCommandError("refused", b"", "migration failed")
+        warning = {"module": "backup", "project_id": "p1", "reason": "Inventory rejected."}
+        return {"version": 1, "status": "ready", "warnings": [warning]}
+
+
+@pytest.mark.parametrize("outcome", ["ready", "older", "refused"])
+def test_dry_run_rehearses_on_a_copy_without_admission_or_residue(
+    monkeypatch, capsys, tmp_path, outcome
+):
     target = {"release_tag": "v0.3.4", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
-    monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
-    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: object())
+    runtime = DryRunRuntime(tmp_path, outcome)
+    monkeypatch.setattr(driver, "recover", lambda **_: pytest.fail("a dry run never recovers"))
+    monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: runtime)
     monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
     monkeypatch.setattr(
-        driver, "followed_release", lambda runtime: SimpleNamespace(supervisor_version="0.1.1")
+        driver,
+        "followed_release",
+        lambda runtime: SimpleNamespace(supervisor_version="0.1.1", directory=tmp_path, build=9),
     )
     monkeypatch.setattr(driver, "release_receipt", lambda *args: target)
     monkeypatch.setattr(
-        driver,
-        "prepare_release",
-        lambda *args: pytest.fail("unconfirmed target must not be installed"),
+        driver, "prepare_release", lambda *args: pytest.fail("a dry run seals no release")
     )
     emitter = EventEmitter("server update", machine_readable=True)
     emitter.emit("running", "Verify")
-    assert driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter) == 3
-    events = capsys.readouterr().out.splitlines()
-    step = ServerStepEvent.model_validate_json(events[-1]).step
-    assert step.state == "operator_action_needed"
-    assert step.resume_argv[-1] == f"v0.3.4:{'a' * 64}"
-    assert json.loads(events[0])["event"] == "plan"
+    if outcome == "refused":
+        with pytest.raises(SupervisorError, match="migration failed"):
+            driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter)
+    else:
+        assert driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter) == 3
+        events = capsys.readouterr().out.splitlines()
+        step = ServerStepEvent.model_validate_json(events[-1]).step
+        assert step.state == "operator_action_needed"
+        assert step.resume_argv[-1] == f"v0.3.4:{'a' * 64}"
+        fields = {field.name: field.value for field in step.fields}
+        assert ("update_warning" in fields) == (outcome == "ready")
+        assert (fields["update_rehearsal"] == "ready") == (outcome == "ready")
+    assert [action for action, _ in runtime.requests] == ["capabilities"] + (
+        ["update-rehearsal"] * (outcome != "older")
+    )
+    assert not list(runtime.paths.checkpoints_root.iterdir())
+
+
+def test_dry_run_refuses_pending_recovery_without_performing_it(monkeypatch):
+    monkeypatch.setattr(driver, "recover", lambda **_: pytest.fail("a dry run never recovers"))
+    monkeypatch.setattr(
+        driver, "store_for", lambda paths: SimpleNamespace(active=lambda: {"phase": "activating"})
+    )
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: pytest.fail("machine inspected"))
+    emitter = EventEmitter("server update", machine_readable=True)
+    with pytest.raises(SupervisorError, match="recovery"):
+        driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter)
 
 
 @pytest.mark.parametrize("installed", ["0.1.8", "0.1.9", "0.2.0"])
@@ -220,6 +282,8 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
     monkeypatch.setattr(
         driver, "prepare_release", lambda *args: pytest.fail("application preparation started")
     )
+    monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(driver, "rehearse_update", lambda *args: [])
     monkeypatch.setattr(driver, "update", driver.update.__wrapped__)
     code = cli.main(["--machine-readable", "server", "update"])
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
@@ -264,7 +328,11 @@ def test_update_checks_target_floor_before_deployment(monkeypatch, capsys, versi
         calls.append("deploy")
         return {"phase": "committed"}
 
-    runtime = SimpleNamespace(require_capability=lambda _: None, application=application)
+    runtime = SimpleNamespace(
+        require_capability=lambda _: None,
+        application=application,
+        update_warnings=["backup p1: Inventory rejected."],
+    )
     monkeypatch.setattr(driver, "recover", lambda **_: None)
     monkeypatch.setattr(driver, "SystemRuntime", lambda *_: runtime)
     monkeypatch.setattr(driver, "selected_pointer", lambda _: previous)
@@ -285,6 +353,10 @@ def test_update_checks_target_floor_before_deployment(monkeypatch, capsys, versi
     assert code == (0 if allowed else 3)
     assert calls == (["prepare", "deploy"] if allowed else ["prepare"])
     assert step.state == ("succeeded" if allowed else "operator_action_needed")
+    if allowed:
+        assert {"update_warning": "backup p1: Inventory rejected."}.items() <= {
+            field.name: field.value for field in step.fields
+        }.items()
     if not allowed:
         assert step.actions
         assert previous == {"build": 1, "version_string": version}

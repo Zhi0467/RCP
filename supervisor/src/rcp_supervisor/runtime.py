@@ -172,6 +172,38 @@ def write_root_json(path: Path, document: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def warning_lines(result: dict) -> list[str]:
+    """Render a target's optional warnings; a warning never refuses an update.
+
+    Older targets omit the key. A malformed entry still reaches the operator.
+    """
+    warnings = result.get("warnings", [])
+    lines = []
+    for item in warnings if isinstance(warnings, list) else [None]:
+        item = item if isinstance(item, dict) else {}
+        subject = " ".join(
+            value
+            for value in (item.get("module"), item.get("project_id"))
+            if isinstance(value, str)
+        )
+        reason = item.get("reason")
+        reason = reason if isinstance(reason, str) else "The target reported an unreadable warning."
+        lines.append(safe_diagnostic(f"{subject or 'update'}: {reason}"))
+    return lines
+
+
+def _refusal_diagnostic(stderr: bytes) -> str:
+    """The application's final refusal envelope, when it wrote one."""
+    for line in reversed(stderr.decode("utf-8", errors="replace").splitlines()):
+        try:
+            envelope = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(envelope, dict) and isinstance(envelope.get("diagnostic"), str):
+            return safe_diagnostic(envelope["diagnostic"])
+    return ""
+
+
 class SystemRuntime:
     def __init__(
         self,
@@ -189,6 +221,8 @@ class SystemRuntime:
         self.startup = startup
         self.restore_request = restore_request
         self._deployment_lock_fd: int | None = None
+        # Operator lines the target reported beside its inventory and preparation.
+        self.update_warnings: list[str] = []
         account = pwd.getpwnam(paths.service_account)
         self.uid, self.gid = account.pw_uid, account.pw_gid
         self.config = read_config(paths, allow_legacy=allow_legacy_config)
@@ -366,9 +400,11 @@ class SystemRuntime:
                 if len(data) > MAX_APP_OUTPUT_BYTES:
                     raise SupervisorError("Application subprocess output exceeded its bound.")
                 if process.returncode:
+                    error.seek(0)
                     raise ApplicationCommandError(
                         f"Application subprocess refused the deployment operation; inspect {error_path}.",
                         data,
+                        _refusal_diagnostic(error.read(MAX_APP_OUTPUT_BYTES)),
                     )
                 return data
             finally:
@@ -441,7 +477,14 @@ class SystemRuntime:
             raise SupervisorError("The installed release pointer is not the root-owned link.")
         return os.readlink(self.paths.current)
 
-    def application(self, release: dict, action: str, request: dict | None = None) -> dict:
+    def application(
+        self,
+        release: dict,
+        action: str,
+        request: dict | None = None,
+        *,
+        timeout: float = APP_COMMAND_TIMEOUT_SECONDS,
+    ) -> dict:
         return self.service_json(
             [
                 self.python(release),
@@ -453,7 +496,13 @@ class SystemRuntime:
             ],
             request,
             release=release,
+            timeout=timeout,
         )
+
+    def _record_warnings(self, result: dict) -> None:
+        for line in warning_lines(result):
+            if line not in self.update_warnings:
+                self.update_warnings.append(line)
 
     def require_capability(self, release: dict, *, extra_commands: tuple[str, ...] = ()) -> None:
         capability = self.application(release, "capabilities")
@@ -760,6 +809,7 @@ class SystemRuntime:
                 "sqlite_receipt_sha256": capture["receipt_sha256"],
             },
         )
+        self._record_warnings(inventory)
         roots = [root["live"] for root in inventory["roots"]]
         self.filesystem(
             "check-space", {"directory": str(self.paths.checkpoints_root), "roots": roots}
@@ -793,6 +843,7 @@ class SystemRuntime:
                 "sqlite_receipt_sha256": capture["receipt_sha256"],
             },
         )
+        self._record_warnings(prepared)
         if operation["kind"] == "update":
             self.filesystem(
                 "check-roots",

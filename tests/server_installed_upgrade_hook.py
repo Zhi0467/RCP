@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path("/opt/rcp-installed-upgrade")
+INJECTION = "rcp_installed_upgrade_inject"
 
 
 def permission_state() -> dict:
@@ -51,6 +53,42 @@ def service_permissions(releases: Path = Path("/home/rcp/rcp-server/releases")) 
 def observe_uv_launch(event: str, arguments: tuple) -> None:
     if event == "subprocess.Popen" and Path(os.fsdecode(arguments[0])).name == "uv":
         print("Installed upgrade uv parent: " + json.dumps(permission_state()), file=sys.stderr)
+
+
+def install_inventory_rejection(release_directory: Path, project_id: str) -> None:
+    """Root plants this file into one installed candidate; never into a wheel."""
+    (site,) = (release_directory / ".venv/lib").glob("python*/site-packages")
+    shutil.copyfile(ROOT / "tests/server_installed_upgrade_hook.py", site / f"{INJECTION}.py")
+    (site / f"{INJECTION}.json").write_text(json.dumps({"reject_project": project_id}))
+    (site / f"{INJECTION}.pth").write_text(f"import {INJECTION}\n")
+    for suffix in (".py", ".json", ".pth"):
+        (site / f"{INJECTION}{suffix}").chmod(0o644)
+
+
+def reject_backup_inventory(project_id: str) -> None:
+    """Make the candidate's backup inventory reject one project through its own reader."""
+    from rcp.server_ops import backup_capture
+
+    registration = backup_capture.inspect_backup_project_registration
+    reinspect = backup_capture.reinspect_uncaptured_projects
+
+    def rejecting_registration(record, **kwargs):
+        if record.project_id == project_id:
+            raise ValueError("installed-upgrade injected backup inventory rejection")
+        return registration(record, **kwargs)
+
+    def reinspect_rejected(receipt):
+        # The outgoing capture may have accepted it; send it back through the reader.
+        projects = tuple(
+            project.model_copy(update={"status": "uncaptured"})
+            if project.project_id == project_id
+            else project
+            for project in receipt.projects
+        )
+        return reinspect(receipt.model_copy(update={"projects": projects}))
+
+    backup_capture.inspect_backup_project_registration = rejecting_registration
+    backup_capture.reinspect_uncaptured_projects = reinspect_rejected
 
 
 def install_hooks() -> None:
@@ -147,7 +185,17 @@ def install_hooks() -> None:
 
         self.boundary = boundary
 
+    prepare_release = driver.prepare_release
+
+    def prepare_rejecting_release(runtime, release, warnings=None):
+        receipt = prepare_release(runtime, release, warnings)
+        project_id = json.loads((ROOT / "selection.json").read_text()).get("reject_project")
+        if project_id:
+            install_inventory_rejection(Path(receipt["release_directory"]), project_id)
+        return receipt
+
     driver.followed_release = followed_release
+    driver.prepare_release = prepare_rejecting_release
     Coordinator.__init__ = initialize
 
 
@@ -160,6 +208,17 @@ if __name__ == "sitecustomize":
             install_hooks()
     except Exception as exc:
         print(f"Installed upgrade instrumentation failed: {exc}", file=sys.stderr)
+        os._exit(97)
+
+# Only the candidate's deployment worker sees the injected rejection; its served
+# application and backups read every project normally.
+if __name__ == INJECTION and "rcp.server_ops.deployment" in sys.orig_argv:
+    try:
+        reject_backup_inventory(
+            json.loads(Path(__file__).with_name(f"{INJECTION}.json").read_text())["reject_project"]
+        )
+    except Exception as exc:
+        print(f"Installed upgrade injection failed: {exc}", file=sys.stderr)
         os._exit(97)
 
 if __name__ == "__main__":
