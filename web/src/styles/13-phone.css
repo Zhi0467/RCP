@@ -87,4 +87,40 @@
   .agent-list-filters button {
     padding: 0 14px;
   }
+
+  /* A node window's header and body scroll as one, so a long title cannot
+     take the screen from the fields; the window buttons sit above the title
+     instead of narrowing it, and the actions stay pinned at the bottom. */
+  .node-detail-drawer {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .node-detail-drawer > header {
+    flex: none;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+  }
+  .node-detail-drawer > header > div:first-child {
+    flex-basis: 100%;
+  }
+  .node-detail-drawer > header .window-actions {
+    margin: 0 0 4px auto;
+    order: -1;
+  }
+  .node-detail-drawer h2 {
+    font-size: var(--type-xl);
+  }
+  .node-detail-drawer .drawer-content {
+    flex: none;
+    overflow: visible;
+    padding: 0 16px 16px;
+  }
+  .node-detail-drawer > .drawer-actions {
+    background: var(--sheet);
+    bottom: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: auto;
+    position: sticky;
+  }
 }

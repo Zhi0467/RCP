@@ -129,6 +129,45 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       });
       assert.deepEqual(headerDefinition, { position: "fixed", onScreen: true });
 
+      // A long node title neither narrows beside the window buttons nor holds
+      // the screen: header and fields scroll as one, actions stay in view.
+      const nodeWindow = await page.evaluate(() => {
+        const frame = document.createElement("div");
+        frame.className = "floating-window node-detail-window";
+        frame.style.inset = "12px";
+        frame.innerHTML = `<aside class="detail-drawer node-detail-drawer">
+          <header data-drag-handle="true"><div><span class="eyebrow">Decision</span>
+            <h2>${"Output structure for the next learned denoiser: few lines, ".repeat(3)}</h2>
+            <div class="node-meta"><span class="mono">dec/a-long-identifier</span></div></div>
+            <div class="window-actions"><button class="icon-button">C</button>
+            <button class="icon-button">D</button><button class="icon-button">X</button></div>
+          </header>
+          <div class="drawer-content">${"<section><p>Field text.</p></section>".repeat(40)}</div>
+          <footer class="drawer-actions"><button class="button">Ask about this node</button></footer>
+        </aside>`;
+        document.body.append(frame);
+        const drawer = frame.querySelector("aside");
+        const title = drawer.querySelector("h2").getBoundingClientRect();
+        const header = drawer.querySelector("header").getBoundingClientRect();
+        drawer.scrollTop = drawer.scrollHeight;
+        const footer = drawer.querySelector("footer").getBoundingClientRect();
+        const box = drawer.getBoundingClientRect();
+        const result = {
+          titleShare: title.width / header.width,
+          scrolledHeaderAway:
+            drawer.querySelector("header").getBoundingClientRect().bottom < box.top,
+          footerInView: footer.bottom <= box.bottom + 1 && footer.top >= box.top,
+        };
+        frame.remove();
+        return result;
+      });
+      assert.ok(
+        nodeWindow.titleShare > 0.85,
+        `Title spans the header, got ${nodeWindow.titleShare}`,
+      );
+      assert.equal(nodeWindow.scrolledHeaderAway, true, "The header scrolls with the fields");
+      assert.equal(nodeWindow.footerInView, true, "Node actions stay pinned in view");
+
       // Touch selection settles without a pointer release: the offer follows the
       // selection itself, and nothing opens until the reader chooses Comment. The
       // selection ends inside a link: showing the offer re-renders the answer,
