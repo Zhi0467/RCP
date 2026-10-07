@@ -4446,7 +4446,7 @@ export default function App() {
         <Settings size={16} />
       </button>
       <LandingIdentityMenu
-        compact
+        compact={!phone}
         identity={actorIdentity}
         identityError={actorIdentityError}
         onRequestName={requestActorName}

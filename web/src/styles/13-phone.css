@@ -251,8 +251,15 @@
   .phone-project-menu > .trust-filter select {
     flex: 1;
   }
+  /* The account row is a labelled trigger, and its panel opens in the menu's
+     flow rather than floating off the menu's scroll box. */
   .phone-project-menu > .landing-identity-menu {
     margin: 4px 8px;
+  }
+  .phone-project-menu .landing-identity-panel {
+    margin-top: 8px;
+    position: static;
+    width: auto;
   }
   .phone-tab-bar {
     background: var(--surface);
