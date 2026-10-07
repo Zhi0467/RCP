@@ -158,6 +158,10 @@ test("the human start preserves and renders every overlap without adding a gate"
     assert.match(html, /data-overlap-omitted="4"/);
     assert.ok(html.includes(response.live_elsewhere.rows[1].started_by.display_name));
     assert.ok(!html.includes(response.live_elsewhere.rows[1].started_by.id));
+    // Host and path are visible text in the overlap list, not only a tooltip.
+    const visible = html.replace(/title="[^"]*"/g, "");
+    const shown = response.live_elsewhere.rows[0].checkout;
+    assert.ok(visible.includes(shown.repository_paths[0]));
     assert.doesNotMatch(html, /disabled|role="alert"/);
     const routes = [...html.matchAll(/href="([^"]+)"/g)].map((match) =>
       parseProjectHash(match[1].replaceAll("&amp;", "&")),

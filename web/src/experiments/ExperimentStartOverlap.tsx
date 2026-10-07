@@ -52,7 +52,7 @@ export function ExperimentStartOverlap({
                 : loop.started_by.display_name || "a member"}
             </span>
             {" · "}
-            <ExperimentCheckout checkout={loop.checkout} />
+            <ExperimentCheckout checkout={loop.checkout} detailed />
           </li>
         ))}
       </ul>

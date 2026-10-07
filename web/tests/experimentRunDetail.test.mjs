@@ -1439,6 +1439,7 @@ test("external job rows use watcher facts and keep Cancel independent of observa
     log_path: "/scratch/training.log",
     can_cancel: true,
     cancel_requested_by: "human-1",
+    cancel_requested_by_name: "Ada Researcher",
     cancel_requested_at: "2026-09-06T10:00:00Z",
     cancel_error: "Scheduler is unavailable",
     last_error: "Check could not connect",
@@ -1460,7 +1461,8 @@ test("external job rows use watcher facts and keep Cancel independent of observa
     }),
   );
 
-  assert.match(html, /human-1/);
+  assert.match(html, /Ada Researcher/);
+  assert.doesNotMatch(html, /human-1/);
   assert.match(html, /class="button compact watcher-action"/);
   assert.doesNotMatch(completed, /<button/);
 });

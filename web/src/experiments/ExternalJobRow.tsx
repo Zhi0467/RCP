@@ -44,7 +44,7 @@ export function ExternalJobRow({
       {cancellation.last_error && <span role="alert">{cancellation.last_error}</span>}
       {cancellation.cancel_requested_by && (
         <span>
-          Cancel requested by {cancellation.cancel_requested_by}
+          Cancel requested by {cancellation.cancel_requested_by_name || "a member"}
           {cancellation.cancel_requested_at &&
             ` · ${new Date(cancellation.cancel_requested_at).toLocaleString()}`}
         </span>

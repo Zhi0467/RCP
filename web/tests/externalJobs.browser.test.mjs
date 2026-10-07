@@ -37,6 +37,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
           ...watcher,
           can_cancel: cancellations === 1,
           cancel_requested_by: "human-1",
+          cancel_requested_by_name: "Ada Researcher",
           cancel_requested_at: new Date().toISOString(),
           cancel_error: cancellations === 1 ? "Scheduler unavailable; retry after repair" : null,
         },
@@ -64,7 +65,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     await cancel.waitFor({ state: "hidden" });
     assert.equal(cancellations, 2);
     assert.match(await job.locator(":scope > span").first().innerText(), /\bstopped\b/);
-    assert.match(await job.innerText(), /human-1/);
+    assert.match(await job.innerText(), /Ada Researcher/);
     assert.doesNotMatch(await job.locator(":scope > span").first().innerText(), /\bcompleted\b/);
 
     assert.equal(

@@ -229,6 +229,8 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["cancel_requested_by"] == store.local_owner.user_id
+    assert payload["cancel_requested_by_name"] == store.local_owner.display_name
+    assert payload["cancel_requested_by_name"]
     assert payload["cancel_requested_at"] and payload["cancel_error"] is None
     assert payload["status"] == "active" and payload["can_cancel"] is False
     assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).json() == payload
