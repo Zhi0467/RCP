@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 
@@ -415,3 +417,85 @@ def test_stop_requires_an_exact_identity(tmp_path) -> None:
         store.request_experiment_loop_stop(_PROJECT_ID, _CONTROL_NODE_ID)
     with pytest.raises(ValueError, match="exact episode or graph target"):
         store.settle_experiment_loop_stop(_PROJECT_ID, _CONTROL_NODE_ID)
+
+
+def _failed_remote_loop(store: AppStore) -> tuple[str, AgentTaskRecord]:
+    episode_id, root = _create_episode(store, "remote-root", GraphTargetRef())
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="remote-session",
+        stage_host="worker.example",
+        stage_root="/remote/rcp-stage",
+    )
+    store.fail_agent_task(root.operation_id, "interrupted fixture", status="interrupted")
+    store.request_episode_stop(episode_id)
+    return episode_id, root
+
+
+def test_other_target_watcher_writes_while_stop_probes_remote_workspace(tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, _root = _failed_remote_loop(store)
+    branch = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
+    _branch_id, branch_root = _create_episode(store, "branch-root", branch)
+    store.create_watchers([_watcher(store, "branch-watcher", branch_root, status="active")])
+    probing, release = Event(), Event()
+
+    def slow_probe(_stage, _path):
+        probing.set()
+        assert release.wait(timeout=5)
+        return False
+
+    monkeypatch.setattr("rcp.transport.RemoteRunStage.directory_exists", slow_probe)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        stop = executor.submit(
+            store.settle_experiment_loop_stop,
+            _PROJECT_ID,
+            _CONTROL_NODE_ID,
+            episode_id=episode_id,
+        )
+        try:
+            assert probing.wait(timeout=2)
+            write = executor.submit(
+                store.record_watcher_check,
+                "branch-watcher",
+                status="completed",
+                exit_code=0,
+                error=None,
+            )
+            watcher = write.result(timeout=2)
+            assert watcher.status == "completed" and watcher.graph_target == branch
+            assert not stop.done()
+        finally:
+            release.set()
+        settled = stop.result(timeout=2)
+    assert settled is not None and settled.stop_settled_at is not None
+    watcher = store.watcher("branch-watcher")
+    assert watcher is not None and watcher.status == "completed" and not watcher.notified
+
+
+@pytest.mark.parametrize("field", ["native_session_id", "stage_host", "stage_root"])
+def test_stop_discards_workspace_probe_when_saved_binding_changes(tmp_path, monkeypatch, field):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, root = _failed_remote_loop(store)
+
+    def rebind_during_probe(_stage, _path):
+        store.checkpoint_agent_task(root.operation_id, **{field: "replacement-binding"})
+        return False
+
+    monkeypatch.setattr("rcp.transport.RemoteRunStage.directory_exists", rebind_during_probe)
+    pending = store.settle_experiment_loop_stop(
+        _PROJECT_ID, _CONTROL_NODE_ID, episode_id=episode_id
+    )
+    assert pending is not None and pending.stop_settled_at is None
+    assert pending.session_diagnostic is None
+    assert "experiment_recovery_abandoned" not in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+    monkeypatch.setattr("rcp.transport.RemoteRunStage.directory_exists", lambda *_: False)
+    settled = store.settle_experiment_loop_stop(
+        _PROJECT_ID, _CONTROL_NODE_ID, episode_id=episode_id
+    )
+    assert settled is not None and settled.stop_settled_at is not None
+    assert "experiment_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }

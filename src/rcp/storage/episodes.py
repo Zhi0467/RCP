@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 
 from rcp.core.graph_targets import graph_target_json
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import AuthorizedHuman, EpisodeIsolation
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.digest import (
@@ -19,7 +19,9 @@ from rcp.storage.digest import (
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
+    AgentTaskReceiptRecord,
     AgentTaskRecord,
+    AutoResearchChildExperimentRecord,
     AutoResearchSpaceRunEpisodeState,
     AutoResearchSpaceRunProjectionSnapshot,
     AutoResearchSpaceRunTaskState,
@@ -28,6 +30,7 @@ from rcp.storage.models import (
     EpisodeEnding,
     EpisodeInvocationCeilingReached,
     EpisodeInvocationRecord,
+    EpisodeLoopMetadataSnapshot,
     EpisodeNotRunning,
     EpisodeRecord,
     EpisodeReportAttemptLimitReached,
@@ -46,6 +49,70 @@ _REPORT_ATTEMPT_LIMIT = 3
 
 class EpisodeStoreMixin(StoreMixinBase):
     """Mode-neutral episode lifecycle, operational budget, and report ledger."""
+
+    def episode_loop_metadata_snapshots(
+        self, episodes: list[EpisodeRecord]
+    ) -> dict[str, EpisodeLoopMetadataSnapshot]:
+        """Batch durable routes, isolation, and root launch receipts in one read snapshot."""
+
+        snapshots = {episode.episode_id: EpisodeLoopMetadataSnapshot() for episode in episodes}
+        if not snapshots:
+            return snapshots
+        episode_ids = list(snapshots)
+        placeholders = ",".join("?" for _ in episode_ids)
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            for row in connection.execute(
+                f"""
+                SELECT route.*, parent.graph_target_json AS parent_graph_target_json
+                FROM auto_research_child_experiments AS route
+                LEFT JOIN episodes AS parent ON parent.episode_id = route.auto_research_episode_id
+                WHERE route.child_episode_id IN ({placeholders})
+                """,
+                episode_ids,
+            ):
+                data = dict(row)
+                target = data.pop("parent_graph_target_json")
+                data["request"] = json.loads(data.pop("request_json"))
+                snapshot = snapshots[row["child_episode_id"]]
+                snapshot.route = AutoResearchChildExperimentRecord.model_validate(data)
+                snapshot.parent_graph_target = (
+                    GraphTargetRef.model_validate_json(target) if target is not None else None
+                )
+            for row in connection.execute(
+                f"""
+                SELECT episode.episode_id, isolation.binding_json
+                FROM episodes AS episode
+                JOIN episode_isolations AS isolation
+                  ON isolation.project_id = episode.project_id
+                 AND isolation.owner_episode_id = COALESCE(
+                     episode.isolation_owner_episode_id, episode.episode_id
+                 )
+                WHERE episode.episode_id IN ({placeholders})
+                """,
+                episode_ids,
+            ):
+                snapshots[row["episode_id"]].isolation = EpisodeIsolation.model_validate_json(
+                    row["binding_json"]
+                )
+            for row in connection.execute(
+                f"""
+                SELECT episode.episode_id AS metadata_episode_id, receipt.*
+                FROM episodes AS episode
+                JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
+                JOIN graph_run_receipts AS receipt ON receipt.operation_id = root.operation_id
+                WHERE episode.episode_id IN ({placeholders}) AND receipt.category = 'agent_launch'
+                ORDER BY receipt.receipt_id ASC
+                """,
+                episode_ids,
+            ):
+                data = dict(row)
+                episode_id = data.pop("metadata_episode_id")
+                data["payload"] = json.loads(data.pop("payload_json"))
+                snapshots[episode_id].launch_receipts.append(
+                    AgentTaskReceiptRecord.model_validate(data)
+                )
+        return snapshots
 
     def create_episode(self, record: EpisodeRecord) -> EpisodeRecord:
         self._validate_new_episode(record)

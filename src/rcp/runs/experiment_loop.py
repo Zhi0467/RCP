@@ -31,6 +31,7 @@ from rcp.background import AgentTaskExecution
 from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import UpdateNodesOperation as CoreUpdateNodesOperation
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
 from rcp.loop_status import LoopStatusProjection, chat_loop_status, loop_status_projection
@@ -1115,11 +1116,15 @@ def stage_chat_loop_status(
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
     *,
+    state: GraphState,
     graph_target: GraphTargetRef,
 ) -> dict[str, object] | None:
     """Fresh read-only status, independent of live watcher-maintenance resources."""
 
     if request.chat_scope != "node" or request.node_id is None:
+        return None
+    node = state.nodes.get(request.node_id)
+    if node is None or not project_type_of(state).is_control_node(node.type):
         return None
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     status = (

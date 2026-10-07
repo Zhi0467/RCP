@@ -147,6 +147,7 @@ class ExperimentControlState(BaseModel):
     # The subset of `reasons` a human resolves in the graph, published so no
     # reader has to tell graph gates from operational ones by matching prose.
     graph_reasons: list[str] = Field(default_factory=list)
+    isolated_start_reasons: list[str] = Field(default_factory=list)
     invocations_used: int = Field(ge=0)
     invocation_ceiling: int = Field(ge=1)
     invocations_remaining: int = Field(ge=0)
@@ -341,6 +342,7 @@ def derive_experiment_control_state(
         ready=not reasons,
         reasons=reasons,
         graph_reasons=list(graph_control.reasons),
+        isolated_start_reasons=[*graph_control.reasons, *fresh_start_reasons],
         invocations_used=invocations_used,
         invocation_ceiling=ceiling,
         invocations_remaining=max(ceiling - invocations_used, 0),

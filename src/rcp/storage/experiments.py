@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -53,6 +54,28 @@ from rcp.storage.questions import _question_record
 
 if TYPE_CHECKING:
     from rcp.watchers import ExperimentWatchSpec, WatcherBinding
+
+
+@dataclass(frozen=True)
+class _ExperimentResumeBinding:
+    native_session_id: str
+    stage_host: str
+    stage_root: str
+
+    def workspace_problem(self) -> str | None:
+        if self.stage_host:
+            from rcp.transport import RemoteRunStage
+
+            try:
+                available = RemoteRunStage(self.stage_host).directory_exists(self.stage_root)
+            except Exception as exc:
+                raise OSError("The saved provider workspace could not be checked.") from exc
+            if available is None:
+                raise OSError("The saved provider workspace could not be checked.")
+        else:
+            stage = Path(self.stage_root)
+            available = stage.is_dir() and not stage.is_symlink()
+        return None if available is True else "the saved provider workspace is unavailable"
 
 
 class ExperimentStoreMixin(StoreMixinBase):
@@ -2290,12 +2313,15 @@ class ExperimentStoreMixin(StoreMixinBase):
         """Check the exact saved Experiment session and workspace without changing state."""
 
         with self.connection() as connection:
-            return self._experiment_episode_resume_binding_problem(connection, operation_id)
+            binding = self._experiment_episode_resume_binding(connection, operation_id)
+        return binding if isinstance(binding, str) else binding.workspace_problem()
 
     @staticmethod
-    def _experiment_episode_resume_binding_problem(
+    def _experiment_episode_resume_binding(
         connection: sqlite3.Connection, operation_id: str
-    ) -> str | None:
+    ) -> _ExperimentResumeBinding | str:
+        """Validate persisted recovery inputs without contacting the execution host."""
+
         task = connection.execute(
             "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone()
@@ -2328,21 +2354,11 @@ class ExperimentStoreMixin(StoreMixinBase):
         # Experiment episodes are node chats: a persisted native session is RCP-owned.
         if task["kind"] != "node_chat" or not task["native_session_id"] or not task["stage_root"]:
             return "the attempt has no complete RCP-owned session and stage"
-        if task["stage_host"]:
-            from rcp.transport import RemoteRunStage
-
-            try:
-                available = RemoteRunStage(task["stage_host"]).directory_exists(task["stage_root"])
-            except Exception as exc:
-                raise OSError("The saved provider workspace could not be checked.") from exc
-            if available is None:
-                raise OSError("The saved provider workspace could not be checked.")
-        else:
-            stage = Path(task["stage_root"])
-            available = stage.is_dir() and not stage.is_symlink()
-        if available is not True:
-            return "the saved provider workspace is unavailable"
-        return None
+        return _ExperimentResumeBinding(
+            native_session_id=str(task["native_session_id"]),
+            stage_host=str(task["stage_host"] or ""),
+            stage_root=str(task["stage_root"]),
+        )
 
     def previous_experiment_episode(
         self,
@@ -2753,7 +2769,6 @@ class ExperimentStoreMixin(StoreMixinBase):
         """Reconcile a persisted stop once its authorized turn is no longer live."""
 
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             selected = self._experiment_episode_for_stop(
                 connection,
                 project_id,
@@ -2763,12 +2778,56 @@ class ExperimentStoreMixin(StoreMixinBase):
             )
             if selected is None:
                 return None
-            selected_episode_id, _selected_target = selected
+            selected_episode_id, selected_target = selected
+            requested = self._experiment_episode_row(connection, selected_episode_id)
+            bindings: dict[str, _ExperimentResumeBinding] = {}
+            if (
+                requested is not None
+                and requested["stop_requested_at"] is not None
+                and not requested["session_diagnostic"]
+            ):
+                for row in self._experiment_stop_unresolved_tasks(
+                    connection, project_id, control_node_id, selected_episode_id
+                ):
+                    operation_id = str(row["operation_id"])
+                    if self._experiment_episode_recovery_context_problem(connection, operation_id):
+                        break
+                    if row["status"] in {"paused", "failed", "interrupted"}:
+                        binding = self._experiment_episode_resume_binding(connection, operation_id)
+                        if isinstance(binding, str):
+                            break
+                        bindings[operation_id] = binding
+        # A host probe may take longer than SQLite's writer timeout. Hold no
+        # transaction while checking, then match each result to its current binding.
+        checked_bindings: dict[str, tuple[_ExperimentResumeBinding, str | None]] = {}
+        for operation_id, binding in bindings.items():
+            try:
+                checked_bindings[operation_id] = (binding, binding.workspace_problem())
+            except OSError:
+                logging.getLogger(__name__).warning(
+                    "Stop settlement could not check task %s's saved workspace; "
+                    "its recovery remains pending.",
+                    operation_id,
+                    exc_info=True,
+                )
+                return self.experiment_episode(selected_episode_id)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            selected = self._experiment_episode_for_stop(
+                connection,
+                project_id,
+                control_node_id,
+                episode_id=selected_episode_id,
+                graph_target=selected_target,
+            )
+            if selected is None:
+                return None
             quiescent = self._settle_experiment_loop_stop(
                 connection,
                 project_id,
                 control_node_id,
                 selected_episode_id,
+                checked_bindings,
             )
             if quiescent:
                 self._mark_episode_stop_skipped_in_connection(
@@ -2780,12 +2839,39 @@ class ExperimentStoreMixin(StoreMixinBase):
             stored = self._experiment_episode_row(connection, selected_episode_id)
             return self._experiment_episode_record(stored) if stored is not None else None
 
+    @staticmethod
+    def _experiment_stop_unresolved_tasks(
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        episode_id: str,
+    ) -> list[sqlite3.Row]:
+        # A superseded attempt does not count: only the newest attempt of each
+        # invocation is the turn the human can still act on, which is exactly what
+        # `experiment_loop_runtime` reports as `task_active`.
+        return connection.execute(
+            """
+            SELECT task.operation_id, task.status FROM graph_runs AS task
+            WHERE task.project_id = ?
+              AND json_extract(task.request_json, '$.patch_kind') = 'experiment_loop'
+              AND json_extract(task.request_json, '$.control_node_id') = ?
+              AND json_extract(task.request_json, '$.control_episode_id') = ?
+              AND task.status IN ('queued', 'running', 'pausing', 'paused', 'failed', 'interrupted')
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_runs AS child
+                  WHERE child.parent_operation_id = task.operation_id
+              )
+            """,
+            (project_id, control_node_id, episode_id),
+        ).fetchall()
+
     def _settle_experiment_loop_stop(
         self,
         connection: sqlite3.Connection,
         project_id: str,
         control_node_id: str,
         episode_id: str,
+        checked_bindings: dict[str, tuple[_ExperimentResumeBinding, str | None]],
     ) -> bool:
         """Terminalize this episode's observers once its authorized turn is resolved.
 
@@ -2804,24 +2890,9 @@ class ExperimentStoreMixin(StoreMixinBase):
             or requested["stop_requested_at"] is None
         ):
             return False
-        # A superseded attempt does not count: only the newest attempt of each
-        # invocation is the turn the human can still act on, which is exactly what
-        # `experiment_loop_runtime` reports as `task_active`.
-        unresolved = connection.execute(
-            """
-            SELECT task.operation_id, task.status FROM graph_runs AS task
-            WHERE task.project_id = ?
-              AND json_extract(task.request_json, '$.patch_kind') = 'experiment_loop'
-              AND json_extract(task.request_json, '$.control_node_id') = ?
-              AND json_extract(task.request_json, '$.control_episode_id') = ?
-              AND task.status IN ('queued', 'running', 'pausing', 'paused', 'failed', 'interrupted')
-              AND NOT EXISTS (
-                  SELECT 1 FROM graph_runs AS child
-                  WHERE child.parent_operation_id = task.operation_id
-              )
-            """,
-            (project_id, control_node_id, episode_id),
-        ).fetchall()
+        unresolved = self._experiment_stop_unresolved_tasks(
+            connection, project_id, control_node_id, episode_id
+        )
         if unresolved:
             diagnostic = requested["session_diagnostic"]
             if not diagnostic:
@@ -2830,18 +2901,17 @@ class ExperimentStoreMixin(StoreMixinBase):
                         connection, str(row["operation_id"])
                     )
                     if not diagnostic and row["status"] in {"paused", "failed", "interrupted"}:
-                        try:
-                            diagnostic = self._experiment_episode_resume_binding_problem(
-                                connection, str(row["operation_id"])
-                            )
-                        except OSError:
-                            logging.getLogger(__name__).warning(
-                                "Stop settlement could not check task %s's saved workspace; "
-                                "its recovery remains pending.",
-                                row["operation_id"],
-                                exc_info=True,
-                            )
-                            return False
+                        operation_id = str(row["operation_id"])
+                        binding = self._experiment_episode_resume_binding(connection, operation_id)
+                        if isinstance(binding, str):
+                            diagnostic = binding
+                        else:
+                            checked = checked_bindings.get(operation_id)
+                            if checked is None or checked[0] != binding:
+                                # Resume changed the session/stage during the probe;
+                                # leave Stop pending for a check of that exact binding.
+                                return False
+                            diagnostic = checked[1]
                     if diagnostic:
                         break
                 if diagnostic:

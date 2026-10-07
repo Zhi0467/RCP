@@ -41,7 +41,12 @@ from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS, SPACE_RUNS_COMPLETED_TTL
-from rcp.loop_status import EpisodeLoopMetadata, EpisodeStarter, LoopCheckout, episode_loop_metadata
+from rcp.loop_status import (
+    EpisodeLoopMetadata,
+    EpisodeStarter,
+    LoopCheckout,
+    episode_loop_metadata_from_snapshot,
+)
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
@@ -554,6 +559,7 @@ def space_runs(
         # an old branch without an indexed node stays an explicit history row.
         _cache_status, cached = catalog.cached_snapshot_status(record.project_id)
         main_state = _cached_graph_state(cached)
+        metadata_snapshots = store.episode_loop_metadata_snapshots(archived)
         for episode in archived:
             title = experiment_titles.get(
                 (record.project_id, episode.graph_target.key, episode.control_node_id)
@@ -562,26 +568,21 @@ def space_runs(
                 node = experiment_node(main_state, episode.control_node_id)
                 if node is not None:
                     title = node.title
-            route = (
-                store.auto_research_child_experiment(episode.episode_id)
-                if episode.mode == "experiment_loop"
-                else None
-            )
+            metadata_snapshot = metadata_snapshots[episode.episode_id]
+            route = metadata_snapshot.route if episode.mode == "experiment_loop" else None
             if route is not None and (
                 route.project_id != record.project_id
                 or route.control_node_id != episode.control_node_id
                 or (
                     episode.graph_target.kind == "branch"
-                    and not episode_on_branch(
-                        store, route.auto_research_episode_id, episode.graph_target.branch_id
-                    )
+                    and metadata_snapshot.parent_graph_target != episode.graph_target
                 )
             ):
                 raise ValueError("Archived Experiment route does not identify its durable episode.")
             entries.append(
                 _space_archived_run(
                     episode,
-                    metadata=episode_loop_metadata(store, episode),
+                    metadata=episode_loop_metadata_from_snapshot(episode, metadata_snapshot),
                     project_name=record.name,
                     project_reachable=record.reachable,
                     title=title,

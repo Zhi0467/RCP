@@ -41,6 +41,39 @@ def _status(prompt: str) -> dict:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["discuss", "work"])
+async def test_non_control_node_chat_has_no_loop_status(manifest, tmp_path, mode):
+    data_dir = tmp_path / "data"
+    loop = _Loop(create_named_app(str(manifest.path), data_dir=data_dir))
+    request = _resolved_graph_request(
+        loop.service,
+        "node_chat",
+        RunRequest(
+            chat_scope="node",
+            chat_id=str(uuid.uuid4()),
+            node_id="hyp/replanning-restores-plasticity",
+            message="Inspect this node.",
+            mode=mode,
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+        ),
+    )
+    execution = _execution(loop.store, loop.project_id, "non-control", request)
+    launcher = ScriptedLauncher([{}], message="Inspected.")
+    stream = stream_work_run if mode == "work" else stream_discuss_run
+    events = await _events(
+        stream(loop.service, cast(AgentLauncher, launcher), request, data_dir, execution=execution)
+    )
+    assert not [event.text for event in events if event.event == "error"]
+    blocks = [
+        json.loads(value)
+        for value in re.findall(r"```json\n(.*?)\n```", launcher.prompts[-1], re.S)
+    ]
+    assert all("loop_status" not in block for block in blocks)
+    assert not list(launcher.workspaces[0].parent.glob("inputs/loop-status-watchers-*.json"))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "mode", "continuation"),
     [

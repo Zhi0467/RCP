@@ -17,7 +17,12 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import LOOP_OVERLAP_MAX_BYTES, LOOP_OVERLAP_MAX_ROWS
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
-from rcp.storage.models import EpisodeEnding, EpisodeStatus, ExperimentControlProjectionSnapshot
+from rcp.storage.models import (
+    EpisodeEnding,
+    EpisodeLoopMetadataSnapshot,
+    EpisodeStatus,
+    ExperimentControlProjectionSnapshot,
+)
 
 
 class EpisodeStarter(BaseModel):
@@ -54,6 +59,7 @@ class LoopStarter(BaseModel):
 
     kind: Literal["human", "auto_research", "unknown"]
     id: str | None = None
+    display_name: str | None = None
 
 
 class LoopOverlapCheckout(BaseModel):
@@ -117,15 +123,39 @@ def episode_loop_metadata(
 ) -> EpisodeLoopMetadata:
     """Keep the initiator distinct from authorization and isolation ownership."""
 
-    route = store.auto_research_child_experiment(episode.episode_id)
+    owner_id = episode.isolation_owner_episode_id or episode.episode_id
+    snapshot = EpisodeLoopMetadataSnapshot(
+        route=store.auto_research_child_experiment(episode.episode_id),
+        isolation=store.episode_isolation(episode.project_id, owner_id),
+    )
+    if snapshot.isolation is None or snapshot.isolation.worktree is None:
+        if tasks is None:
+            root = (
+                store.agent_task(episode.root_operation_id) if episode.root_operation_id else None
+            )
+            tasks = [root] if root is not None else []
+        if episode.root_operation_id is not None and any(
+            task.operation_id == episode.root_operation_id for task in tasks
+        ):
+            snapshot.launch_receipts = store.agent_task_receipts_by_category(
+                episode.root_operation_id, "agent_launch"
+            )
+    return episode_loop_metadata_from_snapshot(episode, snapshot)
+
+
+def episode_loop_metadata_from_snapshot(
+    episode: EpisodeRecord, snapshot: EpisodeLoopMetadataSnapshot
+) -> EpisodeLoopMetadata:
+    """Render either a single-episode or batch-hydrated durable metadata input."""
+
+    route = snapshot.route
     parent_id = route.auto_research_episode_id if route is not None else None
     starter = EpisodeStarter(
         kind="auto_research" if parent_id else "human" if episode.authorized_by else "unknown",
         human=episode.authorized_by if parent_id is None else None,
         auto_research_episode_id=parent_id,
     )
-    owner_id = episode.isolation_owner_episode_id or episode.episode_id
-    isolation = store.episode_isolation(episode.project_id, owner_id)
+    isolation = snapshot.isolation
     checkout = LoopCheckout(
         kind="worktree" if episode.code_worktree else "shared",
         isolation_owner_episode_id=episode.isolation_owner_episode_id,
@@ -141,32 +171,21 @@ def episode_loop_metadata(
             isolation_owner_episode_id=binding.owner_episode_id,
         )
     else:
-        if tasks is None:
-            root = (
-                store.agent_task(episode.root_operation_id) if episode.root_operation_id else None
-            )
-            tasks = [root] if root is not None else []
-        for task in tasks:
-            if task.operation_id != episode.root_operation_id:
-                continue
-            receipts = store.agent_task_receipts_by_category(task.operation_id, "agent_launch")
-            for receipt in reversed(receipts):
-                roots = receipt.payload.get("canonical_repository_roots")
-                host = receipt.payload.get("execution_host")
-                if (
-                    isinstance(roots, list)
-                    and all(isinstance(path, str) for path in roots)
-                    and isinstance(host, str)
-                ):
-                    checkout = checkout.model_copy(
-                        update={
-                            "available": True,
-                            "execution_host": host,
-                            "repository_paths": list(roots),
-                        }
-                    )
-                    break
-            if checkout.available:
+        for receipt in reversed(snapshot.launch_receipts):
+            roots = receipt.payload.get("canonical_repository_roots")
+            host = receipt.payload.get("execution_host")
+            if (
+                isinstance(roots, list)
+                and all(isinstance(path, str) for path in roots)
+                and isinstance(host, str)
+            ):
+                checkout = checkout.model_copy(
+                    update={
+                        "available": True,
+                        "execution_host": host,
+                        "repository_paths": list(roots),
+                    }
+                )
                 break
     return EpisodeLoopMetadata(
         started_by=starter,
@@ -266,6 +285,7 @@ def compact_loop_status(row: LoopCurrentStatus) -> LoopStatusRow:
         started_by=LoopStarter(
             kind=starter.kind,
             id=(starter.human.user_id if starter.human else starter.auto_research_episode_id),
+            display_name=starter.human.display_name if starter.human else None,
         ),
         checkout=LoopOverlapCheckout(
             kind=row.checkout.kind,

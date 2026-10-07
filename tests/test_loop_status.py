@@ -11,7 +11,14 @@ from rcp.api.episodes import serialize_episode
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import LOOP_OVERLAP_MAX_BYTES, LOOP_OVERLAP_MAX_ROWS, SPACE_RUNS_COMPLETED_TTL
-from rcp.loop_status import episode_loop_metadata, loop_status_projection, other_branch_loops
+from rcp.loop_status import (
+    EpisodeStarter,
+    compact_loop_status,
+    episode_loop_metadata,
+    episode_loop_metadata_from_snapshot,
+    loop_status_projection,
+    other_branch_loops,
+)
 from rcp.storage import EpisodeRecord
 
 from .helpers import create_named_app, wait_for_task
@@ -139,6 +146,8 @@ def test_checkout_identity_uses_immutable_binding_and_explicit_unavailable_histo
     assert checkout.kind == "worktree" and checkout.available
     assert checkout.execution_host == binding.execution_host
     assert checkout.repository_paths == [binding.worktree_path]
+    snapshot = loop.store.episode_loop_metadata_snapshots([episode])[episode.episode_id]
+    assert episode_loop_metadata_from_snapshot(episode, snapshot).checkout == checkout
 
 
 def test_overlap_renderer_preserves_shared_row_data(loop):
@@ -206,6 +215,8 @@ def test_loop_metadata_queries_only_root_receipts_when_serializing_many_turns(lo
     assert reads == [root.operation_id]
     assert metadata.checkout.available
     assert metadata.checkout.repository_paths == ["/checkout/project"]
+    snapshot = loop.store.episode_loop_metadata_snapshots([episode])[episode.episode_id]
+    assert episode_loop_metadata_from_snapshot(episode, snapshot) == metadata
 
 
 def test_overlap_skips_terminal_metadata_but_target_status_retains_old_loop(loop, monkeypatch):
@@ -300,7 +311,11 @@ def test_overlap_caps_compact_rows_and_reports_omitted(loop, monkeypatch):
         "started_by",
         "checkout",
     }
-    assert payload["rows"][0]["started_by"] == {"kind": "human", "id": loop.authorizer.user_id}
+    assert payload["rows"][0]["started_by"] == {
+        "kind": "human",
+        "id": loop.authorizer.user_id,
+        "display_name": loop.authorizer.display_name,
+    }
     assert set(payload["rows"][0]["checkout"]) == {"kind", "repository_paths"}
 
     import rcp.loop_status as status_module
@@ -317,3 +332,23 @@ def test_overlap_caps_compact_rows_and_reports_omitted(loop, monkeypatch):
     assert oversized.rows == []
     assert oversized.omitted == LOOP_OVERLAP_MAX_ROWS + 3
     assert len(json.dumps(oversized.model_dump(mode="json")).encode()) <= LOOP_OVERLAP_MAX_BYTES
+
+
+@pytest.mark.parametrize("kind", ["human", "auto_research", "unknown"])
+def test_compact_loop_starter_retains_recorded_human_name_only(loop, kind):
+    loop.start_episode()
+    current = loop_status_projection(
+        loop.store, loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    ).current
+    assert current is not None
+    parent_id = str(uuid.uuid4()) if kind == "auto_research" else None
+    current.started_by = EpisodeStarter(
+        kind=kind,
+        human=loop.authorizer if kind == "human" else None,
+        auto_research_episode_id=parent_id,
+    )
+    starter = compact_loop_status(current).started_by
+    assert starter.kind == kind
+    assert starter.id == (loop.authorizer.user_id if kind == "human" else parent_id)
+    assert starter.display_name == (loop.authorizer.display_name if kind == "human" else None)
+    assert "display_name" in starter.model_dump(mode="json")

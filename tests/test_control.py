@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from rcp.control import (
     ExperimentOperationalState,
     derive_experiment_control_state,
@@ -1222,3 +1224,23 @@ def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
     codes = _codes(validate_patch(state, patch, ["repo"]))
     assert "experiment-loop-attempt-close" in codes
     assert "experiment-loop-attempt-mutation" not in codes
+
+
+@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize("graph_gated", [False, True])
+def test_isolated_start_reasons_keep_graph_and_closed_node_gates_only(closed, graph_gated):
+    state = _state(status="completed" if closed else "proposed")
+    if graph_gated:
+        state.nodes["blk/capacity"] = state.nodes["blk/capacity"].model_copy(
+            update={"status": "open"}
+        )
+    fresh = derive_experiment_control_state(state, EXPERIMENT_ID)
+    busy = derive_experiment_control_state(
+        state,
+        EXPERIMENT_ID,
+        active_control_node_ids=[EXPERIMENT_ID],
+        operational=ExperimentOperationalState(episode_live=True, stop_requested=True),
+    )
+    assert busy.isolated_start_reasons == fresh.reasons
+    assert len(busy.isolated_start_reasons) == int(closed) + int(graph_gated)
+    assert len(busy.reasons) > len(busy.isolated_start_reasons)

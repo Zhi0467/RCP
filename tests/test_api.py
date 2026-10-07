@@ -5089,6 +5089,8 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
 async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    from rcp.runs.tasks import discuss
+
     app, service = _seeded_project(manifest, tmp_path)
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
@@ -5101,9 +5103,28 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     context = service.assemble_chat(request.model_copy(update={"run_on": "laptop"}))
     service.history.manifest.machines.append(MachineConfig(alias="remote-1", host="remote.example"))
     service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
+    service.history.manifest.repository_map[service.manifest.state.repository].path = "/srv/project"
     service.history.manifest.agent.node_chat.run_on = "remote-1"
     assert "remote-1" in service.manifest.machine_map
+    context = context.model_copy(
+        update={
+            "repositories": [
+                repository.model_copy(
+                    update={"machine": "remote-1", "host": "remote.example", "path": "/srv/project"}
+                )
+                for repository in context.repositories
+            ]
+        }
+    )
     monkeypatch.setattr(service, "assemble_chat", lambda _request: context)
+    staged_contexts = []
+    stage_branch_read_context = discuss.stage_branch_read_context
+
+    def capture_branch_read_context(context, *args):
+        staged_contexts.append(context)
+        return stage_branch_read_context(context, *args)
+
+    monkeypatch.setattr(discuss, "stage_branch_read_context", capture_branch_read_context)
     store = app.state.background_tasks.store
     _record_lineage_task(
         store,
@@ -5236,6 +5257,14 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     assert RecordingRemoteStage.finalized == launcher.calls == 1
     assert RecordingRemoteStage.touched == 1
     assert launcher.last_kwargs["cwd"] == Path(saved_root) / "workspace"
+    assert len(staged_contexts) == 1
+    staged = staged_contexts[0]
+    assert staged.graph_path == "/srv/project/.research/graph.json"
+    assert staged.research_md_path == "/srv/project/.research/research.md"
+    assert staged.glossary_path == "/srv/project/.research/glossary.json"
+    assert [
+        (repository.alias, repository.host, repository.path) for repository in staged.repositories
+    ] == [("repo-a", "", "/srv/project")]
 
 
 @pytest.mark.asyncio

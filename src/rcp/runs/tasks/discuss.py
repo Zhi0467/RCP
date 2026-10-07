@@ -662,6 +662,7 @@ async def stream_discuss_run(
                 remote_stage.touch()
                 if execution is not None:
                     execution.checkpoint_stage(execution_host, str(remote_stage.root))
+                # Resumes rebuild context too; branch read pointers need execution-host paths.
                 context = context.model_copy(
                     update=_stage_context_paths(
                         context, service, remote_stage, execution_machine.alias
@@ -751,6 +752,7 @@ async def stream_discuss_run(
                         execution,
                         local_stage,
                         remote_stage,
+                        state=service.history.state(),
                         graph_target=service.history.graph_target,
                     )
                 }
