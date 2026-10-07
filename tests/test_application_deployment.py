@@ -1349,3 +1349,25 @@ def test_rehearsal_warns_when_a_project_root_cannot_be_copied(captured, monkeypa
         unreadable.chmod(0o700)
     assert result["status"] == "ready"
     assert [warning["module"] for warning in result["warnings"]] == ["backup"]
+
+
+def test_rehearsal_refuses_a_migration_that_drops_a_project(captured, monkeypatch, tmp_path):
+    from rcp.server_ops import deployment
+    from rcp.server_ops.maintenance import MaintenanceRefused
+
+    request, _, _ = captured
+    opened = deployment.AppStore
+
+    class DroppingStore(opened):
+        def projects(self):
+            return super().projects()[1:]
+
+    monkeypatch.setattr(deployment, "AppStore", DroppingStore)
+    with pytest.raises(MaintenanceRefused):
+        deployment.update_rehearsal(
+            deployment.UpdateRehearsalRequest(
+                version=1,
+                data_dir=request.data_dir,
+                output_dir=str(tmp_path / "rehearsal"),
+            )
+        )

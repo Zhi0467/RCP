@@ -114,9 +114,9 @@ def install_hooks() -> None:
         selection = json.loads((ROOT / "selection.json").read_text())
         bundle = Path(selection["bundle"])
         provenance = json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
-        # A dry run deletes the bundle it fetched, so hand each attempt a copy.
-        # Plain calls only: this hook also runs inside older installed supervisors.
-        bundles = ROOT / "bundles"
+        # A dry run deletes the bundle it fetched, so hand each attempt a copy where
+        # the supervisor fetches. Plain calls only: older supervisors run this too.
+        bundles = runtime.paths.supervisor / "bundles"
         bundles.mkdir(mode=0o755, exist_ok=True)
         bundles.chmod(0o755)
         downloaded = bundles / str(uuid.uuid4())

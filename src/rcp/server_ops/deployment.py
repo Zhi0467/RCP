@@ -732,12 +732,17 @@ def _open_migrated_snapshot(database: Path) -> AppStore:
         identity = connection.execute(
             "SELECT space_id, space_kind, space_name FROM space_identity WHERE singleton=1"
         ).fetchone()
+        project_ids = {row[0] for row in connection.execute("SELECT project_id FROM projects")}
     if identity is None or identity[1] != "team" or not identity[2]:
         raise MaintenanceRefused("Offline snapshot is not an initialized team.")
     store = AppStore(database)
     if (store.space_id, store.space_kind, store.space_name) != identity:
         store.close()
         raise MaintenanceRefused("Migration changed the captured space identity.")
+    # The confirmed update starts from the outgoing project set; so must its rehearsal.
+    if {record.project_id for record in store.projects()} != project_ids:
+        store.close()
+        raise MaintenanceRefused("Migration changed the registered projects.")
     return store
 
 
