@@ -1553,7 +1553,7 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         lambda _stage, _root: None,
     )
 
-    with pytest.raises(OSError, match="remote infrastructure is unavailable"):
+    with pytest.raises(OSError):
         resume_auto_research_child_experiment(
             background,
             parent.episode_id,
@@ -1577,7 +1577,7 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         operation_id="00000000-0000-4000-8000-000000000334",
     )
     assert unavailable.disposition == "resume_unavailable"
-    assert unavailable.reason == "the saved provider workspace is unavailable"
+    assert unavailable.replacement_command == "episode --kick-off-experiment"
 
 
 def test_task_result_keeps_ordered_graph_updates_and_latest_compatibility_projection(

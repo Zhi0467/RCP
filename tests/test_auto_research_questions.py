@@ -181,6 +181,8 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
         project_name="Example",
         repositories=[],
         graph_path="/state/graph.json",
+        main_graph_path=None,
+        shared_repositories=[],
         research_md_path="/state/research.md",
         ontology_extensions=False,
     )

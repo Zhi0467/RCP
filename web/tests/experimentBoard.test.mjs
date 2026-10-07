@@ -645,8 +645,7 @@ test("an explicit main route becomes history when the Experiment advances concur
     }),
   );
 
-  assert.doesNotMatch(html, /campaign-run-detail/);
-  assert.match(html, /data-episode-id="episode-current"/);
+  assert.doesNotMatch(html, /campaign-run-detail|episode-current/);
 });
 
 test("adding turns moves the exact route onto the successor episode", () => {
