@@ -12,7 +12,8 @@ loop it did not start.
 
 Overlap between targets is shown, not prevented: starts succeed, and every loop
 agent is told which loops run elsewhere on its node and asked to check with the
-human when its work could interfere.
+human when its work could interfere. An Auto-research child has no `ask`, so it
+reports the conflict and its orchestrator asks; children gain no new authority.
 
 ## Why
 

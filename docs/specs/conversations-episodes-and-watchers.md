@@ -537,9 +537,10 @@ Every chat turn on an Experiment node, including resumed and watcher-driven
 turns, receives a small loop-status block for its node: this target's loop (live, stopped,
 completed, or none; who started it; who stopped it and when), live loops on
 other targets, and a watcher-state file refreshed for this target. It grants no
-watcher-maintenance authority. Every loop agent is told to ask the human when
-its work could interfere with another branch's episodes, for example the same
-node and the same checkout. Turns on a graph branch also receive read pointers:
+watcher-maintenance authority. A loop agent that can `ask` is told to ask the
+human when its work could interfere with another branch's episodes, for example
+the same node and the same checkout; an Auto-research child, which cannot, is
+told to pause that work and report the conflict for its orchestrator. Turns on a graph branch also receive read pointers:
 the shared checkout path, Git access to other code branches, and main's
 `graph.json` staged read-only; write scope and Patch collection are unchanged.
 

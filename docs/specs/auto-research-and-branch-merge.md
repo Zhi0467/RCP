@@ -81,9 +81,11 @@ stops, adopts, or waits on a loop it did not start, on any target. A loop live
 on another target does not block the kickoff; the result lists it as
 `live_elsewhere`, and `status` lists every live loop off the orchestrator's
 branch as `other_branch_loops`. Both are compact and capped: `{rows, omitted}`
-with one row per loop (node, episode, target, starter, state, checkout). Every loop agent is told to ask the human when its work could
-interfere with another branch's episodes, for example the same node and the
-same checkout. To restart its own child, the orchestrator stops it, waits for
+with one row per loop (node, episode, target, starter, state, checkout). The
+orchestrator and human-started loops are told to ask the human when their work
+could interfere with another branch's episodes, for example the same node and
+the same checkout. A child loop cannot `ask`; it is told to pause that work and
+report the conflict in its answer, and the orchestrator asks the human. To restart its own child, the orchestrator stops it, waits for
 settlement, and kicks off again. Routes left pending by the retired replacement
 path were settled at upgrade as cancelled and never launched; their
 `replaces_episode_id` remains history.
