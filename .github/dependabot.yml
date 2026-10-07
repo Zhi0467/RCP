@@ -1,0 +1,12 @@
+# Version updates cover GitHub Actions only, as one grouped PR a month. Python
+# and npm rely on their lockfiles plus Dependabot security alerts. Dependabot
+# does not bump the `version:` input that pins uv in the workflows.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
