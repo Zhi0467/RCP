@@ -205,17 +205,21 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     try {
       nextIndex = await loadExperimentEpisodes();
     } catch (error) {
-      if (requestedProjectId) {
+      // Only the newest request may change availability.
+      if (
+        requestedProjectId &&
+        experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
+      ) {
         setExperimentLoopUnavailableProjects(
           (current) => new Set([...current, requestedProjectId]),
         );
       }
       throw error;
     }
-    setExperimentLoopUnavailableProjects((current) => (current.size ? new Set() : current));
     if (
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
+      setExperimentLoopUnavailableProjects((current) => (current.size ? new Set() : current));
       setExperimentLoops(nextIndex.entries);
       setUnavailableExperimentLoops(nextIndex.unavailable);
       setExperimentLoopLoadedProjects(
@@ -236,17 +240,23 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     try {
       nextIndex = await loadProjectExperimentEpisodes(requestedProjectId);
     } catch (error) {
-      setExperimentLoopUnavailableProjects((current) => new Set([...current, requestedProjectId]));
+      if (
+        experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
+      ) {
+        setExperimentLoopUnavailableProjects(
+          (current) => new Set([...current, requestedProjectId]),
+        );
+      }
       throw error;
     }
-    setExperimentLoopUnavailableProjects((current) =>
-      current.has(requestedProjectId)
-        ? new Set([...current].filter((id) => id !== requestedProjectId))
-        : current,
-    );
     if (
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
+      setExperimentLoopUnavailableProjects((current) =>
+        current.has(requestedProjectId)
+          ? new Set([...current].filter((id) => id !== requestedProjectId))
+          : current,
+      );
       setExperimentLoops((current) =>
         mergeProjectExperimentLoops(current, requestedProjectId, nextIndex.entries),
       );
