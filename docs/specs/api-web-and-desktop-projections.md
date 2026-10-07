@@ -476,6 +476,10 @@ scheduler and helper work. Every external row includes its required shell check,
 log path and cwd, optional cancel command, check state/diagnostic, and cancellation
 requester/time/diagnostic. The backend exports `can_cancel`; the browser does not
 derive it from watcher status. There is no separate compute-job list request.
+Without `branch_id` the list carries every target's rows. With `branch_id` it
+carries that target's rows, or every target's with `all_targets=true`, which a
+branch view's Runs uses for sibling loops. Either way `can_stop_watching` is
+offered only on rows of the displayed target.
 
 `POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires project
 write admission and an attributed human. A missing or foreign-project watcher
@@ -1303,15 +1307,16 @@ list. Selection, Stop, and busy state follow the exact episode. Older episodes
 remain reachable through project History instead of appearing as sibling Runs
 cards.
 
-Each Experiment card shows its graph target (a branch badge off main), its
+Each Experiment card shows its graph target (a Main pill or a branch badge), its
 checkout (shared or worktree), and who started it: a member, or Auto-research
 with a link to the parent run. Each episode card and space run row also shows a
 compact initials avatar and the recorded human authorizer's name. This is
 historical episode attribution, including the inherited authorizer on an
 Auto-research child; it does not claim live presence or enumerate contributors.
 Missing legacy attribution never borrows the current viewer's identity. The
-Run dialog lists live loops on that node on other targets as information; it
-never disables Run. A chat's watcher strip lists only watchers that chat armed
+Run dialog lists live loops on that node on other targets before submission,
+as information; it never disables Run. A main loop opened from a branch view
+shows its chat read-only. A chat's watcher strip lists only watchers that chat armed
 and watchers of its own target's loop.
 
 Every unarchived episode offers **Archive**; an archived episode offers

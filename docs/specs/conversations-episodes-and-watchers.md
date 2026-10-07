@@ -528,12 +528,13 @@ following hold for that target; loops on other targets never block it
 6. the Experiment itself is not `completed`, `abandoned`, or `superseded`.
 
 Readiness reports its graph gates and its operational reasons as separate lists,
-so no surface has to tell them apart by reading the sentences. A human isolated
+so no surface has to tell them apart by reading the sentences. It also reports
+`isolated_start_reasons`, the reasons a graph-isolated start would be refused. A human isolated
 start is checked against the branch it will create. The start response and the
 Run dialog list live loops on that node on other targets as information.
 
-Every node-chat turn, including resumed and watcher-driven turns, receives a
-small loop-status block for its node: this target's loop (live, stopped,
+Every chat turn on an Experiment node, including resumed and watcher-driven
+turns, receives a small loop-status block for its node: this target's loop (live, stopped,
 completed, or none; who started it; who stopped it and when), live loops on
 other targets, and a watcher-state file refreshed for this target. It grants no
 watcher-maintenance authority. Every loop agent is told to ask the human when
