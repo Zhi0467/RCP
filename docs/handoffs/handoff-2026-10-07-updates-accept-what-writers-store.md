@@ -1,7 +1,8 @@
 # Updates accept what writers store
 
-Status: design, awaiting a start. Nothing implemented yet. The branch holds
-one small uncommitted fix (operation ids, below).
+Status: approved, in progress on one PR. Implemented: backup, restore and
+transfer readers accept stored values, with a real-use corpus. Remaining:
+backup can never block an update, the update dry run, and CI coverage.
 
 ## Why
 
@@ -10,74 +11,70 @@ then the team server refused the update:
 
 1. Keep stores only `kept_at` since #226. Backup still wanted a kept filename.
 2. Answered-question follow-up turns get bare-hex UUID5 ids since #235.
-   Backup wants the hyphenated spelling.
+   Backup wanted the hyphenated spelling.
 
-Both are one class: a **reader** (backup capture, restore, update preparation)
-checks a stored value with its own, stricter copy of a rule. CI data comes
-from test setup code, so it never holds the shapes real use writes. The
-nightly backup went partial within hours each time, but only `doctor` says so.
+Both are one class. A reader (backup, restore, update preparation) checked a
+stored value with its own stricter rule. CI data comes from test setup code,
+so it never held the shapes real use writes. And the update borrowed backup's
+record checks, so one record backup disliked refused the whole update.
 
-An audit found more of the same class, not yet hit:
+## Settled decisions
 
-- Backup screens names, paths and filenames with the secret redaction filter.
-  Its `sk-` pattern matches `sk-learn`, so `/home/a/sk-learn-exps` as a
-  project folder makes that project uncaptured, and fails restore outright.
-- Backup requires machine aliases and project names in a stricter shape than
-  config and provisioning accept.
-- One legacy non-UUID4 project row fails the whole capture, not one project.
-- The result-view transfer check still rejects hex operation ids (latent).
+- Core and side modules are separate. The update must work. Backup, restore
+  and other side modules deserve fixes, but never block an update; a side
+  module that fails is reported as a named warning and the update continues.
+- Smaller cut tonight. No new supervisor/app contract versions, no
+  capture-free stop command, no legacy bridge, no `--build N`, no module
+  framework. Those stay possible later.
+- Follow-up id minting stays bare hex. Changing it would duplicate follow-ups
+  for questions answered before an update.
 
 ## Plan
 
-### 1. One rule per stored value, owned by the writer
+### 1. Readers accept what writers store (done)
 
-- Each stored value's shape rule lives on the store model that writes it.
-  Backup, restore and transfer call that rule; they keep no copies.
-- Operation id: UUID4 or UUID5, hyphenated or bare hex. The rule moves onto
-  `AgentTaskRecord`, so a writer cannot store anything else. Minting stays as
-  is: changing the follow-up spelling would duplicate follow-ups for questions
-  answered before the update.
-- Names, paths, filenames: the redaction filter is for diagnostics, not data.
-  Backup checks only what restore needs to be safe: plain filename, absolute
-  path, length bound.
-- Aliases and project names: backup accepts what config and provisioning
-  accept, by calling their rules.
-- A project row backup cannot read marks only that project uncaptured.
+- Backup, restore and transfer check only what restore needs to be safe:
+  plain filename, absolute path, length. The secret redaction filter is for
+  diagnostics, never a validity rule for stored data (it matched `sk-learn`).
+- Operation ids: one helper accepts UUID4 or UUID5, hyphenated or bare hex.
+- Machine aliases and project names: backup calls the config writers' rules.
+- A legacy project row backup cannot read marks only that project uncaptured.
+- `tests/real_use_corpus.py` writes awkward but valid data through the app's
+  own writers. Backup, restore and transfer must all accept it.
 
-Enforcing test: one **real-use corpus** fixture, written through the real
-write paths with awkward but valid values (`sk-learn` names and folders,
-follow-up ids, store-kept artifacts, a legacy project id). Backup capture,
-restore and offline preparation must all accept it. The backup tests and the
-installed-upgrade seed both use it.
+### 2. Backup can never block an update
 
-### 2. The update dry run does the real preparation
+- When backup cannot read a project, the update still finds that project's
+  folder from the projects table. The supervisor's byte-for-byte checkpoint
+  covers it, so rollback stays complete.
+- The pre-switch copy check skips only that project. The update output names
+  it as a warning instead of refusing.
+- Identity, ownership, migration, proof mismatches on proven projects, and
+  path safety stay hard refusals.
 
-- Today `rcp server update` without `--confirm-target` only shows the target.
-  It will also run the target release's full preparation on a consistent
-  online copy of the database, with the service still running: inventory,
-  project-file capture, migration, candidate start, application proof. It
-  then deletes the copy and reports pass or the exact refusal. Admission is
-  never closed and nothing switches.
-- A dry-run-only `--build <N>` rehearses an unpromoted build, checked against
-  its manifest. A real update still takes only promoted releases.
-- Pre-promote becomes "dry-run build N on each team server", replacing the
-  hand-written `rehearse_inventory` step in `docs/release.md`, which is removed.
-- This touches the supervisor, so its version moves to 0.1.12.
+### 3. The dry run does the real preparation
 
-### 3. Partial backups are loud
+- `rcp server update` without `--confirm-target` installs the target and runs
+  its `update-rehearsal` on a consistent online copy: the same inventory,
+  preparation and application proof as the real update. The service keeps
+  running; nothing switches. It prints ready or the exact refusal, plus
+  warnings, then deletes the copy.
+- Pre-promote runs the same command from the build's wheel on each team
+  server (`docs/release.md`).
+- Supervisor version moves to 0.1.12, so an older supervisor updates first.
 
-- The app's server card shows when the last nightly backup is partial: which
-  projects and the fixed reason. `doctor` keeps reporting it.
+### 4. CI drives the real path
+
+- The installed-upgrade harness seeds a Keep and an answered-question
+  follow-up through real routes, runs the dry run, and forces a backup
+  rejection for one project: the real update must still commit and warn.
 
 ## Verification
 
-- Corpus tests fail on main for every reader listed above, pass on the branch.
-- Installed-upgrade from every base keeps the corpus through update and
-  backup.
-- Before merge: dry-run this PR's candidate build on the team server. It
-  must pass on real data.
+- Corpus tests fail on the parent commit and pass on the branch.
+- Installed upgrade from every base passes with the new steps.
+- Before promoting: the dry run of the merged build passes on the team server.
 
 ## Release
 
-Version stays 0.4.14 (build 1869 was never promoted). After merge: candidate
-checks, dry-run on the team server, promote, update.
+Version stays 0.4.14 (build 1869 was never promoted).
