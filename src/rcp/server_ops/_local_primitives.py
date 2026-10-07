@@ -67,18 +67,19 @@ def canonical_uuid4(value: str, *, label: str) -> str:
 
 
 def canonical_operation_uuid(value: str, *, label: str) -> str:
-    """Require the canonical spelling of a task operation identity.
+    """Accept either lowercase spelling of a stored task operation identity.
 
     RCP mints ordinary task ids with UUID4 and deterministic Experiment-loop and
-    Auto-research child ids with UUID5, so a durable capture must accept both.
+    Auto-research child ids with UUID5. Question follow-ups use bare hex; preserve
+    the stored spelling because it is also the task lookup key.
     """
 
     try:
         parsed = uuid.UUID(value)
     except (AttributeError, ValueError) as exc:
         raise ValueError(f"{label} must be a canonical UUID") from exc
-    if parsed.version not in (4, 5) or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase, hyphenated canonical UUID4 or UUID5")
+    if parsed.version not in (4, 5) or value not in (str(parsed), parsed.hex):
+        raise ValueError(f"{label} must be a lowercase UUID4 or UUID5, hyphenated or bare hex")
     return value
 
 
@@ -117,9 +118,8 @@ def _bounded_path_text(value: str, *, label: str) -> None:
     if (
         not isinstance(value, str)
         or not value
-        or value != value.strip()
         or len(value.encode("utf-8")) > 4096
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or "\x00" in value
     ):
         raise ValueError(f"{label} must be one bounded absolute path")
 

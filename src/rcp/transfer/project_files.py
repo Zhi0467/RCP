@@ -23,6 +23,7 @@ from rcp.paper.service import (
     validate_canonical_introduction_backup,
 )
 from rcp.rcp_home import rcp_temp_dir
+from rcp.server_ops._local_primitives import canonical_operation_uuid
 from rcp.service import (
     ProjectService,
     canonical_chat_backup_sources,
@@ -86,22 +87,16 @@ class TransferLegacyKeptResultView(BaseModel):
     @field_validator("origin_operation_id", "latest_operation_id")
     @classmethod
     def validate_operation_id(cls, value: str) -> str:
-        try:
-            parsed = uuid.UUID(value)
-        except ValueError as exc:
-            raise ValueError("result-view operation identity must be canonical") from exc
-        if str(parsed) != value:
-            raise ValueError("result-view operation identity must be canonical")
-        return value
+        return canonical_operation_uuid(value, label="result-view operation identity")
 
     @field_validator("source_name", "kept_filename")
     @classmethod
     def validate_plain_filename(cls, value: str) -> str:
         if (
-            value != value.strip()
+            value in {".", ".."}
             or "\\" in value
             or PurePosixPath(value).name != value
-            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+            or "\x00" in value
         ):
             raise ValueError("result-view filenames must be plain bounded names")
         return value

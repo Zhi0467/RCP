@@ -18,9 +18,11 @@ from rcp.service import (
     iter_canonical_chat_transfer,
 )
 from rcp.storage import AgentTaskRecord, Artifact
+from rcp.storage.question_models import question_followup_operation_id
 from rcp.transfer import TransferArchiveActor, TransferArchiveAttribution
 from rcp.transfer import project_files as project_files_module
 from rcp.transfer.project_files import (
+    TransferLegacyKeptResultView,
     TransferProjectFileCapture,
     capture_project_transfer_files,
 )
@@ -530,3 +532,29 @@ def test_transfer_inventory_includes_saved_snapshot(manifest, tmp_path):
     ]
     with pytest.raises(ValueError, match="inventory"):
         TransferProjectFileCapture.model_validate(invalid)
+
+
+@pytest.mark.parametrize("filename", ["sk-learn_plot.png", " edge ", "tab\tname.html"])
+def test_legacy_result_view_preserves_writer_values(filename: str) -> None:
+    operation_id = question_followup_operation_id("question-1", 1)
+    now = datetime.now(UTC).isoformat()
+    view = TransferLegacyKeptResultView(
+        view_id="a" * 24,
+        experiment_id="experiment-1",
+        chat_id="chat-1",
+        origin_operation_id=operation_id,
+        latest_operation_id=operation_id,
+        provider="codex",
+        model="",
+        reasoning="",
+        source_name=filename,
+        content_sha256="b" * 64,
+        size_bytes=1,
+        created_at=now,
+        updated_at=now,
+        expires_at=now,
+        kept_filename=filename,
+        kept_at=now,
+    )
+    assert view.origin_operation_id == view.latest_operation_id == operation_id
+    assert view.source_name == view.kept_filename == filename
