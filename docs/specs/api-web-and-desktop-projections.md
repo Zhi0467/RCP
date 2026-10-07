@@ -157,8 +157,12 @@ the digest.
 Needs you contains new, still-open Proposals, ready/revisit Decisions, open ask
 questions, and episodes needing human action. Changed on main groups accepted
 semantic changes by their attributed source. Each touched node belongs to its
-latest eligible source; the viewer's direct human edits are excluded before
-that assignment, so an earlier agent touch remains visible. Removed nodes and
+latest eligible source; the viewer's direct human edits, and the Work turns the
+viewer asked for in a chat once the viewer's chat read marker reaches them, are
+excluded before that assignment, so an earlier agent touch remains visible. A
+turn that finished after the viewer left stays in their digest until they read
+that chat. Excluding a Work turn is a visibility rule only: the provider agent
+remains its author. Removed nodes and
 changed edge endpoints participate in grouping, while `changed_node_ids`
 contains only nodes still present on main. Branch revisions aggregate into one
 line per episode. Ran contains ended episodes and compute jobs, failed
@@ -326,7 +330,9 @@ status cannot compile.
 Project snapshots and transition projections publish exact graph-attention
 membership as pending Proposal ids, Decisions awaiting choice, and asserted
 open Blocker ids. Pending Proposals additionally publish their ordered action
-lines, including incident relations removed with a node. Counts are lengths of
+lines, including incident relations removed with a node. A field-change line
+carries the node's current value as `before` and the proposed value as `text`;
+the card shows it as branch diffs show a changed field. Counts are lengths of
 that same projection. The browser maps those ids and action lines onto the graph
 it is presenting; Inbox, Overview, and Runs never reapply the membership or
 Proposal-operation predicates. A backend preview supplies both the candidate

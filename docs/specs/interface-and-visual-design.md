@@ -71,6 +71,17 @@ Settings.
 Group the header semantically — labeled **Sync / Ask** together, then icon-only
 **History / Refresh** together. Do not space all four as unrelated peers.
 
+At viewport widths of 560px or less the shell is one top bar and a bottom tab
+bar. The top bar holds back, the project name (which opens the open-project
+dock), **Sync** only while changes are staged, and a **⋯** menu with every other
+project control, each a labelled row. The bottom bar shows Overview, Inbox,
+Research, and Runs, with the remaining destinations under **More**, which reads
+as active while one of them is open. **Ask** is a floating button above the tab
+bar, absent in Agents, whose composer is already the way to ask. Status banners
+shrink to one line; provider sign-in and compute-route notices collapse to a
+one-line summary that expands in place, keeping any failed check's alert
+visible; Inbox counts share one row; and the Overview revision is one small line.
+
 Glossary definitions appear inline where terms are read. Glossary has no
 navigation destination. Graph-writing agents add or revise the definitions through
 `upsert_glossary` Patches.

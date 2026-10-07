@@ -438,3 +438,32 @@ test("session polling cannot discard the SSH exit reason before it arrives", asy
     .filter({ hasText: "SSH link dropped; terminal session ended." })
     .waitFor();
 });
+
+test("phone repository cards hold their full long path inside the card", async (t) => {
+  const longPath = "/srv/research-projects/very-long-project-directory-name/checkouts/code";
+  const { page, setRepositories } = await fixture(t);
+  setRepositories(
+    repositories.map((repository) => ({
+      ...repository,
+      path: `${longPath}/${repository.repository_id}`,
+    })),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Refresh terminals" }).click();
+  await page.getByText(`${longPath}/code`, { exact: true }).waitFor();
+  // A column rail with a capped height shrinks flex items down to their
+  // min-height, so a wrapped path would spill out of the card's bottom edge.
+  const spills = await page.locator(".terminal-repository").evaluateAll((cards) =>
+    cards.flatMap((card) => {
+      const box = card.getBoundingClientRect();
+      return [...card.children]
+        .filter((child) => {
+          const inner = child.getBoundingClientRect();
+          return inner.bottom > box.bottom + 0.5 || inner.right > box.right + 0.5;
+        })
+        .map((child) => `${card.textContent}: ${child.textContent}`);
+    }),
+  );
+  assert.deepEqual(spills, []);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+});

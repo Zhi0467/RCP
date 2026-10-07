@@ -738,6 +738,74 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
+def test_cached_project_takes_this_release_rendering_of_proposal_actions(
+    manifest, tmp_path
+) -> None:
+    """A cache written by an older release carries older Proposal action lines.
+
+    The lines only render the cached graph's Proposals, so the cache stays valid
+    and shows this release's rendering instead of being discarded on update.
+    """
+    from rcp.core.attention import project_counts, project_graph_attention
+    from rcp.core.models import GraphState
+
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    authoritative = client.get(f"/api/projects/{project_id}")
+    assert authoritative.status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+
+    snapshot = authoritative.json()
+    snapshot["graph"]["nodes"]["hyp/vague"] = {
+        "id": "hyp/vague",
+        "type": "hypothesis",
+        "title": "Replanning may help",
+        "statement": "Replanning may help.",
+        "status": "active",
+    }
+    snapshot["graph"]["proposals"]["prop/sharpen"] = {
+        "id": "prop/sharpen",
+        "title": "Sharpen the hypothesis",
+        "card": {"decision_needed": "Approve the sharper wording."},
+        "ops": [
+            {
+                "op": "update_nodes",
+                "intent": "content_change",
+                "nodes": [{"id": "hyp/vague", "changes": {"statement": "Replanning helps."}}],
+            }
+        ],
+        "status": "pending",
+    }
+    graph = GraphState.model_validate(snapshot["graph"])
+    attention = project_graph_attention(graph)
+    snapshot["counts"].update(project_counts(graph, attention).model_dump(mode="json"))
+    snapshot["attention"] = attention.model_dump(mode="json")
+    expected_lines = snapshot["attention"]["proposal_actions"]["prop/sharpen"]
+    snapshot["attention"]["proposal_actions"]["prop/sharpen"] = [
+        {"label": "Node", "text": "Replanning may help"},
+        {"label": "Current statement", "text": "“Replanning may help.”"},
+        {"label": "Proposed statement", "text": "“Replanning helps.”"},
+    ]
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 5,
+                "project_id": project_id,
+                "canonical_patch_head": 1,
+                "snapshot": snapshot,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cached = client.get(f"/api/projects/{project_id}/cached")
+    assert cached.status_code == 200
+    assert cached.json()["attention"]["proposal_actions"]["prop/sharpen"] == expected_lines
+    assert expected_lines[1]["before"] == "Replanning may help."
+
+
 def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
     manifest, tmp_path
 ) -> None:

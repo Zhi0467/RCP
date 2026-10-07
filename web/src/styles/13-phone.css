@@ -87,4 +87,316 @@
   .agent-list-filters button {
     padding: 0 14px;
   }
+
+  /* A node window's header and body scroll as one, so a long title cannot
+     take the screen from the fields; the window buttons sit above the title
+     instead of narrowing it, and the actions stay pinned at the bottom. */
+  .node-detail-drawer {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .node-detail-drawer > header {
+    flex: none;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+  }
+  .node-detail-drawer > header > div:first-child {
+    flex-basis: 100%;
+  }
+  .node-detail-drawer > header .window-actions {
+    margin: 0 0 4px auto;
+    order: -1;
+  }
+  .node-detail-drawer h2 {
+    font-size: var(--type-xl);
+  }
+  .node-detail-drawer .drawer-content {
+    flex: none;
+    overflow: visible;
+    padding: 0 16px 16px;
+  }
+  .node-detail-drawer > .drawer-actions {
+    background: var(--sheet);
+    bottom: 0;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: auto;
+    position: sticky;
+  }
+
+  /* Phone project chrome: one bar at the top, the panels at the bottom. The
+     shell scrolls the document on a phone, so both bars are sticky, and they
+     stay put in the screen-height Chats shell too. */
+  .phone-project-bar {
+    align-items: center;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex: none;
+    gap: 2px;
+    height: 52px;
+    padding: 0 4px;
+    position: sticky;
+    top: 0;
+    z-index: 31;
+  }
+  .phone-bar-back {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    flex: none;
+  }
+  .phone-bar-project {
+    flex: 1;
+    min-width: 0;
+  }
+  .phone-bar-name {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: var(--ink);
+    display: flex;
+    font: 650 var(--type-sm) var(--ui);
+    gap: 4px;
+    max-width: 100%;
+    min-height: 44px;
+    padding: 0 6px;
+  }
+  .phone-bar-name > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .phone-bar-name > svg {
+    color: var(--muted);
+    flex: none;
+  }
+  .phone-bar-sync,
+  .phone-bar-more {
+    flex: none;
+  }
+  .phone-bar-sync .header-sync-side {
+    align-items: center;
+    display: flex;
+    gap: 2px;
+  }
+  .phone-bar-sync .draft-sync {
+    border-radius: 999px;
+    min-height: 36px;
+    padding: 0 12px;
+  }
+  .phone-bar-more > .icon-button {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+  }
+  .phone-bar-panel {
+    background: var(--sheet);
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    left: 8px;
+    padding: 6px;
+    /* Many open projects scroll inside the panel; the Chats shell clips the page. */
+    max-height: calc(100dvh - 72px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    position: absolute;
+    right: 8px;
+    top: calc(100% + 4px);
+    z-index: 40;
+  }
+  .phone-project-dock .project-dock,
+  .phone-project-dock .project-dock-scroll {
+    display: grid;
+    gap: 4px;
+    max-width: none;
+  }
+  .phone-project-dock .project-dock-tab {
+    max-width: none;
+    width: 100%;
+  }
+  /* Each control in the menu is a full row, named by its own accessible label. */
+  .phone-project-menu:not([hidden]) {
+    display: grid;
+    gap: 2px;
+  }
+  .phone-project-menu > .button,
+  .phone-project-menu > .icon-button {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    color: var(--ink);
+    font-size: var(--type-sm);
+    gap: 12px;
+    justify-content: flex-start;
+    padding: 0 12px;
+    width: 100%;
+  }
+  .phone-project-menu > .icon-button::after {
+    content: attr(aria-label);
+  }
+  .phone-project-menu .auto-research-label {
+    display: inline;
+  }
+  /* Research's graph filter lives in the menu, since the tab strip is gone. */
+  .phone-project-menu > .trust-filter {
+    display: flex;
+    font-size: var(--type-sm);
+    gap: 12px;
+    margin: 0;
+    min-height: 44px;
+    padding: 0 12px;
+  }
+  .phone-project-menu > .trust-filter select {
+    flex: 1;
+  }
+  /* The account row is a labelled trigger, and its panel opens in the menu's
+     flow rather than floating off the menu's scroll box. */
+  .phone-project-menu > .landing-identity-menu {
+    margin: 4px 8px;
+  }
+  .phone-project-menu .landing-identity-panel {
+    margin-top: 8px;
+    position: static;
+    width: auto;
+  }
+  .phone-tab-bar {
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    bottom: 0;
+    display: grid;
+    flex: none;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
+    position: sticky;
+    z-index: 30;
+  }
+  .phone-tab-bar > button,
+  .phone-more-sheet > button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    display: flex;
+    font: 600 var(--type-4xs) var(--ui);
+    min-height: 48px;
+    position: relative;
+  }
+  .phone-tab-bar > button {
+    flex-direction: column;
+    gap: 3px;
+    justify-content: center;
+  }
+  .phone-tab-bar > button > svg {
+    height: 21px;
+    width: 21px;
+  }
+  .phone-tab-bar > button.active,
+  .phone-more-sheet > button.active {
+    color: var(--oxblood);
+  }
+  .phone-tab-bar > button > small,
+  .phone-more-sheet > button > small,
+  .phone-more-badge {
+    background: var(--amber);
+    border-radius: 999px;
+    color: white;
+    font: 700 var(--type-4xs) / 16px var(--mono);
+    min-width: 16px;
+    padding: 0 4px;
+    text-align: center;
+  }
+  .phone-tab-bar > button > small,
+  .phone-more-badge {
+    left: calc(50% + 6px);
+    position: absolute;
+    top: 3px;
+  }
+  .phone-more-badge {
+    height: 8px;
+    min-width: 8px;
+    padding: 0;
+    top: 6px;
+  }
+  .phone-more-sheet:not([hidden]) {
+    background: var(--sheet);
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    bottom: calc(100% + 6px);
+    box-shadow: var(--shadow);
+    display: grid;
+    min-width: 200px;
+    padding: 6px;
+    position: absolute;
+    right: 8px;
+  }
+  .phone-more-sheet > button {
+    color: var(--ink);
+    font-size: var(--type-sm);
+    gap: 12px;
+    padding: 0 12px;
+  }
+  .phone-ask-button {
+    align-items: center;
+    background: var(--oxblood);
+    border: 0;
+    border-radius: 50%;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    box-shadow: 0 6px 16px rgb(var(--shadow-rgb) / 28%);
+    color: var(--accent-ink, white);
+    display: flex;
+    height: 54px;
+    justify-content: center;
+    position: fixed;
+    right: 16px;
+    width: 54px;
+    z-index: 29;
+  }
+  .phone-ask-button:disabled {
+    opacity: 0.5;
+  }
+  /* A one-line status chip instead of a full-width banner. */
+  .coverage-banner {
+    font-size: var(--type-2xs);
+    padding: 6px 12px;
+  }
+  /* Bar and menu controls are plain rows, not raised theme buttons; the
+     :root prefix outranks the theme's own relief. */
+  :root
+    :is(
+      .phone-bar-back,
+      .phone-bar-more > .icon-button,
+      .phone-project-menu > .button,
+      .phone-project-menu > .icon-button,
+      .phone-project-menu > .icon-button.primary
+    ) {
+    background: transparent;
+    background-image: none;
+    box-shadow: none;
+    color: var(--ink);
+  }
+  :root :is(.phone-project-menu > .button, .phone-project-menu > .icon-button):active {
+    background: var(--paper-deep);
+  }
+  /* The Overview revision is one small line, not a display number. */
+  .overview-page > .overview-heading {
+    padding: 0 6px 8px;
+  }
+  .overview-heading > .overview-revision {
+    align-items: baseline;
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+  }
+  .overview-heading > .overview-revision span {
+    font-size: var(--type-3xs);
+  }
+  .overview-heading > .overview-revision strong {
+    font-family: inherit;
+    font-size: var(--type-xs);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    margin: 0;
+  }
 }

@@ -257,6 +257,50 @@ test("a served login notice parks verification, shows failure, then clears after
   }
 });
 
+test("a phone collapses the login notice to one line that expands to its full text and check", async () => {
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0, hmr: false },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const errors = [];
+    const open = async (viewport) => {
+      const page = await browser.newPage({ viewport });
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(
+        `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLogin.html`,
+      );
+      await page.getByRole("status").waitFor();
+      return page;
+    };
+    const check = (page) => page.getByRole("button", { name: "Already signed in? Check again" });
+
+    const phone = await open({ width: 390, height: 844 });
+    const summary = phone.getByRole("button", { name: "Codex is signed out" });
+    assert.equal(await summary.getAttribute("aria-expanded"), "false");
+    assert.ok((await phone.getByRole("status").boundingBox()).height < 60);
+    assert.equal(await check(phone).isVisible(), false);
+    // The full explanation stays in the document while collapsed.
+    assert.match(await phone.getByRole("status").textContent(), /Provider logins/);
+    await summary.click();
+    assert.equal(await summary.getAttribute("aria-expanded"), "true");
+    assert.equal(await check(phone).isVisible(), true);
+    assert.equal(await phone.getByText(/Sign it in from Settings/).isVisible(), true);
+
+    const desktop = await open({ width: 1280, height: 800 });
+    assert.equal(await desktop.locator(".compact-notice-toggle").isVisible(), false);
+    assert.equal(await check(desktop).isVisible(), true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+  }
+});
+
 test("an open space landing refreshes login notices with its Runs poll", async () => {
   const liveServer = await createServer({
     root: new URL("..", import.meta.url).pathname,

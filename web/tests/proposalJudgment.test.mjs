@@ -125,13 +125,11 @@ function projectedAction(operation, currentGraph) {
       const update = operation.nodes[0];
       return [
         { label: "Node", text: title(update.id) },
-        ...Object.entries(update.changes).flatMap(([field, proposed]) => [
-          {
-            label: `Current ${field.replaceAll("_", " ")}`,
-            text: display(currentGraph.nodes[update.id][field]),
-          },
-          { label: `Proposed ${field.replaceAll("_", " ")}`, text: display(proposed) },
-        ]),
+        ...Object.entries(update.changes).map(([field, proposed]) => ({
+          label: field.replaceAll("_", " "),
+          before: fieldValue(currentGraph.nodes[update.id][field]),
+          text: fieldValue(proposed),
+        })),
       ];
     }
     case "removal": {
@@ -181,6 +179,10 @@ function projectedAction(operation, currentGraph) {
   }
 }
 
+function fieldValue(value) {
+  return typeof value === "string" && value ? value : display(value);
+}
+
 function display(value) {
   if (value === null || value === undefined) return "Not set";
   if (typeof value === "string") return `“${value}”`;
@@ -204,19 +206,31 @@ test("content-change proposals compare every changed field with current graph wo
     ],
   });
 
-  assert.match(html, /<\/strong>Plasticity after shifts/);
-  assert.match(html, /<\/strong>“Can plasticity survive a task shift\?”/);
-  assert.match(html, /<\/strong>“Can plasticity survive repeated task shifts\?”/);
-  assert.match(html, /<\/strong>“One task shift”/);
-  assert.match(html, /<\/strong>“Repeated task shifts”/);
+  // Each field reads like a branch diff: named once, current struck above proposed.
+  const field = (label, before, after) =>
+    new RegExp(
+      `<span class="eyebrow">${label}</span><p class="branch-change-value main-before">` +
+        `<span>Now</span> <s>${before}</s></p><p class="branch-change-value branch">` +
+        `<span>Proposed</span> ${after}</p>`,
+    );
+  assert.match(html, /<div class="proposal-action-node">Plasticity after shifts<\/div>/);
+  assert.match(
+    html,
+    field(
+      "question",
+      "Can plasticity survive a task shift\\?",
+      "Can plasticity survive repeated task shifts\\?",
+    ),
+  );
+  assert.match(html, field("scope", "One task shift", "Repeated task shifts"));
+  assert.doesNotMatch(html, /Current |“/);
 
   const lifecycleHtml = renderProposal({
     op: "update_nodes",
     intent: "content_change",
     nodes: [{ id: "rq/plasticity", changes: { status: "answered" } }],
   });
-  assert.match(lifecycleHtml, /<\/strong>“open”/);
-  assert.match(lifecycleHtml, /<\/strong>“answered”/);
+  assert.match(lifecycleHtml, field("status", "open", "answered"));
 });
 
 test("removal proposals name the node and every incident relation", () => {

@@ -48,11 +48,19 @@ export function signedOutNote(state: {
   host: string;
   detail: string | null;
 }): string {
+  const reason = state.detail ? ` ${state.detail.replace(/\.*$/, "")}.` : "";
+  return `${signedOutSummary(state)}.${reason}`;
+}
+
+/** The one-line form a phone shows until the notice is expanded. */
+export function signedOutSummary(state: {
+  label?: string;
+  provider: string;
+  host: string;
+}): string {
   const named = state.label ?? state.provider;
   const provider = named.charAt(0).toUpperCase() + named.slice(1);
-  const where = state.host ? ` on ${state.host}` : "";
-  const reason = state.detail ? ` ${state.detail.replace(/\.*$/, "")}.` : "";
-  return `${provider} is signed out${where}.${reason}`;
+  return `${provider} is signed out${state.host ? ` on ${state.host}` : ""}`;
 }
 
 export function resumedNote(resumed: ProviderResumeSummary): string {

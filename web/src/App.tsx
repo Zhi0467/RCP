@@ -175,6 +175,8 @@ import { DetailDrawer } from "./graph/DetailDrawer";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { ProjectDock } from "./projects/ProjectDock";
+import { PhoneAskButton, PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
+import { useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
@@ -708,6 +710,7 @@ export default function App() {
   useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
   useEffect(() => closeArtifactViewer(), [projectId]);
   const appearance = useTheme();
+  const phone = useNarrowViewport();
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
@@ -4327,31 +4330,232 @@ export default function App() {
     canonicalEdges: graph.edges,
   };
 
+  const askAboutProject = () => {
+    const chatId =
+      unsentConversation(conversations, "project_chat")?.chatId ??
+      startConversation("project_chat", null, project.name);
+    openChats(chatId);
+  };
+  const syncControls = (
+    <div className="header-sync-side">
+      {draftChangeCount > 0 && (
+        <button
+          className="icon-button draft-reset"
+          aria-label="Reset staged changes"
+          title="Reset staged changes"
+          disabled={projectReconciliation !== "authoritative" || syncingDraft}
+          onClick={resetHumanDraft}
+        >
+          <RotateCcw size={14} />
+        </button>
+      )}
+      <button
+        className={`button draft-sync${committableDraftCount > 0 ? " active" : ""}${ontologyDraftIsStale ? " stale" : ""}`}
+        disabled={
+          mutationsDisabled ||
+          committableDraftCount === 0 ||
+          syncingDraft ||
+          draftPreviewPending ||
+          Boolean(draftPreviewConflict) ||
+          ontologyDraftIsStale ||
+          !project.canonical_state.reachable
+        }
+        title={
+          draftPreviewConflict ||
+          (draftPreviewPending
+            ? "Preparing the staged transition preview"
+            : ontologyDraftIsStale
+              ? "Ontology draft base is stale"
+              : undefined)
+        }
+        aria-label={
+          syncingDraft
+            ? "Syncing staged changes"
+            : draftPreviewPending
+              ? "Preparing staged transition preview"
+              : draftPreviewConflict
+                ? "Resolve the staged transition conflict before Sync"
+                : ontologyDraftIsStale
+                  ? `Ontology conflict, ${committableDraftCount} committable changes`
+                  : behindDraftCount > 0
+                    ? `Sync ${committableDraftCount} committable changes, ${behindDraftCount} behind`
+                    : undefined
+        }
+        onClick={() => void syncHumanDraft()}
+      >
+        {syncingDraft || draftPreviewPending ? (
+          <LoaderCircle className="spin" size={14} />
+        ) : ontologyDraftIsStale || draftPreviewConflict ? (
+          <TriangleAlert size={14} />
+        ) : (
+          <CloudUpload size={14} />
+        )}
+        <span>Sync</span>
+        {committableDraftCount > 0 && <small>{committableDraftCount}</small>}
+      </button>
+      {behindDraftCount > 0 && (
+        <span className="draft-behind-count" role="status">
+          Behind <small>{behindDraftCount}</small>
+        </span>
+      )}
+    </div>
+  );
+  const autoResearchButton = (
+    <button
+      className="button secondary auto-research-control"
+      disabled={autoResearchRefusal !== null}
+      aria-label="Auto-research"
+      title={autoResearchRefusal ?? undefined}
+      onClick={() => {
+        openAutoResearchDialog();
+      }}
+    >
+      <Telescope size={14} /> <span className="auto-research-label">Auto-research</span>
+    </button>
+  );
+  const projectUtilities = (
+    <>
+      <button
+        className="icon-button task-history-control"
+        aria-label={activeTask ? "Project history, task in progress" : "Project history"}
+        onClick={openProjectHistory}
+      >
+        <History size={16} />
+        {activeTask ? <span className="activity-pulse" /> : null}
+      </button>
+      <button
+        className="icon-button primary refresh-control"
+        disabled={
+          mutationsDisabled ||
+          projectReconciliation !== "authoritative" ||
+          !project.canonical_state.reachable ||
+          taskStarting
+        }
+        aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
+        onClick={openRunDialog}
+      >
+        <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
+      </button>
+      <VoiceButton voice={voice} className="icon-button" />
+      <button
+        className="icon-button space-settings-control"
+        aria-label="Space settings"
+        title="Space settings"
+        onClick={() => setSpaceSettingsOpen(true)}
+      >
+        <Settings size={16} />
+      </button>
+      <LandingIdentityMenu
+        compact={!phone}
+        identity={actorIdentity}
+        identityError={actorIdentityError}
+        onRequestName={requestActorName}
+        appearance={{
+          themeChoice: appearance.theme,
+          colorModeChoice: appearance.mode,
+          onThemeChoiceChange: appearance.setTheme,
+          onColorModeChoiceChange: appearance.setMode,
+        }}
+        textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
+      />
+    </>
+  );
+  const renderNavItem = (item: (typeof navItems)[number]) =>
+    item.view === "terminals" ? (
+      <TerminalTab
+        key={`terminals-${project.id}`}
+        projectId={project.id}
+        refreshKey={JSON.stringify([project.machines, project.repositories])}
+        active={view === "terminals"}
+        onClick={() => changeView("terminals")}
+        onError={reportErrorNotice}
+      />
+    ) : (
+      <button
+        key={item.view}
+        className={navItemActive(item.view, view) ? "active" : ""}
+        aria-current={navItemActive(item.view, view) ? "page" : undefined}
+        onClick={() =>
+          item.view === "chats"
+            ? openChats()
+            : item.view === "scientific"
+              ? openLastResearchView()
+              : changeView(item.view)
+        }
+      >
+        {item.icon}
+        <span>{item.label}</span>
+        {item.view === "attention" && attentionCount > 0 && (
+          <small className="inbox-count">{attentionCount}</small>
+        )}
+        {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
+        {item.view === "chats" && chatsIndicator && (
+          <small
+            className={`chats-indicator ${chatsIndicator}`}
+            aria-label={chatsIndicator === "active" ? "Chat task active" : "Unread chat result"}
+          >
+            {chatsIndicator === "active" ? "•" : unreadChatIds.size}
+          </small>
+        )}
+      </button>
+    );
+  const trustFilter = showTrustFilter && (
+    <label className="trust-filter">
+      <span>Show</span>
+      <select
+        value={trustView}
+        onChange={(event) => changeTrustView(event.target.value as TrustView)}
+      >
+        <option value="working">Working graph</option>
+        <option value="accepted">Accepted only</option>
+        <option value="review">Everything</option>
+      </select>
+    </label>
+  );
+  const reconcilingStatus = projectReconciliation === "reconciling" && (
+    <span className="project-reconciliation" role="status" aria-label="Refreshing project state">
+      <LoaderCircle className="spin" size={14} aria-hidden="true" />
+    </span>
+  );
+  const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
+  const projectDock = (
+    <ProjectDock
+      tabs={openProjectTabs}
+      activeProjectId={projectId}
+      onActivate={activateProjectTab}
+      onClose={closeDockedProject}
+    />
+  );
+
   return (
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
       {voiceSurface}
-      {!projectHeaderCollapsed && (
+      {phone && (
+        <PhoneProjectBar
+          projectName={project.name}
+          hasDraft={draftChangeCount > 0 || behindDraftCount > 0}
+          status={reconcilingStatus}
+          onBack={returnToProjects}
+          dock={projectDock}
+          sync={syncControls}
+          menu={
+            <>
+              {trustFilter}
+              {autoResearchButton}
+              {projectUtilities}
+            </>
+          }
+        />
+      )}
+      {!phone && !projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
           <div className="project-header-navigation">
             <button className="project-back" onClick={returnToProjects} aria-label="All projects">
               <ArrowLeft size={16} />
             </button>
-            <ProjectDock
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-            {projectReconciliation === "reconciling" && (
-              <span
-                className="project-reconciliation"
-                role="status"
-                aria-label="Refreshing project state"
-              >
-                <LoaderCircle className="spin" size={14} aria-hidden="true" />
-              </span>
-            )}
+            {projectDock}
+            {reconcilingStatus}
           </div>
           <div className="project-header-actions" id="project-header-actions">
             <div
@@ -4359,231 +4563,64 @@ export default function App() {
               role="group"
               aria-label="Project actions"
             >
-              <div className="header-sync-side">
-                {draftChangeCount > 0 && (
-                  <button
-                    className="icon-button draft-reset"
-                    aria-label="Reset staged changes"
-                    title="Reset staged changes"
-                    disabled={projectReconciliation !== "authoritative" || syncingDraft}
-                    onClick={resetHumanDraft}
-                  >
-                    <RotateCcw size={14} />
-                  </button>
-                )}
-                <button
-                  className={`button draft-sync${committableDraftCount > 0 ? " active" : ""}${ontologyDraftIsStale ? " stale" : ""}`}
-                  disabled={
-                    mutationsDisabled ||
-                    committableDraftCount === 0 ||
-                    syncingDraft ||
-                    draftPreviewPending ||
-                    Boolean(draftPreviewConflict) ||
-                    ontologyDraftIsStale ||
-                    !project.canonical_state.reachable
-                  }
-                  title={
-                    draftPreviewConflict ||
-                    (draftPreviewPending
-                      ? "Preparing the staged transition preview"
-                      : ontologyDraftIsStale
-                        ? "Ontology draft base is stale"
-                        : undefined)
-                  }
-                  aria-label={
-                    syncingDraft
-                      ? "Syncing staged changes"
-                      : draftPreviewPending
-                        ? "Preparing staged transition preview"
-                        : draftPreviewConflict
-                          ? "Resolve the staged transition conflict before Sync"
-                          : ontologyDraftIsStale
-                            ? `Ontology conflict, ${committableDraftCount} committable changes`
-                            : behindDraftCount > 0
-                              ? `Sync ${committableDraftCount} committable changes, ${behindDraftCount} behind`
-                              : undefined
-                  }
-                  onClick={() => void syncHumanDraft()}
-                >
-                  {syncingDraft || draftPreviewPending ? (
-                    <LoaderCircle className="spin" size={14} />
-                  ) : ontologyDraftIsStale || draftPreviewConflict ? (
-                    <TriangleAlert size={14} />
-                  ) : (
-                    <CloudUpload size={14} />
-                  )}
-                  <span>Sync</span>
-                  {committableDraftCount > 0 && <small>{committableDraftCount}</small>}
-                </button>
-                {behindDraftCount > 0 && (
-                  <span className="draft-behind-count" role="status">
-                    Behind <small>{behindDraftCount}</small>
-                  </span>
-                )}
-              </div>
+              {syncControls}
               <button
                 className="button secondary"
                 disabled={projectReconciliation !== "authoritative"}
-                onClick={() => {
-                  const chatId =
-                    unsentConversation(conversations, "project_chat")?.chatId ??
-                    startConversation("project_chat", null, project.name);
-                  openChats(chatId);
-                }}
+                onClick={askAboutProject}
               >
                 <MessageCircle size={14} /> Ask
               </button>
-              <button
-                className="button secondary auto-research-control"
-                disabled={autoResearchRefusal !== null}
-                aria-label="Auto-research"
-                title={autoResearchRefusal ?? undefined}
-                onClick={() => {
-                  openAutoResearchDialog();
-                }}
-              >
-                <Telescope size={14} /> <span className="auto-research-label">Auto-research</span>
-              </button>
+              {autoResearchButton}
             </div>
             <div
               className="project-header-group project-utility-group"
               role="group"
               aria-label="Project utilities"
             >
-              <button
-                className="icon-button task-history-control"
-                aria-label={activeTask ? "Project history, task in progress" : "Project history"}
-                onClick={openProjectHistory}
-              >
-                <History size={16} />
-                {activeTask ? <span className="activity-pulse" /> : null}
-              </button>
-              <button
-                className="icon-button primary refresh-control"
-                disabled={
-                  mutationsDisabled ||
-                  projectReconciliation !== "authoritative" ||
-                  !project.canonical_state.reachable ||
-                  taskStarting
-                }
-                aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
-                onClick={openRunDialog}
-              >
-                <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
-              </button>
-              <VoiceButton voice={voice} className="icon-button" />
-              <button
-                className="icon-button space-settings-control"
-                aria-label="Space settings"
-                title="Space settings"
-                onClick={() => setSpaceSettingsOpen(true)}
-              >
-                <Settings size={16} />
-              </button>
-              <LandingIdentityMenu
-                compact
-                identity={actorIdentity}
-                identityError={actorIdentityError}
-                onRequestName={requestActorName}
-                appearance={{
-                  themeChoice: appearance.theme,
-                  colorModeChoice: appearance.mode,
-                  onThemeChoiceChange: appearance.setTheme,
-                  onColorModeChoiceChange: appearance.setMode,
-                }}
-                textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
-              />
+              {projectUtilities}
             </div>
           </div>
         </header>
       )}
 
-      <nav className="project-tabs" aria-label="Project panels">
-        {projectHeaderCollapsed && (
-          <button
-            className="project-tabs-back project-back"
-            onClick={returnToProjects}
-            aria-label="All projects"
-          >
-            <ArrowLeft size={16} />
-          </button>
-        )}
-        {/* Folded, the expand control sits beside the back arrow it came from. */}
-        <button
-          aria-expanded={!projectHeaderCollapsed}
-          aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
-          aria-label={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
-          className="project-tabs-toggle"
-          title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
-          onClick={toggleProjectHeader}
-        >
-          {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-        </button>
-        {projectHeaderCollapsed && (
-          <ProjectDock
-            className="project-tabs-project-dock"
-            tabs={openProjectTabs}
-            activeProjectId={projectId}
-            onActivate={activateProjectTab}
-            onClose={closeDockedProject}
-          />
-        )}
-        {navItems.map((item) =>
-          item.view === "terminals" ? (
-            <TerminalTab
-              key={`terminals-${project.id}`}
-              projectId={project.id}
-              refreshKey={JSON.stringify([project.machines, project.repositories])}
-              active={view === "terminals"}
-              onClick={() => changeView("terminals")}
-              onError={reportErrorNotice}
-            />
-          ) : (
+      {!phone && (
+        <nav className="project-tabs" aria-label="Project panels">
+          {projectHeaderCollapsed && (
             <button
-              key={item.view}
-              className={navItemActive(item.view, view) ? "active" : ""}
-              aria-current={navItemActive(item.view, view) ? "page" : undefined}
-              onClick={() =>
-                item.view === "chats"
-                  ? openChats()
-                  : item.view === "scientific"
-                    ? openLastResearchView()
-                    : changeView(item.view)
-              }
+              className="project-tabs-back project-back"
+              onClick={returnToProjects}
+              aria-label="All projects"
             >
-              {item.icon}
-              <span>{item.label}</span>
-              {item.view === "attention" && attentionCount > 0 && (
-                <small className="inbox-count">{attentionCount}</small>
-              )}
-              {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
-              {item.view === "chats" && chatsIndicator && (
-                <small
-                  className={`chats-indicator ${chatsIndicator}`}
-                  aria-label={
-                    chatsIndicator === "active" ? "Chat task active" : "Unread chat result"
-                  }
-                >
-                  {chatsIndicator === "active" ? "•" : unreadChatIds.size}
-                </small>
-              )}
+              <ArrowLeft size={16} />
             </button>
-          ),
-        )}
-        {showTrustFilter && (
-          <label className="trust-filter">
-            <span>Show</span>
-            <select
-              value={trustView}
-              onChange={(event) => changeTrustView(event.target.value as TrustView)}
-            >
-              <option value="working">Working graph</option>
-              <option value="accepted">Accepted only</option>
-              <option value="review">Everything</option>
-            </select>
-          </label>
-        )}
-      </nav>
+          )}
+          {/* Folded, the expand control sits beside the back arrow it came from. */}
+          <button
+            aria-expanded={!projectHeaderCollapsed}
+            aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
+            aria-label={
+              projectHeaderCollapsed ? "Expand project header" : "Collapse project header"
+            }
+            className="project-tabs-toggle"
+            title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
+            onClick={toggleProjectHeader}
+          >
+            {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+          </button>
+          {projectHeaderCollapsed && (
+            <ProjectDock
+              className="project-tabs-project-dock"
+              tabs={openProjectTabs}
+              activeProjectId={projectId}
+              onActivate={activateProjectTab}
+              onClose={closeDockedProject}
+            />
+          )}
+          {navItems.map(renderNavItem)}
+          {trustFilter}
+        </nav>
+      )}
 
       {graphTarget.kind === "branch" && (
         <section className="branch-graph-banner" aria-label="Active graph target">
@@ -4674,11 +4711,17 @@ export default function App() {
           draftTransitionProjection.head.revision !== graph.revision && (
             <div className="coverage-banner" role="status">
               <GitBranch size={16} aria-hidden="true" />
-              <span>
-                <strong>Staged transition preview.</strong> Candidate revision{" "}
-                {draftTransitionProjection.head.revision}; canonical state remains revision{" "}
-                {graph.revision} until Sync.
-              </span>
+              {phone ? (
+                <span title={`Canonical state remains revision ${graph.revision} until Sync.`}>
+                  Staged preview · revision {draftTransitionProjection.head.revision}
+                </span>
+              ) : (
+                <span>
+                  <strong>Staged transition preview.</strong> Candidate revision{" "}
+                  {draftTransitionProjection.head.revision}; canonical state remains revision{" "}
+                  {graph.revision} until Sync.
+                </span>
+              )}
             </div>
           )}
         {episodeRefreshError && (
@@ -5067,6 +5110,27 @@ export default function App() {
           )}
         </Suspense>
       </main>
+
+      {phone && view !== "chats" && (
+        <PhoneAskButton
+          disabled={projectReconciliation !== "authoritative"}
+          onAsk={askAboutProject}
+        />
+      )}
+      {phone && (
+        <PhoneTabBar
+          primary={navItems.filter((item) => phonePrimaryViews.has(item.view)).map(renderNavItem)}
+          more={navItems.filter((item) => !phonePrimaryViews.has(item.view)).map(renderNavItem)}
+          moreActive={navItems.some(
+            (item) => !phonePrimaryViews.has(item.view) && navItemActive(item.view, view),
+          )}
+          moreBadge={
+            (chatsIndicator || paper.sync_state !== "synced") && (
+              <small className="phone-more-badge" aria-label="Updates in More" />
+            )
+          }
+        />
+      )}
 
       {(
         [

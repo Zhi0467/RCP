@@ -697,7 +697,12 @@ test("the login notice names each signed-out account once and offers verificatio
 
   assert.doesNotMatch(html, /remote.example/);
 
-  assert.equal((html.match(/<button/g) ?? []).length, 1);
+  // One phone disclosure plus the check; the full explanation stays in the DOM.
+  assert.equal((html.match(/<button/g) ?? []).length, 2);
+  assert.match(html, /class="compact-notice-toggle"[^>]*aria-expanded="false"/);
+  assert.match(html, /<span>Codex is signed out<\/span>/);
+  assert.match(html, /Sign it in from Settings, Provider logins/);
+  assert.match(html, /Already signed in\? Check again/);
 });
 
 test("ineligible and running branches retain merge controls; an in-flight action disables them", () => {

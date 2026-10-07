@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { checkMachineCompute } from "../core/api";
 import type { Machine } from "../core/types";
+import { CompactNotice } from "../ui/CompactNotice";
 
 interface Props {
   apiBase: string;
@@ -54,25 +55,29 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
     <>
       {failures.map(({ machine, route, probe }) => (
         <div className="provider-login-notice" role="status" key={`${machine.alias}:${route}`}>
-          <p>
-            {route === "scheduler" ? "The job scheduler" : "The long-running job helper"} is not
-            ready on {machine.alias}: {probe!.diagnostic}
-          </p>
-          {probe!.required_action ? <p>Fix: {probe!.required_action}</p> : null}
-          <div className="provider-login-notice-actions">
-            <button className="button secondary compact" type="button" onClick={onOpenSettings}>
-              Open Settings
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={checking !== null}
-              onClick={() => void check(machine)}
-            >
-              {checking === machine.alias ? "Checking…" : "Fixed it? Check again"}
-            </button>
-          </div>
-          {error?.alias === machine.alias && <p role="alert">{error.message}</p>}
+          <CompactNotice
+            summary={`${route === "scheduler" ? "Job scheduler" : "Job helper"} not ready on ${machine.alias}`}
+            footer={error?.alias === machine.alias ? <p role="alert">{error.message}</p> : null}
+          >
+            <p>
+              {route === "scheduler" ? "The job scheduler" : "The long-running job helper"} is not
+              ready on {machine.alias}: {probe!.diagnostic}
+            </p>
+            {probe!.required_action ? <p>Fix: {probe!.required_action}</p> : null}
+            <div className="provider-login-notice-actions">
+              <button className="button secondary compact" type="button" onClick={onOpenSettings}>
+                Open Settings
+              </button>
+              <button
+                className="button secondary compact"
+                type="button"
+                disabled={checking !== null}
+                onClick={() => void check(machine)}
+              >
+                {checking === machine.alias ? "Checking…" : "Fixed it? Check again"}
+              </button>
+            </div>
+          </CompactNotice>
         </div>
       ))}
     </>
