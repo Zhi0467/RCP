@@ -1371,3 +1371,65 @@ def test_rehearsal_refuses_a_migration_that_drops_a_project(captured, monkeypatc
                 output_dir=str(tmp_path / "rehearsal"),
             )
         )
+
+
+def _rehearse(request, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    return update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1, data_dir=request.data_dir, output_dir=str(tmp_path / "rehearsal")
+        )
+    )
+
+
+def test_rehearsal_reads_legacy_kept_files_beside_the_state_root(captured, tmp_path):
+    from rcp.artifacts import AgentArtifactDescriptor
+    from rcp.storage import AgentTaskRecord
+
+    request, state, _ = captured
+    content = b"legacy kept bytes"
+    artifacts = Path(state["research"]).parent / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "kept-figure.png").write_bytes(content)
+    with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+        now = store.now()
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=str(uuid.uuid4()),
+                project_id=state["project_id"],
+                kind="project_chat",
+                status="succeeded",
+                request={},
+                result={
+                    "artifacts": [
+                        AgentArtifactDescriptor(
+                            artifact_id="d" * 24,
+                            name="figure.png",
+                            media_type="image/png",
+                            size_bytes=len(content),
+                            kept_filename="kept-figure.png",
+                            kept_at=now,
+                        ).model_dump(mode="json")
+                    ]
+                },
+                created_at=now,
+                updated_at=now,
+                finished_at=now,
+                status_message="Completed.",
+            )
+        )
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+
+
+def test_candidate_check_allows_per_member_unread_counts(captured, monkeypatch, tmp_path):
+    request, state, _ = captured
+    with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+        second = store.preprovision_team_member("Second member")
+        store.seat_project_member(state["project_id"], second.user_id)
+
+    def per_member_counts(store, project_ids, user_id):
+        return dict.fromkeys(project_ids, 1 if user_id == second.user_id else 0)
+
+    monkeypatch.setattr("rcp.api.index.digest_counts", per_member_counts)
+    assert _rehearse(request, tmp_path)["status"] == "ready"

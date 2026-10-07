@@ -814,13 +814,19 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
                 copies = output / "local-projects"
                 copies.mkdir(mode=0o700)
                 for index, root in enumerate(roots[1:]):
-                    target = copies / str(index)
+                    live = Path(root["live"])
+                    repository = copies / str(index)
+                    target = repository / ".research"
                     try:
-                        copy_live_research_tree(Path(root["live"]), target)
+                        repository.mkdir(mode=0o700)
+                        copy_live_research_tree(live, target)
+                        # Kept files and result views live beside `.research`.
+                        for sibling in ("artifacts", "views"):
+                            copy_live_research_tree(live.parent / sibling, repository / sibling)
                     except (OSError, shutil.Error):
                         # An unreadable or special entry is that project's backup
                         # problem: its capture reads the live root and warns.
-                        shutil.rmtree(target, ignore_errors=True)
+                        shutil.rmtree(repository, ignore_errors=True)
                         continue
                     local_project_copies[root["project_id"]] = target
             captured_at = datetime.now(UTC)

@@ -982,6 +982,8 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                         raise CandidateRehearsalRefused("Candidate project inventory read failed.")
                     for raw_card in listing.json():
                         card = dict(raw_card)
+                        # The unread digest count is per member; the catalog card is not.
+                        card.pop("digest_count", None)
                         project_id = str(card["id"])
                         existing = cards.get(project_id)
                         if existing is not None and existing != card:
