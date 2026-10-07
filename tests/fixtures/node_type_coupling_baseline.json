@@ -14,7 +14,7 @@
   "server_ops/git_credentials.py": 2,
   "server_ops/models.py": 1,
   "storage/auto_research.py": 2,
-  "storage/auto_research_children.py": 3,
+  "storage/auto_research_children.py": 2,
   "storage/models.py": 1,
   "storage/notifications.py": 2,
   "transfer/records.py": 1
