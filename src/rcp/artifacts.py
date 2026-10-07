@@ -125,6 +125,16 @@ class AgentArtifactDescriptor(BaseModel):
         return self.kept_at is not None or self.kept_filename is not None
 
 
+def kept_binding_is_complete(kept_filename: str | None, kept_at: str | None) -> bool:
+    """The one rule every reader applies to a recorded Keep.
+
+    A legacy kept file always carries its kept time. Keep through the artifact
+    store records only `kept_at`, because the store owns the bytes.
+    """
+
+    return kept_filename is None or kept_at is not None
+
+
 class _HTMLDocumentTitleParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)

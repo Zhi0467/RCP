@@ -7,6 +7,7 @@ program never removes an existing installation and never listens on port 8421.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.cookies
 import json
 import os
@@ -20,6 +21,8 @@ import stat
 import subprocess
 import sys
 import urllib.request
+import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -129,8 +132,6 @@ def assert_serves(fixture: dict, version: str) -> None:
         assert json.load(response)["space_name"] == "Installed update retained HTTP work"
     pid = int(run(["systemctl", "show", "rcp.service", "--property=MainPID", "--value"]).stdout)
     assert pid > 0 and Path(f"/proc/{pid}").stat().st_uid == pwd.getpwnam("rcp").pw_uid
-    import hashlib
-
     assert {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
         for path in (Path(fixture["research"]) / "patches").iterdir()
@@ -172,6 +173,142 @@ def backup() -> None:
     }
     assert fields["backup_status"] == "protected", fields
     assert fields["uncaptured_projects"] == 0, fields
+
+
+def seed_turn_artifact(data_dir: Path, fixture: dict, label: str) -> dict:
+    """Mirror this interpreter's chat completion; HTTP Keep owns the kept shape."""
+    from rcp.artifacts import descriptor_for
+    from rcp.core.models import AuthorizedHuman
+    from rcp.storage import AgentTaskRecord, AppStore
+
+    store = AppStore(data_dir / "rcp.sqlite3")
+    operation_id, chat_id = str(uuid.uuid4()), str(uuid.uuid4())
+    name = f"{label}-turn.svg"
+    content = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="40">'
+        f'<text x="5" y="25">{label} kept turn</text></svg>'
+    ).encode()
+    descriptor = descriptor_for(
+        operation_id, name, media_type="image/svg+xml", size_bytes=len(content)
+    )
+    now = store.now()
+    stage = data_dir / "run-stage" / operation_id
+    stage.mkdir(parents=True, mode=0o700)
+    member = store.space_user(fixture["member_id"])
+    assert member is not None
+    task = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=fixture["project_id"],
+        kind="project_chat",
+        status="running",
+        request={
+            "mode": "discuss",
+            "chat_scope": "project",
+            "chat_id": chat_id,
+            "message": "Produce a turn artifact.",
+        },
+        created_at=now,
+        updated_at=now,
+        status_message="Producing upgrade fixture artifact",
+        authorized_by=AuthorizedHuman(
+            space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
+        ),
+        stage_host="",
+        stage_root=str(stage),
+    )
+    store.create_agent_task(task)
+    store.record_agent_task_receipt(
+        operation_id,
+        "operation_created",
+        {"kind": task.kind, "attempt": task.attempt, "has_parent": False, "resumed": False},
+    )
+    if hasattr(store, "create_artifact"):
+        from rcp.limits import RUN_STAGE_RETENTION_DAYS
+        from rcp.storage import Artifact
+
+        storage = "artifact_store"
+        store.create_artifact(
+            Artifact(
+                artifact_id=descriptor.artifact_id,
+                project_id=task.project_id,
+                supplier="turn",
+                supplier_id=operation_id,
+                source_name=name,
+                media_type=descriptor.media_type,
+                created_at=now,
+                expires_at=(
+                    datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
+                ).isoformat(),
+                origin_operation_id=operation_id,
+                chat_id=chat_id,
+            ),
+            data=content,
+        )
+    else:
+        # v0.4.5-v0.4.8 load from the task's recorded stage layout, then Keep
+        # copies the bytes to the state repository and records kept_filename.
+        from rcp.runs.chat import _local_chat_artifact_directory
+
+        storage = "stage_file"
+        directory = _local_chat_artifact_directory(store, task, operation_id)
+        directory.mkdir(parents=True, mode=0o700)
+        (directory / name).write_bytes(content)
+    store.complete_agent_task(
+        operation_id,
+        applied_revision=None,
+        result={"artifacts": [descriptor.model_dump(mode="json")]},
+    )
+    close = getattr(store, "close", None)
+    if close is not None:
+        close()
+    return {
+        "kept_artifact": "seeded",
+        "storage": storage,
+        "operation_id": operation_id,
+        "artifact_id": descriptor.artifact_id,
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def seed_artifact(label: str) -> None:
+    fixture = json.loads((ROOT / "state/fixture.json").read_text())
+    artifact = seed_turn_artifact(DATA, fixture, label)
+    write_json(ROOT / f"state/{label}-artifact.json", artifact)
+
+
+def keep_artifact(fixture: dict, artifact: dict) -> None:
+    path = (
+        f"/api/projects/{fixture['project_id']}/tasks/{artifact['operation_id']}"
+        f"/artifacts/{artifact['artifact_id']}/keep"
+    )
+    with request(path, method="POST", cookie=session(fixture)) as response:
+        assert response.status == 200
+        kept = json.load(response)
+    assert kept["kept_at"], kept
+    if artifact["storage"] == "artifact_store":
+        assert kept.get("kept_filename") is None, kept
+    else:
+        assert kept["kept_filename"], kept
+    artifact.update(kept_artifact="kept", kept_at=kept["kept_at"])
+    print(json.dumps(artifact), flush=True)
+
+
+def assert_kept_artifact(fixture: dict, artifact: dict) -> None:
+    base = f"/api/projects/{fixture['project_id']}"
+    cookie = session(fixture)
+    with request(f"{base}/artifacts", cookie=cookie) as response:
+        entries = json.load(response)
+    (entry,) = [item for item in entries if item["artifact_id"] == artifact["artifact_id"]]
+    assert entry["available"], entry
+    with request(f"{base}/tasks/{artifact['operation_id']}", cookie=cookie) as response:
+        (descriptor,) = json.load(response)["result"]["artifacts"]
+    assert descriptor["kept_at"] == artifact["kept_at"], descriptor
+    with request(
+        f"{base}/tasks/{artifact['operation_id']}/artifacts/{artifact['artifact_id']}/content",
+        cookie=cookie,
+    ) as response:
+        assert hashlib.sha256(response.read()).hexdigest() == artifact["sha256"]
+    artifact.update(listed_as_kept=True, content_verified=True)
 
 
 def seed() -> None:
@@ -342,6 +479,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         cookie=cookie,
     ) as response:
         assert response.status == 200
+    service([old_python, "-I", str(SCRIPT), "seed-base-artifact"])
+    base_artifact = json.loads((ROOT / "state/base-artifact.json").read_text())
+    keep_artifact(fixture, base_artifact)
     assert_serves(fixture, selected["version_string"])
     destination = Path("/var/backups/rcp-installed-upgrade")
     destination.mkdir(mode=0o700)
@@ -423,10 +563,16 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             if line.startswith("Version: ")
         )
     assert_serves(fixture, version)
+    assert_kept_artifact(fixture, base_artifact)
     current = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
+    candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
+    service([candidate_python, "-I", str(SCRIPT), "seed-candidate-artifact"])
+    candidate_artifact = json.loads((ROOT / "state/candidate-artifact.json").read_text())
+    keep_artifact(fixture, candidate_artifact)
+    assert_kept_artifact(fixture, candidate_artifact)
     service(
         [
-            str(Path(current["release_directory"]) / ".venv/bin/python"),
+            candidate_python,
             "-I",
             str(SCRIPT),
             "scratch-check",
@@ -448,6 +594,8 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             "rollback_exact": exact,
             "candidate_version": version,
             "backup_after_rollback": "protected",
+            "kept_artifacts": {"base": base_artifact, "candidate": candidate_artifact},
+            "backup_after_candidate_keep": "protected",
             "port": PORT,
         },
     )
@@ -455,7 +603,13 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
 
 def main() -> None:
     # Isolated installed interpreters need only the test helpers, never src/rcp.
-    if len(sys.argv) == 2 and sys.argv[1] in {"setup", "seed", "scratch-check"}:
+    if len(sys.argv) == 2 and sys.argv[1] in {
+        "setup",
+        "seed",
+        "scratch-check",
+        "seed-base-artifact",
+        "seed-candidate-artifact",
+    }:
         if (
             sys.platform != "linux"
             or os.environ.get("GITHUB_ACTIONS") != "true"
@@ -467,6 +621,8 @@ def main() -> None:
             setup()
         elif sys.argv[1] == "seed":
             seed()
+        elif sys.argv[1] in {"seed-base-artifact", "seed-candidate-artifact"}:
+            seed_artifact(sys.argv[1].removeprefix("seed-").removesuffix("-artifact"))
         else:
             from tests.server_upgrade_scratch import assert_scratch_usable
 

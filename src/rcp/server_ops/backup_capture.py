@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType
+from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, kept_binding_is_complete
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_DIAGNOSTIC_MAX_CHARS,
@@ -674,7 +674,7 @@ def _kept_artifact_references(
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact descriptor is malformed."
                 ) from exc
-            if descriptor.kept_filename is not None and descriptor.kept_at is None:
+            if not kept_binding_is_complete(descriptor.kept_filename, descriptor.kept_at):
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact has an incomplete kept-file binding."
                 )
