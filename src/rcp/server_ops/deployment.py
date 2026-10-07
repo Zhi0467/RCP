@@ -810,7 +810,13 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
                 copies.mkdir(mode=0o700)
                 for index, root in enumerate(roots[1:]):
                     target = copies / str(index)
-                    copy_live_research_tree(Path(root["live"]), target)
+                    try:
+                        copy_live_research_tree(Path(root["live"]), target)
+                    except (OSError, shutil.Error):
+                        # An unreadable or special entry is that project's backup
+                        # problem: its capture reads the live root and warns.
+                        shutil.rmtree(target, ignore_errors=True)
+                        continue
                     local_project_copies[root["project_id"]] = target
             captured_at = datetime.now(UTC)
             projects = tuple(

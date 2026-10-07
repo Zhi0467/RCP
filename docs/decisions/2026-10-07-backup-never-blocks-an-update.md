@@ -33,8 +33,10 @@ partial nightly backup is visible in Server Settings and recoverable.
 
 ## What it gives up
 
-A project backup cannot read is proven only after the switch, by the live
-verification on real data, not before it on a copy. Rollback is still complete.
+A project backup cannot read gets no application proof: neither the copy
+check before the switch nor the live check after it reads that project. The
+update names it as a warning, and its folder is still in the byte-for-byte
+checkpoint, so rollback restores it exactly.
 
 ## Not done
 

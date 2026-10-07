@@ -1328,3 +1328,24 @@ def test_rehearsal_tolerates_vanished_live_copy_entry(captured, monkeypatch, tmp
     )
     assert vanished
     assert result == {"version": 1, "status": "ready", "warnings": []}
+
+
+def test_rehearsal_warns_when_a_project_root_cannot_be_copied(captured, monkeypatch, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    unreadable = Path(state["research"]) / "unreadable"
+    unreadable.mkdir()
+    unreadable.chmod(0)
+    try:
+        result = update_rehearsal(
+            UpdateRehearsalRequest(
+                version=1,
+                data_dir=request.data_dir,
+                output_dir=str(tmp_path / "rehearsal"),
+            )
+        )
+    finally:
+        unreadable.chmod(0o700)
+    assert result["status"] == "ready"
+    assert [warning["module"] for warning in result["warnings"]] == ["backup"]
