@@ -211,13 +211,26 @@ def test_target_preparation_rejudges_outgoing_inventory_and_binds_its_proof(
     )
 
 
-def test_target_preparation_still_refuses_uncapturable_kept_binding(captured, monkeypatch):
+def test_target_preparation_warns_for_uncapturable_kept_binding(captured, monkeypatch, tmp_path):
     request = capture_outgoing_keep(captured, monkeypatch, malformed=True)
-    with pytest.raises(MaintenanceRefused, match="unresolved project"):
-        inventory(request)
-    with pytest.raises(MaintenanceRefused, match="local project root could not be captured"):
-        prepare(request)
-    assert not (Path(request.output_dir) / "application-proof.json").exists()
+    discovered = inventory(request)
+    assert {r["live"] for r in discovered["roots"]} == {request.data_dir, captured[1]["research"]}
+    prepared = prepare(request)
+    assert prepared["warnings"] == discovered["warnings"]
+    assert prepared["warnings"][0]["project_id"] == captured[1]["project_id"]
+    proof = ApplicationProof.model_validate_json(Path(prepared["proof_path"]).read_bytes())
+    assert not proof.read_model.projects
+    assert (
+        validate(
+            ValidateRequest(
+                version=1,
+                proof_path=prepared["proof_path"],
+                proof_sha256=prepared["proof_sha256"],
+                output_dir=str(tmp_path / "validated"),
+            )
+        )["status"]
+        == "verified"
+    )
 
 
 @pytest.mark.parametrize("failure", ["prepare", "verification"])
@@ -824,6 +837,7 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
             "inspect",
             "offline-inventory",
             "offline-prepare",
+            "update-rehearsal",
             "restore-prepare",
             "offline-protect",
         ],
@@ -950,7 +964,7 @@ def test_offline_inventory_discovers_roots_without_changing_stopped_state(captur
 
 
 def test_release_rehearsal_reads_a_running_database_and_judges_its_copy(captured, tmp_path):
-    from rcp.server_ops.deployment import OfflinePrepareRequest, rehearse_inventory
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
 
     request, state, _ = captured
     data, research = Path(request.data_dir), Path(state["research"])
@@ -964,15 +978,14 @@ def test_release_rehearsal_reads_a_running_database_and_judges_its_copy(captured
         }
 
     before = {root: visible(root) for root in (data, research)}
-    result = rehearse_inventory(
-        OfflinePrepareRequest(
+    result = update_rehearsal(
+        UpdateRehearsalRequest(
             version=1,
             data_dir=str(data),
             output_dir=str(tmp_path / "rehearsal"),
-            source_commit="a" * 40,
         )
     )
-    assert {root["live"] for root in result["roots"]} == {str(data), str(research)}
+    assert result == {"version": 1, "status": "ready", "warnings": []}
     assert {root: visible(root) for root in before} == before
 
 
@@ -1067,3 +1080,186 @@ def test_inspect_uninitialized_does_not_create_schema(tmp_path, empty_sqlite):
     (data / "unowned").write_text("do not change")
     assert inspect(InspectRequest(version=1, data_dir=str(data)))["status"] == "uninitialized"
     assert (data / "unowned").read_text() == "do not change"
+
+
+@pytest.mark.parametrize("failure", ["inventory", "files"])
+def test_uncaptured_project_does_not_hide_other_project_proof(
+    captured, monkeypatch, tmp_path, failure
+):
+    import rcp.server_ops.backup_capture as backup_capture
+    from rcp.server_ops.backup_project_files import BackupProjectFileUnavailable
+
+    request, state, metadata = captured
+    data = Path(request.data_dir)
+    other = prepare_data(
+        data,
+        data.parent / "projects",
+        account=pwd.getpwuid(os.geteuid()).pw_name,
+        member_token=state["token"],
+        project_name="Second proven project",
+    )
+    original = backup_capture.inspect_snapshot_project_inventory
+
+    def reject_inventory(store, record, **kwargs):
+        result = original(store, record, **kwargs)
+        if record.project_id == state["project_id"]:
+            return backup_capture.BackupSnapshotProjectInventory(
+                project_id=record.project_id,
+                home_space_id=record.home_space_id,
+                locator=record.locator,
+                status="uncaptured",
+                unavailable_reason="Synthetic inventory rejection.",
+                unavailable_at=kwargs["captured_at"],
+            )
+        return result
+
+    if failure == "inventory":
+        monkeypatch.setattr(backup_capture, "inspect_snapshot_project_inventory", reject_inventory)
+    else:
+        original_capture = BackupProjectFileCaptureCoordinator._capture_project
+
+        def reject_files(self, capture_root, project_root, inventory, **kwargs):
+            if inventory.project_id == state["project_id"]:
+                raise BackupProjectFileUnavailable("Synthetic file capture rejection.")
+            return original_capture(self, capture_root, project_root, inventory, **kwargs)
+
+        monkeypatch.setattr(BackupProjectFileCaptureCoordinator, "_capture_project", reject_files)
+    with closing(AppStore(data / "rcp.sqlite3")) as store:
+        capture = BackupCaptureCoordinator(store, data, metadata).capture_sqlite()
+    request = request.model_copy(
+        update={
+            "sqlite_receipt_path": str(capture.receipt_path),
+            "sqlite_receipt_sha256": capture.receipt_sha256,
+        }
+    )
+    discovered = inventory(request)
+    assert {r["live"] for r in discovered["roots"]} == {
+        str(data),
+        state["research"],
+        other["research"],
+    }
+    prepared = prepare(request)
+    assert [(w["module"], w["project_id"]) for w in prepared["warnings"]] == [
+        ("backup", state["project_id"]),
+    ]
+    proof = ApplicationProof.model_validate_json(Path(prepared["proof_path"]).read_bytes())
+    assert [(p.project_id, p.status) for p in proof.read_model.projects] == [
+        (other["project_id"], "verified"),
+    ]
+    validation = ValidateRequest(
+        version=1,
+        proof_path=prepared["proof_path"],
+        proof_sha256=prepared["proof_sha256"],
+        output_dir=str(tmp_path / "validated"),
+    )
+    assert validate(validation)["status"] == "verified"
+    live = create_app(data_dir=data)
+    assert verify_live_application(
+        Path(prepared["proof_path"]),
+        proof_sha256=prepared["proof_sha256"],
+        background=live.state.background_tasks,
+        catalog=live.state.catalog,
+        store=live.state.background_tasks.store,
+    )
+    from rcp.server_ops.deployment import OfflinePrepareRequest, offline_inventory, offline_prepare
+
+    offline = OfflinePrepareRequest(
+        version=1,
+        data_dir=str(data),
+        output_dir=str(tmp_path / "offline-inventory"),
+        source_commit="a" * 40,
+    )
+    assert {r["live"] for r in offline_inventory(offline)["roots"]} == {
+        str(data),
+        state["research"],
+        other["research"],
+    }
+    assert (
+        offline_prepare(
+            offline.model_copy(
+                update={
+                    "output_dir": str(tmp_path / "offline-prepare"),
+                }
+            )
+        )["warnings"]
+        == prepared["warnings"]
+    )
+    bad = proof.model_copy(
+        update={
+            "read_model": proof.read_model.model_copy(
+                update={
+                    "projects": (proof.read_model.projects[0].model_copy(update={"revision": -1}),),
+                }
+            )
+        }
+    )
+    bad_path = tmp_path / "bad-proof.json"
+    digest = _publish_proof(bad_path, bad)
+    with pytest.raises(MaintenanceRefused):
+        validate(
+            validation.model_copy(
+                update={
+                    "proof_path": str(bad_path),
+                    "proof_sha256": digest,
+                    "output_dir": str(tmp_path / "mismatch"),
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize("failure", ["backup", "migration", "identity"])
+def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
+    captured, monkeypatch, tmp_path, failure, capsys
+):
+    from rcp.__main__ import instance_lock
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, main
+
+    request, state, _ = captured
+    data, research = Path(request.data_dir), Path(state["research"])
+    if failure == "backup":
+
+        def reject(*args, **kwargs):
+            raise ValueError("Synthetic backup rejection with private record data.")
+
+        monkeypatch.setattr("rcp.server_ops.backup_capture._kept_artifact_references", reject)
+    elif failure == "migration":
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("Synthetic broken migration.")
+
+        monkeypatch.setattr(AppStore, "_initialize", broken)
+    else:
+        with sqlite3.connect(data / "rcp.sqlite3") as connection:
+            connection.execute("DROP TRIGGER space_identity_immutable")
+            connection.execute("UPDATE space_identity SET space_kind='personal'")
+
+    def visible(root):
+        return {
+            name: entry
+            for name, entry in _tree_state(root).items()
+            if not name.endswith(("-wal", "-shm"))
+        }
+
+    # A running service already owns this lock. Rehearsal must not acquire it.
+    with instance_lock(data, timeout=0):
+        before = {root: visible(root) for root in (data, research)}
+        rehearsal = UpdateRehearsalRequest(
+            version=1,
+            data_dir=str(data),
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+        request_path = tmp_path / "request.json"
+        request_path.write_text(rehearsal.model_dump_json())
+        request_path.chmod(0o600)
+        exit_code = main(["update-rehearsal", str(request_path)])
+        output = capsys.readouterr()
+        if failure == "backup":
+            assert exit_code == 0
+            result = json.loads(output.out)
+            assert result["status"] == "ready"
+            assert result["warnings"][0]["project_id"] == state["project_id"]
+            assert "private record data" not in json.dumps(result)
+        else:
+            assert exit_code == 1
+            assert json.loads(output.err)["status"] == "refused"
+        assert {root: visible(root) for root in before} == before
