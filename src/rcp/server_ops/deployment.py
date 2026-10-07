@@ -813,6 +813,12 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
             if local_project_copies is not None:
                 copies = output / "local-projects"
                 copies.mkdir(mode=0o700)
+                siblings = ("artifacts", "views")
+                for root in roots[1:]:
+                    for sibling in siblings:
+                        source = Path(root["live"]).parent / sibling
+                        if output == source or output.is_relative_to(source):
+                            raise MaintenanceRefused("Prepared storage overlaps application state.")
                 for index, root in enumerate(roots[1:]):
                     live = Path(root["live"])
                     repository = copies / str(index)
@@ -821,7 +827,7 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
                         repository.mkdir(mode=0o700)
                         copy_live_research_tree(live, target)
                         # Kept files and result views live beside `.research`.
-                        for sibling in ("artifacts", "views"):
+                        for sibling in siblings:
                             copy_live_research_tree(live.parent / sibling, repository / sibling)
                     except (OSError, shutil.Error):
                         # An unreadable or special entry is that project's backup

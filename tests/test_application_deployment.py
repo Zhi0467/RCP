@@ -1433,3 +1433,17 @@ def test_candidate_check_allows_per_member_unread_counts(captured, monkeypatch, 
 
     monkeypatch.setattr("rcp.api.index.digest_counts", per_member_counts)
     assert _rehearse(request, tmp_path)["status"] == "ready"
+
+
+def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    artifacts = Path(state["research"]).parent / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    with pytest.raises(MaintenanceRefused):
+        update_rehearsal(
+            UpdateRehearsalRequest(
+                version=1, data_dir=request.data_dir, output_dir=str(artifacts / "rehearsal")
+            )
+        )
