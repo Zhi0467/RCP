@@ -416,3 +416,21 @@ test("branch badges abbreviate ids, preserve full titles, and share overlap rend
     /class="status-pill experiment-branch-badge"[^>]*data-graph-target-kind="main"/,
   );
 });
+
+test("a continued Auto-research child's link keeps its exact route", async () => {
+  const { experimentBoardHref } = await server.ssrLoadModule(
+    "/src/experiments/experimentBoardModel.ts",
+  );
+  // Reauthorization moves the child's route to the continuation run while the
+  // branch keeps the chain root as its id.
+  const route = {
+    experiment_id: "experiment/one",
+    episode_id: "child-loop",
+    graph_target: { kind: "branch", branch_id: "chain-root" },
+    parent_episode_id: "continuation-run",
+  };
+  assert.deepEqual(
+    parseProjectHash(experimentBoardHref("project-one", route)).experimentRoute,
+    route,
+  );
+});

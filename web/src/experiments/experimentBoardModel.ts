@@ -453,13 +453,10 @@ function experimentRouteFromParams(
       parent_episode_id: null,
     };
   }
-  // An Auto-research child names its owning episode; a human Run isolated on its
-  // own branch has no parent.
-  if (
-    targetKind === "branch" &&
-    branchId &&
-    (parentEpisodeId === branchId || parentEpisodeId === null)
-  ) {
+  // An Auto-research child names its owning episode, which after reauthorization
+  // is a continuation of the branch's root; a human isolated Run has no parent.
+  // The exact index entry match validates the pair.
+  if (targetKind === "branch" && branchId && parentEpisodeId !== "") {
     return {
       experiment_id: experimentId,
       episode_id: episodeId,
@@ -511,13 +508,16 @@ function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdenti
     target.kind === "branch" &&
     typeof target.branch_id === "string" &&
     target.branch_id &&
-    (value.parent_episode_id === target.branch_id || value.parent_episode_id === null)
+    // A continued Auto-research run keeps the chain root as branch_id, so the
+    // parent may differ from it; the exact index entry match validates it.
+    ((typeof value.parent_episode_id === "string" && value.parent_episode_id) ||
+      value.parent_episode_id === null)
   ) {
     return {
       experiment_id: value.experiment_id,
       episode_id: value.episode_id,
       graph_target: { kind: "branch", branch_id: target.branch_id },
-      parent_episode_id: value.parent_episode_id,
+      parent_episode_id: value.parent_episode_id as string | null,
     };
   }
   return null;
