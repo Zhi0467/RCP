@@ -157,7 +157,8 @@ def _safe_line(value: str, *, label: str, maximum: int = 4096) -> str:
 
 
 def _relative_path(value: str, *, label: str) -> PurePosixPath:
-    _safe_line(value, label=label)
+    if not value or len(value) > 4096 or "\x00" in value:
+        raise ValueError(f"{label} must be a bounded nonempty path")
     if "\\" in value:
         raise ValueError(f"{label} must use POSIX separators")
     path = PurePosixPath(value)

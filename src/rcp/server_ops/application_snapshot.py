@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -124,6 +125,36 @@ def _set_private_directory_modes(root: Path) -> None:
 def copy_proof_tree(source: Path, destination: Path) -> None:
     """Copy generated application proof material; the supervisor owns live snapshots."""
     shutil.copytree(source, destination, symlinks=True)
+
+
+def copy_live_research_tree(source: Path, destination: Path) -> None:
+    """Rehearsal alone tolerates entries removed during an online copy."""
+    try:
+        info = source.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            destination.symlink_to(os.readlink(source))
+        except FileNotFoundError:
+            return
+    elif stat.S_ISDIR(info.st_mode):
+        destination.mkdir(mode=0o700)
+        try:
+            with os.scandir(source) as entries:
+                children = [Path(entry.path) for entry in entries]
+        except FileNotFoundError:
+            return
+        for child in children:
+            copy_live_research_tree(child, destination / child.name)
+        with suppress(FileNotFoundError):
+            shutil.copystat(source, destination, follow_symlinks=False)
+    else:
+        try:
+            shutil.copy2(source, destination, follow_symlinks=False)
+        except FileNotFoundError:
+            if os.path.lexists(source):
+                raise
 
 
 def _copy_declared_file(

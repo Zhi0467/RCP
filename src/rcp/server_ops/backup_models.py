@@ -14,10 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    COMPUTE_CREDENTIAL_PATH,
-    COMPUTE_SSH_TARGET,
     AgentExecutionProfile,
     AgentPermissions,
+    ComputeConnectionConfig,
+    MachineConfig,
     Manifest,
 )
 from rcp.core.transition_models import GraphHeadRef
@@ -37,15 +37,13 @@ from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
 from rcp.storage.artifact_models import ArtifactFile
+from rcp.storage.models import ProjectProvisioningGitCheckRecord, normalize_space_name
 
 BACKUP_MANIFEST_SCHEMA_VERSION = 1
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
-_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
-_HOST = re.compile(r"[A-Za-z0-9_.@:-]{0,255}")
-_ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
 BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
@@ -145,8 +143,15 @@ def _safe_line(value: str, *, label: str, maximum: int = 4096) -> str:
     return value
 
 
+def _stored_text(value: str, *, label: str, maximum: int = 4096) -> str:
+    """Bound stored metadata without interpreting it as diagnostic text."""
+    if not value or len(value) > maximum or "\x00" in value:
+        raise ValueError(f"{label} must be bounded nonempty text without NUL")
+    return value
+
+
 def _relative_path(value: str, *, label: str) -> str:
-    _safe_line(value, label=label)
+    _stored_text(value, label=label)
     if "\\" in value:
         raise ValueError(f"{label} must use POSIX separators")
     path = PurePosixPath(value)
@@ -158,7 +163,6 @@ def _relative_path(value: str, *, label: str) -> str:
 
 
 def _absolute_path(value: str, *, label: str) -> str:
-    _safe_line(value, label=label)
     return normalized_absolute_non_root_path(value, label=label)
 
 
@@ -564,33 +568,10 @@ class BackupManifestMachine(_StrictBackupModel):
     os_account: str
     provider_paths: dict[ProviderId, str]
 
-    @field_validator("alias")
-    @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _ALIAS.fullmatch(value) is None:
-            raise ValueError("backup manifest machine alias is invalid")
-        return value
-
-    @field_validator("host")
-    @classmethod
-    def validate_host(cls, value: str) -> str:
-        if _HOST.fullmatch(value) is None or redact_server_text(value) != value:
-            raise ValueError("backup manifest machine host is invalid")
-        return value
-
-    @field_validator("os_account")
-    @classmethod
-    def validate_account(cls, value: str) -> str:
-        if _ACCOUNT.fullmatch(value) is None:
-            raise ValueError("backup manifest machine account is invalid")
-        return value
-
-    @field_validator("provider_paths")
-    @classmethod
-    def validate_provider_paths(cls, value: dict[ProviderId, str]) -> dict[ProviderId, str]:
-        for path in value.values():
-            _absolute_path(path, label="backup manifest provider path")
-        return value
+    @model_validator(mode="after")
+    def validate_machine(self) -> BackupManifestMachine:
+        MachineConfig.model_validate(self.model_dump())
+        return self
 
 
 class BackupManifestComputeConnection(_StrictBackupModel):
@@ -600,46 +581,9 @@ class BackupManifestComputeConnection(_StrictBackupModel):
     ssh_target: str = Field(max_length=255)
     access_hint: str
 
-    @field_validator("id")
-    @classmethod
-    def validate_id(cls, value: str) -> str:
-        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value) is None:
-            raise ValueError("backup compute connection id is invalid")
-        return value
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        value = _safe_line(value, label="backup compute connection name", maximum=80)
-        if COMPUTE_CREDENTIAL_PATH.search(value):
-            raise ValueError("backup compute connection name cannot contain an SSH credential path")
-        return value
-
-    @field_validator("ssh_target")
-    @classmethod
-    def validate_ssh_target(cls, value: str) -> str:
-        if value and (
-            COMPUTE_SSH_TARGET.fullmatch(value) is None or redact_server_text(value) != value
-        ):
-            raise ValueError("backup compute SSH target is invalid")
-        return value
-
-    @field_validator("access_hint")
-    @classmethod
-    def validate_access_hint(cls, value: str) -> str:
-        if not value:
-            return value
-        value = _safe_line(value, label="backup compute access hint", maximum=512)
-        if COMPUTE_CREDENTIAL_PATH.search(value):
-            raise ValueError("backup compute access hint cannot contain an SSH credential path")
-        return value
-
     @model_validator(mode="after")
-    def validate_kind(self) -> BackupManifestComputeConnection:
-        if self.kind == "local" and self.ssh_target:
-            raise ValueError("backup local compute cannot define an SSH target")
-        if self.kind == "ssh" and not self.ssh_target:
-            raise ValueError("backup remote compute requires an SSH target")
+    def validate_connection(self) -> BackupManifestComputeConnection:
+        ComputeConnectionConfig.model_validate(self.model_dump())
         return self
 
 
@@ -647,13 +591,6 @@ class BackupManifestRepository(_StrictBackupModel):
     alias: str
     machine: str
     path: str
-
-    @field_validator("alias", "machine")
-    @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _ALIAS.fullmatch(value) is None:
-            raise ValueError("backup manifest repository reference is invalid")
-        return value
 
     @field_validator("path")
     @classmethod
@@ -670,25 +607,12 @@ class BackupManifestAgentProfile(_StrictBackupModel):
     run_on: str
     permissions: AgentPermissions
 
+    # An archive outlives the provider catalog that validated it, so a retired
+    # runtime or model stays readable; restore re-resolves the profile.
     @field_validator("runtime", "run_on")
     @classmethod
     def validate_bounded_field(cls, value: str, info) -> str:
-        return _safe_line(value, label=f"backup agent {info.field_name}", maximum=200)
-
-    # Either may be empty: the provider's default model, or a model that takes
-    # no reasoning effort.
-    @field_validator("model", "reasoning")
-    @classmethod
-    def validate_model(cls, value: str, info) -> str:
-        if len(value) > 200 or any(
-            ord(character) < 32 or ord(character) == 127 for character in value
-        ):
-            raise ValueError(f"backup agent {info.field_name} must be one bounded line")
-        if redact_server_text(value) != value:
-            raise ValueError(
-                f"backup agent {info.field_name} cannot contain credential-shaped text"
-            )
-        return value
+        return _stored_text(value, label=f"backup agent {info.field_name}", maximum=200)
 
 
 class BackupManifestSources(_StrictBackupModel):
@@ -706,12 +630,12 @@ class BackupManifestSources(_StrictBackupModel):
     @classmethod
     def validate_roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         for root in value:
-            _safe_line(root, label="provider-history root")
+            _stored_text(root, label="provider-history root")
         return value
 
 
 class BackupManifestConfiguration(_StrictBackupModel):
-    name: str
+    name: str = Field(min_length=1, max_length=120)
     machines: tuple[BackupManifestMachine, ...]
     repositories: tuple[BackupManifestRepository, ...]
     project_truth_scope: tuple[str, ...]
@@ -728,22 +652,10 @@ class BackupManifestConfiguration(_StrictBackupModel):
         default=(), exclude_if=lambda value: not value
     )
 
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return _safe_line(value, label="backup project name", maximum=120)
-
-    @field_validator("state_repository")
-    @classmethod
-    def validate_state_repository(cls, value: str) -> str:
-        if _ALIAS.fullmatch(value) is None:
-            raise ValueError("backup state repository alias is invalid")
-        return value
-
     @field_validator("project_truth_scope", "default_run_truth_scope")
     @classmethod
     def validate_scope(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if not value or any(_ALIAS.fullmatch(alias) is None for alias in value):
+        if not value:
             raise ValueError("backup repository scope is invalid")
         if len(value) != len(set(value)):
             raise ValueError("backup repository scope cannot repeat an alias")
@@ -870,26 +782,10 @@ class BackupRecoveryMachine(_StrictBackupModel):
     os_account: str
     resolved_central_root: str | None
 
-    @field_validator("alias")
-    @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _ALIAS.fullmatch(value) is None:
-            raise ValueError("backup recovery machine alias is invalid")
-        return value
-
-    @field_validator("host")
-    @classmethod
-    def validate_host(cls, value: str) -> str:
-        if _HOST.fullmatch(value) is None or redact_server_text(value) != value:
-            raise ValueError("backup recovery machine host is invalid")
-        return value
-
-    @field_validator("os_account")
-    @classmethod
-    def validate_account(cls, value: str) -> str:
-        if _ACCOUNT.fullmatch(value) is None:
-            raise ValueError("backup recovery machine account is invalid")
-        return value
+    @model_validator(mode="after")
+    def validate_machine(self) -> BackupRecoveryMachine:
+        MachineConfig(alias=self.alias, host=self.host, os_account=self.os_account)
+        return self
 
     @field_validator("resolved_central_root")
     @classmethod
@@ -916,13 +812,6 @@ class BackupRecoveryRepository(_StrictBackupModel):
     deploy_key_label: str
     public_key_fingerprint: str
 
-    @field_validator("alias", "machine_alias")
-    @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _ALIAS.fullmatch(value) is None:
-            raise ValueError("backup recovery repository reference is invalid")
-        return value
-
     @field_validator("resolved_path")
     @classmethod
     def validate_path(cls, value: str) -> str:
@@ -938,7 +827,8 @@ class BackupRecoveryRepository(_StrictBackupModel):
     @field_validator("deploy_key_label")
     @classmethod
     def validate_key_label(cls, value: str) -> str:
-        return _safe_line(value, label="backup recovery deploy-key label", maximum=255)
+        ProjectProvisioningGitCheckRecord.validate_deploy_key_label(value)
+        return value
 
     @field_validator("public_key_fingerprint")
     @classmethod
@@ -1024,7 +914,8 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
 
 
 class BackupProjectCapture(_StrictBackupModel):
-    project_id: str
+    # Legacy catalog ids are diagnostic metadata only; captured ids gate file paths.
+    project_id: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")
     home_space_id: str | None
     locator: str | None
     status: Literal["captured", "uncaptured"]
@@ -1043,11 +934,6 @@ class BackupProjectCapture(_StrictBackupModel):
     unavailable_reason: str | None = None
     unavailable_at: datetime | None = None
     total_bytes: int = Field(ge=0)
-
-    @field_validator("project_id")
-    @classmethod
-    def validate_id(cls, value: str, info) -> str:
-        return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
 
     @field_validator("home_space_id")
     @classmethod
@@ -1077,6 +963,8 @@ class BackupProjectCapture(_StrictBackupModel):
 
     @model_validator(mode="after")
     def validate_capture(self) -> BackupProjectCapture:
+        if self.status == "captured":
+            _canonical_uuid4(self.project_id, label="project identity")
         if len(self.files) > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ValueError("project backup file inventory exceeds its entry bound")
         if self.status == "captured":
@@ -1289,7 +1177,7 @@ class BackupArchiveManifest(_StrictBackupModel):
     @field_validator("space_name")
     @classmethod
     def validate_space_name(cls, value: str) -> str:
-        return _safe_line(value, label="backup space name", maximum=120)
+        return normalize_space_name(value)
 
     @field_validator("rcp_source_commit")
     @classmethod

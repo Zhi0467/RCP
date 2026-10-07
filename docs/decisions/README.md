@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Backup never blocks an update](2026-10-07-backup-never-blocks-an-update.md)
+  records why side modules warn instead of refusing an update, why readers
+  check only safety, and what a project backup cannot read gives up.
+
 - [Watcher commands run outside the provider sandbox](2026-10-05-watcher-commands-run-outside-the-provider-sandbox.md)
   records why `watch.json` check and cancel commands run in an unbounded login
   shell, and what that gives up.
