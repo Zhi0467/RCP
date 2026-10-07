@@ -41,7 +41,20 @@ export function ExperimentLoopMetadata({
           )}
         </span>
       )}
-      <span className="experiment-checkout" data-checkout-kind={checkout?.kind ?? "unknown"}>
+      <span
+        className="experiment-checkout"
+        data-checkout-kind={checkout?.kind ?? "unknown"}
+        title={
+          checkout
+            ? [
+                checkout.execution_host === ""
+                  ? "local"
+                  : (checkout.execution_host ?? "Unknown host"),
+                ...checkout.repository_paths,
+              ].join(" · ")
+            : undefined
+        }
+      >
         Checkout: {checkout?.kind ?? "unknown"}
       </span>
     </>

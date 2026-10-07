@@ -2,11 +2,15 @@ import { GitBranch } from "lucide-react";
 import type { GraphTargetRef } from "../core/types";
 
 export function ExperimentBranchBadge({ target }: { target: GraphTargetRef }) {
-  if (target.kind === "main") return null;
+  const label = target.kind === "main" ? "Main" : target.branch_id;
   return (
-    <span className="status-pill experiment-branch-badge" title={target.branch_id}>
+    <span
+      className="status-pill experiment-branch-badge"
+      title={label}
+      data-graph-target-kind={target.kind}
+    >
       <GitBranch size={12} aria-hidden="true" />
-      <span>{target.branch_id}</span>
+      <span>{label}</span>
     </span>
   );
 }

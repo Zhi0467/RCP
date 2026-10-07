@@ -239,6 +239,7 @@ function Fixture() {
   const [stopBusyIds, setStopBusyIds] = useState(new Set<string>());
   return (
     <ExecutionView
+      graphTarget={coexisting ? (episode.graph_target as never) : undefined}
       graph={{
         revision: 3,
         nodes: coexisting ? { [experimentId]: entry.node } : {},
@@ -257,7 +258,7 @@ function Fixture() {
       episodeAction={null}
       tasks={[]}
       watchers={[]}
-      experimentControl={coexisting ? ({ [experimentId]: mainEntry.control } as never) : {}}
+      experimentControl={coexisting ? ({ [experimentId]: entry.control } as never) : {}}
       experimentEntries={(coexisting ? [mainEntry, entry] : [entry]) as never}
       exactExperimentRoute={selectedRoute}
       exactExperimentEntry={selectedRoute?.graph_target.kind === "branch" ? (entry as never) : null}

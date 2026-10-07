@@ -871,6 +871,7 @@ export interface ExperimentControlState {
   ready: boolean;
   reasons: string[];
   graph_reasons: string[];
+  isolated_start_reasons: string[];
   invocations_used: number;
   invocation_ceiling: number;
   invocations_remaining: number;
@@ -2487,40 +2488,25 @@ export interface EpisodeLoopMetadata {
   checkout: LoopCheckout;
 }
 
+export interface LoopStarter {
+  kind: EpisodeStarter["kind"];
+  id?: string | null;
+  display_name: string | null;
+}
+
 /** Compact identity shared by every overlap consumer. */
 export interface LoopStatusRow {
   node_id: string;
   episode_id: string;
   graph_target: GraphTargetRef;
   state: "live" | "stopped" | "completed" | "unavailable";
-  started_by: { kind: EpisodeStarter["kind"]; id?: string | null };
+  started_by: LoopStarter;
   checkout: Pick<LoopCheckout, "kind" | "execution_host" | "repository_paths">;
 }
 
 export interface LoopOverlap {
   rows: LoopStatusRow[];
   omitted: number;
-}
-
-export interface LoopCurrentStatus extends EpisodeLoopMetadata {
-  node_id: string;
-  episode_id: string;
-  graph_target: GraphTargetRef;
-  state: "live" | "stopped" | "completed" | "unavailable";
-  status: EpisodeStatus;
-  ending: EpisodeEnding | null;
-  created_at: string;
-  stop_requested_at: string | null;
-  ended_at: string | null;
-  diagnostic: string | null;
-}
-
-export interface LoopStatusProjection {
-  node_id: string;
-  graph_target: GraphTargetRef;
-  state: LoopStatusRow["state"] | "none";
-  current: LoopCurrentStatus | null;
-  live_elsewhere: LoopOverlap;
 }
 
 export interface ExperimentStartResponse extends AgentTask {
