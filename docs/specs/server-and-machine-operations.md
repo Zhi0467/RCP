@@ -609,6 +609,13 @@ supervisor version must be installed first through `server supervisor update`;
 that refusal's next actions name it before the rerun. That command validates a separate root-owned runtime and atomically switches its
 pointer under the same operation lock, without rolling back application data.
 
+The target's `update-rehearsal` child command takes an online SQLite snapshot
+and byte-copies local project roots under its output directory. It runs the same
+preparation and application-proof checks there and returns `ready` with project
+warnings. The service keeps running; rehearsal takes no live instance lock and
+never changes admission. The caller removes the output directory. This checks
+the captured copy, not a later update boundary.
+
 ### Application boundary and local checkpoint
 
 A normal deployment takes a protected backup before closing admission. An
@@ -619,11 +626,13 @@ PID, account, instance, and data-directory identity. The application closes new
 mutations, provider launches, watchers, machine operations, and runtime recovery
 owners, drains entered work (running agent turns get up to two hours to
 finish; the update refuses cleanly after that), then returns a SQLite capture bound to that
-quiescent boundary. The candidate's thin `inventory` command projects the roots
-from backup's captured registration receipt using `_project_restore_location`,
-shared with preparation. The target release re-inspects projects the outgoing
-release could not inventory, using the captured SQLite snapshot; preparation
-binds its project-file capture and application proof to that target inventory.
+quiescent boundary. The candidate's `inventory` command reads local roots directly from the
+captured SQLite projects table. Backup inventory failures do not remove roots
+from the stopped checkpoint. The target re-inspects outgoing inventory failures.
+If inventory or project-file capture still fails, preparation records a `backup`
+warning naming the project and excludes only that project from application proof.
+Validation and the live check use the same proven project set. Identity, ownership,
+path safety, migration, and proof failures on proven projects still refuse.
 Before service stop, supervisor `check-space` reports an advisory estimate of
 allocated bytes and inodes against free space on each destination filesystem,
 with one margin. Copy and sync errors, rather than a size or entry ceiling,

@@ -157,8 +157,8 @@ remain explicit follow-up evidence.
   promotion builds the app afresh and says so in its run summary.
 - Each team server you will update accepts the build's update preparation.
   CI seeds its own data, so it cannot see records that only real use has
-  written. Run the build's inventory against a copy of each server's database
-  before promoting. On the server, as the service account:
+  written. Run the build's update rehearsal before promoting. On the server,
+  as the service account:
 
   ```bash
   D=$(mktemp -d /home/rcp/rcp-rehearsal-XXXXXX)
@@ -167,14 +167,17 @@ remain explicit follow-up evidence.
   uv venv -q "$D/venv" --python 3.12
   uv pip install -q --python "$D/venv" -r "$D/requirements.lock.txt"
   uv pip install -q --python "$D/venv" --no-deps "$D"/rcp-*.whl
-  "$D/venv/bin/python" -I -c 'import sys; from rcp.server_ops.deployment import OfflinePrepareRequest, rehearse_inventory; print(rehearse_inventory(OfflinePrepareRequest(version=1, data_dir=sys.argv[1], output_dir=sys.argv[2], source_commit="0" * 40)))' /home/rcp/rcp-server/data "$D/out"
+  "$D/venv/bin/python" -I -m rcp.server_ops.deployment update-rehearsal - <<EOF
+  {"version":1,"data_dir":"/home/rcp/rcp-server/data","output_dir":"$D/out"}
+  EOF
   rm -rf "$D"
   ```
 
-  The service keeps running. SQLite's online backup copies the database
-  consistently; only that copy migrates to the build's schema, and every
-  project must inventory. A refusal names the same problem the real update
-  would refuse with.
+  The service keeps running. The command copies SQLite and local project roots,
+  then runs preparation and application proof on copies. A `ready` result may
+  include backup warnings naming projects omitted from proof. Review those
+  warnings. Migration, identity, path safety, and proven-project mismatches
+  still refuse. The temporary directory holds all rehearsal output.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
 - A frozen fixture for each schema change is enforced by CI's old-data job, per

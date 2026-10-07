@@ -211,8 +211,11 @@ class BackupProjectFileCapturePublication(_StrictProjectCaptureModel):
 class BackupProjectFileCaptureCoordinator:
     """Consume one O2a receipt without consulting later live database state."""
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(
+        self, data_dir: Path, *, local_project_copies: Mapping[str, Path] | None = None
+    ) -> None:
         self.data_dir = data_dir.resolve()
+        self.local_project_copies = local_project_copies or {}
 
     def capture(
         self,
@@ -525,11 +528,19 @@ class BackupProjectFileCaptureCoordinator:
         locator = inventory.locator
         if recovery is None or locator is None or inventory.home_space_id is None:
             raise BackupProjectFileUnavailable("The project capture proof is incomplete.")
-        manifest = load_manifest(locator)
+        copied_root = self.local_project_copies.get(inventory.project_id)
+        manifest = load_manifest(
+            copied_root / "manifest.toml" if copied_root else locator,
+            project_root=Path(locator).parent.parent,
+        )
         if not recovery.configuration.matches_manifest(manifest):
             raise BackupProjectFileUnavailable("The project manifest changed after SQLite capture.")
         verify_checkout_identities(recovery)
-        workspace = state_workspace_for_probe(manifest, self.data_dir)
+        workspace = (
+            LocalStateWorkspace(copied_root, str(copied_root))
+            if copied_root is not None
+            else state_workspace_for_probe(manifest, self.data_dir)
+        )
 
         with tempfile.TemporaryDirectory(
             prefix=f".sources-{inventory.project_id}-",
