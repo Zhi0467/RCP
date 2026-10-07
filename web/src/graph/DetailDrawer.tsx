@@ -1,4 +1,9 @@
-import { canStartExperiment, experimentStartReasons } from "../experiments/experimentStart";
+import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
+import {
+  canStartExperiment,
+  experimentStartReasons,
+  experimentStartOverlap,
+} from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -28,6 +33,7 @@ import type {
   Edge,
   EpisodeIsolationChoice,
   ExperimentControlState,
+  ExperimentLoopIndexEntry,
   GraphNode,
   OntologyState,
   ValidationMessage,
@@ -69,6 +75,7 @@ interface Props {
   behind?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
+  experimentEntries?: ExperimentLoopIndexEntry[];
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   decisionChoiceStaged?: boolean;
@@ -142,6 +149,7 @@ export function DetailDrawer({
   behind = false,
   canonicalStanding = node.standing,
   experimentControl = null,
+  experimentEntries = [],
   experimentRunDisabled = false,
   experimentRunBusy = false,
   decisionChoiceStaged = false,
@@ -592,6 +600,18 @@ export function DetailDrawer({
                 <section
                   className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
                 >
+                  {projectId && (
+                    <ExperimentStartOverlap
+                      projectId={projectId}
+                      loops={experimentStartOverlap(
+                        experimentEntries,
+                        projectId,
+                        node.id,
+                        graphTarget,
+                        (inheritedIsolation ?? isolation).graph_isolation,
+                      )}
+                    />
+                  )}
                   <div className="experiment-control-heading">
                     <div>
                       {experimentControl.episode_id && (

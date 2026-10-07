@@ -1210,7 +1210,8 @@ test("an isolated closed experiment stays disabled with its server reason", () =
           can_start: false,
           node_closed: true,
           graph_reasons: [],
-          reasons: ["closed-status-code", "source-loop-active-code"],
+          reasons: ["source-loop-active-code", "closed-status-code"],
+          isolated_start_reasons: ["closed-status-code"],
           invocations_used: 0,
           invocation_ceiling: 3,
           invocations_remaining: 3,
@@ -1227,6 +1228,67 @@ test("an isolated closed experiment stays disabled with its server reason", () =
       [...requirements.matchAll(/<li>(.*?)<\/li>/g)].map((match) => match[1]),
       ["closed-status-code"],
     );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("Run presents other-target live episodes before submission without disabling admission", () => {
+  const node = {
+    id: "experiment/shared",
+    type: "experiment",
+    title: "Shared",
+    status: "planned",
+    standing: "asserted",
+    source_refs: [],
+    extension_fields: {},
+    attempts: [],
+    invocation_ceiling: 3,
+  };
+  const main = { kind: "main" };
+  const branch = { kind: "branch", branch_id: "sibling" };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        projectId: "project-one",
+        graphTarget: main,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossaryIndex: { entriesByInitial: new Map() },
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        experimentControl: { can_start: true, reasons: [], decision_drift: [] },
+        experimentEntries: [
+          {
+            project_id: "project-one",
+            node,
+            graph_target: branch,
+            control: { live: true },
+            episode: {
+              episode_id: "sibling-episode",
+              started_by: {
+                kind: "human",
+                human: { user_id: "private-user-id", display_name: null },
+              },
+              checkout: { kind: "shared", execution_host: "local", repository_paths: ["/repo"] },
+            },
+          },
+        ],
+        onRunExperiment() {
+          assert.fail("render must not submit");
+        },
+      }),
+    );
+    assert.match(html, /data-overlap-episode-id="sibling-episode"/);
+    const runButton = html.match(/<button[^>]*class="[^"]*experiment-run-button[^"]*"[^>]*>/)?.[0];
+    assert.ok(runButton);
+    assert.ok(!runButton.includes("disabled"));
+    assert.ok(!html.includes("private-user-id"));
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

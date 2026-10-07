@@ -241,7 +241,11 @@ test("space loop metadata exposes starter parent and checkout outside the open b
       entry: run({
         started_by: { kind: "auto_research", human: null, auto_research_episode_id: "parent-1" },
         auto_research_parent_episode_id: "parent-1",
-        checkout: { kind: "worktree" },
+        checkout: {
+          kind: "worktree",
+          execution_host: "local",
+          repository_paths: ["/workspace/repo"],
+        },
       }),
       theme: "classic-light",
       onOpen() {},

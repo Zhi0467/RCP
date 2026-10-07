@@ -3,7 +3,11 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
-import { canStartExperiment } from "../src/experiments/experimentStart.ts";
+import {
+  canStartExperiment,
+  experimentStartReasons,
+  experimentStartOverlap,
+} from "../src/experiments/experimentStart.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -32,7 +36,7 @@ const loop = {
   checkout: {
     kind: "worktree",
     available: true,
-    execution_host: "",
+    execution_host: "worker-host",
     repository_paths: ["/workspace/repo"],
     repository_alias: "repo",
     isolation_owner_episode_id: "different-owner",
@@ -40,16 +44,41 @@ const loop = {
 };
 
 test("a new branch bypasses only source-target operational gates", () => {
-  const live = { can_start: false, ready: false, node_closed: false, graph_reasons: [] };
+  const live = {
+    can_start: false,
+    ready: false,
+    node_closed: false,
+    graph_reasons: [],
+    isolated_start_reasons: [],
+  };
   assert.equal(canStartExperiment(live, main, true), true);
   assert.equal(canStartExperiment(live, main, false), false);
   assert.equal(canStartExperiment(live, branch, true), false);
   assert.equal(
-    canStartExperiment({ ...live, graph_reasons: ["unresolved-prerequisite"] }, main, true),
+    canStartExperiment(
+      { ...live, isolated_start_reasons: ["unresolved-prerequisite"] },
+      main,
+      true,
+    ),
     false,
   );
-  assert.equal(canStartExperiment({ ...live, node_closed: true }, main, true), false);
+  assert.equal(
+    canStartExperiment(
+      { ...live, node_closed: true, isolated_start_reasons: ["closed-node"] },
+      main,
+      true,
+    ),
+    false,
+  );
   assert.equal(canStartExperiment(null, main, true), false);
+  const gates = {
+    ...live,
+    reasons: ["runtime", "closed", "graph"],
+    isolated_start_reasons: ["graph", "closed"],
+  };
+  assert.deepEqual(experimentStartReasons(gates, main, true), ["graph", "closed"]);
+  assert.deepEqual(experimentStartReasons(gates, main), gates.reasons);
+  assert.deepEqual(experimentStartReasons(gates, branch, true), gates.reasons);
 });
 
 test("starter metadata links the initiating parent independently of checkout ownership", () => {
@@ -62,6 +91,9 @@ test("starter metadata links the initiating parent independently of checkout own
   assert.equal(parseProjectHash(href).autoResearchEpisodeId, "parent-run");
   assert.match(html, /data-starter-kind="auto_research"/);
   assert.match(html, /data-checkout-kind="worktree"/);
+  const checkoutTitle = html.match(/data-checkout-kind="worktree" title="([^"]+)"/)[1];
+  assert.ok(checkoutTitle.includes(loop.checkout.execution_host));
+  assert.ok(checkoutTitle.includes(loop.checkout.repository_paths[0]));
   const human = render({
     ...loop,
     started_by: { kind: "human", human: { display_name: "member-id" } },
@@ -87,7 +119,7 @@ test("the human start preserves and renders every overlap without adding a gate"
           episode_id: "another-loop",
           graph_target: main,
           auto_research_parent_episode_id: null,
-          started_by: { kind: "human", id: "member-id" },
+          started_by: { kind: "human", id: "private-user-id", display_name: "Recorded member" },
         },
       ],
     },
@@ -122,6 +154,8 @@ test("the human start preserves and renders every overlap without adding a gate"
       ["other-loop", "another-loop"],
     );
     assert.match(html, /data-overlap-omitted="4"/);
+    assert.ok(html.includes(response.live_elsewhere.rows[1].started_by.display_name));
+    assert.ok(!html.includes(response.live_elsewhere.rows[1].started_by.id));
     assert.doesNotMatch(html, /disabled|role="alert"/);
     const routes = [...html.matchAll(/href="([^"]+)"/g)].map((match) =>
       parseProjectHash(match[1].replaceAll("&amp;", "&")),
@@ -155,4 +189,28 @@ test("starter attribution is omitted only for the displayed authorizing member",
     assert.equal([...html.matchAll(/data-starter-kind=/g)].length, expectedCount);
     assert.equal([...html.matchAll(/data-checkout-kind=/g)].length, 1);
   }
+});
+
+test("start inventory includes only live same-node overlaps, including main for a new branch", () => {
+  const entry = (id, target, live = true, nodeId = loop.node_id, projectId = "project-one") => ({
+    project_id: projectId,
+    node: { id: nodeId },
+    graph_target: target,
+    control: { live },
+    episode: { ...loop, episode_id: id },
+  });
+  const entries = [
+    entry("main-loop", main),
+    entry("branch-loop", branch),
+    entry("ended", branch, false),
+    entry("other-node", branch, true, "other"),
+    entry("other-project", branch, true, loop.node_id, "other"),
+  ];
+  const ids = (target, isolated) =>
+    experimentStartOverlap(entries, "project-one", loop.node_id, target, isolated).rows.map(
+      (row) => row.episode_id,
+    );
+  assert.deepEqual(ids(main, false), ["branch-loop"]);
+  assert.deepEqual(ids(main, true), ["main-loop", "branch-loop"]);
+  assert.deepEqual(ids(branch, true), ["main-loop"]);
 });

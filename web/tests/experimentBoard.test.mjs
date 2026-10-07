@@ -645,7 +645,8 @@ test("an explicit main route becomes history when the Experiment advances concur
     }),
   );
 
-  assert.doesNotMatch(html, /campaign-run-detail|episode-current/);
+  assert.doesNotMatch(html, /campaign-run-detail/);
+  assert.match(html, /data-episode-id="episode-current"/);
 });
 
 test("adding turns moves the exact route onto the successor episode", () => {
@@ -1364,11 +1365,12 @@ test("the board shows the shared report wrap-up as in-progress", () => {
   assert.match(html, /status-pill running/);
 });
 
-test("selecting either target keeps both same-node cards and scopes busy state to its episode", () => {
+test("every target view keeps all same-node cards and scopes selection and busy state to the episode", () => {
   const experiment = node("experiment/shared", "active");
   const entries = [
     { id: "main-episode", target: { kind: "main" } },
     { id: "branch-episode", target: { kind: "branch", branch_id: "branch-one" } },
+    { id: "sibling-episode", target: { kind: "branch", branch_id: "branch-two" } },
   ].map(({ id, target }) => {
     const runEpisode = episode({
       episode_id: id,
@@ -1387,7 +1389,11 @@ test("selecting either target keeps both same-node cards and scopes busy state t
             }
           : { kind: "auto_research", human: null, auto_research_episode_id: "parent-run" },
       auto_research_parent_episode_id: target.kind === "main" ? null : "parent-run",
-      checkout: { kind: target.kind === "main" ? "shared" : "worktree" },
+      checkout: {
+        kind: target.kind === "main" ? "shared" : "worktree",
+        execution_host: "local",
+        repository_paths: ["/workspace/repo"],
+      },
       authorized_by: {
         space_id: "space-one",
         user_id: "member-one",
@@ -1404,81 +1410,103 @@ test("selecting either target keeps both same-node cards and scopes busy state t
       episode: runEpisode,
     };
   });
-  for (const selected of entries) {
-    for (const item of entries)
-      item.episode.created_at = item === selected ? "2026-10-06T10:00:00Z" : "2026-10-06T11:00:00Z";
-    const route = parseProjectHash(
-      experimentBoardHref(selected.project_id, experimentBoardRouteToken(selected)),
-    ).experimentRoute;
-    const html = renderToStaticMarkup(
-      React.createElement(ExecutionView, {
-        graph: { nodes: { [experiment.id]: experiment }, edges: {} },
-        episodes: entries.map((item) => item.episode),
-        episodeAction: null,
-        tasks: [],
-        watchers: [],
-        experimentControl: { [experiment.id]: entries[0].control },
-        experimentEntries: entries,
-        exactExperimentRoute: route,
-        exactExperimentEntry: selected.graph_target.kind === "branch" ? selected : null,
-        selectedExperimentId: experiment.id,
-        focusExperimentId: null,
-        runBusy: false,
-        stopBusyIds: new Set([selected.episode.episode_id]),
-        watcherCheckBusyId: null,
-        taskActionId: null,
-        selectedExperimentConversation: React.createElement("div", {
-          "data-selected-episode": selected.episode.episode_id,
-        }),
-        onInspectTask() {},
-        onStopEpisode() {},
-        onArchiveEpisode() {},
-        onMergeEpisode() {},
-        onContinueEpisode() {},
-        onSendEpisodeMessage() {},
-        onOperateEpisodeTask() {},
-        onSwitchEpisodeProvider() {},
-        onSelectExperiment() {},
-        onOpenExperimentEntry() {},
-        onDetailFocused() {},
-        onOpenHistory() {},
-        onRunExperiment() {},
-        onStopExperiment() {},
-        onCheckExperimentWatcher() {},
-        onStopExperimentWatcher() {},
-        onRecoverExperiment() {},
-        onSwitchExperimentProvider() {},
-        episodeReportHref: () => "#",
-      }),
-    );
-    const cards = [...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g)];
-    assert.deepEqual(
-      new Set(cards.map((match) => match[1])),
-      new Set(entries.map((item) => item.episode.episode_id)),
-    );
-    for (const [card, id] of cards) {
-      const isSelected = id === selected.episode.episode_id;
-      assert.match(card, /class="episode-author"/);
-      if (id === "main-episode") {
-        assert.doesNotMatch(card, /data-starter-kind=/);
-      } else {
-        assert.match(card, /data-starter-kind="auto_research"/);
-      }
-      assert.match(
-        card,
-        new RegExp(`data-checkout-kind="${id === "main-episode" ? "shared" : "worktree"}"`),
+  for (const displayed of entries)
+    for (const selected of entries) {
+      for (const item of entries)
+        item.episode.created_at =
+          item === selected ? "2026-10-06T10:00:00Z" : "2026-10-06T11:00:00Z";
+      const route = parseProjectHash(
+        experimentBoardHref(selected.project_id, experimentBoardRouteToken(selected)),
+      ).experimentRoute;
+      const projection = projectExperimentExecution(
+        [experiment],
+        [],
+        [],
+        { [experiment.id]: displayed.control },
+        route,
+        selected,
+        displayed.graph_target,
       );
+      // Main selected from a branch must use the main entry, including its chat control.
+      if (selected.graph_target.kind === "branch" || displayed.graph_target.kind === "branch") {
+        assert.equal(projection.experimentControl[experiment.id], selected.control);
+        assert.equal(projection.staleMainRoute, null);
+      }
+      const html = renderToStaticMarkup(
+        React.createElement(ExecutionView, {
+          graph: { nodes: { [experiment.id]: experiment }, edges: {} },
+          episodes: entries.map((item) => item.episode),
+          episodeAction: null,
+          tasks: [],
+          watchers: [],
+          graphTarget: displayed.graph_target,
+          experimentControl: { [experiment.id]: displayed.control },
+          experimentEntries: entries,
+          exactExperimentRoute: route,
+          exactExperimentEntry: selected.graph_target.kind === "branch" ? selected : null,
+          selectedExperimentId: experiment.id,
+          focusExperimentId: null,
+          runBusy: false,
+          stopBusyIds: new Set([selected.episode.episode_id]),
+          watcherCheckBusyId: null,
+          taskActionId: null,
+          selectedExperimentConversation: React.createElement("div", {
+            "data-selected-episode": selected.episode.episode_id,
+          }),
+          onInspectTask() {},
+          onStopEpisode() {},
+          onArchiveEpisode() {},
+          onMergeEpisode() {},
+          onContinueEpisode() {},
+          onSendEpisodeMessage() {},
+          onOperateEpisodeTask() {},
+          onSwitchEpisodeProvider() {},
+          onSelectExperiment() {},
+          onOpenExperimentEntry() {},
+          onDetailFocused() {},
+          onOpenHistory() {},
+          onRunExperiment() {},
+          onStopExperiment() {},
+          onCheckExperimentWatcher() {},
+          onStopExperimentWatcher() {},
+          onRecoverExperiment() {},
+          onSwitchExperimentProvider() {},
+          episodeReportHref: () => "#",
+        }),
+      );
+      const cards = [
+        ...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g),
+      ];
+      assert.deepEqual(
+        new Set(cards.map((match) => match[1])),
+        new Set(entries.map((item) => item.episode.episode_id)),
+      );
+      for (const [card, id] of cards) {
+        const isSelected = id === selected.episode.episode_id;
+        assert.match(card, /class="episode-author"/);
+        if (id === "main-episode") {
+          assert.doesNotMatch(card, /data-starter-kind=/);
+        } else {
+          assert.match(card, /data-starter-kind="auto_research"/);
+        }
+        assert.match(
+          card,
+          new RegExp(`data-checkout-kind="${id === "main-episode" ? "shared" : "worktree"}"`),
+        );
 
-      assert.equal(card.includes("experiment-branch-badge"), id === "branch-episode");
-      assert.equal(card.includes("data-selected-episode="), isSelected);
-      if (isSelected) {
-        assert.match(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
-      } else {
-        // The sibling keeps its own enabled Stop, even while the selected episode is busy.
-        assert.match(card, /class="[^"]*experiment-stop-loop/);
-        assert.equal(entries.find((item) => item.episode.episode_id === id).control.can_stop, true);
-        assert.doesNotMatch(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+        assert.equal(card.includes("experiment-branch-badge"), true);
+        assert.equal(card.includes("data-selected-episode="), isSelected);
+        if (isSelected) {
+          assert.match(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+        } else if (card.includes('aria-expanded="true"')) {
+          // An expanded sibling keeps its enabled Stop while the selected episode is busy.
+          assert.match(card, /class="[^"]*experiment-stop-loop/);
+          assert.equal(
+            entries.find((item) => item.episode.episode_id === id).control.can_stop,
+            true,
+          );
+          assert.doesNotMatch(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+        }
       }
     }
-  }
 });

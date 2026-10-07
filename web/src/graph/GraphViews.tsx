@@ -1,3 +1,4 @@
+import { MAIN_GRAPH } from "../core/graphTarget";
 import { ExperimentLoopMetadata } from "../experiments/ExperimentLoopMetadata";
 import { ComputeRouteNotice } from "../experiments/ComputeRouteNotice";
 import { ProviderLoginNotice } from "../projects/ProviderLoginNotice";
@@ -1121,6 +1122,7 @@ export function DagView({
 }
 
 interface ExecutionProps {
+  graphTarget?: GraphTargetRef;
   graph: GraphState;
   episodes: Episode[];
   episodeAction: string | null;
@@ -1172,6 +1174,7 @@ interface ExecutionProps {
 }
 
 export function ExecutionView({
+  graphTarget = MAIN_GRAPH,
   graph,
   episodes,
   episodeAction,
@@ -1225,7 +1228,11 @@ export function ExecutionView({
     exactExperimentRoute?.graph_target.kind === "main" &&
     !mainExperimentRouteMatchesControl(
       exactExperimentRoute,
-      experimentControl[exactExperimentRoute.experiment_id],
+      graphTarget.kind === "main"
+        ? experimentControl[exactExperimentRoute.experiment_id]
+        : experimentEntries.find(
+            (entry) => entry.episode.episode_id === exactExperimentRoute.episode_id,
+          )?.control,
     )
       ? exactExperimentRoute
       : null;
@@ -1251,6 +1258,7 @@ export function ExecutionView({
     experimentEntries,
     experimentControl,
     exactExperimentEntry,
+    graphTarget,
   );
   indexedEntries.forEach((entry) => {
     if (
@@ -1397,97 +1405,95 @@ export function ExecutionView({
           Show archived
         </label>
       </div>
-      {staleMainRoute ? (
+      {staleMainRoute && (
         <div className="run-route-history" role="status">
           <strong>The requested Experiment episode is now in History.</strong>
           <button className="button secondary compact" type="button" onClick={onOpenHistory}>
             Open History
           </button>
-          {showArchived && requestedEpisode?.archived && renderEpisodeCard(requestedEpisode, false)}
-        </div>
-      ) : (
-        <div className="operating-sections episode-ledger-sections">
-          <section className="operating-section episode-ledger-section needs-action">
-            <header>
-              <h2>Needs action</h2>
-              <span>{needsAction.length}</span>
-            </header>
-            {needsAction.length === 0 ? (
-              <p className="episode-ledger-empty">Nothing needs you right now.</p>
-            ) : (
-              <div className="campaign-run-list">
-                {needsAction.map((episode) =>
-                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
-                )}
-              </div>
-            )}
-          </section>
-          <section className="operating-section episode-ledger-section in-progress">
-            <header>
-              <h2>In progress</h2>
-              <span>{inProgress.length}</span>
-            </header>
-            {inProgress.length === 0 ? (
-              <p className="episode-ledger-empty">No run is in flight.</p>
-            ) : (
-              <div className="campaign-run-list">
-                {inProgress.map((episode) =>
-                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
-                )}
-              </div>
-            )}
-          </section>
-          <section className="operating-section episode-ledger-section completed">
-            <header>
-              <h2>Completed</h2>
-              <span>{completed.length}</span>
-            </header>
-            <div className="episode-type-groups">
-              {completedGroups.map((group) => (
-                <details
-                  className="episode-type-group"
-                  open={
-                    group.episodes.some((episode) => episode.episode_id === requestedEpisodeId) ||
-                    undefined
-                  }
-                  key={`${group.mode}:${requestedEpisodeId ?? ""}`}
-                >
-                  <summary>
-                    <strong>{group.title}</strong>
-                    <span>{group.episodes.length}</span>
-                  </summary>
-                  <div className="campaign-run-list">
-                    {group.episodes.map((episode) =>
-                      renderEpisodeCard(
-                        episode,
-                        episode.episode_id === selectedAutoResearchEpisodeId,
-                      ),
-                    )}
-                  </div>
-                </details>
-              ))}
-            </div>
-          </section>
-          {showArchived && (
-            <section
-              className="operating-section episode-ledger-section archived"
-              aria-label="Archived runs"
-            >
-              <header>
-                <h2>Archived</h2>
-                <span>{archivedEpisodes.length}</span>
-              </header>
-              {archivedEpisodes.length === 0 ? (
-                <p className="episode-ledger-empty">No archived runs.</p>
-              ) : (
-                <div className="campaign-run-list">
-                  {archivedEpisodes.map((episode) => renderEpisodeCard(episode, false))}
-                </div>
-              )}
-            </section>
-          )}
         </div>
       )}
+      <div className="operating-sections episode-ledger-sections">
+        <section className="operating-section episode-ledger-section needs-action">
+          <header>
+            <h2>Needs action</h2>
+            <span>{needsAction.length}</span>
+          </header>
+          {needsAction.length === 0 ? (
+            <p className="episode-ledger-empty">Nothing needs you right now.</p>
+          ) : (
+            <div className="campaign-run-list">
+              {needsAction.map((episode) =>
+                renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+              )}
+            </div>
+          )}
+        </section>
+        <section className="operating-section episode-ledger-section in-progress">
+          <header>
+            <h2>In progress</h2>
+            <span>{inProgress.length}</span>
+          </header>
+          {inProgress.length === 0 ? (
+            <p className="episode-ledger-empty">No run is in flight.</p>
+          ) : (
+            <div className="campaign-run-list">
+              {inProgress.map((episode) =>
+                renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+              )}
+            </div>
+          )}
+        </section>
+        <section className="operating-section episode-ledger-section completed">
+          <header>
+            <h2>Completed</h2>
+            <span>{completed.length}</span>
+          </header>
+          <div className="episode-type-groups">
+            {completedGroups.map((group) => (
+              <details
+                className="episode-type-group"
+                open={
+                  group.episodes.some((episode) => episode.episode_id === requestedEpisodeId) ||
+                  undefined
+                }
+                key={`${group.mode}:${requestedEpisodeId ?? ""}`}
+              >
+                <summary>
+                  <strong>{group.title}</strong>
+                  <span>{group.episodes.length}</span>
+                </summary>
+                <div className="campaign-run-list">
+                  {group.episodes.map((episode) =>
+                    renderEpisodeCard(
+                      episode,
+                      episode.episode_id === selectedAutoResearchEpisodeId,
+                    ),
+                  )}
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+        {showArchived && (
+          <section
+            className="operating-section episode-ledger-section archived"
+            aria-label="Archived runs"
+          >
+            <header>
+              <h2>Archived</h2>
+              <span>{archivedEpisodes.length}</span>
+            </header>
+            {archivedEpisodes.length === 0 ? (
+              <p className="episode-ledger-empty">No archived runs.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {archivedEpisodes.map((episode) => renderEpisodeCard(episode, false))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
     </section>
   );
 

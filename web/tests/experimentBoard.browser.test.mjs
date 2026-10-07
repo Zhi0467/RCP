@@ -140,7 +140,10 @@ test("same-node loops keep exact selection, detail focus, and independent Stop r
     await branch.locator('[data-selected-episode="child-experiment-episode"]').waitFor();
     assert.equal(await main.count(), 1);
     assert.equal(await branch.count(), 1);
-    assert.equal(await main.locator(".experiment-branch-badge").count(), 0);
+    assert.equal(
+      await main.locator('.experiment-branch-badge[data-graph-target-kind="main"]').count(),
+      1,
+    );
     assert.equal(
       await branch.locator('.experiment-branch-badge[title="auto-research-parent"]').count(),
       1,
@@ -186,6 +189,9 @@ test("same-node loops keep exact selection, detail focus, and independent Stop r
       ["child-experiment-episode", "main-episode"],
     );
     assert.ok(pendingStops.every((route) => route.request().method() === "POST"));
+    assert.ok(
+      pendingStops.every((route) => !new URL(route.request().url()).searchParams.has("branch_id")),
+    );
     await pendingStops.shift().fulfill({ json: {} });
     await page.waitForFunction(
       () =>

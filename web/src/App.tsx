@@ -769,8 +769,11 @@ export default function App() {
     projectId,
     selectedExperimentRoute,
   );
-  const selectedExperimentUsesBranch = selectedExperimentRoute?.graph_target.kind === "branch";
-  const selectedBranchExperiment = selectedExperimentUsesBranch ? selectedIndexedExperiment : null;
+  const selectedExperimentUsesIndex = Boolean(
+    selectedExperimentRoute &&
+    (selectedExperimentRoute.graph_target.kind === "branch" || graphTarget.kind === "branch"),
+  );
+  const selectedTargetExperiment = selectedExperimentUsesIndex ? selectedIndexedExperiment : null;
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
@@ -831,24 +834,24 @@ export default function App() {
   );
   const selectedMainExperimentRouteIsCurrent =
     !selectedExperimentRoute ||
-    selectedExperimentUsesBranch ||
+    selectedExperimentUsesIndex ||
     mainExperimentRouteMatchesControl(
       selectedExperimentRoute,
       selectedExperimentRunId ? project?.experiment_control[selectedExperimentRunId] : undefined,
     );
   const selectedExperimentOperational =
     view === "execution" && selectedExperimentRunId && selectedMainExperimentRouteIsCurrent
-      ? selectedExperimentUsesBranch
-        ? (selectedBranchExperiment?.control.operational ?? null)
+      ? selectedExperimentUsesIndex
+        ? (selectedTargetExperiment?.control.operational ?? null)
         : (project?.experiment_control[selectedExperimentRunId]?.operational ?? null)
       : null;
   const selectedExperimentChatId = selectedExperimentOperational?.chat_id ?? null;
-  // The Runs panel keeps a branch-scoped Experiment's graph out of the viewed
-  // target, so its chat must be loaded against the route's own graph. Without
-  // an exact route the chat id comes from the viewed graph's own projection, so
+  // Indexed loops can belong to any target, so their chats load against the
+  // selected episode's graph. Without an exact route the chat id comes from
+  // the viewed graph's own projection, so
   // that target stays correct and is the default.
   const selectedExperimentChatTarget =
-    selectedExperimentUsesBranch && selectedExperimentRoute
+    selectedExperimentUsesIndex && selectedExperimentRoute
       ? selectedExperimentRoute.graph_target
       : graphTarget;
   const selectedExperimentChatFreshness = experimentChatFreshnessToken(
@@ -1141,11 +1144,9 @@ export default function App() {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
           if (responseIsCurrent()) setUsage(null);
         });
-      const watchersRequest = api<WatcherRecord[]>(graphPath(`${base}/watchers`)).then(
-        (nextWatchers) => {
-          if (responseIsCurrent()) setWatchers(nextWatchers);
-        },
-      );
+      const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
+        if (responseIsCurrent()) setWatchers(nextWatchers);
+      });
       const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
         if (responseIsCurrent()) {
           setNotice({
@@ -1623,8 +1624,13 @@ export default function App() {
     () => mergeProviderLogins(project?.provider_logins ?? [], liveProviderLogins),
     [project?.provider_logins, liveProviderLogins],
   );
+  const experimentDetailOpen = Boolean(
+    (selectedNode && isControlNode(selectedNode.type)) ||
+    (companionNode && isControlNode(companionNode.type)),
+  );
   useEffect(() => {
-    if (!projectId || !projectRunsNeedsExperimentIndex(projectId, view)) return;
+    if (!projectId || (!projectRunsNeedsExperimentIndex(projectId, view) && !experimentDetailOpen))
+      return;
     let stopped = false;
     let timer = 0;
     const schedule = () => {
@@ -1656,7 +1662,14 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [projectId, refreshProjectExperimentLoops, refreshProviderLogins, reportErrorNotice, view]);
+  }, [
+    projectId,
+    refreshProjectExperimentLoops,
+    refreshProviderLogins,
+    reportErrorNotice,
+    view,
+    experimentDetailOpen,
+  ]);
 
   const refreshReadiness = useCallback(async () => {
     await requestProjectReadiness(true);
@@ -2608,7 +2621,7 @@ export default function App() {
         ) {
           try {
             const nextWatchers = await api<WatcherRecord[]>(
-              graphPath(`/api/projects/${encodeURIComponent(projectId)}/watchers`),
+              `/api/projects/${encodeURIComponent(projectId)}/watchers`,
             );
             if (!stopped) setWatchers(nextWatchers);
           } catch (error) {
@@ -3012,7 +3025,7 @@ export default function App() {
       await api<WatcherRecord>(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, {
         method: "POST",
       });
-      const nextWatchers = await api<WatcherRecord[]>(graphPath(`${apiBase}/watchers`));
+      const nextWatchers = await api<WatcherRecord[]>(`${apiBase}/watchers`);
       if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
       // Retiring an observer can release an Experiment that was held shut by it,
       // so the control projection is re-read here rather than waiting for a poll.
@@ -3030,7 +3043,8 @@ export default function App() {
         throw new Error("This Experiment Stop is already being submitted.");
       const finishExperimentStop = beginExperimentStop(episodeId);
       try {
-        await api<unknown>(graphPath(experimentStopPath(apiBase, nodeId, episodeId)), {
+        // The exact-episode endpoint resolves its own target, independently of this page.
+        await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), {
           method: "POST",
         });
         try {
@@ -3045,7 +3059,7 @@ export default function App() {
         finishExperimentStop();
       }
     },
-    [apiBase, graphPath, beginExperimentStop, experimentStopIds, refreshExperimentLoops, reload],
+    [apiBase, beginExperimentStop, experimentStopIds, refreshExperimentLoops, reload],
   );
   const stopExperimentLoop = useCallback(
     async (nodeId: string, episodeId: string) => {
@@ -4215,19 +4229,20 @@ export default function App() {
     watchers,
     presentedExperimentControl,
     selectedExperimentRoute,
-    selectedBranchExperiment,
+    selectedTargetExperiment,
+    graphTarget,
   );
   const selectedMainRouteIsStale = selectedExperimentExecution.staleMainRoute !== null;
   const selectedExperimentNode = selectedExperimentRunId
-    ? selectedExperimentUsesBranch
-      ? (selectedBranchExperiment?.node ?? null)
+    ? selectedExperimentUsesIndex
+      ? (selectedTargetExperiment?.node ?? null)
       : selectedMainRouteIsStale
         ? null
         : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
     : null;
   const selectedExperimentControl = selectedExperimentRunId
-    ? selectedExperimentUsesBranch
-      ? (selectedBranchExperiment?.control ?? null)
+    ? selectedExperimentUsesIndex
+      ? (selectedTargetExperiment?.control ?? null)
       : selectedMainRouteIsStale
         ? null
         : (presentedExperimentControl[selectedExperimentRunId] ?? null)
@@ -4258,7 +4273,7 @@ export default function App() {
           chatId={selectedExperimentChatId}
           presentation="workspace"
           fixedConversation
-          readOnly={selectedExperimentUsesBranch}
+          readOnly={selectedExperimentUsesIndex}
           graphChangesDisabled={mutationsDisabled}
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
@@ -4853,6 +4868,7 @@ export default function App() {
                 />
               )}
               <ExecutionView
+                graphTarget={graphTarget}
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
                 machines={project.machines}
@@ -4868,7 +4884,7 @@ export default function App() {
                   (entry) => entry.project_id === project.id,
                 )}
                 exactExperimentRoute={selectedExperimentRoute}
-                exactExperimentEntry={selectedBranchExperiment}
+                exactExperimentEntry={selectedTargetExperiment}
                 selectedExperimentId={selectedExperimentRunId}
                 focusExperimentId={focusExperimentRunId}
                 selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
@@ -5073,6 +5089,7 @@ export default function App() {
             behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
+            experimentEntries={experimentLoops}
             experimentRunDisabled={experimentStartRequiresSync}
             experimentRunBusy={taskStarting}
             decisionChoiceStaged={Boolean(

@@ -1,4 +1,9 @@
-import { graphTargetFromHash, graphViewHash } from "../core/graphTarget.ts";
+import {
+  graphTargetFromHash,
+  graphViewHash,
+  MAIN_GRAPH,
+  sameGraphTarget,
+} from "../core/graphTarget.ts";
 import type {
   AgentTask,
   AppView,
@@ -170,7 +175,7 @@ export function continuedExperimentRoute(
   if (!exactExperimentRoute) return null;
   if (exactExperimentRoute.experiment_id !== episode.control_node_id) return null;
   if (exactExperimentRoute.episode_id !== episode.continues_episode_id) return null;
-  if (!graphTargetsEqual(exactExperimentRoute.graph_target, episode.graph_target)) return null;
+  if (!sameGraphTarget(exactExperimentRoute.graph_target, episode.graph_target)) return null;
   return {
     experiment_id: episode.control_node_id,
     episode_id: episode.episode_id,
@@ -291,24 +296,25 @@ export function experimentIndexEntryForRoute(
       entry.control.episode_id === route.episode_id &&
       entry.episode?.episode_id === route.episode_id &&
       entry.parent_episode_id === route.parent_episode_id &&
-      graphTargetsEqual(entry.graph_target, route.graph_target) &&
-      (!entry.graph_head || graphTargetsEqual(entry.graph_head.target, route.graph_target)),
+      sameGraphTarget(entry.graph_target, route.graph_target) &&
+      (!entry.graph_head || sameGraphTarget(entry.graph_head.target, route.graph_target)),
   );
   return matches.length === 1 ? matches[0] : null;
 }
 
-/** Selection changes detail, never the project-wide inventory of current loops. */
+/** Only a main snapshot can supersede a main index entry; branch views use the entry itself. */
 export function currentExperimentEntries(
   entries: ExperimentLoopIndexEntry[],
   experimentControl: Record<string, ExperimentControlState>,
   exactEntry: ExperimentLoopIndexEntry | null,
+  displayedTarget: GraphTargetRef = MAIN_GRAPH,
 ): ExperimentLoopIndexEntry[] {
   return (exactEntry ? [...entries, exactEntry] : entries).filter(
     (entry) =>
       entry.graph_target.kind !== "main" ||
       mainExperimentRouteMatchesControl(
         experimentRouteIdentity(entry),
-        experimentControl[entry.node.id],
+        displayedTarget.kind === "main" ? experimentControl[entry.node.id] : entry.control,
       ),
   );
 }
@@ -320,8 +326,9 @@ export function projectExperimentExecution(
   experimentControl: Record<string, ExperimentControlState>,
   route: ExperimentRouteIdentity | null,
   exactEntry: ExperimentLoopIndexEntry | null,
+  displayedTarget: GraphTargetRef = MAIN_GRAPH,
 ): ExperimentExecutionProjection {
-  if (route?.graph_target.kind !== "branch") {
+  if (!route || (route.graph_target.kind === "main" && displayedTarget.kind === "main")) {
     return {
       nodes,
       tasks,
@@ -345,7 +352,7 @@ export function projectExperimentExecution(
     }
     return (
       task.request.control_episode_id === route.episode_id &&
-      graphTargetsEqual(task.graph_target, route.graph_target)
+      sameGraphTarget(task.graph_target, route.graph_target)
     );
   });
   const projectedWatchers = watchers.filter((watcher) => {
@@ -357,7 +364,7 @@ export function projectExperimentExecution(
     }
     return (
       watcher.continuation.control_episode_id === route.episode_id &&
-      graphTargetsEqual(watcher.graph_target, route.graph_target)
+      sameGraphTarget(watcher.graph_target, route.graph_target)
     );
   });
   const projectedControl = { ...experimentControl };
@@ -381,7 +388,7 @@ export function projectExperimentExecution(
     tasks: [...tasksById.values()],
     watchers: projectedWatchers,
     experimentControl: projectedControl,
-    exactBranchEntry: exactEntry,
+    exactBranchEntry: route.graph_target.kind === "branch" ? exactEntry : null,
     staleMainRoute: null,
   };
 }
@@ -394,7 +401,7 @@ export function mainExperimentRouteMatchesControl(
     route.graph_target.kind === "main" &&
     control?.episode_id === route.episode_id &&
     control.episode?.episode_id === route.episode_id &&
-    graphTargetsEqual(control.episode.graph_target, route.graph_target),
+    sameGraphTarget(control.episode.graph_target, route.graph_target),
   );
 }
 
@@ -518,11 +525,4 @@ function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdenti
 
 function hasExperimentIdentityParams(params: URLSearchParams): boolean {
   return ["episode", "target", "branch", "parent"].some((key) => params.has(key));
-}
-
-export function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean {
-  return (
-    left?.kind === right.kind &&
-    (left.kind === "main" || (right.kind === "branch" && left.branch_id === right.branch_id))
-  );
 }

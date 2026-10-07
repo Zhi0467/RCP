@@ -1,7 +1,7 @@
 import type { LoopOverlap } from "../core/types";
 import { experimentBoardHref } from "./experimentBoardModel";
 
-/** The successful start's overlap receipt is informational, never an admission gate. */
+/** Both the preflight inventory and successful start receipt are informational. */
 export function ExperimentStartOverlap({
   projectId,
   loops,
@@ -9,16 +9,19 @@ export function ExperimentStartOverlap({
 }: {
   projectId: string;
   loops: LoopOverlap;
-  onDismiss: () => void;
+  onDismiss?: () => void;
 }) {
   if (!loops.rows.length && !loops.omitted) return null;
+  const title = onDismiss ? "Other loops live when this run started" : "Other live loops";
   return (
-    <section className="experiment-run-block" aria-label="Other loops live when this run started">
+    <section className="experiment-run-block" aria-label={title}>
       <div className="experiment-run-block-heading">
-        <h3>Other loops live when this run started</h3>
-        <button type="button" className="button compact" onClick={onDismiss}>
-          Dismiss
-        </button>
+        <h3>{title}</h3>
+        {onDismiss && (
+          <button type="button" className="button compact" onClick={onDismiss}>
+            Dismiss
+          </button>
+        )}
       </div>
       <ul>
         {loops.rows.map((loop) => (
@@ -39,7 +42,7 @@ export function ExperimentStartOverlap({
               Started by{" "}
               {loop.started_by.kind === "auto_research"
                 ? "Auto-research"
-                : (loop.started_by.id ?? "Unknown")}
+                : loop.started_by.display_name || "a member"}
             </span>
             {" · "}
             <span data-checkout-kind={loop.checkout.kind}>Checkout: {loop.checkout.kind}</span>

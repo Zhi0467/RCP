@@ -95,7 +95,7 @@ export async function loadExperimentWatcherPoll(
   project: ProjectSnapshot;
 }> {
   const [watchers, tasks, project] = await Promise.all([
-    fetchJson<WatcherRecord[]>(graphTargetUrl(`${base}/watchers`, graphTarget)),
+    fetchJson<WatcherRecord[]>(`${base}/watchers`),
     fetchJson<AgentTask[]>(`${base}/tasks`),
     fetchJson<ProjectSnapshot>(graphTargetUrl(base, graphTarget)),
   ]);
