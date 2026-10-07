@@ -1392,6 +1392,7 @@ def test_rehearsal_reads_legacy_kept_files_beside_the_state_root(captured, tmp_p
     artifacts = Path(state["research"]).parent / "artifacts"
     artifacts.mkdir(exist_ok=True)
     (artifacts / "kept-figure.png").write_bytes(content)
+    (artifacts / "unreferenced.bin").write_bytes(b"history the inventory never names")
     with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
         now = store.now()
         store.create_agent_task(
@@ -1420,6 +1421,7 @@ def test_rehearsal_reads_legacy_kept_files_beside_the_state_root(captured, tmp_p
             )
         )
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+    assert not list((tmp_path / "rehearsal").rglob("unreferenced.bin"))
 
 
 def test_candidate_check_allows_per_member_unread_counts(captured, monkeypatch, tmp_path):
