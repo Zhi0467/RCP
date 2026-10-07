@@ -293,7 +293,10 @@ export function SpaceRunRow({
             </span>
           )}
           {entry.mode === "experiment_loop" && (
-            <ExperimentBranchBadge target={entry.graph_target} />
+            <ExperimentBranchBadge
+              target={entry.graph_target}
+              autoResearchEpisodeId={entry.auto_research_parent_episode_id}
+            />
           )}
           <time dateTime={entry.started_at}>{formatActivity(entry.started_at)}</time>
         </span>

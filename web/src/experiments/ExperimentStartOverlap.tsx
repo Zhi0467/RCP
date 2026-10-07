@@ -1,3 +1,5 @@
+import { ExperimentBranchBadge } from "./ExperimentBranchBadge";
+import { ExperimentCheckout } from "./ExperimentCheckout";
 import type { LoopOverlap } from "../core/types";
 import { experimentBoardHref } from "./experimentBoardModel";
 
@@ -35,7 +37,12 @@ export function ExperimentStartOverlap({
                   loop.started_by.kind === "auto_research" ? (loop.started_by.id ?? null) : null,
               })}
             >
-              {loop.graph_target.kind === "main" ? "Main" : loop.graph_target.branch_id}
+              <ExperimentBranchBadge
+                target={loop.graph_target}
+                autoResearchEpisodeId={
+                  loop.started_by.kind === "auto_research" ? loop.started_by.id : null
+                }
+              />
             </a>
             {" · "}
             <span data-starter-kind={loop.started_by.kind}>
@@ -45,7 +52,7 @@ export function ExperimentStartOverlap({
                 : loop.started_by.display_name || "a member"}
             </span>
             {" · "}
-            <span data-checkout-kind={loop.checkout.kind}>Checkout: {loop.checkout.kind}</span>
+            <ExperimentCheckout checkout={loop.checkout} />
           </li>
         ))}
       </ul>
