@@ -1,5 +1,8 @@
 # Active implementation handoffs
 
+- [Updates accept what writers store](handoff-2026-10-07-updates-accept-what-writers-store.md)
+  — design approved: shared reader rules, a real-use corpus, a real update
+  dry run, and loud partial backups; implementation in progress.
 - [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
   — implemented on its PR: chat wake sessions, event parsing, the validator
   poller, state-transfer retry, and Apply again; live checks and the remaining
