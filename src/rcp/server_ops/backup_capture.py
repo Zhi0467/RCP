@@ -612,7 +612,12 @@ def inspect_snapshot_project_inventory(
             (candidate.source_operation_id, candidate.source_artifact_id): candidate
             for candidate in snapshot_store.legacy_artifact_candidates(record.project_id)
         }
-        artifacts = _kept_artifact_references(tasks, unresolved_revisions)
+        store_kept = {
+            artifact.artifact_id
+            for artifact in snapshot_store.artifacts(record.project_id)
+            if artifact.kept_at is not None
+        }
+        artifacts = _kept_artifact_references(tasks, unresolved_revisions, store_kept)
         return BackupSnapshotProjectInventory(
             project_id=record.project_id,
             home_space_id=record.home_space_id,
@@ -697,6 +702,7 @@ def reinspect_uncaptured_projects(
 def _kept_artifact_references(
     tasks,
     unresolved_revisions,
+    store_kept: set[str],
 ) -> tuple[BackupKeptArtifactReference, ...]:
     references: list[BackupKeptArtifactReference] = []
     for task in tasks:
@@ -717,9 +723,16 @@ def _kept_artifact_references(
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact has an incomplete kept-file binding."
                 )
-            # Keep since the artifact store records only `kept_at`; those bytes
-            # are captured from the store's own inventory, not as a legacy file.
-            if descriptor.kept_filename is None or descriptor.kept_at is None:
+            if descriptor.kept_at is None:
+                continue
+            if descriptor.kept_filename is None:
+                # Keep since the artifact store records only `kept_at`; the bytes
+                # are captured from the store's own inventory, so the project's
+                # store must hold that artifact as kept.
+                if descriptor.artifact_id not in store_kept:
+                    raise BackupProjectInventoryUnavailable(
+                        "A kept task artifact is missing from the project's artifact store."
+                    )
                 continue
             revision = unresolved_revisions.get((task.operation_id, descriptor.artifact_id))
             references.append(

@@ -416,6 +416,39 @@ def test_store_kept_artifact_keeps_its_project_capturable(tmp_path: Path) -> Non
     assert [item.artifact_id for item in receipt.artifact_inventory] == [artifact.artifact_id]
 
 
+def test_kept_task_artifact_without_its_stored_artifact_is_uncaptured(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Capture lab")
+    project = _register_completed_project(store, data_dir, name="Missing store artifact")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id=project.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request={},
+            result={
+                "artifacts": [
+                    AgentArtifactDescriptor(
+                        artifact_id="e" * 24, name="gone.html", media_type="text/html", kept_at=now
+                    ).model_dump(mode="json")
+                ]
+            },
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+            status_message="Completed.",
+        )
+    )
+
+    receipt = (
+        BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite().receipt
+    )
+
+    assert receipt.projects[0].status == "uncaptured"
+
+
 def test_capture_inventory_is_bound_to_the_copied_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
