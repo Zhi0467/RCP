@@ -226,6 +226,7 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
 
     if not hasattr(AppStore, "admit_chat_question_followup"):
         return {"followup": "unsupported"}
+    from rcp.agents.write_scope import ProjectWriteScope
     from rcp.core.models import AuthorizedHuman
     from rcp.service import RunRequest, resolve_dispatch_authority
     from rcp.storage.question_models import QuestionOrigin
@@ -243,9 +244,22 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
         message="Which comparison?",
-        mode="discuss",
+        mode="work",
+        run_truth_scope=[],
     )
     stage = str(data_dir / "run-stage" / operation_id)
+    # Work questions are supported by every release with follow-up admission.
+    # Give this synthetic provider turn a real, stage-only filesystem binding.
+    scope = ProjectWriteScope.create(
+        project_id=fixture["project_id"],
+        execution_machine="server",
+        execution_host="",
+        capability="work_auto",
+        stage_root=stage,
+        workspace_root=str(Path(stage) / "workspace"),
+        repositories=[],
+        protected_write_paths=[str(data_dir)],
+    )
     task = store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -264,6 +278,14 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
     store.checkpoint_agent_task(
         operation_id, native_session_id="upgrade-session", stage_host="", stage_root=stage
     )
+    store.bind_agent_task_write_scope(
+        operation_id,
+        project_id=task.project_id,
+        stage_host="",
+        stage_root=stage,
+        fingerprint=scope.fingerprint,
+        continuation_binding=False,
+    )
     store.complete_agent_task(operation_id, applied_revision=None, result={})
     question = store.create_or_get_question(
         origin=QuestionOrigin(
@@ -275,7 +297,8 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
             native_session_id="upgrade-session",
             stage_root=stage,
             stage_host="",
-            capability="discuss",
+            capability="work_auto",
+            write_scope_fingerprint=scope.fingerprint,
             graph_target=task.graph_target,
         ),
         key="comparison",

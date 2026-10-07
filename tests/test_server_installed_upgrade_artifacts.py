@@ -81,6 +81,15 @@ def test_installed_upgrade_followup_is_capturable_until_injected_rejection(tmp_p
     task = store.agent_task(followup["operation_id"])
     # The installed journey reads it back through the served task route.
     assert task is not None and task.status == "succeeded" and task.visible
+    (question,) = store.list_questions(project_id=fixture["project_id"])
+    origin_task = store.agent_task(question.origin.operation_id)
+    assert origin_task is not None and origin_task.request["mode"] == "work"
+    assert question.state == "answered"
+    assert question.followup_operation_id == task.operation_id
+    assert origin_task.dispatch_authority is not None
+    assert origin_task.dispatch_authority.task_contract == question.origin.capability == "work_auto"
+    assert origin_task.write_scope_fingerprint == question.origin.write_scope_fingerprint
+    assert question.origin.write_scope_fingerprint is not None
     metadata = ServerMetadata.create(
         data_dir,
         host="127.0.0.1",

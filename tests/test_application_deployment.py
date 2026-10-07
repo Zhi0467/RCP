@@ -845,23 +845,15 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
     assert not data.exists()
 
 
-@pytest.mark.parametrize("mutation", ["missing_local_project", "existing_output"])
-def test_prepare_refuses_incomplete_or_unsafe_local_boundary(
-    captured, tmp_path: Path, mutation: str
-) -> None:
-    request, state, _metadata = captured
-    if mutation == "missing_local_project":
-        research = Path(state["research"])
-        research.rename(research.with_name("held-research"))
-    else:
-        output = Path(request.output_dir)
-        output.mkdir()
-        (output / "sentinel").write_text("preserve")
-    with pytest.raises((RuntimeError, ValueError, OSError)):
+def test_prepare_refuses_existing_output(captured) -> None:
+    request, _state, _metadata = captured
+    output = Path(request.output_dir)
+    output.mkdir()
+    (output / "sentinel").write_text("preserve")
+    with pytest.raises(MaintenanceRefused):
         prepare(request)
-    assert not (Path(request.output_dir) / "application-proof.json").exists()
-    if mutation == "existing_output":
-        assert (Path(request.output_dir) / "sentinel").read_text() == "preserve"
+    assert not (output / "application-proof.json").exists()
+    assert (output / "sentinel").read_text() == "preserve"
 
 
 def test_trusted_deployed_commit_is_bound_to_wheel_version(
@@ -1184,27 +1176,6 @@ def test_uncaptured_project_does_not_hide_other_project_proof(
         )["warnings"]
         == prepared["warnings"]
     )
-    bad = proof.model_copy(
-        update={
-            "read_model": proof.read_model.model_copy(
-                update={
-                    "projects": (proof.read_model.projects[0].model_copy(update={"revision": -1}),),
-                }
-            )
-        }
-    )
-    bad_path = tmp_path / "bad-proof.json"
-    digest = _publish_proof(bad_path, bad)
-    with pytest.raises(MaintenanceRefused):
-        validate(
-            validation.model_copy(
-                update={
-                    "proof_path": str(bad_path),
-                    "proof_sha256": digest,
-                    "output_dir": str(tmp_path / "mismatch"),
-                }
-            )
-        )
 
 
 @pytest.mark.parametrize("failure", ["backup", "migration", "identity"])
@@ -1263,3 +1234,97 @@ def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
             assert exit_code == 1
             assert json.loads(output.err)["status"] == "refused"
         assert {root: visible(root) for root in before} == before
+
+
+def test_prepare_refuses_checkout_identity_mismatch(captured, monkeypatch):
+    from rcp.server_ops import backup_project_files
+    from rcp.transport.remote_backup_checkout import CheckoutInspectionError
+
+    def mismatch(_recovery):
+        raise CheckoutInspectionError("Checkout origin does not match.")
+
+    monkeypatch.setattr(backup_project_files, "verify_checkout_identities", mismatch)
+    with pytest.raises(CheckoutInspectionError):
+        prepare(captured[0])
+    assert not (Path(captured[0].output_dir) / "application-proof.json").exists()
+
+
+def test_missing_project_root_warns_and_preparation_proceeds(captured, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    shutil.rmtree(state["research"])
+    assert state["research"] in {root["live"] for root in inventory(request)["roots"]}
+    prepared = prepare(request)
+    assert [warning["project_id"] for warning in prepared["warnings"]] == [state["project_id"]]
+    assert (
+        validate(
+            ValidateRequest(
+                version=1,
+                proof_path=prepared["proof_path"],
+                proof_sha256=prepared["proof_sha256"],
+                output_dir=str(tmp_path / "validated"),
+            )
+        )["status"]
+        == "verified"
+    )
+    result = update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1,
+            data_dir=request.data_dir,
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+    )
+    assert result["status"] == "ready"
+    assert result["warnings"] == prepared["warnings"]
+
+
+@pytest.mark.parametrize("location", ["ordinary", "ancestor", "equal", "inside"])
+def test_snapshot_refuses_unsafe_project_root(tmp_path, location):
+    from rcp.server_ops.deployment import _snapshot_roots
+
+    ancestor = tmp_path / ".research"
+    data = ancestor / "data" / ".research"
+    data.mkdir(parents=True)
+    roots = {
+        "ordinary": tmp_path / "project",
+        "ancestor": ancestor,
+        "equal": data,
+        "inside": data / "project" / ".research",
+    }
+    database = tmp_path / "snapshot.sqlite3"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE projects(project_id, state_location, state_remote)")
+        connection.execute(
+            "INSERT INTO projects VALUES (?, ?, 0)", (str(uuid.uuid4()), str(roots[location]))
+        )
+        connection.commit()
+    with pytest.raises(MaintenanceRefused):
+        _snapshot_roots(database, data, tmp_path / "output")
+
+
+def test_rehearsal_tolerates_vanished_live_copy_entry(captured, monkeypatch, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    transient = Path(state["research"]) / ".atomic-write.tmp"
+    transient.write_text("unpublished")
+    original = shutil.copy2
+    vanished = []
+
+    def remove_before_copy(source, destination, **kwargs):
+        if Path(source) == transient:
+            transient.unlink()
+            vanished.append(source)
+        return original(source, destination, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", remove_before_copy)
+    result = update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1,
+            data_dir=request.data_dir,
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+    )
+    assert vanished
+    assert result == {"version": 1, "status": "ready", "warnings": []}

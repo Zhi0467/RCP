@@ -140,13 +140,25 @@ def followed_release(runtime: SystemRuntime) -> VerifiedRelease:
     destination = runtime.paths.supervisor / "bundles"
     _root_directory(destination, mode=0o755)
     selector = runtime.config.get("release", {}).get("pin") or "stable"
-    release = fetch_release(selector, destination / str(uuid.uuid4()))
-    # These are public promoted assets. Service-account installation must read
-    # them, while only the root coordinator can alter the origin-bound bundle.
-    os.chmod(release.directory, 0o755)
-    for asset in release.directory.iterdir():
-        os.chmod(asset, 0o644)
-    return release
+    bundle = destination / str(uuid.uuid4())
+    try:
+        release = fetch_release(selector, bundle)
+        # These are public promoted assets. Service-account installation must read
+        # them, while only the root coordinator can alter the origin-bound bundle.
+        os.chmod(release.directory, 0o755)
+        for asset in release.directory.iterdir():
+            os.chmod(asset, 0o644)
+        return release
+    except BaseException:
+        _remove_release_bundle(runtime, bundle)
+        raise
+
+
+def _remove_release_bundle(runtime: SystemRuntime, bundle: Path) -> None:
+    """Remove only this attempt's download; fetch owns its temporary staging."""
+    if os.path.lexists(bundle):
+        runtime.remove_retained(bundle, runtime.paths.supervisor / "bundles")
+    (bundle.parent / f".{bundle.name}.fetch.lock").unlink(missing_ok=True)
 
 
 def release_receipt(release: VerifiedRelease, paths: Paths) -> dict:
@@ -218,8 +230,8 @@ def rehearse_update(runtime: SystemRuntime, release: VerifiedRelease, target: di
     so retention also removes one an interrupted dry run left behind.
     """
     workspace = runtime.paths.checkpoints_root / str(uuid.uuid4())
-    runtime.filesystem("workspace", {"directory": str(workspace)})
     try:
+        runtime.filesystem("workspace", {"directory": str(workspace)})
         runtime.filesystem("workspace", {"directory": str(workspace / "releases")})
         trial = dict(
             target,
@@ -249,7 +261,8 @@ def rehearse_update(runtime: SystemRuntime, release: VerifiedRelease, target: di
             *({"name": "update_warning", "value": line} for line in warning_lines(result)),
         ]
     finally:
-        runtime.remove_retained(workspace, runtime.paths.checkpoints_root)
+        if os.path.lexists(workspace):
+            runtime.remove_retained(workspace, runtime.paths.checkpoints_root)
 
 
 def install_browser_libraries(operator: Path) -> str | None:
@@ -366,60 +379,64 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
     runtime = SystemRuntime(paths)
     previous = selected_pointer(paths)
     release = followed_release(runtime)
-    _require_supervisor(release)
-    target = release_receipt(release, paths)
-    if target == previous:
+    try:
+        _require_supervisor(release)
+        target = release_receipt(release, paths)
+        if target == previous:
+            emitter.emit(
+                "succeeded",
+                "The selected application already matches the followed promoted release.",
+                fields=[] if dry_run else _retention_after_commit(runtime, store_for(paths)),
+            )
+            return 0
+        confirmation = f"{target['release_tag']}:{target['manifest_sha256']}"
+        if arguments.confirm_target != confirmation:
+            rehearsal = rehearse_update(runtime, release, target) if dry_run else []
+            emitter.emit(
+                "operator_action_needed",
+                "Confirm this exact promoted release before closing admission.",
+                actions=[
+                    {
+                        "kind": "external",
+                        "instruction": "Review the displayed release identity and rerun the exact confirmation command to authorize deployment.",
+                    }
+                ],
+                fields=[
+                    {"name": "release", "value": target["release_tag"]},
+                    {"name": "build", "value": target["build"]},
+                    {"name": "commit", "value": target["commit"]},
+                    {"name": "manifest_sha256", "value": target["manifest_sha256"]},
+                    *rehearsal,
+                ],
+                resume_argv=["sudo", "rcp", "server", "update", "--confirm-target", confirmation],
+            )
+            return 3
+        runtime.require_capability(previous)
+        warnings: list[dict] = []
+        target = prepare_release(runtime, release, warnings)
+        if not _check_update_source(previous, runtime.application(target, "capabilities"), emitter):
+            return 3
+        store = store_for(paths)
+        coordinator = Coordinator(store, runtime)
+        result = coordinator.deploy(previous, target)
+        fields = [
+            {"name": "build", "value": target["build"]},
+            {"name": "phase", "value": result["phase"]},
+        ]
+        if coordinator.backup_warning is not None:
+            fields.append({"name": "backup_warning", "value": coordinator.backup_warning})
+        fields.extend(warnings)
+        fields.extend({"name": "update_warning", "value": line} for line in runtime.update_warnings)
+        fields.extend(_retention_after_commit(runtime, store))
         emitter.emit(
             "succeeded",
-            "The selected application already matches the followed promoted release.",
-            fields=_retention_after_commit(runtime, store_for(paths)),
+            "The verified release is serving after fenced validation.",
+            fields=fields,
         )
         return 0
-    confirmation = f"{target['release_tag']}:{target['manifest_sha256']}"
-    if arguments.confirm_target != confirmation:
-        rehearsal = rehearse_update(runtime, release, target) if dry_run else []
-        emitter.emit(
-            "operator_action_needed",
-            "Confirm this exact promoted release before closing admission.",
-            actions=[
-                {
-                    "kind": "external",
-                    "instruction": "Review the displayed release identity and rerun the exact confirmation command to authorize deployment.",
-                }
-            ],
-            fields=[
-                {"name": "release", "value": target["release_tag"]},
-                {"name": "build", "value": target["build"]},
-                {"name": "commit", "value": target["commit"]},
-                {"name": "manifest_sha256", "value": target["manifest_sha256"]},
-                *rehearsal,
-            ],
-            resume_argv=["sudo", "rcp", "server", "update", "--confirm-target", confirmation],
-        )
-        return 3
-    runtime.require_capability(previous)
-    warnings: list[dict] = []
-    target = prepare_release(runtime, release, warnings)
-    if not _check_update_source(previous, runtime.application(target, "capabilities"), emitter):
-        return 3
-    store = store_for(paths)
-    coordinator = Coordinator(store, runtime)
-    result = coordinator.deploy(previous, target)
-    fields = [
-        {"name": "build", "value": target["build"]},
-        {"name": "phase", "value": result["phase"]},
-    ]
-    if coordinator.backup_warning is not None:
-        fields.append({"name": "backup_warning", "value": coordinator.backup_warning})
-    fields.extend(warnings)
-    fields.extend({"name": "update_warning", "value": line} for line in runtime.update_warnings)
-    fields.extend(_retention_after_commit(runtime, store))
-    emitter.emit(
-        "succeeded",
-        "The verified release is serving after fenced validation.",
-        fields=fields,
-    )
-    return 0
+    finally:
+        if dry_run:
+            _remove_release_bundle(runtime, release.directory)
 
 
 def _retention_after_commit(runtime: SystemRuntime, store: OperationStore) -> list[dict]:

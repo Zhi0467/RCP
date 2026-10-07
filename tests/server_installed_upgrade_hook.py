@@ -13,6 +13,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -113,7 +114,14 @@ def install_hooks() -> None:
         selection = json.loads((ROOT / "selection.json").read_text())
         bundle = Path(selection["bundle"])
         provenance = json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
-        release = verify_release(bundle)
+        bundles = runtime.paths.supervisor / "bundles"
+        driver._root_directory(bundles, mode=0o755)
+        downloaded = bundles / str(uuid.uuid4())
+        shutil.copytree(bundle, downloaded)
+        downloaded.chmod(0o755)
+        for asset in downloaded.iterdir():
+            asset.chmod(0o644)
+        release = verify_release(downloaded)
         assert release.manifest_sha256 == provenance["manifest_sha256"]
         assert provenance["full_commit"].startswith(release.commit)
         return replace(

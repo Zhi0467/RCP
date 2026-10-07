@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,7 +184,11 @@ class DryRunRuntime:
     """Supplies only what a dry run may touch; maintenance or selection would raise."""
 
     def __init__(self, root: Path, outcome: str) -> None:
-        self.paths = driver.Paths(data_dir=root / "data", checkpoints_root=root / "checkpoints")
+        self.paths = driver.Paths(
+            data_dir=root / "data",
+            checkpoints_root=root / "checkpoints",
+            supervisor=root / "supervisor",
+        )
         self.paths.checkpoints_root.mkdir()
         self.outcome = outcome
         self.requests: list[tuple[str, dict | None]] = []
@@ -195,6 +200,8 @@ class DryRunRuntime:
             Path(request["directory"]).mkdir()
             return {"directory": request["directory"]}
         if action == "install":
+            if self.outcome == "install_failed":
+                raise SupervisorError("installation failed")
             directory = Path(request["releases_root"]) / "9"
             directory.mkdir()
             return {"release_directory": str(directory)}
@@ -216,20 +223,31 @@ class DryRunRuntime:
         return {"version": 1, "status": "ready", "warnings": [warning]}
 
 
-@pytest.mark.parametrize("outcome", ["ready", "older", "refused"])
+@pytest.mark.parametrize("outcome", ["ready", "older", "refused", "install_failed", "same"])
 def test_dry_run_rehearses_on_a_copy_without_admission_or_residue(
     monkeypatch, capsys, tmp_path, outcome
 ):
     target = {"release_tag": "v0.3.4", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
     runtime = DryRunRuntime(tmp_path, outcome)
+    bundle = runtime.paths.supervisor / "bundles" / str(uuid.uuid4())
+    bundle.mkdir(parents=True)
+    lock = bundle.parent / f".{bundle.name}.fetch.lock"
+    lock.touch()
+    retained = bundle.parent / str(uuid.uuid4())
+    retained.mkdir()
     monkeypatch.setattr(driver, "recover", lambda **_: pytest.fail("a dry run never recovers"))
     monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(active=lambda: None))
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args: runtime)
-    monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
+    monkeypatch.setattr(
+        driver, "selected_pointer", lambda paths: target if outcome == "same" else {"build": 8}
+    )
+    monkeypatch.setattr(
+        driver, "_retention_after_commit", lambda *_: pytest.fail("a dry run never prunes")
+    )
     monkeypatch.setattr(
         driver,
         "followed_release",
-        lambda runtime: SimpleNamespace(supervisor_version="0.1.1", directory=tmp_path, build=9),
+        lambda runtime: SimpleNamespace(supervisor_version="0.1.1", directory=bundle, build=9),
     )
     monkeypatch.setattr(driver, "release_receipt", lambda *args: target)
     monkeypatch.setattr(
@@ -237,11 +255,25 @@ def test_dry_run_rehearses_on_a_copy_without_admission_or_residue(
     )
     emitter = EventEmitter("server update", machine_readable=True)
     emitter.emit("running", "Verify")
-    if outcome == "refused":
-        with pytest.raises(SupervisorError, match="migration failed"):
-            driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter)
+    if outcome in {"refused", "install_failed"}:
+        with pytest.raises(SupervisorError, match="failed"):
+            driver.update.__wrapped__(
+                SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+            )
+    elif outcome == "same":
+        assert (
+            driver.update.__wrapped__(
+                SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+            )
+            == 0
+        )
     else:
-        assert driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter) == 3
+        assert (
+            driver.update.__wrapped__(
+                SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+            )
+            == 3
+        )
         events = capsys.readouterr().out.splitlines()
         step = ServerStepEvent.model_validate_json(events[-1]).step
         assert step.state == "operator_action_needed"
@@ -249,10 +281,54 @@ def test_dry_run_rehearses_on_a_copy_without_admission_or_residue(
         fields = {field.name: field.value for field in step.fields}
         assert ("update_warning" in fields) == (outcome == "ready")
         assert (fields["update_rehearsal"] == "ready") == (outcome == "ready")
-    assert [action for action, _ in runtime.requests] == ["capabilities"] + (
-        ["update-rehearsal"] * (outcome != "older")
-    )
+    expected = [] if outcome in {"install_failed", "same"} else ["capabilities"]
+    if outcome in {"ready", "refused"}:
+        expected.append("update-rehearsal")
+    assert [action for action, _ in runtime.requests] == expected
     assert not list(runtime.paths.checkpoints_root.iterdir())
+    assert list(bundle.parent.iterdir()) == [retained]
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt, OSError])
+@pytest.mark.parametrize("created", [False, True])
+def test_rehearsal_cleans_workspace_when_creation_is_interrupted(tmp_path, failure, created):
+    runtime = DryRunRuntime(tmp_path, "ready")
+    filesystem = runtime.filesystem
+
+    def interrupted(action, request):
+        if action == "workspace":
+            if created:
+                filesystem(action, request)
+            raise failure("workspace creation interrupted")
+        return filesystem(action, request)
+
+    runtime.filesystem = interrupted
+    with pytest.raises(failure, match="workspace creation interrupted"):
+        driver.rehearse_update(runtime, SimpleNamespace(), {})
+    assert not list(runtime.paths.checkpoints_root.iterdir())
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_failed_bundle_fetch_cleans_only_attempt_artifacts(tmp_path, monkeypatch, published):
+    runtime = DryRunRuntime(tmp_path, "ready")
+    bundles = runtime.paths.supervisor / "bundles"
+    bundles.mkdir(parents=True)
+    retained = bundles / str(uuid.uuid4())
+    retained.mkdir()
+
+    def failed_fetch(_selector, destination):
+        (destination.parent / f".{destination.name}.fetch.lock").touch()
+        if published:
+            destination.mkdir()
+        raise OSError("fetch interrupted")
+
+    monkeypatch.setattr(driver, "_root_directory", lambda *_, **__: None)
+    monkeypatch.setattr(driver, "fetch_release", failed_fetch)
+    with pytest.raises(OSError, match="fetch interrupted"):
+        driver.followed_release(
+            SimpleNamespace(paths=runtime.paths, config={}, remove_retained=runtime.remove_retained)
+        )
+    assert list(bundles.iterdir()) == [retained]
 
 
 def test_dry_run_refuses_pending_recovery_without_performing_it(monkeypatch):
@@ -273,10 +349,18 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
     target = {"release_tag": "v0.3.4", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
     monkeypatch.setattr(driver, "__version__", installed)
     monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
-    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: object())
+    monkeypatch.setattr(
+        driver,
+        "SystemRuntime",
+        lambda *args: SimpleNamespace(remove_retained=lambda *_: None),
+    )
     monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
     monkeypatch.setattr(
-        driver, "followed_release", lambda runtime: SimpleNamespace(supervisor_version="0.1.9")
+        driver,
+        "followed_release",
+        lambda runtime: SimpleNamespace(
+            supervisor_version="0.1.9", directory=Path("/absent/bundle")
+        ),
     )
     monkeypatch.setattr(driver, "release_receipt", lambda *args: target)
     monkeypatch.setattr(

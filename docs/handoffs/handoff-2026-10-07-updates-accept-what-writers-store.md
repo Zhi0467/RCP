@@ -1,8 +1,11 @@
 # Updates accept what writers store
 
 Status: approved, in progress on one PR. Implemented: backup, restore and
-transfer readers accept stored values, with a real-use corpus. Remaining:
-backup can never block an update, the update dry run, and CI coverage.
+transfer readers accept stored values, with a real-use corpus; update preparation
+warns on backup inventory failures while preserving identity and path refusals;
+the dry run cleans up its workspace and bundle; CI seeds historical follow-ups
+through compatible Work authority. Remaining: installed-upgrade CI for every
+supported base and the merged build's team-server rehearsal.
 
 ## Why
 

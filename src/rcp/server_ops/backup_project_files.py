@@ -212,10 +212,15 @@ class BackupProjectFileCaptureCoordinator:
     """Consume one O2a receipt without consulting later live database state."""
 
     def __init__(
-        self, data_dir: Path, *, local_project_copies: Mapping[str, Path] | None = None
+        self,
+        data_dir: Path,
+        *,
+        local_project_copies: Mapping[str, Path] | None = None,
+        require_checkout_identity: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
         self.local_project_copies = local_project_copies or {}
+        self.require_checkout_identity = require_checkout_identity
 
     def capture(
         self,
@@ -497,6 +502,8 @@ class BackupProjectFileCaptureCoordinator:
             ValueError,
         ) as exc:
             discard_failed_project_capture(capture_root, project_root)
+            if self.require_checkout_identity and isinstance(exc, CheckoutInspectionError):
+                raise
             return BackupProjectCapture(
                 project_id=inventory.project_id,
                 home_space_id=inventory.home_space_id,

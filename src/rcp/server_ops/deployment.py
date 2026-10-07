@@ -30,6 +30,7 @@ from rcp.server_ops.application_snapshot import (
     _copy_declared_file,
     _project_restore_location,
     _set_private_directory_modes,
+    copy_live_research_tree,
     copy_project_roots,
     copy_proof_tree,
 )
@@ -269,6 +270,7 @@ def prepare(
     request: PrepareRequest,
     *,
     offline: bool = False,
+    online: bool = False,
     local_project_copies: dict[str, Path] | None = None,
 ) -> dict[str, object]:
     from rcp.__main__ import instance_lock
@@ -279,7 +281,7 @@ def prepare(
         raise MaintenanceRefused("Prepared storage overlaps application state.")
     if os.path.lexists(output):
         raise MaintenanceRefused("Prepared output already exists.")
-    with instance_lock(data_dir, timeout=0.0) if local_project_copies is None else nullcontext():
+    with nullcontext() if online else instance_lock(data_dir, timeout=0.0):
         receipt_path = Path(request.sqlite_receipt_path)
         sqlite = read_backup_sqlite_capture_receipt(
             receipt_path, expected_sha256=request.sqlite_receipt_sha256
@@ -289,7 +291,7 @@ def prepare(
             raise MaintenanceRefused("Application capture belongs to a different data directory.")
         _snapshot_roots(Path(sqlite.snapshot_path), data_dir, output)
         coordinator = BackupProjectFileCaptureCoordinator(
-            data_dir, local_project_copies=local_project_copies
+            data_dir, local_project_copies=local_project_copies, require_checkout_identity=True
         )
         if not offline:
             coordinator._validate_capture_boundary(receipt_path, sqlite)
@@ -308,9 +310,14 @@ def prepare(
         publication = coordinator.capture_offline(receipt_path, expected_sha256=sqlite_digest)
         projects = publication.receipt
         warnings = tuple(
-            UpdateWarning(project_id=project.project_id)
-            for project in projects.projects
-            if project.status == "uncaptured"
+            sorted(
+                (
+                    UpdateWarning(project_id=project.project_id)
+                    for project in projects.projects
+                    if project.status == "uncaptured"
+                ),
+                key=lambda warning: (warning.module, warning.project_id),
+            )
         )
         (output / "payload").mkdir(mode=0o700)
         app = output / "payload" / "app-data"
@@ -386,11 +393,14 @@ def inventory(request: PrepareRequest) -> dict[str, object]:
     return {
         "version": 1,
         "roots": roots,
-        "warnings": [
-            UpdateWarning(project_id=p.project_id).model_dump()
-            for p in receipt.projects
-            if p.status == "uncaptured"
-        ],
+        "warnings": sorted(
+            [
+                UpdateWarning(project_id=p.project_id).model_dump()
+                for p in receipt.projects
+                if p.status == "uncaptured"
+            ],
+            key=lambda warning: (warning["module"], warning["project_id"]),
+        ),
     }
 
 
@@ -410,7 +420,17 @@ def _snapshot_roots(database: Path, data: Path, output: Path) -> list[dict]:
     )
     for root in roots:
         path = Path(_absolute(root["live"]))
-        _private_ancestors(path)
+        if root["project_id"] is not None and (
+            path.name != ".research"
+            or path == data
+            or path.is_relative_to(data)
+            or data.is_relative_to(path)
+        ):
+            raise MaintenanceRefused("Project state root is not a separate .research directory.")
+        existing = path
+        while not os.path.lexists(existing):
+            existing = existing.parent
+        _private_ancestors(existing)
         if path == output or path.is_relative_to(output) or output.is_relative_to(path):
             raise MaintenanceRefused("Prepared storage overlaps application state.")
     return roots
@@ -726,8 +746,8 @@ def _inventory_copy(data: Path, database: Path, output: Path) -> dict[str, objec
 
     from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
 
+    roots = _snapshot_roots(database, data, output)
     with closing(_open_migrated_snapshot(database)) as store:
-        roots = _snapshot_roots(database, data, output)
         warnings = []
         for record in sorted(store.projects(), key=lambda item: item.project_id):
             project = inspect_snapshot_project_inventory(
@@ -735,6 +755,7 @@ def _inventory_copy(data: Path, database: Path, output: Path) -> dict[str, objec
             )
             if project.status == "uncaptured":
                 warnings.append(UpdateWarning(project_id=project.project_id).model_dump())
+        warnings.sort(key=lambda warning: (warning["module"], warning["project_id"]))
         return {"version": 1, "roots": roots, "warnings": warnings}
 
 
@@ -782,14 +803,14 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
         original = output / "original.sqlite3"
         shutil.copyfile(database, original)
         original.chmod(0o600)
+        roots = _snapshot_roots(database, data, output)
         with closing(_open_migrated_snapshot(database)) as store:
-            roots = _snapshot_roots(database, data, output)
             if local_project_copies is not None:
                 copies = output / "local-projects"
                 copies.mkdir(mode=0o700)
                 for index, root in enumerate(roots[1:]):
                     target = copies / str(index)
-                    copy_proof_tree(Path(root["live"]), target)
+                    copy_live_research_tree(Path(root["live"]), target)
                     local_project_copies[root["project_id"]] = target
             captured_at = datetime.now(UTC)
             projects = tuple(
@@ -845,6 +866,7 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
             sqlite_receipt_sha256=receipt_digest,
         ),
         offline=True,
+        online=online,
         local_project_copies=local_project_copies,
     )
     migrated = output / "migrated-data"

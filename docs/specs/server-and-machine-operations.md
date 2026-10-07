@@ -610,10 +610,11 @@ that refusal's next actions name it before the rerun. That command validates a s
 pointer under the same operation lock, without rolling back application data.
 
 The target's `update-rehearsal` child command takes an online SQLite snapshot
-and byte-copies local project roots under its output directory. It runs the same
-preparation and application-proof checks there and returns `ready` with project
-warnings. The service keeps running; rehearsal takes no live instance lock and
-never changes admission. The caller removes the output directory. This checks
+and byte-copies local project roots under its output directory. It runs the
+target's full inspection, preparation, and application-proof checks on that copy,
+without the outgoing release's receipt, and returns `ready` with project warnings.
+The service keeps running; rehearsal takes no live instance lock and never changes
+admission. The caller removes the output directory. This checks
 the captured copy, not a later update boundary.
 
 ### Application boundary and local checkpoint
@@ -785,7 +786,8 @@ Installed mutation commands serialize preparation and pruning with a separate
 preparation lock; startup recovery retains the existing operation lock and can
 run while systemd starts during an update. Retention runs under the operation
 and backup/deployment locks after successful update, including an already-current
-update, supervisor update, or restore; `server prune` invokes it on demand.
+confirmed update, supervisor update, or restore; `server prune` invokes it on demand.
+An unconfirmed update never prunes deployment state.
 
 `limits.py` keeps zero finished checkpoints, the two newest completed application
 release trees plus the live release, 20 operation journals, and two completed
