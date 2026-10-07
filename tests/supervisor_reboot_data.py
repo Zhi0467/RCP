@@ -39,6 +39,7 @@ def prepare_data(
     bootstrap_code: str | None = None,
     member_token: str | None = None,
     empty_branch: bool = False,
+    project_name: str = "Reboot qualification project",
 ) -> dict:
     previous = os.umask(0o077)
     try:
@@ -49,6 +50,7 @@ def prepare_data(
             bootstrap_code=bootstrap_code,
             member_token=member_token,
             empty_branch=empty_branch,
+            project_name=project_name,
         )
     finally:
         os.umask(previous)
@@ -62,6 +64,7 @@ def _prepare_data(
     bootstrap_code: str | None,
     member_token: str | None,
     empty_branch: bool,
+    project_name: str,
 ) -> dict:
     """Use application owners to build one completed, fully capturable project."""
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -86,7 +89,7 @@ def _prepare_data(
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authority,
-        name="Reboot qualification project",
+        name=project_name,
         state_repository="paper",
         project_truth_scope=["paper"],
         default_run_truth_scope=["paper"],

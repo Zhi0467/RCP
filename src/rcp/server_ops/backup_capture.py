@@ -27,6 +27,7 @@ from rcp.limits import (
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
+    is_canonical_uuid4,
     normalized_absolute_non_root_path,
     write_all,
 )
@@ -52,6 +53,7 @@ from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.sources.imported import ImportedProviderSourceStore
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.artifact_models import ArtifactFile
+from rcp.storage.models import normalize_space_name
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +87,19 @@ def _safe_line(value: str, *, label: str, maximum: int = 4096) -> str:
 
 
 def _plain_filename(value: str, *, label: str) -> str:
-    _safe_line(value, label=label, maximum=255)
-    if PurePosixPath(value).name != value or "\\" in value or value in {".", ".."}:
+    if (
+        not value
+        or len(value) > 255
+        or "\x00" in value
+        or PurePosixPath(value).name != value
+        or "\\" in value
+        or value in {".", ".."}
+    ):
         raise ValueError(f"{label} must be a plain filename")
     return value
 
 
 def _absolute_path(value: str, *, label: str) -> str:
-    _safe_line(value, label=label)
     return normalized_absolute_non_root_path(value, label=label)
 
 
@@ -209,6 +216,7 @@ class BackupKeptResultViewReference(_StrictCaptureModel):
 
 
 class BackupSnapshotProjectInventory(_StrictCaptureModel):
+    # Legacy catalog ids are diagnostic metadata only; captured ids gate file paths.
     project_id: str
     home_space_id: str | None
     locator: str | None
@@ -219,11 +227,6 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
     kept_result_views: tuple[BackupKeptResultViewReference, ...] = ()
     unavailable_reason: str | None = None
     unavailable_at: datetime | None = None
-
-    @field_validator("project_id")
-    @classmethod
-    def validate_id(cls, value: str, info) -> str:
-        return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
 
     @field_validator("home_space_id")
     @classmethod
@@ -268,6 +271,7 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
         if entries > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ValueError("project backup inventory exceeds its entry bound")
         if self.status == "capturable":
+            _canonical_uuid4(self.project_id, label="project identity")
             if (
                 self.recovery is None
                 or self.locator is None
@@ -352,7 +356,7 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
     @field_validator("space_name")
     @classmethod
     def validate_space_name(cls, value: str) -> str:
-        return _safe_line(value, label="backup space name", maximum=120)
+        return normalize_space_name(value)
 
     @field_validator("snapshot_path")
     @classmethod
@@ -391,7 +395,7 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
         if imported_ids and (
             tuple(sorted(imported_ids)) != tuple(imported_ids)
             or len(imported_ids) != len(set(imported_ids))
-            or set(imported_ids) != set(project_ids)
+            or set(imported_ids) != {value for value in project_ids if is_canonical_uuid4(value)}
         ):
             raise ValueError("SQLite capture imported sources must inventory every project")
         task_ids = [
@@ -486,7 +490,9 @@ class BackupCaptureCoordinator:
             if len(projects) > BACKUP_INVENTORY_MAX_ENTRIES:
                 raise BackupCaptureUnavailable("The project inventory exceeds its entry bound.")
             database_schema_sha256 = _database_schema_sha256(snapshot_store)
-        project_ids = tuple(record.project_id for record in records)
+        project_ids = tuple(
+            record.project_id for record in records if is_canonical_uuid4(record.project_id)
+        )
         try:
             if ImportedProviderSourceStore.project_ids(self.data_dir) != tuple(
                 project_id

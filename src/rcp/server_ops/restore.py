@@ -197,7 +197,6 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
 
 _SHA256 = frozenset("0123456789abcdef")
 _FULL_COMMIT = frozenset("0123456789abcdef")
-_RESTORE_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 
 
@@ -238,13 +237,6 @@ class RestoreRepositoryRecovery(_StrictModel):
             raise ValueError("restore repository project id must be a canonical UUID4") from exc
         if parsed.version != 4 or str(parsed) != value:
             raise ValueError("restore repository project id must be a canonical UUID4")
-        return value
-
-    @field_validator("repository_alias", "machine_alias")
-    @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _RESTORE_ALIAS.fullmatch(value) is None:
-            raise ValueError("restore repository alias is invalid")
         return value
 
     @field_validator("deploy_key_label", "deploy_public_key")
@@ -1023,6 +1015,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     from rcp.server_ops.backup_capture import (
         BackupSnapshotProjectInventory,
         BackupSQLiteCaptureReceipt,
+        _safe_project_locator,
         write_immutable_backup_receipt,
     )
     from rcp.server_ops.backup_models import BackupFileEntry, inspect_app_data_capture_plan
@@ -1276,23 +1269,36 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         for entry in inventory:
             write_artifact_file(capture_root, entry, store.artifact_file_path(entry).read_bytes())
         digest, size = _hash_regular_file(snapshot)
-        inventories = tuple(
-            BackupSnapshotProjectInventory(
-                project_id=p.project_id,
-                home_space_id=p.home_space_id,
-                locator=store.project(p.project_id).locator,
-                status="capturable" if p.status == "captured" else "uncaptured",
-                recovery=p.recovery if p.status == "captured" else None,
-                task_operation_ids=tuple(
-                    sorted(t.operation_id for t in store.all_project_agent_tasks(p.project_id))
+        inventories = []
+        for project in manifest.projects:
+            record = store.project(project.project_id)
+            if record is None:
+                raise RestoreRefused("The restored project registration is missing.")
+            captured = project.status == "captured"
+            try:
+                inventories.append(
+                    BackupSnapshotProjectInventory(
+                        project_id=project.project_id,
+                        home_space_id=project.home_space_id,
+                        locator=record.locator
+                        if captured
+                        else _safe_project_locator(record.locator),
+                        status="capturable" if captured else "uncaptured",
+                        recovery=project.recovery if captured else None,
+                        task_operation_ids=tuple(
+                            sorted(
+                                t.operation_id
+                                for t in store.all_project_agent_tasks(project.project_id)
+                            )
+                        )
+                        if captured
+                        else (),
+                        unavailable_reason=project.unavailable_reason if not captured else None,
+                        unavailable_at=project.unavailable_at if not captured else None,
+                    )
                 )
-                if p.status == "captured"
-                else (),
-                unavailable_reason=p.unavailable_reason if p.status != "captured" else None,
-                unavailable_at=p.unavailable_at if p.status != "captured" else None,
-            )
-            for p in manifest.projects
-        )
+            except ValueError as exc:
+                raise RestoreRefused("The restored project inventory is invalid.") from exc
         plan = inspect_app_data_capture_plan(app).model_copy(
             update={"data_dir": str(data), "database_path": str(data / "rcp.sqlite3")}
         )
@@ -1312,7 +1318,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 size_bytes=size,
             ),
             app_data_plan=plan,
-            projects=inventories,
+            projects=tuple(inventories),
             artifact_inventory=inventory,
             status="partial"
             if any(p.status == "uncaptured" for p in manifest.projects)
