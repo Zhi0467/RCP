@@ -22,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from rcp.artifacts import kept_binding_is_complete
 from rcp.transfer.archive import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -318,7 +319,7 @@ class TransferArtifactReference(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_kept_reference(self) -> TransferArtifactReference:
-        if self.kept_filename is not None and self.kept_at is None:
+        if not kept_binding_is_complete(self.kept_filename, self.kept_at):
             raise ValueError("kept artifact history requires both its filename and kept time")
         return self
 

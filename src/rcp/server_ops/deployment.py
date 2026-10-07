@@ -42,7 +42,9 @@ from rcp.server_ops.application_validation import (
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
     read_backup_sqlite_capture_receipt,
+    reinspect_uncaptured_projects,
     validate_backup_sqlite_snapshot,
+    write_immutable_backup_receipt,
 )
 from rcp.server_ops.backup_models import inspect_app_data_capture_plan
 from rcp.server_ops.backup_project_files import (
@@ -265,8 +267,21 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         if Path(sqlite.app_data_plan.data_dir) != data_dir:
             raise MaintenanceRefused("Application capture belongs to a different data directory.")
         coordinator = BackupProjectFileCaptureCoordinator(data_dir)
-        capture_files = coordinator.capture_offline if offline else coordinator.capture
-        publication = capture_files(receipt_path, expected_sha256=request.sqlite_receipt_sha256)
+        if not offline:
+            coordinator._validate_capture_boundary(receipt_path, sqlite)
+        sqlite = reinspect_uncaptured_projects(sqlite)
+        _new_output(output)
+        capture = output / f"backup-{sqlite.capture_id}"
+        copy_proof_tree(receipt_path.parent, capture)
+        # Preserve the outgoing evidence; every downstream consumer uses the
+        # target's separately published inventory and its own digest.
+        receipt_path = capture / "sqlite-capture.json"
+        receipt_path.rename(capture / "outgoing-sqlite-capture.json")
+        sqlite = BackupSQLiteCaptureReceipt.model_validate(
+            sqlite.model_copy(update={"snapshot_path": str(capture / "rcp.sqlite3")})
+        )
+        sqlite_digest = write_immutable_backup_receipt(receipt_path, sqlite)
+        publication = coordinator.capture_offline(receipt_path, expected_sha256=sqlite_digest)
         projects = publication.receipt
         # Every local root must be captured; only explicitly remote state is excluded.
         for project in projects.projects:
@@ -283,10 +298,7 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
                     ).fetchone()
                 if row is None or not bool(row[0]):
                     raise MaintenanceRefused("A local project root could not be captured.")
-        _new_output(output)
         (output / "payload").mkdir(mode=0o700)
-        capture = output / "capture"
-        copy_proof_tree(receipt_path.parent, capture)
         app = output / "payload" / "app-data"
         app.mkdir(mode=0o700)
         # The supervisor owns the complete stopped copy. This payload contains
@@ -310,7 +322,7 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         _set_private_directory_modes(output)
         boundary = _canonical_sha256(
             {
-                "sqlite_receipt_sha256": request.sqlite_receipt_sha256,
+                "sqlite_receipt_sha256": sqlite_digest,
                 "project_receipt_sha256": publication.receipt_sha256,
                 "roots": [item.model_dump() for item in roots],
             }
@@ -318,7 +330,7 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         baseline = _check_copy(
             output / "baseline",
             sqlite,
-            request.sqlite_receipt_sha256,
+            sqlite_digest,
             projects,
             publication.receipt_sha256,
             capture,
@@ -327,7 +339,7 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
             boundary_sha256=boundary,
             capture_root=str(capture),
             sqlite_receipt=sqlite,
-            sqlite_receipt_sha256=request.sqlite_receipt_sha256,
+            sqlite_receipt_sha256=sqlite_digest,
             project_receipt=projects,
             project_receipt_sha256=publication.receipt_sha256,
             read_model=baseline,
@@ -352,6 +364,7 @@ def inventory(request: PrepareRequest) -> dict[str, object]:
     )
     if Path(receipt.app_data_plan.data_dir) != data:
         raise MaintenanceRefused("Inventory capture belongs to different application data.")
+    receipt = reinspect_uncaptured_projects(receipt)
     roots = [{"live": str(data), "project_id": None}]
     for project in receipt.projects:
         if project.status != "capturable" or project.recovery is None:
@@ -616,17 +629,43 @@ def _copy_offline_database(data: Path, database: Path) -> None:
 
 def offline_inventory(request: OfflinePrepareRequest) -> dict[str, object]:
     """Discover stopped legacy roots using only a migrated, disposable database."""
-    from datetime import UTC, datetime
+    data, output = _inventory_output(request)
+    database = output / "rcp.sqlite3"
+    _copy_offline_database(data, database)
+    return _inventory_copy(data, database)
 
-    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
 
+def rehearse_inventory(request: OfflinePrepareRequest) -> dict[str, object]:
+    """Judge a running team's database with this release, before promoting it.
+
+    SQLite's online backup reads the live database consistently and read-only;
+    only the private copy is migrated and inspected.
+    """
+    data, output = _inventory_output(request)
+    database = output / "rcp.sqlite3"
+    with (
+        closing(sqlite3.connect(f"file:{data / 'rcp.sqlite3'}?mode=ro", uri=True)) as origin,
+        closing(sqlite3.connect(database)) as destination,
+    ):
+        origin.backup(destination)
+    database.chmod(0o600)
+    return _inventory_copy(data, database)
+
+
+def _inventory_output(request: OfflinePrepareRequest) -> tuple[Path, Path]:
     data, output = Path(request.data_dir), Path(request.output_dir)
     _private_ancestors(data)
     if output == data or output.is_relative_to(data) or data.is_relative_to(output):
         raise MaintenanceRefused("Offline inventory overlaps live data.")
     _new_output(output)
-    database = output / "rcp.sqlite3"
-    _copy_offline_database(data, database)
+    return data, output
+
+
+def _inventory_copy(data: Path, database: Path) -> dict[str, object]:
+    from datetime import UTC, datetime
+
+    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
+
     with closing(AppStore(database)) as store:
         if store.space_kind != "team" or not store.space_name:
             raise MaintenanceRefused("Offline snapshot is not an initialized team.")
