@@ -3161,7 +3161,11 @@ export default function App() {
           parent_episode_id: null,
         });
         try {
-          await Promise.all([reload(), refreshEpisodes()]);
+          await Promise.all([
+            reload(),
+            refreshEpisodes(),
+            refreshProjectExperimentLoops(project.id),
+          ]);
         } catch (error) {
           setNotice({
             kind: "error",
@@ -3183,6 +3187,7 @@ export default function App() {
       mutationsDisabled,
       project,
       recordStartedTask,
+      refreshProjectExperimentLoops,
       refreshEpisodes,
       reload,
       runScope,
@@ -5105,10 +5110,11 @@ export default function App() {
             experimentControl={experimentControl}
             experimentEntries={experimentLoops}
             experimentEntriesStatus={
-              experimentLoopsLoaded
-                ? "loaded"
-                : experimentLoopsUnavailable
-                  ? "unavailable"
+              // A failed latest request outranks an earlier successful load.
+              experimentLoopsUnavailable
+                ? "unavailable"
+                : experimentLoopsLoaded
+                  ? "loaded"
                   : "loading"
             }
             experimentRunDisabled={experimentStartRequiresSync}
