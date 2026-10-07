@@ -629,17 +629,43 @@ def _copy_offline_database(data: Path, database: Path) -> None:
 
 def offline_inventory(request: OfflinePrepareRequest) -> dict[str, object]:
     """Discover stopped legacy roots using only a migrated, disposable database."""
-    from datetime import UTC, datetime
+    data, output = _inventory_output(request)
+    database = output / "rcp.sqlite3"
+    _copy_offline_database(data, database)
+    return _inventory_copy(data, database)
 
-    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
 
+def rehearse_inventory(request: OfflinePrepareRequest) -> dict[str, object]:
+    """Judge a running team's database with this release, before promoting it.
+
+    SQLite's online backup reads the live database consistently and read-only;
+    only the private copy is migrated and inspected.
+    """
+    data, output = _inventory_output(request)
+    database = output / "rcp.sqlite3"
+    with (
+        closing(sqlite3.connect(f"file:{data / 'rcp.sqlite3'}?mode=ro", uri=True)) as origin,
+        closing(sqlite3.connect(database)) as destination,
+    ):
+        origin.backup(destination)
+    database.chmod(0o600)
+    return _inventory_copy(data, database)
+
+
+def _inventory_output(request: OfflinePrepareRequest) -> tuple[Path, Path]:
     data, output = Path(request.data_dir), Path(request.output_dir)
     _private_ancestors(data)
     if output == data or output.is_relative_to(data) or data.is_relative_to(output):
         raise MaintenanceRefused("Offline inventory overlaps live data.")
     _new_output(output)
-    database = output / "rcp.sqlite3"
-    _copy_offline_database(data, database)
+    return data, output
+
+
+def _inventory_copy(data: Path, database: Path) -> dict[str, object]:
+    from datetime import UTC, datetime
+
+    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
+
     with closing(AppStore(database)) as store:
         if store.space_kind != "team" or not store.space_name:
             raise MaintenanceRefused("Offline snapshot is not an initialized team.")

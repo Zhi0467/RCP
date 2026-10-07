@@ -949,6 +949,33 @@ def test_offline_inventory_discovers_roots_without_changing_stopped_state(captur
     assert {root: _tree_state(root) for root in before} == before
 
 
+def test_release_rehearsal_reads_a_running_database_and_judges_its_copy(captured, tmp_path):
+    from rcp.server_ops.deployment import OfflinePrepareRequest, rehearse_inventory
+
+    request, state, _ = captured
+    data, research = Path(request.data_dir), Path(state["research"])
+
+    def visible(root: Path) -> dict:
+        # A WAL reader opens the sidecars a running server already holds.
+        return {
+            name: entry
+            for name, entry in _tree_state(root).items()
+            if not name.endswith(("-wal", "-shm"))
+        }
+
+    before = {root: visible(root) for root in (data, research)}
+    result = rehearse_inventory(
+        OfflinePrepareRequest(
+            version=1,
+            data_dir=str(data),
+            output_dir=str(tmp_path / "rehearsal"),
+            source_commit="a" * 40,
+        )
+    )
+    assert {root["live"] for root in result["roots"]} == {str(data), str(research)}
+    assert {root: visible(root) for root in before} == before
+
+
 def test_offline_preparation_keeps_live_database_unchanged(captured, tmp_path):
     from rcp.server_ops.deployment import (
         InspectRequest,

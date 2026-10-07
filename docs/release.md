@@ -167,13 +167,14 @@ remain explicit follow-up evidence.
   uv venv -q "$D/venv" --python 3.12
   uv pip install -q --python "$D/venv" -r "$D/requirements.lock.txt"
   uv pip install -q --python "$D/venv" --no-deps "$D"/rcp-*.whl
-  "$D/venv/bin/python" -I -c 'import sys; from rcp.server_ops.deployment import OfflinePrepareRequest, offline_inventory; print(offline_inventory(OfflinePrepareRequest(version=1, data_dir=sys.argv[1], output_dir=sys.argv[2], source_commit="0" * 40)))' /home/rcp/rcp-server/data "$D/out"
+  "$D/venv/bin/python" -I -c 'import sys; from rcp.server_ops.deployment import OfflinePrepareRequest, rehearse_inventory; print(rehearse_inventory(OfflinePrepareRequest(version=1, data_dir=sys.argv[1], output_dir=sys.argv[2], source_commit="0" * 40)))' /home/rcp/rcp-server/data "$D/out"
   rm -rf "$D"
   ```
 
-  The copy migrates to the build's schema, and every project must inventory.
-  A refusal names the same problem the real update would refuse with. The
-  live database is only read.
+  The service keeps running. SQLite's online backup copies the database
+  consistently; only that copy migrates to the build's schema, and every
+  project must inventory. A refusal names the same problem the real update
+  would refuse with.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
 - A frozen fixture for each schema change is enforced by CI's old-data job, per
