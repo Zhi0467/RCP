@@ -121,6 +121,20 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     episode: EpisodeResponse
 
 
+class UnavailableExperimentLoopResponse(BaseModel):
+    project_id: str
+    project_name: str
+    graph_target: GraphTargetRef
+    control_node_id: str
+    episode_id: str
+    detail: str
+
+
+class ExperimentLoopIndexResponse(BaseModel):
+    entries: list[ExperimentLoopIndexEntryResponse]
+    unavailable: list[UnavailableExperimentLoopResponse]
+
+
 SpaceRunMode = Literal["experiment_loop", "auto_research"]
 SpaceRunSection = Literal["actionable", "running", "completed"]
 SpaceRunTone = Literal[
@@ -179,7 +193,7 @@ def projects(
     ]
 
 
-@router.get("/api/episodes", response_model=list[ExperimentLoopIndexEntryResponse])
+@router.get("/api/episodes", response_model=ExperimentLoopIndexResponse)
 def experiment_episodes(
     request: Request,
     mode: Literal["experiment_loop"] = Query(...),
@@ -189,7 +203,7 @@ def experiment_episodes(
     identity_access: IdentityDependency,
     store: StoreDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
-) -> list[ExperimentLoopIndexEntryResponse]:
+) -> ExperimentLoopIndexResponse:
     # An unfiltered answer would publish research and not just project names.
     # Start from durable loop parents rather than graph nodes: a branch may
     # create an Experiment that does not exist on main at all.
@@ -205,7 +219,7 @@ def experiment_episodes(
 
 @membership_router.get(
     "/api/projects/{project_id}/experiment-episodes",
-    response_model=list[ExperimentLoopIndexEntryResponse],
+    response_model=ExperimentLoopIndexResponse,
 )
 def project_experiment_episodes(
     project_id: str,
@@ -215,7 +229,7 @@ def project_experiment_episodes(
     project_display_cache: DisplayCacheDependency,
     store: StoreDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
-) -> list[ExperimentLoopIndexEntryResponse]:
+) -> ExperimentLoopIndexResponse:
     return _experiment_episode_entries(
         catalog=catalog,
         project_display_cache=project_display_cache,
@@ -233,10 +247,11 @@ def _experiment_episode_entries(
     experiment_operation_lock: KeyedLocks,
     visible: set[str],
     archive_states_by_project: dict[str, dict[str, EpisodeArchiveState]] | None = None,
-) -> list[ExperimentLoopIndexEntryResponse]:
+) -> ExperimentLoopIndexResponse:
     """Build the exact Experiment index once for both index projections."""
 
     entries: list[ExperimentLoopIndexEntryResponse] = []
+    unavailable: list[UnavailableExperimentLoopResponse] = []
     branch_summary = partial(
         graph_branch_summary,
         store=store,
@@ -387,10 +402,26 @@ def _experiment_episode_entries(
                             "Experiment graph projection returned a different target head."
                         )
                 except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
-                    if any(item[0].episode.status in _LIVE_EPISODE_STATUSES for item in group):
-                        raise HTTPException(status_code=503, detail=str(exc)) from exc
+                    live_episodes = [
+                        item[0].episode
+                        for item in group
+                        if item[0].episode.status in _LIVE_EPISODE_STATUSES
+                    ]
+                    for episode in live_episodes:
+                        assert episode.control_node_id is not None
+                        unavailable.append(
+                            UnavailableExperimentLoopResponse(
+                                project_id=record.project_id,
+                                project_name=record.name,
+                                graph_target=target,
+                                control_node_id=episode.control_node_id,
+                                episode_id=episode.episode_id,
+                                detail=str(exc),
+                            )
+                        )
                     logger.warning(
-                        "Skipping unavailable historical Experiment branch %s in project %s: %s",
+                        "Unavailable %s Experiment branch %s in project %s: %s",
+                        "live" if live_episodes else "historical",
                         target.key,
                         record.project_id,
                         exc,
@@ -465,9 +496,19 @@ def _experiment_episode_entries(
                         )
                     except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
                         if episode.status in _LIVE_EPISODE_STATUSES:
-                            raise HTTPException(status_code=503, detail=str(exc)) from exc
+                            unavailable.append(
+                                UnavailableExperimentLoopResponse(
+                                    project_id=record.project_id,
+                                    project_name=record.name,
+                                    graph_target=target,
+                                    control_node_id=node_id,
+                                    episode_id=episode.episode_id,
+                                    detail=str(exc),
+                                )
+                            )
                         logger.warning(
-                            "Skipping unavailable historical Experiment episode %s on %s: %s",
+                            "Unavailable %s Experiment episode %s on %s: %s",
+                            "live" if episode.status in _LIVE_EPISODE_STATUSES else "historical",
                             episode.episode_id,
                             target.key,
                             exc,
@@ -487,7 +528,7 @@ def _experiment_episode_entries(
                         episode=serialized_episode,
                     )
                 )
-    return entries
+    return ExperimentLoopIndexResponse(entries=entries, unavailable=unavailable)
 
 
 @router.get("/api/space/runs", response_model=list[SpaceRunIndexEntryResponse])
@@ -509,7 +550,7 @@ def space_runs(
     archive_states_by_project: dict[str, dict[str, EpisodeArchiveState]] = {}
     as_of = datetime.fromisoformat(store.now()).astimezone(UTC)
     completed_since = (as_of - SPACE_RUNS_COMPLETED_TTL).isoformat()
-    experiment_entries = _experiment_episode_entries(
+    experiment_index = _experiment_episode_entries(
         catalog=catalog,
         project_display_cache=project_display_cache,
         store=store,
@@ -517,7 +558,9 @@ def space_runs(
         visible=visible,
         archive_states_by_project=archive_states_by_project,
     )
-    entries = [_space_experiment_run(entry) for entry in experiment_entries]
+    if experiment_index.unavailable:
+        raise HTTPException(status_code=503, detail=experiment_index.unavailable[0].detail)
+    entries = [_space_experiment_run(entry) for entry in experiment_index.entries]
     for project_id in records:
         if project_id not in archive_states_by_project:
             archive_states_by_project[project_id] = store.episode_archive_states(project_id)
@@ -551,7 +594,7 @@ def space_runs(
     indexed_ids = {entry.episode_id for entry in entries}
     experiment_titles = {
         (entry.project_id, entry.graph_target.key, entry.node.id): entry.node.title
-        for entry in experiment_entries
+        for entry in experiment_index.entries
     }
     for record in records.values():
         if not any(

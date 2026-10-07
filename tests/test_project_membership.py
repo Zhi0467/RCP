@@ -338,7 +338,8 @@ def test_a_non_member_project_is_absent_from_the_cross_project_experiment_board(
     acting[0] = outsider.user_id
     outsider_board = client.get("/api/episodes", params={"mode": "experiment_loop"})
     assert outsider_board.status_code == 200, outsider_board.text
-    assert outsider_board.json() == []
+    assert outsider_board.json()["entries"] == []
+    assert outsider_board.json()["unavailable"] == []
 
 
 def test_an_exact_non_member_project_id_answers_404_and_never_403(manifest, tmp_path) -> None:

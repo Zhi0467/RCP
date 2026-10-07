@@ -6,7 +6,7 @@ import {
 } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { MAIN_GRAPH } from "../core/graphTarget";
+import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
@@ -34,6 +34,7 @@ import type {
   EpisodeIsolationChoice,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
+  UnavailableExperimentLoop,
   GraphNode,
   OntologyState,
   ValidationMessage,
@@ -76,6 +77,7 @@ interface Props {
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
   experimentEntries?: ExperimentLoopIndexEntry[];
+  experimentUnavailableLoops?: UnavailableExperimentLoop[];
   /** Whether the project's loop inventory is known yet, for the overlap list. */
   experimentEntriesStatus?: "loading" | "loaded" | "unavailable";
   experimentRunDisabled?: boolean;
@@ -152,6 +154,7 @@ export function DetailDrawer({
   canonicalStanding = node.standing,
   experimentControl = null,
   experimentEntries = [],
+  experimentUnavailableLoops = [],
   experimentEntriesStatus = "loaded",
   experimentRunDisabled = false,
   experimentRunBusy = false,
@@ -172,6 +175,10 @@ export function DetailDrawer({
   onOpenRelatedNode,
   onSelectNode,
 }: Props) {
+  const unavailableOverlapCount = experimentUnavailableLoops.filter(
+    (entry) =>
+      entry.control_node_id === node.id && !sameGraphTarget(entry.graph_target, graphTarget),
+  ).length;
   const [browserRequested, setBrowserRequested] = useState(false);
   useEffect(() => setBrowserRequested(false), [node.id]);
   const [editing, setEditing] = useState(behind);
@@ -624,6 +631,13 @@ export function DetailDrawer({
                         (inheritedIsolation ?? isolation).graph_isolation,
                       )}
                     />
+                  )}
+                  {experimentEntriesStatus === "loaded" && unavailableOverlapCount > 0 && (
+                    <p className="experiment-overlap-partial" role="status">
+                      {unavailableOverlapCount} live{" "}
+                      {unavailableOverlapCount === 1 ? "loop" : "loops"} on this node couldn't be
+                      read.
+                    </p>
                   )}
                   <div className="experiment-control-heading">
                     <div>

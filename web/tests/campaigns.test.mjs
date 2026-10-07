@@ -545,7 +545,9 @@ test("episode API calls use only the generic endpoints and the continuation body
       ? init.method === "POST"
         ? { message_id: "m" }
         : []
-      : [];
+      : path.endsWith("?mode=experiment_loop")
+        ? { entries: [], unavailable: [] }
+        : [];
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -566,8 +568,11 @@ test("episode API calls use only the generic endpoints and the continuation body
     await mergeEpisodeToMain("/api/projects/demo", "episode/alpha");
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
-    await loadExperimentEpisodes();
-    await loadProjectExperimentEpisodes("project/one");
+    assert.deepEqual(await loadExperimentEpisodes(), { entries: [], unavailable: [] });
+    assert.deepEqual(await loadProjectExperimentEpisodes("project/one"), {
+      entries: [],
+      unavailable: [],
+    });
     await loadSpaceRuns();
   } finally {
     globalThis.fetch = originalFetch;

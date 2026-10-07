@@ -296,6 +296,8 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           };
         else if (path.endsWith("/revision"))
           json = { revision: 1, graph_head: project().graph_head };
+        else if (path === "/api/projects/demo/experiment-episodes")
+          json = { entries: [], unavailable: [] };
         else if (path === "/api/providers/logins") json = [];
         else if (path === "/api/update-notice")
           json = {
@@ -320,7 +322,6 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             "/api/projects/demo/watchers",
             "/api/projects/demo/history/summaries",
             "/api/projects/demo/transition-manifest",
-            "/api/projects/demo/experiment-episodes",
             // The Terminals tab's visibility is a project-level fact, so both
             // projections it decides from load with the project on every view.
             // An open session keeps the tab even where none can be launched.

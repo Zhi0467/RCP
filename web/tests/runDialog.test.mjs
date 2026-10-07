@@ -303,10 +303,25 @@ test("a never-run Experiment shows only its next episode limit", () => {
   let html;
   let loading;
   let unavailable;
+  let partial;
   try {
     html = render();
     loading = render({ projectId: "project-one", experimentEntriesStatus: "loading" });
     unavailable = render({ projectId: "project-one", experimentEntriesStatus: "unavailable" });
+    partial = render({
+      projectId: "project-one",
+      experimentEntriesStatus: "loaded",
+      experimentUnavailableLoops: [
+        {
+          project_id: "project-one",
+          project_name: "Project one",
+          graph_target: { kind: "branch", branch_id: "branch-unavailable" },
+          control_node_id: node.id,
+          episode_id: "episode-unavailable",
+          detail: "Branch unavailable",
+        },
+      ],
+    });
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -331,6 +346,12 @@ test("a never-run Experiment shows only its next episode limit", () => {
   )?.[0];
   assert.doesNotMatch(offered, /\bdisabled(?:=|\s|>)/);
   assert.match(unavailable, /class="experiment-overlap-unavailable" role="status"/);
+  const partialRun = partial.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.ok(partialRun);
+  assert.doesNotMatch(partialRun, /\bdisabled(?:=|\s|>)/);
+  assert.match(partial, /class="experiment-overlap-partial" role="status"/);
 });
 
 test("an invocation-limited episode offers a new episode for its pending watcher", () => {

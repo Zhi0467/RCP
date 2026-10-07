@@ -16,7 +16,9 @@ import {
 } from "./projectTabs";
 import type {
   Episode,
+  ExperimentLoopIndex,
   ExperimentLoopIndexEntry,
+  UnavailableExperimentLoop,
   ProjectCard,
   ProjectSnapshot,
   SpaceRunIndexEntry,
@@ -163,6 +165,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
   const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
+  const [unavailableExperimentLoops, setUnavailableExperimentLoops] = useState<
+    UnavailableExperimentLoop[]
+  >([]);
   const [experimentLoopLoadedProjects, setExperimentLoopLoadedProjects] = useState<Set<string>>(
     () => new Set(),
   );
@@ -196,9 +201,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const refreshExperimentLoops = useCallback(async () => {
     const requestedProjectId = activeProjectId.current;
     const refreshGeneration = ++experimentLoopRefreshGeneration.current;
-    let nextEntries: ExperimentLoopIndexEntry[];
+    let nextIndex: ExperimentLoopIndex;
     try {
-      nextEntries = await loadExperimentEpisodes();
+      nextIndex = await loadExperimentEpisodes();
     } catch (error) {
       if (requestedProjectId) {
         setExperimentLoopUnavailableProjects(
@@ -211,23 +216,25 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     if (
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
-      setExperimentLoops(nextEntries);
+      setExperimentLoops(nextIndex.entries);
+      setUnavailableExperimentLoops(nextIndex.unavailable);
       setExperimentLoopLoadedProjects(
         (current) =>
           new Set([
             ...current,
-            ...nextEntries.map((entry) => entry.project_id),
+            ...nextIndex.entries.map((entry) => entry.project_id),
+            ...nextIndex.unavailable.map((entry) => entry.project_id),
             ...(requestedProjectId ? [requestedProjectId] : []),
           ]),
       );
     }
-    return nextEntries;
+    return nextIndex.entries;
   }, []);
   const refreshProjectExperimentLoops = useCallback(async (requestedProjectId: string) => {
     const refreshGeneration = ++experimentLoopRefreshGeneration.current;
-    let nextEntries: ExperimentLoopIndexEntry[];
+    let nextIndex: ExperimentLoopIndex;
     try {
-      nextEntries = await loadProjectExperimentEpisodes(requestedProjectId);
+      nextIndex = await loadProjectExperimentEpisodes(requestedProjectId);
     } catch (error) {
       setExperimentLoopUnavailableProjects((current) => new Set([...current, requestedProjectId]));
       throw error;
@@ -241,11 +248,15 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
       setExperimentLoops((current) =>
-        mergeProjectExperimentLoops(current, requestedProjectId, nextEntries),
+        mergeProjectExperimentLoops(current, requestedProjectId, nextIndex.entries),
       );
+      setUnavailableExperimentLoops((current) => [
+        ...current.filter((entry) => entry.project_id !== requestedProjectId),
+        ...nextIndex.unavailable,
+      ]);
       setExperimentLoopLoadedProjects((current) => new Set([...current, requestedProjectId]));
     }
-    return nextEntries;
+    return nextIndex.entries;
   }, []);
   const refreshSpaceRuns = useCallback(async () => {
     const generation = ++spaceRunRefreshGeneration.current;
@@ -485,6 +496,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     projects,
     openProjectTabs,
     experimentLoops,
+    experimentLoopsUnavailableRows: unavailableExperimentLoops.filter(
+      (entry) => entry.project_id === projectId,
+    ),
     experimentLoopsLoaded: projectId !== null && experimentLoopLoadedProjects.has(projectId),
     experimentLoopsUnavailable:
       projectId !== null && experimentLoopUnavailableProjects.has(projectId),

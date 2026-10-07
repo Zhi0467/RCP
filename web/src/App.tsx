@@ -655,6 +655,7 @@ export default function App() {
     experimentLoops,
     experimentLoopsLoaded,
     experimentLoopsUnavailable,
+    experimentLoopsUnavailableRows,
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
@@ -2125,7 +2126,9 @@ export default function App() {
             undefined,
             link.itemId,
           ).catch(() => []),
-          loadProjectExperimentEpisodes(link.projectId).catch(() => []),
+          loadProjectExperimentEpisodes(link.projectId)
+            .then((index) => index.entries)
+            .catch(() => []),
         ]);
         next = episodeNotificationHash(link, episodes[0] ?? null, entries);
       } else {
@@ -3710,7 +3713,8 @@ export default function App() {
         ...projectViewToolDefinitions(project, tasks, episodes, webMcpViewOwners, {
           ...webMcpArtifactSource,
           loadTranscript: loadWebMcpConversation,
-          loadExperimentEntries: () => loadProjectExperimentEpisodes(project.id),
+          loadExperimentEntries: async () =>
+            (await loadProjectExperimentEpisodes(project.id)).entries,
         }),
         // Published for voice only; webMcpHostTools keeps them off WebMCP.
         ...voiceTerminalToolDefinitions(project.id, {
@@ -4899,6 +4903,7 @@ export default function App() {
                 watchers={watchers}
                 experimentControl={presentedExperimentControl}
                 experimentEntriesLoaded={experimentLoopsLoaded}
+                experimentUnavailableLoops={experimentLoopsUnavailableRows}
                 experimentEntries={experimentLoops.filter(
                   (entry) => entry.project_id === project.id,
                 )}
@@ -5109,6 +5114,7 @@ export default function App() {
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
             experimentEntries={experimentLoops}
+            experimentUnavailableLoops={experimentLoopsUnavailableRows}
             experimentEntriesStatus={
               // A failed latest request outranks an earlier successful load.
               experimentLoopsUnavailable

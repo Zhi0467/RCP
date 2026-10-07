@@ -1347,6 +1347,14 @@ being published; cached graph state cannot reverse an archive choice.
 The episode index is an explicit typed projection whose current `episode` is
 non-null. Main-target entries consume the completed project snapshot's
 Experiment-control map; branch entries consume the exact branch read model.
+Both `GET /api/episodes?mode=experiment_loop` and the project-scoped index
+return `{entries, unavailable}`. Healthy entries remain visible when a live
+loop's branch or control cannot be read. Each unreadable live loop has an
+`unavailable` row with project identity, graph target, control node id, episode
+id, and diagnostic detail. Historical-only failures are logged and skipped.
+Runs shows a small notice naming the affected branches. A missing or invalid
+required cached project snapshot still returns 503. `/api/space/runs` keeps its
+existing response shape and returns 503 with the first unavailable detail.
 Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
 The page keeps each project's episode list, so returning to a project tab shows

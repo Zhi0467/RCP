@@ -1621,3 +1621,37 @@ test("a branch view waits for the loop index before classifying a main route as 
     );
   }
 });
+
+test("Runs retains healthy cards and names each unavailable branch once", () => {
+  const healthy = entry(
+    "experiment/healthy",
+    "active",
+    control({ episode: episode({ control_node_id: "experiment/healthy" }) }),
+  );
+  const unavailable = {
+    project_id: healthy.project_id,
+    project_name: healthy.project_name,
+    graph_target: { kind: "branch", branch_id: "unavailable-branch" },
+    control_node_id: "experiment/unavailable",
+    episode_id: "episode-unavailable",
+    detail: "Branch unavailable",
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: { nodes: { [healthy.node.id]: healthy.node }, edges: {} },
+      episodes: [],
+      tasks: [],
+      watchers: [],
+      experimentControl: { [healthy.node.id]: healthy.control },
+      experimentEntries: [healthy],
+      experimentUnavailableLoops: [
+        unavailable,
+        { ...unavailable, episode_id: "episode-other", control_node_id: "experiment/other" },
+      ],
+      stopBusyIds: new Set(),
+    }),
+  );
+  assert.match(html, /class="experiment-board-unavailable" role="status"/);
+  assert.equal((html.match(/title="unavailable-branch"/g) ?? []).length, 1);
+  assert.match(html, /data-episode-id="episode-1"/);
+});

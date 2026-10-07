@@ -21,7 +21,7 @@ import type {
   MergePreview,
   EpisodeTimelineText,
   EpisodeMode,
-  ExperimentLoopIndexEntry,
+  ExperimentLoopIndex,
   ExperimentStartResponse,
   AgentTaskRequest,
   IdentityResponse,
@@ -494,14 +494,12 @@ export function startExperimentRun(
   });
 }
 
-export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {
-  return api<ExperimentLoopIndexEntry[]>("/api/episodes?mode=experiment_loop");
+export function loadExperimentEpisodes(): Promise<ExperimentLoopIndex> {
+  return api<ExperimentLoopIndex>("/api/episodes?mode=experiment_loop");
 }
 
-export function loadProjectExperimentEpisodes(
-  projectId: string,
-): Promise<ExperimentLoopIndexEntry[]> {
-  return api<ExperimentLoopIndexEntry[]>(
+export function loadProjectExperimentEpisodes(projectId: string): Promise<ExperimentLoopIndex> {
+  return api<ExperimentLoopIndex>(
     `/api/projects/${encodeURIComponent(projectId)}/experiment-episodes?mode=experiment_loop`,
   );
 }

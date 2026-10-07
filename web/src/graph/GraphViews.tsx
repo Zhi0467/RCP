@@ -108,6 +108,7 @@ import {
 import { runsEpisodeCards } from "../experiments/campaigns";
 import {
   currentExperimentEntries,
+  unavailableExperimentTargets,
   mainExperimentRouteMatchesControl,
   type ExperimentRouteIdentity,
 } from "../experiments/experimentBoardModel";
@@ -120,6 +121,7 @@ import type {
   EpisodeRunSection,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
+  UnavailableExperimentLoop,
   GraphNode,
   GraphState,
   Proposal,
@@ -1130,6 +1132,7 @@ interface ExecutionProps {
   watchers: WatcherRecord[];
   experimentControl: Record<string, ExperimentControlState>;
   experimentEntries?: ExperimentLoopIndexEntry[];
+  experimentUnavailableLoops?: UnavailableExperimentLoop[];
   experimentEntriesLoaded?: boolean;
   exactExperimentRoute?: ExperimentRouteIdentity | null;
   exactExperimentEntry?: ExperimentLoopIndexEntry | null;
@@ -1183,6 +1186,7 @@ export function ExecutionView({
   watchers,
   experimentControl,
   experimentEntries = [],
+  experimentUnavailableLoops = [],
   experimentEntriesLoaded = true,
   exactExperimentRoute = null,
   exactExperimentEntry = null,
@@ -1414,6 +1418,17 @@ export function ExecutionView({
           Show archived
         </label>
       </div>
+      {experimentUnavailableLoops.length > 0 && (
+        <div className="experiment-board-unavailable" role="status">
+          <span>Some live loops couldn't be read:</span>
+          {unavailableExperimentTargets(experimentUnavailableLoops).map((target) => (
+            <ExperimentBranchBadge
+              key={target.kind === "main" ? "main" : target.branch_id}
+              target={target}
+            />
+          ))}
+        </div>
+      )}
       {!experimentEntriesLoaded && (
         <div className="run-route-loading" role="status" aria-busy="true">
           Loading Experiment loops…

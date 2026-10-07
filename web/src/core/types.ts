@@ -910,6 +910,20 @@ export interface ExperimentLoopIndexEntry {
   episode: Episode;
 }
 
+export interface UnavailableExperimentLoop {
+  project_id: string;
+  project_name: string;
+  graph_target: GraphTargetRef;
+  control_node_id: string;
+  episode_id: string;
+  detail: string;
+}
+
+export interface ExperimentLoopIndex {
+  entries: ExperimentLoopIndexEntry[];
+  unavailable: UnavailableExperimentLoop[];
+}
+
 export type SpaceRunSection = "actionable" | "running" | "completed";
 export type SpaceRunMode = "experiment_loop" | "auto_research";
 export type SpaceRunHealthTone =

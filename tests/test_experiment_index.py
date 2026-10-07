@@ -380,8 +380,8 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
 
     assert response.status_code == 200
     assert calls == [(project_id, None)]
-    assert len(response.json()) == 1
-    entry = response.json()[0]
+    assert len(response.json()["entries"]) == 1
+    entry = response.json()["entries"][0]
     assert set(entry) == {
         "project_id",
         "project_name",
@@ -530,7 +530,7 @@ def test_experiment_indexes_overlay_shared_archive_state_without_mutating_cached
         ):
             response = client.get(path)
             assert response.status_code == 200, response.text
-            entry = response.json()[0]
+            entry = response.json()["entries"][0]
             assert entry["episode"]["episode_id"] == episode_id
             assert entry["episode"]["archived"] is archived
             assert entry["episode"]["can_archive"] is True
@@ -998,7 +998,9 @@ def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert [entry["episode"]["episode_id"] for entry in response.json()] == [current_episode]
+    assert [entry["episode"]["episode_id"] for entry in response.json()["entries"]] == [
+        current_episode
+    ]
 
 
 def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_path) -> None:
@@ -1028,7 +1030,9 @@ def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_pat
         response = client.get(path)
         assert response.status_code == 200
         entry = next(
-            item for item in response.json() if item["episode"]["episode_id"] == episode_id
+            item
+            for item in response.json()["entries"]
+            if item["episode"]["episode_id"] == episode_id
         )
         assert entry["parent_episode_id"] is None
         assert entry["parent_watching"] is False
@@ -1161,10 +1165,10 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
 
         experiment_index = client.get("/api/episodes", params={"mode": "experiment_loop"})
         assert experiment_index.status_code == 200
-        assert len(experiment_index.json()) == 2
+        assert len(experiment_index.json()["entries"]) == 2
         entry = next(
             item
-            for item in experiment_index.json()
+            for item in experiment_index.json()["entries"]
             if item["episode"]["episode_id"] == child.episode_id
         )
         indexed_child = entry["episode"]
@@ -1313,8 +1317,8 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         assert response.status_code == 200
         assert refresh_bounds
         assert set(refresh_bounds) == {REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS}
-        assert len(response.json()) == 1
-        entry = response.json()[0]
+        assert len(response.json()["entries"]) == 1
+        entry = response.json()["entries"][0]
         assert entry["node"]["id"] == "exp/branch-created"
         assert entry["node"]["title"] == "Created only on the episode branch"
         assert entry["control"]["episode_id"] == child.episode_id
@@ -1427,8 +1431,8 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
     response = signed_in_client(restarted).get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert len(response.json()) == 1
-    entry = response.json()[0]
+    assert len(response.json()["entries"]) == 1
+    entry = response.json()["entries"][0]
     assert entry["project_id"] == project_id
     assert entry["project_reachable"] is False
     assert entry["control"]["episode_id"] == current_episode
@@ -1503,8 +1507,8 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     )
     response = client.get("/api/episodes?mode=experiment_loop")
     assert response.status_code == 200
-    assert response.json()[0]["node"]["current_summary"] == "Refreshed after Work."
-    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert response.json()["entries"][0]["node"]["current_summary"] == "Refreshed after Work."
+    assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
 
 
 def test_experiment_index_runtime_projection_failure_fails_the_request(
@@ -1560,7 +1564,7 @@ def test_inconsistent_experiment_runtime_is_degraded_without_hiding_healthy_sibl
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200, response.text
-    entries = {item["node"]["id"]: item for item in response.json()}
+    entries = {item["node"]["id"]: item for item in response.json()["entries"]}
     assert set(entries) == {"exp/launched", "exp/never-run"}
     degraded = entries["exp/launched"]["control"]
     assert degraded["health"] == "degraded"
@@ -1851,7 +1855,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     running = app.state.background_tasks.store.agent_task(task.operation_id)
     assert running is not None
     assert running.status == "running"
-    before_release = client.get("/api/episodes?mode=experiment_loop").json()[0]
+    before_release = client.get("/api/episodes?mode=experiment_loop").json()["entries"][0]
     assert before_release["node"]["current_summary"] == ""
     assert before_release["control"]["episode_id"] == episode_id
     assert before_release["control"]["operational"]["current_status"] == "running"
@@ -1859,7 +1863,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     release_cache.set()
     completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
     assert completed.status == "succeeded"
-    after_release = client.get("/api/episodes?mode=experiment_loop").json()[0]
+    after_release = client.get("/api/episodes?mode=experiment_loop").json()["entries"][0]
     assert after_release["node"]["current_summary"] == ("Graph visible with terminal task.")
     assert after_release["control"]["episode_id"] == episode_id
     assert after_release["control"]["operational"]["current_status"] == "succeeded"
@@ -1958,7 +1962,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
     completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
 
     assert completed.status == expected_status
-    indexed = client.get("/api/episodes?mode=experiment_loop").json()[0]
+    indexed = client.get("/api/episodes?mode=experiment_loop").json()["entries"][0]
     assert indexed["node"]["current_summary"] == f"Graph before {terminal_event}."
 
 
@@ -2019,8 +2023,8 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
 
     assert unscoped.status_code == 503
     assert scoped.status_code == 200, scoped.text
-    assert [entry["project_id"] for entry in scoped.json()] == [healthy_project_id]
-    assert scoped.json()[0]["episode"]["episode_id"] == current_episode
+    assert [entry["project_id"] for entry in scoped.json()["entries"]] == [healthy_project_id]
+    assert scoped.json()["entries"][0]["episode"]["episode_id"] == current_episode
     assert unknown.status_code == 404
 
 
@@ -2044,7 +2048,7 @@ def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: P
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
     assert "home_space_id" not in json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
 
 
@@ -2062,7 +2066,7 @@ def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
 
 
 def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
@@ -2081,7 +2085,7 @@ def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
 
 @pytest.mark.parametrize("failure", ["load", "binding", "summary"])
 @pytest.mark.parametrize("live", [False, True])
-def test_index_skips_only_nonlive_branch_failures(
+def test_index_reports_live_branch_failures_and_skips_historical_failures(
     manifest, tmp_path, monkeypatch, caplog, failure, live
 ):
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2108,16 +2112,35 @@ def test_index_skips_only_nonlive_branch_failures(
                 raise ValueError("fixture missing branch owner")
 
             monkeypatch.setattr(api_index_module, "graph_branch_summary", unbound)
-        response = client.get("/api/episodes?mode=experiment_loop")
-    if live:
-        assert response.status_code == 503
-    else:
-        assert response.status_code == 200
-        assert [row["episode"]["episode_id"] for row in response.json()] == [main_id]
-        assert any(
-            record.name == "rcp.api.index" and child.graph_target.key in record.getMessage()
-            for record in caplog.records
-        )
+        for path in (
+            "/api/episodes?mode=experiment_loop",
+            f"/api/projects/{project_id}/experiment-episodes?mode=experiment_loop",
+        ):
+            response = client.get(path)
+            assert response.status_code == 200
+            index = response.json()
+            assert [row["episode"]["episode_id"] for row in index["entries"]] == [main_id]
+            if live:
+                assert len(index["unavailable"]) == 1
+                unavailable = index["unavailable"][0]
+                assert unavailable["project_id"] == project_id
+                assert unavailable["project_name"] == index["entries"][0]["project_name"]
+                assert unavailable["control_node_id"] == child.control_node_id
+                assert unavailable["episode_id"] == child.episode_id
+                assert unavailable["graph_target"] == child.graph_target.model_dump(mode="json")
+                assert unavailable["detail"]
+            else:
+                assert index["unavailable"] == []
+        if live:
+            runs = client.get("/api/space/runs")
+            assert runs.status_code == 503
+            assert runs.json()["detail"] == index["unavailable"][0]["detail"]
+    assert any(
+        record.name == "rcp.api.index"
+        and record.levelname == "WARNING"
+        and child.graph_target.key in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_runs_keeps_archived_current_episode_projection(manifest, tmp_path, monkeypatch):

@@ -14,7 +14,20 @@ import type {
   GraphTargetRef,
   SpaceRunIndexEntry,
   WatcherRecord,
+  UnavailableExperimentLoop,
 } from "../core/types";
+
+export function unavailableExperimentTargets(
+  unavailable: UnavailableExperimentLoop[],
+): GraphTargetRef[] {
+  const targets: GraphTargetRef[] = [];
+  for (const row of unavailable) {
+    if (!targets.some((target) => sameGraphTarget(target, row.graph_target))) {
+      targets.push(row.graph_target);
+    }
+  }
+  return targets;
+}
 
 export interface ProjectHashRoute {
   projectId: string | null;
