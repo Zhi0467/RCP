@@ -16,7 +16,6 @@ from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     AgentPermissions,
-    AgentSurfaceConfig,
     ComputeConnectionConfig,
     MachineConfig,
     Manifest,
@@ -608,10 +607,12 @@ class BackupManifestAgentProfile(_StrictBackupModel):
     run_on: str
     permissions: AgentPermissions
 
-    @model_validator(mode="after")
-    def validate_profile(self) -> BackupManifestAgentProfile:
-        AgentSurfaceConfig.model_validate(self.model_dump(exclude={"profile"}))
-        return self
+    # An archive outlives the provider catalog that validated it, so a retired
+    # runtime or model stays readable; restore re-resolves the profile.
+    @field_validator("runtime", "run_on")
+    @classmethod
+    def validate_bounded_field(cls, value: str, info) -> str:
+        return _stored_text(value, label=f"backup agent {info.field_name}", maximum=200)
 
 
 class BackupManifestSources(_StrictBackupModel):
@@ -914,7 +915,7 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
 
 class BackupProjectCapture(_StrictBackupModel):
     # Legacy catalog ids are diagnostic metadata only; captured ids gate file paths.
-    project_id: str
+    project_id: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")
     home_space_id: str | None
     locator: str | None
     status: Literal["captured", "uncaptured"]

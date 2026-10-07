@@ -217,7 +217,7 @@ class BackupKeptResultViewReference(_StrictCaptureModel):
 
 class BackupSnapshotProjectInventory(_StrictCaptureModel):
     # Legacy catalog ids are diagnostic metadata only; captured ids gate file paths.
-    project_id: str
+    project_id: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")
     home_space_id: str | None
     locator: str | None
     status: Literal["capturable", "uncaptured"]
@@ -650,7 +650,7 @@ def inspect_snapshot_project_inventory(
         if not diagnostic:
             diagnostic = "no diagnostic detail"
         logger.warning(
-            "Backup capture could not inventory project %s: %s: %s",
+            "Backup capture could not inventory project %r: %s: %s",
             record.project_id,
             type(exc).__name__,
             diagnostic[:BACKUP_DIAGNOSTIC_MAX_CHARS],
