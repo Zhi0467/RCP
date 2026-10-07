@@ -24,15 +24,13 @@ from rcp.limits import (
     BACKUP_INVENTORY_MAX_ENTRIES,
     BACKUP_RECEIPT_MAX_BYTES,
 )
+from rcp.operation_ids import canonical_operation_uuid as _canonical_operation_uuid
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
     is_canonical_uuid4,
     normalized_absolute_non_root_path,
     write_all,
-)
-from rcp.server_ops._local_primitives import (
-    canonical_operation_uuid as _canonical_operation_uuid,
 )
 from rcp.server_ops._local_primitives import (
     canonical_uuid4 as _canonical_uuid4,

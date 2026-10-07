@@ -18,12 +18,12 @@ from rcp.limits import (
     PROJECT_TRANSFER_COPY_BUFFER_BYTES,
     PROJECT_TRANSFER_STABLE_READ_ATTEMPTS,
 )
+from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper.service import (
     canonical_introduction_backup_source,
     validate_canonical_introduction_backup,
 )
 from rcp.rcp_home import rcp_temp_dir
-from rcp.server_ops._local_primitives import canonical_operation_uuid
 from rcp.service import (
     ProjectService,
     canonical_chat_backup_sources,

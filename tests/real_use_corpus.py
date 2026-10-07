@@ -11,6 +11,7 @@ from rcp.api import create_app
 from rcp.artifacts import descriptor_for
 from rcp.config import MachineConfig
 from rcp.core.models import AuthorizedHuman
+from rcp.runs.chat import project_chat_question_answer
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, Artifact
 from rcp.storage.question_models import QuestionOrigin
@@ -90,7 +91,11 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
         key="comparison",
         question="Which comparison?",
     )
-    store.answer_question(question.question_id, answer="Compare both.", resolved_by=actor)
+    answered = store.answer_question(
+        question.question_id, answer="Compare both.", resolved_by=actor
+    )
+    # The answer message names its follow-up turn in canonical chat history.
+    project_chat_question_answer(service, store, answered)
     followup = store.admit_chat_question_followup(question.question_id)
     assert followup is not None
     name = "sk-learn_plot.png"

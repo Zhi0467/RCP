@@ -459,6 +459,14 @@ def _prepare_overlay_project(
         expected_revision = capture.main_head.revision
 
     configuration = capture.recovery.configuration
+    for repository in configuration.repositories:
+        # An alias names a folder inside the disposable overlay.
+        if (
+            repository.alias in {"", ".", ".."}
+            or "/" in repository.alias
+            or "\x00" in repository.alias
+        ):
+            raise CandidateRehearsalRefused("A repository alias is not a plain folder name.")
     repository_roots = {
         repository.alias: project_root / "repositories" / repository.alias
         for repository in configuration.repositories
