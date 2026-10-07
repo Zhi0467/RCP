@@ -810,19 +810,6 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
         original.chmod(0o600)
         roots = _snapshot_roots(database, data, output)
         with closing(_open_migrated_snapshot(database)) as store:
-            if local_project_copies is not None:
-                copies = output / "local-projects"
-                copies.mkdir(mode=0o700)
-                for index, root in enumerate(roots[1:]):
-                    target = copies / str(index)
-                    try:
-                        copy_live_research_tree(Path(root["live"]), target)
-                    except (OSError, shutil.Error):
-                        # An unreadable or special entry is that project's backup
-                        # problem: its capture reads the live root and warns.
-                        shutil.rmtree(target, ignore_errors=True)
-                        continue
-                    local_project_copies[root["project_id"]] = target
             captured_at = datetime.now(UTC)
             projects = tuple(
                 inspect_snapshot_project_inventory(
@@ -830,6 +817,51 @@ def _offline_prepare(request: OfflinePrepareRequest, *, online: bool) -> dict[st
                 )
                 for record in sorted(store.projects(), key=lambda item: item.project_id)
             )
+            if local_project_copies is not None:
+                copies = output / "local-projects"
+                copies.mkdir(mode=0o700)
+                siblings = ("artifacts", "views")
+                for root in roots[1:]:
+                    for sibling in siblings:
+                        source = Path(root["live"]).parent / sibling
+                        if output == source or output.is_relative_to(source):
+                            raise MaintenanceRefused("Prepared storage overlaps application state.")
+                inventories = {project.project_id: project for project in projects}
+                for index, root in enumerate(roots[1:]):
+                    live = Path(root["live"])
+                    repository = copies / str(index)
+                    target = repository / ".research"
+                    inventory = inventories.get(root["project_id"])
+                    # Kept files and result views live beside `.research`; copy only
+                    # the ones the inventory references, never whole folders.
+                    kept = (
+                        []
+                        if inventory is None
+                        else [
+                            *(
+                                ("artifacts", item.kept_filename)
+                                for item in inventory.kept_artifacts
+                            ),
+                            *(
+                                ("views", item.kept_filename)
+                                for item in inventory.kept_result_views
+                            ),
+                        ]
+                    )
+                    try:
+                        repository.mkdir(mode=0o700)
+                        copy_live_research_tree(live, target)
+                        for sibling, name in kept:
+                            (repository / sibling).mkdir(mode=0o700, exist_ok=True)
+                            copy_live_research_tree(
+                                live.parent / sibling / name, repository / sibling / name
+                            )
+                    except (OSError, shutil.Error):
+                        # An unreadable or special entry is that project's backup
+                        # problem: its capture reads the live root and warns.
+                        shutil.rmtree(repository, ignore_errors=True)
+                        continue
+                    local_project_copies[root["project_id"]] = target
             space_id, space_name = store.space_id, store.space_name
             assert space_name is not None  # Established by _open_migrated_snapshot.
         plan = inspect_app_data_capture_plan(data)
