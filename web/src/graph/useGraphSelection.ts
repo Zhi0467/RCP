@@ -536,14 +536,18 @@ export function useGraphSelection({
     dispatchExperimentSelection({ kind: "clear_focus" });
   }, []);
   const showExperiment = useCallback(
-    (nodeId: string) => {
-      replaceExactRunExperimentSelection(nodeId, "show");
-      dispatchExperimentSelection({ kind: "show", experimentId: nodeId });
+    (nodeId: string, route?: ExperimentRouteIdentity) => {
+      if (projectId && route) {
+        replaceExactExperimentRoute(projectId, route);
+      } else {
+        replaceExactRunExperimentSelection(nodeId, "show");
+        dispatchExperimentSelection({ kind: "show", experimentId: nodeId });
+      }
       setSelectedNode(null);
       setCompanionNode(null);
       changeView("execution");
     },
-    [changeView, replaceExactRunExperimentSelection],
+    [changeView, projectId, replaceExactExperimentRoute, replaceExactRunExperimentSelection],
   );
   const beginExperimentStop = useCallback((episodeId: string) => {
     setExperimentStopIds((current) => new Set(current).add(episodeId));

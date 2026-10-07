@@ -3151,7 +3151,14 @@ export default function App() {
         setExperimentStartOverlap({ projectId: project.id, loops: task.live_elsewhere });
         setNotice(null);
         setFloatingChat(null);
-        showExperiment(node.id);
+        if (!task.episode_id) throw new Error("Experiment start returned no episode.");
+        showExperiment(node.id, {
+          experiment_id: node.id,
+          episode_id: task.episode_id,
+          graph_target: task.graph_target,
+          // A human start is independent of any Auto-research parent on this branch.
+          parent_episode_id: null,
+        });
         try {
           await Promise.all([reload(), refreshEpisodes()]);
         } catch (error) {

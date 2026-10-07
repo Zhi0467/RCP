@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import ts from "typescript";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -213,4 +215,200 @@ test("start inventory includes only live same-node overlaps, including main for 
   assert.deepEqual(ids(main, false), ["branch-loop"]);
   assert.deepEqual(ids(main, true), ["main-loop", "branch-loop"]);
   assert.deepEqual(ids(branch, true), ["main-loop"]);
+});
+
+// Execute the production callbacks with their captured inputs, without mounting the whole App.
+async function callbackFromSource(path, name, scope) {
+  const source = ts.createSourceFile(
+    path,
+    await readFile(new URL(path, import.meta.url), "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name) {
+      callback = node.initializer.arguments[0];
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, name);
+  const { outputText } = ts.transpileModule(`return (${callback.getText(source)});`, {
+    compilerOptions: { target: ts.ScriptTarget.ESNext },
+  });
+  return new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+}
+
+test("the real start handler selects its returned isolated episode beside a live main loop", async () => {
+  const { experimentStartTarget, sameGraphTarget, graphTargetUrl, graphTargetFromHash } =
+    await server.ssrLoadModule("/src/core/graphTarget.ts");
+  const { experimentBoardHref } = await server.ssrLoadModule(
+    "/src/experiments/experimentBoardModel.ts",
+  );
+  const { reduceExperimentSelection } = await server.ssrLoadModule(
+    "/src/graph/useGraphSelection.ts",
+  );
+  let selection = { selectedExperimentRunId: loop.node_id, selectedExperimentRoute: null };
+  let view;
+  let href;
+  const dispatchExperimentSelection = (action) => {
+    selection = reduceExperimentSelection(selection, action);
+  };
+  const replaceExactExperimentRoute = await callbackFromSource(
+    "../src/graph/useGraphSelection.ts",
+    "replaceExactExperimentRoute",
+    {
+      window: {
+        location: { hash: "#/projects/project-one" },
+        history: {
+          replaceState(_state, _title, value) {
+            href = value;
+          },
+        },
+      },
+      graphTargetUrl,
+      graphTargetFromHash,
+      experimentBoardHref,
+      dispatchExperimentSelection,
+    },
+  );
+  const showExperiment = await callbackFromSource(
+    "../src/graph/useGraphSelection.ts",
+    "showExperiment",
+    {
+      projectId: "project-one",
+      replaceExactExperimentRoute,
+      replaceExactRunExperimentSelection() {},
+      dispatchExperimentSelection,
+      setSelectedNode() {},
+      setCompanionNode() {},
+      changeView(value) {
+        view = value;
+      },
+    },
+  );
+  const task = {
+    episode_id: "new-isolated-loop",
+    graph_target: { kind: "branch", branch_id: "new-isolated-loop" },
+    live_elsewhere: { rows: [{ episode_id: "live-main-loop", graph_target: main }], omitted: 0 },
+  };
+  let finished = 0;
+  const start = await callbackFromSource("../src/App.tsx", "startExperiment", {
+    project: {
+      id: "project-one",
+      experiment_control: { [loop.node_id]: { can_start: false, isolated_start_reasons: [] } },
+      agent_profiles: { node_chat: {} },
+      default_run_truth_scope: [],
+    },
+    isControlNode: () => true,
+    mutationsDisabled: false,
+    experimentStartRequiresSync: false,
+    canStartExperiment,
+    graphTarget: main,
+    beginTaskStart: () => () => {
+      finished += 1;
+    },
+    window: { crypto: { randomUUID: () => "fresh-chat" } },
+    runScope: [],
+    apiBase: "/api/projects/project-one",
+    graphPath: (path) => path,
+    startExperimentRun: async () => task,
+    experimentStartTarget,
+    sameGraphTarget,
+    isActiveGraph: () => true,
+    recordStartedTask() {},
+    setExperimentStartOverlap() {},
+    setNotice() {},
+    setFloatingChat() {},
+    showExperiment,
+    reload: async () => {},
+    refreshEpisodes: async () => {},
+  });
+  assert.equal(
+    await start({ id: loop.node_id, type: "experiment" }, undefined, { graph_isolation: true }),
+    task,
+  );
+  assert.deepEqual(selection.selectedExperimentRoute, {
+    experiment_id: loop.node_id,
+    episode_id: task.episode_id,
+    graph_target: task.graph_target,
+    parent_episode_id: null,
+  });
+  assert.deepEqual(parseProjectHash(href).experimentRoute, selection.selectedExperimentRoute);
+  assert.equal(view, "execution");
+  assert.equal(finished, 1);
+  // The same navigation path must retain a supplied parent, rather than infer one from the target.
+  showExperiment(loop.node_id, {
+    ...selection.selectedExperimentRoute,
+    graph_target: { kind: "branch", branch_id: "parent-run" },
+    parent_episode_id: "parent-run",
+  });
+  assert.equal(selection.selectedExperimentRoute.parent_episode_id, "parent-run");
+  assert.deepEqual(parseProjectHash(href).experimentRoute, selection.selectedExperimentRoute);
+});
+
+test("checkout identity exposes the host and every repository on cards and overlaps", () => {
+  for (const execution_host of ["worker-host", ""]) {
+    const checkout = {
+      ...loop.checkout,
+      execution_host,
+      repository_paths: ["/workspace/one", "/workspace/two"],
+    };
+    const metadata = renderToStaticMarkup(
+      React.createElement(ExperimentLoopMetadata, {
+        projectId: "project-one",
+        metadata: { ...loop, checkout },
+      }),
+    );
+    const overlap = renderToStaticMarkup(
+      React.createElement(ExperimentStartOverlap, {
+        projectId: "project-one",
+        loops: { rows: [{ ...loop, checkout, started_by: { kind: "human" } }], omitted: 0 },
+      }),
+    );
+    const title = (html) => html.match(/data-checkout-kind="worktree" title="([^"]+)"/)[1];
+    assert.equal(title(metadata), title(overlap));
+    const [host, ...paths] = title(overlap).split(" · ");
+    assert.ok(host.length > 0);
+    if (execution_host) assert.equal(host, execution_host);
+    assert.deepEqual(paths, checkout.repository_paths);
+  }
+});
+
+test("branch badges abbreviate ids, preserve full titles, and share overlap rendering", async () => {
+  const { ExperimentBranchBadge } = await server.ssrLoadModule(
+    "/src/experiments/ExperimentBranchBadge.tsx",
+  );
+  const id = "12345678-1234-1234-1234-123456789abc";
+  const target = { kind: "branch", branch_id: id };
+  const render = (autoResearchEpisodeId) =>
+    renderToStaticMarkup(
+      React.createElement(ExperimentBranchBadge, { target, autoResearchEpisodeId }),
+    );
+  const ordinary = render(null);
+  const auto = render(id);
+  assert.ok(ordinary.includes(`title="${id}"`));
+  assert.ok(auto.includes(`title="${id}"`));
+  const label = (html) => html.match(/<span>([^<]+)<\/span>/)[1];
+  assert.equal(label(ordinary), id.slice(0, 8));
+  assert.ok(label(auto).endsWith(id.slice(0, 8)));
+  assert.ok(!label(auto).includes(id));
+  assert.notEqual(label(auto), label(ordinary));
+  assert.equal(render("different-parent"), ordinary);
+  const html = renderToStaticMarkup(
+    React.createElement(ExperimentStartOverlap, {
+      projectId: "project-one",
+      loops: {
+        rows: [{ ...loop, graph_target: target, started_by: { kind: "auto_research", id } }],
+        omitted: 0,
+      },
+    }),
+  );
+  assert.ok(html.includes(auto));
+  assert.match(
+    renderToStaticMarkup(React.createElement(ExperimentBranchBadge, { target: main })),
+    /class="status-pill experiment-branch-badge"[^>]*data-graph-target-kind="main"/,
+  );
 });

@@ -1,3 +1,4 @@
+import { ExperimentCheckout } from "./ExperimentCheckout";
 import type { AuthorizedHuman, EpisodeLoopMetadata } from "../core/types";
 import { experimentBoardHref, AUTO_RESEARCH_ROUTE_PREFIX } from "./experimentBoardModel";
 
@@ -41,22 +42,7 @@ export function ExperimentLoopMetadata({
           )}
         </span>
       )}
-      <span
-        className="experiment-checkout"
-        data-checkout-kind={checkout?.kind ?? "unknown"}
-        title={
-          checkout
-            ? [
-                checkout.execution_host === ""
-                  ? "local"
-                  : (checkout.execution_host ?? "Unknown host"),
-                ...checkout.repository_paths,
-              ].join(" · ")
-            : undefined
-        }
-      >
-        Checkout: {checkout?.kind ?? "unknown"}
-      </span>
+      <ExperimentCheckout checkout={checkout} />
     </>
   );
 }

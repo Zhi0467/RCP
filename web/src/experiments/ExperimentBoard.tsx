@@ -143,7 +143,10 @@ function ExperimentRows({
                     <WifiOff size={12} aria-hidden="true" /> Unavailable
                   </span>
                 )}
-                <ExperimentBranchBadge target={entry.graph_target} />
+                <ExperimentBranchBadge
+                  target={entry.graph_target}
+                  autoResearchEpisodeId={entry.parent_episode_id}
+                />
                 <time dateTime={lastActivityAt ?? undefined}>{formatActivity(lastActivityAt)}</time>
               </span>
               <ChevronRight className="experiment-board-row-arrow" size={16} aria-hidden="true" />

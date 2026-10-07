@@ -1581,7 +1581,10 @@ export function ExecutionView({
                 <time dateTime={episode.created_at}>
                   {formatEpisodeTimestamp(episode.created_at)}
                 </time>
-                <ExperimentBranchBadge target={episode.graph_target} />
+                <ExperimentBranchBadge
+                  target={episode.graph_target}
+                  autoResearchEpisodeId={episode.auto_research_parent_episode_id}
+                />
                 <ExperimentLoopMetadata
                   projectId={episode.project_id}
                   metadata={episode}
@@ -1791,7 +1794,10 @@ function ExperimentEpisodeCard({
           <span className="campaign-run-meta">
             <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
-            <ExperimentBranchBadge target={episode.graph_target} />
+            <ExperimentBranchBadge
+              target={episode.graph_target}
+              autoResearchEpisodeId={episode.auto_research_parent_episode_id}
+            />
             <ExperimentLoopMetadata
               projectId={episode.project_id}
               metadata={episode}
