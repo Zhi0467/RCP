@@ -1128,6 +1128,34 @@
   line-height: 1;
   margin-top: 10px;
 }
+/* Phone: the Inbox counts share one compact row, so the page's work starts
+   near the top. The extra selector weight outranks the tablet rules in
+   09-workspace.css and 10-settings.css, which load later. */
+@media (max-width: 560px) {
+  .view-panel > .attention-overview-grid {
+    gap: 6px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .attention-overview-grid > .overview-card {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    justify-content: space-between;
+    min-height: 0;
+    padding: 7px 9px;
+  }
+  .attention-overview-grid > .overview-card > .eyebrow {
+    font-size: var(--type-3xs);
+    letter-spacing: 0.04em;
+    line-height: 1.25;
+    min-width: 0;
+  }
+  .attention-overview-grid > .overview-card > strong {
+    flex: none;
+    font-size: var(--type-xl);
+    margin-top: 0;
+  }
+}
 .section-label {
   color: var(--muted);
   font-size: var(--type-3xs);

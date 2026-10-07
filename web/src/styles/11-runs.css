@@ -181,6 +181,68 @@
 .provider-login-notice p {
   margin: 0;
 }
+/* CompactNotice: wider screens lay the body out as before and never show the
+   disclosure. */
+.compact-notice-toggle {
+  display: none;
+}
+.compact-notice-body {
+  display: contents;
+}
+/* Phone: each notice collapses to one summary line that expands in place,
+   so stacked notices do not push the page's work below the fold. */
+@media (max-width: 560px) {
+  .provider-login-notice:has(> .compact-notice-toggle) {
+    gap: 0;
+    margin-bottom: 10px;
+    padding: 0;
+  }
+  .compact-notice-toggle {
+    align-items: center;
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: var(--type-sm);
+    font-weight: 600;
+    gap: 8px;
+    min-height: 40px;
+    padding: 6px 12px;
+    text-align: left;
+    width: 100%;
+  }
+  .compact-notice-toggle > span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .compact-notice-toggle > svg {
+    flex: none;
+  }
+  .compact-notice-toggle[aria-expanded="true"] > svg:last-child {
+    transform: rotate(180deg);
+  }
+  .compact-notice-toggle:focus-visible {
+    outline: 2px solid var(--cobalt);
+    outline-offset: -2px;
+  }
+  .compact-notice-body {
+    display: none;
+  }
+  .compact-notice-body[data-expanded="true"] {
+    display: grid;
+    gap: 8px;
+    justify-items: start;
+    padding: 0 12px 10px;
+  }
+  .compact-notice-body ~ [role="alert"] {
+    padding: 0 12px 10px;
+  }
+}
 .provider-login-settings > header,
 .transcription-settings > header {
   align-items: center;

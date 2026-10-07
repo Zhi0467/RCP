@@ -356,4 +356,24 @@
   :root :is(.phone-project-menu > .button, .phone-project-menu > .icon-button):active {
     background: var(--paper-deep);
   }
+  /* The Overview revision is one small line, not a display number. */
+  .overview-page > .overview-heading {
+    padding: 0 6px 8px;
+  }
+  .overview-heading > .overview-revision {
+    align-items: baseline;
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+  }
+  .overview-heading > .overview-revision span {
+    font-size: var(--type-3xs);
+  }
+  .overview-heading > .overview-revision strong {
+    font-family: inherit;
+    font-size: var(--type-xs);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    margin: 0;
+  }
 }

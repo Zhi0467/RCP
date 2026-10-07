@@ -78,7 +78,9 @@ project control, each a labelled row. The bottom bar shows Overview, Inbox,
 Research, and Runs, with the remaining destinations under **More**, which reads
 as active while one of them is open. **Ask** is a floating button above the tab
 bar, absent in Agents, whose composer is already the way to ask. Status banners
-shrink to one line.
+shrink to one line; provider sign-in and compute-route notices collapse to a
+one-line summary that expands in place, keeping any failed check's alert
+visible; Inbox counts share one row; and the Overview revision is one small line.
 
 Glossary definitions appear inline where terms are read. Glossary has no
 navigation destination. Graph-writing agents add or revise the definitions through
