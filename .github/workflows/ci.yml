@@ -27,8 +27,11 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # Every setup-uv step pins uv to the version docs/server.md installs on
+      # servers; unpinned, setup-uv takes the newest uv on each run.
       - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.7"
           enable-cache: true
           python-version: "3.11"
       # The hooks shell out to `uv run ruff` and `npm --prefix web exec prettier`,
@@ -56,6 +59,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.7"
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       # web/dist is gitignored and the app serves it when present; the suite has a
@@ -105,6 +109,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.7"
           enable-cache: true
           python-version: "3.12"
       - run: npm --prefix web ci
@@ -136,6 +141,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.7"
           enable-cache: true
           python-version: "3.12"
       - run: npm --prefix web ci
@@ -166,6 +172,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.7"
           enable-cache: true
           python-version: "3.12"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -260,6 +267,7 @@ jobs:
       # Python renderer through `uv run`, so the web job needs the package too.
       - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: "0.12.7"
           enable-cache: true
           python-version: "3.12"
       - run: npm --prefix web ci
