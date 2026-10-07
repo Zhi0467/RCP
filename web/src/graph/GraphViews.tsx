@@ -1130,6 +1130,7 @@ interface ExecutionProps {
   watchers: WatcherRecord[];
   experimentControl: Record<string, ExperimentControlState>;
   experimentEntries?: ExperimentLoopIndexEntry[];
+  experimentEntriesLoaded?: boolean;
   exactExperimentRoute?: ExperimentRouteIdentity | null;
   exactExperimentEntry?: ExperimentLoopIndexEntry | null;
   selectedExperimentId: string | null;
@@ -1182,6 +1183,7 @@ export function ExecutionView({
   watchers,
   experimentControl,
   experimentEntries = [],
+  experimentEntriesLoaded = true,
   exactExperimentRoute = null,
   exactExperimentEntry = null,
   selectedExperimentId,
@@ -1226,6 +1228,7 @@ export function ExecutionView({
   const focusedAutoResearchEpisodeId = useRef<string | null>(null);
   const staleMainRoute =
     exactExperimentRoute?.graph_target.kind === "main" &&
+    (graphTarget.kind === "main" || experimentEntriesLoaded) &&
     !mainExperimentRouteMatchesControl(
       exactExperimentRoute,
       graphTarget.kind === "main"
@@ -1352,13 +1355,19 @@ export function ExecutionView({
   }, [requestedEpisodeId, requestedEpisodeArchived]);
 
   useEffect(() => {
-    if (staleMainRoute || !focusExperimentId || focusExperimentId !== selectedExperimentId) {
+    if (
+      staleMainRoute ||
+      !experimentEntriesLoaded ||
+      !focusExperimentId ||
+      focusExperimentId !== selectedExperimentId
+    ) {
       return;
     }
     selectedDetailRef.current?.focus();
     onDetailFocused();
   }, [
     staleMainRoute,
+    experimentEntriesLoaded,
     focusExperimentId,
     onDetailFocused,
     selectedExperimentId,
@@ -1405,6 +1414,11 @@ export function ExecutionView({
           Show archived
         </label>
       </div>
+      {!experimentEntriesLoaded && (
+        <div className="run-route-loading" role="status" aria-busy="true">
+          Loading Experiment loops…
+        </div>
+      )}
       {staleMainRoute && (
         <div className="run-route-history" role="status">
           <strong>The requested Experiment episode is now in History.</strong>
@@ -1756,16 +1770,12 @@ function ExperimentEpisodeCard({
             const next = !expanded;
             setExpanded(next);
             if (next) {
-              if (episode.graph_target.kind === "main") {
-                onSelectExperiment(run.node.id);
-              } else {
-                onSelectExperiment(run.node.id, {
-                  experiment_id: run.node.id,
-                  episode_id: episode.episode_id,
-                  graph_target: episode.graph_target,
-                  parent_episode_id: indexedEntry?.parent_episode_id ?? null,
-                });
-              }
+              onSelectExperiment(run.node.id, {
+                experiment_id: run.node.id,
+                episode_id: episode.episode_id,
+                graph_target: episode.graph_target,
+                parent_episode_id: indexedEntry?.parent_episode_id ?? null,
+              });
             } else if (selected) {
               onSelectExperiment(null);
             }

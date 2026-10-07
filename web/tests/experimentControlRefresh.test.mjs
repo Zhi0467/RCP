@@ -158,14 +158,14 @@ test("branch polling retains all-target watchers and tasks while scoping the gra
   const result = await loadExperimentWatcherPoll(
     async (path) => {
       requested.push(path);
-      return path.endsWith("/watchers") ? watchers : {};
+      return new URL(path, "http://localhost").pathname.endsWith("/watchers") ? watchers : {};
     },
     base,
     { kind: "branch", branch_id: "episode-branch" },
   );
   assert.deepEqual(result.watchers, watchers);
   assert.deepEqual(requested, [
-    `${base}/watchers`,
+    `${base}/watchers?all_targets=true&branch_id=episode-branch`,
     `${base}/tasks`,
     `${base}?branch_id=episode-branch`,
   ]);

@@ -1432,8 +1432,14 @@ test("every target view keeps all same-node cards and scopes selection and busy 
         assert.equal(projection.experimentControl[experiment.id], selected.control);
         assert.equal(projection.staleMainRoute, null);
       }
+      let renderedView;
+      const selections = [];
+      function CaptureView(props) {
+        renderedView = ExecutionView(props);
+        return renderedView;
+      }
       const html = renderToStaticMarkup(
-        React.createElement(ExecutionView, {
+        React.createElement(CaptureView, {
           graph: { nodes: { [experiment.id]: experiment }, edges: {} },
           episodes: entries.map((item) => item.episode),
           episodeAction: null,
@@ -1461,7 +1467,9 @@ test("every target view keeps all same-node cards and scopes selection and busy 
           onSendEpisodeMessage() {},
           onOperateEpisodeTask() {},
           onSwitchEpisodeProvider() {},
-          onSelectExperiment() {},
+          onSelectExperiment(nodeId, exactRoute) {
+            selections.push([nodeId, exactRoute]);
+          },
           onOpenExperimentEntry() {},
           onDetailFocused() {},
           onOpenHistory() {},
@@ -1474,6 +1482,31 @@ test("every target view keeps all same-node cards and scopes selection and busy 
           episodeReportHref: () => "#",
         }),
       );
+      // Invoke the real collapsed card's click handler, using React's SSR renderer
+      // to keep hooks valid. The browser case covers effects, focus, and rerendering.
+      const cardElement = findElement(
+        renderedView,
+        (element) =>
+          element.props.run && element.props.episode?.episode_id === selected.episode.episode_id,
+      );
+      assert.ok(cardElement);
+      let renderedCard;
+      function CaptureCard() {
+        renderedCard = cardElement.type({
+          ...cardElement.props,
+          initiallyExpanded: false,
+          selected: false,
+        });
+        return renderedCard;
+      }
+      renderToStaticMarkup(React.createElement(CaptureCard));
+      const toggle = findElement(
+        renderedCard,
+        (element) => element.props.className === "campaign-run-toggle",
+      );
+      assert.equal(toggle.props["aria-expanded"], false);
+      toggle.props.onClick();
+      assert.deepEqual(selections, [[experiment.id, route]]);
       const cards = [
         ...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g),
       ];
@@ -1509,4 +1542,83 @@ test("every target view keeps all same-node cards and scopes selection and busy 
         }
       }
     }
+});
+
+function findElement(tree, predicate) {
+  if (Array.isArray(tree)) {
+    for (const child of tree) {
+      const match = findElement(child, predicate);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (!React.isValidElement(tree)) return null;
+  return predicate(tree) ? tree : findElement(tree.props.children, predicate);
+}
+
+test("a branch view waits for the loop index before classifying a main route as history", () => {
+  const experiment = node("experiment/shared", "active");
+  const mainEpisode = episode({
+    episode_id: "main-episode",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+  });
+  const branchEpisode = episode({
+    episode_id: "branch-episode",
+    control_node_id: experiment.id,
+    graph_target: { kind: "branch", branch_id: "branch-one" },
+  });
+  const mainEntry = entry(
+    experiment.id,
+    "active",
+    control({
+      episode_id: mainEpisode.episode_id,
+      episode: mainEpisode,
+    }),
+  );
+  const route = {
+    experiment_id: experiment.id,
+    episode_id: mainEpisode.episode_id,
+    graph_target: mainEpisode.graph_target,
+    parent_episode_id: null,
+  };
+  for (const [loaded, entries] of [
+    [false, []],
+    [true, [mainEntry]],
+    [true, []],
+  ]) {
+    const html = renderToStaticMarkup(
+      React.createElement(ExecutionView, {
+        graph: { nodes: { [experiment.id]: experiment }, edges: {} },
+        graphTarget: branchEpisode.graph_target,
+        episodes: [mainEpisode, branchEpisode],
+        tasks: [],
+        watchers: [],
+        experimentControl: {
+          [experiment.id]: control({
+            episode_id: branchEpisode.episode_id,
+            episode: branchEpisode,
+          }),
+        },
+        experimentEntries: entries,
+        experimentEntriesLoaded: loaded,
+        exactExperimentRoute: route,
+        selectedExperimentId: experiment.id,
+        stopBusyIds: new Set(),
+        selectedExperimentConversation: React.createElement("div", {
+          "data-selected-episode": mainEpisode.episode_id,
+        }),
+        episodeReportHref: () => "#",
+      }),
+    );
+    assert.equal(html.includes('class="run-route-history"'), loaded && entries.length === 0);
+    assert.equal(
+      html.includes('class="run-route-loading" role="status" aria-busy="true"'),
+      !loaded,
+    );
+    assert.equal(
+      html.includes('data-selected-episode="main-episode"'),
+      loaded && entries.length > 0,
+    );
+  }
 });

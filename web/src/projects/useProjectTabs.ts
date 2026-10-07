@@ -163,6 +163,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
   const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
+  const [experimentLoopLoadedProjects, setExperimentLoopLoadedProjects] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [spaceRuns, setSpaceRuns] = useState<SpaceRunIndexEntry[]>([]);
   const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
     readProjectHeaderCollapsed(initialProjectId),
@@ -187,12 +190,21 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     setProjects(nextProjects);
   }, []);
   const refreshExperimentLoops = useCallback(async () => {
+    const requestedProjectId = activeProjectId.current;
     const refreshGeneration = ++experimentLoopRefreshGeneration.current;
     const nextEntries = await loadExperimentEpisodes();
     if (
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
       setExperimentLoops(nextEntries);
+      setExperimentLoopLoadedProjects(
+        (current) =>
+          new Set([
+            ...current,
+            ...nextEntries.map((entry) => entry.project_id),
+            ...(requestedProjectId ? [requestedProjectId] : []),
+          ]),
+      );
     }
     return nextEntries;
   }, []);
@@ -205,6 +217,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       setExperimentLoops((current) =>
         mergeProjectExperimentLoops(current, requestedProjectId, nextEntries),
       );
+      setExperimentLoopLoadedProjects((current) => new Set([...current, requestedProjectId]));
     }
     return nextEntries;
   }, []);
@@ -446,6 +459,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     projects,
     openProjectTabs,
     experimentLoops,
+    experimentLoopsLoaded: projectId !== null && experimentLoopLoadedProjects.has(projectId),
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,

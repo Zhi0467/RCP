@@ -324,6 +324,7 @@ import {
   loadGraphRevision,
   openProjectSequence,
   projectIsStillReadable,
+  projectWatchersPath,
   projectWithTransitionProjection,
   reconcileInactiveProjectTabState,
 } from "./projectSnapshot";
@@ -652,6 +653,7 @@ export default function App() {
     projects,
     openProjectTabs,
     experimentLoops,
+    experimentLoopsLoaded,
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
@@ -1144,9 +1146,11 @@ export default function App() {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
           if (responseIsCurrent()) setUsage(null);
         });
-      const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
-        if (responseIsCurrent()) setWatchers(nextWatchers);
-      });
+      const watchersRequest = api<WatcherRecord[]>(projectWatchersPath(base, graphTarget)).then(
+        (nextWatchers) => {
+          if (responseIsCurrent()) setWatchers(nextWatchers);
+        },
+      );
       const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
         if (responseIsCurrent()) {
           setNotice({
@@ -1166,6 +1170,7 @@ export default function App() {
     [
       applyProjectSnapshot,
       graphPath,
+      graphTarget,
       isActiveGraph,
       beginProjectSnapshotRequest,
       projectId,
@@ -2621,7 +2626,7 @@ export default function App() {
         ) {
           try {
             const nextWatchers = await api<WatcherRecord[]>(
-              `/api/projects/${encodeURIComponent(projectId)}/watchers`,
+              projectWatchersPath(`/api/projects/${encodeURIComponent(projectId)}`, graphTarget),
             );
             if (!stopped) setWatchers(nextWatchers);
           } catch (error) {
@@ -3025,7 +3030,7 @@ export default function App() {
       await api<WatcherRecord>(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, {
         method: "POST",
       });
-      const nextWatchers = await api<WatcherRecord[]>(`${apiBase}/watchers`);
+      const nextWatchers = await api<WatcherRecord[]>(projectWatchersPath(apiBase, graphTarget));
       if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
       // Retiring an observer can release an Experiment that was held shut by it,
       // so the control projection is re-read here rather than waiting for a poll.
@@ -4880,6 +4885,7 @@ export default function App() {
                 tasks={projectTasks}
                 watchers={watchers}
                 experimentControl={presentedExperimentControl}
+                experimentEntriesLoaded={experimentLoopsLoaded}
                 experimentEntries={experimentLoops.filter(
                   (entry) => entry.project_id === project.id,
                 )}

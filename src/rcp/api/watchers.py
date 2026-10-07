@@ -38,6 +38,7 @@ WatcherPollerDependency = Annotated[WatcherPoller, Depends(get_watcher_poller)]
 def project_watchers(
     project_id: str,
     branch_id: str | None = None,
+    all_targets: bool = False,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -52,7 +53,8 @@ def project_watchers(
     # projection groups them by Experiment node, which main and its branches
     # share. Resolving the displayed target keeps this action off a row that
     # belongs to another one, where retiring it would fence a delivery this view
-    # never owned.
+    # never owned. ``all_targets`` lists every row for a branch view too, whose
+    # Runs cards show other targets' loops, while the action stays scoped.
     displayed = target or GraphTargetRef()
     unended_episodes: dict[str, bool] = {}
     return [
@@ -64,7 +66,7 @@ def project_watchers(
             ),
         )
         for record in store.watchers(catalog.resolve_project_id(project_id))
-        if target is None or record.graph_target == target
+        if target is None or all_targets or record.graph_target == target
     ]
 
 
