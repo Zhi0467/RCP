@@ -76,6 +76,8 @@ interface Props {
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
   experimentEntries?: ExperimentLoopIndexEntry[];
+  /** False until the project's loop inventory has loaded at least once. */
+  experimentEntriesLoaded?: boolean;
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   decisionChoiceStaged?: boolean;
@@ -150,6 +152,7 @@ export function DetailDrawer({
   canonicalStanding = node.standing,
   experimentControl = null,
   experimentEntries = [],
+  experimentEntriesLoaded = true,
   experimentRunDisabled = false,
   experimentRunBusy = false,
   decisionChoiceStaged = false,
@@ -600,7 +603,12 @@ export function DetailDrawer({
                 <section
                   className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
                 >
-                  {projectId && (
+                  {projectId && !experimentEntriesLoaded && (
+                    <p className="experiment-overlap-loading" role="status" aria-busy="true">
+                      Checking other live loops…
+                    </p>
+                  )}
+                  {projectId && experimentEntriesLoaded && (
                     <ExperimentStartOverlap
                       projectId={projectId}
                       loops={experimentStartOverlap(
@@ -642,6 +650,8 @@ export function DetailDrawer({
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
+                        // Overlap never blocks Run; Run waits only until it is known.
+                        !experimentEntriesLoaded ||
                         !canStartExperiment(
                           experimentControl,
                           graphTarget,

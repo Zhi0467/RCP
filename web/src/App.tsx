@@ -5103,6 +5103,7 @@ export default function App() {
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
             experimentEntries={experimentLoops}
+            experimentEntriesLoaded={experimentLoopsLoaded}
             experimentRunDisabled={experimentStartRequiresSync}
             experimentRunBusy={taskStarting}
             decisionChoiceStaged={Boolean(

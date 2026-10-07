@@ -266,10 +266,10 @@ test("a never-run Experiment shows only its next episode limit", () => {
   };
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
-  let html;
-  try {
-    html = renderToStaticMarkup(
+  const render = (extra = {}) =>
+    renderToStaticMarkup(
       React.createElement(DetailDrawer, {
+        ...extra,
         node,
         edges: [],
         allNodes: { [node.id]: node },
@@ -300,6 +300,11 @@ test("a never-run Experiment shows only its next episode limit", () => {
         onSelectNode() {},
       }),
     );
+  let html;
+  let loading;
+  try {
+    html = render();
+    loading = render({ projectId: "project-one", experimentEntriesLoaded: false });
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -312,6 +317,12 @@ test("a never-run Experiment shows only its next episode limit", () => {
   )?.[0];
   assert.ok(startButton);
   assert.doesNotMatch(startButton, /\bdisabled(?:=|\s|>)/);
+  // Run waits until the live-loop inventory is known, so overlap is shown before submit.
+  const waiting = loading.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.match(waiting, /\bdisabled(?:=|\s|>)/);
+  assert.match(loading, /role="status" aria-busy="true"/);
 });
 
 test("an invocation-limited episode offers a new episode for its pending watcher", () => {
