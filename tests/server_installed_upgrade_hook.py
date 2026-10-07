@@ -90,6 +90,18 @@ def install_hooks() -> None:
         runtime_initialize(self, replace(paths, port=18421), **kwargs)
 
     SystemRuntime.__init__ = initialize_runtime
+    enter_maintenance = SystemRuntime.enter_maintenance
+
+    def retain_maintenance_capture(self, operation):
+        capture = enter_maintenance(self, operation)
+        retained = ROOT / "maintenance-capture.json"
+        retained.unlink(missing_ok=True)
+        receipt = Path(capture["receipt_path"])
+        if receipt.is_file():
+            retained.write_bytes(receipt.read_bytes())
+        return capture
+
+    SystemRuntime.enter_maintenance = retain_maintenance_capture
     original = Coordinator.__init__
 
     def initialize(self, *args, **kwargs):

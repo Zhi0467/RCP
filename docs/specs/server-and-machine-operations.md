@@ -621,7 +621,9 @@ owners, drains entered work (running agent turns get up to two hours to
 finish; the update refuses cleanly after that), then returns a SQLite capture bound to that
 quiescent boundary. The candidate's thin `inventory` command projects the roots
 from backup's captured registration receipt using `_project_restore_location`,
-shared with preparation; it does not reread SQLite or parse manifests separately.
+shared with preparation. The target release re-inspects projects the outgoing
+release could not inventory, using the captured SQLite snapshot; preparation
+binds its project-file capture and application proof to that target inventory.
 Before service stop, supervisor `check-space` reports an advisory estimate of
 allocated bytes and inodes against free space on each destination filesystem,
 with one margin. Copy and sync errors, rather than a size or entry ceiling,

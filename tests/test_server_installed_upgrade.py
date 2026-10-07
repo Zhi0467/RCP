@@ -87,11 +87,20 @@ def test_installed_fault_observes_real_snapshot_and_exact_restore(tmp_path, monk
     # Restore instrumentation after the test; these are the only production hooks.
     monkeypatch.setattr(driver, "followed_release", driver.followed_release)
     monkeypatch.setattr(Coordinator, "__init__", Coordinator.__init__)
+    receipt = tmp_path / "sqlite-capture.json"
+    receipt.write_text('{"projects": []}')
+    monkeypatch.setattr(
+        SystemRuntime,
+        "enter_maintenance",
+        lambda self, operation: {"receipt_path": str(receipt)},
+    )
     monkeypatch.setattr(
         SystemRuntime, "__init__", lambda self, paths, **kwargs: setattr(self, "paths", paths)
     )
     hook.install_hooks()
     runtime = SystemRuntime(Paths(data_dir=tmp_path / "data"))
+    assert runtime.enter_maintenance({}) == {"receipt_path": str(receipt)}
+    assert (tmp_path / "maintenance-capture.json").read_bytes() == receipt.read_bytes()
     assert runtime.paths.port == installed.PORT and runtime.paths.port != 8421
     data = runtime.paths.data_dir
     for relative in (

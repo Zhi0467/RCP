@@ -29,7 +29,10 @@ import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.core.models import GraphState, upgrade_graph_projection
 from rcp.server_ops.application_validation import _canonical_sha256
-from rcp.server_ops.backup_capture import BackupCaptureCoordinator
+from rcp.server_ops.backup_capture import (
+    BackupCaptureCoordinator,
+    read_backup_sqlite_capture_receipt,
+)
 from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
 from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
 from rcp.server_ops.deployment import (
@@ -47,6 +50,7 @@ from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
 from tests.helpers import isolated_template_build, reset_from_template, signed_in_client
+from tests.server_installed_upgrade import seed_turn_artifact
 from tests.supervisor_reboot_build import MIGRATION_TABLE, add_forward_migration
 from tests.supervisor_reboot_data import prepare_data
 
@@ -132,6 +136,88 @@ def _tree_state(root: Path) -> dict:
                 contents,
             )
     return entries
+
+
+def capture_outgoing_keep(captured, monkeypatch, *, malformed=False):
+    request, state, metadata = captured
+    data = Path(request.data_dir)
+    artifact = seed_turn_artifact(data, state, "outgoing")
+    with closing(AppStore(data / "rcp.sqlite3")) as store:
+        kept = store.keep_artifact(artifact["artifact_id"])
+        store.mark_agent_artifact_kept(
+            artifact["operation_id"], artifact["artifact_id"], kept_at=kept.kept_at
+        )
+        if malformed:
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET result_json = json_set("
+                    "result_json, '$.artifacts[0].kept_at', NULL, "
+                    "'$.artifacts[0].kept_filename', 'broken.html') WHERE operation_id = ?",
+                    (artifact["operation_id"],),
+                )
+
+        def old_reader(*args):
+            raise ValueError("Outgoing reader rejects the kept binding.")
+
+        with monkeypatch.context() as outgoing:
+            outgoing.setattr("rcp.server_ops.backup_capture._kept_artifact_references", old_reader)
+            capture = BackupCaptureCoordinator(store, data, metadata).capture_sqlite()
+    assert capture.receipt.projects[0].status == "uncaptured"
+    return request.model_copy(
+        update={
+            "sqlite_receipt_path": str(capture.receipt_path),
+            "sqlite_receipt_sha256": capture.receipt_sha256,
+        }
+    )
+
+
+def test_target_preparation_rejudges_outgoing_inventory_and_binds_its_proof(
+    captured, monkeypatch, tmp_path
+):
+    request = capture_outgoing_keep(captured, monkeypatch)
+    roots = {request.data_dir, captured[1]["research"]}
+    discovered = inventory(request)
+    assert {root["live"] for root in discovered["roots"]} == roots
+    checkpoint = create_stopped_snapshot(
+        tmp_path / "checkpoint",
+        tuple(Path(root["live"]) for root in discovered["roots"]),
+        boundary_sha256="d" * 64,
+    )
+    saved = json.loads((checkpoint.directory / "checkpoint.json").read_text())
+    assert {root["live"] for root in saved["roots"]} == roots
+    prepared = prepare(request)
+    assert {root["live"] for root in prepared["roots"]} == roots
+    proof = ApplicationProof.model_validate_json(Path(prepared["proof_path"]).read_bytes())
+    target = read_backup_sqlite_capture_receipt(
+        Path(proof.capture_root) / "sqlite-capture.json",
+        expected_sha256=proof.sqlite_receipt_sha256,
+    )
+    assert target == proof.sqlite_receipt
+    assert target.projects[0].status == "capturable"
+    assert proof.project_receipt.projects[0].status == "captured"
+    assert proof.project_receipt.sqlite_receipt_sha256 == proof.sqlite_receipt_sha256
+    assert proof.sqlite_receipt_sha256 != request.sqlite_receipt_sha256
+    original = read_backup_sqlite_capture_receipt(
+        Path(request.sqlite_receipt_path), expected_sha256=request.sqlite_receipt_sha256
+    )
+    assert original.projects[0].status == "uncaptured"
+    validate(
+        ValidateRequest(
+            version=1,
+            proof_path=prepared["proof_path"],
+            proof_sha256=prepared["proof_sha256"],
+            output_dir=str(tmp_path / "candidate-check"),
+        )
+    )
+
+
+def test_target_preparation_still_refuses_uncapturable_kept_binding(captured, monkeypatch):
+    request = capture_outgoing_keep(captured, monkeypatch, malformed=True)
+    with pytest.raises(MaintenanceRefused, match="unresolved project"):
+        inventory(request)
+    with pytest.raises(MaintenanceRefused, match="local project root could not be captured"):
+        prepare(request)
+    assert not (Path(request.output_dir) / "application-proof.json").exists()
 
 
 @pytest.mark.parametrize("failure", ["prepare", "verification"])

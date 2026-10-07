@@ -479,9 +479,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         cookie=cookie,
     ) as response:
         assert response.status == 200
-    service([old_python, "-I", str(SCRIPT), "seed-base-artifact"])
-    base_artifact = json.loads((ROOT / "state/base-artifact.json").read_text())
-    keep_artifact(fixture, base_artifact)
     assert_serves(fixture, selected["version_string"])
     destination = Path("/var/backups/rcp-installed-upgrade")
     destination.mkdir(mode=0o700)
@@ -530,8 +527,22 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert_serves(fixture, selected["version_string"])
     service([old_python, "-I", str(SCRIPT), "scratch-check"])
     backup()
+    service([old_python, "-I", str(SCRIPT), "seed-base-artifact"])
+    base_artifact = json.loads((ROOT / "state/base-artifact.json").read_text())
+    keep_artifact(fixture, base_artifact)
     select(candidate, observe=True)
     operator("update", "--confirm-target", confirmation)
+    maintenance_receipt = ROOT / "maintenance-capture.json"
+    base_kept_project_uncaptured = "unknown"
+    if maintenance_receipt.is_file():
+        base_kept_project_uncaptured = next(
+            (
+                project["status"] == "uncaptured"
+                for project in json.loads(maintenance_receipt.read_text())["projects"]
+                if project["project_id"] == fixture["project_id"]
+            ),
+            "unknown",
+        )
     records = [
         json.loads(path.read_text())
         for path in Path("/etc/rcp/supervisor/operations").glob("*.json")
@@ -595,6 +606,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             "candidate_version": version,
             "backup_after_rollback": "protected",
             "kept_artifacts": {"base": base_artifact, "candidate": candidate_artifact},
+            "base_maintenance_kept_project_uncaptured": base_kept_project_uncaptured,
             "backup_after_candidate_keep": "protected",
             "port": PORT,
         },

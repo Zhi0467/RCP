@@ -655,6 +655,45 @@ def inspect_snapshot_project_inventory(
     )
 
 
+def reinspect_uncaptured_projects(
+    receipt: BackupSQLiteCaptureReceipt,
+) -> BackupSQLiteCaptureReceipt:
+    """Let update preparation judge outgoing inventory failures from captured data.
+
+    Backups retain their original verdict. Preparation publishes this inventory
+    as a separate receipt before binding project files and application proofs.
+    """
+    if all(project.status == "capturable" for project in receipt.projects):
+        return receipt
+    validate_backup_sqlite_snapshot(receipt)
+    with closing(AppStore.open_read_only_snapshot(Path(receipt.snapshot_path))) as store:
+        records = {record.project_id: record for record in store.projects()}
+        if set(records) != {project.project_id for project in receipt.projects}:
+            raise BackupCaptureUnavailable("The SQLite snapshot project inventory differs.")
+        projects = tuple(
+            inspect_snapshot_project_inventory(
+                store,
+                records[project.project_id],
+                data_dir=Path(receipt.app_data_plan.data_dir),
+                captured_at=receipt.captured_at,
+            )
+            if project.status == "uncaptured"
+            else project
+            for project in receipt.projects
+        )
+    return BackupSQLiteCaptureReceipt.model_validate(
+        receipt.model_copy(
+            update={
+                "projects": projects,
+                "status": "partial"
+                if not receipt.app_data_plan.complete
+                or any(project.status == "uncaptured" for project in projects)
+                else "complete",
+            }
+        )
+    )
+
+
 def _kept_artifact_references(
     tasks,
     unresolved_revisions,
