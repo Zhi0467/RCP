@@ -503,6 +503,9 @@
   background: color-mix(in srgb, var(--sheet) 75%, var(--paper));
   border: 1px solid var(--line);
   border-radius: 8px;
+  /* Node cards lift above their edge labels with z-index; keep that layer
+     inside the map so a card never paints over the window's action footer. */
+  isolation: isolate;
   padding: 10px;
 }
 .relation-map-toolbar {
@@ -985,6 +988,12 @@ button.relation-map-node:hover {
 .drawer-actions > div {
   display: flex;
   gap: 7px;
+}
+/* Node fields scroll beneath the actions, never over them. */
+.node-detail-drawer > .drawer-actions {
+  background: var(--sheet);
+  position: relative;
+  z-index: 2;
 }
 .drawer-actions .button {
   font-size: var(--type-xs);

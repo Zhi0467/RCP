@@ -1009,8 +1009,9 @@ a.digest-title:hover {
   border-color: var(--forest);
   color: var(--forest);
 }
-.proposal-judgment-section .button.judgment.proposal-decision-toggle.approve:hover:not(:disabled),
-.node-detail-window .button.judgment.node-standing-toggle.agree:hover:not(:disabled) {
+.proposal-judgment-section
+  .button.judgment.proposal-decision-toggle.approve:hover:not(:disabled, .selected),
+.node-detail-window .button.judgment.node-standing-toggle.agree:hover:not(:disabled, .selected) {
   background: color-mix(in srgb, var(--forest) 10%, var(--surface));
 }
 .proposal-judgment-section .button.judgment.proposal-decision-toggle.reject,
@@ -1018,17 +1019,22 @@ a.digest-title:hover {
   border-color: var(--red);
   color: var(--red);
 }
-.proposal-judgment-section .button.judgment.proposal-decision-toggle.reject:hover:not(:disabled),
-.node-detail-window .button.judgment.node-standing-toggle.contest:hover:not(:disabled) {
+.proposal-judgment-section
+  .button.judgment.proposal-decision-toggle.reject:hover:not(:disabled, .selected),
+.node-detail-window .button.judgment.node-standing-toggle.contest:hover:not(:disabled, .selected) {
   background: var(--red-soft);
   border-color: var(--red);
 }
-.button.judgment.selected.agree {
+/* The scoped outline colors above outrank the bare selected classes, so the
+   selected fill repeats their scope; otherwise Agree paints forest on forest. */
+.button.judgment.selected.agree,
+:is(.proposal-judgment-section, .node-detail-window) .button.judgment.selected.agree {
   background: var(--forest);
   border-color: var(--forest);
   color: var(--accent-ink);
 }
-.button.judgment.selected.disagree {
+.button.judgment.selected.disagree,
+:is(.proposal-judgment-section, .node-detail-window) .button.judgment.selected.disagree {
   background: var(--red-soft);
   border-color: var(--red);
   color: var(--red);
