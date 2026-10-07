@@ -322,7 +322,7 @@ test("graph watchers stay ungrouped and expose condition labels and evaluation t
   );
 });
 
-test("Chats retain completed graph watchers only for their node or conversation", () => {
+test("Chats hide ended graph watchers, even their own", () => {
   const loop = graphWatcher(
     "loop-completed",
     "experiment/shared-loop",
@@ -339,8 +339,8 @@ test("Chats retain completed graph watchers only for their node or conversation"
   const watchers = [loop, selfWake, { ...selfWake, watcher_id: "stopped", status: "stopped" }];
   const ids = (chatId, node) =>
     visibleChatWatchers(watchers, chatId, node, { kind: "main" }).map((item) => item.watcher_id);
-  assert.deepEqual(ids("new-chat", experiment("experiment/shared-loop")), ["loop-completed"]);
-  assert.deepEqual(ids("work-chat", null), ["self-completed"]);
+  assert.deepEqual(ids("new-chat", experiment("experiment/shared-loop")), []);
+  assert.deepEqual(ids("work-chat", null), []);
   assert.deepEqual(ids("other-chat", experiment("experiment/other")), []);
 });
 
@@ -398,45 +398,29 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   const sameNodeChat = visibleChatWatchers(watchers, "maintenance-chat", node, { kind: "main" });
   assert.deepEqual(
     sameNodeChat.map((item) => item.watcher_id),
-    [
-      "loop-active",
-      "loop-degraded",
-      "loop-stopped",
-      "loop-completed",
-      "self-wake",
-      "stopped-self-wake",
-    ],
+    ["loop-active", "loop-degraded", "self-wake"],
   );
   assert.deepEqual(
     visibleChatWatchers([...watchers, loopActive, selfWake], "maintenance-chat", node, {
       kind: "main",
     }).map((item) => item.watcher_id),
-    [
-      "loop-active",
-      "loop-degraded",
-      "loop-stopped",
-      "loop-completed",
-      "self-wake",
-      "stopped-self-wake",
-    ],
+    ["loop-active", "loop-degraded", "self-wake"],
   );
+  // Runs keeps every watcher of the loop; the chat shows only the live ones.
   const run = buildExperimentRun(node, control({ episode_id: episodeId }), [], watchers);
-  assert.equal(
-    sameNodeChat.filter((item) => item.continuation.patch_kind === "experiment_loop").length,
-    run.watchers.length,
-  );
+  assert.equal(run.watchers.length, 4);
 
   assert.deepEqual(
     visibleChatWatchers(watchers, "maintenance-chat", null, { kind: "main" }).map(
       (item) => item.watcher_id,
     ),
-    ["self-wake", "stopped-self-wake"],
+    ["self-wake"],
   );
   assert.deepEqual(
     visibleChatWatchers(watchers, "maintenance-chat", experiment("experiment/unrelated"), {
       kind: "main",
     }).map((item) => item.watcher_id),
-    ["self-wake", "stopped-self-wake"],
+    ["self-wake"],
   );
   assert.deepEqual(
     visibleChatWatchers(watchers, "project-chat", null, { kind: "main" }).map(
@@ -446,7 +430,7 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   );
 });
 
-test("a chat retains all its external jobs after watching stops or completes", () => {
+test("a chat keeps only external jobs that are live or still cancellable", () => {
   const external = (id, status) =>
     watcher(id, null, null, status, {
       chat_id: "work-chat",
@@ -458,7 +442,8 @@ test("a chat retains all its external jobs after watching stops or completes", (
       },
     });
   const watchers = [
-    external("stopped-cancellable", "stopped"),
+    { ...external("stopped-cancellable", "stopped"), can_cancel: true },
+    external("stopped", "stopped"),
     external("completed", "completed"),
     external("active", "active"),
     { ...external("other-chat", "stopped"), chat_id: "another-chat" },
@@ -467,7 +452,7 @@ test("a chat retains all its external jobs after watching stops or completes", (
     visibleChatWatchers(watchers, "work-chat", null, { kind: "main" }).map(
       (item) => item.watcher_id,
     ),
-    ["stopped-cancellable", "completed", "active"],
+    ["stopped-cancellable", "active"],
   );
 });
 

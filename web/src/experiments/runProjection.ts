@@ -86,7 +86,13 @@ export function visibleChatWatchers(
   const experimentNodeId = node && isControlNode(node.type) ? node.id : null;
   const visible = new Map<string, WatcherRecord>();
   for (const watcher of watchers) {
-    if (watcher.status === "stopped" && !isExternalWatcherRecord(watcher)) continue;
+    // The strip is for live work only; ended watchers stay in Runs. A job whose
+    // observer stopped but that can still be cancelled is still running.
+    const live =
+      watcher.status === "active" ||
+      watcher.status === "degraded" ||
+      (isExternalWatcherRecord(watcher) && watcher.can_cancel);
+    if (!live) continue;
     const nodeLoopWatcher =
       experimentNodeId !== null &&
       watcher.continuation.patch_kind === "experiment_loop" &&

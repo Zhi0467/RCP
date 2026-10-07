@@ -749,7 +749,8 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     }),
   );
 
-  assert.match(html, /<svg[^>]*>.*<\/svg> 5<\/button>/s);
+  // Active, degraded, and the chat's own watcher; ended loop watchers stay in Runs.
+  assert.match(html, /<svg[^>]*>.*<\/svg> 3<\/button>/s);
   assert.doesNotMatch(projectChatHtml, /chat-watcher-count/);
 });
 

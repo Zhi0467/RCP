@@ -1328,8 +1328,9 @@ Auto-research child; it does not claim live presence or enumerate contributors.
 Missing legacy attribution never borrows the current viewer's identity. The
 Run dialog lists live loops on that node on other targets before submission,
 as information; it never disables Run. A main loop opened from a branch view
-shows its chat read-only. A chat's watcher strip lists only watchers that chat armed
-and watchers of its own target's loop.
+shows its chat read-only. A chat's watcher strip lists only live watchers (watching, check
+failing, or a job that can still be cancelled) that chat armed or its own
+target's loop owns; ended watchers stay in Runs.
 
 Every unarchived episode offers **Archive**; an archived episode offers
 **Unarchive**. The [episode archive](conversations-episodes-and-watchers.md#episode-archive)
