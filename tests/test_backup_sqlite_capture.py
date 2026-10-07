@@ -372,6 +372,50 @@ def test_unresolved_kept_artifact_inventory_is_bound_to_its_base_digest(
     assert reference.expected_sha256 == base_sha256
 
 
+def test_store_kept_artifact_keeps_its_project_capturable(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Capture lab")
+    project = _register_completed_project(store, data_dir, name="Store keep")
+    operation_id = str(uuid.uuid4())
+    _create_kept_view(store, project.project_id, origin_operation_id=operation_id)
+    (artifact,) = store.artifacts(project.project_id)
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project.project_id,
+            kind="node_chat",
+            status="succeeded",
+            request={},
+            result={
+                "artifacts": [
+                    AgentArtifactDescriptor(
+                        artifact_id=artifact.artifact_id,
+                        name="result.html",
+                        media_type="text/html",
+                        size_bytes=1,
+                    ).model_dump(mode="json")
+                ]
+            },
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+            status_message="Completed.",
+        )
+    )
+    # The Keep route's own write: the store keeps the bytes, the task records only `kept_at`.
+    kept = store.keep_artifact(artifact.artifact_id)
+    store.mark_agent_artifact_kept(operation_id, artifact.artifact_id, kept_at=kept.kept_at)
+
+    receipt = (
+        BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite().receipt
+    )
+
+    assert receipt.projects[0].status == "capturable"
+    assert receipt.projects[0].kept_artifacts == ()
+    assert [item.artifact_id for item in receipt.artifact_inventory] == [artifact.artifact_id]
+
+
 def test_capture_inventory_is_bound_to_the_copied_database(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

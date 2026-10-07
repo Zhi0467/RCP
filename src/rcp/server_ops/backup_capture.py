@@ -674,10 +674,12 @@ def _kept_artifact_references(
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact descriptor is malformed."
                 ) from exc
-            if (descriptor.kept_filename is None) != (descriptor.kept_at is None):
+            if descriptor.kept_filename is not None and descriptor.kept_at is None:
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact has an incomplete kept-file binding."
                 )
+            # Keep since the artifact store records only `kept_at`; those bytes
+            # are captured from the store's own inventory, not as a legacy file.
             if descriptor.kept_filename is None or descriptor.kept_at is None:
                 continue
             revision = unresolved_revisions.get((task.operation_id, descriptor.artifact_id))
