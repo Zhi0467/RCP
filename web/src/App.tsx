@@ -4499,6 +4499,19 @@ export default function App() {
         )}
       </button>
     );
+  const trustFilter = showTrustFilter && (
+    <label className="trust-filter">
+      <span>Show</span>
+      <select
+        value={trustView}
+        onChange={(event) => changeTrustView(event.target.value as TrustView)}
+      >
+        <option value="working">Working graph</option>
+        <option value="accepted">Accepted only</option>
+        <option value="review">Everything</option>
+      </select>
+    </label>
+  );
   const reconcilingStatus = projectReconciliation === "reconciling" && (
     <span className="project-reconciliation" role="status" aria-label="Refreshing project state">
       <LoaderCircle className="spin" size={14} aria-hidden="true" />
@@ -4528,6 +4541,7 @@ export default function App() {
           sync={syncControls}
           menu={
             <>
+              {trustFilter}
               {autoResearchButton}
               {projectUtilities}
             </>
@@ -4604,19 +4618,7 @@ export default function App() {
             />
           )}
           {navItems.map(renderNavItem)}
-          {showTrustFilter && (
-            <label className="trust-filter">
-              <span>Show</span>
-              <select
-                value={trustView}
-                onChange={(event) => changeTrustView(event.target.value as TrustView)}
-              >
-                <option value="working">Working graph</option>
-                <option value="accepted">Accepted only</option>
-                <option value="review">Everything</option>
-              </select>
-            </label>
-          )}
+          {trustFilter}
         </nav>
       )}
 

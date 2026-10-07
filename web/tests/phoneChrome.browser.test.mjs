@@ -60,6 +60,9 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
         await history.evaluate((element) => getComputedStyle(element, "::after").content),
         /Project history/,
       );
+      // Research's graph filter, hidden with the tab strip, is reachable here.
+      await page.getByRole("combobox").selectOption("review");
+      assert.equal(await page.locator("#phone-project-menu").isHidden(), false);
       await history.click();
       assert.equal(await page.locator("#phone-project-menu").isHidden(), true);
       await more.click();

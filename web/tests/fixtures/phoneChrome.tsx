@@ -54,13 +54,22 @@ function Fixture() {
           </div>
         }
         menu={
-          <button
-            className="icon-button"
-            aria-label="Project history"
-            onClick={() => window.chosen.push("history")}
-          >
-            <History size={16} />
-          </button>
+          <>
+            <label className="trust-filter">
+              <span>Show</span>
+              <select defaultValue="working">
+                <option value="working">Working graph</option>
+                <option value="review">Everything</option>
+              </select>
+            </label>
+            <button
+              className="icon-button"
+              aria-label="Project history"
+              onClick={() => window.chosen.push("history")}
+            >
+              <History size={16} />
+            </button>
+          </>
         }
       />
       <main className="project-panel">
