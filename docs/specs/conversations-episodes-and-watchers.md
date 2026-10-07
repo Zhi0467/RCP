@@ -531,7 +531,9 @@ Readiness reports its graph gates and its operational reasons as separate lists,
 so no surface has to tell them apart by reading the sentences. It also reports
 `isolated_start_reasons`, the reasons a graph-isolated start would be refused. A human isolated
 start is checked against the branch it will create. The start response and the
-Run dialog list live loops on that node on other targets as information.
+Run dialog list live loops on that node on other targets as information. Run
+waits while that list loads; if the list cannot load, the dialog says overlap
+is unknown and Run stays available.
 
 Every chat turn on an Experiment node, including resumed and watcher-driven
 turns, receives a small loop-status block for its node: this target's loop (live, stopped,

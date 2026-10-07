@@ -166,6 +166,10 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const [experimentLoopLoadedProjects, setExperimentLoopLoadedProjects] = useState<Set<string>>(
     () => new Set(),
   );
+  // Projects whose latest loop-list request failed; overlap is unknown, never a gate.
+  const [experimentLoopUnavailableProjects, setExperimentLoopUnavailableProjects] = useState<
+    Set<string>
+  >(() => new Set());
   const [spaceRuns, setSpaceRuns] = useState<SpaceRunIndexEntry[]>([]);
   const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
     readProjectHeaderCollapsed(initialProjectId),
@@ -192,7 +196,18 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const refreshExperimentLoops = useCallback(async () => {
     const requestedProjectId = activeProjectId.current;
     const refreshGeneration = ++experimentLoopRefreshGeneration.current;
-    const nextEntries = await loadExperimentEpisodes();
+    let nextEntries: ExperimentLoopIndexEntry[];
+    try {
+      nextEntries = await loadExperimentEpisodes();
+    } catch (error) {
+      if (requestedProjectId) {
+        setExperimentLoopUnavailableProjects(
+          (current) => new Set([...current, requestedProjectId]),
+        );
+      }
+      throw error;
+    }
+    setExperimentLoopUnavailableProjects((current) => (current.size ? new Set() : current));
     if (
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
@@ -210,7 +225,18 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   }, []);
   const refreshProjectExperimentLoops = useCallback(async (requestedProjectId: string) => {
     const refreshGeneration = ++experimentLoopRefreshGeneration.current;
-    const nextEntries = await loadProjectExperimentEpisodes(requestedProjectId);
+    let nextEntries: ExperimentLoopIndexEntry[];
+    try {
+      nextEntries = await loadProjectExperimentEpisodes(requestedProjectId);
+    } catch (error) {
+      setExperimentLoopUnavailableProjects((current) => new Set([...current, requestedProjectId]));
+      throw error;
+    }
+    setExperimentLoopUnavailableProjects((current) =>
+      current.has(requestedProjectId)
+        ? new Set([...current].filter((id) => id !== requestedProjectId))
+        : current,
+    );
     if (
       experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
     ) {
@@ -460,6 +486,8 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     openProjectTabs,
     experimentLoops,
     experimentLoopsLoaded: projectId !== null && experimentLoopLoadedProjects.has(projectId),
+    experimentLoopsUnavailable:
+      projectId !== null && experimentLoopUnavailableProjects.has(projectId),
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,

@@ -302,9 +302,11 @@ test("a never-run Experiment shows only its next episode limit", () => {
     );
   let html;
   let loading;
+  let unavailable;
   try {
     html = render();
-    loading = render({ projectId: "project-one", experimentEntriesLoaded: false });
+    loading = render({ projectId: "project-one", experimentEntriesStatus: "loading" });
+    unavailable = render({ projectId: "project-one", experimentEntriesStatus: "unavailable" });
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -323,6 +325,12 @@ test("a never-run Experiment shows only its next episode limit", () => {
   )?.[0];
   assert.match(waiting, /\bdisabled(?:=|\s|>)/);
   assert.match(loading, /role="status" aria-busy="true"/);
+  // A failed inventory leaves overlap unknown but never holds Run.
+  const offered = unavailable.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.doesNotMatch(offered, /\bdisabled(?:=|\s|>)/);
+  assert.match(unavailable, /class="experiment-overlap-unavailable" role="status"/);
 });
 
 test("an invocation-limited episode offers a new episode for its pending watcher", () => {

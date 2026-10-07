@@ -76,8 +76,8 @@ interface Props {
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
   experimentEntries?: ExperimentLoopIndexEntry[];
-  /** False until the project's loop inventory has loaded at least once. */
-  experimentEntriesLoaded?: boolean;
+  /** Whether the project's loop inventory is known yet, for the overlap list. */
+  experimentEntriesStatus?: "loading" | "loaded" | "unavailable";
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   decisionChoiceStaged?: boolean;
@@ -152,7 +152,7 @@ export function DetailDrawer({
   canonicalStanding = node.standing,
   experimentControl = null,
   experimentEntries = [],
-  experimentEntriesLoaded = true,
+  experimentEntriesStatus = "loaded",
   experimentRunDisabled = false,
   experimentRunBusy = false,
   decisionChoiceStaged = false,
@@ -603,12 +603,17 @@ export function DetailDrawer({
                 <section
                   className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
                 >
-                  {projectId && !experimentEntriesLoaded && (
+                  {projectId && experimentEntriesStatus === "loading" && (
                     <p className="experiment-overlap-loading" role="status" aria-busy="true">
                       Checking other live loops…
                     </p>
                   )}
-                  {projectId && experimentEntriesLoaded && (
+                  {projectId && experimentEntriesStatus === "unavailable" && (
+                    <p className="experiment-overlap-unavailable" role="status">
+                      Couldn't check other live loops.
+                    </p>
+                  )}
+                  {projectId && experimentEntriesStatus === "loaded" && (
                     <ExperimentStartOverlap
                       projectId={projectId}
                       loops={experimentStartOverlap(
@@ -650,8 +655,8 @@ export function DetailDrawer({
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
-                        // Overlap never blocks Run; Run waits only until it is known.
-                        !experimentEntriesLoaded ||
+                        // Overlap never blocks Run; Run waits only while it is being checked.
+                        experimentEntriesStatus === "loading" ||
                         !canStartExperiment(
                           experimentControl,
                           graphTarget,

@@ -654,6 +654,7 @@ export default function App() {
     openProjectTabs,
     experimentLoops,
     experimentLoopsLoaded,
+    experimentLoopsUnavailable,
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
@@ -5103,7 +5104,13 @@ export default function App() {
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
             experimentEntries={experimentLoops}
-            experimentEntriesLoaded={experimentLoopsLoaded}
+            experimentEntriesStatus={
+              experimentLoopsLoaded
+                ? "loaded"
+                : experimentLoopsUnavailable
+                  ? "unavailable"
+                  : "loading"
+            }
             experimentRunDisabled={experimentStartRequiresSync}
             experimentRunBusy={taskStarting}
             decisionChoiceStaged={Boolean(
