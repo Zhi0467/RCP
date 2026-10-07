@@ -41,6 +41,18 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
       assert.ok(moreBox.x + moreBox.width <= viewport.width);
       await page.getByRole("button", { name: "Sync" }).waitFor();
 
+      // Many open projects scroll inside the dock, which never runs off the
+      // screen: the Agents shell clips the page, so page scroll cannot reach it.
+      await page.locator(".phone-bar-name").click();
+      const dockBox = await page.locator("#phone-project-dock").boundingBox();
+      assert.ok(dockBox.y + dockBox.height <= viewport.height, "The dock fits on screen");
+      const last = page.getByRole("button", { name: "Project 29", exact: true });
+      await last.scrollIntoViewIfNeeded();
+      const lastBox = await last.boundingBox();
+      assert.ok(lastBox.y >= 0 && lastBox.y + lastBox.height <= viewport.height);
+      await last.click();
+      assert.equal(await page.locator("#phone-project-dock").count(), 0);
+
       // The menu names each control by its label and closes when one is chosen.
       await more.click();
       const history = page.getByRole("button", { name: "Project history" });
@@ -65,7 +77,11 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
       const ask = await page.getByRole("button", { name: "Ask about this project" }).boundingBox();
       assert.ok(ask.y + ask.height <= (await tabs.boundingBox()).y);
 
-      assert.deepEqual(await page.evaluate(() => window.chosen), ["history", "settings"]);
+      assert.deepEqual(await page.evaluate(() => window.chosen), [
+        "project-29",
+        "history",
+        "settings",
+      ]);
       assert.deepEqual(errors, []);
       await page.close();
     }

@@ -197,6 +197,10 @@
     box-shadow: var(--shadow);
     left: 8px;
     padding: 6px;
+    /* Many open projects scroll inside the panel; the Chats shell clips the page. */
+    max-height: calc(100dvh - 72px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     position: absolute;
     right: 8px;
     top: calc(100% + 4px);

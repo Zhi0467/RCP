@@ -370,9 +370,9 @@ def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
 
 
 def test_viewer_does_not_see_their_own_chat_agent_edits(tmp_path):
-    # An agent in a member's own chat acts as that member: its edits leave
-    # that member's digest, where an earlier agent touch keeps the node, and a
-    # teammate sees the node under the chat, its latest source.
+    # A Work turn the member asked for leaves that member's digest, where an
+    # earlier agent touch keeps the node, and a teammate sees the node under
+    # the chat, its latest source.
     store = AppStore(tmp_path / "app.db")
     live = GraphState(nodes={"d/one": _decision()})
     event = graph_event(store, "p", "main", GraphState(), _patch(), live)

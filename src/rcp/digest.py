@@ -49,8 +49,9 @@ def _attention(state: GraphState) -> dict[tuple[str, str], str]:
     }
 
 
-# Sources whose edits are the viewer's own when the viewer is their actor: a
-# member's direct edits and the Work turns of chats that member ran.
+# Sources the digest treats as the viewer's own when the viewer is their actor:
+# a member's direct edits, and the Work turns a member asked for in their chat.
+# The latter is a visibility rule only; the provider agent stays the author.
 OWN_SOURCES = frozenset({"member", "chat"})
 
 
@@ -101,7 +102,8 @@ def attribution(store, project_id: str, patch: Patch) -> dict:
                 result["deep_link"] = (
                     f"#/projects/{quote(project_id, safe='')}?view=chats&chat={quote(key, safe='')}"
                 )
-                # An agent in a member's own chat acts as that member (invariant 3).
+                # The member who asked for this Work turn already knows it ran, so
+                # their own digest leaves it out; teammates still see the chat.
                 if task.authorized_by is not None:
                     result["actor_user_id"] = task.authorized_by.user_id
             elif patch.producer == "system":

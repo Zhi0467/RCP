@@ -6,6 +6,7 @@ import {
   PhoneProjectBar,
   PhoneTabBar,
 } from "../../src/projects/PhoneProjectChrome";
+import { ProjectDock } from "../../src/projects/ProjectDock";
 import "../../src/styles.css";
 
 declare global {
@@ -36,7 +37,17 @@ function Fixture() {
         projectName="A project name long enough to need truncating on a phone"
         hasDraft
         onBack={() => window.chosen.push("back")}
-        dock={<button onClick={() => window.chosen.push("dock")}>Other project</button>}
+        dock={
+          <ProjectDock
+            tabs={Array.from({ length: 30 }, (_, index) => ({
+              id: `project-${index}`,
+              name: `Project ${index}`,
+            }))}
+            activeProjectId="project-0"
+            onActivate={(id) => window.chosen.push(id)}
+            onClose={() => {}}
+          />
+        }
         sync={
           <div className="header-sync-side">
             <button className="button draft-sync active">Sync</button>
