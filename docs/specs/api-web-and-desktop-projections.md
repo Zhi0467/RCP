@@ -220,6 +220,16 @@ Delivery pulls and acknowledgments authenticate without refreshing the team's
 idle session expiry or cookie lifetime. Shell polling must call these endpoints
 directly, without an identity-refresh request before each poll.
 
+The Mac shell posts through a small native adapter over
+`UNUserNotificationCenter` (`web/src-tauri/src/notifications.m`), not
+`tauri-plugin-notification`, which on desktop drops the notification id and
+click data and discards delivery errors. The stable notification id is the
+request identifier, so a repeat replaces rather than stacks; the deep link rides
+in `userInfo`, and a click routes the window to it, including a click that
+launches the app. On its first pull after launch, more than three waiting items
+post as one summary that opens the app; a summary macOS accepts acknowledges
+every item it covers, and a rejected one leaves them for retry.
+
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's five toggles: `proposal`, `decision`, `blocker`,
 `episode_needs_action`, and `episode_finished`. All default on except
@@ -245,7 +255,9 @@ Phones use standard Web Push with VAPID. `GET /api/notifications/web-push/key`
 returns the space's application server key; the signing key lives in SQLite,
 so it is part of every backup, and restore keeps it while detaching every
 device. A missing key is never silently replaced while phones still depend on
-it.
+it. No Apple or Google account is involved, and the server needs no public
+address. Encryption and signing use `cryptography` sent through the existing
+`httpx`, not `pywebpush`, which would add `requests` and `aiohttp`.
 
 `POST /api/notifications/devices/web-push` takes the browser's
 `PushSubscription.toJSON()` shape and binds it to the calling team session,

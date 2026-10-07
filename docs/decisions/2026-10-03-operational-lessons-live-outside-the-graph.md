@@ -1,7 +1,7 @@
 # Operational lessons live outside the graph
 
-**Status:** accepted with the human on 2026-10-02. Implementation is tracked in
-the [graph dreaming handoff](../handoffs/handoff-2026-10-03-graph-dreaming.md).
+**Status:** accepted with the human on 2026-10-02. Current behavior is in
+[graph consolidation and lessons](../specs/graph-consolidation-and-lessons.md).
 
 ## Decision
 
