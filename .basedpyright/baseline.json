@@ -1568,14 +1568,6 @@
                     "endColumn": 85,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 63,
-                    "endColumn": 93,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/api/project_provisioning.py": [
