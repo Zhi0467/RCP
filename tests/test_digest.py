@@ -200,9 +200,12 @@ def test_attribution_precedence_and_missing_task(tmp_path):
         attribution(store, "p", _patch().model_copy(update={"kind": "refresh"}))["source_kind"]
         == "ingestion"
     )
-    task = SimpleNamespace(kind="project_chat", request={"chat_id": "chat", "mode": "work"})
+    task = SimpleNamespace(
+        kind="project_chat", request={"chat_id": "chat", "mode": "work"}, authorized_by=human
+    )
     store.agent_task = lambda _: task
-    assert attribution(store, "p", _patch(task_id="task"))["source_kind"] == "chat"
+    chat = attribution(store, "p", _patch(task_id="task"))
+    assert (chat["source_kind"], chat["actor_user_id"]) == ("chat", human.user_id)
     store.consolidation_run_for_operation = lambda _: SimpleNamespace(
         operation_id="task", run_id="run", report_artifact_id="report"
     )
@@ -364,3 +367,29 @@ def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
     projector.run_pass()
     result = digest.read_digest(store, app.state.catalog, episode.project_id, user_id)
     assert [item["item_id"] for item in result["needs_you"]] == [episode.episode_id]
+
+
+def test_viewer_does_not_see_their_own_chat_agent_edits(tmp_path):
+    # An agent in a member's own chat acts as that member: its edits leave
+    # that member's digest, where an earlier agent touch keeps the node, and a
+    # teammate sees the node under the chat, its latest source.
+    store = AppStore(tmp_path / "app.db")
+    live = GraphState(nodes={"d/one": _decision()})
+    event = graph_event(store, "p", "main", GraphState(), _patch(), live)
+    event.update(seq=1, source_key="agent:one")
+    own_chat = dict(
+        event,
+        seq=2,
+        source_key="chat:mine",
+        actor_user_id="me",
+        payload=dict(event["payload"], source_kind="chat"),
+    )
+    mark = {"seq": 0, "marked_at": "now"}
+
+    mine = assemble_digest("p", "me", [event, own_chat], mark, 2, live)
+    assert [group["source_key"] for group in mine["changed"]] == ["agent:one"]
+    assert mine["changed"][0]["node_ids"] == ["d/one"]
+
+    theirs = assemble_digest("p", "teammate", [event, own_chat], mark, 2, live)
+    assert [group["source_key"] for group in theirs["changed"]] == ["chat:mine"]
+    assert theirs["changed"][0]["node_ids"] == ["d/one"]

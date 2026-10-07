@@ -157,8 +157,9 @@ the digest.
 Needs you contains new, still-open Proposals, ready/revisit Decisions, open ask
 questions, and episodes needing human action. Changed on main groups accepted
 semantic changes by their attributed source. Each touched node belongs to its
-latest eligible source; the viewer's direct human edits are excluded before
-that assignment, so an earlier agent touch remains visible. Removed nodes and
+latest eligible source; the viewer's direct human edits and the Work turns of
+chats the viewer ran (an agent in a member's own page acts as that member) are
+excluded before that assignment, so an earlier agent touch remains visible. Removed nodes and
 changed edge endpoints participate in grouping, while `changed_node_ids`
 contains only nodes still present on main. Branch revisions aggregate into one
 line per episode. Ran contains ended episodes and compute jobs, failed

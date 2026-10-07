@@ -49,6 +49,11 @@ def _attention(state: GraphState) -> dict[tuple[str, str], str]:
     }
 
 
+# Sources whose edits are the viewer's own when the viewer is their actor: a
+# member's direct edits and the Work turns of chats that member ran.
+OWN_SOURCES = frozenset({"member", "chat"})
+
+
 def attribution(store, project_id: str, patch: Patch) -> dict:
     """Resolve source once, with explicit provenance ahead of producer fallbacks."""
     result = {"actor_user_id": None, "report_artifact_id": None, "deep_link": None}
@@ -96,6 +101,9 @@ def attribution(store, project_id: str, patch: Patch) -> dict:
                 result["deep_link"] = (
                     f"#/projects/{quote(project_id, safe='')}?view=chats&chat={quote(key, safe='')}"
                 )
+                # An agent in a member's own chat acts as that member (invariant 3).
+                if task.authorized_by is not None:
+                    result["actor_user_id"] = task.authorized_by.user_id
             elif patch.producer == "system":
                 kind, key, label = "system", "system", "System"
             else:
@@ -216,7 +224,7 @@ def assemble_digest(
                     created_at=event["created_at"],
                     deep_link=deep_link(project_id, target, entry["kind"], entry["item_id"]),
                 )
-            if event["actor_user_id"] == user_id and payload["source_kind"] == "member":
+            if event["actor_user_id"] == user_id and payload["source_kind"] in OWN_SOURCES:
                 continue
             if not payload["edits"]:
                 continue
@@ -241,7 +249,7 @@ def assemble_digest(
             for node_id in event["node_ids"]:
                 latest_nodes[node_id] = key
         elif kind == "branch_change":
-            if event["actor_user_id"] == user_id and payload.get("source_kind") == "member":
+            if event["actor_user_id"] == user_id and payload.get("source_kind") in OWN_SOURCES:
                 continue
             episode_id = payload["episode_id"]
             if payload["edits"] and int(item_id) > merged.get(episode_id, -1):
