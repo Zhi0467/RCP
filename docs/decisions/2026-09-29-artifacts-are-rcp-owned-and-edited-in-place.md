@@ -1,7 +1,8 @@
 # Artifacts are RCP-owned and edited in place
 
-**Status:** accepted on 2026-09-29. Remaining verification is tracked in the
-[live artifacts handoff](../handoffs/handoff-2026-09-29-live-artifacts.md).
+**Status:** accepted on 2026-09-29. Current behavior is in
+[paper, artifacts, and result views](../specs/paper-artifacts-and-result-views.md);
+its live checks are among [the open live checks](../handoffs/README.md).
 
 ## Decision
 

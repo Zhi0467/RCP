@@ -42,6 +42,7 @@ function Fixture() {
     <main style={{ height: "100vh", padding: 24 }}>
       <button onClick={() => setChatId("other-chat")}>Switch chat</button>
       <NodeChat
+        graphTarget={{ kind: "main" }}
         project={project}
         runScope={["repo"]}
         tasks={tasks}

@@ -4,8 +4,10 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 
-from rcp.core.models import AuthorizedHuman
+from rcp.core.graph_targets import graph_target_json
+from rcp.core.models import AuthorizedHuman, EpisodeIsolation
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.digest import (
@@ -18,7 +20,9 @@ from rcp.storage.digest import (
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
+    AgentTaskReceiptRecord,
     AgentTaskRecord,
+    AutoResearchChildExperimentRecord,
     AutoResearchSpaceRunEpisodeState,
     AutoResearchSpaceRunProjectionSnapshot,
     AutoResearchSpaceRunTaskState,
@@ -27,6 +31,7 @@ from rcp.storage.models import (
     EpisodeEnding,
     EpisodeInvocationCeilingReached,
     EpisodeInvocationRecord,
+    EpisodeLoopMetadataSnapshot,
     EpisodeNotRunning,
     EpisodeRecord,
     EpisodeReportAttemptLimitReached,
@@ -45,6 +50,70 @@ _REPORT_ATTEMPT_LIMIT = 3
 
 class EpisodeStoreMixin(StoreMixinBase):
     """Mode-neutral episode lifecycle, operational budget, and report ledger."""
+
+    def episode_loop_metadata_snapshots(
+        self, episodes: Sequence[EpisodeRecord | AutoResearchSpaceRunEpisodeState]
+    ) -> dict[str, EpisodeLoopMetadataSnapshot]:
+        """Batch durable routes, isolation, and root launch receipts in one read snapshot."""
+
+        snapshots = {episode.episode_id: EpisodeLoopMetadataSnapshot() for episode in episodes}
+        if not snapshots:
+            return snapshots
+        episode_ids = list(snapshots)
+        placeholders = ",".join("?" for _ in episode_ids)
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            for row in connection.execute(
+                f"""
+                SELECT route.*, parent.graph_target_json AS parent_graph_target_json
+                FROM auto_research_child_experiments AS route
+                LEFT JOIN episodes AS parent ON parent.episode_id = route.auto_research_episode_id
+                WHERE route.child_episode_id IN ({placeholders})
+                """,
+                episode_ids,
+            ):
+                data = dict(row)
+                target = data.pop("parent_graph_target_json")
+                data["request"] = json.loads(data.pop("request_json"))
+                snapshot = snapshots[row["child_episode_id"]]
+                snapshot.route = AutoResearchChildExperimentRecord.model_validate(data)
+                snapshot.parent_graph_target = (
+                    GraphTargetRef.model_validate_json(target) if target is not None else None
+                )
+            for row in connection.execute(
+                f"""
+                SELECT episode.episode_id, isolation.binding_json
+                FROM episodes AS episode
+                JOIN episode_isolations AS isolation
+                  ON isolation.project_id = episode.project_id
+                 AND isolation.owner_episode_id = COALESCE(
+                     episode.isolation_owner_episode_id, episode.episode_id
+                 )
+                WHERE episode.episode_id IN ({placeholders})
+                """,
+                episode_ids,
+            ):
+                snapshots[row["episode_id"]].isolation = EpisodeIsolation.model_validate_json(
+                    row["binding_json"]
+                )
+            for row in connection.execute(
+                f"""
+                SELECT episode.episode_id AS metadata_episode_id, receipt.*
+                FROM episodes AS episode
+                JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
+                JOIN graph_run_receipts AS receipt ON receipt.operation_id = root.operation_id
+                WHERE episode.episode_id IN ({placeholders}) AND receipt.category = 'agent_launch'
+                ORDER BY receipt.receipt_id ASC
+                """,
+                episode_ids,
+            ):
+                data = dict(row)
+                episode_id = data.pop("metadata_episode_id")
+                data["payload"] = json.loads(data.pop("payload_json"))
+                snapshots[episode_id].launch_receipts.append(
+                    AgentTaskReceiptRecord.model_validate(data)
+                )
+        return snapshots
 
     def create_episode(self, record: EpisodeRecord) -> EpisodeRecord:
         self._validate_new_episode(record)
@@ -379,6 +448,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT episode_id, project_id, mode, graph_target_json,
                            root_operation_id, status, stop_requested_at, ending,
                            authorized_space_id, authorized_user_id, authorized_display_name,
+                           code_worktree, isolation_owner_episode_id,
+                           stop_initiated_by, stop_settled_at,
                            wrapup_state, created_at, updated_at, ended_at
                     FROM episodes
                     WHERE project_id IN ({placeholders})
@@ -388,6 +459,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT episode_id, project_id, mode, graph_target_json,
                            root_operation_id, status, stop_requested_at, ending,
                            authorized_space_id, authorized_user_id, authorized_display_name,
+                           code_worktree, isolation_owner_episode_id,
+                           stop_initiated_by, stop_settled_at,
                            wrapup_state, created_at, updated_at, ended_at
                     FROM episodes
                     WHERE project_id IN ({placeholders})
@@ -398,6 +471,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT episode_id, project_id, mode, graph_target_json,
                            root_operation_id, status, stop_requested_at, ending,
                            authorized_space_id, authorized_user_id, authorized_display_name,
+                           code_worktree, isolation_owner_episode_id,
+                           stop_initiated_by, stop_settled_at,
                            wrapup_state, created_at, updated_at, ended_at
                     FROM episodes
                     WHERE project_id IN ({placeholders})
@@ -2279,7 +2354,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                 record.project_id,
                 record.mode,
                 record.control_node_id,
-                record.graph_target.model_dump_json(),
+                graph_target_json(record.graph_target),
                 record.graph_base_head.model_dump_json() if record.graph_base_head else None,
                 record.root_operation_id,
                 record.status,
@@ -2390,7 +2465,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         """Whether a continuation of ``episode`` would be admitted right now.
 
         The same two facts refuse it at admission: another live episode owns the
-        project (Auto-research) or the control node (Experiment), or the branch is
+        project (Auto-research) or the control node and target (Experiment), or the branch is
         being merged. The projection asks first so it offers only a callable control.
         """
 
@@ -2417,7 +2492,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                   AND status IN ('queued', 'running', 'pausing')
                 LIMIT 1
                 """,
-                (project_id, graph_target.model_dump_json()),
+                (project_id, graph_target_json(graph_target)),
             ).fetchone()
             is not None
         )
@@ -2442,10 +2517,15 @@ class EpisodeStoreMixin(StoreMixinBase):
             f"""
             SELECT * FROM episodes
             WHERE project_id = ? AND mode = 'experiment_loop' AND control_node_id = ?
-              AND status IN ({placeholders})
+              AND graph_target_json = ? AND status IN ({placeholders})
             LIMIT 1
             """,
-            (record.project_id, record.control_node_id, *_LIVE_EPISODE_STATUSES),
+            (
+                record.project_id,
+                record.control_node_id,
+                graph_target_json(record.graph_target),
+                *_LIVE_EPISODE_STATUSES,
+            ),
         ).fetchone()
 
     @staticmethod

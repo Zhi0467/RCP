@@ -34,6 +34,7 @@ from rcp.core.authority import (
 from rcp.core.models import (
     DISPLAY_NAME_MAX_LENGTH,
     AuthorizedHuman,
+    EpisodeIsolation,
     HiddenReadPath,
     normalize_display_name,
 )
@@ -2379,6 +2380,10 @@ class AutoResearchSpaceRunEpisodeState(BaseModel):
     graph_target: GraphTargetRef
     root_operation_id: str | None
     authorized_by: AuthorizedHuman | None = None
+    code_worktree: bool = False
+    isolation_owner_episode_id: str | None = None
+    stop_initiated_by: str | None = None
+    stop_settled_at: str | None = None
     status: EpisodeStatus
     stop_requested_at: str | None
     ending: EpisodeEnding | None
@@ -3007,6 +3012,17 @@ class ExperimentLoopRuntime(BaseModel):
     current_failure_kind: AgentFailureKind | None = None
     current_last_activity_at: str | None = None
     current_invocation: int | None = Field(default=None, ge=1)
+
+
+class EpisodeLoopMetadataSnapshot(BaseModel):
+    """Durable starter and checkout inputs for one episode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: AutoResearchChildExperimentRecord | None = None
+    parent_graph_target: GraphTargetRef | None = None
+    isolation: EpisodeIsolation | None = None
+    launch_receipts: list[AgentTaskReceiptRecord] = Field(default_factory=list)
 
 
 class ExperimentEpisodeProjectionSnapshot(BaseModel):
@@ -3755,6 +3771,7 @@ __all__ = [
     "EpisodeMode",
     "EpisodeNotRunning",
     "EpisodeRecord",
+    "EpisodeLoopMetadataSnapshot",
     "EpisodeReportAttemptLimitReached",
     "EpisodeReportAttemptRecord",
     "EpisodeReportAttemptStatus",

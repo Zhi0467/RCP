@@ -220,6 +220,16 @@ Delivery pulls and acknowledgments authenticate without refreshing the team's
 idle session expiry or cookie lifetime. Shell polling must call these endpoints
 directly, without an identity-refresh request before each poll.
 
+The Mac shell posts through a small native adapter over
+`UNUserNotificationCenter` (`web/src-tauri/src/notifications.m`), not
+`tauri-plugin-notification`, which on desktop drops the notification id and
+click data and discards delivery errors. The stable notification id is the
+request identifier, so a repeat replaces rather than stacks; the deep link rides
+in `userInfo`, and a click routes the window to it, including a click that
+launches the app. On its first pull after launch, more than three waiting items
+post as one summary that opens the app; a summary macOS accepts acknowledges
+every item it covers, and a rejected one leaves them for retry.
+
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's five toggles: `proposal`, `decision`, `blocker`,
 `episode_needs_action`, and `episode_finished`. All default on except
@@ -245,7 +255,9 @@ Phones use standard Web Push with VAPID. `GET /api/notifications/web-push/key`
 returns the space's application server key; the signing key lives in SQLite,
 so it is part of every backup, and restore keeps it while detaching every
 device. A missing key is never silently replaced while phones still depend on
-it.
+it. No Apple or Google account is involved, and the server needs no public
+address. Encryption and signing use `cryptography` sent through the existing
+`httpx`, not `pywebpush`, which would add `requests` and `aiohttp`.
 
 `POST /api/notifications/devices/web-push` takes the browser's
 `PushSubscription.toJSON()` shape and binds it to the calling team session,
@@ -476,6 +488,10 @@ scheduler and helper work. Every external row includes its required shell check,
 log path and cwd, optional cancel command, check state/diagnostic, and cancellation
 requester/time/diagnostic. The backend exports `can_cancel`; the browser does not
 derive it from watcher status. There is no separate compute-job list request.
+Without `branch_id` the list carries every target's rows. With `branch_id` it
+carries that target's rows, or every target's with `all_targets=true`, which a
+branch view's Runs uses for sibling loops. Either way `can_stop_watching` is
+offered only on rows of the displayed target.
 
 `POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires project
 write admission and an attributed human. A missing or foreign-project watcher
@@ -1297,15 +1313,24 @@ their start time is secondary metadata and is never prefixed with a redundant
 `Episode` label. A completed type group names the mode once rather than repeating
 it on every card. Collapsed cards contain no muted recommendation or report
 commentary. Each Experiment's backend control selects its one current
-`episode_id`, so repeated work produces one card for that Experiment node. Older
-episodes remain reachable through project History instead of appearing as
-sibling Runs cards.
+`episode_id` per graph target, so repeated work on one target produces one card,
+and live loops on different targets produce one card each in the same flat
+list. Selection, Stop, and busy state follow the exact episode. Older episodes
+remain reachable through project History instead of appearing as sibling Runs
+cards.
 
-Each episode card and space run row shows a compact initials avatar and the
-recorded human authorizer's name, labelled **Started by**. This is historical
-episode attribution, including the inherited authorizer on an Auto-research
-child; it does not claim live presence or enumerate contributors. Missing legacy
-attribution never borrows the current viewer's identity.
+Each Experiment card shows its graph target (a Main pill or a branch badge), its
+checkout (shared or worktree), and who started it: a member, or Auto-research
+with a link to the parent run. Each episode card and space run row also shows a
+compact initials avatar and the recorded human authorizer's name. This is
+historical episode attribution, including the inherited authorizer on an
+Auto-research child; it does not claim live presence or enumerate contributors.
+Missing legacy attribution never borrows the current viewer's identity. The
+Run dialog lists live loops on that node on other targets before submission,
+as information; it never disables Run. A main loop opened from a branch view
+shows its chat read-only. A chat's watcher strip lists only live watchers (watching, check
+failing, or a job that can still be cancelled) that chat armed or its own
+target's loop owns; ended watchers stay in Runs.
 
 Every unarchived episode offers **Archive**; an archived episode offers
 **Unarchive**. The [episode archive](conversations-episodes-and-watchers.md#episode-archive)
@@ -1322,6 +1347,14 @@ being published; cached graph state cannot reverse an archive choice.
 The episode index is an explicit typed projection whose current `episode` is
 non-null. Main-target entries consume the completed project snapshot's
 Experiment-control map; branch entries consume the exact branch read model.
+Both `GET /api/episodes?mode=experiment_loop` and the project-scoped index
+return `{entries, unavailable}`. Healthy entries remain visible when a live
+loop's branch or control cannot be read. Each unreadable live loop has an
+`unavailable` row with project identity, graph target, control node id, episode
+id, and diagnostic detail. Historical-only failures are logged and skipped.
+Runs shows a small notice naming the affected branches. A missing or invalid
+required cached project snapshot still returns 503. `/api/space/runs` keeps its
+existing response shape and returns 503 with the first unavailable detail.
 Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
 The page keeps each project's episode list, so returning to a project tab shows

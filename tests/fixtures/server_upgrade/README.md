@@ -72,3 +72,9 @@ cards gained a per-provider auto-compact map (storage migration 42). It also
 carries the owner sign-in, browser grant, and machine hidden-folder migrations
 that followed the previous boundary. It is built by the exact boundary source
 from the preceding immutable fixture.
+
+`pre-per-target-loops-v18-3640725` retains the last shape before Experiment
+loops gained per-graph-target live identity (storage migration 44). It also
+carries the per-provider auto-compact and shell-timeout migrations, ending at
+migration 43. It is built by the exact boundary source from the preceding
+immutable fixture.

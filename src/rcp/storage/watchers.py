@@ -9,6 +9,7 @@ from pydantic import (
     TypeAdapter,
 )
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import (
     AuthorizedHuman,
 )
@@ -433,7 +434,7 @@ class WatcherStoreMixin(StoreMixinBase):
                 record.chat_id,
                 record.node_id,
                 record.episode_id,
-                record.graph_target.model_dump_json(),
+                graph_target_json(record.graph_target),
                 record.execution_host,
                 check_command,
                 log_path,
@@ -624,11 +625,7 @@ class WatcherStoreMixin(StoreMixinBase):
         """
 
         timestamp = evaluated_at or self.now()
-        target_json = json.dumps(
-            head.target.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        target_json = graph_target_json(head.target)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor_row = connection.execute(

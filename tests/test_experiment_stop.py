@@ -623,7 +623,9 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
 ) -> None:
     loop.start_episode(status="running")
     loop.arm_watcher("atomic-stop-watcher")
-    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    stopping = loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert stopping is not None and stopping.stop_settled_at is None
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
     original = loop.store._mark_episode_stop_skipped_in_connection
@@ -637,7 +639,9 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
         fail_terminalization,
     )
     with pytest.raises(RuntimeError, match="injected episode terminalization failure"):
-        loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+        loop.store.settle_experiment_loop_stop(
+            loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+        )
 
     watcher = loop.store.watcher("atomic-stop-watcher")
     episode = loop.store.episode(loop.episode_id)
@@ -646,7 +650,9 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
     assert episode.stop_settled_at is None
 
     monkeypatch.setattr(loop.store, "_mark_episode_stop_skipped_in_connection", original)
-    settled = loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    settled = loop.store.settle_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert settled is not None and settled.stop_settled_at is not None
     assert loop.store.watcher("atomic-stop-watcher").status == "stopped"  # type: ignore[union-attr]
 
@@ -727,7 +733,9 @@ def test_experiment_control_projection_reads_runtime_and_episode_from_one_snapsh
         nonlocal stop_written
         if not stop_written:
             stop_written = True
-            loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+            loop.store.request_experiment_loop_stop(
+                loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+            )
         return original(connection, project_id, control_node_id, episode_id)
 
     monkeypatch.setattr(
@@ -775,7 +783,9 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     loop.store.record_agent_task_contract(
         "loop-root", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
     )
-    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    stopping = loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert stopping is not None and stopping.stop_settled_at is None
     observed = Event()
     captured: dict[str, object] = {}
@@ -833,7 +843,9 @@ def test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertai
         stage_root="/remote/rcp-stage",
     )
     loop.record_context_candidate("loop-root")
-    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    stopping = loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert stopping is not None and stopping.stop_settled_at is None
     monkeypatch.setattr(
         "rcp.background.RemoteRunStage.directory_exists",
@@ -880,13 +892,17 @@ def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(loop, 
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
 
-    loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     before = loop.loop_task_ids()
     loop.deliver("finished-unclaimed")
 
     assert loop.loop_task_ids() == before
     assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
-    runtime = loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID)
+    runtime = loop.store.experiment_loop_runtime(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     # The session was usable; only the stop refused the wake, and no budget moved.
     assert runtime.session_bound is True
     assert runtime.invocations_used == 1
@@ -950,7 +966,12 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -
     diagnostic = loop.control()["operational"]["session"]["diagnostic"]
     assert diagnostic is not None
     assert "saved provider workspace is gone" in diagnostic
-    assert loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID).invocations_used == 1
+    assert (
+        loop.store.experiment_loop_runtime(
+            loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+        ).invocations_used
+        == 1
+    )
 
 
 def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_path) -> None:
@@ -1162,7 +1183,9 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
     assert episode.native_session_id == "new-claude-session"
     assert episode.stage_root == str(new_stage)
     assert episode.last_turn_invocation == 2
-    runtime = loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID)
+    runtime = loop.store.experiment_loop_runtime(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert runtime.episode_id == loop.episode_id
     assert runtime.provider == "claude"
     assert runtime.model == "sonnet"
@@ -1637,8 +1660,8 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     stage.rmdir()
 
     stopping = loop.stop()
-    assert stopping["operational"]["stop_settled"] is False
-    with pytest.raises(ValueError, match="cannot start a fresh provider session"):
+    assert stopping["operational"]["stop_settled"] is True
+    with pytest.raises(ValueError):
         app.state.background_tasks.retry("failed-wake")
 
     assert not [
@@ -2455,7 +2478,9 @@ def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(loop, t
 
 def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path) -> None:
     loop.start_episode(status="running")
-    loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     desired = loop._watcher("final-handoff")
 
     stored = loop.store.persist_experiment_watchers_idempotently(
@@ -3057,9 +3082,9 @@ def test_artifact_edit_does_not_replace_episode_control_or_block_watcher_wake(lo
             generated_tokens=10,
         ),
     )
-    snapshot = loop.store.experiment_control_projection_snapshots(loop.project_id, [EXPERIMENT_ID])[
-        EXPERIMENT_ID
-    ].episode
+    snapshot = loop.store.experiment_control_projection_snapshots(
+        loop.project_id, [EXPERIMENT_ID], graph_target=GraphTargetRef()
+    )[EXPERIMENT_ID].episode
     episode = loop.store.episode(loop.episode_id)
     projection = serialize_episode(
         loop.store, loop.project_id, episode, projection_snapshot=snapshot

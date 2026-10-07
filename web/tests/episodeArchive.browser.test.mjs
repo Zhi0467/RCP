@@ -340,7 +340,7 @@ test("active and unresolved episodes archive without stopping work and restore a
         isEpisodes
           ? records
           : isIndex
-            ? entries()
+            ? { entries: entries(), unavailable: [] }
             : isSpace
               ? spaceEntries()
               : url.pathname.endsWith("/messages")

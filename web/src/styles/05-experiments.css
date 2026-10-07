@@ -1207,3 +1207,16 @@
   line-height: 1.2;
   margin: 5px 11px 10px;
 }
+
+.experiment-branch-badge {
+  border: 1px solid var(--line);
+  max-width: 16rem;
+  text-transform: none;
+}
+.experiment-branch-badge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.experiment-branch-badge > svg {
+  flex-shrink: 0;
+}

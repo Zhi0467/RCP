@@ -151,19 +151,21 @@ test("pending Experiment watcher polling always refreshes control state", async 
   assert.ok(result.project.experiment_control);
 });
 
-test("branch watcher polling scopes the graph while retaining project task lifecycles", async () => {
+test("branch polling retains all-target watchers and tasks while scoping the graph", async () => {
   const requested = [];
   const base = "/api/projects/project-1";
-  await loadExperimentWatcherPoll(
+  const watchers = ["main", "branch-one", "branch-two"].map((watcher_id) => ({ watcher_id }));
+  const result = await loadExperimentWatcherPoll(
     async (path) => {
       requested.push(path);
-      return {};
+      return new URL(path, "http://localhost").pathname.endsWith("/watchers") ? watchers : {};
     },
     base,
     { kind: "branch", branch_id: "episode-branch" },
   );
+  assert.deepEqual(result.watchers, watchers);
   assert.deepEqual(requested, [
-    `${base}/watchers?branch_id=episode-branch`,
+    `${base}/watchers?all_targets=true&branch_id=episode-branch`,
     `${base}/tasks`,
     `${base}?branch_id=episode-branch`,
   ]);

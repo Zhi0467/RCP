@@ -31,9 +31,11 @@ from rcp.background import AgentTaskExecution
 from rcp.control import decision_drift
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import UpdateNodesOperation as CoreUpdateNodesOperation
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
-from rcp.runs.shared import _stage_json_task_input
+from rcp.loop_status import LoopStatusProjection, chat_loop_status, loop_status_projection
+from rcp.runs.shared import _stage_json_task_input, _stage_or_reuse_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -141,11 +143,11 @@ class StagedExperimentWatcherResource:
 
 def experiment_watcher_output_name(
     control_node_id: str,
-    graph_target: GraphTargetRef | None = None,
+    graph_target: GraphTargetRef,
 ) -> str:
     """Return the stable physical filename that selects one Experiment resource."""
 
-    target = graph_target or GraphTargetRef()
+    target = graph_target
     digest = hashlib.sha256(f"{target.key}\0{control_node_id}".encode()).hexdigest()
     return f"{_EXPERIMENT_WATCH_OUTPUT_PREFIX}{digest}{_EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
 
@@ -1106,6 +1108,45 @@ def _watcher_state(
             )
         state.append(item)
     return state
+
+
+def stage_chat_loop_status(
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    *,
+    state: GraphState,
+    graph_target: GraphTargetRef,
+) -> dict[str, object] | None:
+    """Fresh read-only status, independent of live watcher-maintenance resources."""
+
+    if request.chat_scope != "node" or request.node_id is None:
+        return None
+    node = state.nodes.get(request.node_id)
+    if node is None or not project_type_of(state).is_control_node(node.type):
+        return None
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    status = (
+        loop_status_projection(
+            execution.store, task.project_id, request.node_id, graph_target=task.graph_target
+        )
+        if execution is not None and task is not None
+        else LoopStatusProjection(
+            node_id=request.node_id, graph_target=graph_target, state="unavailable"
+        )
+    )
+    watchers = (
+        _watcher_state(execution, request.node_id, [], status.current.episode_id, "resume")
+        if execution is not None and status.current is not None
+        else []
+    )
+    content = json.dumps(watchers, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    path = _stage_or_reuse_task_input(
+        local_stage, remote_stage, f"loop-status-watchers-{digest}.json", content
+    )
+    return {**chat_loop_status(status), "watcher_state_path": path}
 
 
 async def stage_chat_experiment_watcher_resources(

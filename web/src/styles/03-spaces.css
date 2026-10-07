@@ -1006,10 +1006,20 @@
   border-bottom: 1px solid var(--landing-rule);
   position: relative;
   align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.space-run-loop-metadata {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 18px 12px;
 }
 .space-run-row > .episode-archive-control {
-  flex: none;
+  grid-column: 2;
+  grid-row: 1 / span 2;
   margin: 0 12px;
 }
 .space-run-attribution {

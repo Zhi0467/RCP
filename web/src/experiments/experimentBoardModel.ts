@@ -1,4 +1,9 @@
-import { graphTargetFromHash, graphViewHash } from "../core/graphTarget.ts";
+import {
+  graphTargetFromHash,
+  graphViewHash,
+  MAIN_GRAPH,
+  sameGraphTarget,
+} from "../core/graphTarget.ts";
 import type {
   AgentTask,
   AppView,
@@ -9,7 +14,20 @@ import type {
   GraphTargetRef,
   SpaceRunIndexEntry,
   WatcherRecord,
+  UnavailableExperimentLoop,
 } from "../core/types";
+
+export function unavailableExperimentTargets(
+  unavailable: UnavailableExperimentLoop[],
+): GraphTargetRef[] {
+  const targets: GraphTargetRef[] = [];
+  for (const row of unavailable) {
+    if (!targets.some((target) => sameGraphTarget(target, row.graph_target))) {
+      targets.push(row.graph_target);
+    }
+  }
+  return targets;
+}
 
 export interface ProjectHashRoute {
   projectId: string | null;
@@ -170,7 +188,7 @@ export function continuedExperimentRoute(
   if (!exactExperimentRoute) return null;
   if (exactExperimentRoute.experiment_id !== episode.control_node_id) return null;
   if (exactExperimentRoute.episode_id !== episode.continues_episode_id) return null;
-  if (!graphTargetsEqual(exactExperimentRoute.graph_target, episode.graph_target)) return null;
+  if (!sameGraphTarget(exactExperimentRoute.graph_target, episode.graph_target)) return null;
   return {
     experiment_id: episode.control_node_id,
     episode_id: episode.episode_id,
@@ -291,10 +309,27 @@ export function experimentIndexEntryForRoute(
       entry.control.episode_id === route.episode_id &&
       entry.episode?.episode_id === route.episode_id &&
       entry.parent_episode_id === route.parent_episode_id &&
-      graphTargetsEqual(entry.graph_target, route.graph_target) &&
-      (!entry.graph_head || graphTargetsEqual(entry.graph_head.target, route.graph_target)),
+      sameGraphTarget(entry.graph_target, route.graph_target) &&
+      (!entry.graph_head || sameGraphTarget(entry.graph_head.target, route.graph_target)),
   );
   return matches.length === 1 ? matches[0] : null;
+}
+
+/** Only a main snapshot can supersede a main index entry; branch views use the entry itself. */
+export function currentExperimentEntries(
+  entries: ExperimentLoopIndexEntry[],
+  experimentControl: Record<string, ExperimentControlState>,
+  exactEntry: ExperimentLoopIndexEntry | null,
+  displayedTarget: GraphTargetRef = MAIN_GRAPH,
+): ExperimentLoopIndexEntry[] {
+  return (exactEntry ? [...entries, exactEntry] : entries).filter(
+    (entry) =>
+      entry.graph_target.kind !== "main" ||
+      mainExperimentRouteMatchesControl(
+        experimentRouteIdentity(entry),
+        displayedTarget.kind === "main" ? experimentControl[entry.node.id] : entry.control,
+      ),
+  );
 }
 
 export function projectExperimentExecution(
@@ -304,8 +339,9 @@ export function projectExperimentExecution(
   experimentControl: Record<string, ExperimentControlState>,
   route: ExperimentRouteIdentity | null,
   exactEntry: ExperimentLoopIndexEntry | null,
+  displayedTarget: GraphTargetRef = MAIN_GRAPH,
 ): ExperimentExecutionProjection {
-  if (route?.graph_target.kind !== "branch") {
+  if (!route || (route.graph_target.kind === "main" && displayedTarget.kind === "main")) {
     return {
       nodes,
       tasks,
@@ -329,7 +365,7 @@ export function projectExperimentExecution(
     }
     return (
       task.request.control_episode_id === route.episode_id &&
-      graphTargetsEqual(task.graph_target, route.graph_target)
+      sameGraphTarget(task.graph_target, route.graph_target)
     );
   });
   const projectedWatchers = watchers.filter((watcher) => {
@@ -341,7 +377,7 @@ export function projectExperimentExecution(
     }
     return (
       watcher.continuation.control_episode_id === route.episode_id &&
-      graphTargetsEqual(watcher.graph_target, route.graph_target)
+      sameGraphTarget(watcher.graph_target, route.graph_target)
     );
   });
   const projectedControl = { ...experimentControl };
@@ -365,7 +401,7 @@ export function projectExperimentExecution(
     tasks: [...tasksById.values()],
     watchers: projectedWatchers,
     experimentControl: projectedControl,
-    exactBranchEntry: exactEntry,
+    exactBranchEntry: route.graph_target.kind === "branch" ? exactEntry : null,
     staleMainRoute: null,
   };
 }
@@ -378,7 +414,7 @@ export function mainExperimentRouteMatchesControl(
     route.graph_target.kind === "main" &&
     control?.episode_id === route.episode_id &&
     control.episode?.episode_id === route.episode_id &&
-    graphTargetsEqual(control.episode.graph_target, route.graph_target),
+    sameGraphTarget(control.episode.graph_target, route.graph_target),
   );
 }
 
@@ -430,13 +466,10 @@ function experimentRouteFromParams(
       parent_episode_id: null,
     };
   }
-  // An Auto-research child names its owning episode; a human Run isolated on its
-  // own branch has no parent.
-  if (
-    targetKind === "branch" &&
-    branchId &&
-    (parentEpisodeId === branchId || parentEpisodeId === null)
-  ) {
+  // An Auto-research child names its owning episode, which after reauthorization
+  // is a continuation of the branch's root; a human isolated Run has no parent.
+  // The exact index entry match validates the pair.
+  if (targetKind === "branch" && branchId && parentEpisodeId !== "") {
     return {
       experiment_id: experimentId,
       episode_id: episodeId,
@@ -488,13 +521,16 @@ function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdenti
     target.kind === "branch" &&
     typeof target.branch_id === "string" &&
     target.branch_id &&
-    (value.parent_episode_id === target.branch_id || value.parent_episode_id === null)
+    // A continued Auto-research run keeps the chain root as branch_id, so the
+    // parent may differ from it; the exact index entry match validates it.
+    ((typeof value.parent_episode_id === "string" && value.parent_episode_id) ||
+      value.parent_episode_id === null)
   ) {
     return {
       experiment_id: value.experiment_id,
       episode_id: value.episode_id,
       graph_target: { kind: "branch", branch_id: target.branch_id },
-      parent_episode_id: value.parent_episode_id,
+      parent_episode_id: value.parent_episode_id as string | null,
     };
   }
   return null;
@@ -502,11 +538,4 @@ function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdenti
 
 function hasExperimentIdentityParams(params: URLSearchParams): boolean {
   return ["episode", "target", "branch", "parent"].some((key) => params.has(key));
-}
-
-export function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean {
-  return (
-    left?.kind === right.kind &&
-    (left.kind === "main" || (right.kind === "branch" && left.branch_id === right.branch_id))
-  );
 }

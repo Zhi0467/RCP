@@ -21,7 +21,9 @@ import type {
   MergePreview,
   EpisodeTimelineText,
   EpisodeMode,
-  ExperimentLoopIndexEntry,
+  ExperimentLoopIndex,
+  ExperimentStartResponse,
+  AgentTaskRequest,
   IdentityResponse,
   MachineDirectoryListing,
   MachineDirectoryRequest,
@@ -481,14 +483,23 @@ export function loadEpisodes(
   return api<Episode[]>(`${apiBase}/episodes${suffix}`);
 }
 
-export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {
-  return api<ExperimentLoopIndexEntry[]>("/api/episodes?mode=experiment_loop");
+/** Start on the supplied graph route and retain the server's overlap receipt. */
+export function startExperimentRun(
+  path: string,
+  request: AgentTaskRequest,
+): Promise<ExperimentStartResponse> {
+  return api<ExperimentStartResponse>(path, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
 }
 
-export function loadProjectExperimentEpisodes(
-  projectId: string,
-): Promise<ExperimentLoopIndexEntry[]> {
-  return api<ExperimentLoopIndexEntry[]>(
+export function loadExperimentEpisodes(): Promise<ExperimentLoopIndex> {
+  return api<ExperimentLoopIndex>("/api/episodes?mode=experiment_loop");
+}
+
+export function loadProjectExperimentEpisodes(projectId: string): Promise<ExperimentLoopIndex> {
+  return api<ExperimentLoopIndex>(
     `/api/projects/${encodeURIComponent(projectId)}/experiment-episodes?mode=experiment_loop`,
   );
 }

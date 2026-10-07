@@ -444,11 +444,14 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
       ],
       experimentControl: {},
       experimentEntries: [indexed],
+      exactExperimentRoute: parseProjectHash(
+        experimentBoardHref(indexed.project_id, experimentBoardRouteToken(indexed)),
+      ).experimentRoute,
       selectedExperimentId: indexed.node.id,
       focusExperimentId: null,
       selectedAutoResearchEpisodeId: parentEpisodeId,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -625,7 +628,7 @@ test("an explicit main route becomes history when the Experiment advances concur
       selectedExperimentId: experiment.id,
       focusExperimentId: experiment.id,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -799,7 +802,7 @@ test("a stale main index entry cannot duplicate the current Experiment card", ()
       selectedExperimentId: experiment.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -892,7 +895,7 @@ test("a stale main index entry cannot replace a fresher project run", () => {
       selectedExperimentId: experiment.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -1011,7 +1014,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
       selectedExperimentId: indexed.node.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onSelectNode() {},
@@ -1086,7 +1089,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
       selectedExperimentId: terminalIndexed.node.id,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onSelectNode() {},
@@ -1156,6 +1159,7 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
     const html = renderToStaticMarkup(
       React.createElement(NodeChat, {
         project,
+        graphTarget: { kind: "branch", branch_id: "parent-episode" },
         node: branchNode,
         nodes: { [branchNode.id]: branchNode },
         runScope: ["repo"],
@@ -1222,6 +1226,47 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
     assert.doesNotMatch(html, /chat-new-session|scope-trigger/);
     assert.match(html, /<button type="button" disabled="">/);
   });
+});
+
+test("a branch chat uses its explicit target before it has any tasks", () => {
+  const graphTarget = { kind: "branch", branch_id: "branch-one" };
+  const experiment = node("experiment/shared");
+  const props = {
+    project: {
+      id: "project-one",
+      name: "Project One",
+      graph_target: { kind: "main" },
+      agent_profiles: { node_chat: { provider: "codex", run_on: "local", permissions: {} } },
+      provider_readiness: {},
+      repositories: [],
+      project_truth_scope: [],
+    },
+    graphTarget,
+    node: experiment,
+    runScope: [],
+    tasks: [],
+    chatId: "branch-chat",
+    readOnly: true,
+    presentation: "workspace",
+  };
+  const watcher = {
+    watcher_id: "branch-watcher",
+    graph_target: graphTarget,
+    chat_id: "loop-chat",
+    status: "active",
+    continuation: { control_node_id: experiment.id, patch_kind: "experiment_loop" },
+  };
+  const ownTarget = renderToStaticMarkup(
+    React.createElement(NodeChat, { ...props, watchers: [watcher] }),
+  );
+  const otherTarget = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      ...props,
+      watchers: [{ ...watcher, graph_target: { kind: "main" } }],
+    }),
+  );
+  assert.equal((ownTarget.match(/class="chat-watcher-count/g) ?? []).length, 1);
+  assert.equal((otherTarget.match(/class="chat-watcher-count/g) ?? []).length, 0);
 });
 
 test("partial branch identity fails closed instead of selecting the same id on main", () => {
@@ -1317,4 +1362,296 @@ test("the board shows the shared report wrap-up as in-progress", () => {
   );
 
   assert.match(html, /status-pill running/);
+});
+
+test("every target view keeps all same-node cards and scopes selection and busy state to the episode", () => {
+  const experiment = node("experiment/shared", "active");
+  const entries = [
+    { id: "main-episode", target: { kind: "main" } },
+    { id: "branch-episode", target: { kind: "branch", branch_id: "branch-one" } },
+    { id: "sibling-episode", target: { kind: "branch", branch_id: "branch-two" } },
+  ].map(({ id, target }) => {
+    const runEpisode = episode({
+      episode_id: id,
+      control_node_id: experiment.id,
+      graph_target: target,
+      status: "running",
+      ending: null,
+      wrapup_state: "pending",
+      can_stop: true,
+      started_by:
+        target.kind === "main"
+          ? {
+              kind: "human",
+              human: { space_id: "space-one", user_id: "member-one", display_name: "member-one" },
+              auto_research_episode_id: null,
+            }
+          : { kind: "auto_research", human: null, auto_research_episode_id: "parent-run" },
+      auto_research_parent_episode_id: target.kind === "main" ? null : "parent-run",
+      checkout: {
+        kind: target.kind === "main" ? "shared" : "worktree",
+        execution_host: "local",
+        repository_paths: ["/workspace/repo"],
+      },
+      authorized_by: {
+        space_id: "space-one",
+        user_id: "member-one",
+        display_name: "member-one",
+      },
+    });
+    const runControl = control(
+      { episode_id: id, episode: runEpisode, active: true, can_stop: true, can_start: false },
+      { task_active: true, episode_live: true },
+    );
+    return {
+      ...entry(experiment.id, "active", runControl),
+      graph_target: target,
+      episode: runEpisode,
+    };
+  });
+  for (const displayed of entries)
+    for (const selected of entries) {
+      for (const item of entries)
+        item.episode.created_at =
+          item === selected ? "2026-10-06T10:00:00Z" : "2026-10-06T11:00:00Z";
+      const route = parseProjectHash(
+        experimentBoardHref(selected.project_id, experimentBoardRouteToken(selected)),
+      ).experimentRoute;
+      const projection = projectExperimentExecution(
+        [experiment],
+        [],
+        [],
+        { [experiment.id]: displayed.control },
+        route,
+        selected,
+        displayed.graph_target,
+      );
+      // Main selected from a branch must use the main entry, including its chat control.
+      if (selected.graph_target.kind === "branch" || displayed.graph_target.kind === "branch") {
+        assert.equal(projection.experimentControl[experiment.id], selected.control);
+        assert.equal(projection.staleMainRoute, null);
+      }
+      let renderedView;
+      const selections = [];
+      function CaptureView(props) {
+        renderedView = ExecutionView(props);
+        return renderedView;
+      }
+      const html = renderToStaticMarkup(
+        React.createElement(CaptureView, {
+          graph: { nodes: { [experiment.id]: experiment }, edges: {} },
+          episodes: entries.map((item) => item.episode),
+          episodeAction: null,
+          tasks: [],
+          watchers: [],
+          graphTarget: displayed.graph_target,
+          experimentControl: { [experiment.id]: displayed.control },
+          experimentEntries: entries,
+          exactExperimentRoute: route,
+          exactExperimentEntry: selected.graph_target.kind === "branch" ? selected : null,
+          selectedExperimentId: experiment.id,
+          focusExperimentId: null,
+          runBusy: false,
+          stopBusyIds: new Set([selected.episode.episode_id]),
+          watcherCheckBusyId: null,
+          taskActionId: null,
+          selectedExperimentConversation: React.createElement("div", {
+            "data-selected-episode": selected.episode.episode_id,
+          }),
+          onInspectTask() {},
+          onStopEpisode() {},
+          onArchiveEpisode() {},
+          onMergeEpisode() {},
+          onContinueEpisode() {},
+          onSendEpisodeMessage() {},
+          onOperateEpisodeTask() {},
+          onSwitchEpisodeProvider() {},
+          onSelectExperiment(nodeId, exactRoute) {
+            selections.push([nodeId, exactRoute]);
+          },
+          onOpenExperimentEntry() {},
+          onDetailFocused() {},
+          onOpenHistory() {},
+          onRunExperiment() {},
+          onStopExperiment() {},
+          onCheckExperimentWatcher() {},
+          onStopExperimentWatcher() {},
+          onRecoverExperiment() {},
+          onSwitchExperimentProvider() {},
+          episodeReportHref: () => "#",
+        }),
+      );
+      // Invoke the real collapsed card's click handler, using React's SSR renderer
+      // to keep hooks valid. The browser case covers effects, focus, and rerendering.
+      const cardElement = findElement(
+        renderedView,
+        (element) =>
+          element.props.run && element.props.episode?.episode_id === selected.episode.episode_id,
+      );
+      assert.ok(cardElement);
+      let renderedCard;
+      function CaptureCard() {
+        renderedCard = cardElement.type({
+          ...cardElement.props,
+          initiallyExpanded: false,
+          selected: false,
+        });
+        return renderedCard;
+      }
+      renderToStaticMarkup(React.createElement(CaptureCard));
+      const toggle = findElement(
+        renderedCard,
+        (element) => element.props.className === "campaign-run-toggle",
+      );
+      assert.equal(toggle.props["aria-expanded"], false);
+      toggle.props.onClick();
+      assert.deepEqual(selections, [[experiment.id, route]]);
+      const cards = [
+        ...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g),
+      ];
+      assert.deepEqual(
+        new Set(cards.map((match) => match[1])),
+        new Set(entries.map((item) => item.episode.episode_id)),
+      );
+      for (const [card, id] of cards) {
+        const isSelected = id === selected.episode.episode_id;
+        assert.match(card, /class="episode-author"/);
+        if (id === "main-episode") {
+          assert.doesNotMatch(card, /data-starter-kind=/);
+        } else {
+          assert.match(card, /data-starter-kind="auto_research"/);
+        }
+        assert.match(
+          card,
+          new RegExp(`data-checkout-kind="${id === "main-episode" ? "shared" : "worktree"}"`),
+        );
+
+        assert.equal(card.includes("experiment-branch-badge"), true);
+        assert.equal(card.includes("data-selected-episode="), isSelected);
+        if (isSelected) {
+          assert.match(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+        } else if (card.includes('aria-expanded="true"')) {
+          // An expanded sibling keeps its enabled Stop while the selected episode is busy.
+          assert.match(card, /class="[^"]*experiment-stop-loop/);
+          assert.equal(
+            entries.find((item) => item.episode.episode_id === id).control.can_stop,
+            true,
+          );
+          assert.doesNotMatch(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
+        }
+      }
+    }
+});
+
+function findElement(tree, predicate) {
+  if (Array.isArray(tree)) {
+    for (const child of tree) {
+      const match = findElement(child, predicate);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (!React.isValidElement(tree)) return null;
+  return predicate(tree) ? tree : findElement(tree.props.children, predicate);
+}
+
+test("a branch view waits for the loop index before classifying a main route as history", () => {
+  const experiment = node("experiment/shared", "active");
+  const mainEpisode = episode({
+    episode_id: "main-episode",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+  });
+  const branchEpisode = episode({
+    episode_id: "branch-episode",
+    control_node_id: experiment.id,
+    graph_target: { kind: "branch", branch_id: "branch-one" },
+  });
+  const mainEntry = entry(
+    experiment.id,
+    "active",
+    control({
+      episode_id: mainEpisode.episode_id,
+      episode: mainEpisode,
+    }),
+  );
+  const route = {
+    experiment_id: experiment.id,
+    episode_id: mainEpisode.episode_id,
+    graph_target: mainEpisode.graph_target,
+    parent_episode_id: null,
+  };
+  for (const [loaded, entries] of [
+    [false, []],
+    [true, [mainEntry]],
+    [true, []],
+  ]) {
+    const html = renderToStaticMarkup(
+      React.createElement(ExecutionView, {
+        graph: { nodes: { [experiment.id]: experiment }, edges: {} },
+        graphTarget: branchEpisode.graph_target,
+        episodes: [mainEpisode, branchEpisode],
+        tasks: [],
+        watchers: [],
+        experimentControl: {
+          [experiment.id]: control({
+            episode_id: branchEpisode.episode_id,
+            episode: branchEpisode,
+          }),
+        },
+        experimentEntries: entries,
+        experimentEntriesLoaded: loaded,
+        exactExperimentRoute: route,
+        selectedExperimentId: experiment.id,
+        stopBusyIds: new Set(),
+        selectedExperimentConversation: React.createElement("div", {
+          "data-selected-episode": mainEpisode.episode_id,
+        }),
+        episodeReportHref: () => "#",
+      }),
+    );
+    assert.equal(html.includes('class="run-route-history"'), loaded && entries.length === 0);
+    assert.equal(
+      html.includes('class="run-route-loading" role="status" aria-busy="true"'),
+      !loaded,
+    );
+    assert.equal(
+      html.includes('data-selected-episode="main-episode"'),
+      loaded && entries.length > 0,
+    );
+  }
+});
+
+test("Runs retains healthy cards and names each unavailable branch once", () => {
+  const healthy = entry(
+    "experiment/healthy",
+    "active",
+    control({ episode: episode({ control_node_id: "experiment/healthy" }) }),
+  );
+  const unavailable = {
+    project_id: healthy.project_id,
+    project_name: healthy.project_name,
+    graph_target: { kind: "branch", branch_id: "unavailable-branch" },
+    control_node_id: "experiment/unavailable",
+    episode_id: "episode-unavailable",
+    detail: "Branch unavailable",
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: { nodes: { [healthy.node.id]: healthy.node }, edges: {} },
+      episodes: [],
+      tasks: [],
+      watchers: [],
+      experimentControl: { [healthy.node.id]: healthy.control },
+      experimentEntries: [healthy],
+      experimentUnavailableLoops: [
+        unavailable,
+        { ...unavailable, episode_id: "episode-other", control_node_id: "experiment/other" },
+      ],
+      stopBusyIds: new Set(),
+    }),
+  );
+  assert.match(html, /class="experiment-board-unavailable" role="status"/);
+  assert.equal((html.match(/title="unavailable-branch"/g) ?? []).length, 1);
+  assert.match(html, /data-episode-id="episode-1"/);
 });

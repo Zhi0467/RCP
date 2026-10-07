@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Literal
 
 from rcp.agents.artifact_contract import artifact_contract
+from rcp.agents.context import ChatContext
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.agents.prompts import (
     _EXTERNAL_WATCHER_FORMS,
     _TASK_AUTHORITY_BOUNDARY,
@@ -16,15 +18,32 @@ from rcp.agents.prompts import (
     _repository_pointers,
     _watcher_execution_host,
     _work_experiment_watcher_resource_section,
+    render_chat_read_context,
     selected_skill_section,
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
+from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
 EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v4"
+
+
+def experiment_loop_read_context(
+    context: ChatContext, loops: LoopOverlap, *, ask_allowed: bool
+) -> str:
+    """Fresh overlap evidence and branch read pointers for every loop invocation."""
+
+    pointers = render_chat_read_context(context)
+    return (
+        "Other-target live loops for this node:\n"
+        + render_loop_overlap(loops, ask_allowed=ask_allowed)
+        + "\n\n"
+        + pointers
+    )
+
 
 # The contract names the fields enforcement actually admits, so the two cannot
 # drift apart into a human-written allowlist beside the real one.

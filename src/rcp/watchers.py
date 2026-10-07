@@ -802,10 +802,10 @@ class WatcherDelivery:
                 ):
                     self._store.stop_watchers(first.project_id, watcher_ids)
                     return
-                runtime = self._store.experiment_loop_runtime_for_target(
+                runtime = self._store.experiment_loop_runtime(
                     first.project_id,
                     control_node_id,
-                    first.graph_target,
+                    graph_target=first.graph_target,
                 )
                 episode = (
                     self._store.experiment_episode(runtime.episode_id)

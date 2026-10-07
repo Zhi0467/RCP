@@ -554,6 +554,17 @@
 .campaign-run-heading > .archived-episode-actions {
   pointer-events: auto;
 }
+.runs-view > .experiment-board-unavailable {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font: var(--type-xs)/1.4 var(--body);
+  letter-spacing: normal;
+  margin-bottom: 12px;
+  text-transform: none;
+}
 .runs-view-controls {
   display: flex;
   justify-content: flex-end;

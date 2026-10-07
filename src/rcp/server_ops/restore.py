@@ -46,6 +46,16 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-target Experiment loops, fresh and historical in-place upgrades.
+        "c6db35af708b61c951ac40cba438e4c2d3888ce681e0ac16cbe65df9250bf0d3",
+        "e46b4d477534c3701798b01b45d3529626236fab325cc600c9216a2168156f49",
+        "6fd2e76b5f90a9720d3ccdd3fc27753516e1165237bb631d82531d3a8803093c",
+        "5bfc0ff9db6ee91fe4fd3915de0838066910c1ad4c00c3a3004e1a3d915bebf1",
+        "c8b4b5273b5d04c6862ec293b6d57046f83d0dd08f5b1b04d4ae67bffabe5736",
+        "7085cb3e2e6dec86b6f4effa8f4e1d99640d6648a679d3f5fae6af2167243aa2",
+        "0b0c5ce83844f12868de405171d4ffc7e6839c87cbd0829fbc9541ebb5190748",
+        "9f8d6299091eb189a6c3395daf6ed69eb9604a3ec6ecca582908968716b1ed88",
+        "529687b1794bb55dbe58d44160f1b95234aec29957cc0f43f1115bae26628da4",
         # Per-machine provider shell timeout, fresh and historical in-place upgrades.
         "103947657c32d80b70e02605eb95dacaf6cc967915bf9601bdb90a1cefefac6c",
         "84147ee5ae320f2e40579fb1c94a383001d821300d17a3e52e0f1a2fe437364c",

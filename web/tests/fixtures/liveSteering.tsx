@@ -74,6 +74,7 @@ function Fixture() {
   return (
     <main style={{ height: "100vh", padding: 24 }}>
       <NodeChat
+        graphTarget={{ kind: "main" }}
         key={generation}
         project={project as never}
         runScope={["repo"]}

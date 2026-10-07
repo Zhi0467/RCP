@@ -1185,8 +1185,8 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     monkeypatch.setattr(runtime_module, "_stream_agent_events", disconnected_correction)
     monkeypatch.setattr(maintenance_module, "_stream_agent_events", disconnected_correction)
     if deliverable == "experiment-watch":
-        name = experiment_watcher_output_name("exp/test")
-        resource = SimpleNamespace(control_node_id="exp/test", graph_target=None)
+        name = experiment_watcher_output_name("exp/test", GraphTargetRef())
+        resource = SimpleNamespace(control_node_id="exp/test", graph_target=GraphTargetRef())
         finalization.experiment_resources = [
             SimpleNamespace(
                 resource=resource,

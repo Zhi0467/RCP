@@ -36,6 +36,7 @@ from rcp.storage import (
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, fabricated_authorizer, wait_for_task
+from .test_auto_research_children_storage import _experiment_task
 
 
 async def _successful_stream(_project_id, _kind, _request, _execution):
@@ -471,8 +472,7 @@ class _RecordingExperimentCoordinator:
             auto_research_episode_id=parent_id,
             project_id="project",
             control_node_id=kwargs["node_id"],
-            state="pending",
-            replaces_episode_id="prior-experiment",
+            state="running",
             request={
                 "goal": kwargs["goal"],
                 "invocation_limit": kwargs["invocation_limit"],
@@ -482,14 +482,17 @@ class _RecordingExperimentCoordinator:
             created_at=now,
             updated_at=now,
         )
-        self.store.reserve_auto_research_experiment_replacement(
-            route,
-            admission_id=kwargs["admission_id"],
+        parent = self.store.episode(parent_id)
+        assert parent is not None
+        self.store.create_experiment_episode_with_invocation(
+            _experiment_task(self.store, child_id, parent.authorized_by, node_id=kwargs["node_id"]),
+            auto_research_route=route,
+            auto_research_admission_id=kwargs["admission_id"],
         )
         return AutoResearchExperimentAction(
-            disposition="replacement_pending",
+            disposition="created",
             episode_id=child_id,
-            status="pending",
+            status="queued",
             allowance=self.store.auto_research_experiment_allowance(parent_id),
         )
 

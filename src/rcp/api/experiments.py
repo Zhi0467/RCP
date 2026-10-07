@@ -20,13 +20,15 @@ from rcp.api.dependencies import (
 )
 from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.api.episodes import _episode_for_http, episode_on_branch
-from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
+from rcp.api.experiment_controls import _experiment_control
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.control import ExperimentControlState
 from rcp.core.models import AuthorizedHuman, Experiment
+from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
+from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.projects import ProjectCatalog
 from rcp.runs.episodes.isolation import validate_episode_admission
 from rcp.runs.experiment_admission import (
@@ -39,7 +41,13 @@ from rcp.runs.experiment_loop import experiment_watcher_delivery_request
 from rcp.runs.provider_login import provider_login_host
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskAdmissionConflict, AppStore, EpisodeNotRunning, EpisodeRecord
+from rcp.storage import (
+    AgentTaskAdmissionConflict,
+    AgentTaskRecord,
+    AppStore,
+    EpisodeNotRunning,
+    EpisodeRecord,
+)
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -54,9 +62,28 @@ ExperimentOperationLockDependency = Annotated[
 ]
 
 
+class ExperimentStartResponse(AgentTaskRecord):
+    """The admitted task plus informational overlap on other graph targets."""
+
+    live_elsewhere: LoopOverlap
+
+
+def _start_response(store: AppStore, task: AgentTaskRecord, node_id: str) -> dict[str, object]:
+    return ExperimentStartResponse(
+        **task.model_dump(),
+        live_elsewhere=other_branch_loops(
+            store,
+            task.project_id,
+            graph_target=task.graph_target,
+            node_id=node_id,
+        ),
+    ).model_dump(mode="json")
+
+
 @router.post(
     "/api/projects/{project_id}/experiments/{node_id:path}/run",
     status_code=202,
+    response_model=ExperimentStartResponse,
     dependencies=[Depends(require_project_write_admission)],
 )
 def run_experiment(
@@ -83,15 +110,6 @@ def run_experiment(
         node = state.nodes.get(node_id)
         if not isinstance(node, Experiment):
             raise HTTPException(status_code=404, detail="Experiment not found")
-        runtime, control = _experiment_control(
-            store,
-            project_id,
-            state,
-            node_id,
-            graph_target=target,
-        )
-        if not control.ready:
-            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
         client_request = dict(body)
         client_request.pop("resolved_compute_context", None)
         client_request.pop("isolation_owner_episode_id", None)
@@ -121,6 +139,17 @@ def run_experiment(
             raise ValueError("Run requires a new chat_id; this conversation already has turns.")
         episode_id = str(uuid.uuid4())
         creates_branch = supplied.graph_isolation and target.kind == "main"
+        runtime, control = _experiment_control(
+            store,
+            project_id,
+            state,
+            node_id,
+            graph_target=(
+                GraphTargetRef(kind="branch", branch_id=episode_id) if creates_branch else target
+            ),
+        )
+        if not control.ready:
+            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
         pending_group = (
             None
             if creates_branch or (runtime.stop_requested and runtime.stop_settled)
@@ -169,7 +198,7 @@ def run_experiment(
                     "The pending watcher completion could not be claimed because its "
                     "conversation is active."
                 )
-            return record.model_dump(mode="json")
+            return _start_response(store, record, node_id)
         experiment_request = fresh_experiment_run_request(
             service,
             supplied,
@@ -194,7 +223,7 @@ def run_experiment(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return record.model_dump(mode="json")
+    return _start_response(store, record, node_id)
 
 
 @router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
@@ -257,10 +286,10 @@ def stop_bound_experiment_episode(
                 status_code=409,
                 detail="The branch Experiment lost its Auto-research parent binding.",
             )
-    runtime = store.experiment_loop_runtime_for_target(
+    runtime = store.experiment_loop_runtime(
         project_id,
         node_id,
-        episode.graph_target,
+        graph_target=episode.graph_target,
     )
     if runtime.episode_id != episode.episode_id:
         raise HTTPException(
@@ -277,7 +306,7 @@ def stop_bound_experiment_episode(
         )
     except EpisodeNotRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    _, control = _experiment_control_for_target(
+    _, control = _experiment_control(
         store,
         project_id,
         state,
@@ -347,7 +376,7 @@ def continue_experiment_episode(
     node = state.nodes.get(node_id)
     if not isinstance(node, Experiment):
         raise HTTPException(status_code=404, detail="Experiment not found")
-    _, control = _experiment_control_for_target(
+    _, control = _experiment_control(
         store,
         project_id,
         state,

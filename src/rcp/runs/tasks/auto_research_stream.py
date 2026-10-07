@@ -21,6 +21,7 @@ from rcp.agents import (
 from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.auto_research_prompt import (
     AUTO_RESEARCH_POLICY_VERSION,
+    auto_research_branch_read_pointers,
     auto_research_continuation_parts,
     auto_research_orchestrator_continuation_contract,
     auto_research_orchestrator_task_contract,
@@ -43,10 +44,12 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
+from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
+from rcp.loop_status import other_branch_loops
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research import (
@@ -103,6 +106,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _swept_stage_root,
     _task_token,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.work import (
     _apply_work_patch,
@@ -246,7 +250,7 @@ async def stream_auto_research_orchestrator_run(
                 stage,
             ),
         )
-        context = _auto_research_context(service, turn.request, stage)
+        context = _orchestrator_launch_context(service, turn.request, stage)
         _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
@@ -1211,6 +1215,15 @@ def _auto_research_context(
     return context
 
 
+def _orchestrator_launch_context(
+    service: ProjectService, request: AutoResearchRunRequest, stage: _WorkerStage
+) -> ChatContext:
+    context = _auto_research_context(service, request, stage)
+    return context.model_copy(
+        update=stage_branch_read_context(context, service, stage.local, stage.remote)
+    )
+
+
 def _refreshed_orchestrator_state_paths(
     service: ProjectService,
     request: AutoResearchRunRequest,
@@ -1454,6 +1467,13 @@ def _orchestrator_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
+    shared_repositories = [
+        {"alias": item.alias, "host": item.host, "path": item.path}
+        for item in context.shared_repositories
+    ]
+    loops = other_branch_loops(
+        execution.store, turn.task.project_id, graph_target=turn.task.graph_target
+    )
     values = auto_research_prompt_values(
         graph_path=context.graph_path,
         research_path=context.research_md_path,
@@ -1569,7 +1589,15 @@ def _orchestrator_prompt(
         render_master=render_master,
         start_contract=start_contract,
         continuation_parts=continuation_parts,
-        fresh_parts=(question_part,),
+        fresh_parts=(
+            question_part,
+            auto_research_branch_read_pointers(
+                context.main_graph_path, shared_repositories, repositories
+            ),
+            render_loop_overlap(
+                loops, ask_allowed="ask" in auto_research_allowed_verbs("orchestrator")
+            ),
+        ),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
             turn.task.project_id,
             native_session_id=session_id,

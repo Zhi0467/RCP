@@ -67,6 +67,7 @@ let resolveTask: (() => void) | null = null;
 createRoot(document.getElementById("root")!).render(
   <main style={{ height: "100vh", padding: 24 }}>
     <NodeChat
+      graphTarget={{ kind: "main" }}
       project={project as never}
       node={null}
       runScope={["repo"]}

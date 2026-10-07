@@ -1,6 +1,12 @@
+import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
+import {
+  canStartExperiment,
+  experimentStartReasons,
+  experimentStartOverlap,
+} from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { MAIN_GRAPH } from "../core/graphTarget";
+import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
@@ -27,6 +33,8 @@ import type {
   Edge,
   EpisodeIsolationChoice,
   ExperimentControlState,
+  ExperimentLoopIndexEntry,
+  UnavailableExperimentLoop,
   GraphNode,
   OntologyState,
   ValidationMessage,
@@ -68,6 +76,10 @@ interface Props {
   behind?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
+  experimentEntries?: ExperimentLoopIndexEntry[];
+  experimentUnavailableLoops?: UnavailableExperimentLoop[];
+  /** Whether the project's loop inventory is known yet, for the overlap list. */
+  experimentEntriesStatus?: "loading" | "loaded" | "unavailable";
   experimentRunDisabled?: boolean;
   experimentRunBusy?: boolean;
   decisionChoiceStaged?: boolean;
@@ -141,6 +153,9 @@ export function DetailDrawer({
   behind = false,
   canonicalStanding = node.standing,
   experimentControl = null,
+  experimentEntries = [],
+  experimentUnavailableLoops = [],
+  experimentEntriesStatus = "loaded",
   experimentRunDisabled = false,
   experimentRunBusy = false,
   decisionChoiceStaged = false,
@@ -160,6 +175,10 @@ export function DetailDrawer({
   onOpenRelatedNode,
   onSelectNode,
 }: Props) {
+  const unavailableOverlapCount = experimentUnavailableLoops.filter(
+    (entry) =>
+      entry.control_node_id === node.id && !sameGraphTarget(entry.graph_target, graphTarget),
+  ).length;
   const [browserRequested, setBrowserRequested] = useState(false);
   useEffect(() => setBrowserRequested(false), [node.id]);
   const [editing, setEditing] = useState(behind);
@@ -168,6 +187,11 @@ export function DetailDrawer({
     graph_isolation: false,
     code_worktree: false,
   });
+  const startReasons = experimentStartReasons(
+    experimentControl,
+    graphTarget,
+    (inheritedIsolation ?? isolation).graph_isolation,
+  );
   const [editBase, setEditBase] = useState(node);
   const [draft, setDraft] = useState<Record<string, string>>(() => nodeEditDraft(node, ontology));
   const [referenceDraft, setReferenceDraft] = useState<Record<string, string>>(() =>
@@ -586,6 +610,35 @@ export function DetailDrawer({
                 <section
                   className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
                 >
+                  {projectId && experimentEntriesStatus === "loading" && (
+                    <p className="experiment-overlap-loading" role="status" aria-busy="true">
+                      Checking other live loops…
+                    </p>
+                  )}
+                  {projectId && experimentEntriesStatus === "unavailable" && (
+                    <p className="experiment-overlap-unavailable" role="status">
+                      Couldn't check other live loops.
+                    </p>
+                  )}
+                  {projectId && experimentEntriesStatus === "loaded" && (
+                    <ExperimentStartOverlap
+                      projectId={projectId}
+                      loops={experimentStartOverlap(
+                        experimentEntries,
+                        projectId,
+                        node.id,
+                        graphTarget,
+                        (inheritedIsolation ?? isolation).graph_isolation,
+                      )}
+                    />
+                  )}
+                  {experimentEntriesStatus === "loaded" && unavailableOverlapCount > 0 && (
+                    <p className="experiment-overlap-partial" role="status">
+                      {unavailableOverlapCount} live{" "}
+                      {unavailableOverlapCount === 1 ? "loop" : "loops"} on this node couldn't be
+                      read.
+                    </p>
+                  )}
                   <div className="experiment-control-heading">
                     <div>
                       {experimentControl.episode_id && (
@@ -616,7 +669,13 @@ export function DetailDrawer({
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
-                        !experimentControl.ready
+                        // Overlap never blocks Run; Run waits only while it is being checked.
+                        experimentEntriesStatus === "loading" ||
+                        !canStartExperiment(
+                          experimentControl,
+                          graphTarget,
+                          (inheritedIsolation ?? isolation).graph_isolation,
+                        )
                       }
                       onClick={() =>
                         onRunExperiment(inheritedIsolation ?? isolation, browserRequested)
@@ -660,9 +719,9 @@ export function DetailDrawer({
                     disabled={nodeMutationDisabled || experimentRunBusy}
                     onChange={setBrowserRequested}
                   />
-                  {experimentControl.reasons.length > 0 && (
+                  {startReasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
-                      {experimentControl.reasons.map((reason) => (
+                      {startReasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>

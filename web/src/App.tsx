@@ -1,3 +1,5 @@
+import { canStartExperiment } from "./experiments/experimentStart";
+import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
@@ -79,6 +81,7 @@ import {
   continueEpisode,
   sendEpisodeMessage,
   startEpisode,
+  startExperimentRun,
   stopEpisode,
 } from "./core/api";
 import {
@@ -214,6 +217,8 @@ import type {
   MergeDiffPath,
   MergeEpisodeBody,
   ExperimentControlState,
+  ExperimentStartResponse,
+  LoopOverlap,
   GraphRevisionSnapshot,
   GraphNode,
   GraphState,
@@ -319,6 +324,7 @@ import {
   loadGraphRevision,
   openProjectSequence,
   projectIsStillReadable,
+  projectWatchersPath,
   projectWithTransitionProjection,
   reconcileInactiveProjectTabState,
 } from "./projectSnapshot";
@@ -583,6 +589,10 @@ export default function App() {
     expandUpdate,
     dismissUpdate,
   } = useDesktopShell(desktop);
+  const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
+    projectId: string;
+    loops: LoopOverlap;
+  } | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
@@ -643,6 +653,9 @@ export default function App() {
     projects,
     openProjectTabs,
     experimentLoops,
+    experimentLoopsLoaded,
+    experimentLoopsUnavailable,
+    experimentLoopsUnavailableRows,
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
@@ -714,7 +727,7 @@ export default function App() {
     focusExperimentRunId,
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
-    experimentStopId,
+    experimentStopIds,
     watcherCheckId,
     dockedNodeIds,
     dagRelationFocusId,
@@ -760,8 +773,11 @@ export default function App() {
     projectId,
     selectedExperimentRoute,
   );
-  const selectedExperimentUsesBranch = selectedExperimentRoute?.graph_target.kind === "branch";
-  const selectedBranchExperiment = selectedExperimentUsesBranch ? selectedIndexedExperiment : null;
+  const selectedExperimentUsesIndex = Boolean(
+    selectedExperimentRoute &&
+    (selectedExperimentRoute.graph_target.kind === "branch" || graphTarget.kind === "branch"),
+  );
+  const selectedTargetExperiment = selectedExperimentUsesIndex ? selectedIndexedExperiment : null;
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
@@ -822,24 +838,24 @@ export default function App() {
   );
   const selectedMainExperimentRouteIsCurrent =
     !selectedExperimentRoute ||
-    selectedExperimentUsesBranch ||
+    selectedExperimentUsesIndex ||
     mainExperimentRouteMatchesControl(
       selectedExperimentRoute,
       selectedExperimentRunId ? project?.experiment_control[selectedExperimentRunId] : undefined,
     );
   const selectedExperimentOperational =
     view === "execution" && selectedExperimentRunId && selectedMainExperimentRouteIsCurrent
-      ? selectedExperimentUsesBranch
-        ? (selectedBranchExperiment?.control.operational ?? null)
+      ? selectedExperimentUsesIndex
+        ? (selectedTargetExperiment?.control.operational ?? null)
         : (project?.experiment_control[selectedExperimentRunId]?.operational ?? null)
       : null;
   const selectedExperimentChatId = selectedExperimentOperational?.chat_id ?? null;
-  // The Runs panel keeps a branch-scoped Experiment's graph out of the viewed
-  // target, so its chat must be loaded against the route's own graph. Without
-  // an exact route the chat id comes from the viewed graph's own projection, so
+  // Indexed loops can belong to any target, so their chats load against the
+  // selected episode's graph. Without an exact route the chat id comes from
+  // the viewed graph's own projection, so
   // that target stays correct and is the default.
   const selectedExperimentChatTarget =
-    selectedExperimentUsesBranch && selectedExperimentRoute
+    selectedExperimentUsesIndex && selectedExperimentRoute
       ? selectedExperimentRoute.graph_target
       : graphTarget;
   const selectedExperimentChatFreshness = experimentChatFreshnessToken(
@@ -1132,7 +1148,7 @@ export default function App() {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
           if (responseIsCurrent()) setUsage(null);
         });
-      const watchersRequest = api<WatcherRecord[]>(graphPath(`${base}/watchers`)).then(
+      const watchersRequest = api<WatcherRecord[]>(projectWatchersPath(base, graphTarget)).then(
         (nextWatchers) => {
           if (responseIsCurrent()) setWatchers(nextWatchers);
         },
@@ -1156,6 +1172,7 @@ export default function App() {
     [
       applyProjectSnapshot,
       graphPath,
+      graphTarget,
       isActiveGraph,
       beginProjectSnapshotRequest,
       projectId,
@@ -1614,8 +1631,13 @@ export default function App() {
     () => mergeProviderLogins(project?.provider_logins ?? [], liveProviderLogins),
     [project?.provider_logins, liveProviderLogins],
   );
+  const experimentDetailOpen = Boolean(
+    (selectedNode && isControlNode(selectedNode.type)) ||
+    (companionNode && isControlNode(companionNode.type)),
+  );
   useEffect(() => {
-    if (!projectId || !projectRunsNeedsExperimentIndex(projectId, view)) return;
+    if (!projectId || (!projectRunsNeedsExperimentIndex(projectId, view) && !experimentDetailOpen))
+      return;
     let stopped = false;
     let timer = 0;
     const schedule = () => {
@@ -1647,7 +1669,14 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [projectId, refreshProjectExperimentLoops, refreshProviderLogins, reportErrorNotice, view]);
+  }, [
+    projectId,
+    refreshProjectExperimentLoops,
+    refreshProviderLogins,
+    reportErrorNotice,
+    view,
+    experimentDetailOpen,
+  ]);
 
   const refreshReadiness = useCallback(async () => {
     await requestProjectReadiness(true);
@@ -1816,6 +1845,7 @@ export default function App() {
       resetProjectHistory(projectId, graphTarget);
       setUsage(null);
       setWatchers([]);
+      setExperimentStartOverlap(null);
       resetProjectHeader(projectId);
     }
     if (setupOpen) {
@@ -2096,7 +2126,9 @@ export default function App() {
             undefined,
             link.itemId,
           ).catch(() => []),
-          loadProjectExperimentEpisodes(link.projectId).catch(() => []),
+          loadProjectExperimentEpisodes(link.projectId)
+            .then((index) => index.entries)
+            .catch(() => []),
         ]);
         next = episodeNotificationHash(link, episodes[0] ?? null, entries);
       } else {
@@ -2598,7 +2630,7 @@ export default function App() {
         ) {
           try {
             const nextWatchers = await api<WatcherRecord[]>(
-              graphPath(`/api/projects/${encodeURIComponent(projectId)}/watchers`),
+              projectWatchersPath(`/api/projects/${encodeURIComponent(projectId)}`, graphTarget),
             );
             if (!stopped) setWatchers(nextWatchers);
           } catch (error) {
@@ -3002,7 +3034,7 @@ export default function App() {
       await api<WatcherRecord>(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, {
         method: "POST",
       });
-      const nextWatchers = await api<WatcherRecord[]>(graphPath(`${apiBase}/watchers`));
+      const nextWatchers = await api<WatcherRecord[]>(projectWatchersPath(apiBase, graphTarget));
       if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
       // Retiring an observer can release an Experiment that was held shut by it,
       // so the control projection is re-read here rather than waiting for a poll.
@@ -3013,16 +3045,19 @@ export default function App() {
   };
 
   const requestExperimentStop = useCallback(
-    async (nodeId: string, episodeId: string | null = null): Promise<void> => {
+    async (nodeId: string, episodeId: string): Promise<void> => {
       if (!apiBase) throw new Error("No RCP project is open.");
-      if (experimentStopId) throw new Error("Another Experiment Stop is already being submitted.");
-      const finishExperimentStop = beginExperimentStop(nodeId);
+      if (!episodeId) throw new Error("An exact episode is required to stop an Experiment loop.");
+      if (experimentStopIds.has(episodeId))
+        throw new Error("This Experiment Stop is already being submitted.");
+      const finishExperimentStop = beginExperimentStop(episodeId);
       try {
-        await api<unknown>(graphPath(experimentStopPath(apiBase, nodeId, episodeId)), {
+        // The exact-episode endpoint resolves its own target, independently of this page.
+        await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), {
           method: "POST",
         });
         try {
-          await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
+          await Promise.all([reload(), refreshExperimentLoops()]);
         } catch (error) {
           setNotice({
             kind: "error",
@@ -3033,10 +3068,10 @@ export default function App() {
         finishExperimentStop();
       }
     },
-    [apiBase, graphPath, beginExperimentStop, experimentStopId, refreshExperimentLoops, reload],
+    [apiBase, beginExperimentStop, experimentStopIds, refreshExperimentLoops, reload],
   );
   const stopExperimentLoop = useCallback(
-    async (nodeId: string, episodeId: string | null = null) => {
+    async (nodeId: string, episodeId: string) => {
       try {
         await requestExperimentStop(nodeId, episodeId);
       } catch (error) {
@@ -3047,15 +3082,9 @@ export default function App() {
   );
 
   const checkExperimentWatcher = async (watcherId: string) => {
-    if (
-      !apiBase ||
-      watcherCheckId ||
-      taskStarting ||
-      taskActionId ||
-      experimentStopId ||
-      mutationsDisabled
-    )
-      return;
+    if (!apiBase || watcherCheckId || taskStarting || taskActionId || mutationsDisabled) return;
+    const watcher = watchers.find((candidate) => candidate.watcher_id === watcherId);
+    if (watcher?.episode_id && experimentStopIds.has(watcher.episode_id)) return;
     const finishWatcherCheck = beginWatcherCheck(watcherId);
     try {
       const checked = await api<WatcherRecord>(
@@ -3079,7 +3108,7 @@ export default function App() {
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
-    ): Promise<AgentTask> => {
+    ): Promise<ExperimentStartResponse> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
       }
@@ -3088,7 +3117,7 @@ export default function App() {
         throw new Error("Sync staged graph changes before starting an episode.");
       }
       const control = project.experiment_control?.[node.id];
-      if (!control?.can_start) {
+      if (!canStartExperiment(control, graphTarget, isolation?.graph_isolation)) {
         throw new Error(control?.reasons.join(" ") ?? "This experiment is not ready to run.");
       }
       const finishTaskStart = beginTaskStart();
@@ -3098,23 +3127,20 @@ export default function App() {
         // would file the episode inside a human's finished Work chat.
         const chatId = window.crypto.randomUUID();
         const profile = project.agent_profiles.node_chat;
-        const task = await api<AgentTask>(
+        const task = await startExperimentRun(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
           {
-            method: "POST",
-            body: JSON.stringify({
-              provider: profile.provider,
-              model: profile.model || null,
-              reasoning: profile.reasoning,
-              run_on: profile.run_on,
-              run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
-              chat_id: chatId,
-              // Omitted unless the human reauthorized an explicit count; the
-              // backend then keeps the Experiment node's own limit.
-              ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
-              ...isolation,
-              browser_requested: browserRequested,
-            }),
+            provider: profile.provider,
+            model: profile.model || null,
+            reasoning: profile.reasoning,
+            run_on: profile.run_on,
+            run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
+            chat_id: chatId,
+            // Omitted unless the human reauthorized an explicit count; the
+            // backend then keeps the Experiment node's own limit.
+            ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
+            ...isolation,
+            browser_requested: browserRequested,
           },
         );
         const expectedTarget = experimentStartTarget(
@@ -3126,11 +3152,23 @@ export default function App() {
           throw new Error("Experiment start returned a different graph target.");
         if (!isActiveGraph(project.id)) return task;
         recordStartedTask(task);
+        setExperimentStartOverlap({ projectId: project.id, loops: task.live_elsewhere });
         setNotice(null);
         setFloatingChat(null);
-        showExperiment(node.id);
+        if (!task.episode_id) throw new Error("Experiment start returned no episode.");
+        showExperiment(node.id, {
+          experiment_id: node.id,
+          episode_id: task.episode_id,
+          graph_target: task.graph_target,
+          // A human start is independent of any Auto-research parent on this branch.
+          parent_episode_id: null,
+        });
         try {
-          await Promise.all([reload(), refreshEpisodes()]);
+          await Promise.all([
+            reload(),
+            refreshEpisodes(),
+            refreshProjectExperimentLoops(project.id),
+          ]);
         } catch (error) {
           setNotice({
             kind: "error",
@@ -3152,6 +3190,7 @@ export default function App() {
       mutationsDisabled,
       project,
       recordStartedTask,
+      refreshProjectExperimentLoops,
       refreshEpisodes,
       reload,
       runScope,
@@ -3178,7 +3217,7 @@ export default function App() {
     [startExperiment],
   );
   const startWebMcpExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
+    async (node: GraphNode, invocationCeiling?: number): Promise<ExperimentStartResponse> => {
       if (!project) throw new Error("No RCP project is open.");
       const pendingProjectId = project.id;
       setWebMcpExperimentStartProjectId(pendingProjectId);
@@ -3669,12 +3708,13 @@ export default function App() {
           episodes,
           requestExperimentStop,
           stopAutoResearchEpisode,
-          experimentStopId !== null || Boolean(episodeAction?.startsWith("stop:")),
+          experimentStopIds.size > 0 || Boolean(episodeAction?.startsWith("stop:")),
         ),
         ...projectViewToolDefinitions(project, tasks, episodes, webMcpViewOwners, {
           ...webMcpArtifactSource,
           loadTranscript: loadWebMcpConversation,
-          loadExperimentEntries: () => loadProjectExperimentEpisodes(project.id),
+          loadExperimentEntries: async () =>
+            (await loadProjectExperimentEpisodes(project.id)).entries,
         }),
         // Published for voice only; webMcpHostTools keeps them off WebMCP.
         ...voiceTerminalToolDefinitions(project.id, {
@@ -3691,7 +3731,7 @@ export default function App() {
     episodeAction,
     episodes,
     experimentStartRequiresSync,
-    experimentStopId,
+    experimentStopIds,
     loadWebMcpConversation,
     mutationsDisabled,
     projectIndexWebMcpAvailable,
@@ -3835,6 +3875,7 @@ export default function App() {
 
   const closeDockedProject = (id: string) => {
     if (!closeProjectRoute(id)) return;
+    setExperimentStartOverlap((current) => (current?.projectId === id ? null : current));
     forgetProjectViewport(id);
   };
 
@@ -4210,19 +4251,20 @@ export default function App() {
     watchers,
     presentedExperimentControl,
     selectedExperimentRoute,
-    selectedBranchExperiment,
+    selectedTargetExperiment,
+    graphTarget,
   );
   const selectedMainRouteIsStale = selectedExperimentExecution.staleMainRoute !== null;
   const selectedExperimentNode = selectedExperimentRunId
-    ? selectedExperimentUsesBranch
-      ? (selectedBranchExperiment?.node ?? null)
+    ? selectedExperimentUsesIndex
+      ? (selectedTargetExperiment?.node ?? null)
       : selectedMainRouteIsStale
         ? null
         : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
     : null;
   const selectedExperimentControl = selectedExperimentRunId
-    ? selectedExperimentUsesBranch
-      ? (selectedBranchExperiment?.control ?? null)
+    ? selectedExperimentUsesIndex
+      ? (selectedTargetExperiment?.control ?? null)
       : selectedMainRouteIsStale
         ? null
         : (presentedExperimentControl[selectedExperimentRunId] ?? null)
@@ -4242,6 +4284,7 @@ export default function App() {
         <NodeChat
           key={selectedExperimentChatId}
           project={project}
+          graphTarget={selectedExperimentChatTarget}
           node={selectedExperimentNode}
           nodes={selectedExperimentNodes}
           glossaryIndex={glossaryIndex}
@@ -4252,7 +4295,7 @@ export default function App() {
           chatId={selectedExperimentChatId}
           presentation="workspace"
           fixedConversation
-          readOnly={selectedExperimentUsesBranch}
+          readOnly={selectedExperimentUsesIndex}
           graphChangesDisabled={mutationsDisabled}
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
@@ -4839,7 +4882,15 @@ export default function App() {
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
           {view === "execution" && (
             <div className="combined-runs-view">
+              {experimentStartOverlap?.projectId === project.id && (
+                <ExperimentStartOverlap
+                  projectId={project.id}
+                  loops={experimentStartOverlap.loops}
+                  onDismiss={() => setExperimentStartOverlap(null)}
+                />
+              )}
               <ExecutionView
+                graphTarget={graphTarget}
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
                 machines={project.machines}
@@ -4851,16 +4902,18 @@ export default function App() {
                 tasks={projectTasks}
                 watchers={watchers}
                 experimentControl={presentedExperimentControl}
+                experimentEntriesLoaded={experimentLoopsLoaded}
+                experimentUnavailableLoops={experimentLoopsUnavailableRows}
                 experimentEntries={experimentLoops.filter(
                   (entry) => entry.project_id === project.id,
                 )}
                 exactExperimentRoute={selectedExperimentRoute}
-                exactExperimentEntry={selectedBranchExperiment}
+                exactExperimentEntry={selectedTargetExperiment}
                 selectedExperimentId={selectedExperimentRunId}
                 focusExperimentId={focusExperimentRunId}
                 selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
                 runBusy={taskStarting}
-                stopBusyId={experimentStopId}
+                stopBusyIds={experimentStopIds}
                 watcherCheckBusyId={watcherCheckId}
                 taskActionId={taskActionId}
                 selectedExperimentConversation={selectedExperimentConversation}
@@ -4889,9 +4942,7 @@ export default function App() {
                 onRunExperiment={(node, invocationCeiling, browserRequested) =>
                   void runExperiment(node, invocationCeiling, undefined, browserRequested)
                 }
-                onStopExperiment={(nodeId, episodeId) =>
-                  void stopExperimentLoop(nodeId, episodeId ?? null)
-                }
+                onStopExperiment={(nodeId, episodeId) => void stopExperimentLoop(nodeId, episodeId)}
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
                 onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
                 onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
@@ -5062,6 +5113,16 @@ export default function App() {
             behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
+            experimentEntries={experimentLoops}
+            experimentUnavailableLoops={experimentLoopsUnavailableRows}
+            experimentEntriesStatus={
+              // A failed latest request outranks an earlier successful load.
+              experimentLoopsUnavailable
+                ? "unavailable"
+                : experimentLoopsLoaded
+                  ? "loaded"
+                  : "loading"
+            }
             experimentRunDisabled={experimentStartRequiresSync}
             experimentRunBusy={taskStarting}
             decisionChoiceStaged={Boolean(
@@ -5127,6 +5188,7 @@ export default function App() {
             <NodeChat
               key={floatingChat.chatId}
               project={project}
+              graphTarget={project.graph_target}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
               nodes={presentedGraph.nodes}
               glossaryIndex={glossaryIndex}

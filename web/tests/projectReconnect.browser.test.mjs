@@ -129,7 +129,9 @@ for (const initialFreshness of ["stale", "fresh"]) {
             last_remote_sync_at: project().last_remote_sync_at,
             graph_mutation: project().graph_mutation,
           };
-        } else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
+        } else if (path.endsWith("/experiment-episodes") || path === "/api/episodes")
+          json = { entries: [], unavailable: [] };
+        else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
         else if (path.endsWith("/chat-reads"))
           json = {
             baseline: "2026-01-01T00:00:00+00:00",

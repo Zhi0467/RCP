@@ -580,7 +580,12 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
 
     bound_before = store.experiment_episode(episode_id)
     assert bound_before is not None
-    assert store.experiment_loop_runtime(project_id, _EXPERIMENT_ID).invocations_used == 1
+    assert (
+        store.experiment_loop_runtime(
+            project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+        ).invocations_used
+        == 1
+    )
     revision_before = service.history.state().revision
     patch_count_before = len(service.history.load_patches())
     watcher_ids_before = [item.watcher_id for item in store.watchers(project_id)]
@@ -638,7 +643,12 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     bound_after = store.experiment_episode(episode_id)
     assert bound_after is not None
     # Resume is recovery of invocation one, never another paid Experiment allocation.
-    assert store.experiment_loop_runtime(project_id, _EXPERIMENT_ID).invocations_used == 1
+    assert (
+        store.experiment_loop_runtime(
+            project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+        ).invocations_used
+        == 1
+    )
     if accepted:
         assert not [event for event in resume_events if event.event == "error"]
         assert service.history.state().revision == revision_before + 1
@@ -2376,7 +2386,7 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
     stage = tmp_path / "maintenance-stage"
     workspace = stage / "workspace"
     workspace.mkdir(parents=True)
-    stale = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
+    stale = workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
     stale.write_text("stale", encoding="utf-8")
 
     resources = await stage_chat_experiment_watcher_resources(
@@ -2394,7 +2404,9 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
     assert resource.resource.control_node_id == _EXPERIMENT_ID
     assert resource.resource.episode_id == episode_id
     assert resource.resource.execution_host == "episode.example"
-    assert resource.watch_path == str(workspace / experiment_watcher_output_name(_EXPERIMENT_ID))
+    assert resource.watch_path == str(
+        workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
+    )
     assert not stale.exists()
     state = json.loads(Path(resource.watcher_state_path).read_text(encoding="utf-8"))
     assert [item["watcher_id"] for item in state] == ["resource-active"]
@@ -2527,7 +2539,7 @@ async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_pat
     execution = _execution(store, project_id, "maintenance-work", request)
     workspace = tmp_path / "unstaged-workspace"
     workspace.mkdir()
-    guessed = workspace / experiment_watcher_output_name("exp/outside-scope")
+    guessed = workspace / experiment_watcher_output_name("exp/outside-scope", GraphTargetRef())
     guessed.write_text('{"external":[],"graph":[]}', encoding="utf-8")
 
     frames, session_id, paused = await _process_experiment_watcher_maintenance(
@@ -2596,7 +2608,7 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
     )
     workspace = tmp_path / "retry-workspace"
     workspace.mkdir()
-    survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID)
+    survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
     survivor_text = '{"external":[{"stop_watcher_id":"w-1","reason":"Superseded"}],"graph":[]}'
     survivor.write_text(survivor_text, encoding="utf-8")
     predecessor_digest = hashlib.sha256(survivor_text.encode("utf-8")).hexdigest()
@@ -2645,7 +2657,9 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         project_id=project_id,
         episode_id=older_episode,
     )
-    older_stopped = store.request_experiment_loop_stop(project_id, _EXPERIMENT_ID)
+    older_stopped = store.request_experiment_loop_stop(
+        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert older_stopped is not None and older_stopped.stop_settled_at is not None
     _store_task(
         store,
@@ -2670,7 +2684,9 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         watcher_ids=[],
         context_baseline={},
     )
-    stopped = store.request_experiment_loop_stop(project_id, _EXPERIMENT_ID)
+    stopped = store.request_experiment_loop_stop(
+        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
     assert stopped is not None and stopped.stop_requested_at is not None
     _store_task(
         store,

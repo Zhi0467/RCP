@@ -619,6 +619,29 @@ if actual!=expected:
             raise ValueError(result.stderr.strip() or f"missing remote input {safe_label}")
         return result.stdout
 
+    def prepare_read_context_input(self, label: str) -> bool:
+        """Reuse a hashed read input by existence, retiring only its older snapshots."""
+
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        pending = self._pending_inputs
+        queued = pending is not None and remote_stage_root.prepare_read_context_input(
+            str(pending), label, immutable=False
+        )
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "prepare-read-context-input",
+                str(self.root),
+                label,
+            ]
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not inspect staged read-context input")
+        return json.loads(result.stdout) is True or queued
+
     def read_workspace_text(self, name: str, *, max_bytes: int | None = None) -> str:
         """Read one direct regular workspace file without following symlinks.
 

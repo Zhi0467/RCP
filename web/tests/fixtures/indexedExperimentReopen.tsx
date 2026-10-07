@@ -4,9 +4,12 @@ import { createRoot } from "react-dom/client";
 import {
   experimentBoardHref,
   experimentBoardRouteToken,
+  experimentStopPath,
+  type ExperimentRouteIdentity,
 } from "../../src/experiments/experimentBoardModel";
 import { ExecutionView } from "../../src/graph/GraphViews";
 
+const coexisting = new URLSearchParams(window.location.search).has("coexisting");
 const projectId = "project-one";
 const experimentId = "experiment/branch-child";
 const parentEpisodeId = "auto-research-parent";
@@ -43,7 +46,7 @@ const episode = {
   ended_at: "2026-09-03T13:00:00Z",
   tasks: [],
   report: null,
-  can_stop: false,
+  can_stop: coexisting,
   can_continue: false,
   chain: [
     {
@@ -82,7 +85,7 @@ const control = {
   run_section: "actionable",
   live: false,
   can_start: false,
-  can_stop: false,
+  can_stop: coexisting,
   can_open_report: false,
   can_switch_provider: false,
   node_closed: false,
@@ -207,13 +210,39 @@ const parentEpisode = {
   run_section: "actionable",
 };
 
+const mainEpisode = {
+  ...episode,
+  episode_id: "main-episode",
+  created_at: "2026-09-03T11:00:00Z",
+  graph_target: { kind: "main" },
+  chain: [],
+  can_stop: true,
+};
+const mainEntry = {
+  ...entry,
+  graph_target: mainEpisode.graph_target,
+  graph_head: null,
+  parent_episode_id: null,
+  episode: mainEpisode,
+  control: { ...control, episode_id: mainEpisode.episode_id, episode: mainEpisode },
+};
+const childRoute = {
+  experiment_id: experimentId,
+  episode_id: episode.episode_id,
+  graph_target: episode.graph_target,
+  parent_episode_id: parentEpisodeId,
+} as ExperimentRouteIdentity;
+
 function Fixture() {
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(experimentId);
+  const [selectedRoute, setSelectedRoute] = useState<ExperimentRouteIdentity | null>(childRoute);
+  const [stopBusyIds, setStopBusyIds] = useState(new Set<string>());
   return (
     <ExecutionView
+      graphTarget={coexisting ? (episode.graph_target as never) : undefined}
       graph={{
         revision: 3,
-        nodes: {},
+        nodes: coexisting ? { [experimentId]: entry.node } : {},
         edges: {},
         proposals: {},
         ambiguities: {},
@@ -224,31 +253,28 @@ function Fixture() {
         replay_failure: null,
         ontology: { types: [], fields: [], relations: [] },
       }}
-      episodes={[parentEpisode] as never}
+      episodes={(coexisting ? [mainEpisode] : [parentEpisode]) as never}
       episodeMessages={{}}
       episodeAction={null}
       tasks={[]}
       watchers={[]}
-      experimentControl={{}}
-      experimentEntries={[entry] as never}
-      exactExperimentRoute={
-        {
-          experiment_id: experimentId,
-          episode_id: episode.episode_id,
-          graph_target: episode.graph_target,
-          parent_episode_id: parentEpisodeId,
-        } as never
-      }
-      exactExperimentEntry={entry as never}
+      experimentControl={coexisting ? ({ [experimentId]: entry.control } as never) : {}}
+      experimentEntries={(coexisting ? [mainEntry, entry] : [entry]) as never}
+      exactExperimentRoute={selectedRoute}
+      exactExperimentEntry={selectedRoute?.graph_target.kind === "branch" ? (entry as never) : null}
       selectedExperimentId={selectedExperimentId}
-      focusExperimentId={null}
-      selectedAutoResearchEpisodeId={parentEpisodeId}
+      focusExperimentId={coexisting ? selectedExperimentId : null}
+      selectedAutoResearchEpisodeId={coexisting ? null : parentEpisodeId}
       runBusy={false}
-      stopBusyId={null}
+      stopBusyIds={stopBusyIds}
       watcherCheckBusyId={null}
       taskActionId={null}
       selectedExperimentConversation={
-        selectedExperimentId ? <div>Selected child transcript</div> : null
+        selectedExperimentId ? (
+          <div data-selected-episode={selectedRoute?.episode_id ?? mainEpisode.episode_id}>
+            Selected child transcript
+          </div>
+        ) : null
       }
       onInspectTask={() => undefined}
       onLoadEpisodeMessages={() => Promise.resolve()}
@@ -257,7 +283,10 @@ function Fixture() {
       onContinueEpisode={() => Promise.resolve()}
       onSendEpisodeMessage={() => Promise.resolve()}
       onOperateEpisodeTask={() => Promise.resolve()}
-      onSelectExperiment={setSelectedExperimentId}
+      onSelectExperiment={(nodeId, route) => {
+        setSelectedExperimentId(nodeId);
+        if (nodeId) setSelectedRoute(route ?? null);
+      }}
       onOpenExperimentEntry={(nextEntry) => {
         window.location.hash = experimentBoardHref(
           nextEntry.project_id,
@@ -267,7 +296,18 @@ function Fixture() {
       onDetailFocused={() => undefined}
       onOpenHistory={() => undefined}
       onRunExperiment={() => undefined}
-      onStopExperiment={() => undefined}
+      onStopExperiment={(nodeId, episodeId) => {
+        setStopBusyIds((current) => new Set(current).add(episodeId));
+        void fetch(experimentStopPath(`/api/projects/${projectId}`, nodeId, episodeId), {
+          method: "POST",
+        }).then(() => {
+          setStopBusyIds((current) => {
+            const pending = new Set(current);
+            pending.delete(episodeId);
+            return pending;
+          });
+        });
+      }}
       onCheckExperimentWatcher={() => undefined}
       onRecoverExperiment={() => undefined}
       onSwitchExperimentProvider={() => undefined}

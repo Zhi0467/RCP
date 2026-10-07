@@ -5,16 +5,43 @@ import uuid
 
 import pytest
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.experiment_loop import preflight_episode_wake
 from rcp.skill_registry import SkillReference
-from rcp.storage import WatcherStopRequest
+from rcp.storage import AppStore, WatcherStopRequest
 from rcp.watchers import WatcherBinding
 
 from .helpers import create_named_app as create_app
 from .test_experiment_stop import EXPERIMENT_ID, _Loop
-from .test_experiment_watcher_targets import _retarget_episode
+
+
+def _retarget_episode(
+    store: AppStore,
+    episode_id: str,
+    graph_target: GraphTargetRef,
+) -> None:
+    if graph_target.kind == "main":
+        return
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            UPDATE episodes
+            SET graph_target_json = ?, graph_base_head_json = ?
+            WHERE episode_id = ?
+            """,
+            (
+                graph_target_json(graph_target),
+                GraphHeadRef(revision=0).model_dump_json(),
+                episode_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json = ? WHERE episode_id = ?",
+            (graph_target_json(graph_target), episode_id),
+        )
 
 
 def _adopted_loop(manifest, tmp_path, *, branch: bool, old_status: str = "completed"):
@@ -170,7 +197,9 @@ def test_stop_retires_adopted_watchers_without_touching_later_episode(
 @pytest.mark.parametrize("mismatch", ["graph_target", "execution_host", "node_id"])
 def test_adoption_keeps_target_and_host_preflight_checks(manifest, tmp_path, mismatch):
     loop, target, _ = _adopted_loop(manifest, tmp_path, branch=False)
-    runtime = loop.store.experiment_loop_runtime_for_target(loop.project_id, EXPERIMENT_ID, target)
+    runtime = loop.store.experiment_loop_runtime(
+        loop.project_id, EXPERIMENT_ID, graph_target=target
+    )
     episode = loop.store.experiment_episode(loop.episode_id)
     watcher = loop.store.watcher("old-watcher")
     assert preflight_episode_wake(runtime, episode, [watcher]).readiness == "ready"

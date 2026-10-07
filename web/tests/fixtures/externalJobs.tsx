@@ -191,6 +191,7 @@ function WatcherFixture() {
         />
       </section>
       <NodeChat
+        graphTarget={{ kind: "main" }}
         project={project as never}
         node={experiment as never}
         runScope={["repo"]}

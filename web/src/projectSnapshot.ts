@@ -85,6 +85,13 @@ export async function projectIsStillReadable(
   }
 }
 
+/** All loop cards need rows; watcher actions still belong to the displayed target. */
+export function projectWatchersPath(base: string, target: GraphTargetRef = MAIN_GRAPH): string {
+  return target.kind === "main"
+    ? `${base}/watchers`
+    : graphTargetUrl(`${base}/watchers?all_targets=true`, target);
+}
+
 export async function loadExperimentWatcherPoll(
   fetchJson: <T>(path: string) => Promise<T>,
   base: string,
@@ -95,7 +102,7 @@ export async function loadExperimentWatcherPoll(
   project: ProjectSnapshot;
 }> {
   const [watchers, tasks, project] = await Promise.all([
-    fetchJson<WatcherRecord[]>(graphTargetUrl(`${base}/watchers`, graphTarget)),
+    fetchJson<WatcherRecord[]>(projectWatchersPath(base, graphTarget)),
     fetchJson<AgentTask[]>(`${base}/tasks`),
     fetchJson<ProjectSnapshot>(graphTargetUrl(base, graphTarget)),
   ]);

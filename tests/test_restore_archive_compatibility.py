@@ -249,6 +249,18 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     # Migration 31 only adds this table and its index. Reconstruct its preceding
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
+        # Restore the pre-44 indexes as well as the later additive schema below.
+        connection.execute("DROP INDEX episodes_one_live_experiment_target")
+        connection.execute(
+            "CREATE UNIQUE INDEX episodes_one_live_experiment_control "
+            "ON episodes(project_id, control_node_id) WHERE mode = 'experiment_loop' "
+            "AND status IN ('queued', 'running', 'stopping', 'wrapping_up')"
+        )
+        connection.execute(
+            """CREATE UNIQUE INDEX auto_research_pending_experiment_per_node
+                ON auto_research_child_experiments(project_id, control_node_id)
+                WHERE state = 'pending'"""
+        )
         connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")

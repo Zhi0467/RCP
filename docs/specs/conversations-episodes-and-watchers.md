@@ -512,7 +512,9 @@ Lists retain archived records for the explicit **Show archived** view.
 
 ## Experiment readiness and budget
 
-An Experiment can start a new bounded episode only when:
+An Experiment can start a new bounded episode on a graph target only when the
+following hold for that target; loops on other targets never block it
+([decision](../decisions/2026-10-06-experiment-loops-are-per-branch.md)):
 
 1. each `governed_by` Decision is decided with a selected option;
 2. none of those Decisions has a pending Proposal;
@@ -526,7 +528,25 @@ An Experiment can start a new bounded episode only when:
 6. the Experiment itself is not `completed`, `abandoned`, or `superseded`.
 
 Readiness reports its graph gates and its operational reasons as separate lists,
-so no surface has to tell them apart by reading the sentences.
+so no surface has to tell them apart by reading the sentences. It also reports
+`isolated_start_reasons`, the reasons a graph-isolated start would be refused. A human isolated
+start is checked against the branch it will create. The start response and the
+Run dialog list live loops on that node on other targets as information. Run
+waits while that list loads; if the list cannot load, the dialog says overlap
+is unknown and Run stays available. A partially read list shows healthy loops
+and the count of unreadable live loops on this node on other targets. Run stays
+available.
+
+Every chat turn on an Experiment node, including resumed and watcher-driven
+turns, receives a small loop-status block for its node: this target's loop (live, stopped,
+completed, or none; who started it; who stopped it and when), live loops on
+other targets, and a watcher-state file refreshed for this target. It grants no
+watcher-maintenance authority. A loop agent that can `ask` is told to ask the
+human when its work could interfere with another branch's episodes, for example
+the same node and the same checkout; an Auto-research child, which cannot, is
+told to pause that work and report the conflict for its orchestrator. Turns on a graph branch also receive read pointers:
+the shared checkout path, Git access to other code branches, and main's
+`graph.json` staged read-only; write scope and Patch collection are unchanged.
 
 Graph prerequisites derive from the exact graph target's final graph. A closed
 Experiment separately refuses a fresh episode: Runs says the Experiment is
@@ -557,8 +577,8 @@ agent-authored bookkeeping and never control budget, watcher identity, or
 episode admission. A nonblank human initial goal is retained exactly; only blank
 input receives the RCP fallback objective.
 
-Only the newest unresolved operational task in the newest episode may perform
-operational Resume or Retry. Patch-only repair may reflect retained completed
+Only the newest unresolved operational task in the newest episode on the same
+graph target may perform operational Resume or Retry. Patch-only repair may reflect retained completed
 work but cannot rerun side effects or reopen an old episode.
 
 ## Experiment-loop graph authority
