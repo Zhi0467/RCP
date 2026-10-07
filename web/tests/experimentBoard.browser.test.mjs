@@ -104,11 +104,12 @@ test("same-node loops keep exact selection, detail focus, and independent Stop r
     logLevel: "silent",
     server: { host: "127.0.0.1", port: 0, strictPort: false },
   });
-  server.httpServer?.on("error", (error) => serverErrors.push(String(error)));
   let browser;
   const pendingStops = [];
   try {
     await server.listen();
+    // Listen retries a busy port itself; record only errors after the server is up.
+    server.httpServer?.on("error", (error) => serverErrors.push(String(error)));
     const address = server.httpServer.address();
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
