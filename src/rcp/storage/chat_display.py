@@ -209,6 +209,22 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             "archived": [row["chat_id"] for row in archived],
         }
 
+    def chat_read_markers(self, project_id: str, user_id: str) -> dict[str, Any]:
+        """Only the member's markers and baseline, without `chat_reads`' turn scan."""
+        with self.connection() as connection:
+            baseline = connection.execute(
+                "SELECT completed_at FROM storage_schema_migrations "
+                "WHERE migration_name = 'chat_reads_and_pins_v1'"
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT chat_id, read_through FROM chat_reads WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchall()
+        return {
+            "baseline": baseline["completed_at"] if baseline else None,
+            "reads": {row["chat_id"]: row["read_through"] for row in rows},
+        }
+
     def mark_chat_read(
         self, project_id: str, chat_id: str, user_id: str, read_through: datetime
     ) -> None:

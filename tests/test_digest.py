@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from rcp.core.models import Decision, Edge, GatedCard, GraphState, Patch, Proposal
@@ -369,27 +370,39 @@ def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
     assert [item["item_id"] for item in result["needs_you"]] == [episode.episode_id]
 
 
-def test_viewer_does_not_see_their_own_chat_agent_edits(tmp_path):
-    # A Work turn the member asked for leaves that member's digest, where an
-    # earlier agent touch keeps the node, and a teammate sees the node under
-    # the chat, its latest source.
-    store = AppStore(tmp_path / "app.db")
+def test_viewer_does_not_see_their_own_chat_agent_edits_once_read(tmp_path):
+    # A Work turn the member asked for leaves their digest once their chat read
+    # marker reaches it; one that finished after they left stays news until they
+    # read the chat. A teammate always sees it, under the chat as its latest source.
+    store = _project_store(tmp_path)
     live = GraphState(nodes={"d/one": _decision()})
     event = graph_event(store, "p", "main", GraphState(), _patch(), live)
-    event.update(seq=1, source_key="agent:one")
+    event.update(seq=1, source_key="agent:one", created_at="2026-10-07T10:00:00+00:00")
     own_chat = dict(
         event,
         seq=2,
         source_key="chat:mine",
         actor_user_id="me",
+        created_at="2026-10-07T12:00:00+00:00",
         payload=dict(event["payload"], source_kind="chat"),
     )
     mark = {"seq": 0, "marked_at": "now"}
 
-    mine = assemble_digest("p", "me", [event, own_chat], mark, 2, live)
-    assert [group["source_key"] for group in mine["changed"]] == ["agent:one"]
-    assert mine["changed"][0]["node_ids"] == ["d/one"]
+    def groups(user, reads):
+        result = assemble_digest("p", user, [event, own_chat], mark, 2, live, reads)
+        return [group["source_key"] for group in result["changed"]]
 
-    theirs = assemble_digest("p", "teammate", [event, own_chat], mark, 2, live)
-    assert [group["source_key"] for group in theirs["changed"]] == ["chat:mine"]
-    assert theirs["changed"][0]["node_ids"] == ["d/one"]
+    seen = {"baseline": None, "reads": {"mine": "2026-10-07T12:00:05.000000+00:00"}}
+    unseen = {"baseline": None, "reads": {"mine": "2026-10-07T11:00:00.000000+00:00"}}
+    assert groups("me", seen) == ["agent:one"]
+    assert groups("me", unseen) == ["chat:mine"]
+    assert groups("me", {"baseline": None, "reads": {}}) == ["chat:mine"]
+    assert groups("me", {"baseline": "2026-10-08T00:00:00+00:00", "reads": {}}) == ["agent:one"]
+    assert groups("teammate", seen) == ["chat:mine"]
+
+    # The store reads exactly the member's own markers and the marker baseline.
+    store.mark_chat_read("p", "mine", "me", datetime(2026, 10, 7, 12, 0, 5, tzinfo=UTC))
+    store.mark_chat_read("p", "mine", "teammate", datetime(2026, 10, 7, 9, tzinfo=UTC))
+    markers = store.chat_read_markers("p", "me")
+    assert markers["reads"] == {"mine": "2026-10-07T12:00:05.000000+00:00"}
+    assert groups("me", markers) == ["agent:one"]

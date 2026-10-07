@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import threading
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from rcp.core.attention import project_graph_attention
@@ -49,10 +50,29 @@ def _attention(state: GraphState) -> dict[tuple[str, str], str]:
     }
 
 
-# Sources the digest treats as the viewer's own when the viewer is their actor:
-# a member's direct edits, and the Work turns a member asked for in their chat.
-# The latter is a visibility rule only; the provider agent stays the author.
-OWN_SOURCES = frozenset({"member", "chat"})
+def _instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _viewers_own(event: dict, user_id: str, chat_reads: dict | None) -> bool:
+    """Whether the viewer already knows this change, so their digest leaves it out.
+
+    A member's direct edit is theirs. A Work turn they asked for is theirs once
+    they have seen it finish: their chat read marker reaches the change. One
+    that finished after they left stays news until they read the chat. This is
+    a visibility rule only; the provider agent stays the turn's author.
+    """
+    if event["actor_user_id"] != user_id:
+        return False
+    source_kind = event["payload"].get("source_kind")
+    if source_kind == "member":
+        return True
+    if source_kind != "chat" or chat_reads is None:
+        return False
+    chat_id = event["source_key"].removeprefix("chat:")
+    read_through = chat_reads["reads"].get(chat_id, chat_reads["baseline"])
+    return read_through is not None and _instant(read_through) >= _instant(event["created_at"])
 
 
 def attribution(store, project_id: str, patch: Patch) -> dict:
@@ -102,8 +122,7 @@ def attribution(store, project_id: str, patch: Patch) -> dict:
                 result["deep_link"] = (
                     f"#/projects/{quote(project_id, safe='')}?view=chats&chat={quote(key, safe='')}"
                 )
-                # The member who asked for this Work turn already knows it ran, so
-                # their own digest leaves it out; teammates still see the chat.
+                # The member who asked for this Work turn; see `_viewers_own`.
                 if task.authorized_by is not None:
                     result["actor_user_id"] = task.authorized_by.user_id
             elif patch.producer == "system":
@@ -191,6 +210,7 @@ def assemble_digest(
     mark: dict | None,
     cursor: int,
     state: GraphState | None = None,
+    chat_reads: dict | None = None,
 ) -> dict:
     """The sole rendered-line grouping function, also used by landing counts."""
     resets = {}
@@ -226,7 +246,7 @@ def assemble_digest(
                     created_at=event["created_at"],
                     deep_link=deep_link(project_id, target, entry["kind"], entry["item_id"]),
                 )
-            if event["actor_user_id"] == user_id and payload["source_kind"] in OWN_SOURCES:
+            if _viewers_own(event, user_id, chat_reads):
                 continue
             if not payload["edits"]:
                 continue
@@ -251,7 +271,7 @@ def assemble_digest(
             for node_id in event["node_ids"]:
                 latest_nodes[node_id] = key
         elif kind == "branch_change":
-            if event["actor_user_id"] == user_id and payload.get("source_kind") in OWN_SOURCES:
+            if _viewers_own(event, user_id, chat_reads):
                 continue
             episode_id = payload["episode_id"]
             if payload["edits"] and int(item_id) > merged.get(episode_id, -1):
@@ -338,7 +358,15 @@ def read_digest(store, catalog, project_id: str, user_id: str) -> dict:
 
 
 def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None):
-    result = assemble_digest(project_id, user_id, events, mark, cursor, state)
+    result = assemble_digest(
+        project_id,
+        user_id,
+        events,
+        mark,
+        cursor,
+        state,
+        store.chat_read_markers(project_id, user_id),
+    )
     question_ids = [item["item_id"] for item in result["needs_you"] if item["kind"] == "question"]
     with store.connection() as conn:
         open_questions = (
