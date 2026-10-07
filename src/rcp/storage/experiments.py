@@ -2802,7 +2802,10 @@ class ExperimentStoreMixin(StoreMixinBase):
         checked_bindings: dict[str, tuple[_ExperimentResumeBinding, str | None]] = {}
         for operation_id, binding in bindings.items():
             try:
-                checked_bindings[operation_id] = (binding, binding.workspace_problem())
+                diagnostic = binding.workspace_problem()
+                checked_bindings[operation_id] = (binding, diagnostic)
+                if diagnostic:
+                    break
             except OSError:
                 logging.getLogger(__name__).warning(
                     "Stop settlement could not check task %s's saved workspace; "

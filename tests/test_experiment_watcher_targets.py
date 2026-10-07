@@ -499,3 +499,49 @@ def test_stop_discards_workspace_probe_when_saved_binding_changes(tmp_path, monk
     assert "experiment_recovery_abandoned" in {
         receipt.category for receipt in store.agent_task_receipts(root.operation_id)
     }
+
+
+def test_stop_settles_on_broken_local_task_before_unreachable_remote_task(tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, local = _create_episode(store, "local-task-a", GraphTargetRef())
+    store.checkpoint_agent_task(
+        local.operation_id,
+        native_session_id="local-session",
+        stage_root=str(tmp_path / "missing-stage"),
+    )
+    store.fail_agent_task(local.operation_id, "interrupted fixture", status="interrupted")
+    # Seed retained history with two unresolved turns on different hosts.
+    # Neither turn supersedes the other; Stop must inspect both in order.
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, episode_id, kind, status, request_json,
+                created_at, updated_at, status_message, native_session_id, stage_host, stage_root
+            )
+            SELECT 'remote-task-b', project_id, episode_id, kind, status,
+                json_set(request_json, '$.control_invocation', 2, '$.trigger', 'watcher'),
+                created_at, updated_at, status_message, 'remote-session',
+                'worker.example', '/remote/rcp-stage'
+            FROM graph_runs WHERE operation_id = ?
+            """,
+            (local.operation_id,),
+        )
+    store.request_episode_stop(episode_id)
+    probes = []
+
+    def unreachable(_stage, path):
+        probes.append(path)
+        raise OSError("fixture host unreachable")
+
+    monkeypatch.setattr("rcp.transport.RemoteRunStage.directory_exists", unreachable)
+    settled = store.settle_experiment_loop_stop(
+        _PROJECT_ID, _CONTROL_NODE_ID, episode_id=episode_id
+    )
+    assert settled is not None and settled.stop_settled_at is not None
+    assert settled.session_diagnostic is not None
+    assert probes == []
+    for operation_id in (local.operation_id, "remote-task-b"):
+        assert "experiment_recovery_abandoned" in {
+            receipt.category for receipt in store.agent_task_receipts(operation_id)
+        }

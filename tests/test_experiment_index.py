@@ -22,6 +22,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+from rcp.loop_status import episode_loop_metadata, episode_loop_metadata_from_snapshot
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -604,40 +605,23 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
 
     monkeypatch.setattr(app.state.service, "for_graph_target", reject_old_branch_load)
     metadata_batches = []
-    metadata_selects = []
     original_metadata = store.episode_loop_metadata_snapshots
-    original_connection = store.connection
-    reading_metadata = False
-
-    @contextmanager
-    def traced_connection():
-        with original_connection() as connection:
-            connection.set_trace_callback(
-                lambda statement: (
-                    metadata_selects.append(statement)
-                    if reading_metadata and statement.lstrip().upper().startswith("SELECT")
-                    else None
-                )
-            )
-            yield connection
 
     def metadata_batch(episodes):
-        nonlocal reading_metadata
         metadata_batches.append({episode.episode_id for episode in episodes})
-        reading_metadata = True
-        try:
-            return original_metadata(episodes)
-        finally:
-            reading_metadata = False
+        snapshots = original_metadata(episodes)
+        for episode in episodes:
+            assert episode_loop_metadata_from_snapshot(
+                episode, snapshots[episode.episode_id]
+            ) == episode_loop_metadata(store, episode)
+        return snapshots
 
-    monkeypatch.setattr(store, "connection", traced_connection)
     monkeypatch.setattr(store, "episode_loop_metadata_snapshots", metadata_batch)
     response = client.get("/api/space/runs")
     assert response.status_code == 200, response.text
     entries = {item["episode_id"]: item for item in response.json()}
     assert set(entries) == archived_ids | {current_episode_id, replacement_id}
     assert metadata_batches == [archived_ids]
-    assert len(metadata_selects) == 3
     assert all(entries[item]["archived"] for item in archived_ids)
     assert all(entries[item]["can_archive"] for item in archived_ids)
     assert all(entries[item]["run_section"] == "completed" for item in archived_ids)
