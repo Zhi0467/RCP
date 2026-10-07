@@ -114,8 +114,11 @@ def install_hooks() -> None:
         selection = json.loads((ROOT / "selection.json").read_text())
         bundle = Path(selection["bundle"])
         provenance = json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
-        bundles = runtime.paths.supervisor / "bundles"
-        driver._root_directory(bundles, mode=0o755)
+        # A dry run deletes the bundle it fetched, so hand each attempt a copy.
+        # Plain calls only: this hook also runs inside older installed supervisors.
+        bundles = ROOT / "bundles"
+        bundles.mkdir(mode=0o755, exist_ok=True)
+        bundles.chmod(0o755)
         downloaded = bundles / str(uuid.uuid4())
         shutil.copytree(bundle, downloaded)
         downloaded.chmod(0o755)
@@ -195,8 +198,9 @@ def install_hooks() -> None:
 
     prepare_release = driver.prepare_release
 
-    def prepare_rejecting_release(runtime, release, warnings=None):
-        receipt = prepare_release(runtime, release, warnings)
+    # Every installed supervisor version is wrapped, so forward its own signature.
+    def prepare_rejecting_release(*args, **kwargs):
+        receipt = prepare_release(*args, **kwargs)
         project_id = json.loads((ROOT / "selection.json").read_text()).get("reject_project")
         if project_id:
             install_inventory_rejection(Path(receipt["release_directory"]), project_id)
