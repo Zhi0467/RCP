@@ -29,8 +29,9 @@ READ_CONTEXT_INPUT = re.compile(r"(main-graph-|loop-status-watchers-)[0-9a-f]{64
 def prepare_read_context_input(inputs: str, label: str, *, immutable: bool = True) -> bool:
     """Inspect a content-addressed read input and retire its superseded snapshots.
 
-    Only these ephemeral read-context families are pruned; contracts and other
-    task inputs retain their existing lifecycle. Content is never read back.
+    Chat loop status also retires old unkeyed loop watcher snapshots from this
+    reused session stage. Keyed watcher-maintenance inputs and contracts remain
+    owned by their consumers. Content is never read back.
     """
 
     match = READ_CONTEXT_INPUT.fullmatch(label)
@@ -44,7 +45,12 @@ def prepare_read_context_input(inputs: str, label: str, *, immutable: bool = Tru
     with os.scandir(inputs) as entries:
         for entry in entries:
             candidate = READ_CONTEXT_INPUT.fullmatch(entry.name)
-            if candidate is None or candidate.group(1) != match.group(1):
+            obsolete_loop_watchers = match.group(1) == "loop-status-watchers-" and re.fullmatch(
+                r"task-[A-Za-z0-9._-]+-experiment-watchers\.json", entry.name
+            )
+            if not obsolete_loop_watchers and (
+                candidate is None or candidate.group(1) != match.group(1)
+            ):
                 continue
             info = entry.stat(follow_symlinks=False)
             if not stat.S_ISREG(info.st_mode) or (immutable and info.st_mode & 0o222):

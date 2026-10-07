@@ -28,6 +28,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
+from rcp.history.branches import BranchHistoryManager
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
 from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
@@ -781,8 +782,11 @@ async def _prepare_hidden_read_scope(
         machine = service.manifest.machine_map[request.run_on]
         execution_host = machine.host
         card = execution.store.space_machine_for(machine.host) if execution is not None else None
+        history = service.history
+        if isinstance(history, BranchHistoryManager):
+            history = history.parent
         project_id = (
-            service.history.project_id
+            history.project_id
             or "manifest-" + hashlib.sha256(str(service.manifest.path).encode("utf-8")).hexdigest()
         )
         return await asyncio.to_thread(

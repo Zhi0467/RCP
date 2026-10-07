@@ -150,10 +150,19 @@ def test_read_context_inputs_reuse_without_readback_and_retire_only_superseded_s
     inputs = root / "inputs"
     inputs.mkdir(parents=True)
     other_prefix = "loop-status-watchers-" if prefix == "main-graph-" else "main-graph-"
-    kept = ["master-context.md", f"{other_prefix}{'f' * 64}.json"]
+    legacy = "task-previous-experiment-watchers.json"
+    kept = [
+        "master-context.md",
+        f"{other_prefix}{'f' * 64}.json",
+        "task-live-experiment-watchers-0123456789abcdef.json",
+    ]
+    (inputs / legacy).write_text("[]")
+    (inputs / legacy).chmod(0o400)
     for name in kept:
         (inputs / name).write_text("{}")
         (inputs / name).chmod(0o400)
+    if prefix != "loop-status-watchers-":
+        kept.append(legacy)
     stage = RemoteRunStage("execution.example") if remote else None
     uploads = []
     if stage is not None:
@@ -322,3 +331,38 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
         assert Path(statuses[0]["watcher_state_path"]).is_file()
     else:
         assert statuses == []
+
+
+@pytest.mark.asyncio
+async def test_branch_turn_prepares_hidden_reads_with_its_project_identity(
+    branch_services, tmp_path, monkeypatch
+):
+    from rcp.agents import provider_environment
+    from rcp.runs.shared import _prepare_hidden_read_scope
+
+    from .test_hidden_read_launch import _scope
+
+    main, service = branch_services
+    main.history.project_id = "project"
+    expected = _scope()
+    launches = []
+
+    def prepare(**kwargs):
+        launches.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(provider_environment, "prepare_hidden_read_launch", prepare)
+    actual = await _prepare_hidden_read_scope(
+        service,
+        RunRequest(run_on="laptop"),
+        workspace=tmp_path / "stage" / "workspace",
+        remote_stage=None,
+        execution=None,
+        capability="work_auto",
+        data_dir=tmp_path / "data",
+    )
+    assert actual is expected
+    assert len(launches) == 1
+    inventory = launches[0]["repository_inventory"]
+    assert inventory
+    assert {item.project_id for item in inventory} == {service.history.branch_metadata().project_id}

@@ -31,12 +31,17 @@ from rcp.loop_status import LoopOverlap
 EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v4"
 
 
-def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
+def experiment_loop_read_context(
+    context: ChatContext, loops: LoopOverlap, *, ask_allowed: bool
+) -> str:
     """Fresh overlap evidence and branch read pointers for every loop invocation."""
 
     pointers = render_chat_read_context(context)
     return (
-        "Other-target live loops for this node:\n" + render_loop_overlap(loops) + "\n\n" + pointers
+        "Other-target live loops for this node:\n"
+        + render_loop_overlap(loops, ask_allowed=ask_allowed)
+        + "\n\n"
+        + pointers
     )
 
 

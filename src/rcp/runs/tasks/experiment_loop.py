@@ -767,7 +767,9 @@ def _loop_read_context(turn: WorkTurn) -> str:
         if execution is not None and task is not None
         else LoopOverlap()
     )
-    return experiment_loop_read_context(turn.context, loops)
+    return experiment_loop_read_context(
+        turn.context, loops, ask_allowed="ask" in _work_turn_command_handler(turn).allowed_verbs
+    )
 
 
 def _record_continuation_prompt(

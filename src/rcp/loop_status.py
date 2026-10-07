@@ -18,6 +18,7 @@ from rcp.limits import LOOP_OVERLAP_MAX_BYTES, LOOP_OVERLAP_MAX_ROWS
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (
+    AutoResearchSpaceRunEpisodeState,
     EpisodeEnding,
     EpisodeLoopMetadataSnapshot,
     EpisodeStatus,
@@ -144,7 +145,8 @@ def episode_loop_metadata(
 
 
 def episode_loop_metadata_from_snapshot(
-    episode: EpisodeRecord, snapshot: EpisodeLoopMetadataSnapshot
+    episode: EpisodeRecord | AutoResearchSpaceRunEpisodeState,
+    snapshot: EpisodeLoopMetadataSnapshot,
 ) -> EpisodeLoopMetadata:
     """Render either a single-episode or batch-hydrated durable metadata input."""
 

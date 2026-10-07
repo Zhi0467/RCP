@@ -2380,6 +2380,10 @@ class AutoResearchSpaceRunEpisodeState(BaseModel):
     graph_target: GraphTargetRef
     root_operation_id: str | None
     authorized_by: AuthorizedHuman | None = None
+    code_worktree: bool = False
+    isolation_owner_episode_id: str | None = None
+    stop_initiated_by: str | None = None
+    stop_settled_at: str | None = None
     status: EpisodeStatus
     stop_requested_at: str | None
     ending: EpisodeEnding | None

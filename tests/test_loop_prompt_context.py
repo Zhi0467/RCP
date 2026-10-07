@@ -224,9 +224,9 @@ def test_experiment_loop_prompt_receives_other_target_rows_from_shared_renderer(
     rendered = []
     render = experiment_loop_prompt.render_loop_overlap
 
-    def capture(rows):
+    def capture(rows, *, ask_allowed):
         rendered.append([row.model_dump(mode="json") for row in rows.rows])
-        return render(rows)
+        return render(rows, ask_allowed=ask_allowed)
 
     monkeypatch.setattr(experiment_loop_prompt, "render_loop_overlap", capture)
     patch = {
@@ -313,3 +313,57 @@ async def test_failed_node_status_staging_closes_the_work_mailbox(manifest, tmp_
     assert launcher.calls == 0
     assert len(owners) == 1
     assert owners[0].closed and owners[0].staged.credential.expired
+
+
+@pytest.mark.parametrize(
+    ("child", "rule_id"), [(False, "ask_human"), (True, "escalate_to_orchestrator")]
+)
+def test_loop_interference_prompt_uses_resolved_launch_verbs(manifest, tmp_path, child, rule_id):
+    from types import SimpleNamespace
+
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.questions import work_command_handler
+    from rcp.runs.tasks.experiment_loop import _loop_read_context
+    from rcp.runs.tasks.work import WorkTurn
+
+    from .test_experiment_index import _record_branch_target_child_experiment, _seed_indexed_project
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    if child:
+        _seed_indexed_project(app)
+        _parent, episode = _record_branch_target_child_experiment(app)
+    else:
+        loop = _Loop(app)
+        loop.start_episode(status="running")
+        episode = store.episode(loop.episode_id)
+    assert episode is not None and episode.root_operation_id is not None
+    execution = AgentTaskExecution(
+        operation_id=episode.root_operation_id, store=store, control=AgentProcessControl()
+    )
+    service = app.state.service.for_graph_target(episode.graph_target)
+    request = RunRequest(
+        chat_scope="node",
+        node_id=episode.control_node_id,
+        control_node_id=episode.control_node_id,
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+    )
+    turn = cast(
+        WorkTurn,
+        SimpleNamespace(
+            execution=execution,
+            request=request,
+            context=service.assemble_chat(request),
+            compute_commands=None,
+        ),
+    )
+    prompt = _loop_read_context(turn)
+    rule = next(
+        json.loads(line)["interference_rule"]
+        for line in prompt.splitlines()
+        if line.startswith('{"interference_rule":')
+    )
+    assert rule["id"] == rule_id
+    assert ("ask" in work_command_handler(execution, None).allowed_verbs) is (not child)

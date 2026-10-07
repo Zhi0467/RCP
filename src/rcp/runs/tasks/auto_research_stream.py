@@ -1594,7 +1594,9 @@ def _orchestrator_prompt(
             auto_research_branch_read_pointers(
                 context.main_graph_path, shared_repositories, repositories
             ),
-            render_loop_overlap(loops),
+            render_loop_overlap(
+                loops, ask_allowed="ask" in auto_research_allowed_verbs("orchestrator")
+            ),
         ),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
             turn.task.project_id,

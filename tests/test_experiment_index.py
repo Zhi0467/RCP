@@ -417,6 +417,15 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     project_id, current_episode = _seed_indexed_project(app)
     parent, child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
     store = app.state.background_tasks.store
+    assert parent.root_operation_id is not None
+    store.record_agent_task_receipt(
+        parent.root_operation_id,
+        "agent_launch",
+        {
+            "execution_host": "",
+            "canonical_repository_roots": [manifest.repository_map["repo-a"].path],
+        },
+    )
     authorizer = authorized_human(store)
     store.rename_space_user(authorizer.user_id, "Changed display name")
     client = signed_in_client(app)
@@ -447,6 +456,13 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert auto_research["experiment_id"] is None
     assert auto_research["title"] == "Auto-research"
     assert auto_research["run_section"] == "running"
+
+    episodes = client.get(f"/api/projects/{project_id}/episodes")
+    assert episodes.status_code == 200, episodes.text
+    parent_row = next(row for row in episodes.json() if row["episode_id"] == parent.episode_id)
+    assert auto_research["checkout"] == parent_row["checkout"]
+    assert auto_research["checkout"]["available"] is True
+    assert auto_research["checkout"]["repository_paths"] == [manifest.repository_map["repo-a"].path]
 
 
 def test_space_runs_keeps_completed_parents_for_seven_days() -> None:

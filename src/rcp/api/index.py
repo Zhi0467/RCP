@@ -521,14 +521,25 @@ def space_runs(
     for project_id in records:
         if project_id not in archive_states_by_project:
             archive_states_by_project[project_id] = store.episode_archive_states(project_id)
-    for snapshot in store.auto_research_space_run_projection_snapshots(
+    auto_research_snapshots = store.auto_research_space_run_projection_snapshots(
         set(records),
         completed_since=completed_since,
-    ):
+    )
+    auto_research_metadata = (
+        store.episode_loop_metadata_snapshots(
+            [snapshot.episode for snapshot in auto_research_snapshots]
+        )
+        if auto_research_snapshots
+        else {}
+    )
+    for snapshot in auto_research_snapshots:
         episode = snapshot.episode
         record = records[episode.project_id]
         entry = _space_auto_research_run(
             snapshot,
+            metadata=episode_loop_metadata_from_snapshot(
+                episode, auto_research_metadata[episode.episode_id]
+            ),
             project_name=record.name,
             project_reachable=record.reachable,
             archive_state=archive_states_by_project[episode.project_id].get(
@@ -659,6 +670,7 @@ def _space_experiment_run(
 def _space_auto_research_run(
     snapshot: AutoResearchSpaceRunProjectionSnapshot,
     *,
+    metadata: EpisodeLoopMetadata,
     project_name: str,
     project_reachable: bool | None,
     archive_state: EpisodeArchiveState,
@@ -705,9 +717,9 @@ def _space_auto_research_run(
         archived=archive_state.archived,
         can_archive=archive_state.can_archive,
         authorized_by=episode.authorized_by,
-        started_by=EpisodeStarter(
-            kind="human" if episode.authorized_by else "unknown", human=episode.authorized_by
-        ),
+        started_by=metadata.started_by,
+        auto_research_parent_episode_id=metadata.auto_research_parent_episode_id,
+        checkout=metadata.checkout,
     )
 
 

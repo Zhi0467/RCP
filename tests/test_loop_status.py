@@ -157,7 +157,7 @@ def test_overlap_renderer_preserves_shared_row_data(loop):
         loop.project_id,
         graph_target=GraphTargetRef(kind="branch", branch_id="other"),
     )
-    rendered = render_loop_overlap(rows)
+    rendered = render_loop_overlap(rows, ask_allowed=True)
     assert json.loads(rendered.split("\n", 1)[1]) == rows.model_dump(mode="json", exclude_none=True)
 
 

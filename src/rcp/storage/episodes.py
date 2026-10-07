@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import AuthorizedHuman, EpisodeIsolation
@@ -51,7 +52,7 @@ class EpisodeStoreMixin(StoreMixinBase):
     """Mode-neutral episode lifecycle, operational budget, and report ledger."""
 
     def episode_loop_metadata_snapshots(
-        self, episodes: list[EpisodeRecord]
+        self, episodes: Sequence[EpisodeRecord | AutoResearchSpaceRunEpisodeState]
     ) -> dict[str, EpisodeLoopMetadataSnapshot]:
         """Batch durable routes, isolation, and root launch receipts in one read snapshot."""
 
@@ -447,6 +448,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT episode_id, project_id, mode, graph_target_json,
                            root_operation_id, status, stop_requested_at, ending,
                            authorized_space_id, authorized_user_id, authorized_display_name,
+                           code_worktree, isolation_owner_episode_id,
+                           stop_initiated_by, stop_settled_at,
                            wrapup_state, created_at, updated_at, ended_at
                     FROM episodes
                     WHERE project_id IN ({placeholders})
@@ -456,6 +459,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT episode_id, project_id, mode, graph_target_json,
                            root_operation_id, status, stop_requested_at, ending,
                            authorized_space_id, authorized_user_id, authorized_display_name,
+                           code_worktree, isolation_owner_episode_id,
+                           stop_initiated_by, stop_settled_at,
                            wrapup_state, created_at, updated_at, ended_at
                     FROM episodes
                     WHERE project_id IN ({placeholders})
@@ -466,6 +471,8 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT episode_id, project_id, mode, graph_target_json,
                            root_operation_id, status, stop_requested_at, ending,
                            authorized_space_id, authorized_user_id, authorized_display_name,
+                           code_worktree, isolation_owner_episode_id,
+                           stop_initiated_by, stop_settled_at,
                            wrapup_state, created_at, updated_at, ended_at
                     FROM episodes
                     WHERE project_id IN ({placeholders})
