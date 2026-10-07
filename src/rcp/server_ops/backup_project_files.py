@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -16,8 +17,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from rcp.config import load_manifest
+from rcp.config import load_manifest, resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
+from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS
 from rcp.paper.service import (
     canonical_introduction_backup_source,
     validate_canonical_introduction_backup,
@@ -53,12 +55,15 @@ from rcp.server_ops.backup_project_io import (
     stable_workspace_bytes,
     write_bytes_entry,
 )
+from rcp.server_ops.models import redact_server_text
 from rcp.sources.imported import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
 )
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError
 from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_for_probe
+
+logger = logging.getLogger(__name__)
 
 BACKUP_PROJECT_FILE_CAPTURE_SCHEMA_VERSION = 1
 
@@ -504,6 +509,13 @@ class BackupProjectFileCaptureCoordinator:
             discard_failed_project_capture(capture_root, project_root)
             if self.require_checkout_identity and isinstance(exc, CheckoutInspectionError):
                 raise
+            # The receipt keeps only a fixed reason; this line names the cause.
+            logger.warning(
+                "Backup could not capture project files for %r: %s: %s",
+                inventory.project_id,
+                type(exc).__name__,
+                " ".join(redact_server_text(str(exc)).split())[:BACKUP_DIAGNOSTIC_MAX_CHARS],
+            )
             return BackupProjectCapture(
                 project_id=inventory.project_id,
                 home_space_id=inventory.home_space_id,
@@ -536,9 +548,15 @@ class BackupProjectFileCaptureCoordinator:
         if recovery is None or locator is None or inventory.home_space_id is None:
             raise BackupProjectFileUnavailable("The project capture proof is incomplete.")
         copied_root = self.local_project_copies.get(inventory.project_id)
-        manifest = load_manifest(
-            copied_root / "manifest.toml" if copied_root else locator,
-            project_root=Path(locator).parent.parent,
+        # A locator may name the project folder or its manifest; relative
+        # repository paths resolve against the live project either way.
+        manifest = (
+            load_manifest(
+                copied_root / "manifest.toml",
+                project_root=resolve_manifest_path(locator).parent.parent,
+            )
+            if copied_root is not None
+            else load_manifest(locator)
         )
         if not recovery.configuration.matches_manifest(manifest):
             raise BackupProjectFileUnavailable("The project manifest changed after SQLite capture.")

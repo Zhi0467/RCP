@@ -331,7 +331,7 @@ def backup() -> None:
         for line in result.stdout.splitlines()
         for field in json.loads(line).get("step", {}).get("fields", [])
     }
-    assert fields["backup_status"] == "protected", fields
+    assert fields["backup_status"] == "protected", (fields, result.stderr[-4000:])
     assert fields["uncaptured_projects"] == 0, fields
 
 
