@@ -2281,9 +2281,14 @@ class ProjectCatalog:
                 # comparison and discard the offline copy. Both are recoverable
                 # from the graph the cache already carries.
                 expected_payload = expected_attention.model_dump(mode="json")
-                for field in ("proposal_actions", "decision_prior_choices"):
-                    if field not in attention_payload:
-                        attention_payload[field] = expected_payload[field]
+                if "decision_prior_choices" not in attention_payload:
+                    attention_payload["decision_prior_choices"] = expected_payload[
+                        "decision_prior_choices"
+                    ]
+                # Proposal action lines only render the cached graph's Proposals,
+                # and their wording and shape change between releases; a cache
+                # written by an older release takes this release's rendering.
+                attention_payload["proposal_actions"] = expected_payload["proposal_actions"]
             if "graph_mutation" not in snapshot:
                 snapshot["graph_mutation"] = project_graph_mutation_availability(graph).model_dump(
                     mode="json"
