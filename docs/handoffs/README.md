@@ -55,12 +55,9 @@ stands in for it. Run one on disposable data, then delete its line here.
   execution context is a separate contract change.
 - Pushes: the live team-space push run and real remote-machine SSH.
 - Phone UI: the real-iPhone journey and its screenshot review.
-- Artifacts inside a reply: with a real provider login, ask a chat for a game,
-  a diagram, and a live dashboard and confirm the reply embeds each one where it
-  belongs; comment on a part of one in comment mode, send, and confirm the edit
-  turn publishes the next version that the reply then shows; repeat in
-  `RCP Candidate.app` (the frozen backend and the desktop WebView) and on a real
-  phone, where Comment gives way to Expand.
+- Artifacts inside a reply: on a real phone, open a reply that embeds a game
+  and a live dashboard, scroll past the embeds, play the game by touch, and
+  confirm Comment gives way to Expand.
 - Runs loading: the team-server measurement of first open against the 2 s target.
 - Continuation prompts: with a real provider, an Experiment episode through two
   watcher wakes, its report, then Add N turns on the same session, checking the
