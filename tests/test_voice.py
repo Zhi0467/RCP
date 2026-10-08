@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 
 import httpx
 import pytest
@@ -547,7 +548,10 @@ def test_save_generation_check_and_delete_do_not_scan_history(voice_setup, monke
     assert client.get(f"{path}/generation").status_code == 404
 
 
-def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_setup, monkeypatch):
+@pytest.mark.parametrize("request_id", [None, str(uuid.uuid4())])
+def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(
+    voice_setup, monkeypatch, request_id
+):
     _, private, client = voice_setup
     enable(private)
     payloads = []
@@ -580,13 +584,16 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
         "task_id": "task-1",
         "episode_id": None,
     }
+    if request_id is not None:
+        receipt["request_id"] = request_id
     saved = client.put(
         f"/api/voice/sessions/{record['id']}",
         json=transcript_save(record, entries=entries, receipts=[receipt]),
     )
     assert saved.status_code == 200
     resumed = client.post("/api/voice/sessions", json={**OFFER, "resume_id": record["id"]}).json()
-    assert resumed["input_truncated"] and resumed["session"]["receipts"] == [receipt]
+    assert resumed["input_truncated"]
+    assert resumed["session"]["receipts"] == [{**receipt, "request_id": request_id}]
     inputs = payloads[-1]["session"]["input"]
     assert 0 < len(inputs) <= limits.VOICE_RESUME_MAX_MESSAGES
     assert {item["role"] for item in inputs} == {"user", "assistant"}

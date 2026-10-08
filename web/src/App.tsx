@@ -2970,7 +2970,11 @@ export default function App() {
   };
 
   const startAgentTask = useCallback(
-    async (kind: AgentTaskKind, request: AgentTaskRequest): Promise<AgentTask> => {
+    async (
+      kind: AgentTaskKind,
+      request: AgentTaskRequest,
+      requestId?: string,
+    ): Promise<AgentTask> => {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       try {
@@ -2981,6 +2985,7 @@ export default function App() {
           {
             method: "POST",
             body: JSON.stringify(request),
+            ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
           },
         );
         if (
@@ -3049,7 +3054,11 @@ export default function App() {
     [project, startConversation],
   );
   const startWebMcpConversationTurn = useCallback(
-    (submission: ConversationTurnSubmission) => startConversationTurn(startAgentTask, submission),
+    (submission: ConversationTurnSubmission, requestId?: string) =>
+      startConversationTurn(
+        (kind, request) => startAgentTask(kind, request, requestId),
+        submission,
+      ),
     [startAgentTask],
   );
 
@@ -3133,6 +3142,7 @@ export default function App() {
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
+      requestId?: string,
     ): Promise<ExperimentStartResponse> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
@@ -3167,6 +3177,7 @@ export default function App() {
             ...isolation,
             browser_requested: browserRequested,
           },
+          requestId,
         );
         const expectedTarget = experimentStartTarget(
           graphTarget,
@@ -3242,12 +3253,16 @@ export default function App() {
     [startExperiment],
   );
   const startWebMcpExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number): Promise<ExperimentStartResponse> => {
+    async (
+      node: GraphNode,
+      invocationCeiling?: number,
+      requestId?: string,
+    ): Promise<ExperimentStartResponse> => {
       if (!project) throw new Error("No RCP project is open.");
       const pendingProjectId = project.id;
       setWebMcpExperimentStartProjectId(pendingProjectId);
       try {
-        return await startExperiment(node, invocationCeiling);
+        return await startExperiment(node, invocationCeiling, undefined, false, requestId);
       } finally {
         setWebMcpExperimentStartProjectId((current) =>
           current === pendingProjectId ? null : current,
@@ -3290,6 +3305,7 @@ export default function App() {
       startingInstruction: string | null,
       codeWorktree = true,
       browserRequested = false,
+      requestId?: string,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3300,14 +3316,18 @@ export default function App() {
         throw new Error("Wait for the current episode action to finish.");
       }
       try {
-        const started = await startEpisode(apiBase, {
-          mode: "auto_research",
-          browser_requested: browserRequested,
-          invocation_ceiling: invocationCeiling,
-          starting_instruction: startingInstruction,
-          // Omitted, the server turns code isolation on only where it is eligible.
-          ...(codeWorktree ? {} : { code_worktree: false }),
-        });
+        const started = await startEpisode(
+          apiBase,
+          {
+            mode: "auto_research",
+            browser_requested: browserRequested,
+            invocation_ceiling: invocationCeiling,
+            starting_instruction: startingInstruction,
+            // Omitted, the server turns code isolation on only where it is eligible.
+            ...(codeWorktree ? {} : { code_worktree: false }),
+          },
+          requestId,
+        );
         replaceEpisode(started);
         replaceExactAutoResearchSelection(started.project_id, started.episode_id);
         closeAutoResearchDialog();
@@ -3734,7 +3754,12 @@ export default function App() {
           experimentStartRequiresSync,
           startWebMcpExperiment,
         ),
-        ...projectAutoResearchToolDefinitions(project, autoResearchRefusal, startAutoResearch),
+        ...projectAutoResearchToolDefinitions(
+          project,
+          autoResearchRefusal,
+          (ceiling, instruction, codeWorktree, requestId) =>
+            startAutoResearch(ceiling, instruction, codeWorktree, false, requestId),
+        ),
         ...projectEpisodeStopToolDefinitions(
           project,
           episodes,

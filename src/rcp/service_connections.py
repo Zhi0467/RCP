@@ -82,6 +82,10 @@ class VoiceActionReceipt(BaseModel):
     argument_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     task_id: str | None = Field(default=None, max_length=200)
     episode_id: str | None = Field(default=None, max_length=200)
+    request_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    )
     outcome: Literal["accepted", "refused", "unknown"]
 
 

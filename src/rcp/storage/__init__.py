@@ -21,6 +21,7 @@ from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
 from rcp.storage.base import AppStoreBase
 from rcp.storage.chat_display import ChatDisplayStoreMixin
+from rcp.storage.client_requests import ClientRequestStoreMixin
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
@@ -51,6 +52,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    ClientRequestStoreMixin,
     OwnerAuthStoreMixin,
     DigestStoreMixin,
     ConsolidationStoreMixin,

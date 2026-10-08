@@ -448,7 +448,10 @@ export function projectConversationToolDefinitions(
 }
 
 type CreateWebMcpConversation = (kind: ChatKind, node: GraphNode | null) => string;
-type StartWebMcpConversationTurn = (submission: ConversationTurnSubmission) => Promise<AgentTask>;
+type StartWebMcpConversationTurn = (
+  submission: ConversationTurnSubmission,
+  requestId?: string,
+) => Promise<AgentTask>;
 
 function exactEnabledSkillIds(
   project: ProjectSnapshot,
@@ -543,6 +546,7 @@ export async function sendProjectConversationMessage(
   taskStartPending: boolean,
   createConversation: CreateWebMcpConversation,
   startTurn: StartWebMcpConversationTurn,
+  requestId?: string,
 ): Promise<Record<string, unknown>> {
   if (Object.prototype.hasOwnProperty.call(input, "references")) {
     throw new Error("Project references are not supported by WebMCP Send.");
@@ -573,18 +577,21 @@ export async function sendProjectConversationMessage(
     stringListInput(input, "provider_skill_names"),
   );
   const chatId = existing?.transcript.chat_id ?? createConversation(surface, node);
-  const task = await startTurn({
-    kind: surface,
-    config,
-    runTruthScope,
-    nodeId: node?.id ?? null,
-    message,
-    chatId,
-    sessionId: existing?.sessionId ?? null,
-    mode,
-    skills: { workflow_ids: workflowIds, skill_ids: skillIds },
-    providerSkillNames,
-  });
+  const task = await startTurn(
+    {
+      kind: surface,
+      config,
+      runTruthScope,
+      nodeId: node?.id ?? null,
+      message,
+      chatId,
+      sessionId: existing?.sessionId ?? null,
+      mode,
+      skills: { workflow_ids: workflowIds, skill_ids: skillIds },
+      providerSkillNames,
+    },
+    requestId,
+  );
   return {
     project_id: project.id,
     chat_id: chatId,
@@ -663,7 +670,7 @@ export function projectConversationSendToolDefinitions(
   startTurn: StartWebMcpConversationTurn,
 ): WebMcpToolDefinition[] {
   return [
-    withExecute(SEND_CONVERSATION_TOOL, async (toolInput) =>
+    withExecute(SEND_CONVERSATION_TOOL, async (toolInput, requestId) =>
       webMcpTextResult(
         await sendProjectConversationMessage(
           project,
@@ -673,6 +680,7 @@ export function projectConversationSendToolDefinitions(
           taskStartPending,
           createConversation,
           startTurn,
+          requestId,
         ),
       ),
     ),

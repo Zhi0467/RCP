@@ -8,6 +8,7 @@ import {
   createVoiceSaveQueue,
   createFinishedResultOffer,
   voiceWatchFromReceipt,
+  reconcileVoiceReceipts,
   createIdentityGate,
   createVoiceExecutor,
   voiceCallOutcome,
@@ -50,8 +51,8 @@ function harness({
         definition: {
           name,
           annotations: { readOnlyHint: Boolean(tool?.readOnly) },
-          execute: async (args) => {
-            runs.push({ name, args });
+          execute: async (args, requestId) => {
+            runs.push({ name, args, ...(requestId ? { requestId } : {}) });
             if (failWith) throw failWith;
             return { content: [{ type: "text", text: JSON.stringify(result) }] };
           },
@@ -406,7 +407,7 @@ const receiptTarget = {
   graph_target: { kind: "main", branch_id: null },
 };
 
-test("durable receipt precedes dispatch and restores a target-scoped unknown fence", async () => {
+test("lost-response Send resumes to an accepted receipt and exact watch", async () => {
   const receipts = [];
   let first;
   first = harness({
@@ -425,10 +426,41 @@ test("durable receipt precedes dispatch and restores a target-scoped unknown fen
     code(await first.executor.run(call("a", "rcp_send_conversation_message", args))),
     "unknown_outcome",
   );
-  assert.equal(receipts[0].argument_fingerprint.length, 64);
+  assert.match(
+    receipts[0].request_id,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  assert.equal(first.runs[0].requestId, receipts[0].request_id);
+  const resumed = await reconcileVoiceReceipts(receipts, async (projectId, requestId) => {
+    assert.equal(projectId, "p");
+    assert.equal(requestId, receipts[0].request_id);
+    return { route: "tasks/node_chat", operation_id: "task-one" };
+  });
+  assert.equal(resumed[0].outcome, "accepted");
+  assert.equal(voiceWatchFromReceipt(resumed[0]).id, "task-one");
+});
+
+test("a restored keyless unknown receipt fences its exact call in its own target", async () => {
+  const receipts = [];
+  const first = harness({
+    mode: "none",
+    failWith: new TypeError("dropped"),
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async (receipt) => receipts.push(receipt),
+    },
+  });
+  const args = { mode: "work", message: "m" };
+  await first.executor.run(call("a", "rcp_send_conversation_message", args));
+  // A lookup that cannot answer leaves the receipt unknown instead of failing Resume.
+  const [unanswered] = await reconcileVoiceReceipts(receipts, async () => {
+    throw { status: 503 };
+  });
+  assert.equal(unanswered.outcome, "unknown");
+  const { request_id: _key, ...keyless } = unanswered;
   const resumed = harness({
     mode: "none",
-    receiptDeps: { target: () => receiptTarget, initialReceipts: receipts },
+    receiptDeps: { target: () => receiptTarget, initialReceipts: [keyless] },
   });
   assert.equal(
     code(await resumed.executor.run(call("b", "rcp_send_conversation_message", args))),
@@ -439,11 +471,44 @@ test("durable receipt precedes dispatch and restores a target-scoped unknown fen
     mode: "none",
     receiptDeps: {
       target: () => ({ ...receiptTarget, project_id: "other" }),
-      initialReceipts: receipts,
+      initialReceipts: [keyless],
     },
   });
   await other.executor.run(call("b", "rcp_send_conversation_message", args));
   assert.equal(other.runs.length, 1);
+});
+
+test("Resume's 404 clears the unknown fence and retries with the saved key", async () => {
+  const receipts = [];
+  const first = harness({
+    mode: "none",
+    failWith: new TypeError("dropped"),
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async (receipt) => receipts.push(receipt),
+    },
+  });
+  const args = { mode: "work", message: "m" };
+  await first.executor.run(call("a", "rcp_send_conversation_message", args));
+  const reconciled = await reconcileVoiceReceipts(receipts, async () => {
+    throw { status: 404 };
+  });
+  assert.equal(reconciled[0].outcome, "refused");
+  const saved = [];
+  const resumed = harness({
+    confirmations: [true],
+    result: { project_id: "p", task_id: "task-one" },
+    receiptDeps: {
+      target: () => receiptTarget,
+      initialReceipts: reconciled,
+      saveReceipt: async (receipt) => saved.push(receipt),
+    },
+  });
+  await resumed.executor.run(call("b", "rcp_send_conversation_message", args));
+  assert.equal(resumed.asked.length, 1);
+  assert.equal(resumed.runs.length, 1);
+  assert.equal(resumed.runs[0].requestId, receipts[0].request_id);
+  assert.equal(saved.at(-1).outcome, "accepted");
 });
 
 test("accepted receipts restore exact watches but never confirmation authority", async () => {

@@ -4,7 +4,8 @@ import uuid
 from functools import partial
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from pydantic import UUID4
 
 from rcp.api.dependencies import (
     get_background_tasks,
@@ -48,6 +49,7 @@ from rcp.storage import (
     EpisodeNotRunning,
     EpisodeRecord,
 )
+from rcp.storage.client_requests import ClientRequestConflict
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -97,133 +99,162 @@ def run_experiment(
     store: StoreDependency,
     identity_access: IdentityAccessDependency,
     background_tasks: BackgroundTasksDependency,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
     if body.get("references"):
         raise HTTPException(status_code=422, detail="Experiment runs do not accept references.")
     authorized_by = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
-    service = get_graph_service(catalog, project_id, branch_id)
-    target = service.history.graph_target
-    require_graph_edit_admission(store, project_id, target)
+    if idempotency_key is not None:
+        project_id = catalog.resolve_project_id(project_id)
     try:
-        state = service.history.state()
-        node = state.nodes.get(node_id)
-        if not isinstance(node, Experiment):
-            raise HTTPException(status_code=404, detail="Experiment not found")
-        client_request = dict(body)
-        client_request.pop("resolved_compute_context", None)
-        client_request.pop("isolation_owner_episode_id", None)
-        # Reauthorizing the next episode is an operational human act, not research
-        # truth, so an explicit ceiling arrives with the Run instead of requiring a
-        # staged node edit and a Sync. The node value remains the default.
-        requested_ceiling = client_request.pop("invocation_ceiling", None)
-        if requested_ceiling is not None and (
-            not isinstance(requested_ceiling, int)
-            or isinstance(requested_ceiling, bool)
-            or requested_ceiling < 1
-            # Past 2^53 every JSON client reads back a different number than the
-            # one authorized here, so Runs would act on a budget nobody chose.
-            or requested_ceiling > 2**53 - 1
-        ):
-            raise ValueError("The authorized invocation limit must be a positive integer.")
-        episode_ceiling = (
-            node.invocation_ceiling if requested_ceiling is None else requested_ceiling
-        )
-        supplied = RunRequest.model_validate(client_request)
-        if not supplied.chat_id:
-            raise ValueError("Run requires a chat_id")
-        uuid.UUID(supplied.chat_id)
-        # A fresh Run is its own conversation; joining an existing chat would
-        # file the episode inside that chat's history.
-        if store.chat_graph_target(project_id, supplied.chat_id) is not None:
-            raise ValueError("Run requires a new chat_id; this conversation already has turns.")
-        episode_id = str(uuid.uuid4())
-        creates_branch = supplied.graph_isolation and target.kind == "main"
-        runtime, control = _experiment_control(
-            store,
+        with store.client_request_admission(
             project_id,
-            state,
-            node_id,
-            graph_target=(
-                GraphTargetRef(kind="branch", branch_id=episode_id) if creates_branch else target
-            ),
-        )
-        if not control.ready:
-            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
-        pending_group = (
-            None
-            if creates_branch or (runtime.stop_requested and runtime.stop_settled)
-            else store.completed_experiment_watcher_group(
-                project_id,
-                node_id,
-                graph_target=target,
-            )
-        )
-        if pending_group is not None:
-            experiment_request = experiment_watcher_delivery_request(
-                pending_group,
-                trigger="experiment_run",
-                episode_id=episode_id,
-                invocation=1,
-                invocation_ceiling=episode_ceiling,
-                control_revision=state.revision,
-                decision_bundle=control.governing_decisions,
-                completion_criteria=list(node.completion_criteria),
-            )
-            experiment_request = experiment_request.model_copy(
-                update={
-                    "run_truth_scope": supplied.run_truth_scope,
-                    "browser_requested": supplied.browser_requested,
-                    "code_worktree": supplied.code_worktree,
-                    "graph_isolation": supplied.graph_isolation,
-                    "chat_scope": "node",
-                    "node_id": node_id,
-                    "message": experiment_start_message(supplied.message, node_id),
-                    "chat_id": supplied.chat_id,
-                    "session_id": None,
-                }
-            )
-            experiment_request = resolve_experiment_node_work_request(service, experiment_request)
-            validate_episode_admission(store, project_id, experiment_request, graph_target=target)
-            record = start_watcher_notification(
-                background_tasks,
-                project_id,
-                "node_chat",
-                experiment_request,
-                [item.watcher_id for item in pending_group],
-                authorized_by=authorized_by,
-            )
-            if record is None:
-                raise ValueError(
-                    "The pending watcher completion could not be claimed because its "
-                    "conversation is active."
+            authorized_by.user_id,
+            str(idempotency_key) if idempotency_key is not None else None,
+            "experiments/run",
+            result_kind="operation",
+        ) as existing:
+            if existing is not None:
+                record = store.agent_task(existing.operation_id or "")
+                assert record is not None
+                return _start_response(store, record, str(record.request.get("node_id", node_id)))
+            project_id = catalog.resolve_project_id(project_id)
+            service = get_graph_service(catalog, project_id, branch_id)
+            target = service.history.graph_target
+            require_graph_edit_admission(store, project_id, target)
+            try:
+                state = service.history.state()
+                node = state.nodes.get(node_id)
+                if not isinstance(node, Experiment):
+                    raise HTTPException(status_code=404, detail="Experiment not found")
+                client_request = dict(body)
+                client_request.pop("resolved_compute_context", None)
+                client_request.pop("isolation_owner_episode_id", None)
+                # Reauthorizing the next episode is an operational human act, not research
+                # truth, so an explicit ceiling arrives with the Run instead of requiring a
+                # staged node edit and a Sync. The node value remains the default.
+                requested_ceiling = client_request.pop("invocation_ceiling", None)
+                if requested_ceiling is not None and (
+                    not isinstance(requested_ceiling, int)
+                    or isinstance(requested_ceiling, bool)
+                    or requested_ceiling < 1
+                    # Past 2^53 every JSON client reads back a different number than the
+                    # one authorized here, so Runs would act on a budget nobody chose.
+                    or requested_ceiling > 2**53 - 1
+                ):
+                    raise ValueError("The authorized invocation limit must be a positive integer.")
+                episode_ceiling = (
+                    node.invocation_ceiling if requested_ceiling is None else requested_ceiling
                 )
+                supplied = RunRequest.model_validate(client_request)
+                if not supplied.chat_id:
+                    raise ValueError("Run requires a chat_id")
+                uuid.UUID(supplied.chat_id)
+                # A fresh Run is its own conversation; joining an existing chat would
+                # file the episode inside that chat's history.
+                if store.chat_graph_target(project_id, supplied.chat_id) is not None:
+                    raise ValueError(
+                        "Run requires a new chat_id; this conversation already has turns."
+                    )
+                episode_id = str(uuid.uuid4())
+                creates_branch = supplied.graph_isolation and target.kind == "main"
+                runtime, control = _experiment_control(
+                    store,
+                    project_id,
+                    state,
+                    node_id,
+                    graph_target=(
+                        GraphTargetRef(kind="branch", branch_id=episode_id)
+                        if creates_branch
+                        else target
+                    ),
+                )
+                if not control.ready:
+                    raise HTTPException(status_code=409, detail=" ".join(control.reasons))
+                pending_group = (
+                    None
+                    if creates_branch or (runtime.stop_requested and runtime.stop_settled)
+                    else store.completed_experiment_watcher_group(
+                        project_id,
+                        node_id,
+                        graph_target=target,
+                    )
+                )
+                if pending_group is not None:
+                    experiment_request = experiment_watcher_delivery_request(
+                        pending_group,
+                        trigger="experiment_run",
+                        episode_id=episode_id,
+                        invocation=1,
+                        invocation_ceiling=episode_ceiling,
+                        control_revision=state.revision,
+                        decision_bundle=control.governing_decisions,
+                        completion_criteria=list(node.completion_criteria),
+                    )
+                    experiment_request = experiment_request.model_copy(
+                        update={
+                            "run_truth_scope": supplied.run_truth_scope,
+                            "browser_requested": supplied.browser_requested,
+                            "code_worktree": supplied.code_worktree,
+                            "graph_isolation": supplied.graph_isolation,
+                            "chat_scope": "node",
+                            "node_id": node_id,
+                            "message": experiment_start_message(supplied.message, node_id),
+                            "chat_id": supplied.chat_id,
+                            "session_id": None,
+                        }
+                    )
+                    experiment_request = resolve_experiment_node_work_request(
+                        service, experiment_request
+                    )
+                    validate_episode_admission(
+                        store, project_id, experiment_request, graph_target=target
+                    )
+                    record = start_watcher_notification(
+                        background_tasks,
+                        project_id,
+                        "node_chat",
+                        experiment_request,
+                        [item.watcher_id for item in pending_group],
+                        authorized_by=authorized_by,
+                    )
+                    if record is None:
+                        raise ValueError(
+                            "The pending watcher completion could not be claimed because its "
+                            "conversation is active."
+                        )
+                    return _start_response(store, record, node_id)
+                experiment_request = fresh_experiment_run_request(
+                    service,
+                    supplied,
+                    node=node,
+                    state_revision=state.revision,
+                    control=control,
+                    episode_id=episode_id,
+                    invocation_ceiling=episode_ceiling,
+                )
+                record = background_tasks.start(
+                    project_id,
+                    "node_chat",
+                    experiment_request,
+                    authorized_by=authorized_by,
+                    graph_target=target,
+                    graph_base_head=service.history.head_ref() if creates_branch else None,
+                    ensure_graph_target=(
+                        partial(ensure_episode_graph_target, catalog=catalog)
+                        if creates_branch
+                        else None
+                    ),
+                )
+            except AgentTaskAdmissionConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except ClientRequestConflict:
+                raise
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             return _start_response(store, record, node_id)
-        experiment_request = fresh_experiment_run_request(
-            service,
-            supplied,
-            node=node,
-            state_revision=state.revision,
-            control=control,
-            episode_id=episode_id,
-            invocation_ceiling=episode_ceiling,
-        )
-        record = background_tasks.start(
-            project_id,
-            "node_chat",
-            experiment_request,
-            authorized_by=authorized_by,
-            graph_target=target,
-            graph_base_head=service.history.head_ref() if creates_branch else None,
-            ensure_graph_target=(
-                partial(ensure_episode_graph_target, catalog=catalog) if creates_branch else None
-            ),
-        )
-    except AgentTaskAdmissionConflict as exc:
+    except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _start_response(store, record, node_id)
 
 
 @router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")

@@ -1583,7 +1583,8 @@ test("conversation Send resumes the exact saved route and returns after durable 
       created.push([kind, node]);
       return "new-chat";
     },
-    async (submission) => {
+    async (submission, requestId) => {
+      assert.equal(requestId, "request-one");
       submissions.push(submission);
       return {
         operation_id: "task-chat-2",
@@ -1592,6 +1593,7 @@ test("conversation Send resumes the exact saved route and returns after durable 
         queued: true,
       };
     },
+    "request-one",
   );
   assert.deepEqual(created, []);
   assert.deepEqual(submissions, [
@@ -1901,7 +1903,8 @@ test("Experiment Start revalidates the exact node and returns durable task ident
   const receipt = await startProjectExperiment(
     project,
     { experiment_id: "exp-1" },
-    async (node) => {
+    async (node, _ceiling, requestId) => {
+      assert.equal(requestId, "request-one");
       calls.push(node.id);
       return {
         operation_id: "experiment-task-1",
@@ -1913,6 +1916,7 @@ test("Experiment Start revalidates the exact node and returns durable task ident
         queued: true,
       };
     },
+    "request-one",
   );
   assert.deepEqual(calls, ["exp-1"]);
   assert.deepEqual(receipt, {
@@ -2347,14 +2351,18 @@ test("Auto-research authorization takes the form's inputs and is offered only un
   assert.deepEqual(projectAutoResearchToolDefinitions(project, "refused", start), []);
   const [tool] = projectAutoResearchToolDefinitions(project, null, start);
   const receipt = JSON.parse(
-    (await tool.execute({ invocation_ceiling: 500, starting_instruction: " Probe " })).content[0]
-      .text,
+    (
+      await tool.execute(
+        { invocation_ceiling: 500, starting_instruction: " Probe " },
+        "request-one",
+      )
+    ).content[0].text,
   );
   assert.equal(receipt.episode_id, "auto-1");
   await tool.execute({ invocation_ceiling: 1, code_worktree: false });
   assert.deepEqual(starts, [
-    [500, "Probe", true],
-    [1, null, false],
+    [500, "Probe", true, "request-one"],
+    [1, null, false, undefined],
   ]);
   for (const invocation_ceiling of [0, 1.5, "3", undefined]) {
     await assert.rejects(authorizeProjectAutoResearch(project, { invocation_ceiling }, start));
