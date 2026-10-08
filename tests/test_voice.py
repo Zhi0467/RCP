@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from rcp import limits, transcription, voice
-from rcp.service_connections import VoiceSettings
+from rcp.service_connections import ConnectionError, VoiceSettings
 
 from .test_service_connections import KEY, MIME, connection, mock_transport, setup  # noqa: F401
 
@@ -647,6 +647,9 @@ def test_transcript_metadata_retention_and_disconnect_removal(voice_setup, monke
         records[-1]["id"]
     ]
     clock[0] += limits.VOICE_TRANSCRIPT_RETENTION_SECONDS
+    # Knowing an expired id does not revive it.
+    with pytest.raises(ConnectionError):
+        private.claim_voice_session(records[-1]["id"])
     assert private.list_voice_sessions(0, 20)["sessions"] == []
     record = private.claim_voice_session()
     private.remove_member_data()
@@ -657,6 +660,9 @@ def test_transcript_request_entry_and_session_byte_bounds(voice_setup, monkeypat
     _, private, client = voice_setup
     record = private.claim_voice_session()
     path = f"/api/voice/sessions/{record['id']}"
+    # A chunked body declares no length, so it is refused before it is buffered.
+    chunked = client.put(path, content=iter([b"{}"]), headers={"content-type": "application/json"})
+    assert chunked.status_code == 411
     oversized = "漢" * (limits.VOICE_TRANSCRIPT_ENTRY_MAX_BYTES // 3 + 1)
     assert (
         client.put(

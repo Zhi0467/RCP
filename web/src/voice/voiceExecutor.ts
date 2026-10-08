@@ -507,6 +507,9 @@ export function boundVoiceTranscript<
   return snapshot;
 }
 
+/** The backend's bound on a saved entry's source label. */
+const VOICE_SOURCE_MAX_CHARS = 1_024;
+
 /** A tool's provenance belongs to its call and the next response item only. */
 export function createVoiceSourceLabels() {
   const calls = new Map<string, string>();
@@ -514,14 +517,13 @@ export function createVoiceSourceLabels() {
   let active: string | null = null;
   let activeItem: string | undefined;
   return {
-    capture(callId: string, name: string, target: VoiceReceiptTarget | null) {
+    capture(callId: string, name: string, args: string, target: VoiceReceiptTarget | null) {
+      // The exact call, so two reads through one tool keep distinct provenance.
+      const where = target
+        ? ` on ${target.project_id} (${target.graph_target.branch_id ?? "main"})`
+        : "";
       if (!calls.has(callId))
-        calls.set(
-          callId,
-          target
-            ? `${name}: ${target.project_id} (${target.graph_target.branch_id ?? "main"})`
-            : name,
-        );
+        calls.set(callId, `${name}(${args})${where}`.slice(0, VOICE_SOURCE_MAX_CHARS));
     },
     succeeded(callId: string) {
       pending = calls.get(callId) ?? null;

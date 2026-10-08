@@ -573,23 +573,36 @@ test("transcript bounds include metadata, receipts, complete unicode, and newest
 
 test("source labels stay with their call and expire on the next response item", () => {
   const labels = createVoiceSourceLabels();
-  labels.capture("a", "read", receiptTarget);
-  labels.capture("b", "read", { ...receiptTarget, project_id: "other" });
+  labels.capture("a", "read", "{}", receiptTarget);
+  labels.capture("b", "read", "{}", { ...receiptTarget, project_id: "other" });
   labels.discard("b");
   labels.succeeded("a");
   const source = labels.speech("agent", "item-1");
   const expected = createVoiceSourceLabels();
-  expected.capture("a", "read", receiptTarget);
+  expected.capture("a", "read", "{}", receiptTarget);
   expected.succeeded("a");
   assert.equal(source, expected.speech("agent", "item-1"));
   assert.notEqual(source, null);
   assert.equal(labels.speech("agent", "item-1"), source);
   assert.equal(labels.speech("agent", "item-2"), null);
-  labels.capture("c", "read", receiptTarget);
+  labels.capture("c", "read", "{}", receiptTarget);
   labels.succeeded("c");
   assert.equal(labels.speech("agent", "item-3"), source);
   assert.equal(labels.speech("member", "member-1"), null);
   assert.equal(labels.speech("agent", "item-4"), null);
+});
+
+test("two reads through one tool and target keep distinct sources", () => {
+  const labels = createVoiceSourceLabels();
+  const sourceOf = (callId, args, item) => {
+    labels.capture(callId, "rcp_read", args, receiptTarget);
+    labels.succeeded(callId);
+    return labels.speech("agent", item);
+  };
+  assert.notEqual(
+    sourceOf("a", '{"route":"/graph"}', "item-1"),
+    sourceOf("b", '{"route":"/history"}', "item-2"),
+  );
 });
 
 test("saves serialize, coalesce pending snapshots, and stop after identity changes", async () => {
