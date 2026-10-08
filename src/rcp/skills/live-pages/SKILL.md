@@ -2,7 +2,7 @@
 id: live-pages
 kind: skill
 label: Live pages
-version: 1.1.0
+version: 1.3.0
 description: Build self-contained HTML artifacts that redraw from bounded job, node, episode, file, and folder snapshots delivered by RCP.
 dependencies:
 ---
@@ -29,6 +29,18 @@ source has an error. A truncated file is a bounded window, not the entire run.
 Never turn a missing observation into a zero. Data sent to this page may leave
 through frame navigation; the sandbox does not promise zero network access.
 
+## Inside the reply
+
+Embed the page where the reader needs it, with Markdown image syntax and its
+absolute artifact path, so it keeps updating inside the reply itself. There the
+page is painted with the reply's theme: draw with the `--rcp-*` custom
+properties the prompt lists, each with a fallback for Expand and downloads,
+leave the background transparent, and size from content and width rather than
+the viewport. For the first example below, the reply would carry
+`![Training loss](<artifact directory>/training-loss.html)` where the reader
+needs the curve. The examples stay minimal; a real dashboard labels its axes,
+shows the latest values as text, and says plainly when a source is unavailable.
+
 ## Loss curve and its job
 
 After `launch --key training` starts a job that appends records such as
@@ -38,7 +50,7 @@ After `launch --key training` starts a job that appends records such as
 <!doctype html><title>Training loss</title>
 <script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"job","key":"training"},{"kind":"file","path":"/project/runs/training/metrics.jsonl","read":"tail","format":"jsonl"}]}</script>
 <p id="state">Waiting for observations</p>
-<svg viewBox="0 0 600 220" aria-label="Loss by training step"><polyline id="curve" fill="none" stroke="blue" stroke-width="2"/></svg>
+<svg viewBox="0 0 600 220" aria-label="Loss by training step"><polyline id="curve" style="fill:none;stroke:var(--rcp-accent, #2563eb);stroke-width:2"/></svg>
 <script>
 addEventListener('message', ({data}) => {
   if (data?.kind !== 'rcp-live-data') return;

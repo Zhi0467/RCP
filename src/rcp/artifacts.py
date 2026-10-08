@@ -264,6 +264,9 @@ class _ArtifactHTMLSanitizer(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self.parts: list[str] = []
+        # RCP's own policy and bootstrap precede the page, so a doctype left in
+        # place would follow content and drop the page into quirks mode.
+        self.doctype: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "meta" and any(
@@ -315,6 +318,11 @@ class _ArtifactHTMLSanitizer(HTMLParser):
         self.parts.append(f"<!--{data}-->")
 
     def handle_decl(self, decl: str) -> None:
+        # Whitespace and comments may legally precede a doctype.
+        leading = all(not part.strip() or part.startswith("<!--") for part in self.parts)
+        if self.doctype is None and leading and decl.casefold().startswith("doctype"):
+            self.doctype = f"<!{decl}>"
+            return
         self.parts.append(f"<!{decl}>")
 
     def handle_pi(self, data: str) -> None:
@@ -325,6 +333,9 @@ class _ArtifactHTMLSanitizer(HTMLParser):
 class FrameAddon:
     frame_script: str
     wrapper_script: str
+    # CSS placed before the page's own markup, so the page's rules still win.
+    frame_style: str = ""
+    wrapper_style: str = ""
 
 
 def html_preview_document(
@@ -372,9 +383,12 @@ document.currentScript?.remove();
         "frame-src 'none'; child-src 'none'; media-src 'none'; worker-src 'none'; "
         "form-action 'none'; base-uri 'none'; navigate-to 'none'"
     )
+    frame_style = frame_addon.frame_style if frame_addon else ""
     artifact = (
-        f'<meta http-equiv="Content-Security-Policy" content="{html.escape(artifact_csp)}">'
+        (sanitizer.doctype or "")
+        + f'<meta http-equiv="Content-Security-Policy" content="{html.escape(artifact_csp)}">'
         + bootstrap
+        + (f"<style>{frame_style}</style>" if frame_style else "")
         + "".join(sanitizer.parts)
     )
     wrapper_script = (
@@ -443,7 +457,9 @@ window.addEventListener('message',(event)=>{
     document = (
         '<!doctype html><meta charset="utf-8">'
         "<title>Artifact preview</title>"
-        "<style>html,body,iframe{border:0;margin:0;width:100%;height:100%;display:block}</style>"
+        "<style>html,body,iframe{border:0;margin:0;width:100%;height:100%;display:block}"
+        + (frame_addon.wrapper_style if frame_addon else "")
+        + "</style>"
         + wrapper_script
         + f'<iframe id="artifact" sandbox="allow-scripts" srcdoc="{html.escape(artifact, quote=True)}">'
         "</iframe>" + result_view_script

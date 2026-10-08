@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { MessageCircle, PanelRight, X } from "lucide-react";
 import { api, ApiError } from "../core/api";
 import {
+  announceArtifactVersionChange,
   closeArtifactViewer,
   openArtifact,
   openEpisodeReport,
@@ -116,8 +117,10 @@ export function ArtifactViewer() {
       pending = api<ArtifactViewerState>(`${url}/state`, { signal: controller.signal })
         .then((next) => {
           if (disposed || generation !== requestGeneration.current) return;
-          if (artifactVersionChanged(latest?.current_version ?? null, next.current_version))
+          if (artifactVersionChanged(latest?.current_version ?? null, next.current_version)) {
             setReload((value) => value + 1);
+            announceArtifactVersionChange(target.artifactId);
+          }
           latest = next;
           if (signalAtStart === editSignal) editStarted = Boolean(next.editing_operation_id);
           setLoaded({ target, state: next });
@@ -172,6 +175,9 @@ export function ArtifactViewer() {
       stop();
       window.removeEventListener("message", message);
       document.removeEventListener("visibilitychange", visible);
+      // The shell's own Keep changes nothing an inline copy watches, so the copies
+      // reread their state when the panel lets go of the artifact.
+      announceArtifactVersionChange(target.artifactId);
     };
   }, [target, collapsed]);
 
@@ -207,6 +213,7 @@ export function ArtifactViewer() {
       await refresh.current();
       if (generation !== requestGeneration.current) return;
       setReload((value) => value + 1);
+      announceArtifactVersionChange(target.artifactId);
     } catch (failure) {
       if (generation === requestGeneration.current) setError(errorMessage(failure));
     } finally {

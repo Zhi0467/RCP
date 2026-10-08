@@ -23,8 +23,19 @@ from rcp.api.episode_timeline import worker_label
 from rcp.api.episodes import episode_on_branch
 from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_artifact_response
-from rcp.artifact_comments import comment_panel, selection_frame_addon, supports_comments
-from rcp.artifact_views import artifact_content, artifact_viewer_document
+from rcp.artifact_comments import (
+    COMMENTABLE_MEDIA_TYPES,
+    comment_panel,
+    selection_frame_addon,
+    supports_comments,
+)
+from rcp.artifact_theme import artifact_color_mode, artifact_theme
+from rcp.artifact_views import (
+    InlineAppearance,
+    ViewerPresentation,
+    artifact_content,
+    artifact_viewer_document,
+)
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
@@ -543,10 +554,18 @@ def stored_artifact_content(
     artifact_id: str,
     request: Request,
     version_id: str | None = None,
+    presentation: ViewerPresentation = "panel",
+    theme: str | None = None,
+    color_mode: str | None = None,
     *,
     store: Annotated[AppStore, Depends(get_store)],
 ) -> Response:
     artifact = _stored_artifact(store, project_id, artifact_id)
+    inline = (
+        InlineAppearance(artifact_theme(theme), artifact_color_mode(color_mode))
+        if presentation == "inline"
+        else None
+    )
     try:
         data = store.read_artifact_bytes(artifact_id, version_id)
         document, media_type, csp = artifact_content(
@@ -554,6 +573,7 @@ def stored_artifact_content(
             artifact.media_type,
             data,
             frame_addon=selection_frame_addon() if artifact.media_type == "text/html" else None,
+            inline=inline,
         )
     except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Artifact unavailable") from exc
@@ -574,6 +594,7 @@ def stored_artifact_viewer(
     project_id: str,
     artifact_id: str,
     request: Request,
+    presentation: ViewerPresentation = "panel",
     *,
     store: Annotated[AppStore, Depends(get_store)],
 ) -> Response:
@@ -592,6 +613,8 @@ def stored_artifact_viewer(
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
             keep_url=f"{base}/keep" if _temporary(artifact) else None,
             state="temporary" if _temporary(artifact) else "kept",
+            presentation=presentation,
+            selectable=artifact.media_type in COMMENTABLE_MEDIA_TYPES,
             panel=comment_panel(
                 {
                     "projectId": project_id,

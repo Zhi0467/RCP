@@ -3,11 +3,19 @@ from __future__ import annotations
 import html
 import importlib.resources
 import json
+import secrets
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Literal
 
 from markdown_it import MarkdownIt
 
+from rcp.artifact_theme import (
+    ArtifactColorMode,
+    ArtifactTheme,
+    artifact_theme_css,
+    shell_theme_css,
+)
 from rcp.artifacts import (
     AgentArtifactDescriptor,
     ArtifactMediaType,
@@ -18,6 +26,8 @@ from rcp.artifacts import (
 )
 from rcp.escaped_lines import escaped_lines
 from rcp.limits import (
+    ARTIFACT_INLINE_INITIAL_HEIGHT_PX,
+    ARTIFACT_INLINE_MAX_HEIGHT_PX,
     ARTIFACT_PREVIEW_MAX_BYTES,
     ARTIFACT_PREVIEW_MAX_LINES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
@@ -27,6 +37,9 @@ ARTIFACT_TEXT_CSP = (
     "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
     "form-action 'none'; frame-ancestors 'self'"
 )
+
+
+ViewerPresentation = Literal["panel", "inline"]
 
 
 @dataclass(frozen=True)
@@ -56,10 +69,7 @@ _KEEP_HANDLER_JS = (
 
 # The shell paints with the app's own theme tokens, in both modes. Aqua is the
 # app's default theme, so a shell that cannot learn the choice starts there.
-_THEME_TOKENS_CSS = """:root{--paper:#e5e8ec;--panel:#f1f3f5;--field:#e9edf1;--ink:#303944;--muted:#5b6673;--rule:#bec7d0;--accent:#386792;--accent-ink:#fff;--radius:8px;--ui:"Helvetica Neue",Helvetica,Arial,sans-serif;--shadow:1px 14px 30px rgb(61 77 96/22%),0 2px 5px rgb(61 77 96/12%);--raised:inset 1px 1px 0 rgb(255 255 255/92%),2px 2px 5px rgb(61 77 96/16%);color-scheme:light}
-:root[data-color-mode="dark"]{--paper:#282e36;--panel:#343c46;--field:#29313a;--ink:#e5ebf2;--muted:#afbccc;--rule:#485360;--accent:#8bbbe8;--accent-ink:#1c2936;--shadow:0 14px 30px rgb(0 0 0/45%);--raised:inset 1px 1px 0 rgb(204 224 244/20%),2px 2px 5px rgb(0 0 0/35%);color-scheme:dark}
-:root[data-theme="classic"]{--paper:#f7f0e3;--panel:#fffdf7;--field:#fffdf7;--ink:#2b251f;--muted:#6b6258;--rule:#d8ccbb;--accent:#873b30;--accent-ink:#fff;--radius:4px;--ui:"Avenir Next",Avenir,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--shadow:0 18px 52px rgb(65 46 29/14%);--raised:none;color-scheme:light}
-:root[data-theme="classic"][data-color-mode="dark"]{--paper:#191512;--panel:#24201b;--field:#221d19;--ink:#ece3d5;--muted:#a99e8e;--rule:#3a332c;--accent:#d97b68;--accent-ink:#191512;--shadow:0 18px 52px rgb(0 0 0/55%);color-scheme:dark}"""
+_THEME_TOKENS_CSS = shell_theme_css()
 
 # Mirror the containing app's theme and mode, live; a shell opened on its own reads
 # the remembered appearance. Same-origin reads only: the app frames its own shell.
@@ -79,6 +89,63 @@ dark?.addEventListener?.('change',applyTheme);
 try{if(window.parent!==window)new MutationObserver(applyTheme).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['data-theme','data-color-mode']});}catch{}"""
 
 
+@dataclass(frozen=True)
+class InlineAppearance:
+    """How a frame shown inside a reply paints: the reply's own theme and mode."""
+
+    theme: ArtifactTheme
+    mode: ArtifactColorMode
+
+
+# A page sized by the viewport would measure as tall as its own frame and never
+# settle; inside a reply the page's content decides the frame's height instead.
+_INLINE_HEIGHT_CSS = "html,body{height:auto!important;min-height:0!important}"
+
+
+def inline_frame_addon(appearance: InlineAppearance) -> FrameAddon:
+    """Report the page's content height and paint it with the reply's theme.
+
+    The height is the only value that leaves the page, a bounded number relayed by
+    RCP's wrapper over the existing private channel.
+    """
+
+    return FrameAddon(
+        frame_style=artifact_theme_css(appearance.theme, appearance.mode) + _INLINE_HEIGHT_CSS,
+        wrapper_style=f":root{{color-scheme:{appearance.mode}}}",
+        frame_script="""
+const sizeRoot=document.documentElement;
+const measureSize=Function.prototype.call.bind(Element.prototype.getBoundingClientRect);
+const SizeObserver=ResizeObserver;
+let reportedSize=-1;
+const reportSize=()=>{
+  const height=Math.ceil(measureSize(sizeRoot).height);
+  if(height===reportedSize) return;
+  reportedSize=height;
+  send({kind:'rcp-artifact-size',height});
+};
+new SizeObserver(reportSize).observe(sizeRoot);
+""",
+        wrapper_script=f"""
+channelListeners.push((value)=>{{
+  if(value.kind!=='rcp-artifact-size' || typeof value.height!=='number' ||
+     !Number.isFinite(value.height) || window.parent===window) return;
+  parentPost({{type:'rcp-artifact-size',version:1,
+    height:Math.max(0,Math.min({ARTIFACT_INLINE_MAX_HEIGHT_PX * 4},Math.ceil(value.height)))}},'*');
+}});
+""",
+    )
+
+
+def _combined_addon(*addons: FrameAddon | None) -> FrameAddon:
+    present = [addon for addon in addons if addon]
+    return FrameAddon(
+        frame_script="".join(addon.frame_script for addon in present),
+        wrapper_script="".join(addon.wrapper_script for addon in present),
+        frame_style="".join(addon.frame_style for addon in present),
+        wrapper_style="".join(addon.wrapper_style for addon in present),
+    )
+
+
 def artifact_viewer_document(
     descriptor: AgentArtifactDescriptor,
     *,
@@ -87,10 +154,16 @@ def artifact_viewer_document(
     keep_url: str | None = None,
     panel: ViewerPanel | None = None,
     live_url: str | None = None,
+    presentation: ViewerPresentation = "panel",
+    selectable: bool = False,
 ) -> tuple[str, str]:
     kind = artifact_view(descriptor.media_type)
     if kind in {"pdf", "file"}:
         raise ValueError("Artifact has no viewer")
+    if presentation == "inline":
+        return _inline_viewer_document(
+            descriptor, kind, content_url=content_url, live_url=live_url, selectable=selectable
+        )
     title = html.escape(descriptor.name, quote=True)
     url = html.escape(content_url, quote=True)
     preview = (
@@ -146,6 +219,69 @@ iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:bloc
     return document, csp
 
 
+def _inline_viewer_document(
+    descriptor: AgentArtifactDescriptor,
+    kind: str,
+    *,
+    content_url: str,
+    live_url: str | None,
+    selectable: bool,
+) -> tuple[str, str]:
+    """The same shell inside a reply: no chrome, transparent, sized by its content.
+
+    The chat owns the artifact's actions around it. Agent HTML keeps its unchanged
+    opaque sandbox one frame further in; this shell adds no capability to it.
+    """
+
+    title = html.escape(descriptor.name, quote=True)
+    url = html.escape(content_url, quote=True)
+    preview = (
+        f'<img id="previewImage" src="{url}" alt="{title}">'
+        if kind == "image"
+        else f'<iframe id="preview" sandbox="allow-scripts" title="{title}"></iframe>'
+    )
+    config = json.dumps(
+        {
+            "contentUrl": content_url,
+            "maxHeight": ARTIFACT_INLINE_MAX_HEIGHT_PX,
+            "initialHeight": ARTIFACT_INLINE_INITIAL_HEIGHT_PX,
+            "selectable": selectable,
+        }
+    ).replace("<", "\\u003c")
+    resources = importlib.resources.files("rcp")
+    scripts = [
+        f"const inlineConfig={config};\n"
+        + resources.joinpath("artifact_selection.js").read_text("utf-8")
+        + "\n"
+        + resources.joinpath("artifact_inline.js").read_text("utf-8")
+    ]
+    if live_url and kind == "html":
+        scripts.append(
+            "const liveUrl="
+            + json.dumps(live_url).replace("<", "\\u003c")
+            + ";\n"
+            + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
+            + resources.joinpath("artifact_live.js").read_text("utf-8")
+        )
+    script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
+    document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title><script>(()=>{{{_THEME_SYNC_JS}}})();</script><style>
+{_THEME_TOKENS_CSS}
+*{{box-sizing:border-box}}html,body{{margin:0;background:transparent;color:var(--ink);font:15px/1.5 var(--ui)}}
+.canvas{{position:relative}}iframe{{display:block;border:0;width:100%;height:{ARTIFACT_INLINE_INITIAL_HEIGHT_PX}px;background:transparent}}
+#previewImage{{display:block;max-width:100%;height:auto;border-radius:var(--radius)}}
+.canvas:has(#previewImage){{display:inline-block;max-width:100%}}#boxLayer{{position:absolute;inset:0;cursor:crosshair}}
+</style></head><body><main class="canvas">{preview}</main>{script_markup}</body></html>"""
+    csp = (
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+        "frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; "
+        "object-src 'none'; frame-ancestors 'self'"
+    )
+    if live_url and kind == "html":
+        csp += "; connect-src 'self'"
+    return document, csp
+
+
 def _preview_text(data: bytes) -> tuple[str, bool]:
     bounded = data[:ARTIFACT_PREVIEW_MAX_BYTES]
     truncated = len(bounded) < len(data)
@@ -158,25 +294,56 @@ def _preview_text(data: bytes) -> tuple[str, bool]:
     return text, truncated
 
 
-def _text_page(body: str, *, truncated: bool) -> tuple[str, str]:
+def _text_page(
+    body: str, *, truncated: bool, inline: InlineAppearance | None = None
+) -> tuple[str, str]:
     marker = (
         '<p id="truncated" role="status">Preview truncated. Download contains the whole file.</p>'
         if truncated
         else ""
     )
+    if inline is None:
+        return (
+            '<!doctype html><html><head><meta charset="utf-8"><style>'
+            "body{margin:24px;font:15px/1.5 system-ui;overflow-wrap:anywhere}"
+            "pre{white-space:pre-wrap}table{border-collapse:collapse;display:block;overflow-x:auto}"
+            "th,td{border:1px solid GrayText;padding:4px 8px;text-align:left;vertical-align:top}"
+            ".line{display:block;min-height:1.5em;padding-left:4.5em}"
+            ".line::before{content:attr(id);display:inline-block;width:4em;margin-left:-4.5em;color:GrayText;user-select:none}"
+            "</style></head><body>" + marker + body + "</body></html>",
+            ARTIFACT_TEXT_CSP,
+        )
+    # The page holds only RCP-rendered, escaped text; the one nonce-bound script is
+    # RCP's own height report, so the document still runs no artifact code.
+    nonce = secrets.token_urlsafe(18)
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
-        "body{margin:24px;font:15px/1.5 system-ui;overflow-wrap:anywhere}"
-        "pre{white-space:pre-wrap}table{border-collapse:collapse;display:block;overflow-x:auto}"
-        "th,td{border:1px solid GrayText;padding:4px 8px;text-align:left;vertical-align:top}"
-        ".line{display:block;min-height:1.5em;padding-left:4.5em}"
-        ".line::before{content:attr(id);display:inline-block;width:4em;margin-left:-4.5em;color:GrayText;user-select:none}"
-        "</style></head><body>" + marker + body + "</body></html>",
-        ARTIFACT_TEXT_CSP,
+        + artifact_theme_css(inline.theme, inline.mode)
+        + "html{background:transparent}body{overflow-wrap:anywhere}"
+        "body>:first-child{margin-top:0}body>:last-child{margin-bottom:0}"
+        "pre{margin:0;padding:12px 14px;background:var(--rcp-field);border:1px solid var(--rcp-rule);"
+        "border-radius:var(--rcp-radius);font:13px/1.55 var(--rcp-mono);white-space:pre-wrap}"
+        "code{font-family:var(--rcp-mono)}a{color:var(--rcp-accent)}"
+        "table{border-collapse:collapse;display:block;overflow-x:auto}"
+        "th,td{border:1px solid var(--rcp-rule);padding:4px 8px;text-align:left;vertical-align:top}"
+        ".line{display:block;min-height:1.55em;padding-left:4.5em}"
+        ".line::before{content:attr(id);display:inline-block;width:4em;margin-left:-4.5em;"
+        "color:var(--rcp-muted);user-select:none}"
+        "#truncated{color:var(--rcp-muted);font-size:13px}"
+        "</style></head><body>"
+        + marker
+        + body
+        + f'<script nonce="{nonce}">(()=>{{const root=document.documentElement;let last=-1;'
+        "const report=()=>{const height=Math.ceil(root.getBoundingClientRect().height);"
+        "if(height===last)return;last=height;"
+        "parent.postMessage({type:'rcp-artifact-size',version:1,height},'*');};"
+        "new ResizeObserver(report).observe(root);})();</script></body></html>",
+        "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; "
+        f"script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
     )
 
 
-def markdown_document(data: bytes) -> tuple[str, str]:
+def markdown_document(data: bytes, inline: InlineAppearance | None = None) -> tuple[str, str]:
     text, truncated = _preview_text(data)
     renderer = MarkdownIt("commonmark", {"html": False}).enable("table")
 
@@ -199,10 +366,12 @@ def markdown_document(data: bytes) -> tuple[str, str]:
         return html.escape(token.content) + " (" + html.escape(token.attrGet("src") or "") + ")"
 
     renderer.renderer.rules.update(link_open=link_open, link_close=link_close, image=image)
-    return _text_page(renderer.render(text), truncated=truncated)
+    return _text_page(renderer.render(text), truncated=truncated, inline=inline)
 
 
-def text_document(name: str, data: bytes) -> tuple[str, str]:
+def text_document(
+    name: str, data: bytes, inline: InlineAppearance | None = None
+) -> tuple[str, str]:
     text, truncated = _preview_text(data)
     if not truncated and PurePosixPath(name).suffix.lower() in {".json", ".ipynb"}:
         try:
@@ -215,32 +384,41 @@ def text_document(name: str, data: bytes) -> tuple[str, str]:
                 and len(pretty.split("\n")) <= ARTIFACT_PREVIEW_MAX_LINES
             ):
                 text = pretty
-    return _text_page("<pre><code>" + escaped_lines(text) + "</code></pre>", truncated=truncated)
+    return _text_page(
+        "<pre><code>" + escaped_lines(text) + "</code></pre>", truncated=truncated, inline=inline
+    )
 
 
 def artifact_content(
-    name: str, media_type: ArtifactMediaType, data: bytes, *, frame_addon: FrameAddon | None = None
+    name: str,
+    media_type: ArtifactMediaType,
+    data: bytes,
+    *,
+    frame_addon: FrameAddon | None = None,
+    inline: InlineAppearance | None = None,
 ) -> tuple[str | bytes, str, str]:
-    """Render stored bytes through the single sandboxed artifact boundary."""
+    """Render stored bytes through the single sandboxed artifact boundary.
+
+    `inline` renders the same bytes for a frame inside a reply: painted with the
+    reply's theme and reporting its content height. Nothing else differs.
+    """
     if classify_artifact_bytes(name, data) != media_type:
         raise ValueError("Artifact media type changed")
     view = artifact_view(media_type)
     try:
         if view == "html":
-            live_addon = live_frame_addon()
             document, csp = html_preview_document(
                 data,
-                frame_addon=FrameAddon(
-                    frame_script=live_addon.frame_script
-                    + (frame_addon.frame_script if frame_addon else ""),
-                    wrapper_script=live_addon.wrapper_script
-                    + (frame_addon.wrapper_script if frame_addon else ""),
+                frame_addon=_combined_addon(
+                    live_frame_addon(),
+                    frame_addon,
+                    inline_frame_addon(inline) if inline else None,
                 ),
             )
         elif view == "markdown":
-            document, csp = markdown_document(data)
+            document, csp = markdown_document(data, inline)
         elif view == "text":
-            document, csp = text_document(name, data)
+            document, csp = text_document(name, data, inline)
         elif view == "image":
             return data, media_type, "default-src 'none'; sandbox"
         else:

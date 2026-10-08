@@ -1,20 +1,26 @@
 import {
   createContext,
   createElement,
+  Fragment,
   useContext,
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math-extended";
+import type { Element as HastElement } from "hast";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
 import { segmentGlossaryText, type GlossaryIndex } from "../graph/glossary";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
+
+/** The Markdown syntax every reply is read with; embed detection parses with it too. */
+export const ANSWER_SYNTAX_PLUGINS = [remarkGfm, remarkMath] as const;
 
 const NODE_REFERENCE_CANDIDATE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
 const NODE_REFERENCE_HREF_PREFIX = "#rcp-node=";
@@ -204,6 +210,8 @@ interface MarkdownLinkContextValue {
   nodeIds: ReadonlySet<string>;
   onOpenNode?: (nodeId: string) => void;
   onOpenRepositoryFileLink?: (href: string) => void;
+  /** Renders an image source the reply embeds in place; null keeps the plain image. */
+  renderEmbed?: (src: string, alt: string) => ReactNode | null;
 }
 
 const MarkdownLinkContext = createContext<MarkdownLinkContextValue>({ nodeIds: new Set() });
@@ -211,9 +219,12 @@ const MarkdownLinkContext = createContext<MarkdownLinkContextValue>({ nodeIds: n
 // One stable component type for every render: a component created per render
 // makes React replace each link's DOM on any re-render of the answer, which
 // cuts a reader's text selection that starts or ends inside a link.
-function MarkdownLink({ href, children, className, node: _node, ...props }: MarkdownLinkProps) {
-  const { nodeIds, onOpenNode, onOpenRepositoryFileLink } = useContext(MarkdownLinkContext);
-  void _node;
+function MarkdownLink({ href, children, className, node, ...props }: MarkdownLinkProps) {
+  const { nodeIds, onOpenNode, onOpenRepositoryFileLink, renderEmbed } =
+    useContext(MarkdownLinkContext);
+  // An artifact shown in place is interactive and carries its own actions, so a
+  // link around it would swallow those clicks; it renders without the link.
+  if (renderEmbed && wrapsEmbed(node, renderEmbed)) return createElement(Fragment, null, children);
   const nodeId = nodeIdFromReferenceHref(href, nodeIds);
   const repositoryFile =
     !nodeId && Boolean(onOpenRepositoryFileLink) && isRepositoryFileHrefCandidate(href);
@@ -264,7 +275,39 @@ function MarkdownLink({ href, children, className, node: _node, ...props }: Mark
   );
 }
 
-const MARKDOWN_COMPONENTS: Components = { a: MarkdownLink, pre: MarkdownCodeBlock };
+function wrapsEmbed(
+  node: unknown,
+  renderEmbed: NonNullable<MarkdownLinkContextValue["renderEmbed"]>,
+): boolean {
+  const element = node as HastElement | undefined;
+  if (!element || !Array.isArray(element.children)) return false;
+  return element.children.some((child) => {
+    if (child.type !== "element") return false;
+    const src = child.properties?.src;
+    if (child.tagName === "img" && typeof src === "string") {
+      const alt = child.properties?.alt;
+      return renderEmbed(src, typeof alt === "string" ? alt : "") !== null;
+    }
+    return wrapsEmbed(child, renderEmbed);
+  });
+}
+
+type MarkdownImageProps = ComponentProps<"img"> & { node?: unknown };
+
+// An image whose source is an artifact the turn wrote renders that artifact in place.
+function MarkdownImage({ node: _node, ...props }: MarkdownImageProps) {
+  const { renderEmbed } = useContext(MarkdownLinkContext);
+  void _node;
+  const embedded =
+    renderEmbed && typeof props.src === "string" ? renderEmbed(props.src, props.alt ?? "") : null;
+  return embedded ?? createElement("img", props);
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  a: MarkdownLink,
+  img: MarkdownImage,
+  pre: MarkdownCodeBlock,
+};
 
 interface MarkdownAnswerProps {
   text: string;
@@ -272,6 +315,7 @@ interface MarkdownAnswerProps {
   onOpenNode?: (nodeId: string) => void;
   glossaryIndex?: GlossaryIndex;
   onOpenRepositoryFileLink?: (href: string) => void;
+  renderEmbed?: (src: string, alt: string) => ReactNode | null;
 }
 
 export function MarkdownAnswer({
@@ -280,13 +324,13 @@ export function MarkdownAnswer({
   onOpenNode,
   glossaryIndex,
   onOpenRepositoryFileLink,
+  renderEmbed,
 }: MarkdownAnswerProps) {
   const nodeIds = onOpenNode ? new Set(Object.keys(nodes)) : new Set<string>();
   const markdown = createElement(ReactMarkdown, {
     children: text,
     remarkPlugins: [
-      remarkGfm,
-      remarkMath,
+      ...ANSWER_SYNTAX_PLUGINS,
       nodeReferencePlugin(nodeIds),
       glossaryDefinitionPlugin(glossaryIndex),
     ],
@@ -295,7 +339,7 @@ export function MarkdownAnswer({
   });
   return createElement(
     MarkdownLinkContext.Provider,
-    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink } },
+    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink, renderEmbed } },
     markdown,
   );
 }
