@@ -4,7 +4,7 @@ Date: 2026-10-08
 Status: design, waiting for the human's go. Nothing is implemented yet.
 
 Implemented: nothing.
-Remaining: slices 1 to 4 below, then the live checks.
+Remaining: slices 1 to 5 below, then the live checks.
 
 Settled with the human on 2026-10-08:
 
@@ -13,7 +13,9 @@ Settled with the human on 2026-10-08:
   hiding still ends it, and the panel says why.
 - Resume uses a text transcript RCP saves, not an OpenAI fork. RCP keeps
   sending `store: false`. Nothing stays on OpenAI's side.
-- One PR holds all four slices.
+- One PR holds all five slices.
+- Priority order: staying connected while hidden first, broad reads second.
+- A code-owned playbook (slice 5) tells page agents how RCP work is routed.
 - Reads become broad (one generic project GET tool). Writes stay named and
   card-gated. No page-driving or browser control: it would let the agent press
   Confirm itself and send the screen to OpenAI.
@@ -120,6 +122,28 @@ a GET the member's page could already make.
   route, and an oversized body, and that the route list matches the
   enforcement filter.
 
+### 5. Playbook: how RCP work gets done
+
+Today a page agent gets three lines of instructions and one-line tool
+descriptions. Nothing says that making something (a visualization, a live
+dashboard, an analysis, code) means a Work turn on the relevant node, whose
+node agent already knows the artifact contract. So "make me a live dashboard
+for this experiment" depends on luck.
+
+- One module in `web/src/webmcp/` holds the routes. It names tools through the
+  catalog objects, so a renamed or removed tool fails a test instead of leaving
+  stale prose.
+  - Explain or answer: overview, then inspect, then `rcp_read`.
+  - Make something: find the node, send a Work turn on that node with the
+    member's request, say it is running, let the watch announce the finish, then
+    list and open the artifact.
+  - Run something: start an Experiment or authorize Auto-research.
+- Voice: the page sends the rendered playbook with the session request. The
+  backend appends it to its fixed instructions under a size limit.
+- WebMCP: a read-only `rcp_get_playbook` tool returns the same text.
+- Checks: structure only. Every tool the playbook names exists in the catalog,
+  and voice and WebMCP get the same object. No wording tests.
+
 ## Ownership and checks
 
 | Slice | Files | Focused check |
@@ -128,6 +152,7 @@ a GET the member's page could already make.
 | 2 | `service_connections.py`, `api/voice.py`, `voice.py`, `limits.py`, `useVoiceAgent.ts`, Agents panel, `core/types.ts` | `tests/test_voice*.py`, web voice tests |
 | 3 | `voice.py` | `tests/test_voice*.py` |
 | 4 | `webmcp/` new module, `webmcp/index.ts`, `voice.py`, `limits.py` | web webmcp tests |
+| 5 | `webmcp/playbook.ts`, `webmcp/index.ts`, `voice.py`, `api/voice.py` | web webmcp tests, `tests/test_voice*.py` |
 
 `core/types.ts` and `voice.py` are shared, so they are edited serially.
 
@@ -141,3 +166,5 @@ Run with a real OpenAI key in a rebuilt `RCP Dev.app` on disposable data:
 - Kill the network mid-session, then Resume from the Agents panel. The agent
   remembers the earlier topic.
 - Ask for artifacts and for last night's consolidation report. Both answer.
+- Ask "make me a live dashboard for experiment X" with no other hint. It sends
+  a Work turn on that node, announces the finish, and opens the result.
