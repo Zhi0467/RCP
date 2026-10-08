@@ -67,6 +67,13 @@ test("syntax that renders no image embeds nothing, so the card stays", () => {
   assert.deepEqual([...inlineArtifactNames(quoted, "op-1")], ["referenced.html"]);
 });
 
+test("a repeated reference label embeds its first definition, as it renders", () => {
+  const text = ["![Plot][p]", "[p]: " + dir + "/first.svg", "[p]: " + dir + "/second.svg"].join(
+    "\n\n",
+  );
+  assert.deepEqual([...inlineArtifactNames(text, "op-1")], ["first.svg"]);
+});
+
 test("only artifacts the viewer shows render in place", () => {
   assert.equal(isInlineViewable(artifact("a.html", "html")), true);
   assert.equal(isInlineViewable(artifact("a.svg", "image")), true);

@@ -27,8 +27,11 @@ export function inlineArtifactNames(text: string, taskId: string): Set<string> {
     if (node.type === "image") sources.push((node as Image).url);
     else if (node.type === "imageReference") references.push((node as ImageReference).identifier);
     else if (node.type === "definition") {
+      // CommonMark renders the first definition of a label; later ones are inert.
       const definition = node as Definition;
-      definitions.set(definition.identifier, definition.url);
+      if (!definitions.has(definition.identifier)) {
+        definitions.set(definition.identifier, definition.url);
+      }
     }
     if ("children" in node) (node as Parent).children.forEach(visit);
   };
