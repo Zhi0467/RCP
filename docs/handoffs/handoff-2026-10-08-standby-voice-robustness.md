@@ -2,12 +2,14 @@
 
 Date: 2026-10-08
 Status: design settled with the human after a grilling and an astra xhigh
-design review. Slice 1 is implemented; its live check is next.
+design review. Slice 1 is implemented and passed its live check on
+2026-10-08 (talking on another Space stayed connected; a minimized, silent
+session released the microphone at a 1-minute idle limit), so no native
+deadline backstop is needed.
 
 Implemented: slice 1 (hidden-window policy, absolute deadlines, member idle
 setting).
-Remaining: slice 1's live check, then slices 2 to 5, then the remaining live
-checks.
+Remaining: slices 2 to 5, then the remaining live checks.
 
 Settled with the human on 2026-10-08:
 
