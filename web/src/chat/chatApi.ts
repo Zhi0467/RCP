@@ -23,6 +23,33 @@ export async function loadChatSummaryPage(
   return page;
 }
 
+/** Load the whole project before applying viewer filters, including older branches. */
+export async function loadChatInventory(
+  apiBase: string,
+  request: ChatPageRequest,
+): Promise<ChatSummary[]> {
+  let items: ChatSummary[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await request(
+      `${apiBase}/chats?inventory=true&offset=${offset}&limit=${CHAT_SUMMARY_PAGE_SIZE}`,
+    );
+    items = mergeChatSummaryPage(items, page.items, "append");
+    const next = nextChatSummaryOffset(page);
+    if (next >= page.total) return items;
+    if (next <= offset) throw new Error("Conversation inventory paging made no progress.");
+    offset = next;
+  }
+}
+
+/** Selection is exact-target even though the Agents inventory spans the project. */
+export function chatSummariesForTarget(
+  summaries: readonly ChatSummary[],
+  graphTarget: GraphTargetRef,
+): ChatSummary[] {
+  return summaries.filter((summary) => sameGraphTarget(summary.graph_target, graphTarget));
+}
+
 export function mergeChatSummaryPage(
   current: ChatSummary[],
   page: ChatSummary[],
@@ -80,7 +107,7 @@ export async function loadChatTranscript(
   const transcript = await request(
     graphTargetUrl(`${apiBase}/chats/${encodeURIComponent(chatId)}`, graphTarget),
   );
-  if (graphTarget.kind === "branch" && !sameGraphTarget(transcript.graph_target, graphTarget))
+  if (!sameGraphTarget(transcript.graph_target, graphTarget))
     throw new Error("Conversation returned a different graph target.");
   return transcript;
 }

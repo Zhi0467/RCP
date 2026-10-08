@@ -107,7 +107,6 @@ function Fixture() {
         board={false}
         onBoardChange={() => {}}
         nodes={{}}
-        experimentEntries={[]}
         graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({
           schema: {
@@ -122,10 +121,7 @@ function Fixture() {
         graphChangesDisabled={false}
         unreadChatIds={new Set()}
         chatTranscripts={chatTranscripts}
-        hasMore={false}
-        loadingMore={false}
         onSelect={setSelected}
-        onLoadMore={() => {}}
         onStartTask={async () => {}}
         onResumeTask={() => {}}
         onRetryTask={() => {}}

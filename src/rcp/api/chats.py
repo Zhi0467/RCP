@@ -21,6 +21,7 @@ from rcp.api.dependencies import (
     get_catalog,
     get_graph_service,
     get_identity_access,
+    get_project_service,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -38,7 +39,7 @@ from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT, CHAT_TITLE_
 from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
-from rcp.service import ChatSummaryPage, ChatTranscript, RunRequest
+from rcp.service import ChatSummary, ChatSummaryPage, ChatTranscript, RunRequest
 from rcp.storage import AppStore
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -256,12 +257,19 @@ def chat_reads(
     store: StoreDependency,
     identity_access: IdentityDependency,
     branch_id: str | None = None,
+    inventory: bool = False,
 ) -> ChatReads:
-    """Latest finishes cover the same graph target as the chat list."""
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    """Latest finishes cover the selected target or the whole project inventory."""
+    service = get_graph_service(
+        catalog, project_id, None if inventory else branch_id, initialize=False
+    )
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    return ChatReads(**store.chat_reads(project_id, user.user_id, service.history.graph_target))
+    return ChatReads(
+        **store.chat_reads(
+            project_id, user.user_id, None if inventory else service.history.graph_target
+        )
+    )
 
 
 # A viewer's own marker, not project work, so it skips the write-admission fence.
@@ -276,14 +284,21 @@ def mark_chat_read(
     store: StoreDependency,
     identity_access: IdentityDependency,
     branch_id: str | None = None,
+    inventory: bool = False,
 ) -> ChatReads:
     """Record that the acting user has seen this conversation's turns up to a time."""
     chat_id = _canonical_chat_id(chat_id)
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    service = get_graph_service(
+        catalog, project_id, None if inventory else branch_id, initialize=False
+    )
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through)
-    return ChatReads(**store.chat_reads(project_id, user.user_id, service.history.graph_target))
+    return ChatReads(
+        **store.chat_reads(
+            project_id, user.user_id, None if inventory else service.history.graph_target
+        )
+    )
 
 
 @router.post(
@@ -358,10 +373,25 @@ def chats(
     ),
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     branch_id: str | None = None,
+    inventory: bool = False,
 ) -> ChatSummaryPage:
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
-    return service.chat_summaries(offset=offset, limit=limit)
+    # Only the retained main service owns the project-wide canonical scan cache.
+    service = (
+        get_project_service(catalog, project_id)
+        if inventory
+        else get_graph_service(catalog, project_id, branch_id, initialize=False)
+    )
+    project_id = catalog.resolve_project_id(project_id)
+    return service.chat_summaries(
+        offset=offset,
+        limit=limit,
+        inventory=inventory,
+        task_summaries=[
+            ChatSummary.model_validate(row) for row in store.chat_inventory(project_id)
+        ],
+    )
 
 
 @router.get(
@@ -383,6 +413,22 @@ def chat(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if transcript is None:
         raise HTTPException(status_code=404, detail="Chat not found")
+    project_id = catalog.resolve_project_id(project_id)
+    summary = next(
+        (row for row in store.chat_inventory(project_id) if row["chat_id"] == chat_id), None
+    )
+    transcript = transcript.model_copy(
+        update={
+            "graph_title": "Main"
+            if transcript.graph_target.kind == "main"
+            else (transcript.graph_target.branch_id or "")[:8],
+            **(
+                {key: summary[key] for key in ("conversation_kind", "orchestrator_episode_id")}
+                if summary is not None
+                else {}
+            ),
+        }
+    )
     for message in transcript.messages:
         if message.operation_id is not None:
             message.browser_status = store.browser_turn_status(message.operation_id).public()

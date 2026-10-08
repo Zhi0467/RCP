@@ -2375,3 +2375,39 @@ def test_suppressed_notice_never_blocks_finish(tmp_path) -> None:
     # The orchestrator caused the stop itself; the notice is history it still
     # sees through the harvest, never an obligation that refuses its Finish.
     assert [(item.kind, item.blocker_id) for item in blockers] == [("lifecycle_notice", "ordinary")]
+
+
+@pytest.mark.parametrize("child_kind", ["work", "experiment"])
+@pytest.mark.parametrize("chat_kind", ["node_chat", "project_chat"])
+def test_human_cannot_admit_a_turn_on_an_auto_research_child(tmp_path, child_kind, chat_kind):
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    if child_kind == "work":
+        route, task = _work_pair(store, parent, root, worker_id=chat_id, chat_id=chat_id)
+        store.create_auto_research_child_work(route, task)
+    else:
+        task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+        task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+        route = _experiment_route(store, parent, root, task)
+        store.create_experiment_episode_with_invocation(task, auto_research_route=route)
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    now = store.now()
+    human = AgentTaskRecord(
+        operation_id=str(uuid.uuid4()),
+        project_id=parent.project_id,
+        kind=chat_kind,
+        graph_target=parent.graph_target,
+        status="queued",
+        request={"chat_id": chat_id},
+        created_at=now,
+        updated_at=now,
+        status_message="",
+        authorized_by=parent.authorized_by,
+    )
+    with pytest.raises(ValueError) as error:
+        store.create_agent_task(human)
+    assert str(error.value) == "auto_research_child_read_only"
+    assert store.agent_task(human.operation_id) is None
+    row = next(row for row in store.chat_inventory(parent.project_id) if row["chat_id"] == chat_id)
+    assert row["conversation_kind"] == "auto_research_child"
+    assert row["orchestrator_episode_id"] == parent.episode_id

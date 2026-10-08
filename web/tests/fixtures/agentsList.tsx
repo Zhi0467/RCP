@@ -62,6 +62,20 @@ const conversations: ChatConversation[] = [
   tasks: [turn(title, provider, label)],
   updatedAt: new Date().toISOString(),
 }));
+if (new URLSearchParams(location.search).has("inventory")) {
+  conversations.push({
+    chatId: "branch-chat",
+    title: "Branch conversation",
+    kind: "project_chat",
+    nodeId: null,
+    tasks: [],
+    updatedAt: new Date().toISOString(),
+    graphTarget: { kind: "branch", branch_id: "branch-one" },
+    graphTitle: "Branch one",
+    conversationKind: "auto_research_child",
+    orchestratorEpisodeId: "parent-one",
+  });
+}
 const chatTranscripts = new Map<string, ChatTranscript>(
   conversations.map((conversation) => [
     conversation.chatId,
@@ -90,7 +104,6 @@ function Fixture() {
         board={board}
         onBoardChange={setBoard}
         nodes={{}}
-        experimentEntries={[]}
         graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({})}
         runScope={[]}
@@ -99,10 +112,7 @@ function Fixture() {
         graphChangesDisabled={false}
         unreadChatIds={new Set()}
         chatTranscripts={chatTranscripts}
-        hasMore={false}
-        loadingMore={false}
         onSelect={setSelected}
-        onLoadMore={() => {}}
         onStartTask={async () => {}}
         onResumeTask={() => {}}
         onRetryTask={() => {}}
