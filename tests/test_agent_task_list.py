@@ -162,5 +162,5 @@ def test_experiment_inventory_kind_survives_a_later_human_turn(tmp_path: Path) -
     assert len(rows) == 1
     assert rows[0]["chat_id"] == chat_id
     assert rows[0]["updated_at"] == now
-    assert rows[0]["conversation_kind"] == "experiment"
+    assert rows[0]["conversation_kind"] == "episode"
     assert rows[0]["orchestrator_episode_id"] is None

@@ -35,7 +35,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                       AND kind IN ('node_chat', 'project_chat')
                       AND json_extract(request_json, '$.chat_id') IS NOT NULL
                 ),
-                experiments AS (
+                episode_chats AS (
                     SELECT DISTINCT json_extract(run.request_json, '$.chat_id') AS chat_id,
                            run.graph_target_json
                     FROM graph_runs AS run
@@ -43,13 +43,13 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                      AND episode.project_id = run.project_id
                     WHERE run.project_id = ? AND episode.mode = 'experiment_loop'
                 )
-                SELECT chats.*, experiments.chat_id IS NOT NULL AS is_experiment,
+                SELECT chats.*, episode_chats.chat_id IS NOT NULL AS is_episode,
                        COALESCE(worker.episode_id, child.auto_research_episode_id)
                            AS orchestrator_episode_id
                 FROM chats
-                LEFT JOIN experiments
-                  ON experiments.chat_id = chats.chat_id
-                 AND experiments.graph_target_json = chats.graph_target_json
+                LEFT JOIN episode_chats
+                  ON episode_chats.chat_id = chats.chat_id
+                 AND episode_chats.graph_target_json = chats.graph_target_json
                 LEFT JOIN auto_research_child_work AS worker
                   ON worker.worker_id = chats.chat_id AND worker.project_id = chats.project_id
                 LEFT JOIN auto_research_child_experiments AS child
@@ -79,8 +79,8 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "conversation_kind": (
                         "auto_research_child"
                         if orchestrator
-                        else "experiment"
-                        if row["is_experiment"]
+                        else "episode"
+                        if row["is_episode"]
                         else "chat"
                     ),
                     "orchestrator_episode_id": orchestrator,

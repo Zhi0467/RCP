@@ -29,7 +29,7 @@ export interface ChatConversation {
   preview?: string;
   graphTarget?: GraphTargetRef;
   graphTitle?: string;
-  conversationKind?: "chat" | "experiment" | "auto_research_child";
+  conversationKind?: "chat" | "episode" | "auto_research_child";
   orchestratorEpisodeId?: string | null;
 }
 

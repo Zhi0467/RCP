@@ -333,8 +333,8 @@ function ConversationTags({ conversation }: { conversation: ChatConversation }) 
       <span data-conversation-kind={kind}>
         {kind === "auto_research_child"
           ? "Auto-research child"
-          : kind === "experiment"
-            ? "Experiment"
+          : kind === "episode"
+            ? "Episode"
             : "Chat"}
       </span>
     </span>

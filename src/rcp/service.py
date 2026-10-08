@@ -360,7 +360,7 @@ class ChatSummary(BaseModel):
     updated_at: str
     message_count: int = Field(ge=0)
     last_message_preview: str
-    conversation_kind: Literal["chat", "experiment", "auto_research_child"] = "chat"
+    conversation_kind: Literal["chat", "episode", "auto_research_child"] = "chat"
     orchestrator_episode_id: str | None = None
     graph_title: str = "Main"
 
