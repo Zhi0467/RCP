@@ -24,14 +24,17 @@ class VoiceRoute(ServiceConnectionRoute):
 
         async def bounded(request: Request):
             if request.method in {"POST", "PUT"}:
+                # A body without a declared length (chunked) would be buffered in
+                # full before validation, so a bounded length is required.
                 length = request.headers.get("content-length")
-                if length is not None:
-                    try:
-                        size = int(length)
-                    except ValueError:
-                        raise HTTPException(400, {"code": "voice_request_invalid_length"}) from None
-                    if size > limits.VOICE_TRANSCRIPT_REQUEST_MAX_BYTES:
-                        raise HTTPException(413, {"code": "voice_request_too_large"})
+                if length is None:
+                    raise HTTPException(411, {"code": "voice_request_length_required"})
+                try:
+                    size = int(length)
+                except ValueError:
+                    raise HTTPException(400, {"code": "voice_request_invalid_length"}) from None
+                if size > limits.VOICE_TRANSCRIPT_REQUEST_MAX_BYTES:
+                    raise HTTPException(413, {"code": "voice_request_too_large"})
             return await handler(request)
 
         return bounded

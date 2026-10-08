@@ -1,10 +1,12 @@
 # Standby voice robustness
 
 Date: 2026-10-08
-Status: all five slices implemented. Slice 1 passed its live check on
-2026-10-08 (talking on another Space stayed connected; a minimized, silent
-session released the microphone at a 1-minute idle limit), so no native
-deadline backstop is needed. Each slice had one cross-model review and one
+Status: slices 1 to 5 implemented; slice 6 in progress. Slice 1 is partly
+live-checked (2026-10-08): talking on another Space stayed connected, and a
+minimized, silent session released the microphone at a 1-minute idle limit.
+The fully occluded and app-hidden cases, speech in each state, and timer and
+media measurements remain in the final live check; the native deadline
+backstop stays deferred until that check, not ruled out. Each slice had one cross-model review and one
 fix round.
 
 Implemented: slices 1 to 5.

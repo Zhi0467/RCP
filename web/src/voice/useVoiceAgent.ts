@@ -505,7 +505,7 @@ export function useVoiceAgent({
               }
             },
             onFunctionCall: (call) => {
-              sourceLabels.capture(call.call_id, call.name, currentTarget());
+              sourceLabels.capture(call.call_id, call.name, call.arguments, currentTarget());
               setTranscript((lines) =>
                 setToolLine(lines, call.call_id, toolActivity(call.name, null)),
               );

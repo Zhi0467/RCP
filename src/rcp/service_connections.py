@@ -229,10 +229,17 @@ class ServiceConnections:
         return records[: limits.VOICE_TRANSCRIPT_MAX_SESSIONS]
 
     def _voice_record(self, session_id: str) -> dict:
+        path = self._voice_path(session_id)
         try:
-            return json.loads(self._voice_path(session_id).read_text())
+            record = json.loads(path.read_text())
         except FileNotFoundError:
             raise ConnectionError("voice_session_not_found", 404) from None
+        # An expired record is gone even when only its id is known, so Resume,
+        # save, and generation reads cannot revive it before a listing prunes it.
+        if record["updated_at"] <= time.time() - limits.VOICE_TRANSCRIPT_RETENTION_SECONDS:
+            path.unlink(missing_ok=True)
+            raise ConnectionError("voice_session_not_found", 404)
+        return record
 
     def _write_voice_record(self, record: dict) -> None:
         path = self._voice_path(record["id"])
