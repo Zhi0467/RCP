@@ -115,7 +115,7 @@ def test_inline_text_runs_only_rcp_s_nonce_bound_height_report(name, data) -> No
     assert csp.startswith("sandbox allow-scripts;")
     assert "'unsafe-inline'" not in csp.split("script-src")[1].split(";")[0]
     assert "frame-ancestors 'self'" in csp
-    assert "--rcp-ink:#e5ebf2;" in page and "color-scheme:dark" in page
+    assert "--rcp-ink:#e5ebf2;" in page and "color-scheme:dark!important" in page
     # Two renders never share a nonce.
     _, _, again = artifact_content(
         name, classify_artifact_bytes(name, data), data, inline=InlineAppearance("aqua", "dark")

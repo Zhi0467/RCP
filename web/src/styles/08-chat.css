@@ -857,7 +857,7 @@
 }
 /* Selection gestures take a mouse or pen; a touch reader comments from Expand. */
 @media (hover: none) and (pointer: coarse) {
-  .chat-inline-artifact-comment {
+  .chat-inline-artifact-bar .chat-inline-artifact-comment {
     display: none;
   }
 }

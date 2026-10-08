@@ -279,8 +279,9 @@ It has no RCP chrome and a transparent page. Inside it the content route renders
 the same bytes with the reply's theme: every frame in the chain declares the
 reply's `color-scheme`, without which the browser paints an opaque backdrop
 behind the nested page, and the artifact frame receives the app palette as
-`--rcp-*` custom properties ahead of its own CSS. A page that declares its own
-scheme keeps it and is shown on that backdrop. Markdown and text pages get the
+`--rcp-*` custom properties ahead of its own CSS. The reply's scheme is pinned:
+a page's own `light dark` would follow the operating system rather than the
+reply, so a page drawn for one palette paints its own background. Markdown and text pages get the
 same palette and RCP's nonce-bound height report as their only script. The
 shell reloads its content when the theme or mode changes.
 

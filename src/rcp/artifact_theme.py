@@ -180,14 +180,15 @@ def artifact_theme_css(theme: ArtifactTheme, mode: ArtifactColorMode) -> str:
     """Zero-specificity defaults an inline frame paints with until its own CSS speaks.
 
     Every frame in the chain must declare the same `color-scheme`, or the browser
-    paints an opaque backdrop behind the nested document; a page that declares its
-    own scheme keeps it and is shown on that backdrop.
+    paints an opaque backdrop behind the nested document. A page's own `light dark`
+    would resolve to the operating system's preference rather than the reply's,
+    so the reply's scheme is pinned; a page drawn for one background paints it.
     """
 
     palette = _PALETTES[theme][mode]
     tokens = "".join(f"--rcp-{name}:{value};" for name, value in palette.items())
     return (
-        f":root{{{tokens}--rcp-color-mode:{mode};color-scheme:{mode}}}"
+        f":root{{{tokens}--rcp-color-mode:{mode};color-scheme:{mode}!important}}"
         ":where(html){color:var(--rcp-ink);font:14px/1.55 var(--rcp-font)}"
         ":where(body){margin:0}"
     )

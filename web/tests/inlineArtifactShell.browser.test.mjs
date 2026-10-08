@@ -15,7 +15,7 @@ const rendered = JSON.parse(
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.artifact_comments import selection_frame_addon
 from rcp.artifact_views import InlineAppearance, artifact_content, artifact_viewer_document
-page = b"""<!doctype html><html><body><style>body{margin:0}.box{height:500px;width:100%}</style>
+page = b"""<!doctype html><html><body><style>:root{color-scheme:light dark}body{margin:0}.box{height:500px;width:100%}</style>
 <div class=box id=box></div><button id=grow onclick="box.style.height='700px'">grow</button>
 <p id=ink style="color:var(--rcp-ink)">ink</p></body></html>"""
 d = AgentArtifactDescriptor(artifact_id="a"*24, name="page.html", media_type="text/html", size_bytes=1)
@@ -73,7 +73,8 @@ test("an inline artifact sizes to its content, blends in dark mode, and selects 
       window.received.some((m) => m.type === "rcp-artifact-size" && m.height > 700),
     );
 
-    // Every frame declares the reply's scheme, so the nested page stays transparent.
+    // Every frame declares the reply's scheme, so the nested page stays transparent,
+    // even though the page itself asked for "light dark" (the OS preference here is light).
     assert.equal(
       await artifact.evaluate(() => getComputedStyle(document.documentElement).colorScheme),
       "dark",
