@@ -494,8 +494,9 @@ surfaces.
 ## Artifact viewer
 
 One viewer panel is mounted beside the application shell, surviving loading and
-identity branches. Changing the open project closes it. Chat artifacts, Artifacts,
-History reports, Runs, repository-file links, and WebMCP all open it. Its default is
+identity branches. Changing the open project closes it. Chat artifacts, an
+artifact's Expand inside a reply, Artifacts, History reports, Runs,
+repository-file links, and WebMCP all open it. Its default is
 right-docked and full height. Dragging its left edge resizes it; dragging the
 title bar floats it. Double-clicking the title bar enters full screen and
 repeats to restore the prior placement. Enter or Space on the focused title bar
@@ -503,6 +504,12 @@ does the same. The dock control collapses it to a slim tab on the right edge,
 just below the project header; the tab restores it in docked mode. There is no mode button row.
 Size and placement persist on this browser origin and remain reachable after
 viewport changes.
+
+An artifact inside a reply has no frame of its own: it sits in the reply's flow
+at the reply's width, paints with the reply's palette, and shows its name,
+version, Live or Finished, and its actions as one quiet caption line beneath it.
+A placeholder shimmer holds its space until it is measured. Comment mode outlines
+the artifact with a dashed accent line and says how to select a part.
 
 The title bar contains the name, Live or Finished when supplied, version,
 Undo when offered, the reply-thread control when supplied, dock, and close.

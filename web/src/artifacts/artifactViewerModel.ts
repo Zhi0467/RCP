@@ -26,6 +26,19 @@ export function openRepositoryFile(input: {
 export function closeArtifactViewer(): void {
   publish(null);
 }
+
+// The panel learns of version moves an inline copy of the same artifact cannot
+// see, such as Undo, which settles no task.
+const versionListeners = new Set<(artifactId: string) => void>();
+export function announceArtifactVersionChange(artifactId: string): void {
+  versionListeners.forEach((listener) => listener(artifactId));
+}
+export function onArtifactVersionChange(listener: (artifactId: string) => void): () => void {
+  versionListeners.add(listener);
+  return () => {
+    versionListeners.delete(listener);
+  };
+}
 export function useArtifactViewerTarget() {
   return useSyncExternalStore(
     (listener) => {
