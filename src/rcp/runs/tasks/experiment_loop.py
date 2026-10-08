@@ -584,22 +584,45 @@ def _experiment_master(
     render: Callable[[], str] | None,
     values: dict[str, object] | None = None,
 ) -> MasterRef:
-    """The master contract this continuing episode session holds, staged for a pointer.
+    """Restore this Experiment's own master, reopening it after another owner or report.
 
-    A session with no settled master record keeps the exact start contract its own
-    episode lineage sent it, recorded now under the current key with the values that
-    start recorded. Otherwise the shared lookup points to the recorded master, or
-    bootstraps a freshly rendered one from ``values``. Without a renderer, the recorded
-    master is kept even under an older key, and the session's next operational launch
-    re-opens the current one.
+    Repair has no renderer: only a master recorded in this episode's lineage can supply
+    its policy and values. Never relabel another owner's session master as an Experiment.
     """
 
     key = master_key(EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=ontology_extensions)
     record = execution.store.agent_task(execution.operation_id)
     if record is None or not record.stage_root:
         raise ValueError("An Experiment-loop continuation has no saved stage for its master.")
-    recorded = execution.store.latest_session_master(record.project_id, session_id)
-    if recorded is None and episode_id:
+    latest = execution.store.latest_session_master(record.project_id, session_id)
+    revoked = report_rebootstrap_pending(execution, session_id)
+    own = _experiment_lineage_master(execution, episode_id, session_id)
+    if own is not None and (render is None or own[2] == key):
+        operation_id, digest, own_key = own
+        content = execution.store.agent_task_contract(operation_id, SESSION_MASTER_ROLE)
+        assert content is not None
+        path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=operation_id,
+            sha256=digest,
+            path=session_master_label(_EXPERIMENT_MASTER_LABEL, content),
+        )
+        own_values = recorded_master_values(execution.store, operation_id)
+        reopen = revoked or latest is None or latest[1] != digest
+        if reopen:
+            record_session_master(
+                execution.store, execution.operation_id, content, own_key, own_values
+            )
+        return MasterRef(
+            path=path,
+            bootstrap=reopen,
+            replaces=reopen,
+            values=own_values,
+            after_report=revoked,
+        )
+    if own is None and episode_id:
         started = _session_start_contract(
             execution,
             episode_id=episode_id,
@@ -618,36 +641,66 @@ def _experiment_master(
                 session_master_label(_EXPERIMENT_MASTER_LABEL, content),
                 content,
             )
-            return MasterRef(path=path, bootstrap=False, values=started_values)
-    if render is None:
-        if recorded is None:
-            raise ValueError(
-                "The native session has no recoverable master contract; retry the "
-                "Experiment turn from a clean attempt instead."
+            reopen = latest is not None or revoked
+            return MasterRef(
+                path=path,
+                bootstrap=reopen,
+                replaces=reopen,
+                values=started_values,
+                after_report=revoked,
             )
-        operation_id, digest, _ = recorded
-        content = execution.store.agent_task_contract(operation_id, SESSION_MASTER_ROLE) or ""
-        path = stage_session_master(
-            execution.store,
+    if render is None:
+        raise ValueError(
+            "The native session has no recoverable Experiment master contract; retry the "
+            "Experiment turn from a clean attempt instead."
+        )
+    return replace(
+        continuation_session_master(
+            execution,
             local_stage=local_stage,
             remote_stage=remote_stage,
-            operation_id=operation_id,
-            sha256=digest,
-            path=session_master_label(_EXPERIMENT_MASTER_LABEL, content),
-        )
-        return MasterRef(
-            path=path, bootstrap=False, values=recorded_master_values(execution.store, operation_id)
-        )
-    return continuation_session_master(
-        execution,
-        local_stage=local_stage,
-        remote_stage=remote_stage,
-        native_session_id=session_id,
-        label_prefix=_EXPERIMENT_MASTER_LABEL,
-        key=key,
-        render=render,
-        values=values,
+            native_session_id=session_id,
+            label_prefix=_EXPERIMENT_MASTER_LABEL,
+            key=key,
+            render=render,
+            values=values,
+            force_bootstrap=revoked,
+        ),
+        after_report=revoked,
     )
+
+
+def _experiment_lineage_master(
+    execution: AgentTaskExecution,
+    episode_id: str | None,
+    session_id: str,
+) -> tuple[str, str, str | None] | None:
+    """Find the latest recorded Experiment master in its own continuation lineage."""
+
+    current = execution.store.agent_task(execution.operation_id)
+    if current is None:
+        return None
+    visited: set[str] = set()
+    while episode_id is not None and episode_id not in visited:
+        visited.add(episode_id)
+        for task in reversed(execution.store.episode_tasks(episode_id)):
+            if task.native_session_id != session_id or (task.stage_host or "", task.stage_root) != (
+                current.stage_host or "",
+                current.stage_root,
+            ):
+                continue
+            for contract in execution.store.agent_task_contracts(task.operation_id):
+                if contract.role == SESSION_MASTER_ROLE:
+                    return (
+                        task.operation_id,
+                        contract.sha256,
+                        execution.store.agent_task_contract(
+                            task.operation_id, SESSION_MASTER_KEY_ROLE
+                        ),
+                    )
+        episode = execution.store.episode(episode_id)
+        episode_id = episode.continues_episode_id if episode is not None else None
+    return None
 
 
 def _stale_master_graph_rules(
@@ -660,10 +713,8 @@ def _stale_master_graph_rules(
     """
 
     record = execution.store.agent_task(execution.operation_id)
-    recorded = (
-        execution.store.latest_session_master(record.project_id, session_id)
-        if record is not None
-        else None
+    recorded = _experiment_lineage_master(
+        execution, record.episode_id if record else None, session_id
     )
     key = master_key(EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=ontology_extensions)
     if recorded is not None and recorded[2] == key:
