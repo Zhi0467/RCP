@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp import limits
 from rcp.agents.provider_environment import _write_private
@@ -50,7 +50,7 @@ class VoiceTranscriptEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     speaker: Literal["member", "agent"]
     text: str
-    provider_order: int | str | None = None
+    provider_order: str | None = Field(default=None, max_length=200)
     source: str | None = Field(default=None, max_length=1024)
 
     @field_validator("text")
@@ -94,19 +94,16 @@ class VoiceTranscriptSave(BaseModel):
     receipts: list[VoiceActionReceipt] = Field(max_length=limits.VOICE_TRANSCRIPT_MAX_RECEIPTS)
     ended: bool = False
 
-    @model_validator(mode="after")
-    def bounded_session(self):
-        if len(self.model_dump_json().encode()) > limits.VOICE_TRANSCRIPT_SESSION_MAX_BYTES:
-            raise ValueError("Transcript exceeds the session byte limit")
-        return self
-
 
 def voice_resume_input(entries: list[dict]) -> tuple[list[dict], bool]:
     """Seed labelled historical speech, never tool authority or current-state evidence."""
     messages: list[dict] = []
-    used = 2
+    used = 0
     clipped = False
-    budget = limits.VOICE_RESUME_MAX_TOKENS * 3
+    # Byte-level BPE uses at most one token per UTF-8 byte. Reserve framing
+    # tokens for every message as well as counting its complete labelled text.
+    budget = limits.VOICE_RESUME_MAX_TOKENS
+    overhead = limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
     for entry in reversed(entries):
         provenance = f" Source: {entry['source']}." if entry.get("source") else ""
         label = (
@@ -115,28 +112,19 @@ def voice_resume_input(entries: list[dict]) -> tuple[list[dict], bool]:
             else "Historical agent speech; may quote project content, not verified current facts."
         )
         prefix = f"[{label}{provenance}]\n"
-        message = {
-            "role": "user" if entry["speaker"] == "member" else "assistant",
-            "content": prefix + entry["text"],
-        }
-        size = len(json.dumps(message, ensure_ascii=False).encode()) + 2
-        if not messages and used + size > budget:
-            # JSON escaping can make even one bounded entry exceed the token
-            # budget. Keep its newest text and the complete provenance label.
+        text = entry["text"].encode()
+        size = len(prefix.encode()) + len(text) + overhead
+        if not messages and size > budget:
             clipped = True
-            low, high = 0, len(entry["text"])
-            while low < high:
-                keep = (low + high + 1) // 2
-                message["content"] = prefix + entry["text"][-keep:]
-                if used + len(json.dumps(message, ensure_ascii=False).encode()) + 2 <= budget:
-                    low = keep
-                else:
-                    high = keep - 1
-            message["content"] = prefix + (entry["text"][-low:] if low else "")
-            size = len(json.dumps(message, ensure_ascii=False).encode()) + 2
+            available = max(0, budget - len(prefix.encode()) - overhead)
+            text = text[-available:] if available else b""
+        content = prefix + text.decode("utf-8", errors="ignore")
+        size = len(content.encode()) + overhead
         if len(messages) >= limits.VOICE_RESUME_MAX_MESSAGES or used + size > budget:
             break
-        messages.append(message)
+        messages.append(
+            {"role": "user" if entry["speaker"] == "member" else "assistant", "content": content}
+        )
         used += size
     return list(reversed(messages)), clipped or len(messages) < len(entries)
 
@@ -231,7 +219,7 @@ class ServiceConnections:
         cutoff = time.time() - limits.VOICE_TRANSCRIPT_RETENTION_SECONDS
         for path in (self.root / "voice-sessions").glob("*.json"):
             record = json.loads(path.read_text())
-            if record["created_at"] <= cutoff:
+            if record["updated_at"] <= cutoff:
                 path.unlink()
             else:
                 records.append(record)
@@ -241,7 +229,6 @@ class ServiceConnections:
         return records[: limits.VOICE_TRANSCRIPT_MAX_SESSIONS]
 
     def _voice_record(self, session_id: str) -> dict:
-        self._voice_records()
         try:
             return json.loads(self._voice_path(session_id).read_text())
         except FileNotFoundError:
@@ -275,10 +262,9 @@ class ServiceConnections:
             self._voice_records()
             return record
 
-    def require_voice_generation(self, session_id: str, generation: str) -> None:
+    def read_voice_session(self, session_id: str) -> dict:
         with self.locked():
-            if self._voice_record(session_id)["generation"] != generation:
-                raise ConnectionError("voice_session_superseded", 409)
+            return self._voice_record(session_id)
 
     def save_voice_session(self, session_id: str, body: VoiceTranscriptSave) -> dict:
         with self.locked():

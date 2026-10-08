@@ -18,7 +18,7 @@ export type VoiceEndReason =
   "member" | "idle" | "hard_cap" | "hidden" | "identity" | "space" | "connection" | "upstream";
 
 export type VoiceSessionEvents = {
-  onTranscript: (role: "member" | "agent", delta: string, order?: string | number) => void;
+  onTranscript: (role: "member" | "agent", delta: string, order?: string) => void;
   onFunctionCall: (call: VoiceFunctionCall) => void;
   onEnded: (reason: VoiceEndReason) => void;
 };

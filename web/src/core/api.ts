@@ -823,6 +823,10 @@ export function loadVoiceSessions(offset = 0): Promise<VoiceSessionPage> {
   return api(`/api/voice/sessions?offset=${offset}&limit=5`);
 }
 
+export function loadVoiceGeneration(id: string): Promise<{ generation: string }> {
+  return api(`/api/voice/sessions/${encodeURIComponent(id)}/generation`);
+}
+
 export function saveVoiceSession(
   record: VoiceSavedSession,
 ): Promise<Pick<VoiceSavedSession, "id" | "generation" | "revision">> {
