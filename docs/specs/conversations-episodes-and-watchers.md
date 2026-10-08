@@ -596,8 +596,19 @@ that started the session (see
 Current inline instructions take precedence while the objective, attempt ledger,
 and completed native-session progress remain intact. The episode report gets no
 pointer, and the next operational turn on its session reopens the master.
-Revoking artifact edits use the same reopening rule. Only a successful
-operational launch clears it; edit completion does not. All owners reserve the
+Revoking artifact edits use the same reopening rule; a Discuss edit under the
+chat master revokes nothing. Revocation is tracked per owner, the episode and
+the chat, and clears only after a successful launch of that owner records its
+reopened master; edit completion does not.
+
+A human may post in an Experiment's own conversation from Agents when no turn
+runs. The turn is an ordinary chat turn on the same native session: it spends
+no episode budget and does not touch Stop. Whenever a session's latest master
+belongs to another owner, or a report or revoking edit revoked it, the next
+launch reopens its own master with a replacing bootstrap: a human turn the
+chat master, on fresh turns, Resume, Retry, and recovery; an Experiment turn,
+including renderer-free graph repair, the master recorded in its own episode
+lineage. All owners reserve the
 exact native session and stage atomically, including human chats, episode
 invocations, wakes, recovery, reports, and artifact edits. Busy edit admission
 returns 409 without queueing, steering, spending budget, or changing Stop.

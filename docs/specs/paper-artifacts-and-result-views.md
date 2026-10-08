@@ -220,11 +220,13 @@ without loading report HTML. A missing document title uses **Report** as its
 label; the tag supplies its episode type without repetition. This display
 metadata does not alter the immutable report bytes, digest, or episode outcome.
 
-Source chat preserves the exact project and graph target. Episode-owned branch
-conversations open through their existing Runs transcript, preserving its
-read-only boundary; Work that an Auto-research episode spawned opens that
-episode's Runs entry, which lists the worker turn and inspects its transcript.
-Missing or non-chat origins have no source link; their
+One resolver gives every inventory entry and the viewer the same source link.
+It links an artifact or report to its conversation's chat on the exact project
+and graph target, including Experiment episodes and Auto-research children on
+branches, after checking that the transcript exists on that target and that an
+edited output traces back to its origin. The Auto-research orchestrator has no
+chat, so its outputs link to its Runs card. Missing or unverifiable origins have
+no source link; their
 artifact preview remains available. The source link is independent of the
 card's preview click target. Opening an entry uses the existing bounded artifact
 viewer in both browser and desktop; an entry with no viewer offers Download,
@@ -245,7 +247,9 @@ legacy URLs redirect to artifact routes.
 
 Every viewable artifact, including a report, opens in the RCP window's viewer
 panel. Its RCP chrome owns the title, version, Live or Finished status, Undo,
-reply-thread control, dock, and close. The embedded shell keeps Keep and notices,
+a labelled **Source chat** button using the source link above, dock, and close.
+When the artifact accepts comments, one line says comments edit the artifact
+and analysis or code goes through the source chat. The embedded shell keeps Keep and notices,
 selection gestures, a comment box, and Send. The shell allows framing only by
 the same RCP origin. Agent HTML remains inside its unchanged opaque sandbox.
 Small raster images and SVGs may also render inline in chat; HTML has no thumbnail.

@@ -2,10 +2,14 @@
 
 Date: 2026-10-08
 Status: design agreed with the human on 2026-10-08, revised after an astra
-xhigh design review the same day. Nothing implemented.
+xhigh design review the same day. Slices 1 to 3 and the Runs folding are
+implemented on branch `source-chat`, with specs updated.
 
-Implemented: nothing.
-Remaining: slices 1 to 4.
+Implemented: session-rule defects, Agents inventory, tags, filter, read-only
+children, folded Archived column, readable refusals, one source link, viewer
+button, Open in Agents, folded Runs cards. The conversation kind is named
+`episode`, not `experiment`, to keep node types out of the kernel.
+Remaining: the served-app journeys in slice 4, and the pre-push review.
 
 Settled with the human on 2026-10-08:
 
