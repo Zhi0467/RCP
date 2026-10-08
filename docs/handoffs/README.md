@@ -1,9 +1,10 @@
 # Active implementation handoffs
 
 - [Standby voice robustness](handoff-2026-10-08-standby-voice-robustness.md)
-  — slice 1 (keep voice while the desktop window is hidden, member idle
-  limit) implemented and live-checked; remaining: saved transcripts with
-  Resume, non-strict tool schemas, broad reads, and a page-agent playbook.
+  — all slices implemented (hidden-window voice, idle limit, saved
+  transcripts with Resume, non-strict tools, broad reads, playbook); slice 1
+  live-checked; remaining: live checks for the rest and the unknown-outcome
+  reconciliation question.
 - [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
   — implemented on its PR: chat wake sessions, event parsing, the validator
   poller, state-transfer retry, and Apply again; live checks and the remaining

@@ -1,15 +1,17 @@
 # Standby voice robustness
 
 Date: 2026-10-08
-Status: design settled with the human after a grilling and an astra xhigh
-design review. Slice 1 is implemented and passed its live check on
+Status: all five slices implemented. Slice 1 passed its live check on
 2026-10-08 (talking on another Space stayed connected; a minimized, silent
 session released the microphone at a 1-minute idle limit), so no native
-deadline backstop is needed.
+deadline backstop is needed. Each slice had one cross-model review and one
+fix round.
 
-Implemented: slice 1 (hidden-window policy, absolute deadlines, member idle
-setting).
-Remaining: slices 2 to 5, then the remaining live checks.
+Implemented: slices 1 to 5.
+Remaining: the live checks below for slices 2 to 5, and one open question:
+a restored unknown-outcome fence blocks an identical Work send for the whole
+resumed session, because task admission has no client request id to reconcile
+against.
 
 Settled with the human on 2026-10-08:
 
