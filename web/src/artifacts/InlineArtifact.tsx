@@ -210,6 +210,13 @@ export function InlineArtifact({
     canComment &&
     Boolean(state?.can_comment) &&
     (artifact.view === "html" || artifact.view === "image");
+  // A refresh can withdraw commenting, such as another edit reserving the
+  // artifact, and would leave comment mode on with no Done to end it.
+  useEffect(() => {
+    if (selectable || !commentModeRef.current) return;
+    setCommentMode(false);
+    onSelectionCancelRef.current();
+  }, [selectable]);
   const source = state?.viewer_url ? inlineViewerUrl(state.viewer_url) : null;
   return (
     <span

@@ -175,6 +175,9 @@ export function ArtifactViewer() {
       stop();
       window.removeEventListener("message", message);
       document.removeEventListener("visibilitychange", visible);
+      // The shell's own Keep changes nothing an inline copy watches, so the copies
+      // reread their state when the panel lets go of the artifact.
+      announceArtifactVersionChange(target.artifactId);
     };
   }, [target, collapsed]);
 
