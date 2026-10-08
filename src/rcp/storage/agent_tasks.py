@@ -592,6 +592,21 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("An agent task admission has an invalid continuation cause.")
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
+        # A child's native session belongs to its orchestrator even after it ends.
+        # Enforce this before session binding, without changing child continuations.
+        if (
+            record.kind in {"node_chat", "project_chat"}
+            and record.request.get("trigger", "human") == "human"
+        ):
+            chat_id = record.request.get("chat_id")
+            child = connection.execute(
+                "SELECT 1 FROM auto_research_child_work WHERE project_id = ? AND worker_id = ? "
+                "UNION ALL SELECT 1 FROM auto_research_child_experiments "
+                "WHERE project_id = ? AND child_episode_id = ? LIMIT 1",
+                (record.project_id, chat_id, record.project_id, chat_id),
+            ).fetchone()
+            if child is not None:
+                raise ValueError("auto_research_child_read_only")
         self._validate_dispatch_authority_insert(connection, record)
         record, session_resolution = self._bind_chat_stage(connection, record, continuation_cause)
         self._require_session_launch_available(connection, record)

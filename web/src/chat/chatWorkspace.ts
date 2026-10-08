@@ -1,8 +1,4 @@
-import {
-  experimentBoardHref,
-  experimentBoardRouteToken,
-} from "../experiments/experimentBoardModel.ts";
-import { sameGraphTarget } from "../core/graphTarget.ts";
+import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
 import type {
   ProjectReferenceSelector,
   AgentRunConfig,
@@ -14,7 +10,6 @@ import type {
   ChatReads,
   ChatSummary,
   ConversationMode,
-  ExperimentLoopIndexEntry,
   GraphTargetRef,
   SkillDefaults,
   StartAgentTask,
@@ -32,6 +27,10 @@ export interface ChatConversation {
   updatedAt: string;
   /** The latest message's text from the stored summary, for search. */
   preview?: string;
+  graphTarget?: GraphTargetRef;
+  graphTitle?: string;
+  conversationKind?: "chat" | "experiment" | "auto_research_child";
+  orchestratorEpisodeId?: string | null;
 }
 
 export interface DraftConversation {
@@ -219,11 +218,14 @@ export function groupChatConversations(
   nodeTitles: Record<string, string>,
   projectTitle: string,
   drafts: DraftConversation[] = [],
+  viewedTarget: GraphTargetRef = MAIN_GRAPH,
 ): ChatConversation[] {
   const grouped = new Map<string, ChatConversation>();
   for (const summary of summaries) {
     const title =
-      summary.kind === "node_chat" && summary.node_id
+      sameGraphTarget(summary.graph_target, viewedTarget) &&
+      summary.kind === "node_chat" &&
+      summary.node_id
         ? (nodeTitles[summary.node_id] ?? summary.node_id)
         : summary.title;
     grouped.set(summary.chat_id, {
@@ -234,11 +236,22 @@ export function groupChatConversations(
       tasks: [],
       updatedAt: summary.updated_at,
       preview: summary.last_message_preview,
+      graphTarget: summary.graph_target,
+      graphTitle: summary.graph_title,
+      conversationKind: summary.conversation_kind,
+      orchestratorEpisodeId: summary.orchestrator_episode_id,
     });
   }
   for (const draft of drafts) {
     if (!grouped.has(draft.chatId))
-      grouped.set(draft.chatId, { ...draft, tasks: [], updatedAt: "" });
+      grouped.set(draft.chatId, {
+        ...draft,
+        graphTarget: viewedTarget,
+        graphTitle: viewedTarget.kind === "main" ? "Main" : viewedTarget.branch_id.slice(0, 8),
+        conversationKind: "chat",
+        tasks: [],
+        updatedAt: "",
+      });
   }
   for (const task of tasks) {
     const chatId = chatIdForTask(task);
@@ -263,6 +276,10 @@ export function groupChatConversations(
         title,
         tasks: [task],
         updatedAt: task.updated_at,
+        graphTarget: task.graph_target,
+        graphTitle:
+          task.graph_target?.kind === "branch" ? task.graph_target.branch_id.slice(0, 8) : "Main",
+        conversationKind: "chat",
       });
     }
   }
@@ -396,95 +413,6 @@ export function groupConversationAgents(
   return groups;
 }
 
-/**
- * An Experiment episode on a graph branch other than the viewed one. Its chat
- * and tasks belong to that branch, so the row links to the episode in Runs.
- */
-export interface BranchEpisodeAgentRow {
-  episodeId: string;
-  title: string;
-  group: Exclude<ConversationAgentGroup, "new_reply">;
-  href: string;
-  updatedAt: string;
-}
-
-/**
- * Rows for human-started Experiment episodes on another graph branch, from the
- * Experiment index Runs itself reads, so every row opens a card that exists and
- * carries the title from the episode's own graph. An Auto-research child is
- * reached through its parent episode instead.
- */
-export function branchEpisodeAgentRows(
-  entries: ExperimentLoopIndexEntry[],
-  viewedTarget: GraphTargetRef,
-  projectId: string,
-  query = "",
-): Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> {
-  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  const groups: Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> = {
-    failed: [],
-    stopped: [],
-    working: [],
-    done: [],
-  };
-  for (const entry of entries) {
-    const { episode } = entry;
-    if (
-      entry.project_id !== projectId ||
-      entry.graph_target.kind !== "branch" ||
-      entry.parent_episode_id !== null ||
-      episode.archived ||
-      sameGraphTarget(entry.graph_target, viewedTarget)
-    ) {
-      continue;
-    }
-    const title = entry.node.title;
-    if (terms.length) {
-      const text = `${title}\n${entry.node.id}\nbranch`.toLocaleLowerCase();
-      if (!terms.every((term) => text.includes(term))) continue;
-    }
-    // A failed episode still writing its report is running, as Runs shows it.
-    const group =
-      episode.run_section === "running"
-        ? "working"
-        : episode.ending === "failed"
-          ? "failed"
-          : episode.run_section === "actionable"
-            ? "stopped"
-            : "done";
-    groups[group].push({
-      episodeId: episode.episode_id,
-      title,
-      group,
-      href: experimentBoardHref(projectId, experimentBoardRouteToken(entry)),
-      updatedAt: episode.ended_at ?? episode.updated_at,
-    });
-  }
-  for (const rows of Object.values(groups)) {
-    rows.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-  }
-  return groups;
-}
-
-export type AgentGroupItem =
-  { kind: "chat"; row: ConversationAgentRow } | { kind: "branch"; row: BranchEpisodeAgentRow };
-
-/** One status group's chats and branch episodes together, newest first; an unsent draft leads. */
-export function agentGroupItems(
-  chats: ConversationAgentRow[],
-  branches: BranchEpisodeAgentRow[],
-): AgentGroupItem[] {
-  const items: AgentGroupItem[] = chats.map((row) => ({ kind: "chat", row }));
-  if (!branches.length) return items;
-  const at = (item: AgentGroupItem) =>
-    Date.parse(
-      (item.kind === "chat" ? item.row.conversation.updatedAt : item.row.updatedAt) || "9999-01-01",
-    );
-  return [...items, ...branches.map((row) => ({ kind: "branch" as const, row }))].sort(
-    (left, right) => at(right) - at(left),
-  );
-}
-
 /** A draft nobody has sent a turn in; opening a new chat reuses it. */
 export function unsentConversation(
   conversations: ChatConversation[],
@@ -506,11 +434,15 @@ export function latestConversation(
   conversations: ChatConversation[],
   kind: ChatKind,
   nodeId: string | null = null,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): ChatConversation | null {
   return (
     conversations.find(
       (conversation) =>
-        conversation.kind === kind && (kind === "project_chat" || conversation.nodeId === nodeId),
+        sameGraphTarget(conversation.graphTarget, graphTarget) &&
+        conversation.conversationKind !== "auto_research_child" &&
+        conversation.kind === kind &&
+        (kind === "project_chat" || conversation.nodeId === nodeId),
     ) ?? null
   );
 }
@@ -627,4 +559,12 @@ export function conversationHasUnread(
 function comparableTime(value: string): number {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+/** Inventory rows enter the existing route so the target loads before the chat. */
+export function conversationHref(projectId: string, conversation: ChatConversation): string {
+  const params = new URLSearchParams({ view: "chats", chat: conversation.chatId });
+  if (conversation.graphTarget?.kind === "branch")
+    params.set("branch_id", conversation.graphTarget.branch_id);
+  return `#/projects/${encodeURIComponent(projectId)}?${params}`;
 }

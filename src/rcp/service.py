@@ -358,8 +358,11 @@ class ChatSummary(BaseModel):
     node_id: str | None
     title: str
     updated_at: str
-    message_count: int = Field(ge=1)
+    message_count: int = Field(ge=0)
     last_message_preview: str
+    conversation_kind: Literal["chat", "experiment", "auto_research_child"] = "chat"
+    orchestrator_episode_id: str | None = None
+    graph_title: str = "Main"
 
 
 class ChatSummaryPage(BaseModel):
@@ -1256,16 +1259,41 @@ class ProjectService:
         *,
         offset: int = 0,
         limit: int = CHAT_PAGE_DEFAULT_LIMIT,
+        inventory: bool = False,
+        task_summaries: list[ChatSummary] | None = None,
     ) -> ChatSummaryPage:
+        """Page canonical chats, optionally including every target and task-only chat."""
         if offset < 0:
             raise ValueError("chat offset must be non-negative")
         if limit < 1 or limit > CHAT_PAGE_MAX_LIMIT:
             raise ValueError(f"chat limit must be between 1 and {CHAT_PAGE_MAX_LIMIT}")
+        summaries = {
+            summary.chat_id: summary.model_copy(
+                update={
+                    "graph_title": "Main"
+                    if summary.graph_target.kind == "main"
+                    else (summary.graph_target.branch_id or "")[:8],
+                }
+            )
+            for summary in self._canonical_chat_summaries()
+        }
+        for task in task_summaries or []:
+            canonical = summaries.get(task.chat_id)
+            if canonical is None:
+                summaries[task.chat_id] = task
+            elif canonical.graph_target == task.graph_target:
+                summaries[task.chat_id] = canonical.model_copy(
+                    update={
+                        "conversation_kind": task.conversation_kind,
+                        "orchestrator_episode_id": task.orchestrator_episode_id,
+                        "graph_title": task.graph_title,
+                    }
+                )
         chats = sorted(
             (
                 summary
-                for summary in self._canonical_chat_summaries()
-                if summary.graph_target == self.history.graph_target
+                for summary in summaries.values()
+                if inventory or summary.graph_target == self.history.graph_target
             ),
             key=lambda item: (datetime.fromisoformat(item.updated_at), item.chat_id),
             reverse=True,

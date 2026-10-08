@@ -12,8 +12,6 @@ export interface AgentBoardCard {
   title: string;
   column: AgentBoardColumn;
   working: boolean;
-  /** A branch episode opens in Runs and is not a chat, so it neither moves nor archives. */
-  href?: string;
 }
 
 interface Props<C extends AgentBoardCard> {
@@ -47,14 +45,15 @@ export function AgentBoard<C extends AgentBoardCard>({
   onOpen,
   onDrop,
 }: Props<C>) {
+  // Folding belongs to this viewer; it never changes the shared archive set.
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const drag = useRef<DragState | null>(null);
   const suppressClick = useRef(false);
   const [offset, setOffset] = useState<{ id: string; x: number; y: number } | null>(null);
   const [target, setTarget] = useState<DropTarget | null>(null);
   const cardById = (id: string) =>
     AGENT_BOARD_COLUMNS.flatMap((column) => columns[column]).find((card) => card.id === id);
-  const columnIds = (column: AgentBoardColumn) =>
-    columns[column].filter((card) => !card.href).map((card) => card.id);
+  const columnIds = (column: AgentBoardColumn) => columns[column].map((card) => card.id);
 
   const dropFor = (state: DragState, at: DropTarget | null) => {
     const card = cardById(state.id);
@@ -69,7 +68,7 @@ export function AgentBoard<C extends AgentBoardCard>({
     if (!columnElement || !column) return null;
     const before = [...columnElement.querySelectorAll<HTMLElement>("[data-card-id]")].find(
       (element) => {
-        if (element.dataset.cardId === dragged || element.dataset.cardFixed) return false;
+        if (element.dataset.cardId === dragged) return false;
         const box = element.getBoundingClientRect();
         return y < box.top + box.height / 2;
       },
@@ -126,9 +125,7 @@ export function AgentBoard<C extends AgentBoardCard>({
       [ids[index], ids[next]] = [ids[next], ids[index]];
       onDrop(card, "reorder", ids);
     };
-    const open = card.href ? (
-      <a className="agent-card-open" href={card.href} aria-label={`Open ${card.title}`} />
-    ) : (
+    const open = (
       <button
         className="agent-card-open"
         type="button"
@@ -146,7 +143,6 @@ export function AgentBoard<C extends AgentBoardCard>({
       <div
         className={`agent-card${dragging ? " dragging" : ""}`}
         data-card-id={card.id}
-        data-card-fixed={card.href ? "true" : undefined}
         data-state={card.working ? "working" : undefined}
         style={dragging ? { transform: `translate(${offset.x}px, ${offset.y}px)` } : undefined}
         onClickCapture={(event) => {
@@ -158,7 +154,7 @@ export function AgentBoard<C extends AgentBoardCard>({
         }}
         onPointerDown={(event) => {
           // Touch keeps scrolling the board; a card there moves through its menu.
-          if (card.href || event.button !== 0 || event.pointerType === "touch") return;
+          if (event.button !== 0 || event.pointerType === "touch") return;
           if (
             event.target instanceof Element &&
             event.target.closest("button:not(.agent-card-open), input, [role=menu]")
@@ -213,10 +209,28 @@ export function AgentBoard<C extends AgentBoardCard>({
           >
             <header className="agent-board-column-head">
               <span className="agent-board-dot" aria-hidden="true" />
-              <h3>{labels[column]}</h3>
+              <h3>
+                {column === "archived" ? (
+                  <button
+                    type="button"
+                    className="agent-board-fold"
+                    aria-expanded={archivedOpen}
+                    aria-controls="agent-board-archived-cards"
+                    onClick={() => setArchivedOpen((open) => !open)}
+                  >
+                    {labels[column]} <span aria-hidden="true">{archivedOpen ? "▾" : "▸"}</span>
+                  </button>
+                ) : (
+                  labels[column]
+                )}
+              </h3>
               <span className="agent-board-count">{cards.length}</span>
             </header>
-            <div className="agent-board-cards">
+            <div
+              className="agent-board-cards"
+              id={column === "archived" ? "agent-board-archived-cards" : undefined}
+              hidden={column === "archived" && !archivedOpen}
+            >
               {cards.map((card) => (
                 <Fragment key={card.id}>
                   {here && activeDrop && target?.beforeId === card.id && line}

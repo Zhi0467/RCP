@@ -1,10 +1,8 @@
 import {
   ChevronDown,
   Circle,
-  GitBranch,
   Ellipsis,
   Kanban,
-  LoaderCircle,
   MessageCircle,
   PanelLeft,
   Pause,
@@ -16,11 +14,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
-  agentGroupItems,
-  branchEpisodeAgentRows,
   conversationAgentStatus,
   groupConversationAgents,
-  type BranchEpisodeAgentRow,
   type ChatConversation,
   type AgentListSection,
   type ConversationAgentRow,
@@ -51,7 +46,6 @@ import type {
   AgentTask,
   ChatDisplay,
   ChatTranscript,
-  ExperimentLoopIndexEntry,
   GraphNode,
   GraphTargetRef,
   GraphUpdateRecovery,
@@ -63,6 +57,11 @@ import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
 import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
 import { NodeChat } from "./NodeChat";
+import {
+  AUTO_RESEARCH_ROUTE_PREFIX,
+  experimentBoardHref,
+} from "../experiments/experimentBoardModel";
+import { sameGraphTarget, MAIN_GRAPH } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 
 interface Props {
@@ -73,8 +72,6 @@ interface Props {
   board: boolean;
   onBoardChange: (board: boolean) => void;
   nodes: Record<string, GraphNode>;
-  /** The Experiment index; episodes on another graph branch get their own rows. */
-  experimentEntries: ExperimentLoopIndexEntry[];
   graphTarget: GraphTargetRef;
   glossaryIndex: GlossaryIndex;
   runScope: string[];
@@ -83,10 +80,7 @@ interface Props {
   graphChangesDisabled: boolean;
   unreadChatIds: ReadonlySet<string>;
   chatTranscripts: ReadonlyMap<string, ChatTranscript>;
-  hasMore: boolean;
-  loadingMore: boolean;
   onSelect: (chatId: string) => void;
-  onLoadMore: () => void;
   onStartTask: StartAgentTask;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
@@ -100,8 +94,6 @@ interface Props {
   onRemoveDraft: (chatId: string) => void;
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
-  /** Fetches conversations the loaded pages do not reach, such as old pinned ones. */
-  onEnsureListed?: (chatIds: readonly string[]) => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -326,11 +318,28 @@ function AgentMenu({
   );
 }
 
-type BoardCard = AgentBoardCard &
-  (
-    | { kind: "chat"; conversation: ChatConversation; status: ConversationAgentStatus }
-    | { kind: "branch"; row: BranchEpisodeAgentRow }
+type BoardCard = AgentBoardCard & {
+  conversation: ChatConversation;
+  status: ConversationAgentStatus;
+};
+
+function ConversationTags({ conversation }: { conversation: ChatConversation }) {
+  const kind = conversation.conversationKind ?? "chat";
+  return (
+    <span className="agent-conversation-tags">
+      <span data-graph-target={conversation.graphTarget?.branch_id ?? "main"}>
+        {conversation.graphTitle ?? conversation.graphTarget?.branch_id ?? "Main"}
+      </span>
+      <span data-conversation-kind={kind}>
+        {kind === "auto_research_child"
+          ? "Auto-research child"
+          : kind === "experiment"
+            ? "Experiment"
+            : "Chat"}
+      </span>
+    </span>
   );
+}
 
 const BOARD_LABELS: Record<AgentBoardColumn, string> = {
   needs_you: "Needs you",
@@ -346,7 +355,6 @@ export function ChatsWorkspace({
   board,
   onBoardChange,
   nodes,
-  experimentEntries,
   graphTarget,
   glossaryIndex,
   runScope,
@@ -355,12 +363,8 @@ export function ChatsWorkspace({
   graphChangesDisabled,
   unreadChatIds,
   chatTranscripts,
-  hasMore,
   onArchiveChange,
-  onEnsureListed,
-  loadingMore,
   onSelect,
-  onLoadMore,
   onStartTask,
   onResumeTask,
   onRetryTask,
@@ -377,6 +381,7 @@ export function ChatsWorkspace({
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [filter, setFilter] = useState<AgentFilter>("all");
   const [query, setQuery] = useState("");
+  const [graphFilter, setGraphFilter] = useState("all");
   const [listWidth, setListWidth] = useState(() => readChatListWidth(project.id));
   const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
   const [widthBounds, setWidthBounds] = useState<ChatListWidthBounds>(() =>
@@ -402,16 +407,41 @@ export function ChatsWorkspace({
       ),
     [storedConversations, display.titles],
   );
+  const graphOptions = new Map<string, string>([["main", "Main"]]);
+  for (const conversation of conversations) {
+    const branchId = conversation.graphTarget?.branch_id;
+    if (branchId) graphOptions.set(branchId, conversation.graphTitle ?? branchId);
+  }
+  const filteredConversations = conversations.filter(
+    (conversation) =>
+      graphFilter === "all" || (conversation.graphTarget?.branch_id ?? "main") === graphFilter,
+  );
+  const graphFilterControl = (
+    <select
+      className="agent-graph-filter"
+      aria-label="Filter agents by graph"
+      value={graphFilter}
+      onChange={(event) => setGraphFilter(event.target.value)}
+    >
+      <option value="all">All</option>
+      {[...graphOptions].map(([id, title]) => (
+        <option key={id} value={id}>
+          {title}
+        </option>
+      ))}
+    </select>
+  );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const showingArchived = filter === "archived";
-  const listed = conversations.filter(
+  const listed = filteredConversations.filter(
     (conversation) => archivedChatIds.has(conversation.chatId) === showingArchived,
   );
-  // Count every archived chat, including ones on pages not loaded yet; the
-  // Archived view pages through them with Load more.
-  const archivedCount = archivedChatIds.size;
+  // The inventory is complete before a graph filter is applied.
+  const archivedCount = filteredConversations.filter((conversation) =>
+    archivedChatIds.has(conversation.chatId),
+  ).length;
   // Pins lead only the All view; a filter shows each pinned chat in its status group.
   const groups = groupConversationAgents(
     listed,
@@ -421,27 +451,17 @@ export function ChatsWorkspace({
   );
   // Filter counts ignore pins, so Working counts every working agent.
   const activeGroups = groupConversationAgents(
-    conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
+    filteredConversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
     unreadChatIds,
     query,
   );
-  // Archive and pins belong to chats; a branch episode is archived from Runs, so
-  // it counts toward All and Working but is not drawn in the Archived view.
-  const branchRows = branchEpisodeAgentRows(experimentEntries, graphTarget, project.id, query);
-  const branchRowsIn = (group: AgentListSection) =>
-    showingArchived || group === "pinned" || group === "new_reply" ? [] : branchRows[group];
   const pinnedChatIds = new Set(display.pinned);
-  useEffect(() => {
-    onEnsureListed?.(display.pinned);
-  }, [display.pinned, onEnsureListed]);
   const visibleGroups = AGENT_LIST_SECTIONS.filter(
     (group) => filter === "all" || showingArchived || group === filter,
   );
   const now = Date.now();
   const selected =
-    conversations.find((conversation) => conversation.chatId === selectedChatId) ??
-    conversations[0] ??
-    null;
+    conversations.find((conversation) => conversation.chatId === selectedChatId) ?? null;
 
   // Every read or edit of the display set returns the whole set, so only the
   // latest request's answer may apply; a project switch starts a new request.
@@ -557,7 +577,6 @@ export function ChatsWorkspace({
           archived: [],
         };
         const chatCard = (row: ConversationAgentRow, column: AgentBoardColumn): BoardCard => ({
-          kind: "chat",
           id: row.conversation.chatId,
           title: row.conversation.title,
           column,
@@ -567,24 +586,10 @@ export function ChatsWorkspace({
         });
         for (const group of CONVERSATION_AGENT_GROUPS) {
           const column = agentBoardColumn(group);
-          const branches = group === "new_reply" ? [] : branchRows[group];
-          for (const item of agentGroupItems(activeGroups[group], branches))
-            columns[column].push(
-              item.kind === "chat"
-                ? chatCard(item.row, column)
-                : {
-                    kind: "branch",
-                    id: `episode:${item.row.episodeId}`,
-                    title: item.row.title,
-                    column,
-                    working: item.row.group === "working",
-                    href: item.row.href,
-                    row: item.row,
-                  },
-            );
+          for (const row of activeGroups[group]) columns[column].push(chatCard(row, column));
         }
         const archivedGroups = groupConversationAgents(
-          conversations.filter((conversation) => archivedChatIds.has(conversation.chatId)),
+          filteredConversations.filter((conversation) => archivedChatIds.has(conversation.chatId)),
           unreadChatIds,
           query,
         );
@@ -601,8 +606,9 @@ export function ChatsWorkspace({
       })();
   const focusComposer = useRef(false);
   const openCard = (card: BoardCard) => {
-    if (card.kind !== "chat") return;
     onSelect(card.id);
+    // Cross-target selection enters through the route after its workspace loads.
+    if (!sameGraphTarget(card.conversation.graphTarget, graphTarget)) return;
     // The board already did the list's job, so the chat opens with the list folded.
     setListCollapsed(true);
     focusComposer.current = true;
@@ -619,7 +625,6 @@ export function ChatsWorkspace({
     return () => window.cancelAnimationFrame(frame);
   }, [board, selected?.chatId]);
   const dropCard = (card: BoardCard, drop: AgentBoardDrop, columnIds: string[]) => {
-    if (card.kind !== "chat") return;
     const ordered = saveAgentBoardColumn(boardOrder, columnIds);
     setBoardOrder(ordered);
     writeAgentBoardOrder(project.id, ordered);
@@ -632,6 +637,7 @@ export function ChatsWorkspace({
     setListCollapsed(readChatListCollapsed(project.id));
     setQuery("");
     setFilter("all");
+    setGraphFilter("all");
   }, [project.id]);
 
   useEffect(() => {
@@ -706,53 +712,53 @@ export function ChatsWorkspace({
             .filter(Boolean)
             .join(" · ")}
         </span>
-        {needsHuman(selectedStatus) && selectedLatest && (
-          <div className="conversation-header-banner" role="status">
-            <span>{selectedLatest.status_label}</span>
-            {selectedLatest.can_resume && (
-              <button
-                className="button compact"
-                type="button"
-                onClick={() => onResumeTask(selectedLatest)}
+        {selected.conversationKind === "auto_research_child" && (
+          <span className="conversation-header-meta">
+            Managed by the orchestrator in{" "}
+            {selected.orchestratorEpisodeId ? (
+              <a
+                href={experimentBoardHref(
+                  project.id,
+                  `${AUTO_RESEARCH_ROUTE_PREFIX}${selected.orchestratorEpisodeId}`,
+                )}
               >
-                Resume
-              </button>
+                Runs
+              </a>
+            ) : (
+              <a href={experimentBoardHref(project.id, AUTO_RESEARCH_ROUTE_PREFIX)}>Runs</a>
             )}
-            {!selectedLatest.can_resume && selectedLatest.can_retry && (
-              <button
-                className="button compact"
-                type="button"
-                onClick={() => onRetryTask(selectedLatest)}
-              >
-                Retry
-              </button>
-            )}
-          </div>
+            .
+          </span>
         )}
+        {selected.conversationKind !== "auto_research_child" &&
+          needsHuman(selectedStatus) &&
+          selectedLatest && (
+            <div className="conversation-header-banner" role="status">
+              <span>{selectedLatest.status_label}</span>
+              {selectedLatest.can_resume && (
+                <button
+                  className="button compact"
+                  type="button"
+                  onClick={() => onResumeTask(selectedLatest)}
+                >
+                  Resume
+                </button>
+              )}
+              {!selectedLatest.can_resume && selectedLatest.can_retry && (
+                <button
+                  className="button compact"
+                  type="button"
+                  onClick={() => onRetryTask(selectedLatest)}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
       </>
     ) : null;
 
   const renderBoardCard = (card: BoardCard) => {
-    if (card.kind === "branch")
-      return (
-        <>
-          <div className="agent-card-top">
-            <span className="agent-card-avatar" data-working={card.working || undefined}>
-              <GitBranch size={16} aria-hidden="true" />
-            </span>
-            <strong className="agent-card-title">
-              <span className="agent-branch-pill">Branch</span>
-              {card.title}
-            </strong>
-          </div>
-          <span className="agent-card-meta">Experiment episode · opens in Runs</span>
-          <div className="agent-card-foot">
-            <span className="agent-card-state">
-              {card.working ? "Working" : sinceLabel(card.row.updatedAt, now)}
-            </span>
-          </div>
-        </>
-      );
     const { conversation, status } = card;
     const latest = status.latest;
     const provider =
@@ -761,7 +767,7 @@ export function ChatsWorkspace({
       latest?.provider_label ?? project.providers?.[provider]?.label ?? provider;
     const renaming = renamingChatId === conversation.chatId;
     const action =
-      needsHuman(status) && latest
+      conversation.conversationKind !== "auto_research_child" && needsHuman(status) && latest
         ? latest.can_resume
           ? { label: "Resume", run: () => onResumeTask(latest) }
           : latest.can_retry
@@ -798,6 +804,7 @@ export function ChatsWorkspace({
           )}
           {!renaming && agentMenu(conversation, status, card.column === "archived")}
         </div>
+        <ConversationTags conversation={conversation} />
         <span className="agent-card-meta">
           {agentCardMeta(status, conversation.kind, providerLabel)}
         </span>
@@ -832,6 +839,7 @@ export function ChatsWorkspace({
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
+          {graphFilterControl}
         </header>
         {archiveError && (
           <p className="agent-list-error" role="alert">
@@ -845,19 +853,6 @@ export function ChatsWorkspace({
           onOpen={openCard}
           onDrop={dropCard}
         />
-        {hasMore && (
-          <footer className="conversation-list-more">
-            <button
-              className="button primary compact"
-              type="button"
-              disabled={loadingMore}
-              onClick={onLoadMore}
-            >
-              {loadingMore && <LoaderCircle className="spin" size={12} />}
-              Load more
-            </button>
-          </footer>
-        )}
       </section>
     );
 
@@ -922,6 +917,7 @@ export function ChatsWorkspace({
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
+            {graphFilterControl}
           </div>
           <div className="agent-list-filters" role="group" aria-label="Filter agents">
             {(archivedCount > 0 || showingArchived
@@ -932,9 +928,8 @@ export function ChatsWorkspace({
                 value === "archived"
                   ? archivedCount
                   : value === "all"
-                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0) +
-                      Object.values(branchRows).reduce((total, rows) => total + rows.length, 0)
-                    : activeGroups[value].length + branchRows[value].length;
+                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0)
+                    : activeGroups[value].length;
               return (
                 <button
                   type="button"
@@ -961,7 +956,7 @@ export function ChatsWorkspace({
         )}
         <div role="listbox" aria-label="Conversations">
           {visibleGroups.map((group) =>
-            groups[group].length + branchRowsIn(group).length === 0 ? null : (
+            groups[group].length === 0 ? null : (
               <div
                 className="agent-group"
                 role="group"
@@ -974,41 +969,9 @@ export function ChatsWorkspace({
                     <AgentGroupIcon group={group} />
                     {GROUP_LABELS[group]}
                   </span>
-                  <span>{groups[group].length + branchRowsIn(group).length}</span>
+                  <span>{groups[group].length}</span>
                 </div>
-                {agentGroupItems(groups[group], branchRowsIn(group)).map((item) => {
-                  if (item.kind === "branch") {
-                    const row = item.row;
-                    return (
-                      <div className="agent-row" key={`episode:${row.episodeId}`}>
-                        <a
-                          role="option"
-                          aria-selected={false}
-                          aria-label={`${row.title}, Experiment episode on a graph branch`}
-                          data-state={row.group}
-                          href={row.href}
-                          title={row.title}
-                          onClick={() => {
-                            if (narrow) setMobileListOpen(false);
-                          }}
-                        >
-                          <span className="agent-row-body">
-                            <span className="agent-row-title">
-                              <span className="agent-branch-pill">Branch</span>
-                              {row.title}
-                            </span>
-                            <span className="agent-row-meta">
-                              Experiment episode · opens in Runs
-                            </span>
-                          </span>
-                          <time>
-                            {row.group === "working" ? "live" : sinceLabel(row.updatedAt, now)}
-                          </time>
-                        </a>
-                      </div>
-                    );
-                  }
-                  const { conversation, status } = item.row;
+                {groups[group].map(({ conversation, status }) => {
                   const selectedConversation = conversation.chatId === selected?.chatId;
                   const unread = status.unread;
                   const latest = status.latest;
@@ -1046,6 +1009,7 @@ export function ChatsWorkspace({
                               {unread && <span className="agent-new-pill">New</span>}
                               {conversation.title}
                             </span>
+                            <ConversationTags conversation={conversation} />
                             <span className="agent-row-meta">
                               {latest ? (
                                 <>
@@ -1080,19 +1044,6 @@ export function ChatsWorkspace({
             ),
           )}
         </div>
-        {hasMore && (
-          <footer className="conversation-list-more">
-            <button
-              className="button primary compact"
-              type="button"
-              disabled={loadingMore}
-              onClick={onLoadMore}
-            >
-              {loadingMore && <LoaderCircle className="spin" size={12} />}
-              Load more
-            </button>
-          </footer>
-        )}
       </aside>
       <div className="conversation-divider" hidden={listCollapsed}>
         <div
@@ -1153,7 +1104,7 @@ export function ChatsWorkspace({
             <PanelLeft size={16} />
           </button>
         )}
-        {selected ? (
+        {selected && sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) ? (
           <NodeChat
             key={selected.chatId}
             project={project}
@@ -1170,6 +1121,7 @@ export function ChatsWorkspace({
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             chatId={selected.chatId}
             presentation="workspace"
+            readOnly={selected.conversationKind === "auto_research_child"}
             graphChangesDisabled={graphChangesDisabled}
             onStartTask={onStartTask}
             onResumeTask={onResumeTask}

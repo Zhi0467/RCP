@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -102,6 +103,10 @@ def test_chat_reads_find_a_reply_the_task_list_no_longer_holds(tmp_path: Path) -
     assert set(finished) == {"chat-done"}
     assert set(store.chat_reads("project", "user", branch)["latest_finished"]) == {"chat-branch"}
     assert finished["chat-done"] == store.agent_task("old-success").finished_at
+    assert set(store.chat_reads("project", "user", None)["latest_finished"]) == {
+        "chat-done",
+        "chat-branch",
+    }
 
 
 def test_chat_read_marker_never_moves_back(tmp_path: Path) -> None:
@@ -128,3 +133,34 @@ def test_chat_pins_belong_to_the_user_who_pinned(tmp_path: Path) -> None:
 
     assert store.chat_display("project", "user")["pinned"] == ["second"]
     assert store.chat_display("project", "other")["pinned"] == ["first"]
+
+
+def test_experiment_inventory_kind_survives_a_later_human_turn(tmp_path: Path) -> None:
+    from tests.test_experiment_episode_storage import _task
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode_id, chat_id = str(uuid.uuid4()), str(uuid.uuid4())
+    root = _task(store, "experiment-root", episode_id)
+    root = root.model_copy(update={"request": {**root.request, "chat_id": chat_id}})
+    store.create_experiment_episode_with_invocation(root)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    now = store.now()
+    human = AgentTaskRecord(
+        operation_id="human-followup",
+        project_id="project",
+        kind="node_chat",
+        status="queued",
+        request={"chat_id": chat_id, "node_id": "exp-one"},
+        created_at=now,
+        updated_at=now,
+        status_message="",
+        authorized_by=_identity(store),
+    )
+    store.create_agent_task(human)
+    rows = store.chat_inventory("project")
+    assert len(rows) == 1
+    assert rows[0]["chat_id"] == chat_id
+    assert rows[0]["updated_at"] == now
+    assert rows[0]["conversation_kind"] == "experiment"
+    assert rows[0]["orchestrator_episode_id"] is None

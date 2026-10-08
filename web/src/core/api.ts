@@ -331,18 +331,33 @@ function identityNameIsRequired(status: number, body: unknown): boolean {
   );
 }
 
+/** Stable admission codes share one human-readable explanation across composers. */
+export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
+  episode_merge_reserved:
+    "This branch is being merged. Send your message after the merge finishes.",
+  episode_isolation_unavailable:
+    "This branch's code worktree is no longer available. Start a conversation on Main to continue.",
+  auto_research_child_read_only:
+    "This conversation belongs to its Auto-research orchestrator. Message the orchestrator in Runs.",
+};
+
 function apiError(status: number, body: unknown): ApiError {
   const detail =
     body && typeof body === "object" && "detail" in body
       ? (body as { detail: unknown }).detail
       : undefined;
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
-    const { message } = detail as { message?: unknown };
+    const { message, code } = detail as { message?: unknown; code?: unknown };
+    const reason = typeof code === "string" ? TURN_REFUSAL_REASONS[code] : undefined;
     return new ApiError(
-      typeof message === "string" ? message : JSON.stringify(detail),
+      reason ?? (typeof message === "string" ? message : JSON.stringify(detail)),
       status,
       detail as Record<string, unknown>,
     );
+  }
+  // Task admission currently returns its stable refusal code as string detail.
+  if (typeof detail === "string" && Object.hasOwn(TURN_REFUSAL_REASONS, detail)) {
+    return new ApiError(TURN_REFUSAL_REASONS[detail], status, { code: detail });
   }
   if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
     return new ApiError(detail[0].msg, status);
