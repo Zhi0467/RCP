@@ -1298,10 +1298,12 @@ class ProjectService:
             key=lambda item: (datetime.fromisoformat(item.updated_at), item.chat_id),
             reverse=True,
         )
+        # The project inventory is one consistent snapshot: paging a list sorted by
+        # mutable recency would skip a conversation updated between requests.
         return ChatSummaryPage(
-            items=chats[offset : offset + limit],
+            items=chats if inventory else chats[offset : offset + limit],
             total=len(chats),
-            offset=offset,
+            offset=0 if inventory else offset,
             limit=limit,
         )
 

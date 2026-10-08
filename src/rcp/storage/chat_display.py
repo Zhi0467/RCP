@@ -18,7 +18,7 @@ from rcp.storage.mixin_base import StoreMixinBase
 
 
 class ChatDisplayStoreMixin(StoreMixinBase):
-    def chat_inventory(self, project_id: str) -> list[dict[str, Any]]:
+    def chat_inventory(self, project_id: str, chat_id: str | None = None) -> list[dict[str, Any]]:
         """Project-wide newest chat tasks, with durable episode ownership and no recency cap."""
         with self.connection() as connection:
             rows = connection.execute(
@@ -34,6 +34,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     WHERE project_id = ? AND visible = 1
                       AND kind IN ('node_chat', 'project_chat')
                       AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                      AND (? IS NULL OR json_extract(request_json, '$.chat_id') = ?)
                 ),
                 episode_chats AS (
                     SELECT DISTINCT json_extract(run.request_json, '$.chat_id') AS chat_id,
@@ -56,7 +57,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                   ON child.child_episode_id = chats.chat_id AND child.project_id = chats.project_id
                 WHERE chats.position = 1
                 """,
-                (project_id, project_id),
+                (project_id, chat_id, chat_id, project_id),
             ).fetchall()
         summaries = []
         for row in rows:

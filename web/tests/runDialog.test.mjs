@@ -1367,6 +1367,7 @@ test("a selected inventory row cannot mount the composer on another target", () 
         tasks: [],
         updatedAt: "",
         graphTarget: { kind: "branch", branch_id: "b" },
+        conversationKind: "chat",
       },
     ],
     selectedChatId: "branch-chat",

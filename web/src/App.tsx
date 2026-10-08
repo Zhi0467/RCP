@@ -2562,6 +2562,33 @@ export default function App() {
     }
   }, [closeAutoResearchDialog, closeRunDialog, mutationsDisabled]);
 
+  // A conversation a task names but the inventory lacks has unknown ownership,
+  // so its composer stays closed; fetch the inventory once to resolve it.
+  const unlistedChatIds = useMemo(() => {
+    if (!inventoryLoaded) return "";
+    const listed = new Set(inventoryChatSummaries.map((summary) => summary.chat_id));
+    const unlisted = new Set<string>();
+    for (const task of projectTasks) {
+      const chatId = task.request?.chat_id;
+      if (
+        (task.kind === "node_chat" || task.kind === "project_chat") &&
+        typeof chatId === "string" &&
+        !listed.has(chatId)
+      )
+        unlisted.add(chatId);
+    }
+    return [...unlisted].sort().join(",");
+  }, [inventoryChatSummaries, inventoryLoaded, projectTasks]);
+  useEffect(() => {
+    if (!unlistedChatIds || !projectId) return;
+    void refreshChatSummaries(projectId, apiBase).catch((error) => {
+      setNotice({
+        kind: "error",
+        text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
+  }, [apiBase, projectId, refreshChatSummaries, unlistedChatIds]);
+
   useEffect(() => {
     if (recordTaskUpdates(projectTasks)) {
       if (projectId) {

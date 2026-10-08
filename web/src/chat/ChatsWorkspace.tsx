@@ -1121,7 +1121,9 @@ export function ChatsWorkspace({
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly={selected.conversationKind === "auto_research_child"}
+            readOnly={
+              selected.conversationKind !== "chat" && selected.conversationKind !== "episode"
+            }
             graphChangesDisabled={graphChangesDisabled}
             onStartTask={onStartTask}
             onResumeTask={onResumeTask}

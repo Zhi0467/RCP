@@ -279,7 +279,8 @@ export function groupChatConversations(
         graphTarget: task.graph_target,
         graphTitle:
           task.graph_target?.kind === "branch" ? task.graph_target.branch_id.slice(0, 8) : "Main",
-        conversationKind: "chat",
+        // Ownership is unknown until the inventory lists this conversation.
+        conversationKind: undefined,
       });
     }
   }

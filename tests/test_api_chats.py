@@ -475,16 +475,15 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
 
     monkeypatch.setattr(service, "_read_chat_transcript", counted)
     url = f"/api/projects/{project_id}/chats"
-    pages = [
-        client.get(
-            f"{url}?inventory=true&branch_id={branch.branch_id}&limit=1&offset={offset}"
+    # The inventory is one complete snapshot; paging parameters do not slice it.
+    for _ in range(2):
+        page = client.get(
+            f"{url}?inventory=true&branch_id={branch.branch_id}&limit=1&offset=2"
         ).json()
-        for offset in range(3)
-    ]
-    assert all(page["total"] == 3 for page in pages)
-    rows = {page["items"][0]["chat_id"]: page["items"][0] for page in pages}
+        assert page["total"] == len(page["items"]) == 3
+    rows = {row["chat_id"]: row for row in page["items"]}
     assert set(rows) == {main_chat, branch_chat, task_chat}
-    assert len(parsed) == 2
+    assert len(parsed) == 2  # The second request reuses the cached scan.
     assert rows[task_chat]["message_count"] == 0
     assert (
         rows[task_chat]["graph_target"] == rows[branch_chat]["graph_target"] == branch.model_dump()

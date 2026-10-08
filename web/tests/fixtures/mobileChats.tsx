@@ -79,6 +79,7 @@ const conversations: ChatConversation[] = ["First chat", "Second chat"].map((tit
   nodeId: null,
   tasks: [],
   updatedAt: new Date().toISOString(),
+  conversationKind: "chat" as const,
 }));
 const chatTranscripts = new Map<string, ChatTranscript>(
   conversations.map((conversation) => [

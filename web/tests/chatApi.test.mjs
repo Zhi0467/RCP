@@ -146,7 +146,7 @@ test("load more resumes from the refreshed cursor and preserves a valid selectio
   assert.equal(nextChatSummaryOffset(page), 3);
 });
 
-test("inventory loads later pages before exact-target selection excludes other graphs", async () => {
+test("inventory loads one complete snapshot before exact-target selection excludes other graphs", async () => {
   const branch = { kind: "branch", branch_id: "branch-1" };
   const main = { kind: "main" };
   const summaries = Array.from({ length: 201 }, (_, index) => ({
@@ -159,17 +159,24 @@ test("inventory loads later pages before exact-target selection excludes other g
     const params = new URL(path, "http://rcp").searchParams;
     assert.equal(params.get("inventory"), "true");
     assert.equal(params.has("branch_id"), false);
-    const offset = Number(params.get("offset"));
-    calls.push(offset);
-    return { items: summaries.slice(offset, offset + 200), offset, total: 201, limit: 200 };
+    calls.push(path);
+    return { items: summaries, offset: 0, total: 201, limit: 200 };
   });
-  assert.deepEqual(calls, [0, 200]);
+  assert.equal(calls.length, 1);
   assert.equal(inventory.length, 201);
   assert.deepEqual(
     chatSummariesForTarget(inventory, branch).map((item) => item.chat_id),
     ["chat-200"],
   );
   assert.equal(chatSummariesForTarget(inventory, main).length, 200);
+  await assert.rejects(
+    loadChatInventory("/api/projects/project", async () => ({
+      items: summaries.slice(0, 200),
+      offset: 0,
+      total: 201,
+      limit: 200,
+    })),
+  );
 });
 
 test("transcript validation refuses a branch transcript when viewing main", async () => {

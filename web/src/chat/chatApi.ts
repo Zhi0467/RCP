@@ -23,23 +23,14 @@ export async function loadChatSummaryPage(
   return page;
 }
 
-/** Load the whole project before applying viewer filters, including older branches. */
+/** The whole project inventory, as one consistent snapshot, before viewer filters apply. */
 export async function loadChatInventory(
   apiBase: string,
   request: ChatPageRequest,
 ): Promise<ChatSummary[]> {
-  let items: ChatSummary[] = [];
-  let offset = 0;
-  while (true) {
-    const page = await request(
-      `${apiBase}/chats?inventory=true&offset=${offset}&limit=${CHAT_SUMMARY_PAGE_SIZE}`,
-    );
-    items = mergeChatSummaryPage(items, page.items, "append");
-    const next = nextChatSummaryOffset(page);
-    if (next >= page.total) return items;
-    if (next <= offset) throw new Error("Conversation inventory paging made no progress.");
-    offset = next;
-  }
+  const page = await request(`${apiBase}/chats?inventory=true`);
+  if (page.items.length !== page.total) throw new Error("Conversation inventory is incomplete.");
+  return mergeChatSummaryPage([], page.items, "append");
 }
 
 /** Selection is exact-target even though the Agents inventory spans the project. */

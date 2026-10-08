@@ -1480,8 +1480,9 @@ no human message, so it holds an Activity row in its chat until its first output
 Agents lists every conversation in the project: chats on main and on every graph
 branch, Experiment episode conversations, Auto-research children, and
 conversations whose first turn has no transcript yet.
-`GET /api/projects/{project_id}/chats?inventory=true` pages that inventory from
-the retained main service's one cached scan; each summary carries its graph
+`GET /api/projects/{project_id}/chats?inventory=true` returns that whole inventory
+as one snapshot from the retained main service's cached scan, so a conversation
+updated between requests is never skipped; each summary carries its graph
 target, a graph title, and a `conversation_kind` of `chat`, `episode`, or
 `auto_research_child`. Rows show those tags. A filter beside the search picks
 all, main, or one branch, and applies to the whole inventory. The Archived
@@ -1489,7 +1490,9 @@ column starts folded. Read markers and unread finishes cover the whole project.
 
 Selection stays exact-target. Opening a row on another graph switches the
 workspace through `#/projects/P?view=chats&chat=C&branch_id=B` before the
-composer mounts; node actions select only within the viewed graph. Posting
+composer mounts; node actions select only within the viewed graph. A
+conversation a task names before the inventory lists it has unknown ownership:
+its composer stays closed and the inventory is fetched again. Posting
 follows the ordinary chat rules on that target. An Auto-research child's chat
 is read-only: it shows its transcript and a link to the orchestrator in Runs,
 and task admission refuses a human turn on it with

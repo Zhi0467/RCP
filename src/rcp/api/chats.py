@@ -414,9 +414,7 @@ def chat(
     if transcript is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     project_id = catalog.resolve_project_id(project_id)
-    summary = next(
-        (row for row in store.chat_inventory(project_id) if row["chat_id"] == chat_id), None
-    )
+    summary = next(iter(store.chat_inventory(project_id, chat_id)), None)
     transcript = transcript.model_copy(
         update={
             "graph_title": "Main"

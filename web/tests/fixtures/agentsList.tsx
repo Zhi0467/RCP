@@ -61,6 +61,7 @@ const conversations: ChatConversation[] = [
   nodeId: null,
   tasks: [turn(title, provider, label)],
   updatedAt: new Date().toISOString(),
+  conversationKind: "chat" as const,
 }));
 if (new URLSearchParams(location.search).has("inventory")) {
   conversations.push({
