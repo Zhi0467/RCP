@@ -284,7 +284,12 @@ fn macos_major_version() -> Option<u32> {
         return None;
     }
     let version = std::str::from_utf8(&buffer[..length]).ok()?;
-    version.trim_end_matches('\0').split('.').next()?.parse().ok()
+    version
+        .trim_end_matches('\0')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[cfg(not(target_os = "macos"))]

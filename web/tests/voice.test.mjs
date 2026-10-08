@@ -380,3 +380,21 @@ test("hiding ends voice unless the window keeps running while hidden", () => {
     globalThis.window = saved.window;
   }
 });
+
+test("output sent after a missed deadline ends the session instead of reaching OpenAI", async () => {
+  const transport = fakeTransport();
+  let time = 0;
+  const session = await openVoiceSession(
+    [],
+    { onTranscript() {}, onFunctionCall() {}, onEnded() {} },
+    harness().gate,
+    { ...transport.deps, now: () => time },
+  );
+  time = 600_000;
+  session.sendFunctionOutput("c1", "{}");
+  session.speak("done");
+  assert.ok(!transport.sent.some((event) => event.type === "response.create"));
+  assert.ok(!transport.sent.some((event) => event.type === "session.commentary.append"));
+  assert.ok(transport.sent.some((event) => event.type === "session.close"));
+  await session.end("member", { immediate: true });
+});

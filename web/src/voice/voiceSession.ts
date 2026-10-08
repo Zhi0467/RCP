@@ -273,6 +273,8 @@ function startSession(
   return {
     limits,
     sendFunctionOutput: (callId, output) => {
+      // A call that finished after a late deadline must not restart generation.
+      if (endIfDue()) return;
       send({
         type: "response.item.create",
         event_id: eventId(),
@@ -280,13 +282,15 @@ function startSession(
       });
       send({ type: "response.create", event_id: eventId() });
     },
-    speak: (text) =>
+    speak: (text) => {
+      if (endIfDue()) return;
       send({
         type: "session.commentary.append",
         event_id: eventId(),
         delegation_id: null,
         content: text.slice(0, limits.commentary_max_chars),
-      }),
+      });
+    },
     noteActivity,
     end,
   };
