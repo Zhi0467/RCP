@@ -188,6 +188,7 @@ export function InlineArtifact({
         {selectable && (
           <button
             type="button"
+            className="chat-inline-artifact-comment"
             aria-pressed={commentMode}
             title={
               commentMode

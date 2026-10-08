@@ -295,7 +295,9 @@ the reply in place. Live pages keep their unchanged one-way data feed.
 
 Comment mode is off by default, so a game or chart receives the pointer. The
 caption's Comment turns on the existing selection gestures for HTML and images,
-and turning it off removes them. A finished selection opens the chat's own
+and turning it off removes them. Those gestures take a mouse or pen, so a
+touch-only reader is offered Expand, whose viewer comments on the whole
+artifact, instead of Comment. A finished selection opens the chat's own
 comment window; Add comment stages it in the composer like quoted answer text,
 and the turn carries it as that artifact's selection in the one shape every
 artifact route uses, with the fresh-session flag when the viewer state requires
