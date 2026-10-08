@@ -54,6 +54,19 @@ test("a reply embeds the artifacts its own turn wrote, by image syntax only", ()
   assert.deepEqual([...inlineArtifactNames(text, "op-1")].sort(), ["breakout.html", "loss.svg"]);
 });
 
+test("syntax that renders no image embeds nothing, so the card stays", () => {
+  const quoted = [
+    "Embed with `![Game](" + dir + "/inline.html)`:",
+    "```md\n![Game](" + dir + "/fenced.html)\n```",
+    "<!-- ![Game](" + dir + "/commented.html) -->",
+    "\\![Game](" + dir + "/escaped.html)",
+    "![By reference][game]",
+    "",
+    "[game]: " + dir + "/referenced.html",
+  ].join("\n\n");
+  assert.deepEqual([...inlineArtifactNames(quoted, "op-1")], ["referenced.html"]);
+});
+
 test("only artifacts the viewer shows render in place", () => {
   assert.equal(isInlineViewable(artifact("a.html", "html")), true);
   assert.equal(isInlineViewable(artifact("a.svg", "image")), true);

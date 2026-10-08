@@ -1,3 +1,7 @@
+import type { Definition, Image, ImageReference, Node, Parent } from "mdast";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+import { ANSWER_SYNTAX_PLUGINS } from "../core/chatMarkdown";
 import type { AgentArtifactDescriptor, ArtifactSelection } from "../core/types";
 import { turnArtifactName } from "../core/repositoryFileLinks";
 
@@ -5,13 +9,35 @@ import { turnArtifactName } from "../core/repositoryFileLinks";
 export const INLINE_ARTIFACT_MAX_HEIGHT = 1200;
 export const INLINE_ARTIFACT_INITIAL_HEIGHT = 320;
 
-const MARKDOWN_IMAGE = /!\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g;
-
-/** The artifact names a reply embeds in place with Markdown image syntax. */
+/** The artifact names a reply embeds in place with Markdown image syntax.
+ *
+ * The reply is parsed exactly as it renders, so syntax quoted in code, inside a
+ * comment, or escaped embeds nothing and keeps the artifact's card.
+ */
 export function inlineArtifactNames(text: string, taskId: string): Set<string> {
+  const processor = unified().use(remarkParse);
+  for (const plugin of ANSWER_SYNTAX_PLUGINS) processor.use(plugin);
+  const tree = processor.parse(text);
+  const sources: string[] = [];
+  const references: string[] = [];
+  const definitions = new Map<string, string>();
+  const visit = (node: Node) => {
+    if (node.type === "image") sources.push((node as Image).url);
+    else if (node.type === "imageReference") references.push((node as ImageReference).identifier);
+    else if (node.type === "definition") {
+      const definition = node as Definition;
+      definitions.set(definition.identifier, definition.url);
+    }
+    if ("children" in node) (node as Parent).children.forEach(visit);
+  };
+  visit(tree);
+  for (const reference of references) {
+    const url = definitions.get(reference);
+    if (url) sources.push(url);
+  }
   const names = new Set<string>();
-  for (const match of text.matchAll(MARKDOWN_IMAGE)) {
-    const name = match[1] ? turnArtifactName(match[1], taskId) : null;
+  for (const source of sources) {
+    const name = turnArtifactName(source, taskId);
     if (name) names.add(name);
   }
   return names;

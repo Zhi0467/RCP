@@ -17,6 +17,9 @@ import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
 
+/** The Markdown syntax every reply is read with; embed detection parses with it too. */
+export const ANSWER_SYNTAX_PLUGINS = [remarkGfm, remarkMath] as const;
+
 const NODE_REFERENCE_CANDIDATE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
 const NODE_REFERENCE_HREF_PREFIX = "#rcp-node=";
 const NON_TEXT_CHILDREN = new Set([
@@ -305,8 +308,7 @@ export function MarkdownAnswer({
   const markdown = createElement(ReactMarkdown, {
     children: text,
     remarkPlugins: [
-      remarkGfm,
-      remarkMath,
+      ...ANSWER_SYNTAX_PLUGINS,
       nodeReferencePlugin(nodeIds),
       glossaryDefinitionPlugin(glossaryIndex),
     ],
