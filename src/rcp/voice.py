@@ -32,6 +32,8 @@ class SessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     sdp_offer: str = Field(min_length=1, max_length=limits.VOICE_SDP_MAX_CHARS)
     tools: list[FunctionTool]
+    # The page's plain-language RCP playbook, appended after the fixed instructions.
+    playbook: str = Field(max_length=limits.VOICE_PLAYBOOK_MAX_CHARS)
 
     @field_validator("tools", mode="before")
     @classmethod
@@ -92,6 +94,8 @@ async def check_voice_model(connection: dict, key: str, model: str) -> None:
 
 
 async def create_session(connection: dict, key: str, settings: dict, offer: SessionRequest) -> str:
+    # The fixed instructions come first, so the page's playbook adds knowledge, not rules.
+    instructions = f"{INSTRUCTIONS}\n\n{offer.playbook}" if offer.playbook else INSTRUCTIONS
     body = await _request(
         connection,
         key,
@@ -104,12 +108,12 @@ async def create_session(connection: dict, key: str, settings: dict, offer: Sess
                 # The page enforces VOICE_HARD_CAP_SECONDS and the member's idle
                 # limit, and closes on hiding unless the window keeps running.
                 "store": False,
-                "instructions": INSTRUCTIONS,
+                "instructions": instructions,
                 "delegation": {
                     "type": "responses",
                     "responses": {
                         "model": settings["delegation_model"],
-                        "instructions": INSTRUCTIONS,
+                        "instructions": instructions,
                         "parallel_tool_calls": False,
                         # Responses normalizes an omitted `strict` to strict mode, which
                         # makes every optional field required; the page validates shape.

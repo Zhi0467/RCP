@@ -12,6 +12,7 @@ import {
   STOP_EPISODE_TOOL,
 } from "./experiments";
 import { OPEN_VIEW_TOOL } from "./view";
+import { GET_PLAYBOOK_TOOL } from "./playbook";
 import type { WebMcpToolSpec } from "./shared";
 
 export {
@@ -76,9 +77,11 @@ export {
   projectAutoResearchToolDefinitions,
 } from "./experiments";
 export { openProjectView, projectViewToolDefinitions } from "./view";
+export { RCP_PLAYBOOK, playbookToolDefinitions } from "./playbook";
 export type { WebMcpViewOwners, WebMcpViewSource } from "./view";
 /** Every tool of the open-project surface, in catalog order. */
 export const PROJECT_TOOLS: readonly WebMcpToolSpec[] = [
+  GET_PLAYBOOK_TOOL,
   PROJECT_OVERVIEW_TOOL,
   PROVIDER_LOGINS_TOOL,
   INSPECT_NODE_TOOL,

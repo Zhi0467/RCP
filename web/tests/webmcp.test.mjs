@@ -13,6 +13,7 @@ const server = await createServer({
 const {
   WEBMCP_NODE_CONTENT_MAX_CHARS,
   WEBMCP_RESULT_MAX_CHARS,
+  RCP_PLAYBOOK,
   authorizeProjectAutoResearch,
   boundJsonToBudget,
   createWebMcpToolRegistry,
@@ -27,6 +28,7 @@ const {
   openProjectFromIndex,
   openProjectArtifact,
   openProjectView,
+  playbookToolDefinitions,
   projectArtifactToolDefinitions,
   projectAutoResearchToolDefinitions,
   projectConversationSendToolDefinitions,
@@ -927,7 +929,12 @@ const noEpisodeFetch = async () => {
 const noTaskFetch = async () => {
   throw new Error("the recent-task window should have answered without a fetch");
 };
-const noArtifactFetch = { loadEpisode: noEpisodeFetch, loadTask: noTaskFetch };
+const noSavedArtifacts = async () => [];
+const noArtifactFetch = {
+  loadEpisode: noEpisodeFetch,
+  loadTask: noTaskFetch,
+  loadSavedArtifacts: noSavedArtifacts,
+};
 
 test("artifact listing returns current task artifacts, kept state, and episode reports", async () => {
   const project = projectFixture();
@@ -975,6 +982,7 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
       {
         loadEpisode: noEpisodeFetch,
         loadTask: async () => null,
+        loadSavedArtifacts: noSavedArtifacts,
       },
     ),
     /Task missing is not present/,
@@ -1015,7 +1023,7 @@ test("an exact episode outside the recent window is fetched once from the backen
     tasks,
     episodes,
     { episode_id: "episode-old" },
-    { loadEpisode, loadTask: noTaskFetch },
+    { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
   );
   assert.deepEqual(
     listed.artifacts.map((artifact) => artifact.viewer_id),
@@ -1028,7 +1036,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       tasks,
       episodes,
       { episode_id: "episode-none" },
-      { loadEpisode, loadTask: noTaskFetch },
+      { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
     ),
     /Episode episode-none is not present/,
   );
@@ -1043,7 +1051,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       opened.push(record.viewer_url);
       return true;
     },
-    { loadEpisode, loadTask: noTaskFetch },
+    { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
   );
   assert.equal(receipt.viewer_id, "report:episode-old");
   assert.deepEqual(opened, ["/api/projects/project-1/episodes/episode-old/report/viewer"]);
@@ -1054,7 +1062,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       episodes,
       { viewer_id: "report:episode-none" },
       () => true,
-      { loadEpisode, loadTask: noTaskFetch },
+      { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
     ),
     /Artifact viewer report:episode-none is not present/,
   );
@@ -1074,6 +1082,7 @@ test("an exact task outside the recent window is fetched once for listing and op
   const fetched = [];
   const source = {
     loadEpisode: noEpisodeFetch,
+    loadSavedArtifacts: noSavedArtifacts,
     loadTask: async (operationId) => {
       fetched.push(operationId);
       return operationId === "task-old" ? older : null;
@@ -1126,6 +1135,7 @@ test("an exact task outside the recent window is fetched once for listing and op
     openProjectArtifact(project, tasks, episodes, { viewer_id: "task::artifact-1" }, () => true, {
       loadEpisode: noEpisodeFetch,
       loadTask: noTaskFetch,
+      loadSavedArtifacts: noSavedArtifacts,
     }),
     /is not present/,
   );
@@ -2085,11 +2095,13 @@ function evalToolDefinitions(state) {
   const { task, transcript } = conversationFixtures();
   const { tasks, episodes } = artifactFixtures();
   return [
+    ...playbookToolDefinitions(),
     ...projectReadToolDefinitions(project),
     ...providerLoginToolDefinitions(async () => []),
     ...projectArtifactToolDefinitions(project, tasks, episodes, () => true, {
       loadEpisode: async () => null,
       loadTask: async () => null,
+      loadSavedArtifacts: noSavedArtifacts,
     }),
     ...projectConversationToolDefinitions(
       project,
@@ -2469,7 +2481,7 @@ test("ordinary branch conversations can send from their matching graph view", as
   assert.equal(started.length, 1);
 });
 
-test("download-only files and PDFs are listed but never sent to the visual opener", async () => {
+test("download-only files are never opened; a PDF goes to the opener, which picks the PDF path", async () => {
   const project = projectFixture();
   const { tasks } = artifactFixtures();
   for (const view of ["file", "pdf"]) {
@@ -2485,20 +2497,20 @@ test("download-only files and PDFs are listed but never sent to the visual opene
     assert.equal(listed.artifacts[0].can_open, false);
     assert.equal(listed.artifacts[0].can_download, true);
     let opened = false;
-    await assert.rejects(
-      openProjectArtifact(
-        project,
-        [tasks[0]],
-        [],
-        { viewer_id: listed.artifacts[0].viewer_id },
-        () => {
-          opened = true;
-          return true;
-        },
-        noArtifactFetch,
-      ),
+    const opening = openProjectArtifact(
+      project,
+      [tasks[0]],
+      [],
+      { viewer_id: listed.artifacts[0].viewer_id },
+      () => {
+        opened = true;
+        return true;
+      },
+      noArtifactFetch,
     );
-    assert.equal(opened, false);
+    if (view === "pdf") await opening;
+    else await assert.rejects(opening);
+    assert.equal(opened, view === "pdf");
   }
 });
 
@@ -2545,4 +2557,64 @@ test("Experiment inspection filters same-node tasks and watchers by the open gra
       [`watch-${index}`],
     );
   });
+});
+
+test("artifact search covers the Artifacts panel without repeating what turns already show", async () => {
+  const project = projectFixture();
+  const { tasks } = artifactFixtures();
+  const saved = (id, artifactId, node) => ({
+    id,
+    name: `${id}.html`,
+    kind: "artifact",
+    created_at: "2026-08-31T10:00:00Z",
+    path: null,
+    operation_id: null,
+    artifact_id: artifactId,
+    episode_id: null,
+    episode_mode: null,
+    source_chat_href: null,
+    source_node_id: node,
+    viewer_url: null,
+    view: "html",
+    available: true,
+    can_download: true,
+    download_url: null,
+    can_open: true,
+    unavailable_reason: null,
+  });
+  const source = {
+    ...noArtifactFetch,
+    loadSavedArtifacts: async () => [
+      saved("artifact:task-1:artifact-1", "artifact-1", "hyp-1"),
+      saved("artifact:old", "old", "hyp-1"),
+    ],
+  };
+  const listed = await listProjectArtifacts(project, [tasks[0]], [], {}, source);
+  // The panel's copy of the turn's artifact marks it; only the panel-only entry is added.
+  const names = listed.artifacts.map((record) => record.name);
+  assert.deepEqual(names.sort(), ["artifact:old.html", "calibration.html"]);
+  assert.ok(listed.artifacts.every((record) => record.in_artifacts_panel));
+  const old = listed.artifacts.find((record) => record.name === "artifact:old.html");
+  assert.equal(
+    (await listProjectArtifacts(project, [tasks[0]], [], { node_id: "hyp-1" }, source)).total,
+    2,
+  );
+  const opened = [];
+  await openProjectArtifact(
+    project,
+    [tasks[0]],
+    [],
+    { viewer_id: old.viewer_id },
+    (record) => opened.push(record.artifact_id) > 0,
+    source,
+  );
+  assert.deepEqual(opened, ["old"]);
+});
+
+test("voice and WebMCP hosts read one playbook, within the backend's size limit", async () => {
+  const [tool] = playbookToolDefinitions();
+  const result = JSON.parse((await tool.execute({})).content[0].text);
+  assert.equal(result.playbook, RCP_PLAYBOOK);
+  // src/rcp/limits.py VOICE_PLAYBOOK_MAX_CHARS refuses a longer voice session request.
+  assert.ok(RCP_PLAYBOOK.length <= 8 * 1024);
 });

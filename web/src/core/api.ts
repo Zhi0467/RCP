@@ -811,7 +811,7 @@ export function saveVoiceSettings(
 
 /** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
 export function createVoiceSession(
-  body: { sdp_offer: string; tools: unknown[] },
+  body: { sdp_offer: string; tools: unknown[]; playbook: string },
   signal?: AbortSignal,
 ): Promise<VoiceSessionResponse> {
   return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });

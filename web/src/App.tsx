@@ -91,6 +91,7 @@ import {
   setDesktopWebviewZoom,
   isDesktopRuntime,
   listenDesktopEvent,
+  openDesktopArtifactPdf,
   returnDesktopToPersonal,
   TEAM_TRANSPORT_RECOVERED,
   type BackendIdentityEventDetail,
@@ -215,6 +216,7 @@ import type {
   AgentUsageSnapshot,
   AppView,
   Episode,
+  ProjectArtifact,
   EpisodeIsolationChoice,
   MergeDiffPath,
   MergeEpisodeBody,
@@ -271,6 +273,7 @@ import {
   projectExperimentToolDefinitions,
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
+  playbookToolDefinitions,
   providerLoginToolDefinitions,
   projectViewToolDefinitions,
   type WebMcpToolRegistry,
@@ -601,7 +604,17 @@ export default function App() {
   >(null);
   const showWebMcpArtifactViewer = useCallback(
     async (record: ProjectArtifactRecord, projectId: string) => {
-      if (record.view === "pdf" || record.view === "file") return false;
+      if (record.view === "pdf") {
+        // The panel's own path: the desktop's system PDF viewer; a browser offers Download.
+        if (!isDesktopRuntime() || !record.artifact_id) return false;
+        await openDesktopArtifactPdf({
+          projectId,
+          artifactId: record.artifact_id,
+          ...(record.task_id ? { taskId: record.task_id } : {}),
+        });
+        return true;
+      }
+      if (record.view === "file") return false;
       const response = await fetch(record.content_url, {
         method: "HEAD",
         cache: "no-store",
@@ -3015,9 +3028,17 @@ export default function App() {
     },
     [apiBase],
   );
+  const loadWebMcpSavedArtifacts = useCallback(
+    () => api<ProjectArtifact[]>(`${apiBase}/artifacts`),
+    [apiBase],
+  );
   const webMcpArtifactSource = useMemo(
-    () => ({ loadEpisode: loadWebMcpEpisode, loadTask: loadWebMcpTask }),
-    [loadWebMcpEpisode, loadWebMcpTask],
+    () => ({
+      loadEpisode: loadWebMcpEpisode,
+      loadTask: loadWebMcpTask,
+      loadSavedArtifacts: loadWebMcpSavedArtifacts,
+    }),
+    [loadWebMcpEpisode, loadWebMcpTask, loadWebMcpSavedArtifacts],
   );
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
@@ -3670,6 +3691,7 @@ export default function App() {
     if (webMcpProject) {
       const project = webMcpProject;
       return [
+        ...playbookToolDefinitions(),
         ...projectReadToolDefinitions(project, episodes),
         ...providerLoginToolDefinitions(loadProviderLogins),
         ...projectArtifactToolDefinitions(

@@ -6,12 +6,12 @@ import json
 import httpx
 import pytest
 
-from rcp import limits, transcription
+from rcp import limits, transcription, voice
 from rcp.service_connections import VoiceSettings
 
 from .test_service_connections import KEY, MIME, connection, mock_transport, setup  # noqa: F401
 
-OFFER = {"sdp_offer": "v=0\r\n", "tools": []}
+OFFER = {"sdp_offer": "v=0\r\n", "tools": [], "playbook": "How RCP works."}
 TOOLS = [
     {
         "type": "function",
@@ -72,6 +72,13 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
         assert delegation["responses"]["model"] == "chosen-model"
         assert delegation["responses"]["parallel_tool_calls"] is False
         assert delegation["responses"]["tools"] == [{**tool, "strict": False} for tool in TOOLS]
+        # Both models get the fixed instructions, then the page's playbook.
+        for instructions in (
+            payload["session"]["instructions"],
+            delegation["responses"]["instructions"],
+        ):
+            assert instructions.startswith(voice.INSTRUCTIONS)
+            assert instructions.endswith(OFFER["playbook"])
         return reply({"transport": {"type": "webrtc", "sdp": "v=0\r\nanswer"}})
 
     mock_transport(monkeypatch, handler)
