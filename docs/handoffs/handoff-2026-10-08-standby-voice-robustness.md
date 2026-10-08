@@ -8,10 +8,8 @@ deadline backstop is needed. Each slice had one cross-model review and one
 fix round.
 
 Implemented: slices 1 to 5.
-Remaining: the live checks below for slices 2 to 5, and one open question:
-a restored unknown-outcome fence blocks an identical Work send for the whole
-resumed session, because task admission has no client request id to reconcile
-against.
+Remaining: slice 6 (request ids), then the live checks below for slices 2 to
+6.
 
 Settled with the human on 2026-10-08:
 
@@ -213,6 +211,29 @@ Settled with the human on 2026-10-08:
   no watches; they read the returned task id.
 - Checks: voice and WebMCP get the same playbook object under its size limit;
   artifact identity, dedup, and PDF eligibility tests. No wording tests.
+
+### 6. Request ids for voice writes (added 2026-10-08)
+
+A Work send whose reply is lost leaves an "unknown" receipt, and today Resume
+can only block the identical send. The human chose to fix this in this PR.
+
+- The page mints one request id (UUID4) per voice write before dispatch: a
+  conversation Send, an Experiment Start, and an Auto-research authorization.
+  It stores the id in the receipt first, then sends it as an
+  `Idempotency-Key` header.
+- Each of the three admission routes accepts the header. The backend records
+  (project, member, key) with the admitted task or episode id in one AppStore
+  table, written in the same transaction as the admission. A repeat of the
+  same key by the same member returns the original result and admits nothing
+  new; the same key from another member or another route is refused. Rows
+  older than the transcript retention are pruned.
+- `GET /api/projects/{id}/client-requests/{key}` returns the admitted task or
+  episode id, or 404 when nothing was admitted under that key.
+- Resume reconciles each unknown receipt through that lookup: accepted becomes
+  an accepted receipt with its id (and a watch); not found clears the fence. A
+  member who asks again resends with the receipt's same key, so a send still
+  in flight can never be admitted twice.
+- Terminal commands keep their per-run card and are out of scope.
 
 ## Ownership and checks
 
