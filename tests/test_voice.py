@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 
 import httpx
 import pytest
@@ -548,7 +547,8 @@ def test_save_generation_check_and_delete_do_not_scan_history(voice_setup, monke
     assert client.get(f"{path}/generation").status_code == 404
 
 
-@pytest.mark.parametrize("request_id", [None, str(uuid.uuid4())])
+# A fixed key keeps test ids identical across xdist workers.
+@pytest.mark.parametrize("request_id", [None, "5b0e7c1e-3f4a-4d2b-9c8e-1a2b3c4d5e6f"])
 def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(
     voice_setup, monkeypatch, request_id
 ):

@@ -1060,8 +1060,9 @@ schema intersected with it. It admits every GET under
 `/api/projects/{open project}`, root included, except downloads, redirect-only
 routes, GETs with side effects (terminal reconciliation, Experiment stop
 settlement, digest marks, project reconciliation, merge-preview Git writes,
-the conversation worktree route's remote Git contact, and the machine browser
-readiness probe), and the `refresh`
+the conversation worktree route's remote Git contact, the machine browser
+readiness probe, and live artifact snapshots, which read remote files over
+SSH), and the `refresh`
 query flag, which reruns probes. Repository file reads refuse any path whose
 component matches the credential denylist (for example `.env*`, `*.pem`, `.git`,
 `.ssh`, `id_rsa*`). Requests are built from admitted templates with validated
@@ -1137,7 +1138,10 @@ non-strict function tools (strict mode would make every optional field
 required), the member's delegation model, and RCP's fixed instructions followed
 by the playbook, for both the live and the delegated model. Only after OpenAI
 answers does it create the session record, or for `resume_id` claim a new
-generation of that record; a failed open changes no record. It returns
+generation of that record; an upstream failure changes no record. The claim
+lands when OpenAI answers, before the page applies that answer, so a Resume
+whose page then fails to connect has still taken the record and the older page
+ends as superseded; Resume again recovers it. It returns
 `{sdp_answer, session, input_truncated, limits}`. With no such connection it
 returns `voice_not_connected` (409); an OpenAI failure returns
 `voice_upstream_failed` (502) with a bounded message. `limits` carries

@@ -42,6 +42,8 @@ type Route = { template: string; parameters: Parameter[]; scope: "displayed_grap
  * /tasks/{operation_id}/artifacts/{artifact_id}/download: attachment downloads.
  * /result-views and /result-views/{view_id}/preview: redirect-only aliases.
  * /machines/{machine_alias}/browser: every read runs a local or SSH readiness probe.
+ * /artifacts/{artifact_id}/versions/{version_id}/live: an uncaptured live source
+ * reads remote files or job logs over SSH on every request.
  * /chats/{chat_id}/worktree: remote Git inspection can contact the network
  * using the member's transport credentials (including ls-remote).
  * Other GETs were audited in project_state, chats, questions, history, lessons,
@@ -60,6 +62,7 @@ export const PROJECT_READ_POLICY = {
     "/cached/revision": "project_reconciliation",
     "/episodes/{episode_id}/merge-preview": "git_object_write",
     "/machines/{machine_alias}/browser": "live_readiness_probe",
+    "/artifacts/{artifact_id}/versions/{version_id}/live": "live_remote_snapshot",
   } as Record<string, string>,
   credentialNames: [
     ".env*",
