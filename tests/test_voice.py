@@ -8,6 +8,7 @@ import pytest
 
 from rcp import limits, transcription
 from rcp.service_connections import VoiceSettings
+from rcp.voice import INSTRUCTIONS
 
 from .test_service_connections import KEY, MIME, connection, mock_transport, setup  # noqa: F401
 
@@ -68,6 +69,8 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
         assert payload["transport"] == {"type": "webrtc", "sdp": OFFER["sdp_offer"]}
         assert payload["session"]["model"] == "gpt-live-2"
         delegation = payload["session"]["delegation"]
+        assert payload["session"]["instructions"] == INSTRUCTIONS
+        assert delegation["responses"]["instructions"] == INSTRUCTIONS
         assert delegation["type"] == "responses"
         assert delegation["responses"]["model"] == "chosen-model"
         assert delegation["responses"]["parallel_tool_calls"] is False

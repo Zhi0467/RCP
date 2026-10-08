@@ -12,6 +12,8 @@ import {
   STOP_EPISODE_TOOL,
 } from "./experiments";
 import { OPEN_VIEW_TOOL } from "./view";
+import { LIST_READ_ROUTES_TOOL, READ_TOOL } from "./reads";
+export { useProjectBroadReadTools } from "./reads";
 import type { WebMcpToolSpec } from "./shared";
 
 export {
@@ -80,6 +82,8 @@ export type { WebMcpViewOwners, WebMcpViewSource } from "./view";
 /** Every tool of the open-project surface, in catalog order. */
 export const PROJECT_TOOLS: readonly WebMcpToolSpec[] = [
   PROJECT_OVERVIEW_TOOL,
+  LIST_READ_ROUTES_TOOL,
+  READ_TOOL,
   PROVIDER_LOGINS_TOOL,
   INSPECT_NODE_TOOL,
   OPEN_VIEW_TOOL,

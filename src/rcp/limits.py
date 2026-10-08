@@ -627,3 +627,10 @@ def ask_hold_seconds(shell_timeout_seconds: int | None) -> int:
         SHELL_TIMEOUT_DEFAULT_SECONDS if shell_timeout_seconds is None else shell_timeout_seconds
     )
     return timeout - COMMAND_CLIENT_WAIT_MARGIN_SECONDS
+
+
+# Broad project reads shared by WebMCP and voice; mirrored by reads.ts.
+PROJECT_READ_MAX_BYTES = 262_144
+PROJECT_READ_SCHEMA_MAX_BYTES = 4_194_304
+PROJECT_READ_TIMEOUT_MS = 15_000
+PROJECT_READ_HISTORY_REVISIONS = 100

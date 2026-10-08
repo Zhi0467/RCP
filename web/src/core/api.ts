@@ -916,3 +916,35 @@ export function enableMachineLinger(machineId: string): Promise<MachineBrowserRe
     body: JSON.stringify({}),
   });
 }
+
+/** A same-origin GET whose caller owns bounded body reading, including error bodies. */
+export async function apiReadResponse(path: string, signal: AbortSignal): Promise<Response> {
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin || url.username || url.password || url.hash) {
+    throw new Error("Read URL must stay on this origin.");
+  }
+  let response: Response;
+  try {
+    response = await fetch(url.href, {
+      method: "GET",
+      credentials: "same-origin",
+      redirect: "error",
+      headers: { "Content-Type": "application/json" },
+      signal,
+    });
+  } catch (error) {
+    notifyTransportFailure(error);
+    throw error;
+  }
+  if (
+    response.status === 401 &&
+    !["/api/owner/exchange", "/api/owner/redeem"].includes(url.pathname)
+  ) {
+    window.dispatchEvent(new Event("rcp:session-required"));
+  }
+  if (response.status === 401 || response.status === 403) {
+    accessLossHandler?.();
+    window.dispatchEvent(new Event("rcp:read-access-lost"));
+  }
+  return response;
+}
