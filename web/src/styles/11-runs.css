@@ -1410,3 +1410,21 @@
   margin: 20px 0 0;
   padding: 16px 16px 0;
 }
+
+.voice-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+.voice-history li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+.voice-history time {
+  flex: 1;
+  font-size: 0.8rem;
+}

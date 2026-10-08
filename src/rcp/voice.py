@@ -34,6 +34,7 @@ class SessionRequest(BaseModel):
     tools: list[FunctionTool]
     # The page's plain-language RCP playbook, appended after the fixed instructions.
     playbook: str = Field(max_length=limits.VOICE_PLAYBOOK_MAX_CHARS)
+    resume_id: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
 
     @field_validator("tools", mode="before")
     @classmethod
@@ -93,7 +94,13 @@ async def check_voice_model(connection: dict, key: str, model: str) -> None:
         ) from None
 
 
-async def create_session(connection: dict, key: str, settings: dict, offer: SessionRequest) -> str:
+async def create_session(
+    connection: dict,
+    key: str,
+    settings: dict,
+    offer: SessionRequest,
+    session_input: list[dict] | None = None,
+) -> str:
     # The fixed instructions come first, so the page's playbook adds knowledge, not rules.
     instructions = f"{INSTRUCTIONS}\n\n{offer.playbook}" if offer.playbook else INSTRUCTIONS
     body = await _request(
@@ -108,6 +115,7 @@ async def create_session(connection: dict, key: str, settings: dict, offer: Sess
                 # The page enforces VOICE_HARD_CAP_SECONDS and the member's idle
                 # limit, and closes on hiding unless the window keeps running.
                 "store": False,
+                "input": session_input or [],
                 "instructions": instructions,
                 "delegation": {
                     "type": "responses",

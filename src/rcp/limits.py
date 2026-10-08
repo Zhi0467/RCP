@@ -628,3 +628,15 @@ def ask_hold_seconds(shell_timeout_seconds: int | None) -> int:
         SHELL_TIMEOUT_DEFAULT_SECONDS if shell_timeout_seconds is None else shell_timeout_seconds
     )
     return timeout - COMMAND_CLIENT_WAIT_MARGIN_SECONDS
+
+
+# Member-private saved voice transcripts and bounded text-only Resume context.
+VOICE_TRANSCRIPT_REQUEST_MAX_BYTES = 512 * 1024
+VOICE_TRANSCRIPT_ENTRY_MAX_BYTES = 16 * 1024
+VOICE_TRANSCRIPT_SESSION_MAX_BYTES = 256 * 1024
+VOICE_TRANSCRIPT_MAX_ENTRIES = 512
+VOICE_TRANSCRIPT_MAX_RECEIPTS = 256
+VOICE_TRANSCRIPT_MAX_SESSIONS = 20
+VOICE_TRANSCRIPT_RETENTION_SECONDS = 30 * 24 * 60 * 60
+VOICE_RESUME_MAX_MESSAGES = 128
+VOICE_RESUME_MAX_TOKENS = 8192

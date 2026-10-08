@@ -56,6 +56,9 @@ export function createIdentityGate(): VoiceIdentityGate {
 
 export type VoiceExecutorDeps = {
   gate: VoiceIdentityGate;
+  initialReceipts?: readonly VoiceReceipt[];
+  target?: () => VoiceReceiptTarget | null;
+  saveReceipt?: (receipt: VoiceReceipt) => Promise<void>;
   catalog: () => readonly CatalogTool[];
   resolve: (name: string) => ToolResolution;
   confirmMode: () => VoiceConfirmMode;
@@ -64,6 +67,21 @@ export type VoiceExecutorDeps = {
   /** True on Confirm; false on decline, timeout, or the session ending. */
   requestConfirmation: (pin: VoicePin) => Promise<boolean>;
   onSucceeded?: (name: string, args: Record<string, unknown>, output: string) => void;
+};
+
+export type VoiceReceiptTarget = {
+  project_id: string;
+  project_name: string;
+  graph_target: { kind: string; branch_id: string | null };
+};
+export type VoiceReceipt = {
+  tool: string;
+  target: VoiceReceiptTarget;
+  call_id: string;
+  argument_fingerprint: string;
+  outcome: "accepted" | "refused" | "unknown";
+  task_id?: string | null;
+  episode_id?: string | null;
 };
 
 export type VoiceRefusalCode =
@@ -105,7 +123,16 @@ function outcomeUnknown(error: unknown): boolean {
 /** `run` returns the `function_call_output` text, or null when the call was already handled. */
 export function createVoiceExecutor(deps: VoiceExecutorDeps) {
   const seenCallIds = new Set<string>();
-  const unknownOutcomes = new Set<string>();
+  const receiptKey = (receipt: VoiceReceipt) =>
+    stableJson([
+      receipt.tool,
+      receipt.target.project_id,
+      receipt.target.graph_target,
+      receipt.argument_fingerprint,
+    ]);
+  const unknownOutcomes = new Set(
+    (deps.initialReceipts ?? []).filter((item) => item.outcome === "unknown").map(receiptKey),
+  );
   let busy = false;
 
   async function runOne(call: VoiceFunctionCall): Promise<string> {
@@ -120,7 +147,30 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
     } catch {
       return refusal("bad_arguments", "Arguments must be a JSON object.");
     }
-    const callKey = `${call.name}:${stableJson(args)}`;
+    const target = deps.target?.() ?? null;
+    const fingerprint = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stableJson(args))),
+      ),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const receipt: VoiceReceipt | null = target
+      ? {
+          tool: call.name,
+          target,
+          call_id: call.call_id,
+          argument_fingerprint: fingerprint,
+          outcome: "unknown",
+        }
+      : null;
+    const callKey = receipt ? receiptKey(receipt) : `${call.name}:${fingerprint}`;
+    const available = deps.resolve(call.name);
+    const isWrite = available.ok && available.definition.annotations?.readOnlyHint !== true;
+    const refuse = async (code: VoiceRefusalCode, error: string) => {
+      if (receipt && isWrite) await deps.saveReceipt?.({ ...receipt, outcome: "refused" });
+      unknownOutcomes.delete(callKey);
+      return refusal(code, error);
+    };
     if (unknownOutcomes.has(callKey)) {
       return refusal(
         "unknown_outcome",
@@ -128,8 +178,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       );
     }
     // A tool the page cannot run now is refused before any card is shown.
-    const available = deps.resolve(call.name);
-    if (!available.ok) return refusal("refused", available.refusal);
+    if (!available.ok) return refuse("refused", available.refusal);
     let runArgs = args;
     // An always-confirm tool shows its card even when the member runs without confirming.
     if (tool.alwaysConfirm || (deps.confirmMode() === "tap" && tool.confirm(args))) {
@@ -137,12 +186,12 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       try {
         pinned = await deps.pin(call.name, args);
       } catch (error) {
-        return refusal("refused", errorText(error));
+        return refuse("refused", errorText(error));
       }
       if (!(await deps.requestConfirmation(pinned))) {
-        return refusal("not_confirmed", "The member did not confirm this action.");
+        return refuse("not_confirmed", "The member did not confirm this action.");
       }
-      if (!deps.gate.ok()) return refusal("identity", "RCP signed out; the voice session ended.");
+      if (!deps.gate.ok()) return refuse("identity", "RCP signed out; the voice session ended.");
       let current: VoicePin | null = null;
       try {
         current = await deps.pin(call.name, args);
@@ -150,16 +199,46 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
         current = null;
       }
       if (!current || stableJson(current) !== stableJson(pinned)) {
-        return refusal("changed", "The project changed after the card was shown; nothing ran.");
+        return refuse("changed", "The project changed after the card was shown; nothing ran.");
       }
       runArgs = pinned.arguments;
     }
     const resolved = deps.resolve(call.name);
-    if (!resolved.ok) return refusal("refused", resolved.refusal);
-    if (!deps.gate.ok()) return refusal("identity", "RCP signed out; the voice session ended.");
+    if (!resolved.ok) return refuse("refused", resolved.refusal);
+    if (!deps.gate.ok()) return refuse("identity", "RCP signed out; the voice session ended.");
+    if (deps.target && stableJson(deps.target()) !== stableJson(target)) {
+      return refuse("changed", "The project changed; nothing ran.");
+    }
+    if (isWrite && deps.saveReceipt) {
+      if (!receipt) return refusal("refused", "No project target is available.");
+      await deps.saveReceipt(receipt);
+      unknownOutcomes.add(callKey);
+      if (!deps.gate.ok()) return refusal("identity", "RCP signed out; the voice session ended.");
+      if (deps.target && stableJson(deps.target()) !== stableJson(target)) {
+        return refuse("changed", "The project changed; nothing ran.");
+      }
+    }
     try {
       const result = await resolved.definition.execute(runArgs);
       const output = result.content.map((item) => item.text).join("\n");
+      if (receipt && isWrite) {
+        const watch = voiceWatchFromResult(call.name, args, output, () => target!.project_name);
+        try {
+          await deps.saveReceipt?.({
+            ...receipt,
+            outcome: voiceCallOutcome(output).ok ? "accepted" : "refused",
+            ...(watch?.record === "task" ? { task_id: watch.id } : {}),
+            ...(watch?.record === "episode" ? { episode_id: watch.id } : {}),
+          });
+        } catch {
+          unknownOutcomes.add(callKey);
+          return refusal(
+            "unknown_outcome",
+            "The action receipt could not be saved; check the chat.",
+          );
+        }
+        unknownOutcomes.delete(callKey);
+      }
       deps.onSucceeded?.(call.name, args, output);
       return output;
     } catch (error) {
@@ -167,7 +246,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
         unknownOutcomes.add(callKey);
         return refusal("unknown_outcome", "The outcome is unknown; check the chat.");
       }
-      return refusal("refused", errorText(error));
+      return refuse("refused", errorText(error));
     }
   }
 
@@ -180,6 +259,8 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       busy = true;
       try {
         return await runOne(call);
+      } catch (error) {
+        return refusal("refused", errorText(error));
       } finally {
         busy = false;
       }
@@ -292,4 +373,157 @@ export function voiceCommentary(
   const name =
     projectName.length <= room ? projectName : `${projectName.slice(0, Math.max(0, room - 1))}…`;
   return frame(name).slice(0, maxChars);
+}
+
+export type VoiceTranscriptEntry = {
+  speaker: "member" | "agent";
+  text: string;
+  provider_order?: number | string | null;
+  source?: string | null;
+};
+
+/** The persisted transcript is independent of the small panel display buffer. */
+export function appendVoiceTranscript(
+  entries: readonly VoiceTranscriptEntry[],
+  speaker: VoiceTranscriptEntry["speaker"],
+  delta: string,
+  limits: { entry_bytes: number; session_bytes: number },
+  provider_order?: number | string | null,
+  source?: string | null,
+): VoiceTranscriptEntry[] {
+  const encoder = new TextEncoder();
+  const result = entries.map((entry) => ({ ...entry }));
+  const last = result.at(-1);
+  const tail =
+    last?.speaker === speaker &&
+    (last.provider_order ?? null) === (provider_order ?? null) &&
+    (last.source ?? null) === (source ?? null)
+      ? result.pop()!.text + delta
+      : delta;
+  // Iterate code points so byte truncation never splits a surrogate pair.
+  let text = "";
+  let bytes = 0;
+  const chunks: string[] = [];
+  for (const character of tail) {
+    const size = encoder.encode(character).length;
+    if (size > limits.entry_bytes) continue;
+    if (bytes + size > limits.entry_bytes) {
+      chunks.push(text);
+      text = "";
+      bytes = 0;
+    }
+    text += character;
+    bytes += size;
+  }
+  if (text) chunks.push(text);
+  result.push(
+    ...chunks.map((text) => ({
+      speaker,
+      text,
+      ...(provider_order === undefined ? {} : { provider_order }),
+      ...(source === undefined ? {} : { source }),
+    })),
+  );
+  while (result.length && encoder.encode(JSON.stringify(result)).length > limits.session_bytes)
+    result.shift();
+  return result;
+}
+
+/** At most one save is in flight; a newer snapshot replaces the pending one. */
+export function createVoiceSaveQueue<T>(
+  save: (snapshot: T) => Promise<void>,
+  isCurrent: () => boolean,
+) {
+  let pending: { snapshot: T; resolve: () => void; reject: (error: unknown) => void }[] = [];
+  let running: Promise<void> | null = null;
+  async function drain() {
+    while (pending.length) {
+      const batch = pending;
+      pending = [];
+      try {
+        if (!isCurrent()) throw new Error("Voice session identity changed.");
+        await save(batch.at(-1)!.snapshot);
+        batch.forEach(({ resolve }) => resolve());
+      } catch (error) {
+        batch.concat(pending).forEach(({ reject }) => reject(error));
+        pending = [];
+        return;
+      }
+    }
+  }
+  function start() {
+    if (!running)
+      running = Promise.resolve()
+        .then(drain)
+        .finally(() => {
+          running = null;
+          if (pending.length) start();
+        });
+  }
+  return {
+    save(snapshot: T): Promise<void> {
+      const acknowledged = new Promise<void>((resolve, reject) =>
+        pending.push({ snapshot, resolve, reject }),
+      );
+      start();
+      return acknowledged;
+    },
+    async flush() {
+      while (running) await running;
+    },
+  };
+}
+
+/** A finish offers access; only the explicit page-tool call can open the result. */
+export function createFinishedResultOffer(deps: {
+  currentTarget: () => VoiceReceiptTarget | null;
+  list: (
+    watch: VoiceWatch,
+  ) => Promise<{ viewer_id: string; can_open: boolean; can_open_pdf?: boolean }[]>;
+  open: (viewerId: string) => Promise<void>;
+}) {
+  let offered: { watch: VoiceWatch; target: VoiceReceiptTarget } | null = null;
+  const sameTarget = (target: VoiceReceiptTarget) => {
+    const current = deps.currentTarget();
+    return (
+      current?.project_id === target.project_id &&
+      stableJson(current.graph_target) === stableJson(target.graph_target)
+    );
+  };
+  return {
+    offer(watch: VoiceWatch, target: VoiceReceiptTarget) {
+      offered = { watch, target };
+    },
+    async open() {
+      const captured = offered;
+      if (!captured || !sameTarget(captured.target))
+        throw new Error("The offered result is not in the current project and graph.");
+      const artifacts = await deps.list(captured.watch);
+      if (offered !== captured || !sameTarget(captured.target))
+        throw new Error("The project or graph changed.");
+      const eligible = artifacts.filter((artifact) => artifact.can_open || artifact.can_open_pdf);
+      if (!eligible.length) throw new Error("This task has no result available in a viewer.");
+      for (const artifact of eligible) {
+        if (offered !== captured || !sameTarget(captured.target))
+          throw new Error("The project or graph changed.");
+        await deps.open(artifact.viewer_id);
+      }
+      offered = null;
+      return eligible.length;
+    },
+  };
+}
+
+export function voiceWatchFromReceipt(receipt: VoiceReceipt): VoiceWatch | null {
+  if (receipt.outcome !== "accepted") return null;
+  return voiceWatchFromResult(
+    receipt.tool,
+    { mode: "work" },
+    JSON.stringify({
+      project_id: receipt.target.project_id,
+      task_id: receipt.task_id,
+      episode_id: receipt.episode_id,
+    }),
+    () => receipt.target.project_name,
+  );
 }

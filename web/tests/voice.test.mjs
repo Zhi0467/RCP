@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  appendVoiceTranscript,
+  createVoiceSaveQueue,
+  createFinishedResultOffer,
+  voiceWatchFromReceipt,
   createIdentityGate,
   createVoiceExecutor,
   voiceCallOutcome,
@@ -23,6 +27,8 @@ function harness({
   pins = null,
   failWith = null,
   unavailable = false,
+  receiptDeps = {},
+  result = { ok: true },
 } = {}) {
   const runs = [];
   const asked = [];
@@ -30,6 +36,7 @@ function harness({
   let pinCalls = 0;
   const executor = createVoiceExecutor({
     gate,
+    ...receiptDeps,
     catalog: () =>
       TOOLS.map(({ name, confirm, alwaysConfirm }) => ({ name, confirm, alwaysConfirm })),
     resolve: (name) => {
@@ -43,7 +50,7 @@ function harness({
           execute: async (args) => {
             runs.push({ name, args });
             if (failWith) throw failWith;
-            return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+            return { content: [{ type: "text", text: JSON.stringify(result) }] };
           },
         },
       };
@@ -378,5 +385,217 @@ test("hiding ends voice unless the window keeps running while hidden", () => {
   } finally {
     globalThis.document = saved.document;
     globalThis.window = saved.window;
+  }
+});
+
+const receiptTarget = {
+  project_id: "p",
+  project_name: "Project",
+  graph_target: { kind: "main", branch_id: null },
+};
+
+test("durable receipt precedes dispatch and restores a target-scoped unknown fence", async () => {
+  const receipts = [];
+  let first;
+  first = harness({
+    mode: "none",
+    failWith: new TypeError("dropped"),
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async (receipt) => {
+        assert.equal(first.runs.length, 0);
+        receipts.push(receipt);
+      },
+    },
+  });
+  const args = { mode: "work", message: "m" };
+  assert.equal(
+    code(await first.executor.run(call("a", "rcp_send_conversation_message", args))),
+    "unknown_outcome",
+  );
+  assert.equal(receipts[0].argument_fingerprint.length, 64);
+  const resumed = harness({
+    mode: "none",
+    receiptDeps: { target: () => receiptTarget, initialReceipts: receipts },
+  });
+  assert.equal(
+    code(await resumed.executor.run(call("b", "rcp_send_conversation_message", args))),
+    "unknown_outcome",
+  );
+  assert.equal(resumed.runs.length, 0);
+  const other = harness({
+    mode: "none",
+    receiptDeps: {
+      target: () => ({ ...receiptTarget, project_id: "other" }),
+      initialReceipts: receipts,
+    },
+  });
+  await other.executor.run(call("b", "rcp_send_conversation_message", args));
+  assert.equal(other.runs.length, 1);
+});
+
+test("accepted receipts restore exact watches but never confirmation authority", async () => {
+  const receipts = [];
+  const original = harness({
+    confirmations: [true],
+    result: { project_id: "p", episode_id: "e" },
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async (receipt) => receipts.push(receipt),
+    },
+  });
+  await original.executor.run(call("a", "rcp_start_experiment"));
+  assert.deepEqual(
+    receipts.map((receipt) => receipt.outcome),
+    ["unknown", "accepted"],
+  );
+  const accepted = receipts.at(-1);
+  assert.equal(voiceWatchFromReceipt(accepted).id, "e");
+  const resumed = harness({
+    receiptDeps: { target: () => receiptTarget, initialReceipts: [accepted] },
+  });
+  assert.equal(
+    code(await resumed.executor.run(call("b", "rcp_start_experiment"))),
+    "not_confirmed",
+  );
+  assert.equal(resumed.runs.length, 0);
+});
+
+test("a failed pending receipt save prevents side effects", async () => {
+  const run = harness({
+    mode: "none",
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async () => {
+        throw new Error("save failed");
+      },
+    },
+  });
+  assert.equal(code(await run.executor.run(call("a", "rcp_start_experiment"))), "refused");
+  assert.equal(run.runs.length, 0);
+});
+
+test("transcript byte bounds preserve complete unicode and newest text", () => {
+  const entries = appendVoiceTranscript(
+    [],
+    "member",
+    "😀".repeat(100),
+    { entry_bytes: 16, session_bytes: 180 },
+    1,
+  );
+  assert.ok(entries.length > 0);
+  assert.ok(Buffer.byteLength(JSON.stringify(entries)) <= 180);
+  assert.ok(
+    entries.every((entry) => Buffer.byteLength(entry.text) <= 16 && !entry.text.includes("�")),
+  );
+  const next = appendVoiceTranscript(
+    entries,
+    "agent",
+    "newest",
+    { entry_bytes: 16, session_bytes: 180 },
+    2,
+  );
+  assert.equal(next.at(-1).text, "newest");
+  assert.equal(next.at(-1).provider_order, 2);
+  const fromStorage = appendVoiceTranscript(
+    [{ speaker: "member", text: "first", provider_order: null, source: null }],
+    "member",
+    " next",
+    { entry_bytes: 32, session_bytes: 1024 },
+  );
+  assert.equal(fromStorage.length, 1);
+  assert.equal(fromStorage[0].text, "first next");
+  const bounds = { entry_bytes: 16, session_bytes: 1024 };
+  const quoted = appendVoiceTranscript([], "agent", "a".repeat(24), bounds, 3, "tool:read");
+  assert.ok(quoted.every((entry) => entry.source === "tool:read"));
+  const continued = appendVoiceTranscript(quoted, "agent", "b", bounds, 3, "tool:read");
+  assert.equal(continued.length, quoted.length);
+  assert.equal(continued.at(-1).source, "tool:read");
+  const fresh = appendVoiceTranscript(continued, "agent", "c", bounds, 3, null);
+  assert.equal(fresh.length, continued.length + 1);
+  assert.equal(fresh.at(-1).source, null);
+  assert.equal(fresh.at(-2).source, "tool:read");
+});
+
+test("saves serialize, coalesce pending snapshots, and stop after identity changes", async () => {
+  let release;
+  let current = true;
+  const saved = [];
+  const queue = createVoiceSaveQueue(
+    async (snapshot) => {
+      saved.push(snapshot);
+      if (snapshot === 1)
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+    },
+    () => current,
+  );
+  const first = queue.save(1);
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = queue.save(2);
+  const third = queue.save(3);
+  assert.deepEqual(saved, [1]);
+  release();
+  await Promise.all([first, second, third]);
+  await queue.flush();
+  assert.deepEqual(saved, [1, 3]);
+  current = false;
+  await assert.rejects(queue.save(4));
+  assert.deepEqual(saved, [1, 3]);
+});
+
+test("finished results only open on explicit acceptance under captured project and graph", async () => {
+  let target = receiptTarget;
+  let listed = 0;
+  const opened = [];
+  const offer = createFinishedResultOffer({
+    currentTarget: () => target,
+    list: async (watch) => {
+      listed++;
+      assert.equal(watch.id, "t");
+      return [{ viewer_id: "v", can_open: true }];
+    },
+    open: async (id) => opened.push(id),
+  });
+  const watch = { id: "t", project_id: "p", kind: "work_turn", record: "task", last: "finished" };
+  offer.offer(watch, target);
+  assert.equal(listed, 0);
+  assert.deepEqual(opened, []);
+  target = { ...receiptTarget, graph_target: { kind: "branch", branch_id: "b" } };
+  await assert.rejects(offer.open());
+  assert.equal(listed, 0);
+  target = receiptTarget;
+  assert.equal(await offer.open(), 1);
+  assert.deepEqual(opened, ["v"]);
+  await assert.rejects(offer.open());
+});
+
+test("commentary queued during connection flushes once on open and is discarded after End", async () => {
+  for (const endBeforeOpen of [false, true]) {
+    const transport = fakeTransport();
+    const channel = transport.deps.createPeer().createDataChannel();
+    channel.readyState = "connecting";
+    const session = await openVoiceSession(
+      [],
+      {
+        onTranscript() {},
+        onFunctionCall() {},
+        onEnded() {},
+      },
+      harness().gate,
+      transport.deps,
+    );
+    session.speak("queued");
+    assert.equal(transport.sent.length, 0);
+    if (endBeforeOpen) await session.end("member", { immediate: true });
+    channel.readyState = "open";
+    channel.onopen();
+    channel.onopen();
+    assert.equal(
+      transport.sent.filter((event) => event.type === "session.commentary.append").length,
+      endBeforeOpen ? 0 : 1,
+    );
+    await session.end("member", { immediate: true });
   }
 });
