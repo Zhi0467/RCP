@@ -18,7 +18,7 @@ export type VoiceEndReason =
   "member" | "idle" | "hard_cap" | "hidden" | "identity" | "space" | "connection" | "upstream";
 
 export type VoiceSessionEvents = {
-  onTranscript: (role: "member" | "agent", delta: string) => void;
+  onTranscript: (role: "member" | "agent", delta: string, order?: string | number) => void;
   onFunctionCall: (call: VoiceFunctionCall) => void;
   onEnded: (reason: VoiceEndReason) => void;
 };
@@ -185,6 +185,12 @@ function startSession(
   };
   const deadlineTimer = setInterval(endIfDue, VOICE_DEADLINE_TICK_MS);
 
+  // Resume can finish its status reads before WebRTC opens the data channel.
+  const pendingCommentary: Record<string, unknown>[] = [];
+  channel.onopen = () => {
+    if (endIfDue()) return;
+    pendingCommentary.splice(0).forEach((event) => channel.send(JSON.stringify(event)));
+  };
   const send = (event: Record<string, unknown>) => {
     if (channel.readyState === "open") channel.send(JSON.stringify(event));
   };
@@ -227,7 +233,7 @@ function startSession(
   };
 
   channel.onmessage = (message) => {
-    let event: { type?: unknown; delta?: unknown };
+    let event: { type?: unknown; delta?: unknown; item_id?: unknown };
     try {
       event = JSON.parse(String(message.data));
     } catch {
@@ -239,14 +245,22 @@ function startSession(
     if (!ending && endIfDue()) return;
     if (event.type === "session.input_transcript.delta" && typeof event.delta === "string") {
       noteActivity();
-      events.onTranscript("member", event.delta);
+      events.onTranscript(
+        "member",
+        event.delta,
+        typeof event.item_id === "string" ? event.item_id : undefined,
+      );
     } else if (
       event.type === "session.output_transcript.delta" &&
       typeof event.delta === "string"
     ) {
       // The assistant speaking is activity too; idle must not cut off a long answer.
       noteActivity();
-      events.onTranscript("agent", event.delta);
+      events.onTranscript(
+        "agent",
+        event.delta,
+        typeof event.item_id === "string" ? event.item_id : undefined,
+      );
     } else if (event.type === "session.closed") {
       markClosed();
       void end("upstream", { immediate: true });
@@ -280,13 +294,17 @@ function startSession(
       });
       send({ type: "response.create", event_id: eventId() });
     },
-    speak: (text) =>
-      send({
+    speak: (text) => {
+      if (endIfDue()) return;
+      const event = {
         type: "session.commentary.append",
         event_id: eventId(),
         delegation_id: null,
         content: text.slice(0, limits.commentary_max_chars),
-      }),
+      };
+      if (channel.readyState === "connecting") pendingCommentary.push(event);
+      else send(event);
+    },
     noteActivity,
     end,
   };

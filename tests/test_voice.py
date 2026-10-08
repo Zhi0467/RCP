@@ -53,7 +53,7 @@ def test_session_requires_explicit_voice_purpose(voice_setup):
     assert private.summary()["connections"][0]["purposes"] == ["transcription"]
 
 
-def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
+def test_session_contract_and_private_session_allocation(voice_setup, monkeypatch):
     _, private, client = voice_setup
     enable(private)
     private.voice_settings(
@@ -77,16 +77,25 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
     mock_transport(monkeypatch, handler)
     response = client.post("/api/voice/sessions", json={**OFFER, "tools": TOOLS})
     assert response.status_code == 200
-    assert response.json() == {
+    assert {key: response.json()[key] for key in ("sdp_answer", "limits")} == {
         "sdp_answer": "v=0\r\nanswer",
         "limits": {
             "idle_seconds": 7 * 60,
             "hard_cap_seconds": limits.VOICE_HARD_CAP_SECONDS,
             "confirm_timeout_seconds": limits.VOICE_CONFIRM_TIMEOUT_SECONDS,
             "commentary_max_chars": limits.VOICE_COMMENTARY_MAX_CHARS,
+            "transcript_entry_max_bytes": limits.VOICE_TRANSCRIPT_ENTRY_MAX_BYTES,
+            "transcript_session_max_bytes": limits.VOICE_TRANSCRIPT_SESSION_MAX_BYTES,
+            "transcript_max_entries": limits.VOICE_TRANSCRIPT_MAX_ENTRIES,
+            "transcript_max_receipts": limits.VOICE_TRANSCRIPT_MAX_RECEIPTS,
         },
     }
-    assert before == {p: p.read_bytes() for p in private.root.rglob("*") if p.is_file()}
+    assert all(path.read_bytes() == data for path, data in before.items())
+    record = response.json()["session"]
+    assert record["member_id"] == private.member_id
+    assert record["revision"] == 0 and record["generation"]
+    assert record["entries"] == record["receipts"] == []
+    assert private._voice_path(record["id"]).stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize("failure", ["error", "transport", "invalid", "secret"])
@@ -455,3 +464,148 @@ def test_edited_key_in_a_voice_model_is_refused_before_the_payer_checks_it(
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "connection_check_failed"
     assert other_key not in response.text and seen == []
+
+
+def transcript_save(record, **changes):
+    return {
+        "member_id": record["member_id"],
+        "generation": record["generation"],
+        "revision": record["revision"] + 1,
+        "entries": [{"speaker": "member", "text": "Earlier topic"}],
+        "receipts": [],
+        **changes,
+    }
+
+
+def test_transcript_generation_revision_delete_and_member_fences(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    enable(private)
+    mock_transport(monkeypatch, lambda _: reply({"transport": {"sdp": "answer"}}))
+    record = client.post("/api/voice/sessions", json=OFFER).json()["session"]
+    path = f"/api/voice/sessions/{record['id']}"
+    body = transcript_save(record)
+    assert client.put(path, json=body).status_code == 200
+    assert client.put(path, json=body).json()["detail"]["code"] == "voice_session_stale"
+    resumed = client.post("/api/voice/sessions", json={**OFFER, "resume_id": record["id"]}).json()[
+        "session"
+    ]
+    assert resumed["generation"] != record["generation"] and resumed["revision"] == 1
+    assert (
+        client.put(path, json={**body, "revision": 2}).json()["detail"]["code"]
+        == "voice_session_superseded"
+    )
+    assert client.put(path, json=transcript_save(resumed, member_id="other")).status_code == 403
+    assert client.put(path, json=transcript_save(resumed, ended=True)).status_code == 200
+    assert client.put(path, json=transcript_save(resumed, revision=3)).status_code == 409
+    assert client.delete(path).status_code == 200
+    assert client.put(path, json=transcript_save(resumed, revision=4)).status_code == 404
+    assert (
+        client.post("/api/voice/sessions", json={**OFFER, "resume_id": record["id"]}).status_code
+        == 404
+    )
+
+
+def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    enable(private)
+    payloads = []
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        return reply({"transport": {"sdp": "answer"}})
+
+    mock_transport(monkeypatch, handler)
+    record = client.post("/api/voice/sessions", json=OFFER).json()["session"]
+    entries = [
+        {
+            "speaker": "member" if i % 2 else "agent",
+            "text": str(i),
+            "provider_order": i,
+            "source": "project:example" if i % 2 == 0 else None,
+        }
+        for i in range(150)
+    ]
+    receipt = {
+        "tool": "rcp_chat",
+        "call_id": "call-1",
+        "argument_fingerprint": "a" * 64,
+        "target": {
+            "project_id": "project",
+            "project_name": "Project",
+            "graph_target": {"kind": "main", "branch_id": None},
+        },
+        "outcome": "unknown",
+        "task_id": "task-1",
+        "episode_id": None,
+    }
+    saved = client.put(
+        f"/api/voice/sessions/{record['id']}",
+        json=transcript_save(record, entries=entries, receipts=[receipt]),
+    )
+    assert saved.status_code == 200
+    resumed = client.post("/api/voice/sessions", json={**OFFER, "resume_id": record["id"]}).json()
+    assert resumed["input_truncated"] and resumed["session"]["receipts"] == [receipt]
+    inputs = payloads[-1]["session"]["input"]
+    assert len(inputs) == limits.VOICE_RESUME_MAX_MESSAGES
+    assert {item["role"] for item in inputs} == {"user", "assistant"}
+    assert inputs[-1]["content"].endswith(entries[-1]["text"])
+    assert entries[-2]["source"] in inputs[-2]["content"]
+    assert payloads[-1]["session"]["store"] is False
+    from rcp.service_connections import voice_resume_input
+
+    inputs, truncated = voice_resume_input([{**entry, "text": "漢" * 4000} for entry in entries])
+    assert truncated and inputs
+    assert (
+        len(json.dumps(inputs, ensure_ascii=False).encode()) <= limits.VOICE_RESUME_MAX_TOKENS * 3
+    )
+
+    newest = {**entries[0], "text": "\\" * (limits.VOICE_TRANSCRIPT_ENTRY_MAX_BYTES - 4) + "tail"}
+    clipped, truncated = voice_resume_input([newest])
+    assert truncated and len(clipped) == 1
+    assert clipped[0]["role"] == "assistant"
+    assert newest["source"] in clipped[0]["content"]
+    assert clipped[0]["content"].endswith("tail")
+    assert (
+        len(json.dumps(clipped, ensure_ascii=False).encode()) <= limits.VOICE_RESUME_MAX_TOKENS * 3
+    )
+
+
+def test_transcript_metadata_retention_and_disconnect_removal(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    connection = enable(private)
+    clock = [10000000.0]
+    monkeypatch.setattr("rcp.service_connections.time.time", lambda: clock[0])
+    records = []
+    for _ in range(limits.VOICE_TRANSCRIPT_MAX_SESSIONS + 1):
+        records.append(private.claim_voice_session())
+        clock[0] += 1
+    assert not private._voice_path(records[0]["id"]).exists()
+    page = client.get("/api/voice/sessions?offset=0&limit=5").json()
+    assert len(page["sessions"]) == 5 and page["next_offset"] == 5
+    assert page["sessions"][0]["id"] == records[-1]["id"]
+    assert all("entries" not in row and "receipts" not in row for row in page["sessions"])
+    private.disconnect(connection["id"])
+    assert len(private.list_voice_sessions(0, 20)["sessions"]) == 20
+    clock[0] += limits.VOICE_TRANSCRIPT_RETENTION_SECONDS
+    assert private.list_voice_sessions(0, 20)["sessions"] == []
+    record = private.claim_voice_session()
+    private.remove_member_data()
+    assert not private._voice_path(record["id"]).exists()
+
+
+def test_transcript_request_entry_and_session_byte_bounds(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    record = private.claim_voice_session()
+    path = f"/api/voice/sessions/{record['id']}"
+    oversized = "漢" * (limits.VOICE_TRANSCRIPT_ENTRY_MAX_BYTES // 3 + 1)
+    assert (
+        client.put(
+            path, json=transcript_save(record, entries=[{"speaker": "member", "text": oversized}])
+        ).status_code
+        == 422
+    )
+    monkeypatch.setattr(limits, "VOICE_TRANSCRIPT_SESSION_MAX_BYTES", 100)
+    assert client.put(path, json=transcript_save(record)).status_code == 422
+    monkeypatch.setattr(limits, "VOICE_TRANSCRIPT_REQUEST_MAX_BYTES", 50)
+    assert client.put(path, json=transcript_save(record)).status_code == 413
+    assert private._voice_record(record["id"])["revision"] == 0

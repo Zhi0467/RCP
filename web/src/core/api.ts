@@ -57,6 +57,8 @@ import type {
   TeamDevicePairingStatus,
   TeamSession,
   VoiceSessionResponse,
+  VoiceSavedSession,
+  VoiceSessionPage,
   VoiceSettings,
 } from "./types";
 
@@ -809,12 +811,34 @@ export function saveVoiceSettings(
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
-/** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
+/** Exchange the offer and allocate or claim a member-private transcript generation. */
 export function createVoiceSession(
-  body: { sdp_offer: string; tools: unknown[] },
+  body: { sdp_offer: string; tools: unknown[]; resume_id?: string },
   signal?: AbortSignal,
 ): Promise<VoiceSessionResponse> {
   return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
+}
+
+export function loadVoiceSessions(offset = 0): Promise<VoiceSessionPage> {
+  return api(`/api/voice/sessions?offset=${offset}&limit=5`);
+}
+
+export function saveVoiceSession(
+  record: VoiceSavedSession,
+): Promise<Pick<VoiceSavedSession, "id" | "generation" | "revision">> {
+  const { member_id, generation, revision, entries, receipts, ended } = record;
+  return api(
+    `/api/voice/sessions/${encodeURIComponent(record.id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ member_id, generation, revision, entries, receipts, ended }),
+    },
+    { retryIdentity: false },
+  );
+}
+
+export function deleteVoiceSession(id: string): Promise<void> {
+  return api(`/api/voice/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */

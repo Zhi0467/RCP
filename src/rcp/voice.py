@@ -32,6 +32,7 @@ class SessionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     sdp_offer: str = Field(min_length=1, max_length=limits.VOICE_SDP_MAX_CHARS)
     tools: list[FunctionTool]
+    resume_id: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
 
     @field_validator("tools", mode="before")
     @classmethod
@@ -91,7 +92,13 @@ async def check_voice_model(connection: dict, key: str, model: str) -> None:
         ) from None
 
 
-async def create_session(connection: dict, key: str, settings: dict, offer: SessionRequest) -> str:
+async def create_session(
+    connection: dict,
+    key: str,
+    settings: dict,
+    offer: SessionRequest,
+    session_input: list[dict] | None = None,
+) -> str:
     body = await _request(
         connection,
         key,
@@ -104,6 +111,7 @@ async def create_session(connection: dict, key: str, settings: dict, offer: Sess
                 # The page enforces VOICE_HARD_CAP_SECONDS and the member's idle
                 # limit, and closes on hiding unless the window keeps running.
                 "store": False,
+                "input": session_input or [],
                 "instructions": INSTRUCTIONS,
                 "delegation": {
                     "type": "responses",

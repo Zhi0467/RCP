@@ -14,7 +14,7 @@ export function VoiceButton({ voice, className }: { voice: VoiceAgent; className
       aria-label={label}
       aria-pressed={active}
       title={label}
-      onClick={() => (active ? voice.end() : void voice.open())}
+      onClick={() => (active ? voice.end() : voice.toggleHistory())}
     >
       {voice.phase === "starting" ? (
         <LoaderCircle className="spin" size={16} aria-hidden="true" />
@@ -144,6 +144,62 @@ export function VoicePanel({
   onOpenSettings: () => void;
 }) {
   if (voice.phase === "idle") {
+    if (voice.historyOpen)
+      return (
+        <aside className="voice-panel" aria-label="Voice conversations">
+          <header>
+            <strong>Voice</strong>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Close"
+              onClick={voice.closeHistory}
+            >
+              <X size={14} />
+            </button>
+          </header>
+          <button
+            className="button primary compact"
+            type="button"
+            onClick={() => void voice.open()}
+          >
+            New conversation
+          </button>
+          {voice.historyError ? (
+            <p className="voice-panel-error" role="alert">
+              {voice.historyError}
+            </p>
+          ) : null}
+          <ol className="voice-history">
+            {voice.recentSessions.map((session) => (
+              <li key={session.id}>
+                <time dateTime={new Date(session.updated_at * 1000).toISOString()}>
+                  {new Date(session.updated_at * 1000).toLocaleString()}
+                </time>
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => void voice.open(session.id)}
+                >
+                  Resume
+                </button>
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => void voice.deleteSession(session.id)}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ol>
+          {voice.nextOffset !== null ? (
+            <button className="button secondary compact" type="button" onClick={voice.moreHistory}>
+              More
+            </button>
+          ) : null}
+        </aside>
+      );
     if (!voice.problem) return null;
     const notConnected = voice.problem.code === "voice_not_connected";
     return (
@@ -206,6 +262,11 @@ export function VoicePanel({
           </label>
         ))}
       </div>
+      {voice.problem ? (
+        <p className="voice-panel-error" role="status">
+          {voice.problem.text}
+        </p>
+      ) : null}
       {voice.settingsError ? (
         <p className="voice-panel-error" role="alert">
           {voice.settingsError}
@@ -220,7 +281,8 @@ export function VoicePanel({
         ))}
       </ol>
       <p className="voice-disclosure">
-        Your audio, and the project content the agent reads, go to OpenAI. RCP keeps no transcript.
+        Your audio and the content the agent reads go to OpenAI. RCP saves text for 30 days; Resume
+        sends the saved conversation to OpenAI.
       </p>
     </aside>
   );
