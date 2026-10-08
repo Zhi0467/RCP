@@ -129,6 +129,7 @@ test("discovery and execution intersect the real backend schema with the same GE
       "/digest",
       "/cached/revision",
       "/episodes/{episode_id}/merge-preview",
+      "/machines/{machine_alias}/browser",
       "/artifacts/{artifact_id}/download",
       "/tasks/{operation_id}/artifacts/{artifact_id}/download",
     ].map((suffix) => prefix + suffix),

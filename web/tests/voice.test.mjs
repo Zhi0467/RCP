@@ -641,6 +641,16 @@ test("two reads through one tool and target keep distinct sources", () => {
     sourceOf("a", '{"route":"/graph"}', "item-1"),
     sourceOf("b", '{"route":"/history"}', "item-2"),
   );
+  // Chained reads before one response all stay in that response's source.
+  for (const [id, route] of [
+    ["c", "/graph"],
+    ["d", "/history"],
+  ]) {
+    labels.capture(id, "rcp_read", JSON.stringify({ route }), receiptTarget);
+    labels.succeeded(id);
+  }
+  const chained = labels.speech("agent", "item-3");
+  assert.ok(chained.includes("/graph") && chained.includes("/history"));
 });
 
 test("saves serialize, coalesce pending snapshots, and stop after identity changes", async () => {
@@ -706,6 +716,7 @@ test("finished offers expire after their immediate reply or the next agent respo
     open: async (id) => opened.push(id),
   });
   offer.offer(watch, receiptTarget);
+  offer.speech("agent", "announcement");
   offer.speech("member", "reply");
   offer.speech("member", "reply");
   assert.equal(await offer.open(), 1);
@@ -714,6 +725,7 @@ test("finished offers expire after their immediate reply or the next agent respo
   offer.speech("member", "later");
   await assert.rejects(offer.open());
   offer.offer(watch, receiptTarget);
+  offer.speech("agent", "announcement");
   offer.speech("agent", "response");
   await assert.rejects(offer.open());
   assert.deepEqual(opened, ["v"]);

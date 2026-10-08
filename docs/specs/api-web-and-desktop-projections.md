@@ -1060,7 +1060,8 @@ schema intersected with it. It admits every GET under
 `/api/projects/{open project}`, root included, except downloads, redirect-only
 routes, GETs with side effects (terminal reconciliation, Experiment stop
 settlement, digest marks, project reconciliation, merge-preview Git writes,
-and the conversation worktree route's remote Git contact), and the `refresh`
+the conversation worktree route's remote Git contact, and the machine browser
+readiness probe), and the `refresh`
 query flag, which reruns probes. Repository file reads refuse any path whose
 component matches the credential denylist (for example `.env*`, `*.pem`, `.git`,
 `.ssh`, `id_rsa*`). Requests are built from admitted templates with validated

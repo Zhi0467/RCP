@@ -513,7 +513,8 @@ const VOICE_SOURCE_MAX_CHARS = 1_024;
 /** A tool's provenance belongs to its call and the next response item only. */
 export function createVoiceSourceLabels() {
   const calls = new Map<string, string>();
-  let pending: string | null = null;
+  // Every read that succeeded since the last response; chained reads all count.
+  let pending: string[] = [];
   let active: string | null = null;
   let activeSegment: string | undefined;
   return {
@@ -526,7 +527,8 @@ export function createVoiceSourceLabels() {
         calls.set(callId, `${name}(${args})${where}`.slice(0, VOICE_SOURCE_MAX_CHARS));
     },
     succeeded(callId: string) {
-      pending = calls.get(callId) ?? null;
+      const label = calls.get(callId);
+      if (label) pending.push(label);
       calls.delete(callId);
     },
     discard(callId: string) {
@@ -534,14 +536,14 @@ export function createVoiceSourceLabels() {
     },
     speech(role: "member" | "agent", segment: string): string | null {
       if (role === "member") {
-        pending = null;
+        pending = [];
         active = null;
         activeSegment = undefined;
         return null;
       }
-      if (pending !== null) {
-        active = pending;
-        pending = null;
+      if (pending.length) {
+        active = pending.join("; ").slice(0, VOICE_SOURCE_MAX_CHARS);
+        pending = [];
       } else if (segment !== activeSegment) active = null;
       activeSegment = segment;
       return active;
@@ -604,6 +606,8 @@ export function createFinishedResultOffer(deps: {
 }) {
   let offered: { watch: VoiceWatch; target: VoiceReceiptTarget } | null = null;
   let replied = false;
+  // The spoken offer itself arrives as the next agent segment; only a later one expires it.
+  let announcing = false;
   let lastSpeech: { role: "member" | "agent"; segment: string } | null = null;
   const sameTarget = (target: VoiceReceiptTarget) => {
     const current = deps.currentTarget();
@@ -616,11 +620,17 @@ export function createFinishedResultOffer(deps: {
     offer(watch: VoiceWatch, target: VoiceReceiptTarget) {
       offered = { watch, target };
       replied = false;
+      announcing = true;
     },
     speech(role: "member" | "agent", segment: string) {
       const newItem = lastSpeech?.role !== role || lastSpeech.segment !== segment;
       lastSpeech = { role, segment };
       if (!offered || !newItem) return;
+      if (role === "agent" && announcing) {
+        announcing = false;
+        return;
+      }
+      announcing = false;
       // Keep the immediate reply available to its tool call; no later turn can use it.
       if (role === "agent" || replied) offered = null;
       else replied = true;
