@@ -71,7 +71,7 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
         assert delegation["type"] == "responses"
         assert delegation["responses"]["model"] == "chosen-model"
         assert delegation["responses"]["parallel_tool_calls"] is False
-        assert delegation["responses"]["tools"] == TOOLS
+        assert delegation["responses"]["tools"] == [{**tool, "strict": False} for tool in TOOLS]
         return reply({"transport": {"type": "webrtc", "sdp": "v=0\r\nanswer"}})
 
     mock_transport(monkeypatch, handler)

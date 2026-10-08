@@ -111,7 +111,9 @@ async def create_session(connection: dict, key: str, settings: dict, offer: Sess
                         "model": settings["delegation_model"],
                         "instructions": INSTRUCTIONS,
                         "parallel_tool_calls": False,
-                        "tools": [tool.model_dump() for tool in offer.tools],
+                        # Responses normalizes an omitted `strict` to strict mode, which
+                        # makes every optional field required; the page validates shape.
+                        "tools": [{**tool.model_dump(), "strict": False} for tool in offer.tools],
                     },
                 },
             },
