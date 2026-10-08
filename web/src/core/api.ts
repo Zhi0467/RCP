@@ -928,7 +928,7 @@ export async function apiReadResponse(path: string, signal: AbortSignal): Promis
     response = await fetch(url.href, {
       method: "GET",
       credentials: "same-origin",
-      redirect: "error",
+      redirect: "manual",
       headers: { "Content-Type": "application/json" },
       signal,
     });

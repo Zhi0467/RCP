@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { createServer } from "vite";
 import { createIdentityGate, createVoiceExecutor } from "../src/voice/voiceExecutor.ts";
 
@@ -20,7 +19,7 @@ const {
   PROJECT_READ_POLICY,
   READ_LIMITS,
 } = await server.ssrLoadModule("/src/webmcp/reads.ts");
-const { apiReadResponse, registerAccessLossHandler } =
+const { apiReadResponse, registerAccessLossHandler, registerTransportFailureHandler } =
   await server.ssrLoadModule("/src/core/api.ts");
 const { catalog, catalogAsFunctionTools, webMcpHostDefinitions } = await server.ssrLoadModule(
   "/src/voice/toolCatalog.ts",
@@ -76,6 +75,22 @@ after(() => {
   registerAccessLossHandler(null);
 });
 
+async function pages(tool, input = {}) {
+  let text = "",
+    offset = 0;
+  do {
+    const raw = await tool.execute({ ...input, offset });
+    assert.ok(raw.content[0].text.length <= READ_LIMITS.resultChars);
+    const page = result(raw);
+    text += page.data;
+    assert.equal(page.truncated, page.next_offset !== null);
+    if (page.next_offset !== null) assert.ok(page.next_offset > offset);
+    offset = page.next_offset;
+    if (offset === null) assert.equal(text.length, page.total_chars);
+  } while (offset !== null);
+  return text;
+}
+
 function inputFor(route) {
   const input = { route: route.template, params: {}, query: {} };
   for (const p of route.parameters) {
@@ -94,13 +109,22 @@ function inputFor(route) {
 
 test("discovery and execution intersect the real backend schema with the same GET policy", async (t) => {
   const { list, read, calls } = harness(t);
-  const discovered = result(await list.execute({}));
+  const discovered = JSON.parse(await pages(list));
   const admitted = admittedReadRoutes(schema);
-  assert.deepEqual(discovered.routes, admitted);
+  assert.deepEqual(
+    discovered.routes.map((r) => r.template),
+    admitted.map((r) => r.template),
+  );
+  assert.ok(
+    discovered.routes.every((r) => [...r.params, ...r.query].every((p) => typeof p === "string")),
+  );
   assert.ok(admitted.some((r) => r.template === prefix));
   const expectedExclusions = new Set(
     [
       "/terminals",
+      "/result-views",
+      "/result-views/{view_id}/preview",
+      "/chats/{chat_id}/worktree",
       "/experiment-episodes",
       "/digest",
       "/cached/revision",
@@ -121,7 +145,7 @@ test("discovery and execution intersect the real backend schema with the same GE
     } else {
       const before = calls.length;
       await assert.rejects(read.execute({ route: template }));
-      assert.equal(calls.length, before + 1); // Only the schema, never the excluded endpoint.
+      assert.equal(calls.length, before);
     }
   }
   const names = ["rcp_read", "rcp_list_read_routes"];
@@ -136,13 +160,14 @@ test("discovery and execution intersect the real backend schema with the same GE
 });
 
 test("URL confinement rejects other projects, dot encodings and non-GET arguments before a project request", async (t) => {
-  const { read, calls } = harness(t);
+  const { list, read, calls } = harness(t);
+  await pages(list);
   for (const id of [".", "..", "%2e%2e", "%252e%252e", "../q", "x/y", "x\\y", "x?z", "x#z"]) {
     const before = calls.length;
     await assert.rejects(
       read.execute({ route: prefix + "/chats/{chat_id}", params: { chat_id: id } }),
     );
-    assert.equal(calls.length, before + 1);
+    assert.equal(calls.length, before);
   }
   for (const input of [
     { route: "/api/projects/q/graph" },
@@ -168,7 +193,7 @@ test("URL confinement rejects other projects, dot encodings and non-GET argument
 test("credential denylist applies to repository path components and discovery publishes that same list", async (t) => {
   const { list, read, calls } = harness(t);
   assert.deepEqual(
-    result(await list.execute({})).policy.credential_names,
+    JSON.parse(await pages(list)).policy.credential_names,
     PROJECT_READ_POLICY.credentialNames,
   );
   for (const name of [
@@ -181,7 +206,10 @@ test("credential denylist applies to repository path components and discovery pu
     ".pypirc",
     "id_rsa.pub",
     "id_ed25519",
-    "id_custom",
+    "id_ecdsa",
+    "id_dsa.pub",
+    ".git/config",
+    "src/.GIT/config",
     "credentials.json",
     "a.p12",
     "a.pfx",
@@ -197,13 +225,13 @@ test("credential denylist applies to repository path components and discovery pu
         query: { path: "repo/" + name },
       }),
     );
-    assert.equal(calls.length, before + 1);
+    assert.equal(calls.length, before);
   }
   await read.execute({
     route: prefix + "/repositories/files/preview",
-    query: { path: "repo/src/main.py", line: 1 },
+    query: { path: "repo/src/id_utils.py", line: 1 },
   });
-  assert.equal(new URL(calls.at(-1).url).searchParams.get("path"), "repo/src/main.py");
+  assert.equal(new URL(calls.at(-1).url).searchParams.get("path"), "repo/src/id_utils.py");
 });
 
 test("displayed branch is injected and history requires an explicit bounded revision window", async (t) => {
@@ -239,17 +267,24 @@ test("SSE is excluded in discovery and real MIME, redirects and attachments are 
   };
   let reply = response("data: x", "text/event-stream");
   const { list, read, calls } = harness(t, () => reply, document);
-  assert.ok(!result(await list.execute({})).routes.some((r) => r.template.endsWith("/stream")));
+  assert.ok(!JSON.parse(await pages(list)).routes.some((r) => r.template.endsWith("/stream")));
+  let failures = 0;
+  registerTransportFailureHandler(() => failures++);
+  t.after(() => registerTransportFailureHandler(null));
+  const opaque = response();
+  Object.defineProperty(opaque, "type", { value: "opaqueredirect" });
   for (const next of [
     reply,
+    opaque,
     response("x", "application/octet-stream"),
     response("x", "text/plain", { status: 302 }),
     response("x", "text/plain", { headers: { "content-disposition": "attachment" } }),
   ]) {
     reply = next;
     await assert.rejects(read.execute({ route: prefix + "/graph" }));
-    assert.equal(calls.at(-1).init.redirect, "error");
+    assert.equal(calls.at(-1).init.redirect, "manual");
   }
+  assert.equal(failures, 0);
   reply = response("<p>quoted</p>", "text/html; charset=utf-8");
   assert.equal(result(await read.execute({ route: prefix + "/graph" })).data, "<p>quoted</p>");
 });
@@ -379,17 +414,40 @@ test("voice honors untrusted annotations with a source-bearing data envelope", a
   }
 });
 
-test("frontend read limits stay aligned with the Python limits owner", () => {
-  const source = readFileSync(new URL("../../src/rcp/limits.py", import.meta.url), "utf8");
-  for (const [key, name] of Object.entries({
-    bodyBytes: "PROJECT_READ_MAX_BYTES",
-    schemaBytes: "PROJECT_READ_SCHEMA_MAX_BYTES",
-    timeoutMs: "PROJECT_READ_TIMEOUT_MS",
-    historyRevisions: "PROJECT_READ_HISTORY_REVISIONS",
-  })) {
-    assert.equal(
-      READ_LIMITS[key],
-      Number(source.match(new RegExp(`^${name} = ([\\d_]+)$`, "m"))[1].replaceAll("_", "")),
-    );
+test("large escaped bodies page losslessly within the model result cap", async (t) => {
+  const body = '\"\\\n'.repeat(20_000);
+  const { read } = harness(t, () => response(body, "text/plain"));
+  assert.equal(await pages(read, { route: prefix }), body);
+  for (const offset of [-1, 0.5, "1", body.length + 1]) {
+    await assert.rejects(read.execute({ route: prefix, offset }));
   }
+});
+
+test("admitted routes are cached across definitions in one scope but not another", async (t) => {
+  const { calls } = harness(t);
+  const cache = {},
+    owner = new AbortController();
+  const definitions = () => projectBroadReadToolDefinitions(project, () => owner.signal, cache);
+  await Promise.all([definitions()[0].execute({}), definitions()[0].execute({})]);
+  await definitions()[1].execute({ route: prefix });
+  assert.equal(calls.filter((c) => c.url.endsWith("/openapi.json")).length, 1);
+  await projectBroadReadToolDefinitions(project, () => owner.signal)[0].execute({});
+  assert.equal(calls.filter((c) => c.url.endsWith("/openapi.json")).length, 2);
+});
+
+test("JSON refusal details retain validation data within the error budget", async (t) => {
+  let detail = [{ type: "missing", loc: ["query", "from_revision"] }];
+  const { read } = harness(t, () =>
+    response(JSON.stringify({ detail }), "application/json", { status: 422 }),
+  );
+  await assert.rejects(read.execute({ route: prefix }), (error) => {
+    assert.equal(error.status, 422);
+    assert.deepEqual(JSON.parse(error.message.slice(error.message.indexOf(": ") + 2)), detail);
+    return true;
+  });
+  detail = "x".repeat(READ_LIMITS.bodyBytes / 2);
+  await assert.rejects(read.execute({ route: prefix }), (error) => {
+    assert.ok(error.message.length <= READ_LIMITS.errorChars + 10);
+    return true;
+  });
 });

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
-import { apiReadResponse } from "../core/api";
+import { ApiError, apiReadResponse } from "../core/api";
 import type { GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { NEVER_CONFIRM, webMcpTextResult, withExecute, type WebMcpToolSpec } from "./shared";
 
-// Mirrors the broad-read block in src/rcp/limits.py; tested against that owner.
+// Transport bounds and model-facing result bounds are deliberately separate.
 export const READ_LIMITS = {
   bodyBytes: 262_144,
+  resultChars: 6_000,
+  errorChars: 1_000,
   schemaBytes: 4_194_304,
   timeoutMs: 15_000,
   historyRevisions: 100,
@@ -38,15 +40,20 @@ type Route = { template: string; parameters: Parameter[]; scope: "displayed_grap
  * /episodes/{episode_id}/merge-preview: Git merge-tree writes repository objects.
  * /artifacts/{artifact_id}/download and
  * /tasks/{operation_id}/artifacts/{artifact_id}/download: attachment downloads.
+ * /result-views and /result-views/{view_id}/preview: redirect-only aliases.
+ * /chats/{chat_id}/worktree: remote Git inspection can contact the network
+ * using the member's transport credentials (including ls-remote).
  * Other GETs were audited in project_state, chats, questions, history, lessons,
  * paper, notifications, artifacts, tasks, watchers, consolidation, episode_routes,
- * result_views and sync. Redirect-only result-views remain discoverable but cannot
- * be followed. Actual MIME admission also applies to undocumented responses.
+ * result_views and sync. Actual MIME admission also applies to undocumented responses.
  */
 export const PROJECT_READ_POLICY = {
   prefix: "/api/projects/{project_id}",
   exclusions: {
     "/terminals": "terminal_reconciliation",
+    "/result-views": "redirect_only",
+    "/result-views/{view_id}/preview": "redirect_only",
+    "/chats/{chat_id}/worktree": "remote_git_network_contact",
     "/experiment-episodes": "experiment_stop_settlement",
     "/digest": "member_digest_mark_creation",
     "/cached/revision": "project_reconciliation",
@@ -59,7 +66,11 @@ export const PROJECT_READ_POLICY = {
     ".npmrc",
     ".netrc",
     ".pypirc",
-    "id_*",
+    "id_rsa*",
+    "id_ed25519*",
+    "id_ecdsa*",
+    "id_dsa*",
+    ".git",
     "credentials*",
     "*.p12",
     "*.pfx",
@@ -193,7 +204,7 @@ export function buildReadUrl(
   target: GraphTargetRef,
   origin: string,
 ): string {
-  if (Object.keys(input).some((key) => !["route", "params", "query"].includes(key)))
+  if (Object.keys(input).some((key) => !["route", "params", "query", "offset"].includes(key)))
     throw new Error("Unknown read argument.");
   const path = object(input.params ?? {});
   const query = object(input.query ?? {});
@@ -273,13 +284,13 @@ export async function readBoundedResponse(
   try {
     signal.throwIfAborted();
     if (
+      response.type === "opaqueredirect" ||
       response.redirected ||
       (response.status >= 300 && response.status < 400) ||
       /attachment/i.test(response.headers.get("content-disposition") ?? "")
     )
       throw new Error("Redirect or download refused.");
     if (!PROJECT_READ_POLICY.admitsMime(mime)) throw new Error("Response MIME refused.");
-    if (!response.ok) throw new Error(`Read failed: HTTP ${response.status}`);
     if (Number(response.headers.get("content-length")) > cap)
       throw new Error("Read exceeds byte limit.");
     const decoder = new TextDecoder();
@@ -294,18 +305,67 @@ export async function readBoundedResponse(
         if (size > cap) throw new Error("Read exceeds byte limit.");
         text += decoder.decode(value, { stream: true });
       }
-    return text + decoder.decode();
+    text += decoder.decode();
+    if (!response.ok) {
+      let detail = "";
+      if (mime === "application/json" || mime.endsWith("+json")) {
+        try {
+          detail = JSON.stringify(JSON.parse(text)?.detail) ?? "";
+        } catch {
+          // A malformed error body still reports its HTTP status.
+        }
+      }
+      throw new ApiError(
+        `HTTP ${response.status}: ${detail.slice(0, READ_LIMITS.errorChars)}`,
+        response.status,
+      );
+    }
+    return text;
   } finally {
     cancel();
     signal.removeEventListener("abort", cancel);
   }
 }
 
+const OFFSET_SCHEMA = {
+  type: "integer",
+  minimum: 0,
+  description:
+    "Character offset into the body text; use next_offset to continue a truncated result.",
+};
+
+function textPage(metadata: Record<string, unknown>, text: string, offset: number) {
+  if (offset > text.length) throw new Error("Offset exceeds total_chars.");
+  const page = (length: number) => ({
+    ...metadata,
+    data: text.slice(offset, offset + length),
+    truncated: offset + length < text.length,
+    total_chars: text.length,
+    next_offset: offset + length < text.length ? offset + length : null,
+  });
+  let low = 0,
+    high = Math.min(text.length - offset, READ_LIMITS.resultChars);
+  // Include JSON escaping and provenance in the budget, not just the body slice.
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (JSON.stringify(page(middle)).length <= READ_LIMITS.resultChars) low = middle;
+    else high = middle - 1;
+  }
+  if (!low && offset < text.length) throw new Error("Read metadata exceeds result budget.");
+  return webMcpTextResult(page(low), READ_LIMITS.resultChars);
+}
+
+type ReadRouteCache = { routes?: Promise<Route[]> };
+
 export const LIST_READ_ROUTES_TOOL: WebMcpToolSpec = {
   name: "rcp_list_read_routes",
   description:
-    "Discover admitted GET templates and parameters for the open project. Page-owned project and branch parameters are injected. History requires a bounded revision window.",
-  inputSchema: { type: "object", additionalProperties: false },
+    "Discover admitted GET templates and parameter names as paged JSON text in data. Continue with next_offset. Project and branch are injected; history needs a bounded revision window.",
+  inputSchema: {
+    type: "object",
+    properties: { offset: OFFSET_SCHEMA },
+    additionalProperties: false,
+  },
   annotations: { readOnlyHint: true, untrustedContentHint: true },
   confirm: NEVER_CONFIRM,
 };
@@ -316,6 +376,7 @@ export const READ_TOOL: WebMcpToolSpec = {
   inputSchema: {
     type: "object",
     properties: {
+      offset: OFFSET_SCHEMA,
       route: {
         type: "string",
         description: "Exact admitted template returned by rcp_list_read_routes.",
@@ -328,7 +389,8 @@ export const READ_TOOL: WebMcpToolSpec = {
       query: {
         type: "object",
         additionalProperties: true,
-        description: "Typed query parameters from discovery, excluding the page-owned branch_id.",
+        description:
+          "Query values for the parameter names in discovery, excluding the page-owned branch_id.",
       },
     },
     required: ["route"],
@@ -341,8 +403,12 @@ export const READ_TOOL: WebMcpToolSpec = {
 export function projectBroadReadToolDefinitions(
   project: Pick<ProjectSnapshot, "id" | "graph_target">,
   lifetime: () => AbortSignal,
+  cache: ReadRouteCache = {},
 ) {
   const execute = async (input: Record<string, unknown>, discovery: boolean) => {
+    const offset = input.offset ?? 0;
+    if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid offset.");
     const controller = new AbortController();
     const owner = lifetime();
     const abort = () => controller.abort();
@@ -351,27 +417,47 @@ export function projectBroadReadToolDefinitions(
     try {
       owner.throwIfAborted();
       const signal = controller.signal;
-      const schemaText = await readBoundedResponse(
-        await apiReadResponse("/openapi.json", signal),
-        READ_LIMITS.schemaBytes,
-        signal,
-      );
-      const routes = admittedReadRoutes(JSON.parse(schemaText) as OpenApi);
+      if (!cache.routes) {
+        const pending = (async () =>
+          admittedReadRoutes(
+            JSON.parse(
+              await readBoundedResponse(
+                await apiReadResponse("/openapi.json", signal),
+                READ_LIMITS.schemaBytes,
+                signal,
+              ),
+            ) as OpenApi,
+          ))();
+        cache.routes = pending;
+        void pending.catch(() => {
+          if (cache.routes === pending) delete cache.routes;
+        });
+      }
+      const routes = await cache.routes;
       lifetime().throwIfAborted();
-      let result: unknown;
+      let metadata: Record<string, unknown>;
+      let body: string;
       if (discovery) {
-        if (Object.keys(input).length) throw new Error("Discovery takes no arguments.");
-        result = {
-          source: "/openapi.json",
-          project_id: project.id,
-          routes,
+        if (Object.keys(input).some((key) => key !== "offset"))
+          throw new Error("Unknown discovery argument.");
+        metadata = { source: "/openapi.json", project_id: project.id };
+        body = JSON.stringify({
+          routes: routes.map(({ template, parameters }) => ({
+            template,
+            params: parameters
+              .filter((p) => p.in === "path" && p.name !== "project_id")
+              .map((p) => p.name),
+            query: parameters
+              .filter((p) => p.in === "query" && p.name !== "branch_id")
+              .map((p) => p.name),
+          })),
           policy: {
             credential_names: PROJECT_READ_POLICY.credentialNames,
             history_max_revisions: READ_LIMITS.historyRevisions,
             history_windows: PROJECT_READ_POLICY.windows,
             injected: ["project_id", "branch_id"],
           },
-        };
+        });
       } else {
         const route = routes.find((r) => r.template === input.route);
         if (!route) throw new Error("Route is not admitted.");
@@ -391,19 +477,19 @@ export function projectBroadReadToolDefinitions(
             new URL(url).searchParams.get("all_targets") === "true")
             ? "project"
             : route.scope;
-        result = {
+        metadata = {
           source: url,
           scope,
           project_id: project.id,
           ...(scope === "displayed_graph" ? { graph_target: project.graph_target } : {}),
           mime: response.headers.get("content-type"),
-          data: text,
         };
+        body = text;
       }
       signal.throwIfAborted();
       owner.throwIfAborted();
       lifetime().throwIfAborted();
-      return webMcpTextResult(result, READ_LIMITS.schemaBytes * 2);
+      return textPage(metadata, body, offset);
     } finally {
       clearTimeout(timer);
       owner.removeEventListener("abort", abort);
@@ -425,7 +511,14 @@ export function useProjectBroadReadTools(
   const id = project?.id;
   const branch = project?.graph_target.branch_id;
   const scope = useMemo(
-    () => ({ id, branch, member, space, controller: new AbortController() }),
+    () => ({
+      id,
+      branch,
+      member,
+      space,
+      controller: new AbortController(),
+      cache: {} as ReadRouteCache,
+    }),
     [id, branch, member, space],
   );
   const current = useRef(scope);
@@ -444,10 +537,14 @@ export function useProjectBroadReadTools(
   return useMemo(
     () =>
       project && member && space
-        ? projectBroadReadToolDefinitions(project, () => {
-            if (current.current !== scope) throw new Error("Read identity or project changed.");
-            return scope.controller.signal;
-          })
+        ? projectBroadReadToolDefinitions(
+            project,
+            () => {
+              if (current.current !== scope) throw new Error("Read identity or project changed.");
+              return scope.controller.signal;
+            },
+            scope.cache,
+          )
         : [],
     [project, member, space, scope],
   );
