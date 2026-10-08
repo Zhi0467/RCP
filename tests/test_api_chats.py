@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.runs.chat import _append_chat_exchange
-from rcp.service import RunRequest
+from rcp.service import ChatSummary, RunRequest
 from rcp.transport import StateUnavailable
 from tests.helpers import signed_in_client
 
@@ -490,3 +490,12 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
     )
     assert rows[branch_chat]["conversation_kind"] == "chat"
     assert [row["chat_id"] for row in client.get(url).json()["items"]] == [main_chat]
+    # The paged per-target list keeps only conversations its transcript route opens,
+    # even when a task-only conversation sits on the viewed target.
+    on_main = [
+        ChatSummary.model_validate({**row, "graph_target": {"kind": "main"}})
+        for row in store.chat_inventory(project_id)
+    ]
+    assert task_chat not in {
+        row.chat_id for row in service.chat_summaries(task_summaries=on_main).items
+    }

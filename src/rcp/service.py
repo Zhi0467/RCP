@@ -1280,7 +1280,10 @@ class ProjectService:
         for task in task_summaries or []:
             canonical = summaries.get(task.chat_id)
             if canonical is None:
-                summaries[task.chat_id] = task
+                # A conversation with no transcript yet is listed only by the inventory;
+                # the paged per-target list keeps rows its transcript route can open.
+                if inventory:
+                    summaries[task.chat_id] = task
             elif canonical.graph_target == task.graph_target:
                 summaries[task.chat_id] = canonical.model_copy(
                     update={
