@@ -2340,6 +2340,8 @@ export interface ArtifactContextRequest {
   operation_id: string;
   artifact_id: string;
   episode_id?: string | null;
+  /** The origin cannot resume; the edit explicitly starts a new provider session. */
+  fresh_session?: boolean;
   selections: ArtifactSelection[];
 }
 

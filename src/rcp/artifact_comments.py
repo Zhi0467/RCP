@@ -86,9 +86,17 @@ def selection_frame_addon() -> FrameAddon:
         frame_script=_selection_script()
         + """
 let clearSelection=null;
+let selectionActive=false;
 listen(privatePort,'message',(event)=>{
-  if(event.data?.kind==='rcp-artifact-selection-enable' && !clearSelection)
-    clearSelection=installArtifactSelection(document,(selection)=>send({kind:'rcp-artifact-selection',selection}));
+  if(event.data?.kind==='rcp-artifact-selection-enable'){
+    selectionActive=true;
+    if(!clearSelection)
+      clearSelection=installArtifactSelection(document,(selection)=>send({kind:'rcp-artifact-selection',selection}),()=>selectionActive);
+  }
+  if(event.data?.kind==='rcp-artifact-selection-disable'){
+    selectionActive=false;
+    clearSelection?.();
+  }
   if(event.data?.kind==='rcp-artifact-selection-clear') clearSelection?.();
 });
 """,
@@ -105,6 +113,10 @@ listen(window,'message',(event)=>{
   if(event.data?.type==='rcp-artifact-selection-enable'){
     selectionEnabled=true;
     if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
+  }
+  if(event.data?.type==='rcp-artifact-selection-disable'){
+    selectionEnabled=false;
+    if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-disable'});
   }
   if(event.data?.type==='rcp-artifact-selection-clear' && artifactPort)
     portPost(artifactPort,{kind:'rcp-artifact-selection-clear'});

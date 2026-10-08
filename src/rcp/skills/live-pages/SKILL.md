@@ -2,7 +2,7 @@
 id: live-pages
 kind: skill
 label: Live pages
-version: 1.1.0
+version: 1.2.0
 description: Build self-contained HTML artifacts that redraw from bounded job, node, episode, file, and folder snapshots delivered by RCP.
 dependencies:
 ---
@@ -28,6 +28,16 @@ unavailable reads explicitly, and retain the last successful display while a
 source has an error. A truncated file is a bounded window, not the entire run.
 Never turn a missing observation into a zero. Data sent to this page may leave
 through frame navigation; the sandbox does not promise zero network access.
+
+## Inside the reply
+
+Embed the page where the reader needs it, with Markdown image syntax and its
+absolute artifact path, so it keeps updating inside the reply itself. There the
+page is painted with the reply's theme: draw with the `--rcp-*` custom
+properties the prompt lists, leave the background transparent, and size from
+content and width rather than the viewport. The examples below stay minimal;
+a real dashboard labels its axes, shows the latest values as text, and says
+plainly when a source is unavailable.
 
 ## Loss curve and its job
 

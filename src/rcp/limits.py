@@ -159,6 +159,11 @@ ARTIFACT_PREVIEW_MAX_LINES = 10_000
 CHAT_ARTIFACT_MAX_COUNT = 8
 ARTIFACT_VIEWER_STATE_REFRESH_MS = 2000
 ARTIFACT_DISPLAY_TITLE_MAX_CHARS = 240
+# An artifact shown inside a reply grows with its content up to this height and
+# scrolls within itself past it; the web mirrors it.
+ARTIFACT_INLINE_MAX_HEIGHT_PX = 1200
+# Shown while an inline frame has not yet measured its content.
+ARTIFACT_INLINE_INITIAL_HEIGHT_PX = 320
 # Selections one chat turn may carry from an artifact viewer; the web mirrors it.
 ARTIFACT_CONTEXT_MAX_SELECTIONS = 50
 # A boxed region of an image artifact is cropped for the agent, scaled to fit this side.

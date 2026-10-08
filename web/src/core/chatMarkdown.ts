@@ -5,6 +5,7 @@ import {
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type ReactNode,
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -204,6 +205,8 @@ interface MarkdownLinkContextValue {
   nodeIds: ReadonlySet<string>;
   onOpenNode?: (nodeId: string) => void;
   onOpenRepositoryFileLink?: (href: string) => void;
+  /** Renders an image source the reply embeds in place; null keeps the plain image. */
+  renderEmbed?: (src: string, alt: string) => ReactNode | null;
 }
 
 const MarkdownLinkContext = createContext<MarkdownLinkContextValue>({ nodeIds: new Set() });
@@ -264,7 +267,22 @@ function MarkdownLink({ href, children, className, node: _node, ...props }: Mark
   );
 }
 
-const MARKDOWN_COMPONENTS: Components = { a: MarkdownLink, pre: MarkdownCodeBlock };
+type MarkdownImageProps = ComponentProps<"img"> & { node?: unknown };
+
+// An image whose source is an artifact the turn wrote renders that artifact in place.
+function MarkdownImage({ node: _node, ...props }: MarkdownImageProps) {
+  const { renderEmbed } = useContext(MarkdownLinkContext);
+  void _node;
+  const embedded =
+    renderEmbed && typeof props.src === "string" ? renderEmbed(props.src, props.alt ?? "") : null;
+  return embedded ?? createElement("img", props);
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  a: MarkdownLink,
+  img: MarkdownImage,
+  pre: MarkdownCodeBlock,
+};
 
 interface MarkdownAnswerProps {
   text: string;
@@ -272,6 +290,7 @@ interface MarkdownAnswerProps {
   onOpenNode?: (nodeId: string) => void;
   glossaryIndex?: GlossaryIndex;
   onOpenRepositoryFileLink?: (href: string) => void;
+  renderEmbed?: (src: string, alt: string) => ReactNode | null;
 }
 
 export function MarkdownAnswer({
@@ -280,6 +299,7 @@ export function MarkdownAnswer({
   onOpenNode,
   glossaryIndex,
   onOpenRepositoryFileLink,
+  renderEmbed,
 }: MarkdownAnswerProps) {
   const nodeIds = onOpenNode ? new Set(Object.keys(nodes)) : new Set<string>();
   const markdown = createElement(ReactMarkdown, {
@@ -295,7 +315,7 @@ export function MarkdownAnswer({
   });
   return createElement(
     MarkdownLinkContext.Provider,
-    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink } },
+    { value: { nodeIds, onOpenNode, onOpenRepositoryFileLink, renderEmbed } },
     markdown,
   );
 }

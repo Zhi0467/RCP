@@ -82,9 +82,11 @@ artifact. Inline JavaScript remains useful and may navigate only its isolated
 child frame, which can still cause a navigation request; RCP does not claim
 literal zero network traffic.
 
-Every card offers Download and Keep. The file's type decides how it is viewed:
+Every card offers Download and Keep. A reply can instead show an artifact in
+place ([Artifacts inside a reply](#artifacts-inside-a-reply)). The file's type
+decides how it is viewed:
 
-- HTML opens in the sandboxed viewer. It has no inline thumbnail.
+- HTML opens in the sandboxed viewer. Its card has no inline thumbnail.
 - Raster images and SVG open in the viewer, and a small one renders directly
   with the answer.
 - Markdown opens as RCP-rendered, script-free HTML. Raw HTML in the source
@@ -248,9 +250,58 @@ panel. Its RCP chrome owns the title, version, Live or Finished status, Undo,
 reply-thread control, dock, and close. The embedded shell keeps Keep and notices,
 selection gestures, a comment box, and Send. The shell allows framing only by
 the same RCP origin. Agent HTML remains inside its unchanged opaque sandbox.
-Small raster images and SVGs may also render inline in chat; HTML has no thumbnail.
-PDFs use the system viewer on desktop, and unsupported files remain download-only.
-Repository-file previews use the same panel with their script-free content route.
+A small raster image or SVG card also renders its picture; an HTML card has no
+thumbnail. PDFs use the system viewer on desktop, and unsupported files remain
+download-only. Repository-file previews use the same panel with their
+script-free content route.
+
+An HTML document that declares a doctype keeps it first, ahead of RCP's policy
+and bootstrap, so the page renders in the standards mode it was written for; a
+page without one keeps the mode its own browser would give it.
+
+### Artifacts inside a reply
+
+A reply embeds an artifact its own turn wrote with Markdown image syntax and
+the file's absolute path in the turn's artifact directory. The same rule that
+resolves a cited turn file to its registered artifact decides which artifact an
+image names; nothing in prose can name another turn's file. In the chat that
+image becomes the artifact's viewer, running in place, for every type the
+viewer shows: HTML runs, raster images and SVG draw, Markdown and text render.
+An embedded artifact loses its card and keeps the card's offers as a caption
+under it: Comment where selections apply, Expand into the viewer panel, Keep,
+and Download. An artifact the reply does not embed keeps its card. An embedded
+PDF or download-only file says it is attached below, where its card stays, and
+an embedded name the turn never registered says it is not available; neither
+navigates or fetches anything.
+
+The embed is the viewer shell in its inline presentation, not a second viewer.
+It has no RCP chrome and a transparent page. Inside it the content route renders
+the same bytes with the reply's theme: every frame in the chain declares the
+reply's `color-scheme`, without which the browser paints an opaque backdrop
+behind the nested page, and the artifact frame receives the app palette as
+`--rcp-*` custom properties ahead of its own CSS. A page that declares its own
+scheme keeps it and is shown on that backdrop. Markdown and text pages get the
+same palette and RCP's nonce-bound height report as their only script. The
+shell reloads its content when the theme or mode changes.
+
+The embed grows with its content up to the inline height bound in `limits.py`,
+after which the content scrolls inside itself. An HTML page reports its content
+height over the existing private channel; the wrapper forwards only that bounded
+number, and inline rendering neutralizes viewport-height rules on the root and
+body so a page cannot measure its own frame. The chat mounts an embed only as a
+reader approaches it, and refreshes its viewer state when a turn in the chat
+settles, so a published edit, Undo, live status, and the version number reach
+the reply in place. Live pages keep their unchanged one-way data feed.
+
+Comment mode is off by default, so a game or chart receives the pointer. The
+caption's Comment turns on the existing selection gestures for HTML and images,
+and turning it off removes them. A finished selection opens the chat's own
+comment window; Add comment stages it in the composer like quoted answer text,
+and the turn carries it as that artifact's selection in the one shape every
+artifact route uses, with the fresh-session flag when the viewer state requires
+one. One message carries comments on one artifact. Comments still become
+ordinary Discuss turns of the artifact's origin chat, and the edit publishes the
+next version of the same artifact.
 
 The Runs card's list comes from the run artifact endpoint described in
 [the API spec](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
@@ -266,7 +317,9 @@ image request; ordinary navigation to that URL receives the shell.
 
 ### Selection and comments
 
-HTML, raster images, and SVG support selection gestures. Every type the viewer
+HTML, raster images, and SVG support selection gestures; the panel enables them
+at once, and an artifact inside a reply enables them only in its comment mode.
+Every type the viewer
 shows accepts an edit comment, including Markdown, text, data, and code; these
 other types accept comments without selections. PDF and download-only files
 refuse editing.

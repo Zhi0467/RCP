@@ -91,6 +91,16 @@ import {
 } from "../artifacts/artifactViewerModel";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import {
+  InlineArtifact,
+  InlineArtifactMissing,
+  type InlineArtifactSelectionEvent,
+} from "../artifacts/InlineArtifact";
+import {
+  inlineArtifactFor,
+  inlineArtifactNames,
+  isInlineViewable,
+} from "../artifacts/inlineArtifacts";
+import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
@@ -107,6 +117,7 @@ import {
   type ChatAnnotationAnchor,
   type ChatAnnotationComposerPosition,
   type ChatAnnotationViewportMetrics,
+  type StagedArtifactTarget,
   type StagedChatAnnotation,
 } from "./chatInput";
 import {
@@ -229,6 +240,8 @@ interface SelectedChatAnnotationComposer {
   selectedText: string;
   anchor: ChatAnnotationAnchor;
   position: ChatAnnotationComposerPosition | null;
+  /** Set when the selection is a part of an artifact shown inside a reply. */
+  artifact?: StagedArtifactTarget;
 }
 
 interface KeyboardChatAnnotationComposer {
@@ -482,6 +495,8 @@ export function NodeChat({
   const annotationComposerRef = useRef<HTMLFormElement | null>(null);
   const selectionCommentRef = useRef<HTMLButtonElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
+  // Clears the selection mark inside an inline artifact once its comment closes.
+  const inlineSelectionClearRef = useRef<(() => void) | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
   const attachmentUploadBusyRef = useRef(false);
@@ -526,6 +541,15 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  // A settled turn may have published a new version of an artifact shown in place.
+  const inlineArtifactRefreshToken = useMemo(
+    () =>
+      relatedTasks
+        .filter((task) => !isActiveTask(task))
+        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+        .join("|"),
+    [relatedTasks],
+  );
   // While the watched turn can take live input, the ordinary composer addresses
   // that exact attempt instead of starting a new turn. There is no separate
   // steering control; a runtime without an input channel leaves the composer
@@ -1359,9 +1383,63 @@ export function NodeChat({
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
 
+  // A part of an artifact shown inside a reply, selected in its comment mode, is
+  // staged like answer text; the turn carries it as that artifact's selection.
+  const openInlineArtifactComment = (
+    taskId: string,
+    artifact: AgentArtifactDescriptor,
+    event: InlineArtifactSelectionEvent,
+  ) => {
+    if (submitting) {
+      event.clear();
+      return;
+    }
+    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+      event.clear();
+      return;
+    }
+    if (
+      annotations.some(
+        (annotation) =>
+          annotation.artifact && annotation.artifact.context.artifact_id !== artifact.artifact_id,
+      )
+    ) {
+      setSubmitError(
+        "One message carries comments on one artifact. Send or remove the staged ones first.",
+      );
+      event.clear();
+      return;
+    }
+    inlineSelectionClearRef.current?.();
+    inlineSelectionClearRef.current = event.clear;
+    annotationOriginRef.current = null;
+    setAnnotationComment("");
+    setSubmitError(null);
+    setAnnotationComposer({
+      step: "comment",
+      selectedText: event.description || artifact.name,
+      anchor: event.anchor,
+      position: null,
+      artifact: {
+        context: {
+          source: "task",
+          operation_id: taskId,
+          artifact_id: artifact.artifact_id,
+          ...(event.freshSession ? { fresh_session: true } : {}),
+        },
+        name: artifact.name,
+        selection: { ...event.selection, comment: "" },
+      },
+    });
+    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+  };
+
   const dismissAnnotationComposer = (returnFocus: boolean) => {
     const origin = annotationOriginRef.current;
     annotationOriginRef.current = null;
+    inlineSelectionClearRef.current?.();
+    inlineSelectionClearRef.current = null;
     setAnnotationComposer(null);
     setAnnotationComment("");
     if (returnFocus) {
@@ -1375,12 +1453,14 @@ export function NodeChat({
     if (annotationComposer.step !== "comment") return;
     const comment = annotationComment.trim();
     if (!comment) return;
+    const artifact = annotationComposer.artifact;
     setAnnotations((current) => [
       ...current,
       {
         id: crypto.randomUUID(),
         selectedText: annotationComposer.selectedText,
         comment,
+        ...(artifact ? { artifact } : {}),
       },
     ]);
     setAnnotationsOpen(false);
@@ -1716,6 +1796,53 @@ export function NodeChat({
     });
   };
 
+  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) =>
+    artifact.can_download ? (
+      desktop ? (
+        <button type="button" onClick={() => void downloadArtifact(taskId, artifact)}>
+          <Download size={12} /> Download
+        </button>
+      ) : (
+        <a
+          href={artifactUrl(project.id, taskId, artifact.artifact_id, "download")}
+          download={artifact.name}
+        >
+          <Download size={12} /> Download
+        </a>
+      )
+    ) : null;
+
+  const renderInlineArtifact = (
+    taskId: string,
+    artifacts: AgentArtifactDescriptor[] | undefined,
+    src: string,
+    alt: string,
+  ) => {
+    const found = inlineArtifactFor(src, taskId, artifacts);
+    if (!found) return null;
+    const { artifact } = found;
+    if (!artifact || !artifact.available || !artifact.can_open)
+      return <InlineArtifactMissing name={found.name} />;
+    // A PDF or download-only file keeps its card below the reply.
+    if (!isInlineViewable(artifact)) return <InlineArtifactMissing name={found.name} attached />;
+    const key = `${taskId}:${artifact.artifact_id}`;
+    return (
+      <InlineArtifact
+        key={key}
+        projectId={project.id}
+        artifact={artifact}
+        title={alt.trim() || artifact.name}
+        refreshToken={inlineArtifactRefreshToken}
+        canComment={!readOnly}
+        keeping={keepingArtifacts.has(key)}
+        onExpand={() => void openArtifact(taskId, artifact)}
+        onKeep={artifact.can_keep ? () => void keepArtifact(taskId, artifact) : null}
+        download={artifactDownloadControl(taskId, artifact)}
+        onSelection={(event) => openInlineArtifactComment(taskId, artifact, event)}
+      />
+    );
+  };
+
   const watcherToggle = watcherRows.length > 0 && (
     <button
       className={`chat-watcher-count${watchersOpen ? " is-open" : ""}`}
@@ -1881,6 +2008,9 @@ export function NodeChat({
                           onOpenRepositoryFileLink={(href) =>
                             void openRepositoryFile(messageId, line.taskId, href)
                           }
+                          renderEmbed={(src, alt) =>
+                            renderInlineArtifact(line.taskId, line.artifacts, src, alt)
+                          }
                         />
                       </div>
                       {/* Outside the annotatable wrapper: a selection clamp or the
@@ -1990,6 +2120,16 @@ export function NodeChat({
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
+                // A reply that embeds an artifact shows it in place, with its actions.
+                if (
+                  line.role === "agent" &&
+                  line.text &&
+                  isInlineViewable(artifact) &&
+                  artifact.available &&
+                  artifact.can_open &&
+                  inlineArtifactNames(line.text, line.taskId).has(artifact.name)
+                )
+                  return null;
                 const taskUpdatedAt =
                   relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const previewFailed = failedArtifactPreviews.has(

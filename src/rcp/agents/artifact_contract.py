@@ -7,8 +7,10 @@ from typing import Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
+from rcp.artifact_theme import ARTIFACT_THEME_TOKENS
 from rcp.artifacts import artifact_view
 from rcp.limits import (
+    ARTIFACT_INLINE_MAX_HEIGHT_PX,
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
@@ -117,4 +119,24 @@ def artifact_contract(artifact_path: str, *, allow_episode: bool = False) -> str
 - When a turn names a commented artifact's writable path, edit that file in place. Its turn names the destination; do not choose a new output path for that edit.
 - HTML must be self-contained. Ordinary HTTP(S) reference links are allowed; external scripts, images, fonts, fetches, and other resource loads are blocked in the preview.
 
+{inline_contract(artifact_path)}
+
 {live_contract(allow_episode=allow_episode)}"""
+
+
+def inline_contract(artifact_path: str) -> str:
+    """How a reply shows an artifact in place, from the tokens and limits RCP applies."""
+
+    tokens = ", ".join(
+        f"`--rcp-{name}` ({purpose})" for name, purpose in ARTIFACT_THEME_TOKENS.items()
+    )
+    return "\n".join(
+        [
+            "Artifacts inside the reply:",
+            f"- To show a viewable artifact where it belongs in the reply, embed it with Markdown image syntax and its absolute path: `![Short title]({artifact_path}/name.html)`. RCP renders it there, running and interactive: HTML runs its scripts, images and SVG draw, Markdown and text render. The reader can play with it in place, expand it, keep it, and comment on it to ask for an edit. Write the file first; an embedded file that does not exist shows nothing. An artifact you do not embed is shown as a card below the reply, and an ordinary link opens it in the viewer instead.",
+            "- Use an embedded HTML page whenever interaction helps the reader: a figure to hover or filter, a parameter to drag, a diagram to explore, a simulation or a game. Use SVG or an image for a figure that only needs to be looked at. Keep prose in the reply itself, not in the page.",
+            f"- The page's own content sets its height, up to {ARTIFACT_INLINE_MAX_HEIGHT_PX}px, after which it scrolls inside itself. Size from content and width: never from the viewport (no `100vh`, no full-window layouts). Scale a canvas to the frame's width with a fixed aspect ratio.",
+            f"- RCP paints an embedded page with the reply's theme. These CSS custom properties are set on `:root`: {tokens}. `color-scheme` is set to the reply's light or dark mode, and `--rcp-color-mode` names it. Leave the page background transparent and draw cards with `--rcp-panel` and `--rcp-rule` so the page reads as part of the reply. A page designed only for a light background declares `:root{{color-scheme:light}}` and is shown on its own light backdrop.",
+            "- Inside a reply, handle keys on your own focusable element rather than `window`, start with sound off, set `touch-action: none` on a surface the pointer drags, and support pointer, touch, and keyboard input.",
+        ]
+    )
