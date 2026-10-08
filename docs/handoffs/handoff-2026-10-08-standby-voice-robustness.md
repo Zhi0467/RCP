@@ -130,19 +130,36 @@ dashboard, an analysis, code) means a Work turn on the relevant node, whose
 node agent already knows the artifact contract. So "make me a live dashboard
 for this experiment" depends on luck.
 
-- One module in `web/src/webmcp/` holds the routes. It names tools through the
-  catalog objects, so a renamed or removed tool fails a test instead of leaving
-  stale prose.
-  - Explain or answer: overview, then inspect, then `rcp_read`.
-  - Make something: find the node, send a Work turn on that node with the
-    member's request, say it is running, let the watch announce the finish, then
-    list and open the artifact.
-  - Run something: start an Experiment or authorize Auto-research.
-- Voice: the page sends the rendered playbook with the session request. The
-  backend appends it to its fixed instructions under a size limit.
+- The playbook is domain knowledge in plain language, about 25 lines. It
+  names no tools; tool descriptions map each step to a call. It describes
+  workflows, not enforcement, so it is not rendered from an enforcement
+  object. One module in `web/src/webmcp/` holds it.
+- Contents, settled 2026-10-08:
+  - What RCP is: the node graph, conversations, episodes (Experiment loops,
+    Auto-research on a branch), artifacts, and the Inbox (proposals, nightly
+    consolidation reports).
+  - Role: the member's voice in their own page, acting as them. Node agents do
+    the research; the voice agent finds, reads, explains, routes, and reports.
+  - Catch me up or explain: overview first, then only as deep as asked.
+  - Make something: pick the node and say which one, then send at once (the tap
+    card, when on, is the guard). Continue the node's recent conversation if it
+    has one; otherwise start a fresh node conversation. Work mode, with the
+    member's words plus what they want to see. Announce the finish and open the
+    result.
+  - Think or plan: Discuss on the node.
+  - Run or keep going: start the Experiment or authorize Auto-research, saying
+    the budget aloud first. Stop means a graceful stop.
+  - Show me: open the view or artifact.
+  - Member-only: proposal judgment, Decision choice, standing, Hypothesis
+    status, branch merge. Say where to tap.
+  - Voice manners: speaking only, maybe not looking. Never ask to paste or type.
+    Gist first, names not ids, one short question when the node or project is
+    unclear, nothing claimed until a result confirms it.
+- Voice: the page sends the playbook with the session request. The backend
+  appends it to its fixed instructions under a size limit.
 - WebMCP: a read-only `rcp_get_playbook` tool returns the same text.
-- Checks: structure only. Every tool the playbook names exists in the catalog,
-  and voice and WebMCP get the same object. No wording tests.
+- Checks: voice and WebMCP get the same object, and it stays under its size
+  limit. No wording tests.
 
 ## Ownership and checks
 
