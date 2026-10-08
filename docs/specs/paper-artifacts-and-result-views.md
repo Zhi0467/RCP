@@ -283,7 +283,9 @@ reply's `color-scheme`, without which the browser paints an opaque backdrop
 behind the nested page, and the artifact frame receives the app palette as
 `--rcp-*` custom properties ahead of its own CSS. The reply's scheme is pinned:
 a page's own `light dark` would follow the operating system rather than the
-reply, so a page drawn for one palette paints its own background. Markdown and text pages get the
+reply, so a page drawn for one palette paints its own background. Only the
+inline presentation sets the palette; Expand and a download show the page's own
+fallback values, which the agent contract asks for. Markdown and text pages get the
 same palette and RCP's nonce-bound height report as their only script. The
 shell reloads its content when the theme or mode changes.
 
@@ -308,7 +310,11 @@ artifact, instead of Comment. A finished selection opens the chat's own
 comment window; Add comment stages it in the composer like quoted answer text,
 and the turn carries it as that artifact's selection in the one shape every
 artifact route uses, with the fresh-session flag when the viewer state requires
-one. One message carries comments on one artifact. Comments still become
+one. A selection cancelled inside the frame (Escape, an aborted drag, or the
+start of a new one) and leaving comment mode close that window. A new version of
+the artifact closes it as well and removes the comments already staged on the
+old version, with a notice, since their regions describe bytes the reader no
+longer sees. One message carries comments on one artifact. Comments still become
 ordinary Discuss turns of the artifact's origin chat, and the edit publishes the
 next version of the same artifact.
 
