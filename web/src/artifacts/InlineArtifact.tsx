@@ -37,7 +37,7 @@ interface InlineArtifactProps {
   onKeep: (() => void) | null;
   download: ReactNode;
   onSelection: (event: InlineArtifactSelectionEvent) => void;
-  /** The reader cancelled the selection inside the frame (Escape, a new drag, or an aborted one). */
+  /** The selection is gone: cancelled in the frame (Escape, a new drag, an aborted one) or replaced by a new version. */
   onSelectionCancel: () => void;
 }
 
@@ -109,6 +109,17 @@ export function InlineArtifact({
       });
     return () => controller.abort();
   }, [near, projectId, artifact.artifact_id, refreshToken, stateGeneration]);
+
+  // A new version replaces the frame, so a comment staged on the old one has no
+  // region left to point at.
+  const shownVersion = useRef<string | null>(null);
+  const currentVersion = state?.current_version ?? null;
+  useEffect(() => {
+    if (currentVersion === null) return;
+    if (shownVersion.current !== null && shownVersion.current !== currentVersion)
+      onSelectionCancelRef.current();
+    shownVersion.current = currentVersion;
+  }, [currentVersion]);
 
   // A live page saves its final snapshot without settling a turn or moving its
   // version, so while live the caption rechecks on a slow beat to read Finished.
