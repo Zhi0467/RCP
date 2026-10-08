@@ -288,6 +288,8 @@ function startSession(
   return {
     limits,
     sendFunctionOutput: (callId, output) => {
+      // A call that finished after a late deadline must not restart generation.
+      if (endIfDue()) return;
       send({
         type: "response.item.create",
         event_id: eventId(),
