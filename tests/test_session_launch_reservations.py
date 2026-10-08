@@ -99,6 +99,7 @@ def test_only_operational_success_reopens_master_after_revoking_edit(store):
             "native",
             stage_host=None,
             stage_root="/scratch/native",
+            owner="chat",
         )
 
     for kind in ("artifact_edit", "node_chat"):
@@ -107,7 +108,10 @@ def test_only_operational_success_reopens_master_after_revoking_edit(store):
                 store,
                 kind,
                 kind=kind,
-                request={"provider": "codex", "artifact_edit": {"base_version_id": "base"}},
+                request={
+                    "provider": "codex",
+                    "artifact_edit": {"base_version_id": "base", "launch_kind": "revoking"},
+                },
             )
         )
         store.complete_agent_task(kind, result={}, applied_revision=None)
@@ -116,6 +120,14 @@ def test_only_operational_success_reopens_master_after_revoking_edit(store):
     clock += timedelta(seconds=1)
     store.create_agent_task(_task(store, "operation"))
     store.complete_agent_task("operation", result={}, applied_revision=None)
+    assert pending()
+    from rcp.runs.session_master import record_session_master
+
+    clock += timedelta(seconds=1)
+    store.create_agent_task(_task(store, "reopened"))
+    record_session_master(store, "reopened", "chat master")
+    assert pending()
+    store.complete_agent_task("reopened", result={}, applied_revision=None)
     assert not pending()
 
 

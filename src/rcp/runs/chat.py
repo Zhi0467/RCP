@@ -60,6 +60,8 @@ from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.session_master import (
+    SESSION_MASTER_KEY_ROLE,
+    SESSION_MASTER_ROLE,
     continuation_session_master,
     read_legacy_session_master,
     record_session_master,
@@ -301,6 +303,27 @@ def _with_graph_revision(
     }
 
 
+def _chat_master_status(
+    execution: AgentTaskExecution | None, session_id: str | None
+) -> tuple[tuple[str, str, str | None] | None, bool]:
+    """The delivered master and chat-owned revocation state on this session."""
+
+    if execution is None or session_id is None:
+        return None, False
+    record = execution.store.agent_task(execution.operation_id)
+    if record is None:
+        raise ValueError("The current chat task record is unavailable.")
+    latest = execution.store.latest_session_master(record.project_id, session_id)
+    revoked = bool(record.stage_root) and execution.store.episode_report_rebootstrap_pending(
+        record.project_id,
+        session_id,
+        stage_host=record.stage_host,
+        stage_root=record.stage_root or "",
+        owner="chat",
+    )
+    return latest, revoked
+
+
 def _prepare_chat_prompt_state(
     execution: AgentTaskExecution | None,
     request: RunRequest,
@@ -314,6 +337,7 @@ def _prepare_chat_prompt_state(
     """Persist a candidate baseline and return the turn's node, master, and compact delta."""
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
+    latest, revoked = _chat_master_status(execution, request.session_id)
     node = classify(
         LaunchPhase(
             session_id=request.session_id,
@@ -336,15 +360,24 @@ def _prepare_chat_prompt_state(
                 remote_stage=remote_stage,
                 path=previous.master_context_path,
             )
-            if legacy is not None:
+            if (
+                legacy is not None
+                and not revoked
+                and (
+                    latest is None
+                    or latest[1] == hashlib.sha256(legacy.encode("utf-8")).hexdigest()
+                )
+            ):
                 master_operation_id = execution.operation_id
                 master_sha256 = record_session_master(
                     execution.store, execution.operation_id, legacy
                 )
                 master_source = "legacy_capture"
-    must_bootstrap = master_operation_id is None
+    displaced = latest is not None and latest[1] != master_sha256
+    must_bootstrap = master_operation_id is None or displaced or revoked
     if not must_bootstrap:
         assert execution is not None and previous is not None and master_sha256 is not None
+        assert master_operation_id is not None
         master_context_path = stage_session_master(
             execution.store,
             local_stage=local_stage,
@@ -354,6 +387,7 @@ def _prepare_chat_prompt_state(
             path=previous.master_context_path,
         )
     else:
+        master_source = "rendered"
         master_context_path = _stage_or_reuse_task_input(
             local_stage,
             remote_stage,
@@ -380,7 +414,7 @@ def _prepare_chat_prompt_state(
         delta = changed_since_master(
             MasterRef(path=master_context_path, bootstrap=False, values=reference), values
         )
-    replaces = previous is not None and must_bootstrap
+    replaces = (previous is not None or latest is not None) and must_bootstrap
     if replaces:
         delta = {
             "master_context": {
@@ -433,6 +467,7 @@ def _prepare_chat_prompt_state(
         path=master_context_path,
         bootstrap=must_bootstrap,
         replaces=replaces,
+        after_report=revoked,
         values=previous.values if previous is not None else None,
     )
     return node, master, delta
@@ -502,11 +537,11 @@ def chat_continuation_master(
 ) -> MasterRef:
     """The master a Discuss or Work continuation points to in this native session.
 
-    A session with a committed chat baseline keeps its chat master, restored from its
-    record. Any other session continues from the master recorded for it under the owner's
-    key, or bootstraps a freshly rendered owner contract. A forced bootstrap reopens the
-    same master rather than implying that its content changed. A launch with no task
-    record has nowhere to find a master, so it always bootstraps one.
+    A session with a committed chat baseline restores its chat master and reopens it
+    after another owner's master or file-only revocation. Any other session continues
+    from the master recorded under the owner's key, or bootstraps a fresh owner contract.
+    A forced bootstrap reopens the same master rather than implying its content changed.
+    A launch with no task record has nowhere to find a master, so it always bootstraps one.
     """
 
     if execution is None:
@@ -518,6 +553,8 @@ def chat_continuation_master(
     previous, _ = _committed_chat_prompt_state(
         execution, request.model_copy(update={"session_id": session_id})
     )
+    latest, revoked = _chat_master_status(execution, session_id)
+    force_bootstrap = force_bootstrap or revoked
     if (
         previous is not None
         and previous.contract_key
@@ -533,10 +570,28 @@ def chat_continuation_master(
             sha256=previous.master_sha256,
             path=previous.master_context_path,
         )
+        reopen = force_bootstrap or (latest is not None and latest[1] != previous.master_sha256)
+        master_values = recorded_master_values(execution.store, previous.master_operation_id)
+        if reopen:
+            content = execution.store.agent_task_contract(
+                previous.master_operation_id, SESSION_MASTER_ROLE
+            )
+            assert content is not None
+            record_session_master(
+                execution.store,
+                execution.operation_id,
+                content,
+                execution.store.agent_task_contract(
+                    previous.master_operation_id, SESSION_MASTER_KEY_ROLE
+                ),
+                master_values,
+            )
         return MasterRef(
             path=path,
-            bootstrap=force_bootstrap,
-            values=recorded_master_values(execution.store, previous.master_operation_id),
+            bootstrap=reopen,
+            replaces=reopen,
+            after_report=revoked,
+            values=master_values,
         )
     master = continuation_session_master(
         execution,
@@ -547,10 +602,9 @@ def chat_continuation_master(
         key=master_key(policy_version, ontology_extensions=ontology_extensions),
         render=render,
         values=values,
+        force_bootstrap=force_bootstrap,
     )
-    if force_bootstrap and not master.bootstrap:
-        return replace(master, bootstrap=True)
-    return master
+    return replace(master, after_report=revoked)
 
 
 def _retained_chat_patch_values(

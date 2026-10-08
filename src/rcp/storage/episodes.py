@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Sequence
+from typing import Literal
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import AuthorizedHuman, EpisodeIsolation
@@ -1854,12 +1855,13 @@ class EpisodeStoreMixin(StoreMixinBase):
         *,
         stage_host: str | None,
         stage_root: str,
+        owner: Literal["chat", "episode"] = "episode",
     ) -> bool:
         """Whether revoking instructions are still the newest this session holds.
 
-        A report attempt or artifact edit sets it. It clears only once an operational
-        task created after that attempt, on the same session and stage, has succeeded; a
-        launch that failed or was interrupted proves nothing reached the provider.
+        A report attempt or artifact edit revokes each owner's master independently.
+        Only a succeeded reopening recorded after revocation clears that owner's fence;
+        an ordinary chat cannot clear the episode's pending reopening.
         """
 
         session = (project_id, native_session_id, stage_host or "", stage_root)
@@ -1875,7 +1877,10 @@ class EpisodeStoreMixin(StoreMixinBase):
                     UNION ALL
                     SELECT project_id, native_session_id, stage_host, stage_root,
                            created_at AS revoked_at
-                    FROM graph_runs WHERE kind = 'artifact_edit'
+                    FROM graph_runs
+                    WHERE kind = 'artifact_edit'
+                      -- A Discuss edit runs under the chat master and revokes nothing.
+                      AND json_extract(request_json, '$.artifact_edit.launch_kind') = 'revoking'
                 )
                 WHERE project_id = ? AND native_session_id = ?
                   AND COALESCE(stage_host, '') = ? AND stage_root = ?
@@ -1887,14 +1892,20 @@ class EpisodeStoreMixin(StoreMixinBase):
             settled = connection.execute(
                 """
                 SELECT 1 FROM graph_runs
+                JOIN graph_run_contracts AS master
+                  ON master.operation_id = graph_runs.operation_id
+                 AND master.role = 'session_master'
                 WHERE project_id = ? AND native_session_id = ?
                   AND COALESCE(stage_host, '') = ? AND stage_root = ?
                   AND kind IN ('node_chat', 'project_chat', 'auto_research')
                   AND json_extract(request_json, '$.artifact_edit') IS NULL
-                  AND status = 'succeeded' AND created_at > ?
+                  AND status = 'succeeded' AND master.created_at > ?
+                  AND CASE WHEN kind = 'auto_research'
+                            OR json_extract(request_json, '$.control_episode_id') IS NOT NULL
+                           THEN 'episode' ELSE 'chat' END = ?
                 LIMIT 1
                 """,
-                (*session, reported["reported_at"]),
+                (*session, reported["reported_at"], owner),
             ).fetchone()
         return settled is None
 
