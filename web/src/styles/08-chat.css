@@ -734,6 +734,152 @@
 .chat-artifact:has(.chat-artifact-shell-error) {
   flex-wrap: wrap;
 }
+/* An artifact a reply embeds sits in the reply's flow, sized by its content,
+   with its actions as a quiet caption rather than a file card. */
+.chat-inline-artifact {
+  container-type: inline-size;
+  display: block;
+  margin: 14px 0;
+  max-width: 100%;
+}
+/* A narrow reply keeps the caption to one line: actions become icons. */
+@container (max-width: 420px) {
+  .chat-inline-artifact-label {
+    display: none;
+  }
+}
+.chat-inline-artifact-frame,
+.chat-inline-artifact-placeholder {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  display: block;
+  width: 100%;
+}
+.chat-inline-artifact-placeholder:not([role="alert"]) {
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--line) 30%, transparent) 30%,
+    color-mix(in srgb, var(--line) 55%, transparent) 50%,
+    color-mix(in srgb, var(--line) 30%, transparent) 70%
+  );
+  background-size: 300% 100%;
+  animation: chat-inline-artifact-loading 1.6s ease-in-out infinite;
+}
+.chat-inline-artifact-placeholder[role="alert"] {
+  color: var(--red);
+  font-size: var(--type-xs);
+}
+@keyframes chat-inline-artifact-loading {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+.chat-inline-artifact.commenting .chat-inline-artifact-frame {
+  cursor: crosshair;
+  outline: 2px dashed var(--cobalt);
+  outline-offset: 4px;
+}
+.chat-inline-artifact-error {
+  color: var(--red);
+  flex-basis: 100%;
+  font-weight: 600;
+  order: 1;
+}
+.chat-inline-artifact-hint {
+  color: var(--cobalt-dark);
+  flex-basis: 100%;
+  order: 1;
+}
+.chat-inline-artifact-bar {
+  align-items: center;
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--type-xs);
+  gap: 2px 4px;
+  margin-top: 6px;
+  user-select: none;
+}
+.chat-inline-artifact-name {
+  font-weight: 600;
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-inline-artifact-name em {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--type-3xs);
+  font-style: normal;
+  font-weight: 600;
+  margin-left: 7px;
+  padding: 0 6px;
+}
+.chat-inline-artifact-live.live {
+  border-color: color-mix(in srgb, var(--forest) 55%, transparent);
+  color: var(--forest);
+}
+.chat-inline-artifact-live.live::before {
+  animation: chat-inline-artifact-pulse 1.8s ease-in-out infinite;
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 6px;
+  margin-right: 4px;
+  vertical-align: 1px;
+  width: 6px;
+}
+@keyframes chat-inline-artifact-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+.chat-inline-artifact-bar a,
+.chat-inline-artifact-bar button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 4px;
+  padding: 3px 6px;
+  text-decoration: none;
+}
+.chat-inline-artifact-bar a:hover,
+.chat-inline-artifact-bar button:hover,
+.chat-inline-artifact-bar button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--cobalt) 12%, transparent);
+  color: var(--cobalt-dark);
+}
+/* Selection gestures take a mouse or pen; a touch reader comments from Expand. */
+@media (hover: none) and (pointer: coarse) {
+  .chat-inline-artifact-bar .chat-inline-artifact-comment {
+    display: none;
+  }
+}
+.chat-inline-artifact-bar button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.chat-inline-artifact.missing {
+  align-items: center;
+  container-type: normal;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: var(--type-xs);
+  gap: 4px;
+  margin: 4px 0;
+}
 .chat-artifact-shell-error {
   color: var(--red);
   flex-basis: 100%;

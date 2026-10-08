@@ -1836,6 +1836,26 @@ each `{text, selection?}`, with `edit_now` and an explicit fresh-session flag to
 the existing comments route. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
 version 1 to the same-origin parent with the artifact and operation ids.
 
+### Inline artifact presentation
+
+The stored artifact `viewer` and `content` routes accept `presentation=inline`;
+`panel`, the default, is unchanged and any other value is a validation error.
+The inline content route also reads `theme` and `color_mode`, falling back to
+the app's default appearance for an unknown value. Every inline frame speaks
+protocol version 1 over `postMessage`:
+
+- content to shell, and shell to chat: `rcp-artifact-size` with a numeric
+  `height`. The wrapper relays only this number from the opaque page; the shell
+  and the chat each clamp it to the inline bound.
+- chat to shell: `rcp-inline-comment-mode` with `enabled`, and
+  `rcp-inline-selection-clear`. The shell maps them onto the existing
+  `rcp-artifact-selection-enable`, `rcp-artifact-selection-disable`, and
+  `rcp-artifact-selection-clear` frame messages.
+- shell to chat: `rcp-artifact-selection` with the bounded `selection`, or
+  null, and a one-line `description`.
+
+The chat accepts these only from that embed's own same-origin shell frame.
+
 ### Artifact viewer and run inventory
 
 `GET /api/projects/{project_id}/artifacts/{artifact_id}/state` returns

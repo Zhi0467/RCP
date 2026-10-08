@@ -72,7 +72,9 @@ import {
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
+  taskArtifacts,
   taskKindLabel,
+  type TaskTranscriptLine,
   versionedArtifactContentUrl,
 } from "../agents/agentTasks";
 import {
@@ -91,6 +93,17 @@ import {
 } from "../artifacts/artifactViewerModel";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import {
+  InlineArtifact,
+  InlineArtifactLoading,
+  InlineArtifactMissing,
+  type InlineArtifactSelectionEvent,
+} from "../artifacts/InlineArtifact";
+import {
+  inlineArtifactFor,
+  inlineArtifactNames,
+  isInlineViewable,
+} from "../artifacts/inlineArtifacts";
+import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
@@ -107,6 +120,7 @@ import {
   type ChatAnnotationAnchor,
   type ChatAnnotationComposerPosition,
   type ChatAnnotationViewportMetrics,
+  type StagedArtifactTarget,
   type StagedChatAnnotation,
 } from "./chatInput";
 import {
@@ -229,6 +243,8 @@ interface SelectedChatAnnotationComposer {
   selectedText: string;
   anchor: ChatAnnotationAnchor;
   position: ChatAnnotationComposerPosition | null;
+  /** Set when the selection is a part of an artifact shown inside a reply. */
+  artifact?: StagedArtifactTarget;
 }
 
 interface KeyboardChatAnnotationComposer {
@@ -482,6 +498,13 @@ export function NodeChat({
   const annotationComposerRef = useRef<HTMLFormElement | null>(null);
   const selectionCommentRef = useRef<HTMLButtonElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
+  // Embedded turns that aged out of the recent task list, fetched once on demand.
+  // Kept here because a later bounded task-list refresh drops such tasks again.
+  const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
+    ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
+  >(() => new Map());
+  // Clears the selection mark inside an inline artifact once its comment closes.
+  const inlineSelectionClearRef = useRef<(() => void) | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
   const attachmentUploadBusyRef = useRef(false);
@@ -526,6 +549,15 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  // A settled turn may have published a new version of an artifact shown in place.
+  const inlineArtifactRefreshToken = useMemo(
+    () =>
+      relatedTasks
+        .filter((task) => !isActiveTask(task))
+        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+        .join("|"),
+    [relatedTasks],
+  );
   // While the watched turn can take live input, the ordinary composer addresses
   // that exact attempt instead of starting a new turn. There is no separate
   // steering control; a runtime without an input channel leaves the composer
@@ -1359,9 +1391,94 @@ export function NodeChat({
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
 
+  // A part of an artifact shown inside a reply, selected in its comment mode, is
+  // staged like answer text; the turn carries it as that artifact's selection.
+  const openInlineArtifactComment = (
+    taskId: string,
+    artifact: AgentArtifactDescriptor,
+    event: InlineArtifactSelectionEvent,
+  ) => {
+    if (submitting) {
+      event.clear();
+      return;
+    }
+    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+      event.clear();
+      return;
+    }
+    if (
+      annotations.some(
+        (annotation) =>
+          annotation.artifact && annotation.artifact.context.artifact_id !== artifact.artifact_id,
+      )
+    ) {
+      setSubmitError(
+        "One message carries comments on one artifact. Send or remove the staged ones first.",
+      );
+      event.clear();
+      return;
+    }
+    inlineSelectionClearRef.current?.();
+    inlineSelectionClearRef.current = event.clear;
+    annotationOriginRef.current = null;
+    setAnnotationComment("");
+    setSubmitError(null);
+    setAnnotationComposer({
+      step: "comment",
+      selectedText: event.description || artifact.name,
+      anchor: event.anchor,
+      position: null,
+      artifact: {
+        context: {
+          source: "task",
+          operation_id: taskId,
+          artifact_id: artifact.artifact_id,
+          ...(event.freshSession ? { fresh_session: true } : {}),
+          ...(event.version ? { base_version: event.version } : {}),
+        },
+        name: artifact.name,
+        selection: { ...event.selection, comment: "" },
+      },
+    });
+    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+  };
+
+  // A selection cancelled inside the frame closes the comment staged from it.
+  const cancelInlineArtifactComment = (taskId: string, artifact: AgentArtifactDescriptor) => {
+    const context =
+      annotationComposer?.step === "comment" ? annotationComposer.artifact?.context : undefined;
+    if (context?.operation_id !== taskId || context.artifact_id !== artifact.artifact_id) return;
+    // The frame already cleared its mark; a clear sent now would end the drag that
+    // a new selection starts with.
+    inlineSelectionClearRef.current = null;
+    dismissAnnotationComposer(false);
+  };
+
+  // A new version moves the parts a selection named, so comments on the old one,
+  // open or staged, would be sent against bytes the reader never saw.
+  const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
+    const open =
+      annotationComposer?.step === "comment" ? annotationComposer.artifact?.context : undefined;
+    if (open?.artifact_id === artifact.artifact_id) {
+      inlineSelectionClearRef.current = null;
+      dismissAnnotationComposer(false);
+    }
+    const stale = annotations.filter(
+      (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
+    );
+    if (!stale.length) return;
+    setAnnotations((current) => current.filter((annotation) => !stale.includes(annotation)));
+    setSubmitError(
+      `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
+    );
+  };
+
   const dismissAnnotationComposer = (returnFocus: boolean) => {
     const origin = annotationOriginRef.current;
     annotationOriginRef.current = null;
+    inlineSelectionClearRef.current?.();
+    inlineSelectionClearRef.current = null;
     setAnnotationComposer(null);
     setAnnotationComment("");
     if (returnFocus) {
@@ -1375,12 +1492,14 @@ export function NodeChat({
     if (annotationComposer.step !== "comment") return;
     const comment = annotationComment.trim();
     if (!comment) return;
+    const artifact = annotationComposer.artifact;
     setAnnotations((current) => [
       ...current,
       {
         id: crypto.randomUUID(),
         selectedText: annotationComposer.selectedText,
         comment,
+        ...(artifact ? { artifact } : {}),
       },
     ]);
     setAnnotationsOpen(false);
@@ -1662,7 +1781,13 @@ export function NodeChat({
         method: "POST",
         body: JSON.stringify({}),
       });
-      await onRefreshTask(taskId);
+      const task = await onRefreshTask(taskId);
+      // An aged-out turn's embed reads its cached descriptors, which still offer Keep.
+      setAgedInlineArtifacts((current) =>
+        Array.isArray(current.get(taskId))
+          ? new Map(current).set(taskId, taskArtifacts(task))
+          : current,
+      );
     } catch (error) {
       setArtifactShellErrors((current) =>
         withMapValue(current, key, error instanceof Error ? error.message : String(error)),
@@ -1714,6 +1839,100 @@ export function NodeChat({
       path: resolution.target.path,
       line: resolution.target.line ?? undefined,
     });
+  };
+
+  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) => {
+    if (!artifact.can_download) return null;
+    const label = <span className="chat-inline-artifact-label">Download</span>;
+    return desktop ? (
+      <button
+        type="button"
+        aria-label="Download"
+        onClick={() => void downloadArtifact(taskId, artifact)}
+      >
+        <Download size={12} />
+        {label}
+      </button>
+    ) : (
+      <a
+        href={artifactUrl(project.id, taskId, artifact.artifact_id, "download")}
+        download={artifact.name}
+        aria-label="Download"
+      >
+        <Download size={12} />
+        {label}
+      </a>
+    );
+  };
+
+  // A turn's own descriptors, or the ones an embed fetched after the turn aged out,
+  // so a PDF the reply says is attached below keeps its card.
+  const lineArtifacts = (line: TaskTranscriptLine) => {
+    if (line.artifacts !== undefined || line.role !== "agent") return line.artifacts;
+    const aged = agedInlineArtifacts.get(line.taskId);
+    return Array.isArray(aged) ? aged : undefined;
+  };
+
+  const renderInlineArtifact = (
+    taskId: string,
+    artifacts: AgentArtifactDescriptor[] | undefined,
+    src: string,
+    alt: string,
+  ) => {
+    // An older reply's task has aged out of the recent list, so fetch the exact
+    // task before deciding the artifact is missing, as file citations do.
+    const aged =
+      artifacts === undefined && !relatedTasks.some((task) => task.operation_id === taskId)
+        ? agedInlineArtifacts.get(taskId)
+        : undefined;
+    const found = inlineArtifactFor(src, taskId, Array.isArray(aged) ? aged : artifacts);
+    if (!found) return null;
+    const { artifact } = found;
+    if (
+      !artifact &&
+      artifacts === undefined &&
+      !relatedTasks.some((task) => task.operation_id === taskId) &&
+      !Array.isArray(aged)
+    )
+      return (
+        <InlineArtifactLoading
+          name={found.name}
+          onLoad={() => {
+            if (agedInlineArtifacts.has(taskId)) return;
+            setAgedInlineArtifacts((current) => new Map(current).set(taskId, "loading"));
+            void onRefreshTask(taskId)
+              .then(taskArtifacts)
+              .catch((): AgentArtifactDescriptor[] => [])
+              .then((loaded) =>
+                setAgedInlineArtifacts((current) => new Map(current).set(taskId, loaded)),
+              );
+          }}
+        />
+      );
+    // A PDF or download-only file keeps its card below the reply.
+    if (artifact && !isInlineViewable(artifact))
+      return <InlineArtifactMissing name={found.name} attached />;
+    if (!artifact || !artifact.available || !artifact.can_open)
+      return <InlineArtifactMissing name={found.name} />;
+    const key = `${taskId}:${artifact.artifact_id}`;
+    return (
+      <InlineArtifact
+        key={key}
+        projectId={project.id}
+        artifact={artifact}
+        title={alt.trim() || artifact.name}
+        refreshToken={inlineArtifactRefreshToken}
+        canComment={!readOnly}
+        keeping={keepingArtifacts.has(key)}
+        actionError={artifactShellErrors.get(key)}
+        onExpand={() => void openArtifact(taskId, artifact)}
+        onKeep={artifact.can_keep ? () => void keepArtifact(taskId, artifact) : null}
+        download={artifactDownloadControl(taskId, artifact)}
+        onSelection={(event) => openInlineArtifactComment(taskId, artifact, event)}
+        onSelectionCancel={() => cancelInlineArtifactComment(taskId, artifact)}
+        onVersionChange={() => dropStaleArtifactComments(artifact)}
+      />
+    );
   };
 
   const watcherToggle = watcherRows.length > 0 && (
@@ -1881,6 +2100,9 @@ export function NodeChat({
                           onOpenRepositoryFileLink={(href) =>
                             void openRepositoryFile(messageId, line.taskId, href)
                           }
+                          renderEmbed={(src, alt) =>
+                            renderInlineArtifact(line.taskId, line.artifacts, src, alt)
+                          }
                         />
                       </div>
                       {/* Outside the annotatable wrapper: a selection clamp or the
@@ -1989,7 +2211,17 @@ export function NodeChat({
               ) : pausedLineTask ? null : (
                 <span className="node-chat-text">{line.text}</span>
               )}
-              {line.artifacts?.map((artifact) => {
+              {lineArtifacts(line)?.map((artifact) => {
+                // A reply that embeds an artifact shows it in place, with its actions.
+                if (
+                  line.role === "agent" &&
+                  line.text &&
+                  isInlineViewable(artifact) &&
+                  artifact.available &&
+                  artifact.can_open &&
+                  inlineArtifactNames(line.text, line.taskId).has(artifact.name)
+                )
+                  return null;
                 const taskUpdatedAt =
                   relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const previewFailed = failedArtifactPreviews.has(

@@ -222,6 +222,31 @@ def test_text_edits_refuse_selection_gestures(edit_origin):
         admit_artifact_edit(store, app.state.service, task.project_id, request)
 
 
+def test_selections_drawn_on_an_older_version_are_refused(edit_origin):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "page.html", b"<p>v1</p>")
+    request = _request(task, artifact)
+    context = request.artifact_context.model_dump(mode="python")
+    stale = RunRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "artifact_context": {**context, "base_version": "older"},
+        }
+    )
+    with pytest.raises(ValueError):
+        admit_artifact_edit(store, app.state.service, task.project_id, stale)
+    current = RunRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "artifact_context": {
+                **context,
+                "base_version": store.artifact(artifact.artifact_id).current_version,
+            },
+        }
+    )
+    admit_artifact_edit(store, app.state.service, task.project_id, current)
+
+
 @pytest.mark.parametrize("suffix", ["html", "png", "svg", "md", "txt", "json", "py"])
 def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffix):
     app, store, task = edit_origin

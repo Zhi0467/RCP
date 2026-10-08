@@ -853,6 +853,8 @@ class ArtifactContextRequest(BaseModel):
     fresh_session: bool = False
     # Set by the viewer's Edit now: the one prompt branch asking for the edit this turn.
     edit_now: bool = False
+    # The version the selections were drawn on; admission refuses a newer one.
+    base_version: str | None = None
     selections: list[ArtifactSelection] = Field(
         default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )

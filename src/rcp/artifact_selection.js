@@ -1,5 +1,6 @@
 // Embedded inside RCP's private preview closure, before any artifact scripts.
-function installArtifactSelection(surface, publish) {
+// `isActive` lets a surface that is also played with turn the gestures off.
+function installArtifactSelection(surface, publish, isActive = () => true) {
   const doc = surface.ownerDocument || surface;
   const view = doc.defaultView;
   const capture = surface === doc ? doc.documentElement : surface;
@@ -169,6 +170,7 @@ function installArtifactSelection(surface, publish) {
     (event) => {
       if (
         !event.isTrusted ||
+        !isActive() ||
         event.button !== 0 ||
         !event.isPrimary ||
         event.pointerType === "touch"
@@ -280,7 +282,7 @@ function installArtifactSelection(surface, publish) {
   );
   if (surface === doc)
     listen(doc, "mouseup", (event) => {
-      if (!event.isTrusted) return;
+      if (!event.isTrusted || !isActive()) return;
       if (areaGesture) {
         areaGesture = false;
         return;

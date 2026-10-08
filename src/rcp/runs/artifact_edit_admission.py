@@ -210,6 +210,11 @@ def admit_artifact_edit(
     with store.artifact_lock(artifact.artifact_id):
         artifact = store.artifact(artifact.artifact_id)
         assert artifact is not None
+        if context.base_version is not None and context.base_version != artifact.current_version:
+            raise ValueError(
+                "This artifact changed to a new version after the parts were selected. "
+                "Select them again."
+            )
         # Prove the admitted version is readable before creating a task.
         store.read_artifact_bytes(artifact.artifact_id)
         edit = ArtifactEditAdmission(
