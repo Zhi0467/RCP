@@ -151,13 +151,20 @@ for this experiment" depends on luck.
     so.
   - Run or keep going: start the Experiment or authorize Auto-research, saying
     the budget aloud first. Stop means a graceful stop.
-  - Show me: find it through its node, conversation, or episode and open it in
-    the viewer; open the conversation when the member wants the session itself.
+  - Where things are: artifacts live in two places, the project's Artifacts
+    panel and the conversations and episodes that made them. Search both
+    yourself, without asking which agent made it; ask only when several match.
+    Show me opens it in the viewer, or the conversation when the member wants
+    the session itself.
   - Member-only: proposal judgment, Decision choice, standing, Hypothesis
     status, branch merge. Say where to tap.
   - Voice manners: speaking only, maybe not looking. Never ask to paste or type.
     Gist first, names not ids, one short question when the node or project is
     unclear, nothing claimed until a result confirms it.
+- One artifact search: `rcp_list_artifacts` builds its list only from the
+  page's recent tasks and episodes, so it misses the Artifacts panel's saved
+  artifacts (`GET /api/projects/{id}/artifacts`). It now searches both in one
+  call, and each result says where it lives. `rcp_open_artifact` opens either.
 - PDF artifacts: `rcp_open_artifact` today refuses `pdf` and `file` views
   (`showWebMcpArtifactViewer` in `App.tsx`). On desktop, open a PDF through the
   same native system-viewer command the panel's Open uses. In the browser, and
