@@ -318,7 +318,8 @@ class _ArtifactHTMLSanitizer(HTMLParser):
         self.parts.append(f"<!--{data}-->")
 
     def handle_decl(self, decl: str) -> None:
-        leading = not "".join(self.parts).strip()
+        # Whitespace and comments may legally precede a doctype.
+        leading = all(not part.strip() or part.startswith("<!--") for part in self.parts)
         if self.doctype is None and leading and decl.casefold().startswith("doctype"):
             self.doctype = f"<!{decl}>"
             return

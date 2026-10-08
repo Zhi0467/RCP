@@ -22,6 +22,9 @@ const {
   isInlineViewable,
   readInlineShellMessage,
 } = await server.ssrLoadModule("/src/artifacts/inlineArtifacts.ts");
+const { announceArtifactVersionChange, onArtifactVersionChange } = await server.ssrLoadModule(
+  "/src/artifacts/artifactViewerModel.ts",
+);
 after(() => server.close());
 
 const dir = "/stage/chats/c/turns/op-1/artifacts";
@@ -184,4 +187,13 @@ test("Markdown hands an embedded image to the reply's renderer and keeps other i
     renderToStaticMarkup(createElement(MarkdownAnswer, { text: `![x](${dir}/a.html)` })),
     /<img src="\/stage\/chats\/c\/turns\/op-1\/artifacts\/a.html" alt="x"\/>/,
   );
+});
+
+test("a version the panel moves reaches every inline copy of that artifact", () => {
+  const seen = [];
+  const stop = onArtifactVersionChange((id) => seen.push(id));
+  announceArtifactVersionChange("a");
+  stop();
+  announceArtifactVersionChange("b");
+  assert.deepEqual(seen, ["a"]);
 });

@@ -3,6 +3,7 @@ import { FileX, Maximize2, MessageSquarePlus } from "lucide-react";
 import { api } from "../core/api";
 import { errorMessage } from "../core/errors";
 import type { AgentArtifactDescriptor, ArtifactViewerState } from "../core/types";
+import { onArtifactVersionChange } from "./artifactViewerModel";
 import {
   INLINE_ARTIFACT_INITIAL_HEIGHT,
   inlineViewerUrl,
@@ -29,6 +30,8 @@ interface InlineArtifactProps {
   /** Whether this reader may stage comments; false in a read-only transcript. */
   canComment: boolean;
   keeping: boolean;
+  /** Why the last Keep or Download of this artifact failed, shown in its caption. */
+  actionError?: string;
   onExpand: () => void;
   onKeep: (() => void) | null;
   download: ReactNode;
@@ -43,6 +46,7 @@ export function InlineArtifact({
   refreshToken,
   canComment,
   keeping,
+  actionError,
   onExpand,
   onKeep,
   download,
@@ -55,6 +59,9 @@ export function InlineArtifact({
   const [error, setError] = useState("");
   const [height, setHeight] = useState(INLINE_ARTIFACT_INITIAL_HEIGHT);
   const [commentMode, setCommentMode] = useState(false);
+  // Bumped when a version moves without a turn settling: Undo in the viewer, or
+  // a return to this page after another member's edit.
+  const [stateGeneration, setStateGeneration] = useState(0);
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
   const onSelectionRef = useRef(onSelection);
@@ -95,7 +102,22 @@ export function InlineArtifact({
         if (!controller.signal.aborted) setError(errorMessage(failure));
       });
     return () => controller.abort();
-  }, [near, projectId, artifact.artifact_id, refreshToken]);
+  }, [near, projectId, artifact.artifact_id, refreshToken, stateGeneration]);
+
+  useEffect(() => {
+    const bump = () => setStateGeneration((value) => value + 1);
+    const stop = onArtifactVersionChange((artifactId) => {
+      if (artifactId === artifact.artifact_id) bump();
+    });
+    const visible = () => {
+      if (document.visibilityState === "visible") bump();
+    };
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [artifact.artifact_id]);
 
   useEffect(() => {
     const message = (event: MessageEvent) => {
@@ -212,6 +234,11 @@ export function InlineArtifact({
           </button>
         )}
         {download}
+        {actionError && (
+          <strong className="chat-inline-artifact-error" role="alert">
+            {actionError}
+          </strong>
+        )}
         {commentMode && (
           <span className="chat-inline-artifact-hint" role="status">
             Drag across a part, or select its text, to comment on it.
@@ -219,6 +246,21 @@ export function InlineArtifact({
         )}
       </span>
     </span>
+  );
+}
+
+/** An embed whose turn has aged out of the recent task list; its task loads on demand. */
+export function InlineArtifactLoading({ name, onLoad }: { name: string; onLoad: () => void }) {
+  const load = useRef(onLoad);
+  load.current = onLoad;
+  useEffect(() => load.current(), []);
+  return (
+    <span
+      className="chat-inline-artifact-placeholder"
+      style={{ height: INLINE_ARTIFACT_INITIAL_HEIGHT }}
+      role="status"
+      aria-label={`Loading ${name}`}
+    />
   );
 }
 

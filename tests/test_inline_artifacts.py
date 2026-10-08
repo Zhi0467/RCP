@@ -53,6 +53,12 @@ def test_a_declared_doctype_leads_the_page_so_it_renders_in_standards_mode() -> 
     spaced, _ = html_preview_document(b"\n  <!doctype html><p>x</p>")
     assert _srcdoc(spaced).startswith("<!doctype html>")
 
+    # A license comment may legally precede the doctype.
+    commented, _ = html_preview_document(b"<!-- MIT license -->\n<!doctype html><p>x</p>")
+    page = _srcdoc(commented)
+    assert page.startswith("<!doctype html><meta http-equiv=")
+    assert "<!-- MIT license -->" in page
+
     # A page without a doctype keeps the mode its author's browser gives it.
     bare, _ = html_preview_document(b"<p>x</p><!doctype html>")
     assert _srcdoc(bare).startswith("<meta http-equiv=")

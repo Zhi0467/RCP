@@ -783,6 +783,12 @@
   outline: 2px dashed var(--cobalt);
   outline-offset: 4px;
 }
+.chat-inline-artifact-error {
+  color: var(--red);
+  flex-basis: 100%;
+  font-weight: 600;
+  order: 1;
+}
 .chat-inline-artifact-hint {
   color: var(--cobalt-dark);
   flex-basis: 100%;

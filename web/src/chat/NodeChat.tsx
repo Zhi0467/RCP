@@ -92,6 +92,7 @@ import {
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import {
   InlineArtifact,
+  InlineArtifactLoading,
   InlineArtifactMissing,
   type InlineArtifactSelectionEvent,
 } from "../artifacts/InlineArtifact";
@@ -495,6 +496,10 @@ export function NodeChat({
   const annotationComposerRef = useRef<HTMLFormElement | null>(null);
   const selectionCommentRef = useRef<HTMLButtonElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
+  // Embedded turns that aged out of the recent task list, fetched once on demand.
+  const [inlineTaskLoads, setInlineTaskLoads] = useState<ReadonlyMap<string, "loading" | "done">>(
+    () => new Map(),
+  );
   // Clears the selection mark inside an inline artifact once its comment closes.
   const inlineSelectionClearRef = useRef<(() => void) | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -1829,6 +1834,25 @@ export function NodeChat({
     const found = inlineArtifactFor(src, taskId, artifacts);
     if (!found) return null;
     const { artifact } = found;
+    // An older reply's task has aged out of the recent list, so fetch the exact
+    // task before deciding the artifact is missing, as file citations do.
+    if (
+      !artifact &&
+      !relatedTasks.some((task) => task.operation_id === taskId) &&
+      inlineTaskLoads.get(taskId) !== "done"
+    )
+      return (
+        <InlineArtifactLoading
+          name={found.name}
+          onLoad={() => {
+            if (inlineTaskLoads.has(taskId)) return;
+            setInlineTaskLoads((current) => new Map(current).set(taskId, "loading"));
+            void onRefreshTask(taskId)
+              .catch(() => null)
+              .finally(() => setInlineTaskLoads((current) => new Map(current).set(taskId, "done")));
+          }}
+        />
+      );
     // A PDF or download-only file keeps its card below the reply.
     if (artifact && !isInlineViewable(artifact))
       return <InlineArtifactMissing name={found.name} attached />;
@@ -1844,6 +1868,7 @@ export function NodeChat({
         refreshToken={inlineArtifactRefreshToken}
         canComment={!readOnly}
         keeping={keepingArtifacts.has(key)}
+        actionError={artifactShellErrors.get(key)}
         onExpand={() => void openArtifact(taskId, artifact)}
         onKeep={artifact.can_keep ? () => void keepArtifact(taskId, artifact) : null}
         download={artifactDownloadControl(taskId, artifact)}
