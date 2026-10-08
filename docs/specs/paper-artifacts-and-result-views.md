@@ -292,10 +292,11 @@ number, and inline rendering neutralizes viewport-height rules on the root and
 body so a page cannot measure its own frame. The chat mounts an embed only as a
 reader approaches it, and refreshes its viewer state when a turn in the chat
 settles, when the viewer panel moves that artifact's version (Undo settles no
-turn), and when the page becomes visible again, so a published edit, Undo, live
-status, and the version number reach the reply in place. An older reply whose
-turn has left the recent task list fetches that exact task before an embed is
-called unavailable, as a cited file does. Live pages keep their unchanged one-way data feed.
+turn), when the page becomes visible again, and on a slow interval while the
+artifact is live, so a published edit, Undo, a final live snapshot, and the
+version number reach the reply in place. An older reply whose turn has left the
+recent task list fetches that exact task before an embed is called unavailable,
+as a cited file does, and keeps what it fetched across later task-list refreshes. Live pages keep their unchanged one-way data feed.
 
 Comment mode is off by default, so a game or chart receives the pointer. The
 caption's Comment turns on the existing selection gestures for HTML and images,

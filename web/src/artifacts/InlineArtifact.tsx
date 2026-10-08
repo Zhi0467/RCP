@@ -6,6 +6,7 @@ import type { AgentArtifactDescriptor, ArtifactViewerState } from "../core/types
 import { onArtifactVersionChange } from "./artifactViewerModel";
 import {
   INLINE_ARTIFACT_INITIAL_HEIGHT,
+  INLINE_ARTIFACT_LIVE_STATE_REFRESH_MS,
   inlineViewerUrl,
   readInlineShellMessage,
   type InlineSelection,
@@ -103,6 +104,17 @@ export function InlineArtifact({
       });
     return () => controller.abort();
   }, [near, projectId, artifact.artifact_id, refreshToken, stateGeneration]);
+
+  // A live page saves its final snapshot without settling a turn or moving its
+  // version, so while live the caption rechecks on a slow beat to read Finished.
+  const live = state?.live === "live";
+  useEffect(() => {
+    if (!live) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") setStateGeneration((value) => value + 1);
+    }, INLINE_ARTIFACT_LIVE_STATE_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [live]);
 
   useEffect(() => {
     const bump = () => setStateGeneration((value) => value + 1);

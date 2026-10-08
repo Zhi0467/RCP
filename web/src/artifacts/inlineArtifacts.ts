@@ -5,9 +5,11 @@ import { ANSWER_SYNTAX_PLUGINS } from "../core/chatMarkdown";
 import type { AgentArtifactDescriptor, ArtifactSelection } from "../core/types";
 import { turnArtifactName } from "../core/repositoryFileLinks";
 
-// Mirrors ARTIFACT_INLINE_MAX_HEIGHT_PX and ARTIFACT_INLINE_INITIAL_HEIGHT_PX in src/rcp/limits.py.
+// Mirror ARTIFACT_INLINE_MAX_HEIGHT_PX, ARTIFACT_INLINE_INITIAL_HEIGHT_PX, and
+// ARTIFACT_INLINE_LIVE_STATE_REFRESH_MS in src/rcp/limits.py.
 export const INLINE_ARTIFACT_MAX_HEIGHT = 1200;
 export const INLINE_ARTIFACT_INITIAL_HEIGHT = 320;
+export const INLINE_ARTIFACT_LIVE_STATE_REFRESH_MS = 10_000;
 
 /** The artifact names a reply embeds in place with Markdown image syntax.
  *

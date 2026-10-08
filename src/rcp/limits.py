@@ -164,6 +164,8 @@ ARTIFACT_DISPLAY_TITLE_MAX_CHARS = 240
 ARTIFACT_INLINE_MAX_HEIGHT_PX = 1200
 # Shown while an inline frame has not yet measured its content.
 ARTIFACT_INLINE_INITIAL_HEIGHT_PX = 320
+# A live inline artifact rechecks its viewer state this often, to show Finished.
+ARTIFACT_INLINE_LIVE_STATE_REFRESH_MS = 10_000
 # Selections one chat turn may carry from an artifact viewer; the web mirrors it.
 ARTIFACT_CONTEXT_MAX_SELECTIONS = 50
 # A boxed region of an image artifact is cropped for the agent, scaled to fit this side.

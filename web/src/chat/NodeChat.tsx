@@ -72,6 +72,7 @@ import {
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
+  taskArtifacts,
   taskKindLabel,
   versionedArtifactContentUrl,
 } from "../agents/agentTasks";
@@ -497,9 +498,10 @@ export function NodeChat({
   const selectionCommentRef = useRef<HTMLButtonElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
   // Embedded turns that aged out of the recent task list, fetched once on demand.
-  const [inlineTaskLoads, setInlineTaskLoads] = useState<ReadonlyMap<string, "loading" | "done">>(
-    () => new Map(),
-  );
+  // Kept here because a later bounded task-list refresh drops such tasks again.
+  const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
+    ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
+  >(() => new Map());
   // Clears the selection mark inside an inline artifact once its comment closes.
   const inlineSelectionClearRef = useRef<(() => void) | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -1831,25 +1833,33 @@ export function NodeChat({
     src: string,
     alt: string,
   ) => {
-    const found = inlineArtifactFor(src, taskId, artifacts);
-    if (!found) return null;
-    const { artifact } = found;
     // An older reply's task has aged out of the recent list, so fetch the exact
     // task before deciding the artifact is missing, as file citations do.
+    const aged =
+      artifacts === undefined && !relatedTasks.some((task) => task.operation_id === taskId)
+        ? agedInlineArtifacts.get(taskId)
+        : undefined;
+    const found = inlineArtifactFor(src, taskId, Array.isArray(aged) ? aged : artifacts);
+    if (!found) return null;
+    const { artifact } = found;
     if (
       !artifact &&
+      artifacts === undefined &&
       !relatedTasks.some((task) => task.operation_id === taskId) &&
-      inlineTaskLoads.get(taskId) !== "done"
+      !Array.isArray(aged)
     )
       return (
         <InlineArtifactLoading
           name={found.name}
           onLoad={() => {
-            if (inlineTaskLoads.has(taskId)) return;
-            setInlineTaskLoads((current) => new Map(current).set(taskId, "loading"));
+            if (agedInlineArtifacts.has(taskId)) return;
+            setAgedInlineArtifacts((current) => new Map(current).set(taskId, "loading"));
             void onRefreshTask(taskId)
-              .catch(() => null)
-              .finally(() => setInlineTaskLoads((current) => new Map(current).set(taskId, "done")));
+              .then(taskArtifacts)
+              .catch((): AgentArtifactDescriptor[] => [])
+              .then((loaded) =>
+                setAgedInlineArtifacts((current) => new Map(current).set(taskId, loaded)),
+              );
           }}
         />
       );
