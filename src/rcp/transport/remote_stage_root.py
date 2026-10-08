@@ -23,6 +23,43 @@ from contextlib import suppress
 STAGE_NAME = re.compile(r"rcp-run\.[A-Za-z0-9._-]+")
 #: Where stages lived before `~/.rcp/stages`; a later release drops it.
 LEGACY_PARENT = "/tmp"
+READ_CONTEXT_INPUT = re.compile(r"(main-graph-|loop-status-watchers-)[0-9a-f]{64}\.json")
+
+
+def prepare_read_context_input(inputs: str, label: str, *, immutable: bool = True) -> bool:
+    """Inspect a content-addressed read input and retire its superseded snapshots.
+
+    Chat loop status also retires old unkeyed loop watcher snapshots from this
+    reused session stage. Keyed watcher-maintenance inputs and contracts remain
+    owned by their consumers. Content is never read back.
+    """
+
+    match = READ_CONTEXT_INPUT.fullmatch(label)
+    if match is None:
+        raise ValueError("read-context input label is invalid")
+    if not os.path.lexists(inputs):
+        return False
+    if os.path.islink(inputs) or not os.path.isdir(inputs):
+        raise ValueError("input root is unavailable")
+    present = False
+    with os.scandir(inputs) as entries:
+        for entry in entries:
+            candidate = READ_CONTEXT_INPUT.fullmatch(entry.name)
+            obsolete_loop_watchers = match.group(1) == "loop-status-watchers-" and re.fullmatch(
+                r"task-[A-Za-z0-9._-]+-experiment-watchers\.json", entry.name
+            )
+            if not obsolete_loop_watchers and (
+                candidate is None or candidate.group(1) != match.group(1)
+            ):
+                continue
+            info = entry.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or (immutable and info.st_mode & 0o222):
+                raise ValueError("read-context input is not an immutable regular file")
+            if entry.name == label:
+                present = True
+            else:
+                os.unlink(entry.path)
+    return present
 
 
 def create_stage(label: str, reuse: bool) -> str:
@@ -332,6 +369,11 @@ def main(argv: list[str]) -> int:
             commit_inputs(
                 argv[2], argv[3], json.loads(argv[4]), argv[5] == "1", set(json.loads(argv[6]))
             )
+        elif len(argv) == 4 and argv[1] == "prepare-read-context-input":
+            root = argv[2]
+            if os.path.islink(root) or not os.path.isdir(root):
+                raise ValueError("run stage is unavailable")
+            print(json.dumps(prepare_read_context_input(os.path.join(root, "inputs"), argv[3])))
         elif len(argv) == 4 and argv[1] == "create":
             print(create_stage(argv[2], argv[3] == "1"))
         else:

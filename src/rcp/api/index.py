@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import logging
+from datetime import UTC, datetime
 from functools import partial
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rcp.agents import AgentLauncher
 from rcp.api.dependencies import (
@@ -39,7 +40,13 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
-from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS, SPACE_RUNS_COMPLETED_TTL
+from rcp.loop_status import (
+    EpisodeLoopMetadata,
+    EpisodeStarter,
+    LoopCheckout,
+    episode_loop_metadata_from_snapshot,
+)
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
@@ -63,7 +70,10 @@ from rcp.storage import (
     NodeStatusGraphCondition,
     ProjectActiveTaskConflict,
 )
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.transport import StateUnavailable
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 membership_router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -111,7 +121,20 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     episode: EpisodeResponse
 
 
-SPACE_RUNS_COMPLETED_TTL = timedelta(days=7)
+class UnavailableExperimentLoopResponse(BaseModel):
+    project_id: str
+    project_name: str
+    graph_target: GraphTargetRef
+    control_node_id: str
+    episode_id: str
+    detail: str
+
+
+class ExperimentLoopIndexResponse(BaseModel):
+    entries: list[ExperimentLoopIndexEntryResponse]
+    unavailable: list[UnavailableExperimentLoopResponse]
+
+
 SpaceRunMode = Literal["experiment_loop", "auto_research"]
 SpaceRunSection = Literal["actionable", "running", "completed"]
 SpaceRunTone = Literal[
@@ -145,6 +168,9 @@ class SpaceRunIndexEntryResponse(BaseModel):
     archived: bool = False
     can_archive: bool = False
     authorized_by: AuthorizedHuman | None = None
+    started_by: EpisodeStarter = Field(default_factory=lambda: EpisodeStarter(kind="unknown"))
+    auto_research_parent_episode_id: str | None = None
+    checkout: LoopCheckout = Field(default_factory=lambda: LoopCheckout(kind="shared"))
 
 
 @router.get("/api/projects")
@@ -167,7 +193,7 @@ def projects(
     ]
 
 
-@router.get("/api/episodes", response_model=list[ExperimentLoopIndexEntryResponse])
+@router.get("/api/episodes", response_model=ExperimentLoopIndexResponse)
 def experiment_episodes(
     request: Request,
     mode: Literal["experiment_loop"] = Query(...),
@@ -177,7 +203,7 @@ def experiment_episodes(
     identity_access: IdentityDependency,
     store: StoreDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
-) -> list[ExperimentLoopIndexEntryResponse]:
+) -> ExperimentLoopIndexResponse:
     # An unfiltered answer would publish research and not just project names.
     # Start from durable loop parents rather than graph nodes: a branch may
     # create an Experiment that does not exist on main at all.
@@ -193,7 +219,7 @@ def experiment_episodes(
 
 @membership_router.get(
     "/api/projects/{project_id}/experiment-episodes",
-    response_model=list[ExperimentLoopIndexEntryResponse],
+    response_model=ExperimentLoopIndexResponse,
 )
 def project_experiment_episodes(
     project_id: str,
@@ -203,7 +229,7 @@ def project_experiment_episodes(
     project_display_cache: DisplayCacheDependency,
     store: StoreDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
-) -> list[ExperimentLoopIndexEntryResponse]:
+) -> ExperimentLoopIndexResponse:
     return _experiment_episode_entries(
         catalog=catalog,
         project_display_cache=project_display_cache,
@@ -221,10 +247,11 @@ def _experiment_episode_entries(
     experiment_operation_lock: KeyedLocks,
     visible: set[str],
     archive_states_by_project: dict[str, dict[str, EpisodeArchiveState]] | None = None,
-) -> list[ExperimentLoopIndexEntryResponse]:
+) -> ExperimentLoopIndexResponse:
     """Build the exact Experiment index once for both index projections."""
 
     entries: list[ExperimentLoopIndexEntryResponse] = []
+    unavailable: list[UnavailableExperimentLoopResponse] = []
     branch_summary = partial(
         graph_branch_summary,
         store=store,
@@ -234,7 +261,7 @@ def _experiment_episode_entries(
     for record in store.projects():
         if record.project_id not in visible:
             continue
-        read_models = store.experiment_control_projection_snapshots(record.project_id)
+        read_models = store.project_experiment_control_projection_snapshots(record.project_id)
         if not read_models:
             continue
         active_graph_watchers = store.active_graph_watchers(record.project_id)
@@ -250,8 +277,10 @@ def _experiment_episode_entries(
             # Re-read under the same canonical project lock as Run/Stop so a
             # concurrent admission cannot race the quiescence decision.
             with experiment_operation_lock(record.project_id):
-                read_models = store.experiment_control_projection_snapshots(record.project_id)
-                for experiment_id, read_model in read_models.items():
+                read_models = store.project_experiment_control_projection_snapshots(
+                    record.project_id
+                )
+                for (experiment_id, _target_key), read_model in read_models.items():
                     runtime = read_model.runtime
                     episode_snapshot = read_model.episode
                     if (
@@ -267,7 +296,9 @@ def _experiment_episode_entries(
                             episode_id=episode.episode_id,
                             graph_target=episode.graph_target,
                         )
-                read_models = store.experiment_control_projection_snapshots(record.project_id)
+                read_models = store.project_experiment_control_projection_snapshots(
+                    record.project_id
+                )
 
         archive_states = store.episode_archive_states(record.project_id)
         if archive_states_by_project is not None:
@@ -279,7 +310,7 @@ def _experiment_episode_entries(
                 ExperimentControlProjectionSnapshot,
             ]
         ] = []
-        for control_node_id, read_model in read_models.items():
+        for (control_node_id, _target_key), read_model in read_models.items():
             episode_snapshot = read_model.episode
             if episode_snapshot is None:
                 continue
@@ -348,9 +379,9 @@ def _experiment_episode_entries(
                 if state is None:
                     continue
             else:
-                if main_service is None:
-                    main_service = get_project_service(catalog, record.project_id)
                 try:
+                    if main_service is None:
+                        main_service = get_project_service(catalog, record.project_id)
                     target_service = (
                         main_service
                         if target.kind == "main"
@@ -366,12 +397,36 @@ def _experiment_episode_entries(
                     )
                     state = materialization.state
                     graph_head = target_service.history.head_ref(materialization)
-                except (KeyError, OSError, StateUnavailable, ValueError) as exc:
-                    raise HTTPException(status_code=503, detail=str(exc)) from exc
-                if graph_head.target != target:
-                    raise ValueError(
-                        "Experiment graph projection returned a different target head."
+                    if graph_head.target != target:
+                        raise ValueError(
+                            "Experiment graph projection returned a different target head."
+                        )
+                except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
+                    live_episodes = [
+                        item[0].episode
+                        for item in group
+                        if item[0].episode.status in _LIVE_EPISODE_STATUSES
+                    ]
+                    for episode in live_episodes:
+                        assert episode.control_node_id is not None
+                        unavailable.append(
+                            UnavailableExperimentLoopResponse(
+                                project_id=record.project_id,
+                                project_name=record.name,
+                                graph_target=target,
+                                control_node_id=episode.control_node_id,
+                                episode_id=episode.episode_id,
+                                detail=str(exc),
+                            )
+                        )
+                    logger.warning(
+                        "Unavailable %s Experiment branch %s in project %s: %s",
+                        "live" if live_episodes else "historical",
+                        target.key,
+                        record.project_id,
+                        exc,
                     )
+                    continue
 
             for episode_snapshot, runtime, read_model in group:
                 episode = episode_snapshot.episode
@@ -395,14 +450,6 @@ def _experiment_episode_entries(
                     and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
                     for watcher in active_graph_watchers
                 )
-                if target.kind == "branch":
-                    binding_episode_id = (
-                        parent_episode_id
-                        if route is not None
-                        else episode.isolation_owner_episode_id or episode.episode_id
-                    )
-                    if not episode_on_branch(store, binding_episode_id, target.branch_id):
-                        raise ValueError("Branch-target Experiment lost its graph binding.")
                 if target.kind == "main":
                     controls = (
                         completed_cached.get("experiment_control") if completed_cached else None
@@ -423,21 +470,50 @@ def _experiment_episode_entries(
                     )
                     control = control.model_copy(update={"episode": serialized_episode})
                 else:
-                    serialized_episode = serialize_episode(
-                        store,
-                        record.project_id,
-                        episode,
-                        branch_summary=branch_summary,
-                        projection_snapshot=episode_snapshot,
-                        archive_state=archive_state,
-                    )
-                    control = _experiment_control_response(
-                        state,
-                        node.id,
-                        runtime,
-                        serialized_episode,
-                        latest_report_episode_id=read_model.latest_report_episode_id,
-                    )
+                    try:
+                        assert target.branch_id is not None
+                        binding_episode_id = (
+                            parent_episode_id
+                            if route is not None
+                            else episode.isolation_owner_episode_id or episode.episode_id
+                        )
+                        if not episode_on_branch(store, binding_episode_id, target.branch_id):
+                            raise ValueError("Branch-target Experiment lost its graph binding.")
+                        serialized_episode = serialize_episode(
+                            store,
+                            record.project_id,
+                            episode,
+                            branch_summary=branch_summary,
+                            projection_snapshot=episode_snapshot,
+                            archive_state=archive_state,
+                        )
+                        control = _experiment_control_response(
+                            state,
+                            node.id,
+                            runtime,
+                            serialized_episode,
+                            latest_report_episode_id=read_model.latest_report_episode_id,
+                        )
+                    except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
+                        if episode.status in _LIVE_EPISODE_STATUSES:
+                            unavailable.append(
+                                UnavailableExperimentLoopResponse(
+                                    project_id=record.project_id,
+                                    project_name=record.name,
+                                    graph_target=target,
+                                    control_node_id=node_id,
+                                    episode_id=episode.episode_id,
+                                    detail=str(exc),
+                                )
+                            )
+                        logger.warning(
+                            "Unavailable %s Experiment episode %s on %s: %s",
+                            "live" if episode.status in _LIVE_EPISODE_STATUSES else "historical",
+                            episode.episode_id,
+                            target.key,
+                            exc,
+                        )
+                        continue
                 entries.append(
                     ExperimentLoopIndexEntryResponse(
                         project_id=record.project_id,
@@ -452,7 +528,7 @@ def _experiment_episode_entries(
                         episode=serialized_episode,
                     )
                 )
-    return entries
+    return ExperimentLoopIndexResponse(entries=entries, unavailable=unavailable)
 
 
 @router.get("/api/space/runs", response_model=list[SpaceRunIndexEntryResponse])
@@ -474,7 +550,7 @@ def space_runs(
     archive_states_by_project: dict[str, dict[str, EpisodeArchiveState]] = {}
     as_of = datetime.fromisoformat(store.now()).astimezone(UTC)
     completed_since = (as_of - SPACE_RUNS_COMPLETED_TTL).isoformat()
-    experiment_entries = _experiment_episode_entries(
+    experiment_index = _experiment_episode_entries(
         catalog=catalog,
         project_display_cache=project_display_cache,
         store=store,
@@ -482,18 +558,31 @@ def space_runs(
         visible=visible,
         archive_states_by_project=archive_states_by_project,
     )
-    entries = [_space_experiment_run(entry) for entry in experiment_entries]
+    if experiment_index.unavailable:
+        raise HTTPException(status_code=503, detail=experiment_index.unavailable[0].detail)
+    entries = [_space_experiment_run(entry) for entry in experiment_index.entries]
     for project_id in records:
         if project_id not in archive_states_by_project:
             archive_states_by_project[project_id] = store.episode_archive_states(project_id)
-    for snapshot in store.auto_research_space_run_projection_snapshots(
+    auto_research_snapshots = store.auto_research_space_run_projection_snapshots(
         set(records),
         completed_since=completed_since,
-    ):
+    )
+    auto_research_metadata = (
+        store.episode_loop_metadata_snapshots(
+            [snapshot.episode for snapshot in auto_research_snapshots]
+        )
+        if auto_research_snapshots
+        else {}
+    )
+    for snapshot in auto_research_snapshots:
         episode = snapshot.episode
         record = records[episode.project_id]
         entry = _space_auto_research_run(
             snapshot,
+            metadata=episode_loop_metadata_from_snapshot(
+                episode, auto_research_metadata[episode.episode_id]
+            ),
             project_name=record.name,
             project_reachable=record.reachable,
             archive_state=archive_states_by_project[episode.project_id].get(
@@ -505,7 +594,7 @@ def space_runs(
     indexed_ids = {entry.episode_id for entry in entries}
     experiment_titles = {
         (entry.project_id, entry.graph_target.key, entry.node.id): entry.node.title
-        for entry in experiment_entries
+        for entry in experiment_index.entries
     }
     for record in records.values():
         if not any(
@@ -524,6 +613,7 @@ def space_runs(
         # an old branch without an indexed node stays an explicit history row.
         _cache_status, cached = catalog.cached_snapshot_status(record.project_id)
         main_state = _cached_graph_state(cached)
+        metadata_snapshots = store.episode_loop_metadata_snapshots(archived)
         for episode in archived:
             title = experiment_titles.get(
                 (record.project_id, episode.graph_target.key, episode.control_node_id)
@@ -532,25 +622,21 @@ def space_runs(
                 node = experiment_node(main_state, episode.control_node_id)
                 if node is not None:
                     title = node.title
-            route = (
-                store.auto_research_child_experiment(episode.episode_id)
-                if episode.mode == "experiment_loop"
-                else None
-            )
+            metadata_snapshot = metadata_snapshots[episode.episode_id]
+            route = metadata_snapshot.route if episode.mode == "experiment_loop" else None
             if route is not None and (
                 route.project_id != record.project_id
                 or route.control_node_id != episode.control_node_id
                 or (
                     episode.graph_target.kind == "branch"
-                    and not episode_on_branch(
-                        store, route.auto_research_episode_id, episode.graph_target.branch_id
-                    )
+                    and metadata_snapshot.parent_graph_target != episode.graph_target
                 )
             ):
                 raise ValueError("Archived Experiment route does not identify its durable episode.")
             entries.append(
                 _space_archived_run(
                     episode,
+                    metadata=episode_loop_metadata_from_snapshot(episode, metadata_snapshot),
                     project_name=record.name,
                     project_reachable=record.reachable,
                     title=title,
@@ -618,12 +704,16 @@ def _space_experiment_run(
         archived=entry.episode.archived,
         can_archive=entry.episode.can_archive,
         authorized_by=entry.episode.authorized_by,
+        started_by=entry.episode.started_by,
+        auto_research_parent_episode_id=entry.episode.auto_research_parent_episode_id,
+        checkout=entry.episode.checkout,
     )
 
 
 def _space_auto_research_run(
     snapshot: AutoResearchSpaceRunProjectionSnapshot,
     *,
+    metadata: EpisodeLoopMetadata,
     project_name: str,
     project_reachable: bool | None,
     archive_state: EpisodeArchiveState,
@@ -670,12 +760,16 @@ def _space_auto_research_run(
         archived=archive_state.archived,
         can_archive=archive_state.can_archive,
         authorized_by=episode.authorized_by,
+        started_by=metadata.started_by,
+        auto_research_parent_episode_id=metadata.auto_research_parent_episode_id,
+        checkout=metadata.checkout,
     )
 
 
 def _space_archived_run(
     episode: EpisodeRecord,
     *,
+    metadata: EpisodeLoopMetadata,
     project_name: str,
     project_reachable: bool | None,
     title: str | None,
@@ -699,6 +793,9 @@ def _space_archived_run(
         archived=True,
         can_archive=True,
         authorized_by=episode.authorized_by,
+        started_by=metadata.started_by,
+        auto_research_parent_episode_id=metadata.auto_research_parent_episode_id,
+        checkout=metadata.checkout,
     )
 
 

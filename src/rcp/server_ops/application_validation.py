@@ -161,6 +161,7 @@ class RehearsalOverlay(_StrictModel):
     expected_startup_recovery: StartupRecoveryReadModel
     projects: tuple[RehearsalProjectOverlay, ...]
     transfer_inbox_entries: tuple[str, ...]
+    excluded_project_ids: tuple[str, ...] = ()
 
     @field_validator("root", "data_dir", "database_path")
     @classmethod
@@ -278,6 +279,7 @@ def build_rehearsal_overlay(
     project_receipt_sha256: str,
     capture_root: Path,
     candidate_migrator: CandidateDatabaseMigrator | None = None,
+    excluded_project_ids: tuple[str, ...] = (),
 ) -> RehearsalOverlay:
     root = operation_root.resolve() / "overlay"
     data_dir = root / "data"
@@ -353,6 +355,15 @@ def build_rehearsal_overlay(
         connection.execute("BEGIN IMMEDIATE")
         for row in rows:
             project_id = str(row["project_id"])
+            if project_id in excluded_project_ids:
+                # Keep operational rows for the startup proof, but make every
+                # omitted project's file access resolve to an absent private path.
+                absent = absent_root / hashlib.sha256(project_id.encode()).hexdigest()
+                connection.execute(
+                    "UPDATE projects SET locator=?, state_location=? WHERE project_id=?",
+                    (str(absent / "manifest.toml"), str(absent), project_id),
+                )
+                continue
             capture = captures[project_id]
             project_root = projects_root / project_id
             project_root.mkdir(mode=_DIRECTORY_MODE)
@@ -376,7 +387,9 @@ def build_rehearsal_overlay(
         transfer_paths = _transfer_inbox_overlay_paths(connection, data_dir)
         _validate_path_column_inventory(connection)
         connection.commit()
-        _validate_rebound_paths(connection, root=root, projects=projects)
+        _validate_rebound_paths(
+            connection, root=root, projects=projects, excluded_project_ids=excluded_project_ids
+        )
     except BaseException:
         connection.rollback()
         raise
@@ -396,6 +409,7 @@ def build_rehearsal_overlay(
         expected_startup_recovery=expected_startup_recovery,
         projects=tuple(projects),
         transfer_inbox_entries=transfer_paths,
+        excluded_project_ids=excluded_project_ids,
     )
     for path in overlay.transfer_inbox_entries:
         if Path(path).exists() or Path(path).is_symlink():
@@ -445,6 +459,14 @@ def _prepare_overlay_project(
         expected_revision = capture.main_head.revision
 
     configuration = capture.recovery.configuration
+    for repository in configuration.repositories:
+        # An alias names a folder inside the disposable overlay.
+        if (
+            repository.alias in {"", ".", ".."}
+            or "/" in repository.alias
+            or "\x00" in repository.alias
+        ):
+            raise CandidateRehearsalRefused("A repository alias is not a plain folder name.")
     repository_roots = {
         repository.alias: project_root / "repositories" / repository.alias
         for repository in configuration.repositories
@@ -785,11 +807,19 @@ def _validate_rebound_paths(
     *,
     root: Path,
     projects: list[RehearsalProjectOverlay],
+    excluded_project_ids: tuple[str, ...] = (),
 ) -> None:
     expected = {project.project_id: project for project in projects}
     for row in connection.execute(
         "SELECT project_id, locator, state_location, state_remote FROM projects"
     ).fetchall():
+        if str(row["project_id"]) in excluded_project_ids:
+            if any(
+                not Path(row[key]).is_relative_to(root / "known-absent") or Path(row[key]).exists()
+                for key in ("locator", "state_location")
+            ):
+                raise CandidateRehearsalRefused("An excluded project escaped its absent boundary.")
+            continue
         project = expected[str(row["project_id"])]
         if row["locator"] != project.overlay_locator or not Path(row["locator"]).is_relative_to(
             root
@@ -952,6 +982,8 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                         raise CandidateRehearsalRefused("Candidate project inventory read failed.")
                     for raw_card in listing.json():
                         card = dict(raw_card)
+                        # The unread digest count is per member; the catalog card is not.
+                        card.pop("digest_count", None)
                         project_id = str(card["id"])
                         existing = cards.get(project_id)
                         if existing is not None and existing != card:
@@ -965,7 +997,10 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                     raise CandidateRehearsalRefused(
                         "Candidate pre-enrollment project inventory did not stay protected."
                     )
-            if set(cards) != {project.project_id for project in overlay.projects}:
+            if set(cards) != (
+                {project.project_id for project in overlay.projects}
+                | set(overlay.excluded_project_ids)
+            ):
                 raise CandidateRehearsalRefused(
                     "Candidate project inventory omitted or substituted a project."
                 )

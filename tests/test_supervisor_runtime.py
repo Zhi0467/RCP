@@ -24,6 +24,7 @@ def runtime(tmp_path: Path, monkeypatch):
     runtime.startup = False
     runtime.restore_request = None
     runtime._deployment_lock_fd = None
+    runtime.update_warnings = []
     if sys.platform != "linux":
         # Production requires Linux. This local framing fixture explicitly
         # bypasses prctl only on hosts where its kernel proof cannot run.
@@ -552,3 +553,51 @@ def test_update_preparation_uses_candidate_and_keeps_stopped_checkpoint(runtime,
     assert result[0] is checkpoint
     assert result[1] is None  # Old startup probes never consume a new-release proof.
     assert calls == ["prepare", "check-roots", "validate"]
+
+
+def test_target_warnings_reach_the_operator_and_older_targets_need_none(runtime, tmp_path):
+    runtime.paths = Paths(data_dir=tmp_path / "data", checkpoints_root=tmp_path)
+    warning = {"module": "backup", "project_id": "p1", "reason": "Inventory rejected."}
+    results = {
+        "inventory": {"version": 1, "roots": [], "warnings": [warning]},
+        "prepare": {
+            "roots": [],
+            "proof_path": "proof",
+            "proof_sha256": "c" * 64,
+            "warnings": [warning, "malformed"],
+        },
+        "validate": {"proof_path": "proof", "proof_sha256": "c" * 64},
+    }
+    runtime.application = lambda release, action, request: results[action]
+    runtime.filesystem = lambda action, request: None
+    operation = {
+        "operation_id": "operation",
+        "target": {},
+        "previous": {},
+        "kind": "update",
+        "checkpoint": {},
+    }
+    capture = {"receipt_path": "receipt", "receipt_sha256": "b" * 64}
+    runtime.checkpoint_roots(operation, capture)
+    runtime.prepare(operation, capture)
+    lines = runtime.update_warnings
+    assert len(lines) == 2 and "p1" in lines[0] and "backup" in lines[0]
+    assert "p1" not in lines[1]
+
+    runtime.update_warnings = []
+    for result in results.values():
+        result.pop("warnings", None)
+    runtime.checkpoint_roots(operation, capture)
+    runtime.prepare(operation, capture)
+    assert runtime.update_warnings == []
+
+
+def test_application_refusal_carries_its_diagnostic(runtime):
+    script = (
+        "import json,sys; print('noise',file=sys.stderr); "
+        "print(json.dumps({'version':1,'status':'refused','diagnostic':'migration failed'}),"
+        "file=sys.stderr); sys.exit(1)"
+    )
+    with pytest.raises(ApplicationCommandError) as refused:
+        runtime.service_json([sys.executable, "-I", "-c", script])
+    assert refused.value.diagnostic == "migration failed"

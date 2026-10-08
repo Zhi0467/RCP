@@ -871,6 +871,7 @@ export interface ExperimentControlState {
   ready: boolean;
   reasons: string[];
   graph_reasons: string[];
+  isolated_start_reasons: string[];
   invocations_used: number;
   invocation_ceiling: number;
   invocations_remaining: number;
@@ -909,13 +910,30 @@ export interface ExperimentLoopIndexEntry {
   episode: Episode;
 }
 
+export interface UnavailableExperimentLoop {
+  project_id: string;
+  project_name: string;
+  graph_target: GraphTargetRef;
+  control_node_id: string;
+  episode_id: string;
+  detail: string;
+}
+
+export interface ExperimentLoopIndex {
+  entries: ExperimentLoopIndexEntry[];
+  unavailable: UnavailableExperimentLoop[];
+}
+
 export type SpaceRunSection = "actionable" | "running" | "completed";
 export type SpaceRunMode = "experiment_loop" | "auto_research";
 export type SpaceRunHealthTone =
   "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
 
 /** A space-level episode summary whose lifecycle placement is decided by the backend. */
-export interface SpaceRunIndexEntry {
+export interface SpaceRunIndexEntry extends Pick<
+  EpisodeLoopMetadata,
+  "started_by" | "auto_research_parent_episode_id" | "checkout"
+> {
   episode_id: string;
   project_id: string;
   project_name: string;
@@ -990,6 +1008,7 @@ export interface ExternalWatcherRecord extends WatcherDeliveryRecord {
   cwd: string;
   cancel_command: string | null;
   cancel_requested_by: string | null;
+  cancel_requested_by_name?: string | null;
   cancel_requested_at: string | null;
   cancel_error: string | null;
   can_cancel: boolean;
@@ -1310,9 +1329,10 @@ export function decodeGraphAttentionProjection(
       lines.some(
         (line) =>
           !isPlainRecord(line) ||
-          !hasExactKeys(line, Object.hasOwn(line, "label") ? ["label", "text"] : ["text"]) ||
+          !hasOnlyKeys(line, ["label", "text", "before"], ["text"]) ||
           !isNonEmptyString(line.text) ||
-          (Object.hasOwn(line, "label") && line.label !== null && !isNonEmptyString(line.label)),
+          (Object.hasOwn(line, "label") && line.label !== null && !isNonEmptyString(line.label)) ||
+          (Object.hasOwn(line, "before") && line.before !== null && !isNonEmptyString(line.before)),
       )
     ) {
       throw new Error(`Project attention projection has invalid action for ${proposalId}.`);
@@ -1810,6 +1830,8 @@ export interface GraphAttentionProjection {
 export interface ProposalActionLine {
   label?: string | null;
   text: string;
+  /** A field change's current value; `text` is then the proposed value. */
+  before?: string | null;
 }
 
 export interface ProjectCounts {
@@ -2461,7 +2483,55 @@ export interface AutoResearchRecoverySummary {
   next_attempt_at: string | null;
 }
 
-export interface Episode {
+export interface EpisodeStarter {
+  kind: "human" | "auto_research" | "unknown";
+  human: AuthorizedHuman | null;
+  auto_research_episode_id: string | null;
+}
+
+export interface LoopCheckout {
+  kind: "shared" | "worktree";
+  available: boolean;
+  execution_host: string | null;
+  repository_paths: string[];
+  repository_alias: string | null;
+  isolation_owner_episode_id: string | null;
+}
+
+export interface EpisodeLoopMetadata {
+  started_by: EpisodeStarter;
+  auto_research_parent_episode_id: string | null;
+  stop_initiated_by: string | null;
+  stop_settled_at: string | null;
+  checkout: LoopCheckout;
+}
+
+export interface LoopStarter {
+  kind: EpisodeStarter["kind"];
+  id?: string | null;
+  display_name: string | null;
+}
+
+/** Compact identity shared by every overlap consumer. */
+export interface LoopStatusRow {
+  node_id: string;
+  episode_id: string;
+  graph_target: GraphTargetRef;
+  state: "live" | "stopped" | "completed" | "unavailable";
+  started_by: LoopStarter;
+  checkout: Pick<LoopCheckout, "kind" | "execution_host" | "repository_paths">;
+}
+
+export interface LoopOverlap {
+  rows: LoopStatusRow[];
+  omitted: number;
+}
+
+export interface ExperimentStartResponse extends AgentTask {
+  live_elsewhere: LoopOverlap;
+}
+
+export interface Episode extends EpisodeLoopMetadata {
   browser_requested: boolean;
   code_worktree: boolean;
   graph_isolation: boolean;

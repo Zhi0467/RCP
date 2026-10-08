@@ -107,7 +107,12 @@ test("attention decoding validates shape and referenced graph member types", () 
     pending_proposal_ids: ["proposal"],
     decisions_awaiting_choice_ids: ["decision"],
     open_blocker_ids: ["blocker"],
-    proposal_actions: { proposal: [{ text: "Review this Proposal." }] },
+    proposal_actions: {
+      proposal: [
+        { text: "Review this Proposal." },
+        { label: "statement", before: "Old wording.", text: "New wording." },
+      ],
+    },
     decision_prior_choices: {},
   };
 
@@ -493,7 +498,7 @@ test("Runs is episode-first while Experiment placement and status stay control-a
       focusExperimentId: null,
       selectedAutoResearchEpisodeId: completedAutoResearch.episode_id,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -593,7 +598,7 @@ test("Runs fails loudly when a cached Experiment control lacks backend lifecycle
           selectedExperimentId: null,
           focusExperimentId: null,
           runBusy: false,
-          stopBusyId: null,
+          stopBusyIds: new Set(),
           watcherCheckBusyId: null,
           taskActionId: null,
           onInspectTask() {},

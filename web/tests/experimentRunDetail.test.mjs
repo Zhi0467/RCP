@@ -286,6 +286,7 @@ function recoveryTask(fields = {}) {
 
 function episode(fields = {}) {
   return {
+    graph_target: { kind: "main" },
     episode_id: "episode-1",
     project_id: "project",
     mode: "experiment_loop",
@@ -851,7 +852,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -1227,7 +1228,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
-      stopBusyId: null,
+      stopBusyIds: new Set(),
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
@@ -1438,6 +1439,7 @@ test("external job rows use watcher facts and keep Cancel independent of observa
     log_path: "/scratch/training.log",
     can_cancel: true,
     cancel_requested_by: "human-1",
+    cancel_requested_by_name: "Ada Researcher",
     cancel_requested_at: "2026-09-06T10:00:00Z",
     cancel_error: "Scheduler is unavailable",
     last_error: "Check could not connect",
@@ -1459,7 +1461,8 @@ test("external job rows use watcher facts and keep Cancel independent of observa
     }),
   );
 
-  assert.match(html, /human-1/);
+  assert.match(html, /Ada Researcher/);
+  assert.doesNotMatch(html, /human-1/);
   assert.match(html, /class="button compact watcher-action"/);
   assert.doesNotMatch(completed, /<button/);
 });
@@ -1590,4 +1593,31 @@ test("prior invocation totals stay pinned beside the edited next episode limit",
   assert.match(html, /<\/span>4\s*\/ 5/);
   assert.match(html, /<\/span>7/);
   assert.match(html, /experiment-run-button/);
+});
+
+test("a parent link selects and expands the newest member of its continued run", () => {
+  const parent = episode({
+    episode_id: "parent-newest",
+    mode: "auto_research",
+    run_section: "completed",
+    chain: [
+      { episode_id: "parent-original", invocation_ceiling: 3, invocations_used: 3 },
+      { episode_id: "parent-newest", invocation_ceiling: 3, invocations_used: 1 },
+    ],
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: { nodes: {} },
+      episodes: [parent],
+      episodeMessages: {},
+      tasks: [],
+      watchers: [],
+      experimentControl: {},
+      selectedAutoResearchEpisodeId: "parent-original",
+      stopBusyIds: new Set(),
+    }),
+  );
+  assert.match(html, /data-episode-id="parent-newest"[^>]*data-selected="true"/);
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /<details[^>]*class="episode-type-group"[^>]*open=""/);
 });

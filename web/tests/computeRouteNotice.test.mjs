@@ -33,7 +33,14 @@ test("Runs warns once per checked route that cannot run jobs, only for offered r
     const notices = (markup) => markup.match(/role="status"/g)?.length ?? 0;
 
     assert.equal(notices(render([machine("gpu", "slurm", { helper: probe(false) })])), 1);
-    assert.match(render([machine("gpu", "slurm", { helper: probe(false) })]), /fix-it/);
+    const helper = render([machine("gpu", "slurm", { helper: probe(false) })]);
+    assert.match(helper, /fix-it/);
+    // A phone shows only this summary line until it is expanded; the full
+    // explanation and both actions stay in the DOM.
+    assert.match(helper, /aria-expanded="false"[^>]*>.*<span>Job helper not ready on gpu<\/span>/);
+    assert.match(helper, /The long-running job helper/);
+    assert.match(helper, /Open Settings/);
+    assert.match(helper, /Fixed it\? Check again/);
     assert.equal(
       notices(render([machine("gpu", "slurm", { scheduler: probe(false), helper: probe(false) })])),
       2,

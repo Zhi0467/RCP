@@ -951,8 +951,11 @@
   gap: 12px;
   min-width: 0;
 }
+/* The phone rail caps its height and scrolls; cards keep their content height
+   instead of shrinking to the button min-height and spilling wrapped paths. */
 .terminal-repository {
   display: flex;
+  flex-shrink: 0;
   flex-wrap: wrap;
   justify-content: flex-start;
   gap: 12px 24px;
@@ -964,6 +967,8 @@
   align-items: center;
   gap: 8px;
   font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .terminal-repository code,
 .terminal-active-heading code {
@@ -978,6 +983,7 @@
 }
 .terminal-session-row {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 8px;
   padding: 10px;

@@ -155,6 +155,29 @@ remain explicit follow-up evidence.
   companion release publishes the bytes you tested. Promotion checks that the
   run is a successful candidate built from the same build. Without it,
   promotion builds the app afresh and says so in its run summary.
+- Each team server you will update accepts the build's update preparation.
+  CI seeds its own data, so it cannot see records that only real use has
+  written. Run the build's update rehearsal before promoting. On the server,
+  as the service account:
+
+  ```bash
+  D=$(mktemp -d /home/rcp/rcp-rehearsal-XXXXXX)
+  gh release download build/<N> --repo Zhi0467/RCP -D "$D" -p 'rcp-*.whl' -p requirements.lock.txt
+  umask 077; export PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR="$D/uv-cache"
+  uv venv -q "$D/venv" --python 3.12
+  uv pip install -q --python "$D/venv" -r "$D/requirements.lock.txt"
+  uv pip install -q --python "$D/venv" --no-deps "$D"/rcp-*.whl
+  "$D/venv/bin/python" -I -m rcp.server_ops.deployment update-rehearsal - <<EOF
+  {"version":1,"data_dir":"/home/rcp/rcp-server/data","output_dir":"$D/out"}
+  EOF
+  rm -rf "$D"
+  ```
+
+  The service keeps running. The command copies SQLite and local project roots,
+  then runs preparation and application proof on copies. A `ready` result may
+  include backup warnings naming projects omitted from proof. Review those
+  warnings. Migration, identity, path safety, and proven-project mismatches
+  still refuse. The temporary directory holds all rehearsal output.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
 - A frozen fixture for each schema change is enforced by CI's old-data job, per

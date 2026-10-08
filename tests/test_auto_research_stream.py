@@ -10,6 +10,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -500,6 +501,7 @@ class _WorkerLauncher:
         self.writer = writer
         self.calls = 0
         self.contracts: list[str] = []
+        self.prompts: list[str] = []
         self.requested_session_ids: list[str | None] = []
         self.read_dirs: list[list[Path]] = []
         self.workspaces: list[Path] = []
@@ -508,6 +510,7 @@ class _WorkerLauncher:
 
     async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
         self.calls += 1
+        self.prompts.append(prompt)
         self.requested_session_ids.append(kwargs["session_id"])
         self.read_dirs.append(list(kwargs["read_dirs"]))
         self.workspaces.append(Path(kwargs["cwd"]))
@@ -638,6 +641,12 @@ class _LocalBackedRemoteStage:
             raise ValueError(f"immutable remote task input already exists: {label}")
         shutil.copyfile(source, target)
         return str(target)
+
+    def prepare_read_context_input(self, label: str) -> bool:
+        from rcp.transport.remote_stage_root import prepare_read_context_input
+
+        assert self.root is not None
+        return prepare_read_context_input(str(self.root / "inputs"), label)
 
     def read_input_text(self, label: str) -> str:
         assert self.root is not None
@@ -2995,6 +3004,7 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
 
 def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     from rcp.agents.auto_research_prompt import (
+        auto_research_orchestrator_continuation_contract,
         auto_research_orchestrator_task_contract,
         auto_research_prompt_values,
     )
@@ -3012,7 +3022,7 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
             "path": package_path,
         }
     ]
-    common = dict(
+    common: dict[str, Any] = dict(
         graph_path="/s/graph.json",
         research_path="/s/research.md",
         patch_path="/s/patch.json",
@@ -3033,6 +3043,11 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     fresh = auto_research_orchestrator_task_contract(
         project_name="project", skill_pointers=pointers, **common
     )
+    continued = auto_research_orchestrator_continuation_contract(
+        original_contract_path="/stage/inputs/original.md", mode="continuation", **common
+    )
+    assert "/stage/inputs/original.md" in continued
+    assert "other_branch_loops" not in auto_research_prompt_values(**common)
     assert package_path in fresh
     assert graph_rules(edits=True, ontology_extensions=False) in fresh
     # A continuation sends the packages again only when one of them changed.
@@ -3126,6 +3141,139 @@ async def test_isolated_orchestrator_launch_uses_owner_worktree(
     binding = isolation.worktree
     assert launcher.write_scopes[0].repository_roots == [binding.worktree_path]
     assert binding.worktree_path in launcher.contracts[0]
+    snapshots = list(launcher.workspaces[0].glob("inputs/main-graph-*.json"))
+    assert len(snapshots) == 1
+    assert str(snapshots[0]) in launcher.prompts[0]
+    assert str(snapshots[0]) not in launcher.contracts[0]
+    assert json.loads(snapshots[0].read_text()) == json.loads(
+        (service.history.workspace.root / "graph.json").read_text()
+    )
+    assert snapshots[0].stat().st_mode & 0o222 == 0
+    assert str(repository) in launcher.prompts[0]
     assert Path(binding.worktree_path, "notes.txt").read_text() == "episode edit\n"
     assert (repository / "notes.txt").read_text() == "initial\n"
     assert store.episode_isolation_state("project", episode.episode_id).status == "ready"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_orchestrator_context_consumes_staged_main_graph_pointer(
+    manifest, tmp_path, remote
+) -> None:
+    main_service = _service(manifest, tmp_path)
+    service, _store, _episode, root, _worker = _setup_branch_auto_research(
+        main_service, tmp_path / "store"
+    )
+    stage_path = tmp_path / "stage"
+    stage_path.mkdir()
+    remote_stage = None
+    if remote:
+        remote_stage = _LocalBackedRemoteStage("execution.example").attach(str(stage_path))
+        (stage_path / "inputs").mkdir()
+    stage = auto_research_stream_module._WorkerStage(
+        local=None if remote else stage_path,
+        remote=cast(auto_research_stream_module.RemoteRunStage | None, remote_stage),
+        workspace=stage_path,
+        execution_host="execution.example" if remote else "",
+        provider_binary=None,
+    )
+    request = AutoResearchRunRequest.model_validate(root.request)
+    context = auto_research_stream_module._auto_research_context(service, request, stage)
+    assert context.main_graph_path is None
+    assert list(stage_path.glob("inputs/main-graph-*")) == []
+    context = auto_research_stream_module._orchestrator_launch_context(service, request, stage)
+    assert context.main_graph_path is not None
+    snapshot = Path(context.main_graph_path)
+    assert snapshot.is_relative_to(stage_path / "inputs")
+    assert json.loads(snapshot.read_text()) == main_service.history.state().model_dump(mode="json")
+    if not remote:
+        assert snapshot.stat().st_mode & 0o222 == 0
+    assert context.graph_path != context.main_graph_path
+    assert [(item.alias, item.path) for item in context.shared_repositories] == [
+        (item.alias, manifest.repository_map[item.alias].path) for item in context.repositories
+    ]
+
+
+def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.loop_status import LoopOverlap, LoopOverlapCheckout, LoopStarter, LoopStatusRow
+    from rcp.providers.browser_grant import BrowserGrant
+
+    service = _service(manifest, tmp_path)
+    store, _episode, root, _worker = _setup_auto_research(tmp_path / "store")
+    stage_path = tmp_path / "stage"
+    stage_path.mkdir()
+    execution = _execution(store, root)
+    execution.checkpoint_stage("", str(stage_path))
+    request = AutoResearchRunRequest.model_validate(root.request)
+    stage = auto_research_stream_module._WorkerStage(
+        local=stage_path, remote=None, workspace=stage_path, execution_host="", provider_binary=None
+    )
+    context = auto_research_stream_module._auto_research_context(service, request, stage)
+    read_path = str(stage_path / "inputs" / "main-graph-snapshot.json")
+    context = context.model_copy(update={"main_graph_path": read_path})
+    overlap = LoopOverlap(
+        rows=[
+            LoopStatusRow(
+                node_id="exp/overlap",
+                episode_id="main-loop",
+                graph_target=GraphTargetRef(),
+                state="live",
+                started_by=LoopStarter(kind="unknown"),
+                checkout=LoopOverlapCheckout(kind="shared"),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        auto_research_stream_module, "other_branch_loops", lambda *_a, **_kw: overlap
+    )
+    scope = ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="laptop",
+        execution_host="",
+        capability="orchestrate",
+        stage_root=str(stage_path),
+        workspace_root=str(stage_path),
+        repositories=[],
+        protected_write_paths=[str(stage_path / "inputs")],
+    )
+    for index in range(2):
+        if index:
+            store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
+            execution.continuation = "resume"
+            overlap = LoopOverlap()
+        binding = store.auto_research_actor_binding(root.operation_id)
+        turn = auto_research_stream_module._CanonicalOrchestratorTurn(
+            task=root,
+            request=request,
+            binding=binding,
+            allocation_operation_id=root.operation_id,
+            recovering_allocation=bool(index),
+            clean_session_retry=False,
+        )
+        _path, prompt, master, values = auto_research_stream_module._orchestrator_prompt(
+            execution,
+            turn,
+            context=context,
+            local_stage=stage_path,
+            remote_stage=None,
+            token=f"inline-{index}",
+            patch_path=str(stage_path / "patch.json"),
+            schema_path=str(stage_path / "schema.json"),
+            command_client="/stage/rcp-agent",
+            messages_path=None,
+            lifecycle_path=None,
+            skill_pointers=[],
+            write_scope=scope,
+            browser_grant=BrowserGrant(),
+        )
+        overlap_blocks = [
+            json.loads(line) for line in prompt.splitlines() if line.startswith('{"rows":')
+        ]
+        assert overlap_blocks == [overlap.model_dump(mode="json", exclude_none=True)]
+        assert prompt.count(read_path) == 1
+        master_text = Path(master.path).read_text()
+        assert read_path not in master_text
+        assert "main-loop" not in master_text
+        assert not {"main_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()

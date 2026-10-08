@@ -459,3 +459,9 @@ def test_entry_groups_cannot_smuggle_materializations_credentials_or_target_proo
 
 def test_source_negotiation_and_archive_manifest_share_one_codec_constant() -> None:
     assert PROJECT_TRANSFER_ARCHIVE_CODEC == TRANSFER_ARCHIVE_CODEC
+
+
+@pytest.mark.parametrize("name", ["sk-learn_plot.png", " edge ", "tab\tname.html"])
+def test_kept_archive_path_preserves_stored_filename(name: str) -> None:
+    path = f"artifacts/{name}"
+    assert _entry(path, "kept_artifact").archive_path == path

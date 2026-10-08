@@ -31,6 +31,8 @@ RETAINED_SUPERVISOR_LOGS = 20
 RETAINED_ROOT_ENVIRONMENTS = 2
 MAX_OPERATION_BYTES = 1024 * 1024
 APP_COMMAND_TIMEOUT_SECONDS = 300
+# A dry run copies the database and every local project root before preparing.
+UPDATE_REHEARSAL_TIMEOUT_SECONDS = 3600
 # An update drains running agent turns for up to two hours before refusing.
 MAINTENANCE_TIMEOUT_SECONDS = 2 * 60 * 60
 # Startup recovery waits this long for a running protected backup to finish.

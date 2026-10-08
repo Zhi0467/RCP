@@ -545,7 +545,9 @@ test("episode API calls use only the generic endpoints and the continuation body
       ? init.method === "POST"
         ? { message_id: "m" }
         : []
-      : [];
+      : path.endsWith("?mode=experiment_loop")
+        ? { entries: [], unavailable: [] }
+        : [];
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -566,8 +568,11 @@ test("episode API calls use only the generic endpoints and the continuation body
     await mergeEpisodeToMain("/api/projects/demo", "episode/alpha");
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
-    await loadExperimentEpisodes();
-    await loadProjectExperimentEpisodes("project/one");
+    assert.deepEqual(await loadExperimentEpisodes(), { entries: [], unavailable: [] });
+    assert.deepEqual(await loadProjectExperimentEpisodes("project/one"), {
+      entries: [],
+      unavailable: [],
+    });
     await loadSpaceRuns();
   } finally {
     globalThis.fetch = originalFetch;
@@ -692,7 +697,12 @@ test("the login notice names each signed-out account once and offers verificatio
 
   assert.doesNotMatch(html, /remote.example/);
 
-  assert.equal((html.match(/<button/g) ?? []).length, 1);
+  // One phone disclosure plus the check; the full explanation stays in the DOM.
+  assert.equal((html.match(/<button/g) ?? []).length, 2);
+  assert.match(html, /class="compact-notice-toggle"[^>]*aria-expanded="false"/);
+  assert.match(html, /<span>Codex is signed out<\/span>/);
+  assert.match(html, /Sign it in from Settings, Provider logins/);
+  assert.match(html, /Already signed in\? Check again/);
 });
 
 test("ineligible and running branches retain merge controls; an in-flight action disables them", () => {

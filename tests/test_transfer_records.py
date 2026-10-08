@@ -9,6 +9,8 @@ import pytest
 
 from rcp.artifacts import descriptor_for
 from rcp.compute_jobs.models import ComputeJobRecord
+from rcp.core.graph_targets import graph_target_json
+from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import ProviderUsage
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
@@ -597,6 +599,16 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
             ),
         )
 
+    cancelled_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO auto_research_child_experiments "
+            "(child_episode_id, auto_research_episode_id, project_id, control_node_id, "
+            "state, replaces_episode_id, request_json, parent_operation_id, "
+            "terminal_diagnostic, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'node-1', 'cancelled', ?, '{}', ?, 'Legacy intent cancelled', ?, ?)",
+            (cancelled_id, episode_id, project_id, child_episode_id, operation_id, now, now),
+        )
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
     auto = next(item for item in bundle.episodes if item.episode_id == episode_id)
     assert auto.auto_research is not None
@@ -605,7 +617,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     assert len(history.messages) == 1
     assert history.recoveries[0].status == "admitted"
     assert len(history.child_work) == 1
-    assert len(history.child_experiments) == 1
+    assert len(history.child_experiments) == 2
     assert len(history.child_admissions) == 2
     assert len(history.lifecycle_notices) == 1
     assert len(history.inbox_receipts) == 1
@@ -614,6 +626,43 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     assert history.apply_results[0].result.value() == {"status": "applied"}
     assert len(history.commands) == 1
     assert "native-auto-session" not in bundle.model_dump_json()
+
+    invalid = bundle.model_dump(mode="json")
+    invalid_parent = next(item for item in invalid["episodes"] if item["episode_id"] == episode_id)
+    invalid_route = next(
+        item
+        for item in invalid_parent["auto_research"]["child_experiments"]
+        if item["child_episode_id"] == cancelled_id
+    )
+    invalid_route["replaces_episode_id"] = None
+    with pytest.raises(ValueError):
+        type(bundle).model_validate(invalid)
+
+    # The import storage path retains a cancelled route without fabricating its episode.
+    target = AppStore(tmp_path / "imported.sqlite3")
+    project = store.project(project_id)
+    assert project is not None
+    target.upsert_project(project)
+    attribution_map = {item.archive_actor_id: item for item in attributions}
+    with target.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        target._insert_transfer_tasks(connection, bundle, attribution_map)
+        target._insert_transfer_watchers(connection, bundle)
+        target._insert_transfer_episodes(connection, bundle, attribution_map)
+    assert target.episode(cancelled_id) is None
+    exported_again = target.export_project_transfer_records(project_id, attributions=attributions)
+    imported_auto = next(item for item in exported_again.episodes if item.episode_id == episode_id)
+    assert imported_auto.auto_research is not None
+    assert imported_auto.auto_research.child_experiments == history.child_experiments
+    assert imported_auto.auto_research.lifecycle_notices == history.lifecycle_notices
+    for row in bundle.episodes:
+        with target.connection() as connection:
+            stored_target = connection.execute(
+                "SELECT graph_target_json FROM episodes WHERE episode_id = ?", (row.episode_id,)
+            ).fetchone()[0]
+        assert stored_target == graph_target_json(
+            GraphTargetRef.model_validate(row.graph_target.model_dump())
+        )
 
     store.record_agent_usage(
         operation_id,

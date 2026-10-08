@@ -22,6 +22,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+from rcp.loop_status import episode_loop_metadata, episode_loop_metadata_from_snapshot
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -367,20 +368,20 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
     monkeypatch.setattr(app.state.service.history, "state", refuse_current_state_read)
 
     store = app.state.background_tasks.store
-    original = store.experiment_control_projection_snapshots
+    original = store.project_experiment_control_projection_snapshots
     calls: list[tuple[str, GraphTargetRef | None]] = []
 
     def capture(requested_project_id, *args, **kwargs):
         calls.append((requested_project_id, kwargs.get("graph_target")))
         return original(requested_project_id, *args, **kwargs)
 
-    monkeypatch.setattr(store, "experiment_control_projection_snapshots", capture)
+    monkeypatch.setattr(store, "project_experiment_control_projection_snapshots", capture)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
     assert calls == [(project_id, None)]
-    assert len(response.json()) == 1
-    entry = response.json()[0]
+    assert len(response.json()["entries"]) == 1
+    entry = response.json()["entries"][0]
     assert set(entry) == {
         "project_id",
         "project_name",
@@ -416,6 +417,15 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     project_id, current_episode = _seed_indexed_project(app)
     parent, child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
     store = app.state.background_tasks.store
+    assert parent.root_operation_id is not None
+    store.record_agent_task_receipt(
+        parent.root_operation_id,
+        "agent_launch",
+        {
+            "execution_host": "",
+            "canonical_repository_roots": [manifest.repository_map["repo-a"].path],
+        },
+    )
     authorizer = authorized_human(store)
     store.rename_space_user(authorizer.user_id, "Changed display name")
     client = signed_in_client(app)
@@ -434,12 +444,25 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert all(entry["project_name"] == manifest.name for entry in entries)
     assert all(entry["authorized_by"] == authorizer.model_dump(mode="json") for entry in entries)
     experiment = next(entry for entry in entries if entry["episode_id"] == current_episode)
+    assert experiment["started_by"]["kind"] == "human"
+    assert experiment["started_by"]["human"] == authorizer.model_dump(mode="json")
+    assert experiment["checkout"]["kind"] == "shared"
+    child_entry = next(entry for entry in entries if entry["episode_id"] == child.episode_id)
+    assert child_entry["started_by"]["kind"] == "auto_research"
+    assert child_entry["auto_research_parent_episode_id"] == parent.episode_id
     assert experiment["experiment_id"] == "exp/launched"
     assert experiment["run_section"] == "actionable"
     auto_research = next(entry for entry in entries if entry["episode_id"] == parent.episode_id)
     assert auto_research["experiment_id"] is None
     assert auto_research["title"] == "Auto-research"
     assert auto_research["run_section"] == "running"
+
+    episodes = client.get(f"/api/projects/{project_id}/episodes")
+    assert episodes.status_code == 200, episodes.text
+    parent_row = next(row for row in episodes.json() if row["episode_id"] == parent.episode_id)
+    assert auto_research["checkout"] == parent_row["checkout"]
+    assert auto_research["checkout"]["available"] is True
+    assert auto_research["checkout"]["repository_paths"] == [manifest.repository_map["repo-a"].path]
 
 
 def test_space_runs_keeps_completed_parents_for_seven_days() -> None:
@@ -507,7 +530,7 @@ def test_experiment_indexes_overlay_shared_archive_state_without_mutating_cached
         ):
             response = client.get(path)
             assert response.status_code == 200, response.text
-            entry = response.json()[0]
+            entry = response.json()["entries"][0]
             assert entry["episode"]["episode_id"] == episode_id
             assert entry["episode"]["archived"] is archived
             assert entry["episode"]["can_archive"] is True
@@ -597,10 +620,24 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
         raise AssertionError("archived history must not rehydrate old branch graphs")
 
     monkeypatch.setattr(app.state.service, "for_graph_target", reject_old_branch_load)
+    metadata_batches = []
+    original_metadata = store.episode_loop_metadata_snapshots
+
+    def metadata_batch(episodes):
+        metadata_batches.append({episode.episode_id for episode in episodes})
+        snapshots = original_metadata(episodes)
+        for episode in episodes:
+            assert episode_loop_metadata_from_snapshot(
+                episode, snapshots[episode.episode_id]
+            ) == episode_loop_metadata(store, episode)
+        return snapshots
+
+    monkeypatch.setattr(store, "episode_loop_metadata_snapshots", metadata_batch)
     response = client.get("/api/space/runs")
     assert response.status_code == 200, response.text
     entries = {item["episode_id"]: item for item in response.json()}
     assert set(entries) == archived_ids | {current_episode_id, replacement_id}
+    assert metadata_batches == [archived_ids]
     assert all(entries[item]["archived"] for item in archived_ids)
     assert all(entries[item]["can_archive"] for item in archived_ids)
     assert all(entries[item]["run_section"] == "completed" for item in archived_ids)
@@ -961,7 +998,9 @@ def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert [entry["episode"]["episode_id"] for entry in response.json()] == [current_episode]
+    assert [entry["episode"]["episode_id"] for entry in response.json()["entries"]] == [
+        current_episode
+    ]
 
 
 def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_path) -> None:
@@ -991,7 +1030,9 @@ def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_pat
         response = client.get(path)
         assert response.status_code == 200
         entry = next(
-            item for item in response.json() if item["episode"]["episode_id"] == episode_id
+            item
+            for item in response.json()["entries"]
+            if item["episode"]["episode_id"] == episode_id
         )
         assert entry["parent_episode_id"] is None
         assert entry["parent_watching"] is False
@@ -1038,14 +1079,19 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         ],
     )
     assert parent.graph_base_head is not None
-    assert store.experiment_loop_runtime(project_id, "exp/launched").episode_id == child.episode_id
+    assert (
+        store.experiment_loop_runtime(
+            project_id, "exp/launched", graph_target=parent.graph_target
+        ).episode_id
+        == child.episode_id
+    )
     assert (
         store.experiment_loop_runtime(
             project_id,
             "exp/launched",
             graph_target=GraphTargetRef(),
         ).episode_id
-        is None
+        == main_episode_id
     )
     assert (
         store.experiment_loop_runtime(
@@ -1072,8 +1118,11 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         cached = client.get(f"/api/projects/{project_id}")
         assert cached.status_code == 200
         assert cached.json()["graph"]["nodes"]["exp/launched"]["current_summary"] == ""
-        assert cached.json()["experiment_control"]["exp/launched"]["episode_id"] is None
-        assert cached.json()["experiment_control"]["exp/launched"]["episode"] is None
+        assert cached.json()["experiment_control"]["exp/launched"]["episode_id"] == main_episode_id
+        assert (
+            cached.json()["experiment_control"]["exp/launched"]["episode"]["episode_id"]
+            == main_episode_id
+        )
 
         main_state = service.history.state()
         main_node = main_state.nodes["exp/launched"]
@@ -1092,8 +1141,8 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         )
         assert preview.status_code == 200, preview.text
         preview_control = preview.json()["projection"]["experiment_control"]["exp/launched"]
-        assert preview_control["episode_id"] is None
-        assert preview_control["episode"] is None
+        assert preview_control["episode_id"] == main_episode_id
+        assert preview_control["episode"]["episode_id"] == main_episode_id
 
         invalid_main_run = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/run",
@@ -1116,8 +1165,12 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
 
         experiment_index = client.get("/api/episodes", params={"mode": "experiment_loop"})
         assert experiment_index.status_code == 200
-        assert len(experiment_index.json()) == 1
-        entry = experiment_index.json()[0]
+        assert len(experiment_index.json()["entries"]) == 2
+        entry = next(
+            item
+            for item in experiment_index.json()["entries"]
+            if item["episode"]["episode_id"] == child.episode_id
+        )
         indexed_child = entry["episode"]
         assert indexed_child["episode_id"] == child.episode_id
         assert indexed_child["graph_target"] == parent.graph_target.model_dump(mode="json")
@@ -1132,10 +1185,12 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert entry["node"]["current_summary"] == "Visible only on the episode branch."
         assert entry["control"]["episode_id"] == child.episode_id
 
-        ambiguous_stop = client.post(
+        main_stop = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop", json={}
         )
-        assert ambiguous_stop.status_code == 404
+        assert main_stop.status_code == 200
+        assert main_stop.json()["episode_id"] == main_episode_id
+        assert store.episode(child.episode_id).stop_requested_at is None
         exact_stop = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop",
             params={"episode_id": child.episode_id},
@@ -1262,8 +1317,8 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         assert response.status_code == 200
         assert refresh_bounds
         assert set(refresh_bounds) == {REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS}
-        assert len(response.json()) == 1
-        entry = response.json()[0]
+        assert len(response.json()["entries"]) == 1
+        entry = response.json()["entries"][0]
         assert entry["node"]["id"] == "exp/branch-created"
         assert entry["node"]["title"] == "Created only on the episode branch"
         assert entry["control"]["episode_id"] == child.episode_id
@@ -1376,8 +1431,8 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
     response = signed_in_client(restarted).get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert len(response.json()) == 1
-    entry = response.json()[0]
+    assert len(response.json()["entries"]) == 1
+    entry = response.json()["entries"][0]
     assert entry["project_id"] == project_id
     assert entry["project_reachable"] is False
     assert entry["control"]["episode_id"] == current_episode
@@ -1452,8 +1507,8 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     )
     response = client.get("/api/episodes?mode=experiment_loop")
     assert response.status_code == 200
-    assert response.json()[0]["node"]["current_summary"] == "Refreshed after Work."
-    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert response.json()["entries"][0]["node"]["current_summary"] == "Refreshed after Work."
+    assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
 
 
 def test_experiment_index_runtime_projection_failure_fails_the_request(
@@ -1468,7 +1523,7 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
 
     monkeypatch.setattr(
         app.state.background_tasks.store,
-        "experiment_control_projection_snapshots",
+        "project_experiment_control_projection_snapshots",
         fail_runtime_projection,
     )
     response = signed_in_client(app, raise_server_exceptions=False).get(
@@ -1509,7 +1564,7 @@ def test_inconsistent_experiment_runtime_is_degraded_without_hiding_healthy_sibl
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200, response.text
-    entries = {item["node"]["id"]: item for item in response.json()}
+    entries = {item["node"]["id"]: item for item in response.json()["entries"]}
     assert set(entries) == {"exp/launched", "exp/never-run"}
     degraded = entries["exp/launched"]["control"]
     assert degraded["health"] == "degraded"
@@ -1800,7 +1855,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     running = app.state.background_tasks.store.agent_task(task.operation_id)
     assert running is not None
     assert running.status == "running"
-    before_release = client.get("/api/episodes?mode=experiment_loop").json()[0]
+    before_release = client.get("/api/episodes?mode=experiment_loop").json()["entries"][0]
     assert before_release["node"]["current_summary"] == ""
     assert before_release["control"]["episode_id"] == episode_id
     assert before_release["control"]["operational"]["current_status"] == "running"
@@ -1808,7 +1863,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     release_cache.set()
     completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
     assert completed.status == "succeeded"
-    after_release = client.get("/api/episodes?mode=experiment_loop").json()[0]
+    after_release = client.get("/api/episodes?mode=experiment_loop").json()["entries"][0]
     assert after_release["node"]["current_summary"] == ("Graph visible with terminal task.")
     assert after_release["control"]["episode_id"] == episode_id
     assert after_release["control"]["operational"]["current_status"] == "succeeded"
@@ -1907,7 +1962,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
     completed = wait_for_task(app.state.background_tasks.store, task.operation_id)
 
     assert completed.status == expected_status
-    indexed = client.get("/api/episodes?mode=experiment_loop").json()[0]
+    indexed = client.get("/api/episodes?mode=experiment_loop").json()["entries"][0]
     assert indexed["node"]["current_summary"] == f"Graph before {terminal_event}."
 
 
@@ -1968,8 +2023,8 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
 
     assert unscoped.status_code == 503
     assert scoped.status_code == 200, scoped.text
-    assert [entry["project_id"] for entry in scoped.json()] == [healthy_project_id]
-    assert scoped.json()[0]["episode"]["episode_id"] == current_episode
+    assert [entry["project_id"] for entry in scoped.json()["entries"]] == [healthy_project_id]
+    assert scoped.json()["entries"][0]["episode"]["episode_id"] == current_episode
     assert unknown.status_code == 404
 
 
@@ -1993,7 +2048,7 @@ def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: P
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
     assert "home_space_id" not in json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
 
 
@@ -2011,7 +2066,7 @@ def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert response.json()[0]["control"]["episode_id"] == current_episode
+    assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
 
 
 def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
@@ -2026,3 +2081,87 @@ def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize("failure", ["load", "binding", "summary"])
+@pytest.mark.parametrize("live", [False, True])
+def test_index_reports_live_branch_failures_and_skips_historical_failures(
+    manifest, tmp_path, monkeypatch, caplog, failure, live
+):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, main_id = _seed_indexed_project(app)
+    _parent, child = _record_branch_target_child_experiment(app)
+    store = app.state.background_tasks.store
+    assert child.root_operation_id is not None
+    store.complete_agent_task(child.root_operation_id, applied_revision=None, result={})
+    if not live:
+        store.end_episode_without_report(child.episode_id, ending="completed")
+    with signed_in_client(app) as client:
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+        if failure == "load":
+
+            def unavailable(*args, **kwargs):
+                raise OSError("fixture branch unavailable")
+
+            monkeypatch.setattr(app.state.service, "for_graph_target", unavailable)
+        elif failure == "binding":
+            monkeypatch.setattr(api_index_module, "episode_on_branch", lambda *args: False)
+        else:
+
+            def unbound(*args, **kwargs):
+                raise ValueError("fixture missing branch owner")
+
+            monkeypatch.setattr(api_index_module, "graph_branch_summary", unbound)
+        for path in (
+            "/api/episodes?mode=experiment_loop",
+            f"/api/projects/{project_id}/experiment-episodes?mode=experiment_loop",
+        ):
+            response = client.get(path)
+            assert response.status_code == 200
+            index = response.json()
+            assert [row["episode"]["episode_id"] for row in index["entries"]] == [main_id]
+            if live:
+                assert len(index["unavailable"]) == 1
+                unavailable = index["unavailable"][0]
+                assert unavailable["project_id"] == project_id
+                assert unavailable["project_name"] == index["entries"][0]["project_name"]
+                assert unavailable["control_node_id"] == child.control_node_id
+                assert unavailable["episode_id"] == child.episode_id
+                assert unavailable["graph_target"] == child.graph_target.model_dump(mode="json")
+                assert unavailable["detail"]
+            else:
+                assert index["unavailable"] == []
+        if live:
+            runs = client.get("/api/space/runs")
+            assert runs.status_code == 503
+            assert runs.json()["detail"] == index["unavailable"][0]["detail"]
+    assert any(
+        record.name == "rcp.api.index"
+        and record.levelname == "WARNING"
+        and child.graph_target.key in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_runs_keeps_archived_current_episode_projection(manifest, tmp_path, monkeypatch):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, episode_id = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    store.end_episode_without_report(episode_id, ending="completed")
+    actor = authorized_human(store)
+    store.set_episode_archived(project_id, episode_id, actor.user_id, archived=True)
+    historical = api_index_module._space_archived_run
+
+    def archived_row(episode, **kwargs):
+        assert episode.episode_id != episode_id
+        return historical(episode, **kwargs)
+
+    monkeypatch.setattr(api_index_module, "_space_archived_run", archived_row)
+    with signed_in_client(app) as client:
+        assert client.get(f"/api/projects/{project_id}").status_code == 200
+        response = client.get("/api/space/runs")
+    assert response.status_code == 200
+    rows = [row for row in response.json() if row["episode_id"] == episode_id]
+    assert len(rows) == 1
+    assert rows[0]["archived"] is True
+    assert rows[0]["experiment_id"] == "exp/launched"

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.artifact_contract import artifact_contract
+from rcp.agents.context import ChatContext
 from rcp.agents.continuation_prompt import (
     MASTER_OVERLAY_RULE,
     SECTIONS,
@@ -31,6 +32,38 @@ from rcp.limits import (
     COMMAND_CLIENT_WAIT_SECONDS,
 )
 from rcp.providers import ProviderSkillReference, profile_for
+
+
+def render_chat_read_context(context: ChatContext) -> str:
+    """Inline turn evidence, even when an unchanged master is only pointed to."""
+
+    parts = []
+    status = context.loop_status
+    if status is not None:
+        parts.append(
+            "Loop status for this turn (read-only; grants no watcher maintenance):\n"
+            + "```json\n"
+            + json.dumps({"loop_status": status}, ensure_ascii=False)
+            + "\n```"
+        )
+    if context.main_graph_path:
+        parts.append(
+            "Branch read pointers: other code branches are readable through Git. "
+            "These pointers grant no additional writes and do not change the graph target.\n"
+            + "```json\n"
+            + json.dumps(
+                {
+                    "main_graph_path": context.main_graph_path,
+                    "shared_repositories": [
+                        item.model_dump(mode="json") for item in context.shared_repositories
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            + "\n```"
+        )
+    return "\n\n".join(parts)
+
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
 RCP maintains one project-global research graph — questions, hypotheses, experiments, evidence,
@@ -753,6 +786,7 @@ class PromptFactory:
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
         lessons_pointer: str = "",
+        read_context: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -765,6 +799,7 @@ class PromptFactory:
             node=node,
             master=master,
             lessons_pointer=lessons_pointer,
+            read_context=read_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -779,6 +814,7 @@ class PromptFactory:
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
         lessons_pointer: str = "",
+        read_context: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -792,6 +828,7 @@ class PromptFactory:
             node=node,
             master=master,
             lessons_pointer=lessons_pointer,
+            read_context=read_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -812,6 +849,7 @@ class PromptFactory:
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
         lessons_pointer: str = "",
+        read_context: str = "",
         launch_instructions: str | None = None,
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the human's bytes.
@@ -824,6 +862,8 @@ class PromptFactory:
         if launch_instructions is not None and marker != "Work":
             raise ValueError("launch instructions belong only to a Work turn")
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
+        if read_context:
+            parts.append(read_context)
         if lessons_pointer:
             parts.append(lessons_pointer)
         if launch_instructions:

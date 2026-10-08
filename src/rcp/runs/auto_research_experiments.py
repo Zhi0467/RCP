@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from rcp.control import derive_experiment_control_state
-from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment
+from rcp.core.models import Experiment
+from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_experiment_spawned,
     resume_auto_research_child_experiment,
@@ -20,7 +21,6 @@ from rcp.storage import (
     AutoResearchChildExperimentRecord,
     AutoResearchExperimentAllowance,
     AutoResearchExperimentAllowanceReached,
-    EpisodeNotRunning,
 )
 
 if TYPE_CHECKING:
@@ -35,10 +35,8 @@ ExperimentOperationLock = Callable[[str], AbstractContextManager[object]]
 class AutoResearchExperimentAction:
     disposition: Literal[
         "created",
-        "replacement_pending",
         "stopping",
         "stopped",
-        "cancelled",
         "existing",
         "resumed",
         "resume_unavailable",
@@ -49,6 +47,7 @@ class AutoResearchExperimentAction:
     operation_id: str | None = None
     reason: str | None = None
     replacement_command: str | None = None
+    live_elsewhere: LoopOverlap = field(default_factory=LoopOverlap)
 
 
 class AutoResearchExperimentLimitInvalid(ValueError):
@@ -59,10 +58,6 @@ class AutoResearchExperimentLimitInvalid(ValueError):
             f"allowance of {allowance.total}; lower --invocation-limit to "
             f"{allowance.total} or less."
         )
-
-
-class AutoResearchExperimentReplacementNotReady(ValueError):
-    """A valid replacement intent is waiting for a mutable admission gate."""
 
 
 class AutoResearchExperimentCoordinator:
@@ -149,6 +144,12 @@ class AutoResearchExperimentCoordinator:
                     else existing.state
                 ),
                 allowance=self.store.auto_research_experiment_allowance(auto_research_episode_id),
+                live_elsewhere=other_branch_loops(
+                    self.store,
+                    parent.project_id,
+                    graph_target=parent.graph_target,
+                    node_id=node_id,
+                ),
             )
         if allowance.remaining == 0:
             raise AutoResearchExperimentAllowanceReached(allowance)
@@ -176,73 +177,43 @@ class AutoResearchExperimentCoordinator:
                     goal=goal,
                     invocation_limit=invocation_limit,
                 )
-                predecessor_id = self._live_predecessor_id(parent.project_id, node_id)
                 route = AutoResearchChildExperimentRecord(
                     child_episode_id=child_episode_id,
                     auto_research_episode_id=auto_research_episode_id,
                     project_id=parent.project_id,
                     control_node_id=node_id,
-                    state="pending" if predecessor_id is not None else "running",
-                    replaces_episode_id=predecessor_id,
+                    state="running",
                     request=intent,
                     goal_sha256=goal_sha256,
                     parent_operation_id=parent_operation_id,
                     created_at=now,
                     updated_at=now,
                 )
-                if predecessor_id is not None:
-                    self.store.reserve_auto_research_experiment_replacement(
-                        route,
-                        admission_id=admission_id,
-                    )
-                    self._ensure_predecessor_stopping(route)
-                else:
-                    task = start_auto_research_child_experiment(
-                        self.background,
-                        route,
-                        request,
-                        admission_id=admission_id,
-                    )
-                    return AutoResearchExperimentAction(
-                        disposition="created",
-                        episode_id=child_episode_id,
-                        operation_id=task.operation_id,
-                        status=task.status,
-                        allowance=self.store.auto_research_experiment_allowance(
-                            auto_research_episode_id
-                        ),
-                    )
+                task = start_auto_research_child_experiment(
+                    self.background,
+                    route,
+                    request,
+                    admission_id=admission_id,
+                )
+                return AutoResearchExperimentAction(
+                    disposition="created",
+                    episode_id=child_episode_id,
+                    operation_id=task.operation_id,
+                    status=task.status,
+                    allowance=self.store.auto_research_experiment_allowance(
+                        auto_research_episode_id
+                    ),
+                    live_elsewhere=other_branch_loops(
+                        self.store,
+                        parent.project_id,
+                        graph_target=parent.graph_target,
+                        node_id=node_id,
+                    ),
+                )
         except ValueError:
             if self.store.auto_research_child_experiment(child_episode_id) is None:
                 self._cancel_unreferenced_admission(admission_id)
             raise
-
-        # A quiescent predecessor may have settled synchronously. Advance the
-        # durable replacement once before returning, without ever overlapping it.
-        self.reconcile(auto_research_episode_id)
-        current = self.store.auto_research_child_experiment(child_episode_id)
-        assert current is not None
-        child_episode = self.store.episode(child_episode_id)
-        task = (
-            self.store.agent_task(child_episode.root_operation_id)
-            if child_episode is not None and child_episode.root_operation_id is not None
-            else None
-        )
-        if current.state == "running" and task is not None:
-            disposition: Literal["created", "replacement_pending"] = "created"
-            status = task.status
-            operation_id = task.operation_id
-        else:
-            disposition = "replacement_pending"
-            status = current.state
-            operation_id = None
-        return AutoResearchExperimentAction(
-            disposition=disposition,
-            episode_id=child_episode_id,
-            operation_id=operation_id,
-            status=status,
-            allowance=self.store.auto_research_experiment_allowance(auto_research_episode_id),
-        )
 
     def stop(
         self,
@@ -253,18 +224,6 @@ class AutoResearchExperimentCoordinator:
     ) -> AutoResearchExperimentAction:
         initiated_by = f"orchestrator:{operation_id}" if operation_id is not None else None
         route = self._child(auto_research_episode_id, child_episode_id)
-        if route.state == "pending":
-            cancelled = self.store.cancel_auto_research_experiment_replacement(
-                child_episode_id,
-                initiated_by=initiated_by,
-                diagnostic="Auto-research cancelled the pending Experiment replacement.",
-            )
-            return AutoResearchExperimentAction(
-                disposition="cancelled",
-                episode_id=child_episode_id,
-                status=cancelled.state,
-                allowance=self.store.auto_research_experiment_allowance(auto_research_episode_id),
-            )
         if route.state in {"cancelled", "terminal"}:
             return AutoResearchExperimentAction(
                 disposition="stopped",
@@ -276,10 +235,10 @@ class AutoResearchExperimentCoordinator:
             child = self.store.episode(child_episode_id)
             if child is None or child.mode != "experiment_loop":
                 raise ValueError("The child Experiment route lost its episode parent.")
-            runtime = self.store.experiment_loop_runtime_for_target(
+            runtime = self.store.experiment_loop_runtime(
                 route.project_id,
                 route.control_node_id,
-                child.graph_target,
+                graph_target=child.graph_target,
             )
             if runtime.episode_id != child_episode_id and child.stop_requested_at is None:
                 raise ValueError("The requested child is no longer the current Experiment episode.")
@@ -327,133 +286,6 @@ class AutoResearchExperimentCoordinator:
             replacement_command=result.replacement_command,
         )
 
-    def reconcile(self, auto_research_episode_id: str) -> int:
-        """Advance every quiescent pending replacement from durable intent."""
-
-        advanced = 0
-        for route in self.store.auto_research_child_experiments(auto_research_episode_id):
-            if route.state != "pending":
-                continue
-            with self.operation_lock(route.project_id):
-                current = self.store.auto_research_child_experiment(route.child_episode_id)
-                if current is None or current.state != "pending":
-                    continue
-                self._ensure_predecessor_stopping(current)
-                self.store.settle_ready_experiment_loop_stops()
-                predecessor = self.store.episode(current.replaces_episode_id or "")
-                if predecessor is not None and predecessor.status in {
-                    "queued",
-                    "running",
-                    "stopping",
-                    "wrapping_up",
-                }:
-                    continue
-                try:
-                    request = self._fresh_request_from_route(current)
-                    running = current.model_copy(
-                        update={"state": "running", "updated_at": self.store.now()}
-                    )
-                    start_auto_research_child_experiment(
-                        self.background,
-                        running,
-                        request,
-                        admission_id=None,
-                    )
-                except AutoResearchExperimentReplacementNotReady:
-                    # The durable replacement remains pending. A later graph or
-                    # lifecycle reconciliation retries the same snapshotted intent.
-                    continue
-                except (
-                    AutoResearchExperimentAllowanceReached,
-                    EpisodeNotRunning,
-                    ValueError,
-                ) as exc:
-                    self.store.fail_auto_research_experiment_replacement(
-                        current.child_episode_id,
-                        diagnostic=f"Experiment replacement could not start: {exc}",
-                    )
-                advanced += 1
-        return advanced
-
-    def _live_predecessor_id(self, project_id: str, node_id: str) -> str | None:
-        # Admission is deliberately node-global: a branch must not duplicate the
-        # same real-world Experiment while another target still owns live work.
-        runtime = self.store.experiment_loop_runtime(project_id, node_id)
-        if runtime.episode_id is None:
-            return None
-        episode = self.store.episode(runtime.episode_id)
-        if episode is None:
-            raise ValueError("The current Experiment runtime lost its episode parent.")
-        if (
-            episode.project_id != project_id
-            or episode.mode != "experiment_loop"
-            or episode.control_node_id != node_id
-        ):
-            raise ValueError("The current Experiment runtime belongs to another node.")
-        return (
-            episode.episode_id
-            if episode.status in {"queued", "running", "stopping", "wrapping_up"}
-            else None
-        )
-
-    def _ensure_predecessor_stopping(
-        self,
-        route: AutoResearchChildExperimentRecord,
-    ) -> None:
-        """Idempotently recover the Stop side of a durable replacement intent."""
-
-        predecessor_id = route.replaces_episode_id
-        if predecessor_id is None:
-            return
-        predecessor = self.store.episode(predecessor_id)
-        if predecessor is None or predecessor.status not in {
-            "queued",
-            "running",
-            "stopping",
-            "wrapping_up",
-        }:
-            return
-        if (
-            predecessor.project_id != route.project_id
-            or predecessor.mode != "experiment_loop"
-            or predecessor.control_node_id != route.control_node_id
-        ):
-            raise ValueError("The pending Experiment replacement names another predecessor.")
-        if predecessor.status == "wrapping_up":
-            return
-        runtime = self.store.experiment_loop_runtime_for_target(
-            route.project_id,
-            route.control_node_id,
-            predecessor.graph_target,
-        )
-        if runtime.episode_id != predecessor_id:
-            raise ValueError("The pending Experiment predecessor is no longer current.")
-        self.store.request_experiment_loop_stop(
-            route.project_id,
-            route.control_node_id,
-            episode_id=predecessor.episode_id,
-            graph_target=predecessor.graph_target,
-            initiated_by=f"orchestrator:{route.parent_operation_id}",
-        )
-
-    def _fresh_request_from_route(
-        self,
-        route: AutoResearchChildExperimentRecord,
-    ) -> RunRequest:
-        goal = route.request.get("goal")
-        invocation_limit = route.request.get("invocation_limit")
-        if goal is not None and not isinstance(goal, str):
-            raise ValueError("The pending Experiment replacement has an invalid goal.")
-        if invocation_limit is not None and not isinstance(invocation_limit, int):
-            raise ValueError("The pending Experiment replacement has an invalid invocation limit.")
-        return self._fresh_request(
-            self.project_service(route.project_id, route.auto_research_episode_id),
-            child_episode_id=route.child_episode_id,
-            node_id=route.control_node_id,
-            goal=goal,
-            invocation_limit=invocation_limit,
-        )
-
     @staticmethod
     def _fresh_request(
         service: ProjectService,
@@ -469,9 +301,7 @@ class AutoResearchExperimentCoordinator:
             raise ValueError(f"Node {node_id!r} is not an Experiment.")
         control = derive_experiment_control_state(state, node_id)
         if not control.ready:
-            if node.status in CLOSED_EXPERIMENT_STATUSES:
-                raise ValueError(" ".join(control.reasons))
-            raise AutoResearchExperimentReplacementNotReady(" ".join(control.reasons))
+            raise ValueError(" ".join(control.reasons))
         supplied = RunRequest(
             chat_scope="node",
             node_id=node_id,

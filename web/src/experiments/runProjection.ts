@@ -7,8 +7,10 @@ import type {
   GraphCondition,
   GraphWatcherRecord,
   GraphNode,
+  GraphTargetRef,
   WatcherRecord,
 } from "../core/types";
+import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
 import { blockedReasonLead } from "./campaigns.ts";
 import { isControlNode } from "../graph/researchType.ts";
 
@@ -71,26 +73,33 @@ export function watcherLastObservedAt(watcher: WatcherRecord): string | null {
 }
 
 /**
- * Chats show the resources they can observe: an Experiment node's loop watchers and the exact
- * conversation's own self-wake watchers. Experiment-loop provenance does not make a chat its
+ * Chats show the resources they can observe: an Experiment node's same-target loop watchers and the exact
+ * conversation's own watchers. Experiment-loop provenance does not make a chat its
  * owner, while generic self-wake watchers never leak into another conversation.
  */
 export function visibleChatWatchers(
   watchers: WatcherRecord[],
   chatId: string,
   node: GraphNode | null | undefined,
+  graphTarget: GraphTargetRef,
 ): WatcherRecord[] {
   const experimentNodeId = node && isControlNode(node.type) ? node.id : null;
   const visible = new Map<string, WatcherRecord>();
   for (const watcher of watchers) {
-    if (watcher.status === "stopped" && !isExternalWatcherRecord(watcher)) continue;
+    // The strip is for live work only; ended watchers stay in Runs. A job whose
+    // observer stopped but that can still be cancelled is still running.
+    const live =
+      watcher.status === "active" ||
+      watcher.status === "degraded" ||
+      (isExternalWatcherRecord(watcher) && watcher.can_cancel);
+    if (!live) continue;
     const nodeLoopWatcher =
       experimentNodeId !== null &&
       watcher.continuation.patch_kind === "experiment_loop" &&
-      watcher.continuation.control_node_id === experimentNodeId;
-    const chatSelfWakeWatcher =
-      watcher.chat_id === chatId && watcher.continuation.patch_kind === "work";
-    if (nodeLoopWatcher || chatSelfWakeWatcher) visible.set(watcher.watcher_id, watcher);
+      watcher.continuation.control_node_id === experimentNodeId &&
+      sameGraphTarget(watcher.graph_target, graphTarget);
+    const chatWatcher = watcher.chat_id === chatId;
+    if (nodeLoopWatcher || chatWatcher) visible.set(watcher.watcher_id, watcher);
   }
   return [...visible.values()];
 }
@@ -173,7 +182,8 @@ export function buildExperimentRun(
     .filter(
       (watcher) =>
         watcher.continuation.patch_kind === "experiment_loop" &&
-        watcher.continuation.control_node_id === node.id,
+        watcher.continuation.control_node_id === node.id &&
+        sameGraphTarget(watcher.graph_target, control.episode?.graph_target ?? MAIN_GRAPH),
     )
     .sort(
       (left, right) =>

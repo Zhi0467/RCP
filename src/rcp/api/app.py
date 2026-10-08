@@ -1288,7 +1288,6 @@ def create_app(
                 if episode.mode == "auto_research":
                     try:
                         reconcile_auto_research_children(episode.episode_id)
-                        auto_research_experiment_coordinator.reconcile(episode.episode_id)
                         reconcile_pending_auto_research_lifecycle(
                             background_tasks,
                             episode_id=episode.episode_id,
@@ -1334,7 +1333,6 @@ def create_app(
                     auto_research_episode_ids.append(episode.episode_id)
                     try:
                         reconcile_auto_research_children(episode.episode_id)
-                        auto_research_experiment_coordinator.reconcile(episode.episode_id)
                         reconcile_auto_research_episode(
                             episode.episode_id,
                             source="watcher poll",
@@ -1840,21 +1838,6 @@ def create_app(
                         "Cancelled %s unlaunchable Auto-research child admission(s) at startup.",
                         child_reconciliation.cancelled,
                     )
-                for project in store.projects():
-                    for episode in store.episodes(project.project_id, limit=None):
-                        if episode.mode == "auto_research":
-                            try:
-                                await asyncio.to_thread(
-                                    auto_research_experiment_coordinator.reconcile,
-                                    episode.episode_id,
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    "Could not reconcile Auto-research child Experiments for "
-                                    "episode %s at startup: %s",
-                                    episode.episode_id,
-                                    exc,
-                                )
                 orphaned_endings = await asyncio.to_thread(
                     reconcile_orphaned_auto_research_failures,
                     background_tasks,

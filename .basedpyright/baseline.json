@@ -1564,24 +1564,8 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 72,
-                    "endColumn": 88,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 62,
                     "endColumn": 85,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 63,
-                    "endColumn": 93,
                     "lineCount": 1
                 }
             }
@@ -6440,14 +6424,6 @@
                 }
             },
             {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 52,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportArgumentType",
                 "range": {
                     "startColumn": 23,
@@ -8630,14 +8606,6 @@
                 "range": {
                     "startColumn": 17,
                     "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 31,
-                    "endColumn": 39,
                     "lineCount": 1
                 }
             },

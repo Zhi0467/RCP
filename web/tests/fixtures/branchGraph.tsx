@@ -230,6 +230,7 @@ function Fixture() {
           }}
         >
           <NodeChat
+            graphTarget={target}
             project={project}
             node={chat}
             nodes={graph.nodes}

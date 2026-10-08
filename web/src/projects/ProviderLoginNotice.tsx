@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { verifyProviderLogin } from "../core/api";
-import { signedOutNote } from "./providerLoginsModel";
+import { signedOutNote, signedOutSummary } from "./providerLoginsModel";
+import { CompactNotice } from "../ui/CompactNotice";
 import type { ProviderLoginState } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
 
@@ -51,25 +52,29 @@ function AccountNotice({
   }
   return (
     <div className="provider-login-notice" role="status">
-      <p>
-        {signedOutNote(state)} Sign it in from Settings, Provider logins; parked work resumes once
-        the login is verified.
-      </p>
-      {state.changed_at ? (
-        <p className="provider-login-notice-since">
-          Signed out since{" "}
-          <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>.
-        </p>
-      ) : null}
-      <button
-        className="button secondary compact"
-        type="button"
-        disabled={pending}
-        onClick={() => void verify()}
+      <CompactNotice
+        summary={signedOutSummary(state)}
+        footer={error ? <p role="alert">{error}</p> : null}
       >
-        {pending ? "Checking…" : "Already signed in? Check again"}
-      </button>
-      {error && <p role="alert">{error}</p>}
+        <p>
+          {signedOutNote(state)} Sign it in from Settings, Provider logins; parked work resumes once
+          the login is verified.
+        </p>
+        {state.changed_at ? (
+          <p className="provider-login-notice-since">
+            Signed out since{" "}
+            <time dateTime={state.changed_at}>{formatServerTimestamp(state.changed_at)}</time>.
+          </p>
+        ) : null}
+        <button
+          className="button secondary compact"
+          type="button"
+          disabled={pending}
+          onClick={() => void verify()}
+        >
+          {pending ? "Checking…" : "Already signed in? Check again"}
+        </button>
+      </CompactNotice>
     </div>
   );
 }

@@ -26,6 +26,7 @@ from rcp.agents.prompts import (
     chat_master_contract_key,
     invoked_package_pointers,
     live_ask_contract,
+    render_chat_read_context,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
@@ -61,7 +62,7 @@ from rcp.runs.chat import (
     retained_work_values,
     stage_artifact_context,
 )
-from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
+from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
 from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
@@ -106,6 +107,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _swept_stage_root,
     _task_token,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.work_turn_runtime import (
     WorkValidatorMailboxLifecycle,
@@ -157,6 +159,7 @@ def _prepare_discuss_chat_prompt(
     ontology_extensions: bool,
     browser_grant: BrowserGrant,
     question_part: str = "",
+    read_context: str = "",
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
@@ -201,6 +204,7 @@ def _prepare_discuss_chat_prompt(
         master=master,
         lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
+        read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
             workflow_ids=request.invoked_workflow_ids,
@@ -658,12 +662,12 @@ async def stream_discuss_run(
                 remote_stage.touch()
                 if execution is not None:
                     execution.checkpoint_stage(execution_host, str(remote_stage.root))
-                if not reusing_checkpoint or retrying:
-                    context = context.model_copy(
-                        update=_stage_context_paths(
-                            context, service, remote_stage, execution_machine.alias
-                        )
+                # Resumes rebuild context too; branch read pointers need execution-host paths.
+                context = context.model_copy(
+                    update=_stage_context_paths(
+                        context, service, remote_stage, execution_machine.alias
                     )
+                )
                 workspace = Path(str(remote_stage.workspace))
             else:
                 stage_root = _swept_stage_root(
@@ -738,6 +742,21 @@ async def stream_discuss_run(
                     reuse=resuming,
                 )
 
+            context = context.model_copy(
+                update=stage_branch_read_context(context, service, local_stage, remote_stage)
+            )
+            context = context.model_copy(
+                update={
+                    "loop_status": stage_chat_loop_status(
+                        request,
+                        execution,
+                        local_stage,
+                        remote_stage,
+                        state=service.history.state(),
+                        graph_target=service.history.graph_target,
+                    )
+                }
+            )
             token = _task_token(execution)
             experiment_resources = await stage_chat_experiment_watcher_resources(
                 request,
@@ -950,6 +969,7 @@ async def stream_discuss_run(
                         node,
                         parts=[
                             continuation_contract,
+                            render_chat_read_context(context),
                             stage_lessons_pointer(execution, local_stage, remote_stage),
                             question_part,
                         ],
@@ -980,6 +1000,7 @@ async def stream_discuss_run(
                         execution=execution,
                         role="discuss_retry_base",
                     )
+                    prompt += "\n\n" + render_chat_read_context(context)
                     prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
                     if execution is not None:
                         record_session_master(
@@ -1032,6 +1053,7 @@ async def stream_discuss_run(
                     master_context=master_context,
                     stable_values=stable_prompt_values,
                     question_part=question_part,
+                    read_context=render_chat_read_context(context),
                     browser_grant=browser_grant,
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,

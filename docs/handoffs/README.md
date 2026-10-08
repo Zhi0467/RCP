@@ -1,15 +1,5 @@
 # Active implementation handoffs
 
-- [Graph dreaming: nightly consolidation and operational lessons](handoff-2026-10-03-graph-dreaming.md)
-  — design settled 2026-10-02; implementation in progress on its PR.
-- [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
-  — implemented 2026-10-01 on its PR; the packaged-candidate checks remain.
-- [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
-  — design settled 2026-10-01; implementation in progress on its PR.
-- [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
-  — implemented 2026-09-30 on the same PR; served-app, desktop, and real-data checks remain.
-- [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
-  — implemented 2026-09-28 on the same PR; real Mac and iPhone journeys remain.
 - [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
   — implemented on its PR: chat wake sessions, event parsing, the validator
   poller, state-transfer retry, and Apply again; live checks and the remaining
@@ -112,3 +102,32 @@ stands in for it. Run one on disposable data, then delete its line here.
 - Personal sign-in: in the desktop app, native PDF preview, project transfer,
   and terminals through the owner session, and adopting a terminal-started
   backend by pasting its one-time code.
+- Push notifications: in the installed Mac app, a native notification for a
+  real Proposal opens that Proposal on click, both while running and from a
+  click that launches the app; a Mac that was closed drops resolved and
+  day-old items on its next launch and collapses more than three into one
+  summary; a member's iPhone added to the Home Screen on a team space receives
+  a push for a real Proposal and opens it.
+- Live artifacts: on a served app with a real provider and disposable data, a
+  chat turn's helper job writes a live loss curve that redraws while the job
+  runs, stops when it ends, and still renders after the job's files are
+  deleted; a viewer comment on a chat artifact, an Experiment turn's artifact,
+  and an episode report each returns as the next version in its own session,
+  Undo restores the previous one, and the next Experiment turn re-opens its
+  master; the desktop viewer checks in `docs/desktop.md`.
+- Agent questions: with a real provider and broker, a Work turn's `ask` is
+  answered on the card within one client call and the turn continues; a parked
+  question survives an RCP restart, and its later answer starts the next turn
+  on the asking turn's session; an Auto-research orchestrator's question keeps
+  the episode running, sends one "Needs you" push, and its answer wakes the
+  orchestrator as human mail.
+- Lid-closed keep-awake: the four "Lid-closed mode" checks in `docs/desktop.md`
+  on a Finder-launched packaged candidate.
+- Nightly consolidation: with a real provider on disposable data, an enabled
+  schedule fires at its time, merges a seeded duplicate pair in one revision,
+  and leaves one report that Keep moves into Artifacts; an unchanged main the
+  next night starts no turn; a failed turn leaves a dismiss-only row naming
+  committed revisions; an expired authorization starts nothing and shows in
+  the settings card; a Work turn's `lesson add` shows in the Lessons card and
+  the next launch's `lessons.md`, and a human-edited lesson refuses an agent
+  update.

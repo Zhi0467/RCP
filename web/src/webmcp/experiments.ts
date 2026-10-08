@@ -1,5 +1,14 @@
+import { sameGraphTarget } from "../core/graphTarget";
 import { isControlNode } from "../graph/researchType";
-import type { AgentTask, Episode, GraphNode, ProjectSnapshot, WatcherRecord } from "../core/types";
+import type {
+  AgentTask,
+  Episode,
+  ExperimentStartResponse,
+  GraphNode,
+  GraphTargetRef,
+  ProjectSnapshot,
+  WatcherRecord,
+} from "../core/types";
 import {
   ALWAYS_CONFIRM,
   NEVER_CONFIRM,
@@ -26,14 +35,19 @@ function exactExperiment(project: ProjectSnapshot, input: Record<string, unknown
   return node;
 }
 
-function experimentTasks(tasks: AgentTask[], experimentId: string): AgentTask[] {
+function experimentTasks(
+  tasks: AgentTask[],
+  experimentId: string,
+  target: GraphTargetRef,
+): AgentTask[] {
   return tasks
     .filter(
       (task) =>
-        task.request.control_node_id === experimentId ||
-        (task.kind === "node_chat" &&
-          task.request.node_id === experimentId &&
-          task.request.patch_kind === "experiment_loop"),
+        sameGraphTarget(task.graph_target, target) &&
+        (task.request.control_node_id === experimentId ||
+          (task.kind === "node_chat" &&
+            task.request.node_id === experimentId &&
+            task.request.patch_kind === "experiment_loop")),
     )
     .sort(
       (left, right) =>
@@ -42,9 +56,17 @@ function experimentTasks(tasks: AgentTask[], experimentId: string): AgentTask[] 
     );
 }
 
-function experimentWatchers(watchers: WatcherRecord[], experimentId: string): WatcherRecord[] {
+function experimentWatchers(
+  watchers: WatcherRecord[],
+  experimentId: string,
+  target: GraphTargetRef,
+): WatcherRecord[] {
   return watchers
-    .filter((watcher) => watcher.continuation.control_node_id === experimentId)
+    .filter(
+      (watcher) =>
+        watcher.continuation.control_node_id === experimentId &&
+        sameGraphTarget(watcher.graph_target, target),
+    )
     .sort(
       (left, right) =>
         Date.parse(right.created_at) - Date.parse(left.created_at) ||
@@ -117,8 +139,8 @@ export function inspectProjectExperiment(
   const node = exactExperiment(project, input);
   const control = project.experiment_control[node.id];
   if (!control) throw new Error(`Experiment ${node.id} has no current control projection.`);
-  const relatedTasks = experimentTasks(tasks, node.id);
-  const relatedWatchers = experimentWatchers(watchers, node.id);
+  const relatedTasks = experimentTasks(tasks, node.id, project.graph_target);
+  const relatedWatchers = experimentWatchers(watchers, node.id, project.graph_target);
   const startRefusal = pageStartRefusal(taskStartPending, mutationsDisabled, startRequiresSync);
   return {
     project_id: project.id,
@@ -152,7 +174,10 @@ export function inspectProjectExperiment(
   };
 }
 
-type StartWebMcpExperiment = (node: GraphNode, invocationCeiling?: number) => Promise<AgentTask>;
+type StartWebMcpExperiment = (
+  node: GraphNode,
+  invocationCeiling?: number,
+) => Promise<ExperimentStartResponse>;
 
 /** A confirmed voice start passes `invocation_ceiling`; it must still be the node's own. */
 export async function startProjectExperiment(
@@ -171,6 +196,7 @@ export async function startProjectExperiment(
     experiment_id: node.id,
     task_id: task.operation_id,
     episode_id: task.episode_id ?? task.request.control_episode_id ?? null,
+    live_elsewhere: task.live_elsewhere,
     accepted: true,
     status: task.status_label,
     active: task.active,

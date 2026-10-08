@@ -266,10 +266,10 @@ test("a never-run Experiment shows only its next episode limit", () => {
   };
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
-  let html;
-  try {
-    html = renderToStaticMarkup(
+  const render = (extra = {}) =>
+    renderToStaticMarkup(
       React.createElement(DetailDrawer, {
+        ...extra,
         node,
         edges: [],
         allNodes: { [node.id]: node },
@@ -279,6 +279,7 @@ test("a never-run Experiment shows only its next episode limit", () => {
         ontology: { types: [], fields: [], relations: [] },
         experimentControl: {
           ready: true,
+          can_start: true,
           reasons: [],
           invocations_used: 0,
           invocation_ceiling: 6,
@@ -299,6 +300,28 @@ test("a never-run Experiment shows only its next episode limit", () => {
         onSelectNode() {},
       }),
     );
+  let html;
+  let loading;
+  let unavailable;
+  let partial;
+  try {
+    html = render();
+    loading = render({ projectId: "project-one", experimentEntriesStatus: "loading" });
+    unavailable = render({ projectId: "project-one", experimentEntriesStatus: "unavailable" });
+    partial = render({
+      projectId: "project-one",
+      experimentEntriesStatus: "loaded",
+      experimentUnavailableLoops: [
+        {
+          project_id: "project-one",
+          project_name: "Project one",
+          graph_target: { kind: "branch", branch_id: "branch-unavailable" },
+          control_node_id: node.id,
+          episode_id: "episode-unavailable",
+          detail: "Branch unavailable",
+        },
+      ],
+    });
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -311,6 +334,24 @@ test("a never-run Experiment shows only its next episode limit", () => {
   )?.[0];
   assert.ok(startButton);
   assert.doesNotMatch(startButton, /\bdisabled(?:=|\s|>)/);
+  // Run waits until the live-loop inventory is known, so overlap is shown before submit.
+  const waiting = loading.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.match(waiting, /\bdisabled(?:=|\s|>)/);
+  assert.match(loading, /role="status" aria-busy="true"/);
+  // A failed inventory leaves overlap unknown but never holds Run.
+  const offered = unavailable.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.doesNotMatch(offered, /\bdisabled(?:=|\s|>)/);
+  assert.match(unavailable, /class="experiment-overlap-unavailable" role="status"/);
+  const partialRun = partial.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.ok(partialRun);
+  assert.doesNotMatch(partialRun, /\bdisabled(?:=|\s|>)/);
+  assert.match(partial, /class="experiment-overlap-partial" role="status"/);
 });
 
 test("an invocation-limited episode offers a new episode for its pending watcher", () => {
@@ -663,7 +704,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
   assert.doesNotMatch(html, /SSH exited 255/);
   assert.doesNotMatch(html, /chat-watchers/);
   assert.equal(html.match(/chat-watcher-count/g).length, 1);
-  assert.doesNotMatch(experimentHtml, /chat-watcher-count/);
+  assert.equal(experimentHtml.match(/chat-watcher-count/g).length, 1);
   assert.match(html, /chat-turn-trigger watcher/);
   assert.doesNotMatch(html, /node-chat-line human/);
 });
@@ -748,7 +789,8 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     }),
   );
 
-  assert.match(html, /<svg[^>]*>.*<\/svg> 5<\/button>/s);
+  // Active, degraded, and the chat's own watcher; ended loop watchers stay in Runs.
+  assert.match(html, /<svg[^>]*>.*<\/svg> 3<\/button>/s);
   assert.doesNotMatch(projectChatHtml, /chat-watcher-count/);
 });
 
@@ -1178,3 +1220,118 @@ const orchestratorOnClaude = {
     },
   },
 };
+
+test("an isolated closed experiment stays disabled with its server reason", () => {
+  const node = {
+    id: "experiment/closed",
+    type: "experiment",
+    title: "Closed",
+    status: "completed",
+    standing: "asserted",
+    source_refs: [],
+    extension_fields: {},
+    attempts: [],
+    invocation_ceiling: 3,
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossaryIndex: { entriesByInitial: new Map() },
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        graphTarget: { kind: "main", branch_id: null },
+        inheritedIsolation: { graph_isolation: true, code_worktree: false },
+        experimentControl: {
+          can_start: false,
+          node_closed: true,
+          graph_reasons: [],
+          reasons: ["source-loop-active-code", "closed-status-code"],
+          isolated_start_reasons: ["closed-status-code"],
+          invocations_used: 0,
+          invocation_ceiling: 3,
+          invocations_remaining: 3,
+          governing_decisions: [],
+          decision_drift: [],
+        },
+        onRunExperiment() {},
+      }),
+    );
+    assert.match(html, /class="[^"]*experiment-run-button[^"]*"[^>]*disabled=""/);
+    const requirements = html.match(/<ul class="experiment-gate-reasons"[^>]*>(.*?)<\/ul>/s)?.[1];
+    assert.ok(requirements);
+    assert.deepEqual(
+      [...requirements.matchAll(/<li>(.*?)<\/li>/g)].map((match) => match[1]),
+      ["closed-status-code"],
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("Run presents other-target live episodes before submission without disabling admission", () => {
+  const node = {
+    id: "experiment/shared",
+    type: "experiment",
+    title: "Shared",
+    status: "planned",
+    standing: "asserted",
+    source_refs: [],
+    extension_fields: {},
+    attempts: [],
+    invocation_ceiling: 3,
+  };
+  const main = { kind: "main" };
+  const branch = { kind: "branch", branch_id: "sibling" };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        projectId: "project-one",
+        graphTarget: main,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossaryIndex: { entriesByInitial: new Map() },
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        experimentControl: { can_start: true, reasons: [], decision_drift: [] },
+        experimentEntries: [
+          {
+            project_id: "project-one",
+            node,
+            graph_target: branch,
+            control: { live: true },
+            episode: {
+              episode_id: "sibling-episode",
+              started_by: {
+                kind: "human",
+                human: { user_id: "private-user-id", display_name: null },
+              },
+              checkout: { kind: "shared", execution_host: "local", repository_paths: ["/repo"] },
+            },
+          },
+        ],
+        onRunExperiment() {
+          assert.fail("render must not submit");
+        },
+      }),
+    );
+    assert.match(html, /data-overlap-episode-id="sibling-episode"/);
+    const runButton = html.match(/<button[^>]*class="[^"]*experiment-run-button[^"]*"[^>]*>/)?.[0];
+    assert.ok(runButton);
+    assert.ok(!runButton.includes("disabled"));
+    assert.ok(!html.includes("private-user-id"));
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});

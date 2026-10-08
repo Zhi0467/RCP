@@ -35,6 +35,7 @@ from rcp.agents.experiment_loop_prompt import (
     EXPERIMENT_LOOP_POLICY_VERSION,
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
+    experiment_loop_read_context,
     experiment_loop_task_contract,
     experiment_loop_turn_message,
     experiment_loop_wake_message,
@@ -58,6 +59,7 @@ from rcp.limits import (
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     ask_hold_seconds,
 )
+from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
@@ -135,6 +137,7 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
     note_link_lost_before_provider,
+    stage_branch_read_context,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.episode_report import report_rebootstrap_pending
@@ -751,6 +754,24 @@ def _question_snapshot_part(turn: WorkTurn) -> str:
     )
 
 
+def _loop_read_context(turn: WorkTurn) -> str:
+    execution = turn.execution
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    loops = (
+        other_branch_loops(
+            execution.store,
+            task.project_id,
+            graph_target=task.graph_target,
+            node_id=turn.request.control_node_id,
+        )
+        if execution is not None and task is not None
+        else LoopOverlap()
+    )
+    return experiment_loop_read_context(
+        turn.context, loops, ask_allowed="ask" in _work_turn_command_handler(turn).allowed_verbs
+    )
+
+
 def _record_continuation_prompt(
     turn: WorkTurn,
     phase: LaunchPhase,
@@ -774,7 +795,11 @@ def _record_continuation_prompt(
     question_part = _question_snapshot_part(turn)
     if question_part:
         parts = [*parts, question_part]
-    parts = [*parts, stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)]
+    parts = [
+        *parts,
+        _loop_read_context(turn),
+        stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage),
+    ]
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
@@ -1090,6 +1115,7 @@ def _compose_fresh_prompt(
         execution=turn.execution,
         role="work_retry_base" if turn.retry_attempt else "work",
     )
+    prompt += "\n\n" + _loop_read_context(turn)
     values = _experiment_values(turn, staged, prepared)
     if turn.execution is not None:
         record_session_master(
@@ -2708,6 +2734,9 @@ async def _stream_work_graph_repair(
                 execution=execution,
                 saved_stage=True,
             )
+        context = context.model_copy(
+            update=stage_branch_read_context(context, service, local_stage, remote_stage)
+        )
         token = _task_token(execution)
         shell_timeout = execution.store.provider_shell_timeout_seconds(
             profile.provider, execution_host

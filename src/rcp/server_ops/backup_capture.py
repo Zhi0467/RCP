@@ -17,21 +17,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType
+from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, kept_binding_is_complete
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_DIAGNOSTIC_MAX_CHARS,
     BACKUP_INVENTORY_MAX_ENTRIES,
     BACKUP_RECEIPT_MAX_BYTES,
 )
+from rcp.operation_ids import canonical_operation_uuid as _canonical_operation_uuid
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
+    is_canonical_uuid4,
     normalized_absolute_non_root_path,
     write_all,
-)
-from rcp.server_ops._local_primitives import (
-    canonical_operation_uuid as _canonical_operation_uuid,
 )
 from rcp.server_ops._local_primitives import (
     canonical_uuid4 as _canonical_uuid4,
@@ -52,6 +51,7 @@ from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.sources.imported import ImportedProviderSourceStore
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.artifact_models import ArtifactFile
+from rcp.storage.models import normalize_space_name
 
 logger = logging.getLogger(__name__)
 
@@ -85,14 +85,19 @@ def _safe_line(value: str, *, label: str, maximum: int = 4096) -> str:
 
 
 def _plain_filename(value: str, *, label: str) -> str:
-    _safe_line(value, label=label, maximum=255)
-    if PurePosixPath(value).name != value or "\\" in value or value in {".", ".."}:
+    if (
+        not value
+        or len(value) > 255
+        or "\x00" in value
+        or PurePosixPath(value).name != value
+        or "\\" in value
+        or value in {".", ".."}
+    ):
         raise ValueError(f"{label} must be a plain filename")
     return value
 
 
 def _absolute_path(value: str, *, label: str) -> str:
-    _safe_line(value, label=label)
     return normalized_absolute_non_root_path(value, label=label)
 
 
@@ -209,7 +214,8 @@ class BackupKeptResultViewReference(_StrictCaptureModel):
 
 
 class BackupSnapshotProjectInventory(_StrictCaptureModel):
-    project_id: str
+    # Legacy catalog ids are diagnostic metadata only; captured ids gate file paths.
+    project_id: str = Field(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")
     home_space_id: str | None
     locator: str | None
     status: Literal["capturable", "uncaptured"]
@@ -219,11 +225,6 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
     kept_result_views: tuple[BackupKeptResultViewReference, ...] = ()
     unavailable_reason: str | None = None
     unavailable_at: datetime | None = None
-
-    @field_validator("project_id")
-    @classmethod
-    def validate_id(cls, value: str, info) -> str:
-        return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
 
     @field_validator("home_space_id")
     @classmethod
@@ -268,6 +269,7 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
         if entries > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ValueError("project backup inventory exceeds its entry bound")
         if self.status == "capturable":
+            _canonical_uuid4(self.project_id, label="project identity")
             if (
                 self.recovery is None
                 or self.locator is None
@@ -352,7 +354,7 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
     @field_validator("space_name")
     @classmethod
     def validate_space_name(cls, value: str) -> str:
-        return _safe_line(value, label="backup space name", maximum=120)
+        return normalize_space_name(value)
 
     @field_validator("snapshot_path")
     @classmethod
@@ -391,7 +393,7 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
         if imported_ids and (
             tuple(sorted(imported_ids)) != tuple(imported_ids)
             or len(imported_ids) != len(set(imported_ids))
-            or set(imported_ids) != set(project_ids)
+            or set(imported_ids) != {value for value in project_ids if is_canonical_uuid4(value)}
         ):
             raise ValueError("SQLite capture imported sources must inventory every project")
         task_ids = [
@@ -486,7 +488,9 @@ class BackupCaptureCoordinator:
             if len(projects) > BACKUP_INVENTORY_MAX_ENTRIES:
                 raise BackupCaptureUnavailable("The project inventory exceeds its entry bound.")
             database_schema_sha256 = _database_schema_sha256(snapshot_store)
-        project_ids = tuple(record.project_id for record in records)
+        project_ids = tuple(
+            record.project_id for record in records if is_canonical_uuid4(record.project_id)
+        )
         try:
             if ImportedProviderSourceStore.project_ids(self.data_dir) != tuple(
                 project_id
@@ -612,7 +616,12 @@ def inspect_snapshot_project_inventory(
             (candidate.source_operation_id, candidate.source_artifact_id): candidate
             for candidate in snapshot_store.legacy_artifact_candidates(record.project_id)
         }
-        artifacts = _kept_artifact_references(tasks, unresolved_revisions)
+        store_kept = {
+            artifact.artifact_id
+            for artifact in snapshot_store.artifacts(record.project_id)
+            if artifact.kept_at is not None
+        }
+        artifacts = _kept_artifact_references(tasks, unresolved_revisions, store_kept)
         return BackupSnapshotProjectInventory(
             project_id=record.project_id,
             home_space_id=record.home_space_id,
@@ -639,7 +648,7 @@ def inspect_snapshot_project_inventory(
         if not diagnostic:
             diagnostic = "no diagnostic detail"
         logger.warning(
-            "Backup capture could not inventory project %s: %s: %s",
+            "Backup capture could not inventory project %r: %s: %s",
             record.project_id,
             type(exc).__name__,
             diagnostic[:BACKUP_DIAGNOSTIC_MAX_CHARS],
@@ -655,9 +664,49 @@ def inspect_snapshot_project_inventory(
     )
 
 
+def reinspect_uncaptured_projects(
+    receipt: BackupSQLiteCaptureReceipt,
+) -> BackupSQLiteCaptureReceipt:
+    """Let update preparation judge outgoing inventory failures from captured data.
+
+    Backups retain their original verdict. Preparation publishes this inventory
+    as a separate receipt before binding project files and application proofs.
+    """
+    if all(project.status == "capturable" for project in receipt.projects):
+        return receipt
+    validate_backup_sqlite_snapshot(receipt)
+    with closing(AppStore.open_read_only_snapshot(Path(receipt.snapshot_path))) as store:
+        records = {record.project_id: record for record in store.projects()}
+        if set(records) != {project.project_id for project in receipt.projects}:
+            raise BackupCaptureUnavailable("The SQLite snapshot project inventory differs.")
+        projects = tuple(
+            inspect_snapshot_project_inventory(
+                store,
+                records[project.project_id],
+                data_dir=Path(receipt.app_data_plan.data_dir),
+                captured_at=receipt.captured_at,
+            )
+            if project.status == "uncaptured"
+            else project
+            for project in receipt.projects
+        )
+    return BackupSQLiteCaptureReceipt.model_validate(
+        receipt.model_copy(
+            update={
+                "projects": projects,
+                "status": "partial"
+                if not receipt.app_data_plan.complete
+                or any(project.status == "uncaptured" for project in projects)
+                else "complete",
+            }
+        )
+    )
+
+
 def _kept_artifact_references(
     tasks,
     unresolved_revisions,
+    store_kept: set[str],
 ) -> tuple[BackupKeptArtifactReference, ...]:
     references: list[BackupKeptArtifactReference] = []
     for task in tasks:
@@ -674,11 +723,20 @@ def _kept_artifact_references(
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact descriptor is malformed."
                 ) from exc
-            if (descriptor.kept_filename is None) != (descriptor.kept_at is None):
+            if not kept_binding_is_complete(descriptor.kept_filename, descriptor.kept_at):
                 raise BackupProjectInventoryUnavailable(
                     "A task artifact has an incomplete kept-file binding."
                 )
-            if descriptor.kept_filename is None or descriptor.kept_at is None:
+            if descriptor.kept_at is None:
+                continue
+            if descriptor.kept_filename is None:
+                # Keep since the artifact store records only `kept_at`; the bytes
+                # are captured from the store's own inventory, so the project's
+                # store must hold that artifact as kept.
+                if descriptor.artifact_id not in store_kept:
+                    raise BackupProjectInventoryUnavailable(
+                        "A kept task artifact is missing from the project's artifact store."
+                    )
                 continue
             revision = unresolved_revisions.get((task.operation_id, descriptor.artifact_id))
             references.append(

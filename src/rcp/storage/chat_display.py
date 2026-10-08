@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.storage.mixin_base import StoreMixinBase
@@ -194,7 +195,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                   AND display.archived_at IS NULL
                 GROUP BY 1
                 """,
-                (project_id, graph_target.model_dump_json()),
+                (project_id, graph_target_json(graph_target)),
             ).fetchall()
             archived = connection.execute(
                 "SELECT chat_id FROM chat_display "
@@ -206,6 +207,22 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             "reads": {row["chat_id"]: row["read_through"] for row in rows},
             "latest_finished": {row["chat_id"]: row["finished_at"] for row in finished},
             "archived": [row["chat_id"] for row in archived],
+        }
+
+    def chat_read_markers(self, project_id: str, user_id: str) -> dict[str, Any]:
+        """Only the member's markers and baseline, without `chat_reads`' turn scan."""
+        with self.connection() as connection:
+            baseline = connection.execute(
+                "SELECT completed_at FROM storage_schema_migrations "
+                "WHERE migration_name = 'chat_reads_and_pins_v1'"
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT chat_id, read_through FROM chat_reads WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id),
+            ).fetchall()
+        return {
+            "baseline": baseline["completed_at"] if baseline else None,
+            "reads": {row["chat_id"]: row["read_through"] for row in rows},
         }
 
     def mark_chat_read(

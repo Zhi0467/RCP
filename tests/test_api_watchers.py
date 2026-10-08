@@ -13,6 +13,7 @@ from rcp.watchers import WatcherCheckResult, WatchSpec
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
+from .test_branch_chats import _app_branch
 
 
 def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path: Path) -> None:
@@ -228,6 +229,8 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["cancel_requested_by"] == store.local_owner.user_id
+    assert payload["cancel_requested_by_name"] == store.local_owner.display_name
+    assert payload["cancel_requested_by_name"]
     assert payload["cancel_requested_at"] and payload["cancel_error"] is None
     assert payload["status"] == "active" and payload["can_cancel"] is False
     assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).json() == payload
@@ -248,3 +251,45 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_project)
     assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 409
     assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
+
+
+def test_all_target_watcher_listing_scopes_stop_offer_to_displayed_branch(manifest, tmp_path):
+    app, _main, episode, root = _app_branch(manifest, tmp_path)
+    store = app.state.catalog.store
+    watcher = WatcherRecord(
+        watcher_id="main-observer",
+        project_id=episode.project_id,
+        origin_operation_id="observer-origin",
+        origin_task_kind="node_chat",
+        chat_id="observer-chat",
+        check_command="true",
+        log_path=str(tmp_path / "observer.log"),
+        cwd=str(tmp_path),
+        continuation=WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work"),
+        created_at=store.now(),
+    )
+    branch_watcher = watcher.model_copy(
+        update={
+            "watcher_id": "branch-observer",
+            "origin_operation_id": root.operation_id,
+            "origin_task_kind": root.kind,
+            "episode_id": episode.episode_id,
+            "chat_id": "branch-observer-chat",
+            "graph_target": episode.graph_target,
+        }
+    )
+    store.create_watchers([watcher])
+    store.create_watchers([branch_watcher])
+    client = signed_in_client(app)
+    url = f"/api/projects/{episode.project_id}/watchers"
+    params = {"branch_id": episode.graph_target.branch_id}
+
+    listing = client.get(url, params={**params, "all_targets": "true"})
+    assert listing.status_code == 200, listing.text
+    assert {row["watcher_id"]: row["can_stop_watching"] for row in listing.json()} == {
+        "main-observer": False,
+        "branch-observer": True,
+    }
+    scoped = client.get(url, params=params)
+    assert scoped.status_code == 200, scoped.text
+    assert [row["watcher_id"] for row in scoped.json()] == ["branch-observer"]

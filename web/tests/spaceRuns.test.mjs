@@ -234,3 +234,27 @@ function relativeLuminance(hex) {
     .map((value) => (value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4)));
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 }
+
+test("space loop metadata exposes starter parent and checkout outside the open button", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(SpaceRunRow, {
+      entry: run({
+        started_by: { kind: "auto_research", human: null, auto_research_episode_id: "parent-1" },
+        auto_research_parent_episode_id: "parent-1",
+        checkout: {
+          kind: "worktree",
+          execution_host: "local",
+          repository_paths: ["/workspace/repo"],
+        },
+      }),
+      theme: "classic-light",
+      onOpen() {},
+      onArchive() {},
+    }),
+  );
+  assert.match(html, /data-starter-kind="auto_research"/);
+  assert.match(html, /data-checkout-kind="worktree"/);
+  const href = html.match(/<a href="([^"]+)"/)[1].replaceAll("&amp;", "&");
+  assert.equal(parseProjectHash(href).autoResearchEpisodeId, "parent-1");
+  assert.doesNotMatch(html.match(/<button[^]*?<\/button>/)[0], /<a /);
+});

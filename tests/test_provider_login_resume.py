@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import uuid
 from contextlib import nullcontext
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -173,38 +175,59 @@ def _verify_client(store, background, monkeypatch):
     return TestClient(app)
 
 
-def test_verify_retries_failed_experiment_once(manifest, tmp_path, monkeypatch):
-    from .helpers import wait_until
+@pytest.mark.parametrize("branch_first", [False, True])
+def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeypatch, branch_first):
+    from .helpers import async_wait_until, wait_until
     from .test_background import _experiment_request
 
     store = _store(tmp_path)
-    store.upsert_project(
-        store.project("project").model_copy(update={"locator": str(manifest.path)})
-    )
-    stage = tmp_path / "experiment-stage"
-    stage.mkdir()
+    project = store.project("project")
+    assert project is not None
+    store.upsert_project(project.model_copy(update={"locator": str(manifest.path)}))
     calls = []
+    fail_ready = Event()
 
     async def stream(_project, _kind, _request, execution):
-        calls.append(execution.continuation)
+        task = store.agent_task(execution.operation_id)
+        assert task is not None and task.episode_id is not None
+        episode_id = task.episode_id
+        calls.append((episode_id, execution.continuation))
+        stage = tmp_path / episode_id
+        stage.mkdir(exist_ok=True)
         execution.checkpoint_stage("", str(stage))
         if execution.continuation == "fresh":
             record_launched_experiment_turn(store, execution.operation_id)
-        yield _sse(AgentEvent(event="session", session_id="experiment-session"))
+        yield _sse(AgentEvent(event="session", session_id=f"session-{episode_id}"))
         if execution.continuation == "fresh":
+            await async_wait_until(fail_ready.is_set)
             yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
         else:
             yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    root = background.start(
-        "project",
-        "node_chat",
-        _experiment_request(),
-        authorized_by=fabricated_authorizer(),
-    )
-    root = wait_for_task(store, root.operation_id, expect="failed")
-    wait_until(lambda: root.operation_id not in background._workers)
+    roots = []
+    for isolated in [True, False] if branch_first else [False, True]:
+        request = _experiment_request().model_copy(
+            update={
+                "graph_isolation": isolated,
+                "control_episode_id": str(uuid.uuid4()),
+                "chat_id": str(uuid.uuid4()),
+            }
+        )
+        root = background.start(
+            "project",
+            "node_chat",
+            request,
+            authorized_by=fabricated_authorizer(),
+            graph_base_head=GraphHeadRef(revision=0) if isolated else None,
+            ensure_graph_target=(lambda _: None) if isolated else None,
+        )
+        roots.append(root)
+    fail_ready.set()
+    for root in roots:
+        wait_for_task(store, root.operation_id, expect="failed")
+        wait_until(lambda root=root: root.operation_id not in background._workers)
+    assert {root.graph_target.kind for root in roots} == {"main", "branch"}
     remote = store.mark_provider_login_failed(
         "codex", "other-machine", generation=0, detail="signed out", source="turn"
     )
@@ -212,19 +235,26 @@ def test_verify_retries_failed_experiment_once(manifest, tmp_path, monkeypatch):
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
-    children = [
-        task
-        for task in store.episode_tasks(root.episode_id)
-        if task.parent_operation_id == root.operation_id
-    ]
-    assert len(children) == 1
-    wait_for_task(store, children[0].operation_id, expect="succeeded")
-    wait_until(lambda: children[0].operation_id not in background._workers)
-    assert store.episode(root.episode_id).invocations_used == 1
+    for root in roots:
+        assert root.episode_id is not None
+        children = [
+            task
+            for task in store.episode_tasks(root.episode_id)
+            if task.parent_operation_id == root.operation_id
+        ]
+        assert len(children) == 1
+        wait_for_task(store, children[0].operation_id, expect="succeeded")
+        wait_until(lambda child=children[0]: child.operation_id not in background._workers)
+        episode = store.episode(root.episode_id)
+        assert episode is not None and episode.invocations_used == 1
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] >= 1
-    assert calls == ["fresh", "retry"]
+    for root in roots:
+        assert [mode for episode_id, mode in calls if episode_id == root.episode_id] == [
+            "fresh",
+            "retry",
+        ]
     assert store.provider_login_state("codex", "other-machine") == remote
 
 

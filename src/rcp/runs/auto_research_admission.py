@@ -1526,7 +1526,16 @@ def resume_auto_research_child_experiment(
             child_kind="experiment",
             child_id=child_episode_id,
             current_operation_id=previous.operation_id,
-            reason=problem,
+            reason=(
+                f"{problem}. "
+                + (
+                    f"Stop your child with episode --stop {child_episode_id}, "
+                    "wait for its settlement, then use episode --kick-off-experiment "
+                    "with a new key."
+                    if route.state == "running"
+                    else "Use episode --kick-off-experiment with a new key."
+                )
+            ),
             replacement_command="episode --kick-off-experiment",
         )
     assert previous.native_session_id is not None
@@ -2424,6 +2433,8 @@ def _validate_existing_child_work_wake(
 
 
 def _exact_child_resume_problem(tasks: BackgroundAgentTasks, record: AgentTaskRecord) -> str | None:
+    if record.request.get("patch_kind") == "experiment_loop":
+        return tasks.store.experiment_episode_resume_binding_problem(record.operation_id)
     if record.status not in {"paused", "interrupted", "failed"}:
         return "only a paused, interrupted, or failed attempt can be resumed"
     if tasks._failure_is_session_limit(record):

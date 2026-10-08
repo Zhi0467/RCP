@@ -46,6 +46,16 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-target Experiment loops, fresh and historical in-place upgrades.
+        "c6db35af708b61c951ac40cba438e4c2d3888ce681e0ac16cbe65df9250bf0d3",
+        "e46b4d477534c3701798b01b45d3529626236fab325cc600c9216a2168156f49",
+        "6fd2e76b5f90a9720d3ccdd3fc27753516e1165237bb631d82531d3a8803093c",
+        "5bfc0ff9db6ee91fe4fd3915de0838066910c1ad4c00c3a3004e1a3d915bebf1",
+        "c8b4b5273b5d04c6862ec293b6d57046f83d0dd08f5b1b04d4ae67bffabe5736",
+        "7085cb3e2e6dec86b6f4effa8f4e1d99640d6648a679d3f5fae6af2167243aa2",
+        "0b0c5ce83844f12868de405171d4ffc7e6839c87cbd0829fbc9541ebb5190748",
+        "9f8d6299091eb189a6c3395daf6ed69eb9604a3ec6ecca582908968716b1ed88",
+        "529687b1794bb55dbe58d44160f1b95234aec29957cc0f43f1115bae26628da4",
         # Per-machine provider shell timeout, fresh and historical in-place upgrades.
         "103947657c32d80b70e02605eb95dacaf6cc967915bf9601bdb90a1cefefac6c",
         "84147ee5ae320f2e40579fb1c94a383001d821300d17a3e52e0f1a2fe437364c",
@@ -187,7 +197,6 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
 
 _SHA256 = frozenset("0123456789abcdef")
 _FULL_COMMIT = frozenset("0123456789abcdef")
-_RESTORE_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 
 
@@ -228,13 +237,6 @@ class RestoreRepositoryRecovery(_StrictModel):
             raise ValueError("restore repository project id must be a canonical UUID4") from exc
         if parsed.version != 4 or str(parsed) != value:
             raise ValueError("restore repository project id must be a canonical UUID4")
-        return value
-
-    @field_validator("repository_alias", "machine_alias")
-    @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _RESTORE_ALIAS.fullmatch(value) is None:
-            raise ValueError("restore repository alias is invalid")
         return value
 
     @field_validator("deploy_key_label", "deploy_public_key")
@@ -1013,6 +1015,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     from rcp.server_ops.backup_capture import (
         BackupSnapshotProjectInventory,
         BackupSQLiteCaptureReceipt,
+        _safe_project_locator,
         write_immutable_backup_receipt,
     )
     from rcp.server_ops.backup_models import BackupFileEntry, inspect_app_data_capture_plan
@@ -1266,23 +1269,36 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         for entry in inventory:
             write_artifact_file(capture_root, entry, store.artifact_file_path(entry).read_bytes())
         digest, size = _hash_regular_file(snapshot)
-        inventories = tuple(
-            BackupSnapshotProjectInventory(
-                project_id=p.project_id,
-                home_space_id=p.home_space_id,
-                locator=store.project(p.project_id).locator,
-                status="capturable" if p.status == "captured" else "uncaptured",
-                recovery=p.recovery if p.status == "captured" else None,
-                task_operation_ids=tuple(
-                    sorted(t.operation_id for t in store.all_project_agent_tasks(p.project_id))
+        inventories = []
+        for project in manifest.projects:
+            record = store.project(project.project_id)
+            if record is None:
+                raise RestoreRefused("The restored project registration is missing.")
+            captured = project.status == "captured"
+            try:
+                inventories.append(
+                    BackupSnapshotProjectInventory(
+                        project_id=project.project_id,
+                        home_space_id=project.home_space_id,
+                        locator=record.locator
+                        if captured
+                        else _safe_project_locator(record.locator),
+                        status="capturable" if captured else "uncaptured",
+                        recovery=project.recovery if captured else None,
+                        task_operation_ids=tuple(
+                            sorted(
+                                t.operation_id
+                                for t in store.all_project_agent_tasks(project.project_id)
+                            )
+                        )
+                        if captured
+                        else (),
+                        unavailable_reason=project.unavailable_reason if not captured else None,
+                        unavailable_at=project.unavailable_at if not captured else None,
+                    )
                 )
-                if p.status == "captured"
-                else (),
-                unavailable_reason=p.unavailable_reason if p.status != "captured" else None,
-                unavailable_at=p.unavailable_at if p.status != "captured" else None,
-            )
-            for p in manifest.projects
-        )
+            except ValueError as exc:
+                raise RestoreRefused("The restored project inventory is invalid.") from exc
         plan = inspect_app_data_capture_plan(app).model_copy(
             update={"data_dir": str(data), "database_path": str(data / "rcp.sqlite3")}
         )
@@ -1302,7 +1318,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 size_bytes=size,
             ),
             app_data_plan=plan,
-            projects=inventories,
+            projects=tuple(inventories),
             artifact_inventory=inventory,
             status="partial"
             if any(p.status == "uncaptured" for p in manifest.projects)

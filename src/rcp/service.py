@@ -102,6 +102,7 @@ from rcp.limits import (
     COMPUTE_CONNECTION_MAX_COUNT,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
+from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
@@ -537,14 +538,9 @@ def iter_canonical_chat_backup_prefix(
                 if first is None:
                     first = record
                 if record.operation_id is not None:
-                    try:
-                        operation_id = str(uuid.UUID(record.operation_id))
-                    except ValueError as exc:
-                        raise ValueError(
-                            "A canonical chat operation identity is malformed."
-                        ) from exc
-                    if operation_id != record.operation_id:
-                        raise ValueError("A canonical chat operation identity is not canonical.")
+                    operation_id = canonical_operation_uuid(
+                        record.operation_id, label="canonical chat operation identity"
+                    )
                     owner = operation_projects.get(operation_id)
                     if owner is None:
                         break
@@ -605,26 +601,14 @@ def iter_canonical_chat_transfer(
                     first = record
                 mapped_operation_id = None
                 if record.operation_id is not None:
-                    try:
-                        source_operation_id = str(uuid.UUID(record.operation_id))
-                    except ValueError as exc:
-                        raise ValueError(
-                            "A canonical chat operation identity is malformed."
-                        ) from exc
-                    if source_operation_id != record.operation_id:
-                        raise ValueError("A canonical chat operation identity is not canonical.")
+                    source_operation_id = canonical_operation_uuid(
+                        record.operation_id, label="canonical chat operation identity"
+                    )
                     mapped_operation_id = operation_id_map.get(source_operation_id)
                     if mapped_operation_id is not None:
-                        try:
-                            canonical_target = str(uuid.UUID(mapped_operation_id))
-                        except ValueError as exc:
-                            raise ValueError(
-                                "A mapped canonical chat operation identity is malformed."
-                            ) from exc
-                        if canonical_target != mapped_operation_id:
-                            raise ValueError(
-                                "A mapped canonical chat operation identity is not canonical."
-                            )
+                        canonical_operation_uuid(
+                            mapped_operation_id, label="mapped canonical chat operation identity"
+                        )
                 transferred = record.model_copy(
                     update={
                         "native_session_id": None,

@@ -27,6 +27,7 @@ from rcp.episode_health import (
     operational_episode_tasks,
     project_episode_health,
 )
+from rcp.loop_status import EpisodeLoopMetadata, episode_loop_metadata
 from rcp.projects import ProjectCatalog
 from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.storage import (
@@ -221,7 +222,7 @@ class AutoResearchRecoverySummary(BaseModel):
     next_attempt_at: str | None
 
 
-class EpisodeResponse(BaseModel):
+class EpisodeResponse(EpisodeLoopMetadata):
     """One public episode parent, without hidden report-attempt state."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -406,6 +407,7 @@ def serialize_episode(
         ]
     )[episode.episode_id]
     return EpisodeResponse(
+        **episode_loop_metadata(store, episode, tasks=task_records).model_dump(),
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         mode=episode.mode,

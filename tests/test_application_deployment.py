@@ -29,7 +29,10 @@ import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.core.models import GraphState, upgrade_graph_projection
 from rcp.server_ops.application_validation import _canonical_sha256
-from rcp.server_ops.backup_capture import BackupCaptureCoordinator
+from rcp.server_ops.backup_capture import (
+    BackupCaptureCoordinator,
+    read_backup_sqlite_capture_receipt,
+)
 from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
 from rcp.server_ops.control import ServerControlPeer, ServerControlRequest
 from rcp.server_ops.deployment import (
@@ -47,6 +50,7 @@ from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
 from tests.helpers import isolated_template_build, reset_from_template, signed_in_client
+from tests.server_installed_upgrade import seed_turn_artifact
 from tests.supervisor_reboot_build import MIGRATION_TABLE, add_forward_migration
 from tests.supervisor_reboot_data import prepare_data
 
@@ -132,6 +136,101 @@ def _tree_state(root: Path) -> dict:
                 contents,
             )
     return entries
+
+
+def capture_outgoing_keep(captured, monkeypatch, *, malformed=False):
+    request, state, metadata = captured
+    data = Path(request.data_dir)
+    artifact = seed_turn_artifact(data, state, "outgoing")
+    with closing(AppStore(data / "rcp.sqlite3")) as store:
+        kept = store.keep_artifact(artifact["artifact_id"])
+        store.mark_agent_artifact_kept(
+            artifact["operation_id"], artifact["artifact_id"], kept_at=kept.kept_at
+        )
+        if malformed:
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET result_json = json_set("
+                    "result_json, '$.artifacts[0].kept_at', NULL, "
+                    "'$.artifacts[0].kept_filename', 'broken.html') WHERE operation_id = ?",
+                    (artifact["operation_id"],),
+                )
+
+        def old_reader(*args):
+            raise ValueError("Outgoing reader rejects the kept binding.")
+
+        with monkeypatch.context() as outgoing:
+            outgoing.setattr("rcp.server_ops.backup_capture._kept_artifact_references", old_reader)
+            capture = BackupCaptureCoordinator(store, data, metadata).capture_sqlite()
+    assert capture.receipt.projects[0].status == "uncaptured"
+    return request.model_copy(
+        update={
+            "sqlite_receipt_path": str(capture.receipt_path),
+            "sqlite_receipt_sha256": capture.receipt_sha256,
+        }
+    )
+
+
+def test_target_preparation_rejudges_outgoing_inventory_and_binds_its_proof(
+    captured, monkeypatch, tmp_path
+):
+    request = capture_outgoing_keep(captured, monkeypatch)
+    roots = {request.data_dir, captured[1]["research"]}
+    discovered = inventory(request)
+    assert {root["live"] for root in discovered["roots"]} == roots
+    checkpoint = create_stopped_snapshot(
+        tmp_path / "checkpoint",
+        tuple(Path(root["live"]) for root in discovered["roots"]),
+        boundary_sha256="d" * 64,
+    )
+    saved = json.loads((checkpoint.directory / "checkpoint.json").read_text())
+    assert {root["live"] for root in saved["roots"]} == roots
+    prepared = prepare(request)
+    assert {root["live"] for root in prepared["roots"]} == roots
+    proof = ApplicationProof.model_validate_json(Path(prepared["proof_path"]).read_bytes())
+    target = read_backup_sqlite_capture_receipt(
+        Path(proof.capture_root) / "sqlite-capture.json",
+        expected_sha256=proof.sqlite_receipt_sha256,
+    )
+    assert target == proof.sqlite_receipt
+    assert target.projects[0].status == "capturable"
+    assert proof.project_receipt.projects[0].status == "captured"
+    assert proof.project_receipt.sqlite_receipt_sha256 == proof.sqlite_receipt_sha256
+    assert proof.sqlite_receipt_sha256 != request.sqlite_receipt_sha256
+    original = read_backup_sqlite_capture_receipt(
+        Path(request.sqlite_receipt_path), expected_sha256=request.sqlite_receipt_sha256
+    )
+    assert original.projects[0].status == "uncaptured"
+    validate(
+        ValidateRequest(
+            version=1,
+            proof_path=prepared["proof_path"],
+            proof_sha256=prepared["proof_sha256"],
+            output_dir=str(tmp_path / "candidate-check"),
+        )
+    )
+
+
+def test_target_preparation_warns_for_uncapturable_kept_binding(captured, monkeypatch, tmp_path):
+    request = capture_outgoing_keep(captured, monkeypatch, malformed=True)
+    discovered = inventory(request)
+    assert {r["live"] for r in discovered["roots"]} == {request.data_dir, captured[1]["research"]}
+    prepared = prepare(request)
+    assert prepared["warnings"] == discovered["warnings"]
+    assert prepared["warnings"][0]["project_id"] == captured[1]["project_id"]
+    proof = ApplicationProof.model_validate_json(Path(prepared["proof_path"]).read_bytes())
+    assert not proof.read_model.projects
+    assert (
+        validate(
+            ValidateRequest(
+                version=1,
+                proof_path=prepared["proof_path"],
+                proof_sha256=prepared["proof_sha256"],
+                output_dir=str(tmp_path / "validated"),
+            )
+        )["status"]
+        == "verified"
+    )
 
 
 @pytest.mark.parametrize("failure", ["prepare", "verification"])
@@ -738,6 +837,7 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
             "inspect",
             "offline-inventory",
             "offline-prepare",
+            "update-rehearsal",
             "restore-prepare",
             "offline-protect",
         ],
@@ -745,23 +845,15 @@ def test_capabilities_never_opens_data(tmp_path: Path) -> None:
     assert not data.exists()
 
 
-@pytest.mark.parametrize("mutation", ["missing_local_project", "existing_output"])
-def test_prepare_refuses_incomplete_or_unsafe_local_boundary(
-    captured, tmp_path: Path, mutation: str
-) -> None:
-    request, state, _metadata = captured
-    if mutation == "missing_local_project":
-        research = Path(state["research"])
-        research.rename(research.with_name("held-research"))
-    else:
-        output = Path(request.output_dir)
-        output.mkdir()
-        (output / "sentinel").write_text("preserve")
-    with pytest.raises((RuntimeError, ValueError, OSError)):
+def test_prepare_refuses_existing_output(captured) -> None:
+    request, _state, _metadata = captured
+    output = Path(request.output_dir)
+    output.mkdir()
+    (output / "sentinel").write_text("preserve")
+    with pytest.raises(MaintenanceRefused):
         prepare(request)
-    assert not (Path(request.output_dir) / "application-proof.json").exists()
-    if mutation == "existing_output":
-        assert (Path(request.output_dir) / "sentinel").read_text() == "preserve"
+    assert not (output / "application-proof.json").exists()
+    assert (output / "sentinel").read_text() == "preserve"
 
 
 def test_trusted_deployed_commit_is_bound_to_wheel_version(
@@ -863,6 +955,32 @@ def test_offline_inventory_discovers_roots_without_changing_stopped_state(captur
     assert {root: _tree_state(root) for root in before} == before
 
 
+def test_release_rehearsal_reads_a_running_database_and_judges_its_copy(captured, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    data, research = Path(request.data_dir), Path(state["research"])
+
+    def visible(root: Path) -> dict:
+        # A WAL reader opens the sidecars a running server already holds.
+        return {
+            name: entry
+            for name, entry in _tree_state(root).items()
+            if not name.endswith(("-wal", "-shm"))
+        }
+
+    before = {root: visible(root) for root in (data, research)}
+    result = update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1,
+            data_dir=str(data),
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+    )
+    assert result == {"version": 1, "status": "ready", "warnings": []}
+    assert {root: visible(root) for root in before} == before
+
+
 def test_offline_preparation_keeps_live_database_unchanged(captured, tmp_path):
     from rcp.server_ops.deployment import (
         InspectRequest,
@@ -954,3 +1072,380 @@ def test_inspect_uninitialized_does_not_create_schema(tmp_path, empty_sqlite):
     (data / "unowned").write_text("do not change")
     assert inspect(InspectRequest(version=1, data_dir=str(data)))["status"] == "uninitialized"
     assert (data / "unowned").read_text() == "do not change"
+
+
+@pytest.mark.parametrize("failure", ["inventory", "files"])
+def test_uncaptured_project_does_not_hide_other_project_proof(
+    captured, monkeypatch, tmp_path, failure
+):
+    import rcp.server_ops.backup_capture as backup_capture
+    from rcp.server_ops.backup_project_files import BackupProjectFileUnavailable
+
+    request, state, metadata = captured
+    data = Path(request.data_dir)
+    other = prepare_data(
+        data,
+        data.parent / "projects",
+        account=pwd.getpwuid(os.geteuid()).pw_name,
+        member_token=state["token"],
+        project_name="Second proven project",
+    )
+    original = backup_capture.inspect_snapshot_project_inventory
+
+    def reject_inventory(store, record, **kwargs):
+        result = original(store, record, **kwargs)
+        if record.project_id == state["project_id"]:
+            return backup_capture.BackupSnapshotProjectInventory(
+                project_id=record.project_id,
+                home_space_id=record.home_space_id,
+                locator=record.locator,
+                status="uncaptured",
+                unavailable_reason="Synthetic inventory rejection.",
+                unavailable_at=kwargs["captured_at"],
+            )
+        return result
+
+    if failure == "inventory":
+        monkeypatch.setattr(backup_capture, "inspect_snapshot_project_inventory", reject_inventory)
+    else:
+        original_capture = BackupProjectFileCaptureCoordinator._capture_project
+
+        def reject_files(self, capture_root, project_root, inventory, **kwargs):
+            if inventory.project_id == state["project_id"]:
+                raise BackupProjectFileUnavailable("Synthetic file capture rejection.")
+            return original_capture(self, capture_root, project_root, inventory, **kwargs)
+
+        monkeypatch.setattr(BackupProjectFileCaptureCoordinator, "_capture_project", reject_files)
+    with closing(AppStore(data / "rcp.sqlite3")) as store:
+        capture = BackupCaptureCoordinator(store, data, metadata).capture_sqlite()
+    request = request.model_copy(
+        update={
+            "sqlite_receipt_path": str(capture.receipt_path),
+            "sqlite_receipt_sha256": capture.receipt_sha256,
+        }
+    )
+    discovered = inventory(request)
+    assert {r["live"] for r in discovered["roots"]} == {
+        str(data),
+        state["research"],
+        other["research"],
+    }
+    prepared = prepare(request)
+    assert [(w["module"], w["project_id"]) for w in prepared["warnings"]] == [
+        ("backup", state["project_id"]),
+    ]
+    proof = ApplicationProof.model_validate_json(Path(prepared["proof_path"]).read_bytes())
+    assert [(p.project_id, p.status) for p in proof.read_model.projects] == [
+        (other["project_id"], "verified"),
+    ]
+    validation = ValidateRequest(
+        version=1,
+        proof_path=prepared["proof_path"],
+        proof_sha256=prepared["proof_sha256"],
+        output_dir=str(tmp_path / "validated"),
+    )
+    assert validate(validation)["status"] == "verified"
+    live = create_app(data_dir=data)
+    assert verify_live_application(
+        Path(prepared["proof_path"]),
+        proof_sha256=prepared["proof_sha256"],
+        background=live.state.background_tasks,
+        catalog=live.state.catalog,
+        store=live.state.background_tasks.store,
+    )
+    from rcp.server_ops.deployment import OfflinePrepareRequest, offline_inventory, offline_prepare
+
+    offline = OfflinePrepareRequest(
+        version=1,
+        data_dir=str(data),
+        output_dir=str(tmp_path / "offline-inventory"),
+        source_commit="a" * 40,
+    )
+    assert {r["live"] for r in offline_inventory(offline)["roots"]} == {
+        str(data),
+        state["research"],
+        other["research"],
+    }
+    assert (
+        offline_prepare(
+            offline.model_copy(
+                update={
+                    "output_dir": str(tmp_path / "offline-prepare"),
+                }
+            )
+        )["warnings"]
+        == prepared["warnings"]
+    )
+
+
+@pytest.mark.parametrize("failure", ["backup", "migration", "identity"])
+def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
+    captured, monkeypatch, tmp_path, failure, capsys
+):
+    from rcp.__main__ import instance_lock
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, main
+
+    request, state, _ = captured
+    data, research = Path(request.data_dir), Path(state["research"])
+    if failure == "backup":
+
+        def reject(*args, **kwargs):
+            raise ValueError("Synthetic backup rejection with private record data.")
+
+        monkeypatch.setattr("rcp.server_ops.backup_capture._kept_artifact_references", reject)
+    elif failure == "migration":
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("Synthetic broken migration.")
+
+        monkeypatch.setattr(AppStore, "_initialize", broken)
+    else:
+        with sqlite3.connect(data / "rcp.sqlite3") as connection:
+            connection.execute("DROP TRIGGER space_identity_immutable")
+            connection.execute("UPDATE space_identity SET space_kind='personal'")
+
+    def visible(root):
+        return {
+            name: entry
+            for name, entry in _tree_state(root).items()
+            if not name.endswith(("-wal", "-shm"))
+        }
+
+    # A running service already owns this lock. Rehearsal must not acquire it.
+    with instance_lock(data, timeout=0):
+        before = {root: visible(root) for root in (data, research)}
+        rehearsal = UpdateRehearsalRequest(
+            version=1,
+            data_dir=str(data),
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+        request_path = tmp_path / "request.json"
+        request_path.write_text(rehearsal.model_dump_json())
+        request_path.chmod(0o600)
+        exit_code = main(["update-rehearsal", str(request_path)])
+        output = capsys.readouterr()
+        if failure == "backup":
+            assert exit_code == 0
+            result = json.loads(output.out)
+            assert result["status"] == "ready"
+            assert result["warnings"][0]["project_id"] == state["project_id"]
+            assert "private record data" not in json.dumps(result)
+        else:
+            assert exit_code == 1
+            assert json.loads(output.err)["status"] == "refused"
+        assert {root: visible(root) for root in before} == before
+
+
+def test_prepare_refuses_checkout_identity_mismatch(captured, monkeypatch):
+    from rcp.server_ops import backup_project_files
+    from rcp.transport.remote_backup_checkout import CheckoutInspectionError
+
+    def mismatch(_recovery):
+        raise CheckoutInspectionError("Checkout origin does not match.")
+
+    monkeypatch.setattr(backup_project_files, "verify_checkout_identities", mismatch)
+    with pytest.raises(CheckoutInspectionError):
+        prepare(captured[0])
+    assert not (Path(captured[0].output_dir) / "application-proof.json").exists()
+
+
+def test_missing_project_root_warns_and_preparation_proceeds(captured, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    shutil.rmtree(state["research"])
+    assert state["research"] in {root["live"] for root in inventory(request)["roots"]}
+    prepared = prepare(request)
+    assert [warning["project_id"] for warning in prepared["warnings"]] == [state["project_id"]]
+    assert (
+        validate(
+            ValidateRequest(
+                version=1,
+                proof_path=prepared["proof_path"],
+                proof_sha256=prepared["proof_sha256"],
+                output_dir=str(tmp_path / "validated"),
+            )
+        )["status"]
+        == "verified"
+    )
+    result = update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1,
+            data_dir=request.data_dir,
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+    )
+    assert result["status"] == "ready"
+    assert result["warnings"] == prepared["warnings"]
+
+
+@pytest.mark.parametrize("location", ["ordinary", "ancestor", "equal", "inside"])
+def test_snapshot_refuses_unsafe_project_root(tmp_path, location):
+    from rcp.server_ops.deployment import _snapshot_roots
+
+    ancestor = tmp_path / ".research"
+    data = ancestor / "data" / ".research"
+    data.mkdir(parents=True)
+    roots = {
+        "ordinary": tmp_path / "project",
+        "ancestor": ancestor,
+        "equal": data,
+        "inside": data / "project" / ".research",
+    }
+    database = tmp_path / "snapshot.sqlite3"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE projects(project_id, state_location, state_remote)")
+        connection.execute(
+            "INSERT INTO projects VALUES (?, ?, 0)", (str(uuid.uuid4()), str(roots[location]))
+        )
+        connection.commit()
+    with pytest.raises(MaintenanceRefused):
+        _snapshot_roots(database, data, tmp_path / "output")
+
+
+def test_rehearsal_tolerates_vanished_live_copy_entry(captured, monkeypatch, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    transient = Path(state["research"]) / ".atomic-write.tmp"
+    transient.write_text("unpublished")
+    original = shutil.copy2
+    vanished = []
+
+    def remove_before_copy(source, destination, **kwargs):
+        if Path(source) == transient:
+            transient.unlink()
+            vanished.append(source)
+        return original(source, destination, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", remove_before_copy)
+    result = update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1,
+            data_dir=request.data_dir,
+            output_dir=str(tmp_path / "rehearsal"),
+        )
+    )
+    assert vanished
+    assert result == {"version": 1, "status": "ready", "warnings": []}
+
+
+def test_rehearsal_warns_when_a_project_root_cannot_be_copied(captured, monkeypatch, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    unreadable = Path(state["research"]) / "unreadable"
+    unreadable.mkdir()
+    unreadable.chmod(0)
+    try:
+        result = update_rehearsal(
+            UpdateRehearsalRequest(
+                version=1,
+                data_dir=request.data_dir,
+                output_dir=str(tmp_path / "rehearsal"),
+            )
+        )
+    finally:
+        unreadable.chmod(0o700)
+    assert result["status"] == "ready"
+    assert [warning["module"] for warning in result["warnings"]] == ["backup"]
+
+
+def test_rehearsal_refuses_a_migration_that_drops_a_project(captured, monkeypatch, tmp_path):
+    from rcp.server_ops import deployment
+    from rcp.server_ops.maintenance import MaintenanceRefused
+
+    request, _, _ = captured
+    opened = deployment.AppStore
+
+    class DroppingStore(opened):
+        def projects(self):
+            return super().projects()[1:]
+
+    monkeypatch.setattr(deployment, "AppStore", DroppingStore)
+    with pytest.raises(MaintenanceRefused):
+        deployment.update_rehearsal(
+            deployment.UpdateRehearsalRequest(
+                version=1,
+                data_dir=request.data_dir,
+                output_dir=str(tmp_path / "rehearsal"),
+            )
+        )
+
+
+def _rehearse(request, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    return update_rehearsal(
+        UpdateRehearsalRequest(
+            version=1, data_dir=request.data_dir, output_dir=str(tmp_path / "rehearsal")
+        )
+    )
+
+
+def test_rehearsal_reads_legacy_kept_files_beside_the_state_root(captured, tmp_path):
+    from rcp.artifacts import AgentArtifactDescriptor
+    from rcp.storage import AgentTaskRecord
+
+    request, state, _ = captured
+    content = b"legacy kept bytes"
+    artifacts = Path(state["research"]).parent / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "kept-figure.png").write_bytes(content)
+    (artifacts / "unreferenced.bin").write_bytes(b"history the inventory never names")
+    with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+        now = store.now()
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=str(uuid.uuid4()),
+                project_id=state["project_id"],
+                kind="project_chat",
+                status="succeeded",
+                request={},
+                result={
+                    "artifacts": [
+                        AgentArtifactDescriptor(
+                            artifact_id="d" * 24,
+                            name="figure.png",
+                            media_type="image/png",
+                            size_bytes=len(content),
+                            kept_filename="kept-figure.png",
+                            kept_at=now,
+                        ).model_dump(mode="json")
+                    ]
+                },
+                created_at=now,
+                updated_at=now,
+                finished_at=now,
+                status_message="Completed.",
+            )
+        )
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+    assert not list((tmp_path / "rehearsal").rglob("unreferenced.bin"))
+
+
+def test_candidate_check_allows_per_member_unread_counts(captured, monkeypatch, tmp_path):
+    request, state, _ = captured
+    with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+        second = store.preprovision_team_member("Second member")
+        store.seat_project_member(state["project_id"], second.user_id)
+
+    def per_member_counts(store, project_ids, user_id):
+        return dict.fromkeys(project_ids, 1 if user_id == second.user_id else 0)
+
+    monkeypatch.setattr("rcp.api.index.digest_counts", per_member_counts)
+    assert _rehearse(request, tmp_path)["status"] == "ready"
+
+
+def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
+    from rcp.server_ops.deployment import UpdateRehearsalRequest, update_rehearsal
+
+    request, state, _ = captured
+    artifacts = Path(state["research"]).parent / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    with pytest.raises(MaintenanceRefused):
+        update_rehearsal(
+            UpdateRehearsalRequest(
+                version=1, data_dir=request.data_dir, output_dir=str(artifacts / "rehearsal")
+            )
+        )

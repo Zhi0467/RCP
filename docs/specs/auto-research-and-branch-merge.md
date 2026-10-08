@@ -74,11 +74,21 @@ undelivered watcher. Waiting is derived from the route, task, and watcher rows;
 it is not a new persisted task state. The root's status distinguishes waiting
 workers from running and settled workers.
 
-One project-global live Experiment-loop episode may exist per Experiment. An
-orchestrator kickoff reuses normal readiness and, if a loop already exists,
-requests a graceful replacement through the same durable Stop path. It never
-overlaps loops or hard-kills the current turn. A pending replacement snapshots
-its goal and admission and starts only after settlement and fresh readiness.
+At most one live Experiment-loop episode exists per Experiment per graph
+target ([decision](../decisions/2026-10-06-experiment-loops-are-per-branch.md)).
+An orchestrator kickoff reuses normal readiness on its own branch. It never
+stops, adopts, or waits on a loop it did not start, on any target. A loop live
+on another target does not block the kickoff; the result lists it as
+`live_elsewhere`, and `status` lists every live loop off the orchestrator's
+branch as `other_branch_loops`. Both are compact and capped: `{rows, omitted}`
+with one row per loop (node, episode, target, starter, state, checkout). The
+orchestrator and human-started loops are told to ask the human when their work
+could interfere with another branch's episodes, for example the same node and
+the same checkout. A child loop cannot `ask`; it is told to pause that work and
+report the conflict in its answer, and the orchestrator asks the human. To restart its own child, the orchestrator stops it, waits for
+settlement, and kicks off again. Routes left pending by the retired replacement
+path were settled at upgrade as cancelled and never launched; their
+`replaces_episode_id` remains history.
 
 Child task/episode admission, budget spend, parent registration, graph target,
 and lifecycle routing commit atomically. Recovery dispatches an accepted queued
@@ -166,8 +176,7 @@ Mail is Markdown hearsay and carries no graph authority; `patch.json` remains th
 only graph channel.
 
 RCP-authored lifecycle notices are separate authority facts: child settlement
-or recovery, child Experiment attention/ending, graph-condition readiness, and
-replacement progression. Source transition and deduplicated notice commit
+or recovery, child Experiment attention/ending, and graph-condition readiness. Source transition and deduplicated notice commit
 together. A busy actor receives the notice after its current turn; neither mail
 nor lifecycle notices are injected into a live provider process. The separate
 [live human steering](providers-and-containment.md#live-human-steering) channel
@@ -186,15 +195,15 @@ harvest never costs a wake. Budget exhaustion retains notices but cannot create
 an unauthorized turn. Clear refuses before acknowledgment if even its compact
 full response exceeds the bound.
 
-Every Stop and every replacement records who initiated it (`human:<member>`,
+Every Stop records who initiated it (`human:<member>`,
 `orchestrator:<operation>`, or `system:<reason>`) in the same transaction as
-the fence. A notice born from a stop the orchestrator itself requested, or from
-a replacement it created advancing, carries `wake_suppressed=self_caused`; a
+the fence. A notice born from a stop the orchestrator itself requested carries
+`wake_suppressed=self_caused`; a
 child task failure classified as a revoked login carries
 `wake_suppressed=provider_auth`. A suppressed notice never admits a paid wake
 and never holds ordinary mail; the running orchestrator still learns of it
 through the harvest, it still counts in the ending receipt, and it never blocks
-quiescence or an ending. A failed replacement is new information and wakes.
+quiescence or an ending.
 
 A completed child watcher group wakes the same child route and native session,
 never the root. Watchers retain the episode id and route worker id. One atomic
@@ -233,7 +242,8 @@ still act on them. An unconsumed final `patch.json` still applies at turn
 settlement, but the episode then spends another invocation to observe the result.
 
 There is no agent Retry verb. Resume means the exact saved session and stage;
-an unusable binding tells the orchestrator to create the explicit replacement.
+an unusable binding tells the orchestrator to stop that child, wait for
+settlement, and start a fresh one.
 
 Mutating commands require a caller-supplied idempotency key. RCP records the
 exact admitted intent and any instruction/goal/Patch file bytes and digest before
@@ -258,7 +268,7 @@ verbs. Its existing validation and reply commands retain their policy.
 Apply uses the ordinary transition-manager path on the branch target, with
 idempotent source effect identity and refreshed graph pointers. Guarded finish
 is a pure state transition: it refuses with a complete immutable blocker receipt
-while child work, replacements, undelivered notices, or accepted-unreflected
+while child work, undelivered notices, or accepted-unreflected
 admissions remain. A waiting child contributes a `waiting_work` blocker with
 action `stop --key <key> <worker_id>`. Finish never performs cleanup as a side
 effect of saying finish.
@@ -327,7 +337,8 @@ continuation is offered (`can_continue`) only where the source's orchestrator
 session and stage are still bound; otherwise the human starts a new episode. `POST .../episodes/{id}/continue` with
 `invocation_ceiling` and a client `request_id` serves both modes; it refuses
 while the source has a live turn, is not terminal, is already continued, a merge
-runs on its branch, or a newer live episode occupies the project or node. The
+runs on its branch, or a newer live episode occupies the project, or the node
+on the same target. The
 same `request_id` replays the same continuation. A continuation records the
 member who made it; the source keeps its own authorizer. Stopped watchers stay
 stopped. See
