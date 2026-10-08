@@ -146,15 +146,23 @@ for this experiment" depends on luck.
     has one; otherwise start a fresh node conversation. Work mode, with the
     member's words plus what they want to see. Announce the finish and open the
     result.
-  - Think or plan: Discuss on the node.
+  - Think, plan, or explain: answer from what you read. Hand off to a Discuss
+    turn on the node only when it needs code, data, or long analysis, and say
+    so.
   - Run or keep going: start the Experiment or authorize Auto-research, saying
     the budget aloud first. Stop means a graceful stop.
-  - Show me: open the view or artifact.
+  - Show me: find it through its node, conversation, or episode and open it in
+    the viewer; open the conversation when the member wants the session itself.
   - Member-only: proposal judgment, Decision choice, standing, Hypothesis
     status, branch merge. Say where to tap.
   - Voice manners: speaking only, maybe not looking. Never ask to paste or type.
     Gist first, names not ids, one short question when the node or project is
     unclear, nothing claimed until a result confirms it.
+- PDF artifacts: `rcp_open_artifact` today refuses `pdf` and `file` views
+  (`showWebMcpArtifactViewer` in `App.tsx`). On desktop, open a PDF through the
+  same native system-viewer command the panel's Open uses. In the browser, and
+  for download-only files, return a refusal that says where to tap Download.
+  Page agents never download.
 - Voice: the page sends the playbook with the session request. The backend
   appends it to its fixed instructions under a size limit.
 - WebMCP: a read-only `rcp_get_playbook` tool returns the same text.
