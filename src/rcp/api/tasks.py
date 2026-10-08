@@ -346,6 +346,8 @@ def start_agent_task(
                         if request.artifact_edit.launch_kind == "revoking"
                         else ("project_chat" if request.chat_scope == "project" else "node_chat")
                     )
+                if kind in {"node_chat", "project_chat"}:
+                    assert isinstance(request, RunRequest)
                 if (
                     kind in {"node_chat", "project_chat"}
                     and isinstance(request, RunRequest)

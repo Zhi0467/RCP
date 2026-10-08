@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rcp.keyed_locks import KeyedLocks
-from rcp.limits import VOICE_TRANSCRIPT_RETENTION_SECONDS
+from rcp.limits import VOICE_HARD_CAP_SECONDS, VOICE_TRANSCRIPT_RETENTION_SECONDS
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 
@@ -112,7 +112,9 @@ def record_client_request(
         raise ValueError("Client request admission requires an episode.")
     cutoff = (
         datetime.fromisoformat(task.created_at)
-        - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS)
+        # A transcript expires 30 days after its last save, which can trail
+        # this admission by up to one session's hard cap.
+        - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS + VOICE_HARD_CAP_SECONDS)
     ).isoformat()
     connection.execute("DELETE FROM client_requests WHERE created_at < ?", (cutoff,))
     try:

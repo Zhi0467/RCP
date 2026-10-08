@@ -685,7 +685,8 @@ export async function reconcileVoiceReceipts(
       } catch (error) {
         if ((error as { status?: number } | null)?.status === 404)
           return { ...receipt, outcome: "refused" as const };
-        throw error;
+        // An unanswered lookup keeps the receipt unknown, so its fence and key stay.
+        return receipt;
       }
     }),
   );

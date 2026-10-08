@@ -165,7 +165,7 @@ def test_failed_admission_rolls_back_request_and_task(request_app, monkeypatch):
 def test_new_request_prunes_expired_keys(request_app):
     from datetime import datetime, timedelta
 
-    from rcp.limits import VOICE_TRANSCRIPT_RETENTION_SECONDS
+    from rcp.limits import VOICE_HARD_CAP_SECONDS, VOICE_TRANSCRIPT_RETENTION_SECONDS
 
     store = request_app.state.background_tasks.store
     project_id = request_app.state.default_project_id
@@ -176,7 +176,7 @@ def test_new_request_prunes_expired_keys(request_app):
         assert first.status_code == 202
         expired_at = (
             datetime.fromisoformat(store.now())
-            - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS + 1)
+            - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS + VOICE_HARD_CAP_SECONDS + 1)
         ).isoformat()
         with store.connection() as connection:
             connection.execute("UPDATE client_requests SET created_at = ?", (expired_at,))

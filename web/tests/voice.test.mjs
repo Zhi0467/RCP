@@ -440,6 +440,44 @@ test("lost-response Send resumes to an accepted receipt and exact watch", async 
   assert.equal(voiceWatchFromReceipt(resumed[0]).id, "task-one");
 });
 
+test("a restored keyless unknown receipt fences its exact call in its own target", async () => {
+  const receipts = [];
+  const first = harness({
+    mode: "none",
+    failWith: new TypeError("dropped"),
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async (receipt) => receipts.push(receipt),
+    },
+  });
+  const args = { mode: "work", message: "m" };
+  await first.executor.run(call("a", "rcp_send_conversation_message", args));
+  // A lookup that cannot answer leaves the receipt unknown instead of failing Resume.
+  const [unanswered] = await reconcileVoiceReceipts(receipts, async () => {
+    throw { status: 503 };
+  });
+  assert.equal(unanswered.outcome, "unknown");
+  const { request_id: _key, ...keyless } = unanswered;
+  const resumed = harness({
+    mode: "none",
+    receiptDeps: { target: () => receiptTarget, initialReceipts: [keyless] },
+  });
+  assert.equal(
+    code(await resumed.executor.run(call("b", "rcp_send_conversation_message", args))),
+    "unknown_outcome",
+  );
+  assert.equal(resumed.runs.length, 0);
+  const other = harness({
+    mode: "none",
+    receiptDeps: {
+      target: () => ({ ...receiptTarget, project_id: "other" }),
+      initialReceipts: [keyless],
+    },
+  });
+  await other.executor.run(call("b", "rcp_send_conversation_message", args));
+  assert.equal(other.runs.length, 1);
+});
+
 test("Resume's 404 clears the unknown fence and retries with the saved key", async () => {
   const receipts = [];
   const first = harness({

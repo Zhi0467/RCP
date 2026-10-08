@@ -1162,6 +1162,20 @@ and speaks one fixed summary of what finished and what still runs. The newest
 Resume of a record wins; the older page ends with a notice. The voice panel
 lists recent sessions with Resume and Delete.
 
+Each voice write (a conversation Send, an Experiment Start, an Auto-research
+authorization) carries a page-minted UUID4 request id. The page saves it in the
+receipt before dispatch and sends it as the `Idempotency-Key` header. The
+admission route records (project, member, key) with the admitted task or
+episode in the same transaction as the admission; a repeat by the same member
+returns the original result, and the key from another member or route is a
+409. Rows are pruned 30 days plus one session's hard cap after admission.
+`GET /api/projects/{id}/client-requests/{key}` returns the admitted ids, or 404
+when nothing was admitted or the row is not the caller's. Resume turns a found
+key into an accepted receipt with a watch, a 404 into a refused receipt that
+keeps its key, and an unanswered lookup into an unchanged unknown receipt. A
+re-ask reuses the receipt's key, so a send still in flight is never admitted
+twice.
+
 `GET /api/voice/settings` returns `{live_model, delegation_model, confirm,
 idle_minutes}` from the member's private settings file; a session uses the
 saved `live_model` (default `gpt-live-1`) and `delegation_model`, and its
