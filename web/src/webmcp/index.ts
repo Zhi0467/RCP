@@ -13,6 +13,8 @@ import {
 } from "./experiments";
 import { OPEN_VIEW_TOOL } from "./view";
 import { GET_PLAYBOOK_TOOL } from "./playbook";
+import { LIST_READ_ROUTES_TOOL, READ_TOOL } from "./reads";
+export { useProjectBroadReadTools } from "./reads";
 import type { WebMcpToolSpec } from "./shared";
 
 export {
@@ -83,6 +85,8 @@ export type { WebMcpViewOwners, WebMcpViewSource } from "./view";
 export const PROJECT_TOOLS: readonly WebMcpToolSpec[] = [
   GET_PLAYBOOK_TOOL,
   PROJECT_OVERVIEW_TOOL,
+  LIST_READ_ROUTES_TOOL,
+  READ_TOOL,
   PROVIDER_LOGINS_TOOL,
   INSPECT_NODE_TOOL,
   OPEN_VIEW_TOOL,

@@ -50,6 +50,7 @@ const {
 } = await server.ssrLoadModule("/src/webmcp/index.ts");
 const { catalog, catalogAsFunctionTools, publishToolSurface, resolve, webMcpHostDefinitions } =
   await server.ssrLoadModule("/src/voice/toolCatalog.ts");
+const { projectBroadReadToolDefinitions } = await server.ssrLoadModule("/src/webmcp/reads.ts");
 const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } = await server.ssrLoadModule(
   "/src/voice/voiceTerminal.ts",
 );
@@ -2097,6 +2098,7 @@ function evalToolDefinitions(state) {
   return [
     ...playbookToolDefinitions(),
     ...projectReadToolDefinitions(project),
+    ...projectBroadReadToolDefinitions(project, () => new AbortController().signal),
     ...providerLoginToolDefinitions(async () => []),
     ...projectArtifactToolDefinitions(project, tasks, episodes, () => true, {
       loadEpisode: async () => null,

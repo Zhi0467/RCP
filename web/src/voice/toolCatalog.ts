@@ -15,6 +15,7 @@ export type CatalogTool = {
   name: string;
   description: string;
   inputSchema: WebMcpJsonSchema;
+  annotations?: WebMcpToolDefinition["annotations"];
   /** True when this exact call waits for the member's tap in a voice session. */
   confirm: (args: Record<string, unknown>) => boolean;
   /** True when a voice session shows the card even while running without confirming. */
@@ -36,10 +37,11 @@ export type ToolSurfaceKind = "project-index" | "project" | null;
 const SPECS = [...PROJECT_INDEX_TOOLS, ...PROJECT_TOOLS, ...VOICE_TERMINAL_TOOLS];
 
 const CATALOG: readonly CatalogTool[] = SPECS.map(
-  ({ name, description, inputSchema, confirm, alwaysConfirm }) => ({
+  ({ name, description, inputSchema, annotations, confirm, alwaysConfirm }) => ({
     name,
     description,
     inputSchema,
+    annotations,
     confirm,
     alwaysConfirm: alwaysConfirm === true,
   }),

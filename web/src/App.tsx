@@ -274,6 +274,7 @@ import {
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
   playbookToolDefinitions,
+  useProjectBroadReadTools,
   providerLoginToolDefinitions,
   projectViewToolDefinitions,
   type WebMcpToolRegistry,
@@ -3687,12 +3688,18 @@ export default function App() {
       showWebMcpArtifactViewer,
     ],
   );
+  const broadReadTools = useProjectBroadReadTools(
+    webMcpProject,
+    backendSessionReady ? (actorIdentity?.user.user_id ?? null) : null,
+    verifiedHealth?.space_id ?? null,
+  );
   const webMcpTools = useMemo(() => {
     if (webMcpProject) {
       const project = webMcpProject;
       return [
         ...playbookToolDefinitions(),
         ...projectReadToolDefinitions(project, episodes),
+        ...broadReadTools,
         ...providerLoginToolDefinitions(loadProviderLogins),
         ...projectArtifactToolDefinitions(
           project,
@@ -3751,6 +3758,7 @@ export default function App() {
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
   }, [
     autoResearchRefusal,
+    broadReadTools,
     chatSummaryTotal,
     createWebMcpConversation,
     episodeAction,

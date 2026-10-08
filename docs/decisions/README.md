@@ -35,6 +35,11 @@
   records why how-to-get-work-done notes are an RCP-owned store instead of graph
   state or repository instruction files, and why agents receive a pointer.
 
+- [Voice keeps member-private text transcripts](2026-10-08-voice-keeps-member-private-text-transcripts.md)
+  records why voice saves session text (no audio) behind member-private
+  routes on the space's backend, why Resume seeds a new session instead of an
+  OpenAI fork, and what that gives up.
+
 - [Agents in a member's page act as that member](2026-10-02-agents-in-a-member-page-act-as-that-member.md)
   records why a WebMCP or voice agent running in a member's own page acts as
   that member, why it may send Work and start episodes, why protected judgment
