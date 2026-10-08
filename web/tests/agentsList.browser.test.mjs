@@ -7,7 +7,7 @@ test("Agents keeps archived chats hidden across revisits and shows provider logo
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
-    server: { host: "127.0.0.1", port: 8502, strictPort: true },
+    server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
   try {
@@ -63,7 +63,7 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
-    server: { host: "127.0.0.1", port: 8502, strictPort: true },
+    server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
   try {
@@ -172,7 +172,7 @@ test("Agents graph filter includes branch inventory and keeps graph and kind tag
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
-    server: { host: "127.0.0.1", port: 8502, strictPort: true },
+    server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
   try {

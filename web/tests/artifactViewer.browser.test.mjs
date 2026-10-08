@@ -7,7 +7,7 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
-    server: { host: "127.0.0.1", port: 8503, strictPort: true },
+    server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
   try {
