@@ -37,8 +37,10 @@ interface InlineArtifactProps {
   onKeep: (() => void) | null;
   download: ReactNode;
   onSelection: (event: InlineArtifactSelectionEvent) => void;
-  /** The selection is gone: cancelled in the frame (Escape, a new drag, an aborted one) or replaced by a new version. */
+  /** The selection is gone: cancelled in the frame (Escape, a new drag, an aborted one) or comment mode ended. */
   onSelectionCancel: () => void;
+  /** A new version replaced the frame, so selections drawn on the old one are stale. */
+  onVersionChange: () => void;
 }
 
 /** One artifact shown in place inside a reply: the viewer shell, sized by its content. */
@@ -55,6 +57,7 @@ export function InlineArtifact({
   download,
   onSelection,
   onSelectionCancel,
+  onVersionChange,
 }: InlineArtifactProps) {
   const host = useRef<HTMLSpanElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -72,6 +75,8 @@ export function InlineArtifact({
   onSelectionRef.current = onSelection;
   const onSelectionCancelRef = useRef(onSelectionCancel);
   onSelectionCancelRef.current = onSelectionCancel;
+  const onVersionChangeRef = useRef(onVersionChange);
+  onVersionChangeRef.current = onVersionChange;
   const freshSessionRef = useRef(false);
   freshSessionRef.current = Boolean(state?.fresh_session_required);
 
@@ -117,7 +122,7 @@ export function InlineArtifact({
   useEffect(() => {
     if (currentVersion === null) return;
     if (shownVersion.current !== null && shownVersion.current !== currentVersion)
-      onSelectionCancelRef.current();
+      onVersionChangeRef.current();
     shownVersion.current = currentVersion;
   }, [currentVersion]);
 
@@ -250,7 +255,11 @@ export function InlineArtifact({
                 : "Select a part of this artifact to comment on it"
             }
             aria-label={commentMode ? "Done commenting" : "Comment on a part"}
-            onClick={() => setCommentMode((current) => !current)}
+            onClick={() => {
+              // Leaving comment mode clears the selection without a message from the frame.
+              if (commentMode) onSelectionCancel();
+              setCommentMode(!commentMode);
+            }}
           >
             <MessageSquarePlus size={12} />
             <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>

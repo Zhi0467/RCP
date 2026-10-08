@@ -1454,6 +1454,25 @@ export function NodeChat({
     dismissAnnotationComposer(false);
   };
 
+  // A new version moves the parts a selection named, so comments on the old one,
+  // open or staged, would be sent against bytes the reader never saw.
+  const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
+    const open =
+      annotationComposer?.step === "comment" ? annotationComposer.artifact?.context : undefined;
+    if (open?.artifact_id === artifact.artifact_id) {
+      inlineSelectionClearRef.current = null;
+      dismissAnnotationComposer(false);
+    }
+    const stale = annotations.filter(
+      (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
+    );
+    if (!stale.length) return;
+    setAnnotations((current) => current.filter((annotation) => !stale.includes(annotation)));
+    setSubmitError(
+      `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
+    );
+  };
+
   const dismissAnnotationComposer = (returnFocus: boolean) => {
     const origin = annotationOriginRef.current;
     annotationOriginRef.current = null;
@@ -1910,6 +1929,7 @@ export function NodeChat({
         download={artifactDownloadControl(taskId, artifact)}
         onSelection={(event) => openInlineArtifactComment(taskId, artifact, event)}
         onSelectionCancel={() => cancelInlineArtifactComment(taskId, artifact)}
+        onVersionChange={() => dropStaleArtifactComments(artifact)}
       />
     );
   };
