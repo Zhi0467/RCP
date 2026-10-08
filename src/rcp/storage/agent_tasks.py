@@ -55,6 +55,7 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
+from rcp.storage.client_requests import record_client_request
 from rcp.storage.digest import append_task_failed
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
@@ -670,6 +671,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 record.failure_kind,
             ),
         )
+        record_client_request(self, connection, record)
         self._insert_agent_task_receipt(
             connection,
             record.operation_id,

@@ -85,6 +85,7 @@ export type VoiceReceipt = {
   call_id: string;
   argument_fingerprint: string;
   outcome: "accepted" | "refused" | "unknown";
+  request_id?: string | null;
   task_id?: string | null;
   episode_id?: string | null;
 };
@@ -138,6 +139,11 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
   const unknownOutcomes = new Set(
     (deps.initialReceipts ?? []).filter((item) => item.outcome === "unknown").map(receiptKey),
   );
+  const requestIds = new Map(
+    (deps.initialReceipts ?? [])
+      .filter((item) => item.request_id && item.outcome !== "accepted")
+      .map((item) => [receiptKey(item), item.request_id!]),
+  );
   let busy = false;
 
   async function runOne(call: VoiceFunctionCall): Promise<string> {
@@ -178,7 +184,12 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       unknownOutcomes.delete(callKey);
       return refusal(code, error);
     };
-    if (unknownOutcomes.has(callKey)) {
+    const keyedWrite = [
+      "rcp_send_conversation_message",
+      "rcp_start_experiment",
+      "rcp_authorize_auto_research",
+    ].includes(call.name);
+    if (unknownOutcomes.has(callKey) && !requestIds.has(callKey)) {
       return refusal(
         "unknown_outcome",
         "An identical earlier call has an unknown outcome; check the chat before repeating it.",
@@ -218,6 +229,10 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
     }
     if (isWrite && deps.saveReceipt) {
       if (!receipt) return refusal("refused", "No project target is available.");
+      if (keyedWrite) {
+        receipt.request_id = requestIds.get(callKey) ?? crypto.randomUUID();
+        requestIds.set(callKey, receipt.request_id);
+      }
       await deps.saveReceipt(receipt);
       pendingReceiptSaved = true;
       unknownOutcomes.add(callKey);
@@ -227,7 +242,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       }
     }
     try {
-      const result = await resolved.definition.execute(runArgs);
+      const result = await resolved.definition.execute(runArgs, receipt?.request_id ?? undefined);
       const text = result.content.map((item) => item.text).join("\n");
       const output =
         tool.annotations?.untrustedContentHint ||
@@ -259,6 +274,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
           );
         }
         unknownOutcomes.delete(callKey);
+        requestIds.delete(callKey);
       }
       deps.onSucceeded?.(call.name, args, output, call.call_id);
       return output;
@@ -460,6 +476,7 @@ export function boundVoiceTranscript<
     entries: [] as VoiceTranscriptEntry[],
     receipts: record.receipts.map((receipt) => ({
       ...receipt,
+      request_id: receipt.request_id ?? null,
       task_id: receipt.task_id ?? null,
       episode_id: receipt.episode_id ?? null,
     })),
@@ -637,5 +654,37 @@ export function voiceWatchFromReceipt(receipt: VoiceReceipt): VoiceWatch | null 
       episode_id: receipt.episode_id,
     }),
     () => receipt.target.project_name,
+  );
+}
+
+/** Resolve saved uncertain admissions before rebuilding Resume's watches. */
+export async function reconcileVoiceReceipts(
+  receipts: readonly VoiceReceipt[],
+  lookup: (
+    projectId: string,
+    requestId: string,
+  ) => Promise<{
+    route: string;
+    operation_id?: string;
+    episode_id?: string;
+  }>,
+): Promise<VoiceReceipt[]> {
+  return Promise.all(
+    receipts.map(async (receipt) => {
+      if (receipt.outcome !== "unknown" || !receipt.request_id) return receipt;
+      try {
+        const admitted = await lookup(receipt.target.project_id, receipt.request_id);
+        return {
+          ...receipt,
+          outcome: "accepted" as const,
+          task_id: admitted.operation_id ?? null,
+          episode_id: admitted.episode_id ?? null,
+        };
+      } catch (error) {
+        if ((error as { status?: number } | null)?.status === 404)
+          return { ...receipt, outcome: "refused" as const };
+        throw error;
+      }
+    }),
   );
 }

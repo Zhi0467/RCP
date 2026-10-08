@@ -3,6 +3,7 @@ import {
   api,
   ApiError,
   loadEpisodes,
+  loadClientRequest,
   loadVoiceSettings,
   createVoiceSession,
   loadVoiceSessions,
@@ -35,6 +36,7 @@ import {
   createVoiceSourceLabels,
   createFinishedResultOffer,
   voiceWatchFromReceipt,
+  reconcileVoiceReceipts,
   type VoiceReceiptTarget,
   createVoiceExecutor,
   episodeWatchStatus,
@@ -561,6 +563,11 @@ export function useVoiceAgent({
                   .slice(-VOICE_TRANSCRIPT_LINES)
                   .map((entry) => ({ role: entry.speaker, text: entry.text })),
               );
+              if (resumeId) {
+                record.receipts = await reconcileVoiceReceipts(record.receipts, loadClientRequest);
+                if (!sameOwner() || !gate.ok()) throw new Error("Voice identity changed.");
+                await save();
+              }
               for (const receipt of record.receipts) {
                 const watch = voiceWatchFromReceipt(receipt);
                 if (
@@ -586,7 +593,9 @@ export function useVoiceAgent({
                 saveReceipt: async (receipt) => {
                   if (!record || !bounds) throw new Error("Voice history is unavailable.");
                   const index = record.receipts.findIndex(
-                    (item) => item.call_id === receipt.call_id,
+                    (item) =>
+                      item.call_id === receipt.call_id ||
+                      (Boolean(receipt.request_id) && item.request_id === receipt.request_id),
                   );
                   if (index < 0) {
                     if (record.receipts.length >= bounds.transcript_max_receipts)

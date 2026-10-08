@@ -20,6 +20,7 @@ from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.artifact_imports import migrate_artifact_imports
 from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
+from rcp.storage.client_requests import migrate_client_requests
 from rcp.storage.connections import ConnectionCache
 from rcp.storage.digest import migrate_digest
 from rcp.storage.episodes import migrate_legacy_episodes
@@ -90,6 +91,7 @@ class AppStoreBase:
         (42, "machine_provider_autocompact_v1"),
         (43, "machine_provider_shell_timeout_v1"),
         (44, "per_target_experiment_loops_v1"),
+        (45, "client_requests_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -807,6 +809,9 @@ class AppStoreBase:
             version=44,
             name="per_target_experiment_loops_v1",
             migration=self._migrate_per_target_experiment_loops,
+        )
+        self._run_storage_schema_migration(
+            connection, version=45, name="client_requests_v1", migration=migrate_client_requests
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

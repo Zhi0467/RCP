@@ -489,10 +489,12 @@ export function loadEpisodes(
 export function startExperimentRun(
   path: string,
   request: AgentTaskRequest,
+  requestId?: string,
 ): Promise<ExperimentStartResponse> {
   return api<ExperimentStartResponse>(path, {
     method: "POST",
     body: JSON.stringify(request),
+    ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
   });
 }
 
@@ -510,9 +512,14 @@ export function loadSpaceRuns(): Promise<SpaceRunIndexEntry[]> {
   return api<SpaceRunIndexEntry[]>("/api/space/runs");
 }
 
-export function startEpisode(apiBase: string, request: StartEpisodeRequest): Promise<Episode> {
+export function startEpisode(
+  apiBase: string,
+  request: StartEpisodeRequest,
+  requestId?: string,
+): Promise<Episode> {
   return api<Episode>(`${apiBase}/episodes`, {
     method: "POST",
+    ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
     body: JSON.stringify(request),
   });
 }
@@ -975,4 +982,13 @@ export async function apiReadResponse(path: string, signal: AbortSignal): Promis
     window.dispatchEvent(new Event("rcp:read-access-lost"));
   }
   return response;
+}
+
+export function loadClientRequest(
+  projectId: string,
+  requestId: string,
+): Promise<{ route: string; operation_id?: string; episode_id?: string }> {
+  return api(
+    `/api/projects/${encodeURIComponent(projectId)}/client-requests/${encodeURIComponent(requestId)}`,
+  );
 }
