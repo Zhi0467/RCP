@@ -46,6 +46,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Voice client request ids, fresh and historical in-place upgrades.
+        "8239c39dfa87e7d8bc3acb91e54a06ccc2f645c9e6df4eaff6617038dc2872be",
+        "40fb26ddf973e8c5c105b0301cc60700f1df3a7714598abc7513770047aeaf0a",
+        "7b9bdce92eafa43ecb436e9f0469d07433b26988d0d63d0898586e91fa34e90a",
+        "cfb3840a3fd6d4d97b3778dde2d58684695dd65326f1c584e064fefc814ce50d",
+        "4664f65651533c211e536b68a1064d588af4f73274506b96b901d727d58a5ab7",
+        "1fe0c51105fbbd298321d93491ecff63d91ce7485f40d88b11e7029bf12429cc",
+        "29fbeab790be5e4b623f98c7490280e44dda6097f3120cf7eb39fa0ac884f23a",
+        "3fb9fb8d140127663b983d598f28f2c4871ee0437b914603bed22a42f5895610",
+        "4f00c596137fd088a204f9f28ea8f9905ba4e544e0b37b513d600e2b3d907e33",
+        "6f842b75c902f12d82c0cf4523a54f56183953798df437ddaf10347c46cd0fda",
+        "a2c0701b2c7dfacae97bab21841ba330f3142d8417746361eea0aab6702608dd",
         # Per-target Experiment loops, fresh and historical in-place upgrades.
         "c6db35af708b61c951ac40cba438e4c2d3888ce681e0ac16cbe65df9250bf0d3",
         "e46b4d477534c3701798b01b45d3529626236fab325cc600c9216a2168156f49",

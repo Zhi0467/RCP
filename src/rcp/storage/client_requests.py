@@ -146,7 +146,7 @@ def record_client_request(
 
 def migrate_client_requests(connection: sqlite3.Connection) -> None:
     connection.execute(
-        """CREATE TABLE client_requests (
+        """CREATE TABLE IF NOT EXISTS client_requests (
             project_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             key TEXT NOT NULL,
@@ -159,4 +159,6 @@ def migrate_client_requests(connection: sqlite3.Connection) -> None:
             CHECK ((operation_id IS NOT NULL) != (episode_id IS NOT NULL))
         )"""
     )
-    connection.execute("CREATE INDEX client_requests_created ON client_requests(created_at)")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS client_requests_created ON client_requests(created_at)"
+    )

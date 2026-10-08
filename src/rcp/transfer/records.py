@@ -126,6 +126,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "artifact_operations",
         "artifact_imports",
         "writing_sessions",
+        # Voice request keys reconcile source-installation transcripts only.
+        "client_requests",
     }
 )
 

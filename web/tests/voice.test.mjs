@@ -437,7 +437,10 @@ test("lost-response Send resumes to an accepted receipt and exact watch", async 
     return { route: "tasks/node_chat", operation_id: "task-one" };
   });
   assert.equal(resumed[0].outcome, "accepted");
+  assert.equal(receipts[0].mode, "work");
   assert.equal(voiceWatchFromReceipt(resumed[0]).id, "task-one");
+  // A Discuss send never becomes earlier work after Resume.
+  assert.equal(voiceWatchFromReceipt({ ...resumed[0], mode: "discuss" }), null);
 });
 
 test("a restored keyless unknown receipt fences its exact call in its own target", async () => {

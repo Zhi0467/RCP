@@ -581,6 +581,7 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(
             "graph_target": {"kind": "main", "branch_id": None},
         },
         "outcome": "unknown",
+        "mode": "work",
         "task_id": "task-1",
         "episode_id": None,
     }

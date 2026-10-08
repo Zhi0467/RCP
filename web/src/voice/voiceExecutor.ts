@@ -85,6 +85,8 @@ export type VoiceReceipt = {
   call_id: string;
   argument_fingerprint: string;
   outcome: "accepted" | "refused" | "unknown";
+  /** A conversation send's mode; Resume watches only Work sends. */
+  mode?: "work" | "discuss" | null;
   request_id?: string | null;
   task_id?: string | null;
   episode_id?: string | null;
@@ -172,6 +174,10 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
           call_id: call.call_id,
           argument_fingerprint: fingerprint,
           outcome: "unknown",
+          ...(call.name === "rcp_send_conversation_message" &&
+          (args.mode === "work" || args.mode === "discuss")
+            ? { mode: args.mode }
+            : {}),
         }
       : null;
     const callKey = receipt ? receiptKey(receipt) : `${call.name}:${fingerprint}`;
@@ -659,7 +665,7 @@ export function voiceWatchFromReceipt(receipt: VoiceReceipt): VoiceWatch | null 
   if (receipt.outcome !== "accepted") return null;
   return voiceWatchFromResult(
     receipt.tool,
-    { mode: "work" },
+    { mode: receipt.mode ?? null },
     JSON.stringify({
       project_id: receipt.target.project_id,
       task_id: receipt.task_id,
