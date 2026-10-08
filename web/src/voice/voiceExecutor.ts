@@ -498,7 +498,7 @@ export function createVoiceSourceLabels() {
   const calls = new Map<string, string>();
   let pending: string | null = null;
   let active: string | null = null;
-  let activeItem: string | undefined;
+  let activeSegment: string | undefined;
   return {
     capture(callId: string, name: string, args: string, target: VoiceReceiptTarget | null) {
       // The exact call, so two reads through one tool keep distinct provenance.
@@ -515,18 +515,18 @@ export function createVoiceSourceLabels() {
     discard(callId: string) {
       calls.delete(callId);
     },
-    speech(role: "member" | "agent", itemId?: string): string | null {
+    speech(role: "member" | "agent", segment: string): string | null {
       if (role === "member") {
         pending = null;
         active = null;
-        activeItem = undefined;
+        activeSegment = undefined;
         return null;
       }
       if (pending !== null) {
         active = pending;
         pending = null;
-      } else if (itemId !== activeItem) active = null;
-      activeItem = itemId;
+      } else if (segment !== activeSegment) active = null;
+      activeSegment = segment;
       return active;
     },
   };
@@ -587,7 +587,7 @@ export function createFinishedResultOffer(deps: {
 }) {
   let offered: { watch: VoiceWatch; target: VoiceReceiptTarget } | null = null;
   let replied = false;
-  let lastSpeech: { role: "member" | "agent"; itemId?: string } | null = null;
+  let lastSpeech: { role: "member" | "agent"; segment: string } | null = null;
   const sameTarget = (target: VoiceReceiptTarget) => {
     const current = deps.currentTarget();
     return (
@@ -600,9 +600,9 @@ export function createFinishedResultOffer(deps: {
       offered = { watch, target };
       replied = false;
     },
-    speech(role: "member" | "agent", itemId?: string) {
-      const newItem = lastSpeech?.role !== role || lastSpeech.itemId !== itemId;
-      lastSpeech = { role, itemId };
+    speech(role: "member" | "agent", segment: string) {
+      const newItem = lastSpeech?.role !== role || lastSpeech.segment !== segment;
+      lastSpeech = { role, segment };
       if (!offered || !newItem) return;
       // Keep the immediate reply available to its tool call; no later turn can use it.
       if (role === "agent" || replied) offered = null;

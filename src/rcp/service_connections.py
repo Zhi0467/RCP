@@ -122,8 +122,14 @@ def voice_resume_input(entries: list[dict]) -> tuple[list[dict], bool]:
         size = len(content.encode()) + overhead
         if len(messages) >= limits.VOICE_RESUME_MAX_MESSAGES or used + size > budget:
             break
+        member = entry["speaker"] == "member"
+        # GPT-Live history items: one typed text part per message.
         messages.append(
-            {"role": "user" if entry["speaker"] == "member" else "assistant", "content": content}
+            {
+                "type": "message",
+                "role": "user" if member else "assistant",
+                "content": [{"type": "input_text" if member else "output_text", "text": content}],
+            }
         )
         used += size
     return list(reversed(messages)), clipped or len(messages) < len(entries)

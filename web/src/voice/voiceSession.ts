@@ -19,7 +19,7 @@ export type VoiceEndReason =
   "member" | "idle" | "hard_cap" | "hidden" | "identity" | "space" | "connection" | "upstream";
 
 export type VoiceSessionEvents = {
-  onTranscript: (role: "member" | "agent", delta: string, order?: string) => void;
+  onTranscript: (role: "member" | "agent", delta: string, segment: string) => void;
   onFunctionCall: (call: VoiceFunctionCall) => void;
   onEnded: (reason: VoiceEndReason) => void;
 };
@@ -195,6 +195,16 @@ function startSession(
   const send = (event: Record<string, unknown>) => {
     if (channel.readyState === "open") channel.send(JSON.stringify(event));
   };
+  // GPT-Live transcript deltas carry no item id or turn end, so the page marks
+  // its own boundaries: each tool result and each spoken announcement starts a
+  // new agent segment, which ends any quoted source and any pending offer.
+  let segment = 0;
+  let speaker: "member" | "agent" | null = null;
+  const transcript = (role: "member" | "agent", delta: string) => {
+    if (role !== speaker) segment += 1;
+    speaker = role;
+    events.onTranscript(role, delta, String(segment));
+  };
   const noteActivity = () => {
     if (endIfDue()) return;
     idleAt = now() + limits.idle_seconds * 1000;
@@ -234,7 +244,7 @@ function startSession(
   };
 
   channel.onmessage = (message) => {
-    let event: { type?: unknown; delta?: unknown; item_id?: unknown };
+    let event: { type?: unknown; delta?: unknown };
     try {
       event = JSON.parse(String(message.data));
     } catch {
@@ -246,22 +256,14 @@ function startSession(
     if (!ending && endIfDue()) return;
     if (event.type === "session.input_transcript.delta" && typeof event.delta === "string") {
       noteActivity();
-      events.onTranscript(
-        "member",
-        event.delta,
-        typeof event.item_id === "string" ? event.item_id : undefined,
-      );
+      transcript("member", event.delta);
     } else if (
       event.type === "session.output_transcript.delta" &&
       typeof event.delta === "string"
     ) {
       // The assistant speaking is activity too; idle must not cut off a long answer.
       noteActivity();
-      events.onTranscript(
-        "agent",
-        event.delta,
-        typeof event.item_id === "string" ? event.item_id : undefined,
-      );
+      transcript("agent", event.delta);
     } else if (event.type === "session.closed") {
       markClosed();
       void end("upstream", { immediate: true });
@@ -290,6 +292,7 @@ function startSession(
     sendFunctionOutput: (callId, output) => {
       // A call that finished after a late deadline must not restart generation.
       if (endIfDue()) return;
+      segment += 1;
       send({
         type: "response.item.create",
         event_id: eventId(),
@@ -299,6 +302,7 @@ function startSession(
     },
     speak: (text) => {
       if (endIfDue()) return;
+      segment += 1;
       const event = {
         type: "session.commentary.append",
         event_id: eventId(),

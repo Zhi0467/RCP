@@ -700,3 +700,38 @@ test("output sent after a missed deadline ends the session instead of reaching O
   assert.ok(transport.sent.some((event) => event.type === "session.close"));
   await session.end("member", { immediate: true });
 });
+
+test("the page starts a new speech segment at each tool result, announcement, and speaker change", async () => {
+  const transport = fakeTransport();
+  const heard = [];
+  const session = await openVoiceSession(
+    [],
+    {
+      onTranscript: (role, _delta, segment) => heard.push([role, segment]),
+      onFunctionCall() {},
+      onEnded() {},
+    },
+    harness().gate,
+    transport.deps,
+  );
+  const channel = transport.deps.createPeer().createDataChannel();
+  const say = (type) => channel.onmessage({ data: JSON.stringify({ type, delta: "x" }) });
+  say("session.output_transcript.delta");
+  say("session.output_transcript.delta");
+  session.sendFunctionOutput("c1", "{}");
+  say("session.output_transcript.delta");
+  session.speak("done");
+  say("session.output_transcript.delta");
+  say("session.input_transcript.delta");
+  say("session.output_transcript.delta");
+  const segments = heard.map(([, segment]) => segment);
+  assert.equal(segments[0], segments[1]);
+  assert.equal(new Set(segments.slice(1)).size, segments.length - 1);
+  // A commentary after an answer cannot inherit the answer's quoted source.
+  const labels = createVoiceSourceLabels();
+  labels.capture("c1", "rcp_read", "{}", null);
+  labels.succeeded("c1");
+  assert.notEqual(labels.speech("agent", segments[2]), null);
+  assert.equal(labels.speech("agent", segments[3]), null);
+  await session.end("member", { immediate: true });
+});

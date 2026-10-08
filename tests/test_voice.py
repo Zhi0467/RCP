@@ -590,8 +590,12 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
     inputs = payloads[-1]["session"]["input"]
     assert 0 < len(inputs) <= limits.VOICE_RESUME_MAX_MESSAGES
     assert {item["role"] for item in inputs} == {"user", "assistant"}
-    assert inputs[-1]["content"].endswith(entries[-1]["text"])
-    assert entries[-2]["source"] in inputs[-2]["content"]
+    assert {(item["type"], item["role"], item["content"][0]["type"]) for item in inputs} == {
+        ("message", "user", "input_text"),
+        ("message", "assistant", "output_text"),
+    }
+    assert inputs[-1]["content"][0]["text"].endswith(entries[-1]["text"])
+    assert entries[-2]["source"] in inputs[-2]["content"][0]["text"]
     assert payloads[-1]["session"]["store"] is False
     from rcp.service_connections import voice_resume_input
 
@@ -599,7 +603,7 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
     assert truncated and inputs
     assert (
         sum(
-            len(item["content"].encode()) + limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
+            len(item["content"][0]["text"].encode()) + limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
             for item in inputs
         )
         <= limits.VOICE_RESUME_MAX_TOKENS
@@ -609,10 +613,10 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
     clipped, truncated = voice_resume_input([newest])
     assert truncated and len(clipped) == 1
     assert clipped[0]["role"] == "assistant"
-    assert newest["source"] in clipped[0]["content"]
-    assert clipped[0]["content"].endswith("tail")
+    assert newest["source"] in clipped[0]["content"][0]["text"]
+    assert clipped[0]["content"][0]["text"].endswith("tail")
     assert (
-        len(clipped[0]["content"].encode()) + limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
+        len(clipped[0]["content"][0]["text"].encode()) + limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
         <= limits.VOICE_RESUME_MAX_TOKENS
     )
 
