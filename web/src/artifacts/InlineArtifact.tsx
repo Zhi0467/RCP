@@ -19,6 +19,8 @@ export interface InlineArtifactSelectionEvent {
   anchor: { left: number; right: number; top: number };
   /** The viewer says the origin cannot resume, so the edit needs a new session. */
   freshSession: boolean;
+  /** The version the reader selected on, so a newer one refuses the edit. */
+  version: string | null;
   clear: () => void;
 }
 
@@ -183,6 +185,7 @@ export function InlineArtifact({
             }
           : { left: rect.left, right: rect.right, top: rect.top + Math.min(rect.height, 48) },
         freshSession: freshSessionRef.current,
+        version: shownVersion.current,
         clear: () =>
           frame.current?.contentWindow?.postMessage(
             { type: "rcp-inline-selection-clear", version: 1 },
@@ -269,7 +272,7 @@ export function InlineArtifact({
           <Maximize2 size={12} />
           <span className="chat-inline-artifact-label">Expand</span>
         </button>
-        {onKeep && (
+        {onKeep && state?.can_keep !== false && (
           <button type="button" data-artifact-action="keep" disabled={keeping} onClick={onKeep}>
             Keep
           </button>

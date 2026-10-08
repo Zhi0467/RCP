@@ -1435,6 +1435,7 @@ export function NodeChat({
           operation_id: taskId,
           artifact_id: artifact.artifact_id,
           ...(event.freshSession ? { fresh_session: true } : {}),
+          ...(event.version ? { base_version: event.version } : {}),
         },
         name: artifact.name,
         selection: { ...event.selection, comment: "" },

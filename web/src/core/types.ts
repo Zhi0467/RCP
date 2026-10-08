@@ -2342,6 +2342,8 @@ export interface ArtifactContextRequest {
   episode_id?: string | null;
   /** The origin cannot resume; the edit explicitly starts a new provider session. */
   fresh_session?: boolean;
+  /** The version the selections were drawn on; admission refuses a newer one. */
+  base_version?: string | null;
   selections: ArtifactSelection[];
 }
 

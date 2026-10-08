@@ -310,7 +310,9 @@ artifact, instead of Comment. A finished selection opens the chat's own
 comment window; Add comment stages it in the composer like quoted answer text,
 and the turn carries it as that artifact's selection in the one shape every
 artifact route uses, with the fresh-session flag when the viewer state requires
-one. A selection cancelled inside the frame (Escape, an aborted drag, or the
+one and the version the selections were drawn on; admission refuses the edit
+when the artifact has since moved to another version. The caption offers Keep
+only while the loaded viewer state still does. A selection cancelled inside the frame (Escape, an aborted drag, or the
 start of a new one) and leaving comment mode close that window. A new version of
 the artifact closes it as well and removes the comments already staged on the
 old version, with a notice, since their regions describe bytes the reader no
