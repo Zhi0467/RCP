@@ -31,6 +31,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   padding: 5px;
   color: inherit;
 }
@@ -88,4 +89,9 @@
 .artifact-viewer-loading,
 .artifact-viewer-file {
   padding: 20px;
+}
+
+.artifact-viewer-comment-guidance {
+  padding: 6px 10px;
+  font-size: var(--type-sm);
 }
