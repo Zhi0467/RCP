@@ -1796,21 +1796,29 @@ export function NodeChat({
     });
   };
 
-  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) =>
-    artifact.can_download ? (
-      desktop ? (
-        <button type="button" onClick={() => void downloadArtifact(taskId, artifact)}>
-          <Download size={12} /> Download
-        </button>
-      ) : (
-        <a
-          href={artifactUrl(project.id, taskId, artifact.artifact_id, "download")}
-          download={artifact.name}
-        >
-          <Download size={12} /> Download
-        </a>
-      )
-    ) : null;
+  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) => {
+    if (!artifact.can_download) return null;
+    const label = <span className="chat-inline-artifact-label">Download</span>;
+    return desktop ? (
+      <button
+        type="button"
+        aria-label="Download"
+        onClick={() => void downloadArtifact(taskId, artifact)}
+      >
+        <Download size={12} />
+        {label}
+      </button>
+    ) : (
+      <a
+        href={artifactUrl(project.id, taskId, artifact.artifact_id, "download")}
+        download={artifact.name}
+        aria-label="Download"
+      >
+        <Download size={12} />
+        {label}
+      </a>
+    );
+  };
 
   const renderInlineArtifact = (
     taskId: string,
@@ -1821,10 +1829,11 @@ export function NodeChat({
     const found = inlineArtifactFor(src, taskId, artifacts);
     if (!found) return null;
     const { artifact } = found;
+    // A PDF or download-only file keeps its card below the reply.
+    if (artifact && !isInlineViewable(artifact))
+      return <InlineArtifactMissing name={found.name} attached />;
     if (!artifact || !artifact.available || !artifact.can_open)
       return <InlineArtifactMissing name={found.name} />;
-    // A PDF or download-only file keeps its card below the reply.
-    if (!isInlineViewable(artifact)) return <InlineArtifactMissing name={found.name} attached />;
     const key = `${taskId}:${artifact.artifact_id}`;
     return (
       <InlineArtifact

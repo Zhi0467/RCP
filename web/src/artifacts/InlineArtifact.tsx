@@ -194,13 +194,16 @@ export function InlineArtifact({
                 ? "Stop commenting and use the artifact"
                 : "Select a part of this artifact to comment on it"
             }
+            aria-label={commentMode ? "Done commenting" : "Comment on a part"}
             onClick={() => setCommentMode((current) => !current)}
           >
-            <MessageSquarePlus size={12} /> {commentMode ? "Done" : "Comment"}
+            <MessageSquarePlus size={12} />
+            <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>
           </button>
         )}
-        <button type="button" onClick={onExpand} title="Open in the viewer">
-          <Maximize2 size={12} /> Expand
+        <button type="button" onClick={onExpand} title="Open in the viewer" aria-label="Expand">
+          <Maximize2 size={12} />
+          <span className="chat-inline-artifact-label">Expand</span>
         </button>
         {onKeep && (
           <button type="button" data-artifact-action="keep" disabled={keeping} onClick={onKeep}>

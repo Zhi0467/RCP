@@ -737,9 +737,16 @@
 /* An artifact a reply embeds sits in the reply's flow, sized by its content,
    with its actions as a quiet caption rather than a file card. */
 .chat-inline-artifact {
+  container-type: inline-size;
   display: block;
   margin: 14px 0;
   max-width: 100%;
+}
+/* A narrow reply keeps the caption to one line: actions become icons. */
+@container (max-width: 420px) {
+  .chat-inline-artifact-label {
+    display: none;
+  }
 }
 .chat-inline-artifact-frame,
 .chat-inline-artifact-placeholder {
@@ -854,6 +861,7 @@
 }
 .chat-inline-artifact.missing {
   align-items: center;
+  container-type: normal;
   color: var(--muted);
   display: inline-flex;
   font-size: var(--type-xs);
