@@ -13,7 +13,10 @@ Settled with the human on 2026-10-08:
   hiding still ends it, and the panel says why.
 - Resume uses a text transcript RCP saves, not an OpenAI fork. RCP keeps
   sending `store: false`. Nothing stays on OpenAI's side.
-- One PR holds all four slices, including the new inbox read tool.
+- One PR holds all four slices.
+- Reads become broad (one generic project GET tool). Writes stay named and
+  card-gated. No page-driving or browser control: it would let the agent press
+  Confirm itself and send the screen to OpenAI.
 
 ## What is wrong today
 
@@ -90,18 +93,32 @@ Settled with the human on 2026-10-08:
 - Check: a backend test that the outgoing tool payload carries `strict: false`
   (structure, not wording).
 
-### 4. Inbox read tool and instructions
+### 4. Broad reads and instructions
 
-- New read-only catalog tools, available to voice and WebMCP:
-  `rcp_list_inbox` (the open project's inbox items, including consolidation
-  runs, failures, and the renewal row) and `rcp_read_consolidation_report`
-  (one report's text, bounded, marked untrusted). Both follow the
-  `artifacts.ts` pattern and reuse the routes the inbox already reads.
+Writes stay as named, card-gated tools. Reads become broad, so the agent can
+answer about anything the member can see without a hand-written tool per
+screen. This replaces an inbox-only tool. It adds no authority: every read is
+a GET the member's page could already make.
+
+- `rcp_list_read_routes`: the open project's GET route templates, taken from
+  the backend's OpenAPI schema and filtered by the same rule `rcp_read` uses.
+  The tool description and enforcement share one resolved object.
+- `rcp_read`: one GET under `/api/projects/{open project}/`, as the member.
+  It refuses other prefixes, other methods, streams (SSE), and non-JSON or
+  non-text bodies. Results are size-limited (limit in `limits.py`) and marked
+  untrusted. This covers the inbox, consolidation reports, artifacts, tasks,
+  and episodes.
+- Both are available to voice and WebMCP, in a new `webmcp/` module beside
+  `artifacts.ts`.
 - `INSTRUCTIONS`: the agent acts through RCP's page tools in the member's own
-  page (the WebMCP catalog). It doesn't see the screen. The member can only
-  speak, so it never asks for pasted or typed text. It names the exact tool
-  that refused and retries with corrected arguments. Prompt tests check data
-  and enforcement only, never wording.
+  page (the WebMCP catalog), as the member. It doesn't see the screen. It uses
+  `rcp_read` when no named tool fits. The member can only speak, so it never
+  asks for pasted or typed text. It names the exact tool that refused and
+  retries with corrected arguments. Prompt tests check data and enforcement
+  only, never wording.
+- Checks: tests that try a path outside the open project, a non-GET, an SSE
+  route, and an oversized body, and that the route list matches the
+  enforcement filter.
 
 ## Ownership and checks
 
@@ -110,7 +127,7 @@ Settled with the human on 2026-10-08:
 | 1 | `windows.rs`, a native command, `voiceSession.ts`, `useVoiceAgent.ts` | web voice tests, Tauri build |
 | 2 | `service_connections.py`, `api/voice.py`, `voice.py`, `limits.py`, `useVoiceAgent.ts`, Agents panel, `core/types.ts` | `tests/test_voice*.py`, web voice tests |
 | 3 | `voice.py` | `tests/test_voice*.py` |
-| 4 | `webmcp/` new module, `webmcp/index.ts`, `voice.py` | web webmcp tests |
+| 4 | `webmcp/` new module, `webmcp/index.ts`, `voice.py`, `limits.py` | web webmcp tests |
 
 `core/types.ts` and `voice.py` are shared, so they are edited serially.
 
