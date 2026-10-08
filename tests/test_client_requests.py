@@ -78,7 +78,8 @@ def test_client_request_replay_admits_once_and_lookup_returns_id(request_app, tm
 @pytest.mark.parametrize(
     "route", ["tasks/project_chat", "experiments/exp%2Fbounded-loop/run", "episodes"]
 )
-@pytest.mark.parametrize("key", ["invalid", str(uuid.uuid1())])
+# A fixed version-1 UUID keeps test ids identical across xdist workers.
+@pytest.mark.parametrize("key", ["invalid", "c232ab00-9414-11ec-b3c8-9e6bdeced846"])
 def test_client_request_headers_require_uuid4(request_app, route, key):
     project_id = request_app.state.default_project_id
     body = chat_request()
@@ -178,10 +179,16 @@ def test_new_request_prunes_expired_keys(request_app):
             datetime.fromisoformat(store.now())
             - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS + VOICE_HARD_CAP_SECONDS + 1)
         ).isoformat()
+        expire = "UPDATE client_requests SET created_at = ?"
         with store.connection() as connection:
-            connection.execute("UPDATE client_requests SET created_at = ?", (expired_at,))
+            connection.execute(expire, (expired_at,))
         second = client.post(url, json=chat_request(), headers={"Idempotency-Key": new_key})
         assert second.status_code == 202
-    assert store.client_request(project_id, old_key) is None
-    assert store.client_request(project_id, new_key) is not None
+        with store.connection() as connection:
+            keys = {row["key"] for row in connection.execute("SELECT key FROM client_requests")}
+            assert keys == {new_key}
+            # With no later admission to prune it, the lookup itself refuses the key.
+            connection.execute(expire, (expired_at,))
+        lookup = f"/api/projects/{project_id}/client-requests/{new_key}"
+        assert client.get(lookup).status_code == 404
     assert store.agent_task(first.json()["operation_id"]) is not None

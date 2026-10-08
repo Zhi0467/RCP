@@ -1,7 +1,7 @@
 # Standby voice robustness
 
 Date: 2026-10-08
-Status: slices 1 to 5 implemented; slice 6 in progress. Slice 1 is partly
+Status: slices 1 to 6 implemented. Slice 1 is partly
 live-checked (2026-10-08): talking on another Space stayed connected, and a
 minimized, silent session released the microphone at a 1-minute idle limit.
 The fully occluded and app-hidden cases, speech in each state, and timer and
@@ -9,9 +9,8 @@ media measurements remain in the final live check; the native deadline
 backstop stays deferred until that check, not ruled out. Each slice had one cross-model review and one
 fix round.
 
-Implemented: slices 1 to 5.
-Remaining: slice 6 (request ids), then the live checks below for slices 2 to
-6.
+Implemented: slices 1 to 6.
+Remaining: the live checks below for slices 1 to 6.
 
 Settled with the human on 2026-10-08:
 

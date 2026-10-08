@@ -46,9 +46,21 @@ _ADMISSION: ContextVar[tuple[object, _Admission] | None] = ContextVar(
 _LOCKS = KeyedLocks()
 
 
+def _expiry_cutoff(now: str) -> str:
+    # A transcript expires 30 days after its last save, which can trail the
+    # admission by up to one session's hard cap.
+    retention = VOICE_TRANSCRIPT_RETENTION_SECONDS + VOICE_HARD_CAP_SECONDS
+    return (datetime.fromisoformat(now) - timedelta(seconds=retention)).isoformat()
+
+
 class ClientRequestStoreMixin(StoreMixinBase):
     def client_request(self, project_id: str, key: str) -> ClientRequestRecord | None:
         with self.connection() as connection:
+            # An expired key is gone even before a later admission prunes it.
+            connection.execute(
+                "DELETE FROM client_requests WHERE project_id = ? AND key = ? AND created_at < ?",
+                (project_id, key, _expiry_cutoff(self.now())),
+            )
             row = connection.execute(
                 "SELECT * FROM client_requests WHERE project_id = ? AND key = ?",
                 (project_id, key),
@@ -110,13 +122,9 @@ def record_client_request(
     episode_id = task.episode_id if admission.result_kind == "episode" else None
     if admission.result_kind == "episode" and episode_id is None:
         raise ValueError("Client request admission requires an episode.")
-    cutoff = (
-        datetime.fromisoformat(task.created_at)
-        # A transcript expires 30 days after its last save, which can trail
-        # this admission by up to one session's hard cap.
-        - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS + VOICE_HARD_CAP_SECONDS)
-    ).isoformat()
-    connection.execute("DELETE FROM client_requests WHERE created_at < ?", (cutoff,))
+    connection.execute(
+        "DELETE FROM client_requests WHERE created_at < ?", (_expiry_cutoff(task.created_at),)
+    )
     try:
         connection.execute(
             """INSERT INTO client_requests
