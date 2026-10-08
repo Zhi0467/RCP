@@ -278,6 +278,7 @@ def test_session_validation_bounds_tools_and_does_not_echo_input(voice_setup, mo
         {**OFFER, "tools": TOOLS},
         {**OFFER, "tools": [{"type": KEY}]},
         {**OFFER, "extra": KEY},
+        {**OFFER, "playbook": "x" * (limits.VOICE_PLAYBOOK_MAX_CHARS + 1)},
     ):
         response = client.post("/api/voice/sessions", json=body)
         assert response.status_code == 422 and KEY not in response.text

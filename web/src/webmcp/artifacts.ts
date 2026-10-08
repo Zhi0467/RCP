@@ -100,7 +100,11 @@ function assertArtifactFilterTarget(
   tasks: AgentTask[],
   episodes: Episode[],
   filter: ArtifactFilter,
+  saved: ProjectArtifact[],
 ): void {
+  // The Artifacts panel names its own sources, so a target it holds outputs for is
+  // present even when its tasks are older than the page's recent window.
+  if (saved.some((entry) => savedMatchesArtifactFilter(entry, filter))) return;
   if (filter.nodeId && !project.graph.nodes[filter.nodeId]) {
     throw new Error(`Node ${filter.nodeId} is not present in the current project graph.`);
   }
@@ -168,13 +172,48 @@ function savedMatchesArtifactFilter(entry: ProjectArtifact, filter: ArtifactFilt
  * holds, and the Artifacts panel. A panel entry the recent windows already show
  * marks that record instead of repeating it.
  */
+function savedArtifactRecord(
+  project: ProjectSnapshot,
+  entry: ProjectArtifact & { artifact_id: string },
+): ProjectArtifactRecord {
+  const artifactBase = `/api/projects/${encodeURIComponent(project.id)}/artifacts/${encodeURIComponent(entry.artifact_id)}`;
+  return {
+    artifact_id: entry.artifact_id,
+    viewer_id: `${SAVED_VIEWER_PREFIX}${entry.id}`,
+    kind: entry.kind === "report" ? "episode_report" : "saved_artifact",
+    in_artifacts_panel: true,
+    name: compactText(entry.name, 120),
+    media_type: null,
+    view: entry.view,
+    can_download: entry.can_download,
+    available: entry.available,
+    can_open: entry.can_open,
+    task_id: entry.operation_id,
+    chat_id: savedChatId(entry),
+    node_id: entry.source_node_id,
+    episode_id: entry.episode_id,
+    kept_filename: null,
+    unavailable_reason: entry.unavailable_reason
+      ? compactText(entry.unavailable_reason, 160)
+      : null,
+    viewer_url: entry.viewer_url ?? `${artifactBase}/viewer`,
+    content_url: `${artifactBase}/content`,
+    sort_time: entry.created_at,
+  };
+}
+
+/**
+ * One list over both places an artifact lives: the turns and episodes the page
+ * holds, and the Artifacts panel. A panel entry the recent windows already show
+ * marks that record instead of repeating it. Each viewer id still opens by
+ * itself, whichever window it was listed from.
+ */
 function withSavedArtifacts(
   project: ProjectSnapshot,
   records: ProjectArtifactRecord[],
   saved: ProjectArtifact[],
   filter: ArtifactFilter,
 ): ProjectArtifactRecord[] {
-  const base = `/api/projects/${encodeURIComponent(project.id)}`;
   const extra: ProjectArtifactRecord[] = [];
   for (const entry of saved) {
     if (!savedMatchesArtifactFilter(entry, filter)) continue;
@@ -187,31 +226,8 @@ function withSavedArtifacts(
       shown.in_artifacts_panel = true;
       continue;
     }
-    if (!entry.artifact_id) continue;
-    const artifactBase = `${base}/artifacts/${encodeURIComponent(entry.artifact_id)}`;
-    extra.push({
-      artifact_id: entry.artifact_id,
-      viewer_id: `${SAVED_VIEWER_PREFIX}${entry.id}`,
-      kind: entry.kind === "report" ? "episode_report" : "saved_artifact",
-      in_artifacts_panel: true,
-      name: compactText(entry.name, 120),
-      media_type: null,
-      view: entry.view,
-      can_download: entry.can_download,
-      available: entry.available,
-      can_open: entry.can_open,
-      task_id: entry.operation_id,
-      chat_id: savedChatId(entry),
-      node_id: entry.source_node_id,
-      episode_id: entry.episode_id,
-      kept_filename: null,
-      unavailable_reason: entry.unavailable_reason
-        ? compactText(entry.unavailable_reason, 160)
-        : null,
-      viewer_url: entry.viewer_url ?? `${artifactBase}/viewer`,
-      content_url: `${artifactBase}/content`,
-      sort_time: entry.created_at,
-    });
+    if (entry.artifact_id)
+      extra.push(savedArtifactRecord(project, { ...entry, artifact_id: entry.artifact_id }));
   }
   return [...records, ...extra].sort(
     (left, right) =>
@@ -225,8 +241,9 @@ function projectArtifactRecords(
   tasks: AgentTask[],
   episodes: Episode[],
   filter: ArtifactFilter,
+  saved: ProjectArtifact[] = [],
 ): ProjectArtifactRecord[] {
-  assertArtifactFilterTarget(project, tasks, episodes, filter);
+  assertArtifactFilterTarget(project, tasks, episodes, filter, saved);
   const artifacts = tasks
     .filter((task) => taskMatchesArtifactFilter(task, filter))
     .flatMap((task) =>
@@ -299,10 +316,11 @@ export async function listProjectArtifacts(
   const filter = artifactFilter(input);
   const knownTasks = await withExactTask(tasks, filter.taskId, source);
   const knownEpisodes = await withExactEpisode(episodes, filter.episodeId, source);
+  const saved = await source.loadSavedArtifacts();
   const records = withSavedArtifacts(
     project,
-    projectArtifactRecords(project, knownTasks, knownEpisodes, filter),
-    await source.loadSavedArtifacts(),
+    projectArtifactRecords(project, knownTasks, knownEpisodes, filter, saved),
+    saved,
     filter,
   );
   return {
@@ -343,12 +361,18 @@ export async function openProjectArtifact(
     : null;
   const knownTasks = await withExactTask(tasks, taskViewerOperationId(viewerId), source);
   const knownEpisodes = await withExactEpisode(episodes, reportEpisodeId, source);
-  const records = projectArtifactRecords(project, knownTasks, knownEpisodes, artifactFilter({}));
-  const record = (
-    viewerId.startsWith(SAVED_VIEWER_PREFIX)
-      ? withSavedArtifacts(project, records, await source.loadSavedArtifacts(), artifactFilter({}))
-      : records
-  ).find((candidate) => candidate.viewer_id === viewerId);
+  // A panel id resolves against the panel's own inventory, never the deduplicated list.
+  const savedId = viewerId.startsWith(SAVED_VIEWER_PREFIX)
+    ? viewerId.slice(SAVED_VIEWER_PREFIX.length)
+    : null;
+  const savedEntry = savedId
+    ? (await source.loadSavedArtifacts()).find((entry) => entry.id === savedId)
+    : undefined;
+  const record = savedEntry?.artifact_id
+    ? savedArtifactRecord(project, { ...savedEntry, artifact_id: savedEntry.artifact_id })
+    : projectArtifactRecords(project, knownTasks, knownEpisodes, artifactFilter({})).find(
+        (candidate) => candidate.viewer_id === viewerId,
+      );
   if (!record)
     throw new Error(`Artifact viewer ${viewerId} is not present in the current project.`);
   // A PDF has no RCP viewer; the desktop opens it in the system viewer, as the panel does.

@@ -2609,6 +2609,22 @@ test("artifact search covers the Artifacts panel without repeating what turns al
     source,
   );
   assert.deepEqual(opened, ["old"]);
+  // Listed while its task was old, opened after the task entered the recent window.
+  const turnSaved = { ...saved("artifact:task-1:artifact-1", "artifact-1", "hyp-1") };
+  turnSaved.source_chat_href = "#/projects/project-1?view=chats&chat=chat-old";
+  const panelOnly = { ...source, loadSavedArtifacts: async () => [turnSaved] };
+  const before = await listProjectArtifacts(project, [], [], { chat_id: "chat-old" }, panelOnly);
+  assert.equal(before.total, 1);
+  opened.length = 0;
+  await openProjectArtifact(
+    project,
+    [tasks[0]],
+    [],
+    { viewer_id: before.artifacts[0].viewer_id },
+    (record) => opened.push(record.artifact_id) > 0,
+    panelOnly,
+  );
+  assert.deepEqual(opened, ["artifact-1"]);
 });
 
 test("voice and WebMCP hosts read one playbook, within the backend's size limit", async () => {
