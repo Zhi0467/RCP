@@ -74,6 +74,7 @@ import {
   resumablePausedChatTask,
   taskArtifacts,
   taskKindLabel,
+  type TaskTranscriptLine,
   versionedArtifactContentUrl,
 } from "../agents/agentTasks";
 import {
@@ -1827,6 +1828,14 @@ export function NodeChat({
     );
   };
 
+  // A turn's own descriptors, or the ones an embed fetched after the turn aged out,
+  // so a PDF the reply says is attached below keeps its card.
+  const lineArtifacts = (line: TaskTranscriptLine) => {
+    if (line.artifacts !== undefined || line.role !== "agent") return line.artifacts;
+    const aged = agedInlineArtifacts.get(line.taskId);
+    return Array.isArray(aged) ? aged : undefined;
+  };
+
   const renderInlineArtifact = (
     taskId: string,
     artifacts: AgentArtifactDescriptor[] | undefined,
@@ -2163,7 +2172,7 @@ export function NodeChat({
               ) : pausedLineTask ? null : (
                 <span className="node-chat-text">{line.text}</span>
               )}
-              {line.artifacts?.map((artifact) => {
+              {lineArtifacts(line)?.map((artifact) => {
                 // A reply that embeds an artifact shows it in place, with its actions.
                 if (
                   line.role === "agent" &&

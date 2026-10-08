@@ -209,6 +209,30 @@ test("Markdown hands an embedded image to the reply's renderer and keeps other i
   );
 });
 
+test("a link around an embedded artifact renders without the link, so its actions stay its own", () => {
+  const rendered = renderToStaticMarkup(
+    createElement(MarkdownAnswer, {
+      text: `[![Plot](${dir}/plot.html)](/repo/file.py) and [a link](/repo/other.py)`,
+      renderEmbed: (src, alt) =>
+        src.endsWith("plot.html") ? createElement("span", { "data-embed": alt }) : null,
+    }),
+  );
+  assert.match(
+    rendered,
+    /<p><span data-embed="Plot"><\/span> and <a href="\/repo\/other.py">a link<\/a><\/p>/,
+  );
+  // A link around an ordinary image is kept.
+  assert.match(
+    renderToStaticMarkup(
+      createElement(MarkdownAnswer, {
+        text: "[![x](https://example.com/a.png)](https://example.com)",
+        renderEmbed: () => null,
+      }),
+    ),
+    /<a href="https:\/\/example.com"><img/,
+  );
+});
+
 test("a version the panel moves reaches every inline copy of that artifact", () => {
   const seen = [];
   const stop = onArtifactVersionChange((id) => seen.push(id));

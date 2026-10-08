@@ -269,10 +269,12 @@ image becomes the artifact's viewer, running in place, for every type the
 viewer shows: HTML runs, raster images and SVG draw, Markdown and text render.
 An embedded artifact loses its card and keeps the card's offers as a caption
 under it: Comment where selections apply, Expand into the viewer panel, Keep,
-and Download. An artifact the reply does not embed keeps its card. An embedded
-PDF or download-only file says it is attached below, where its card stays, and
-an embedded name the turn never registered says it is not available; neither
-navigates or fetches anything.
+and Download. A link written around an embedded artifact is dropped, so those
+actions never also follow the link. An artifact the reply does not embed keeps
+its card. An embedded PDF or download-only file says it is attached below,
+where its card stays, also for an older turn whose descriptors the embed
+fetched on demand, and an embedded name the turn never registered says it is
+not available; neither navigates or fetches anything.
 
 The embed is the viewer shell in its inline presentation, not a second viewer.
 It has no RCP chrome and a transparent page. Inside it the content route renders
