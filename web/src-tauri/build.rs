@@ -35,6 +35,7 @@ const COMMANDS: &[&str] = &[
     "choose_repository_folder",
     "desktop_start_dictation",
     "desktop_stop_dictation",
+    "desktop_keeps_voice_while_hidden",
     "desktop_notifications_enabled",
     "desktop_set_notifications",
     "desktop_test_notification",

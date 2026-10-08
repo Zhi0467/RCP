@@ -7,6 +7,7 @@ import {
   registerAccessLossHandler,
   saveVoiceSettings,
 } from "../core/api";
+import { desktopKeepsVoiceWhileHidden } from "../core/desktopRuntime";
 import { serviceConnectionFailure } from "./dictation";
 import { errorMessage } from "../core/errors";
 import { MicrophoneBusyError } from "./microphone";
@@ -195,6 +196,8 @@ function appendTranscript(
 
 const END_NOTICES: Partial<Record<VoiceEndReason, string>> = {
   idle: "Voice ended after a quiet stretch.",
+  hidden:
+    "Voice ended when the window was hidden or suspended. Only the desktop app on macOS 14 or later keeps it open while hidden.",
   hard_cap: "Voice ended at its time limit.",
   connection: "Voice ended: the connection dropped.",
   upstream: "Voice ended by OpenAI.",
@@ -237,6 +240,13 @@ export function useVoiceAgent({
   const cardRef = useRef<{ settle: (confirmed: boolean) => void } | null>(null);
   const readyRef = useRef(ready);
   readyRef.current = ready;
+  // Unknown counts as not kept: an older desktop shell or a browser ends on hiding.
+  const [keepWhileHidden, setKeepWhileHidden] = useState(false);
+  useEffect(() => {
+    void desktopKeepsVoiceWhileHidden()
+      .then(setKeepWhileHidden)
+      .catch(() => setKeepWhileHidden(false));
+  }, []);
   // Confirm-mode writes in click order; `latest` fences every older settings result.
   const confirmSaves = useRef<{ chain: Promise<unknown>; latest: number }>({
     chain: Promise.resolve(),
@@ -409,12 +419,12 @@ export function useVoiceAgent({
   useEffect(() => {
     if (!active) return;
     registerAccessLossHandler(() => gateRef.current?.lose());
-    const stopSuspend = endOnPageSuspend(() => end("hidden", true));
+    const stopSuspend = endOnPageSuspend(() => end("hidden", true), { keepWhileHidden });
     return () => {
       registerAccessLossHandler(null);
       stopSuspend();
     };
-  }, [active, end]);
+  }, [active, end, keepWhileHidden]);
 
   // Speak first only about this session's own starts, wherever the member has gone.
   useEffect(() => {

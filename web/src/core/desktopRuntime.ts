@@ -689,6 +689,12 @@ export async function stopDesktopDictation(
   await invokeDesktop("desktop_stop_dictation", { sessionId, finish });
 }
 
+/** Whether this window keeps an open voice session running while it is hidden. */
+export async function desktopKeepsVoiceWhileHidden(): Promise<boolean> {
+  if (!isDesktopRuntime()) return false;
+  return invokeDesktop<boolean>("desktop_keeps_voice_while_hidden");
+}
+
 /** Whether this Mac posts this space's notifications; it turns on only from its row. */
 export async function desktopNotificationsEnabled(): Promise<boolean> {
   if (!isDesktopRuntime()) return false;

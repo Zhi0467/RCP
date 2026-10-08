@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-keeps-voice-while-hidden"
+description = "Enables the desktop_keeps_voice_while_hidden command without any pre-configured scope."
+commands.allow = ["desktop_keeps_voice_while_hidden"]
+
+[[permission]]
+identifier = "deny-desktop-keeps-voice-while-hidden"
+description = "Denies the desktop_keeps_voice_while_hidden command without any pre-configured scope."
+commands.deny = ["desktop_keeps_voice_while_hidden"]

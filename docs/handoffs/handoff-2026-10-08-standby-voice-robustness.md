@@ -2,11 +2,12 @@
 
 Date: 2026-10-08
 Status: design settled with the human after a grilling and an astra xhigh
-design review. Nothing is implemented yet.
+design review. Slice 1 is implemented; its live check is next.
 
-Implemented: nothing.
-Remaining: slice 1 and its live check first, then slices 2 to 5, then the
-remaining live checks.
+Implemented: slice 1 (hidden-window policy, absolute deadlines, member idle
+setting).
+Remaining: slice 1's live check, then slices 2 to 5, then the remaining live
+checks.
 
 Settled with the human on 2026-10-08:
 

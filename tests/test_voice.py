@@ -56,7 +56,9 @@ def test_session_requires_explicit_voice_purpose(voice_setup):
 def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
     _, private, client = voice_setup
     enable(private)
-    private.voice_settings(VoiceSettings(delegation_model="chosen-model", live_model="gpt-live-2"))
+    private.voice_settings(
+        VoiceSettings(delegation_model="chosen-model", live_model="gpt-live-2", idle_minutes=7)
+    )
     before = {p: p.read_bytes() for p in private.root.rglob("*") if p.is_file()}
 
     def handler(request):
@@ -78,7 +80,7 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
     assert response.json() == {
         "sdp_answer": "v=0\r\nanswer",
         "limits": {
-            "idle_seconds": limits.VOICE_IDLE_SECONDS,
+            "idle_seconds": 7 * 60,
             "hard_cap_seconds": limits.VOICE_HARD_CAP_SECONDS,
             "confirm_timeout_seconds": limits.VOICE_CONFIRM_TIMEOUT_SECONDS,
             "commentary_max_chars": limits.VOICE_COMMENTARY_MAX_CHARS,
@@ -218,9 +220,19 @@ def test_voice_requires_openai_preset_before_transport(voice_setup, monkeypatch)
 def test_settings_default_roundtrip_and_preserve_dictation(voice_setup):
     _, private, client = voice_setup
     path = "/api/voice/settings"
-    models = {"delegation_model": "gpt-6-luna", "live_model": "gpt-live-1"}
+    models = {
+        "delegation_model": "gpt-6-luna",
+        "live_model": "gpt-live-1",
+        "idle_minutes": limits.VOICE_IDLE_MINUTES_DEFAULT,
+    }
     assert client.get(path).json() == {**models, "confirm": "tap"}
     assert client.put(path, json={"confirm": "none"}).json() == {**models, "confirm": "none"}
+    # Each field saves alone and keeps the other; the idle limit stays in its range.
+    saved = client.put(path, json={"idle_minutes": limits.VOICE_IDLE_MINUTES_MAX}).json()
+    assert saved == {**models, "confirm": "none", "idle_minutes": limits.VOICE_IDLE_MINUTES_MAX}
+    for bad in ({}, {"idle_minutes": limits.VOICE_IDLE_MINUTES_MAX + 1}, {"idle_minutes": 0}):
+        assert client.put(path, json=bad).status_code == 422
+    models["idle_minutes"] = limits.VOICE_IDLE_MINUTES_MAX
     # Voice models change only through the checked connection update.
     unchecked = client.put(path, json={"confirm": "tap", "delegation_model": "unchecked"})
     assert unchecked.status_code == 422

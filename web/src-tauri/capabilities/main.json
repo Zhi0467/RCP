@@ -41,6 +41,7 @@
     "allow-choose-repository-folder",
     "allow-desktop-start-dictation",
     "allow-desktop-stop-dictation",
+    "allow-desktop-keeps-voice-while-hidden",
     "allow-desktop-notifications-enabled",
     "allow-desktop-set-notifications",
     "allow-desktop-test-notification",

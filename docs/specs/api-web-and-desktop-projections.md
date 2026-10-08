@@ -1105,16 +1105,19 @@ returns `voice_not_connected` (409); an OpenAI failure returns
 `idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`, and
 `commentary_max_chars` from `limits.py`, and the page enforces them.
 
-`GET /api/voice/settings` returns `{live_model, delegation_model, confirm}`
-from the member's private settings file; a session uses the saved `live_model`
-(default `gpt-live-1`) and `delegation_model`. `PUT` takes only `{confirm}`:
-the voice models change only through the checked connection update below, and
-the card sends only the models the member changed.
+`GET /api/voice/settings` returns `{live_model, delegation_model, confirm,
+idle_minutes}` from the member's private settings file; a session uses the
+saved `live_model` (default `gpt-live-1`) and `delegation_model`, and its
+`idle_seconds` limit comes from `idle_minutes` (default 5, range 1 to 60, in
+`limits.py`). `PUT` takes `confirm`, `idle_minutes`, or both, and keeps the
+other field: the voice models change only through the checked connection update
+below, and the card sends only the models the member changed.
 `confirm` is `tap` (the default) or `none`; the panel's toggle sets it. In the Dictation and voice card, the
 **Standby voice agent** section picks the connection it **Runs on** (Off, or an
 OpenAI connection). Choosing a connection gives it the `voice` purpose, which
 RCP checks against OpenAI before saving. The voice models are set on that
-connection's card (see Dictation below).
+connection's card (see Dictation below). With a connection chosen, **Ends
+after silence (minutes)** sets `idle_minutes`.
 
 The page runs each delegated function call through the shared catalog's
 `resolve`, as the member. It runs one call at a time, ignores a repeated
@@ -1150,7 +1153,14 @@ full terminal power.
 
 The page owns the session's lifetime. It ends the session on End, the idle
 limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,
-leaving the space, and the page going hidden, frozen, or away. It sends
+leaving the space, and the page freezing or going away. The idle and hard-cap
+deadlines are absolute times checked every second and on every event, so an
+event that arrives after a late tick ends the session instead of extending it.
+Hiding the page also ends it, except in a desktop window that keeps running
+while hidden: the main window disables WebKit background throttling, which
+macOS 14 and later honor, and `desktop_keeps_voice_while_hidden` reports
+whether this window does. Browsers, macOS 13, and an older shell end on hiding,
+and the panel says why. It sends
 `session.close`, waits a bounded time for `session.closed`, then closes the
 peer. After End, it runs no further calls. While open, the session speaks
 first only when a Work turn, Experiment, or Auto-research episode it started

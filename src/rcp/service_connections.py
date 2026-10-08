@@ -11,12 +11,16 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from rcp import limits
 from rcp.agents.provider_environment import _write_private
 from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AppStore
 
 _MEMBER_LOCKS = KeyedLocks()
 ModelId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")]
+IdleMinutes = Annotated[
+    int, Field(ge=limits.VOICE_IDLE_MINUTES_MIN, le=limits.VOICE_IDLE_MINUTES_MAX)
+]
 
 
 class PurposesRequest(BaseModel):
@@ -37,6 +41,7 @@ class VoiceSettings(BaseModel):
     delegation_model: ModelId = "gpt-6-luna"
     live_model: ModelId = "gpt-live-1"
     confirm: Literal["tap", "none"] = "tap"
+    idle_minutes: IdleMinutes = limits.VOICE_IDLE_MINUTES_DEFAULT
 
 
 # Account-level voice models: the live voice and the model it hands work to.

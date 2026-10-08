@@ -11,6 +11,8 @@ import type { VoiceLimits, VoiceSessionResponse } from "../core/types";
 const VOICE_CLOSE_WAIT_MS = 2_000;
 /** How long setup waits for ICE gathering, as in OpenAI's WebRTC sequence. */
 const VOICE_ICE_GATHER_WAIT_MS = 10_000;
+/** How often the session checks its idle and hard-cap deadlines. */
+const VOICE_DEADLINE_TICK_MS = 1_000;
 
 export type VoiceEndReason =
   "member" | "idle" | "hard_cap" | "hidden" | "identity" | "space" | "connection" | "upstream";
@@ -29,6 +31,7 @@ export type VoiceSessionDeps = {
     signal?: AbortSignal,
   ) => Promise<VoiceSessionResponse>;
   playRemote?: (stream: MediaStream) => () => void;
+  now?: () => number;
 };
 
 export type VoiceSession = {
@@ -137,7 +140,15 @@ export async function openVoiceSession(
     checkSetup();
     await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp_answer });
     checkSetup();
-    session = startSession(answer.limits, pc, channel, claim, () => audio.stop?.(), events);
+    session = startSession(
+      answer.limits,
+      pc,
+      channel,
+      claim,
+      () => audio.stop?.(),
+      events,
+      deps.now ?? Date.now,
+    );
     return session;
   } catch (error) {
     audio.stop?.();
@@ -154,22 +165,32 @@ function startSession(
   claim: MicrophoneClaim,
   stopAudio: () => void,
   events: VoiceSessionEvents,
+  now: () => number,
 ): VoiceSession {
   let ending: Promise<void> | null = null;
   let markClosed: () => void = () => {};
   const closed = new Promise<void>((resolve) => {
     markClosed = resolve;
   });
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const hardCapTimer = setTimeout(() => void end("hard_cap"), limits.hard_cap_seconds * 1000);
+  // Absolute deadlines: a tick that runs late, after the Mac slept or the page was
+  // held back, ends the session then rather than granting the missed time.
+  const hardCapAt = now() + limits.hard_cap_seconds * 1000;
+  let idleAt = now() + limits.idle_seconds * 1000;
+  const endIfDue = (): boolean => {
+    if (ending) return true;
+    const time = now();
+    const reason = time >= hardCapAt ? "hard_cap" : time >= idleAt ? "idle" : null;
+    if (reason) void end(reason);
+    return reason !== null;
+  };
+  const deadlineTimer = setInterval(endIfDue, VOICE_DEADLINE_TICK_MS);
 
   const send = (event: Record<string, unknown>) => {
     if (channel.readyState === "open") channel.send(JSON.stringify(event));
   };
   const noteActivity = () => {
-    if (ending) return;
-    if (idleTimer !== null) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => void end("idle"), limits.idle_seconds * 1000);
+    if (endIfDue()) return;
+    idleAt = now() + limits.idle_seconds * 1000;
   };
 
   let finished = false;
@@ -178,6 +199,7 @@ function startSession(
   const finish = () => {
     if (finished) return;
     finished = true;
+    clearInterval(deadlineTimer);
     channel.close();
     pc.close();
     stopAudio();
@@ -191,8 +213,7 @@ function startSession(
       return ending;
     }
     endReason = reason;
-    clearTimeout(hardCapTimer);
-    if (idleTimer !== null) clearTimeout(idleTimer);
+    clearInterval(deadlineTimer);
     const waitForClose = channel.readyState === "open" && !options.immediate;
     send({ type: "session.close", event_id: eventId() });
     ending = waitForClose
@@ -214,6 +235,8 @@ function startSession(
     }
     // After End, only the close acknowledgement matters; a late call must not run.
     if (ending && event.type !== "session.closed") return;
+    // An event that arrives past a deadline ends the session instead of running.
+    if (!ending && endIfDue()) return;
     if (event.type === "session.input_transcript.delta" && typeof event.delta === "string") {
       noteActivity();
       events.onTranscript("member", event.delta);
@@ -246,7 +269,6 @@ function startSession(
       void end("connection", { immediate: true });
     }
   };
-  noteActivity();
 
   return {
     limits,
@@ -270,10 +292,16 @@ function startSession(
   };
 }
 
-/** A frozen page runs no timers, so the session ends as soon as the page hides or goes. */
-export function endOnPageSuspend(end: () => void): () => void {
+/**
+ * A frozen page runs no timers, so the session ends when the page freezes or goes.
+ * Hiding also ends it, unless the window keeps running scripts while hidden.
+ */
+export function endOnPageSuspend(
+  end: () => void,
+  { keepWhileHidden }: { keepWhileHidden: boolean },
+): () => void {
   const onVisibility = () => {
-    if (document.visibilityState === "hidden") end();
+    if (!keepWhileHidden && document.visibilityState === "hidden") end();
   };
   document.addEventListener("visibilitychange", onVisibility);
   document.addEventListener("freeze", end);

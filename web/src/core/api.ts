@@ -802,9 +802,9 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
   return api("/api/voice/settings");
 }
 
-/** Only the confirm toggle; voice models change through the checked connection update. */
+/** The confirm toggle and idle limit; voice models change through the checked connection update. */
 export function saveVoiceSettings(
-  settings: Pick<VoiceSettings, "confirm">,
+  settings: Partial<Pick<VoiceSettings, "confirm" | "idle_minutes">>,
 ): Promise<VoiceSettings> {
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }

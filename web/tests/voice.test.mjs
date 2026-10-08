@@ -8,7 +8,7 @@ import {
   voiceCommentary,
   voiceWatchFromResult,
 } from "../src/voice/voiceExecutor.ts";
-import { openVoiceSession } from "../src/voice/voiceSession.ts";
+import { endOnPageSuspend, openVoiceSession } from "../src/voice/voiceSession.ts";
 
 const TOOLS = [
   { name: "rcp_get_project_overview", confirm: () => false, readOnly: true },
@@ -320,4 +320,63 @@ test("completion commentary depends only on kind, project name, and status", () 
   assert.notEqual(voiceCommentary("experiment", "Alpha", "needs_you", 200), spoken);
   assert.equal(voiceCommentary.length, 4);
   assert.ok(voiceCommentary("experiment", "A".repeat(500), "finished", 80).length <= 80);
+});
+
+test("an event past the idle deadline ends the session instead of extending it", async () => {
+  const transport = fakeTransport();
+  let time = 0;
+  const heard = [];
+  const ended = [];
+  await openVoiceSession(
+    [],
+    {
+      onTranscript: (_role, delta) => heard.push(delta),
+      onFunctionCall() {},
+      onEnded: (reason) => ended.push(reason),
+    },
+    harness().gate,
+    {
+      ...transport.deps,
+      now: () => time,
+      requestSession: async (body) => {
+        const answer = await transport.deps.requestSession(body);
+        return { ...answer, limits: { ...answer.limits, hard_cap_seconds: 600 } };
+      },
+    },
+  );
+  const channel = transport.deps.createPeer().createDataChannel();
+  // A held-back timer never ran; speech arriving after the deadline must not reopen it.
+  time = 60_000;
+  channel.onmessage({
+    data: JSON.stringify({ type: "session.input_transcript.delta", delta: "hi" }),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(heard, []);
+  assert.ok(transport.sent.some((event) => event.type === "session.close"));
+  channel.onmessage({ data: JSON.stringify({ type: "session.closed" }) });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(ended, ["idle"]);
+  assert.ok(transport.state.released);
+});
+
+test("hiding ends voice unless the window keeps running while hidden", () => {
+  const saved = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = Object.assign(new EventTarget(), { visibilityState: "hidden" });
+  globalThis.window = new EventTarget();
+  try {
+    for (const keepWhileHidden of [false, true]) {
+      const ends = [];
+      const stop = endOnPageSuspend(() => ends.push("end"), { keepWhileHidden });
+      document.dispatchEvent(new Event("visibilitychange"));
+      assert.equal(ends.length, keepWhileHidden ? 0 : 1);
+      // A frozen or departing page cannot enforce limits, so these always end it.
+      document.dispatchEvent(new Event("freeze"));
+      window.dispatchEvent(new Event("pagehide"));
+      assert.equal(ends.length, keepWhileHidden ? 2 : 3);
+      stop();
+    }
+  } finally {
+    globalThis.document = saved.document;
+    globalThis.window = saved.window;
+  }
 });

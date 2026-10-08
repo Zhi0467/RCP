@@ -101,7 +101,8 @@ async def create_session(connection: dict, key: str, settings: dict, offer: Sess
             "session": {
                 "model": settings["live_model"],
                 # MediaSessionConfig exposes no configurable duration limit.
-                # The page enforces VOICE_HARD_CAP_SECONDS and closes on hiding.
+                # The page enforces VOICE_HARD_CAP_SECONDS and the member's idle
+                # limit, and closes on hiding unless the window keeps running.
                 "store": False,
                 "instructions": INSTRUCTIONS,
                 "delegation": {

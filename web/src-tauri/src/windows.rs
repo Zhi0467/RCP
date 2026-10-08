@@ -7,6 +7,7 @@ use std::{
 };
 
 use tauri::{
+    utils::config::BackgroundThrottlingPolicy,
     webview::{NewWindowResponse, PageLoadEvent, WebviewWindow, WebviewWindowBuilder},
     AppHandle, Emitter, Manager, WebviewUrl,
 };
@@ -81,6 +82,10 @@ pub fn create_main(
         .min_inner_size(880.0, 600.0)
         .visible(false)
         .zoom_hotkeys_enabled(false)
+        // A hidden window keeps running scripts, so an open voice session and its
+        // page-enforced idle limit survive another Space or a minimized window.
+        // WebKit honors this on macOS 14+ only; `keeps_voice_while_hidden` says so.
+        .background_throttling(BackgroundThrottlingPolicy::Disabled)
         // Tauri's native drop handler consumes every drag and never hands it to the
         // page, which kills HTML5 drops (files and project references). RCP reads
         // drops in the page only.
@@ -255,6 +260,38 @@ pub fn recover_then_prepare_show(
 
 /// The backend origin the window must move to, or `None` when it is already
 /// there — or when `tauri dev` is serving the frontend from Vite.
+/// Whether the main window's disabled background throttling takes effect here, so
+/// the page may keep voice open while hidden. Wry applies it on macOS 14+ only.
+pub fn keeps_voice_while_hidden() -> bool {
+    macos_major_version().is_some_and(|major| major >= 14)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_major_version() -> Option<u32> {
+    let mut buffer = [0u8; 32];
+    let mut length = buffer.len();
+    // SAFETY: the name is NUL-terminated and the buffer length is passed in.
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let version = std::str::from_utf8(&buffer[..length]).ok()?;
+    version.trim_end_matches('\0').split('.').next()?.parse().ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_major_version() -> Option<u32> {
+    None
+}
+
 pub fn navigation_target(base_url: &str) -> Option<Url> {
     startup_navigation_target(INITIAL_URL.get(), uses_vite_dev_server(), base_url)
 }
@@ -513,6 +550,13 @@ mod tests {
             startup_navigation_target(Some(&eager_backend), false, backend),
             None
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_the_running_macos_major_version() {
+        // The release supports macOS 13+, so a parse failure would show here.
+        assert!(macos_major_version().is_some_and(|major| major >= 13));
     }
 
     #[test]

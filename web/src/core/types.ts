@@ -3466,6 +3466,8 @@ export interface VoiceSettings {
   confirm: "tap" | "none";
   /** The live voice model the member talks to. */
   live_model: string;
+  /** Minutes of silence after which an open session ends. */
+  idle_minutes: number;
 }
 
 /** The page enforces these; the backend owns their values. */
