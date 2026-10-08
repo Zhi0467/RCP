@@ -11,7 +11,7 @@ import {
   Square,
   Telescope,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useState, type Ref } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import {
   episodeEndingLabel,
   episodeProjection,
@@ -141,8 +141,11 @@ export function AutoResearchEpisodeCard({
     if (initiallyExpanded) setExpanded(true);
   }, [initiallyExpanded]);
 
+  // Cards load folded; authorization that becomes available while open still opens it.
+  const couldContinue = useRef(episode.can_continue);
   useEffect(() => {
-    if (episode.can_continue) setExpanded(true);
+    if (episode.can_continue && !couldContinue.current) setExpanded(true);
+    couldContinue.current = episode.can_continue;
   }, [episode.can_continue]);
 
   const submitContinuation = async () => {
