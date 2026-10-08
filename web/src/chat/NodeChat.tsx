@@ -1443,6 +1443,17 @@ export function NodeChat({
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
 
+  // A selection cancelled inside the frame closes the comment staged from it.
+  const cancelInlineArtifactComment = (taskId: string, artifact: AgentArtifactDescriptor) => {
+    const context =
+      annotationComposer?.step === "comment" ? annotationComposer.artifact?.context : undefined;
+    if (context?.operation_id !== taskId || context.artifact_id !== artifact.artifact_id) return;
+    // The frame already cleared its mark; a clear sent now would end the drag that
+    // a new selection starts with.
+    inlineSelectionClearRef.current = null;
+    dismissAnnotationComposer(false);
+  };
+
   const dismissAnnotationComposer = (returnFocus: boolean) => {
     const origin = annotationOriginRef.current;
     annotationOriginRef.current = null;
@@ -1750,7 +1761,13 @@ export function NodeChat({
         method: "POST",
         body: JSON.stringify({}),
       });
-      await onRefreshTask(taskId);
+      const task = await onRefreshTask(taskId);
+      // An aged-out turn's embed reads its cached descriptors, which still offer Keep.
+      setAgedInlineArtifacts((current) =>
+        Array.isArray(current.get(taskId))
+          ? new Map(current).set(taskId, taskArtifacts(task))
+          : current,
+      );
     } catch (error) {
       setArtifactShellErrors((current) =>
         withMapValue(current, key, error instanceof Error ? error.message : String(error)),
@@ -1892,6 +1909,7 @@ export function NodeChat({
         onKeep={artifact.can_keep ? () => void keepArtifact(taskId, artifact) : null}
         download={artifactDownloadControl(taskId, artifact)}
         onSelection={(event) => openInlineArtifactComment(taskId, artifact, event)}
+        onSelectionCancel={() => cancelInlineArtifactComment(taskId, artifact)}
       />
     );
   };

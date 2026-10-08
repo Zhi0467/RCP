@@ -37,6 +37,8 @@ interface InlineArtifactProps {
   onKeep: (() => void) | null;
   download: ReactNode;
   onSelection: (event: InlineArtifactSelectionEvent) => void;
+  /** The reader cancelled the selection inside the frame (Escape, a new drag, or an aborted one). */
+  onSelectionCancel: () => void;
 }
 
 /** One artifact shown in place inside a reply: the viewer shell, sized by its content. */
@@ -52,6 +54,7 @@ export function InlineArtifact({
   onKeep,
   download,
   onSelection,
+  onSelectionCancel,
 }: InlineArtifactProps) {
   const host = useRef<HTMLSpanElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -67,6 +70,8 @@ export function InlineArtifact({
   commentModeRef.current = commentMode;
   const onSelectionRef = useRef(onSelection);
   onSelectionRef.current = onSelection;
+  const onSelectionCancelRef = useRef(onSelectionCancel);
+  onSelectionCancelRef.current = onSelectionCancel;
   const freshSessionRef = useRef(false);
   freshSessionRef.current = Boolean(state?.fresh_session_required);
 
@@ -143,7 +148,11 @@ export function InlineArtifact({
         setHeight(value.height);
         return;
       }
-      if (!value.selection || !commentModeRef.current) return;
+      if (!value.selection) {
+        onSelectionCancelRef.current();
+        return;
+      }
+      if (!commentModeRef.current) return;
       const rect = frame.current?.getBoundingClientRect();
       if (!rect) return;
       const box = value.selection.kind === "box" ? value.selection.rect : null;
