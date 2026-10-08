@@ -24,13 +24,14 @@ class VoiceRoute(ServiceConnectionRoute):
 
         async def bounded(request: Request):
             if request.method in {"POST", "PUT"}:
-                body = bytearray()
-                async for chunk in request.stream():
-                    if len(body) + len(chunk) > limits.VOICE_TRANSCRIPT_REQUEST_MAX_BYTES:
+                length = request.headers.get("content-length")
+                if length is not None:
+                    try:
+                        size = int(length)
+                    except ValueError:
+                        raise HTTPException(400, {"code": "voice_request_invalid_length"}) from None
+                    if size > limits.VOICE_TRANSCRIPT_REQUEST_MAX_BYTES:
                         raise HTTPException(413, {"code": "voice_request_too_large"})
-                    body.extend(chunk)
-                # Cache the bounded body for FastAPI's normal Pydantic validation.
-                request._body = bytes(body)
             return await handler(request)
 
         return bounded
@@ -66,10 +67,10 @@ async def session(request: Request, body: SessionRequest):
     store = connections(request)
     connection, key = store.voice_credentials()
     settings = store.voice_settings()
-    record = store.claim_voice_session(body.resume_id)
-    session_input, truncated = voice_resume_input(record["entries"])
+    previous = store.read_voice_session(body.resume_id) if body.resume_id else None
+    session_input, truncated = voice_resume_input(previous["entries"] if previous else [])
     answer = await create_session(connection, key, settings, body, session_input)
-    store.require_voice_generation(record["id"], record["generation"])
+    record = store.claim_voice_session(body.resume_id)
     return {
         "sdp_answer": answer,
         "session": record,
@@ -94,6 +95,11 @@ def list_sessions(
     limit: int = Query(5, ge=1, le=limits.VOICE_TRANSCRIPT_MAX_SESSIONS),
 ):
     return connections(request).list_voice_sessions(offset, limit)
+
+
+@router.get("/sessions/{session_id}/generation")
+def session_generation(request: Request, session_id: str):
+    return {"generation": connections(request).read_voice_session(session_id)["generation"]}
 
 
 @router.put("/sessions/{session_id}")

@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   appendVoiceTranscript,
+  boundVoiceTranscript,
+  createVoiceSourceLabels,
   createVoiceSaveQueue,
   createFinishedResultOffer,
   voiceWatchFromReceipt,
@@ -25,6 +27,7 @@ function harness({
   mode = "tap",
   confirmations = [],
   pins = null,
+  pinError = null,
   failWith = null,
   unavailable = false,
   receiptDeps = {},
@@ -57,6 +60,7 @@ function harness({
     },
     confirmMode: () => mode,
     pin: async (name, args) => {
+      if (pinError) throw pinError;
       const budget = pins ? pins[pinCalls] : 4;
       pinCalls += 1;
       return {
@@ -84,12 +88,20 @@ test("a name outside the catalog never runs", async () => {
 });
 
 test("tap mode runs a confirm call only after Confirm, with the pinned arguments", async () => {
-  const declined = harness({ confirmations: [false] });
+  const receipts = [];
+  const declined = harness({
+    confirmations: [false],
+    receiptDeps: {
+      target: () => receiptTarget,
+      saveReceipt: async (receipt) => receipts.push(receipt),
+    },
+  });
   assert.equal(
     code(await declined.executor.run(call("c1", "rcp_start_experiment", { experiment_id: "e" }))),
     "not_confirmed",
   );
   assert.equal(declined.runs.length, 0);
+  assert.equal(receipts.length, 0);
 
   const confirmed = harness({ confirmations: [true] });
   await confirmed.executor.run(call("c1", "rcp_start_experiment", { experiment_id: "e" }));
@@ -461,6 +473,26 @@ test("accepted receipts restore exact watches but never confirmation authority",
   assert.equal(resumed.runs.length, 0);
 });
 
+test("refusal receipts only replace a persisted pre-dispatch unknown receipt", async () => {
+  for (const dispatched of [false, true]) {
+    const receipts = [];
+    const run = harness({
+      confirmations: [true],
+      pinError: dispatched ? null : new Error("cannot pin"),
+      failWith: new Error("refused"),
+      receiptDeps: {
+        target: () => receiptTarget,
+        saveReceipt: async (receipt) => receipts.push(receipt),
+      },
+    });
+    assert.equal(code(await run.executor.run(call("a", "rcp_start_experiment"))), "refused");
+    assert.deepEqual(
+      receipts.map((receipt) => receipt.outcome),
+      dispatched ? ["unknown", "refused"] : [],
+    );
+  }
+});
+
 test("a failed pending receipt save prevents side effects", async () => {
   const run = harness({
     mode: "none",
@@ -475,46 +507,62 @@ test("a failed pending receipt save prevents side effects", async () => {
   assert.equal(run.runs.length, 0);
 });
 
-test("transcript byte bounds preserve complete unicode and newest text", () => {
-  const entries = appendVoiceTranscript(
-    [],
-    "member",
-    "😀".repeat(100),
-    { entry_bytes: 16, session_bytes: 180 },
-    1,
-  );
-  assert.ok(entries.length > 0);
-  assert.ok(Buffer.byteLength(JSON.stringify(entries)) <= 180);
+test("transcript bounds include metadata, receipts, complete unicode, and newest entries", () => {
+  const raw = appendVoiceTranscript([], "member", "😀".repeat(100), "item-1");
+  const record = { entries: raw, receipts: [], revision: 1, updated_at: 1, id: "session" };
+  const limits = { entry_bytes: 16, session_bytes: 550, max_entries: 3 };
+  const bounded = boundVoiceTranscript(record, limits);
+  assert.ok(bounded.entries.length > 0 && bounded.entries.length <= 3);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= limits.session_bytes);
   assert.ok(
-    entries.every((entry) => Buffer.byteLength(entry.text) <= 16 && !entry.text.includes("�")),
+    bounded.entries.every(
+      (entry) => Buffer.byteLength(entry.text) <= 16 && !entry.text.includes("�"),
+    ),
   );
-  const next = appendVoiceTranscript(
-    entries,
-    "agent",
-    "newest",
-    { entry_bytes: 16, session_bytes: 180 },
-    2,
+  const newest = boundVoiceTranscript(
+    { ...bounded, entries: appendVoiceTranscript(bounded.entries, "agent", "newest", "item-2") },
+    limits,
   );
-  assert.equal(next.at(-1).text, "newest");
-  assert.equal(next.at(-1).provider_order, 2);
-  const fromStorage = appendVoiceTranscript(
-    [{ speaker: "member", text: "first", provider_order: null, source: null }],
-    "member",
-    " next",
-    { entry_bytes: 32, session_bytes: 1024 },
+  assert.equal(newest.entries.at(-1).text, "newest");
+  assert.equal(newest.entries.at(-1).provider_order, "item-2");
+  assert.equal(
+    appendVoiceTranscript(
+      [{ speaker: "member", text: "first", provider_order: null, source: null }],
+      "member",
+      " next",
+    )[0].text,
+    "first next",
   );
-  assert.equal(fromStorage.length, 1);
-  assert.equal(fromStorage[0].text, "first next");
-  const bounds = { entry_bytes: 16, session_bytes: 1024 };
-  const quoted = appendVoiceTranscript([], "agent", "a".repeat(24), bounds, 3, "tool:read");
-  assert.ok(quoted.every((entry) => entry.source === "tool:read"));
-  const continued = appendVoiceTranscript(quoted, "agent", "b", bounds, 3, "tool:read");
-  assert.equal(continued.length, quoted.length);
-  assert.equal(continued.at(-1).source, "tool:read");
-  const fresh = appendVoiceTranscript(continued, "agent", "c", bounds, 3, null);
-  assert.equal(fresh.length, continued.length + 1);
-  assert.equal(fresh.at(-1).source, null);
-  assert.equal(fresh.at(-2).source, "tool:read");
+  const quoted = appendVoiceTranscript([], "agent", "a".repeat(24), "item-3", "tool:read");
+  const continued = appendVoiceTranscript(quoted, "agent", "b", "item-3", "tool:read");
+  const fresh = appendVoiceTranscript(continued, "agent", "c", "item-3", null);
+  assert.equal(fresh.length, 2);
+  assert.equal(fresh[0].source, "tool:read");
+  assert.equal(fresh[1].source, null);
+  assert.throws(() =>
+    boundVoiceTranscript({ ...record, receipts: [{ tool: "x".repeat(600) }] }, limits),
+  );
+});
+
+test("source labels stay with their call and expire on the next response item", () => {
+  const labels = createVoiceSourceLabels();
+  labels.capture("a", "read", receiptTarget);
+  labels.capture("b", "read", { ...receiptTarget, project_id: "other" });
+  labels.discard("b");
+  labels.succeeded("a");
+  const source = labels.speech("agent", "item-1");
+  const expected = createVoiceSourceLabels();
+  expected.capture("a", "read", receiptTarget);
+  expected.succeeded("a");
+  assert.equal(source, expected.speech("agent", "item-1"));
+  assert.notEqual(source, null);
+  assert.equal(labels.speech("agent", "item-1"), source);
+  assert.equal(labels.speech("agent", "item-2"), null);
+  labels.capture("c", "read", receiptTarget);
+  labels.succeeded("c");
+  assert.equal(labels.speech("agent", "item-3"), source);
+  assert.equal(labels.speech("member", "member-1"), null);
+  assert.equal(labels.speech("agent", "item-4"), null);
 });
 
 test("saves serialize, coalesce pending snapshots, and stop after identity changes", async () => {
@@ -569,6 +617,28 @@ test("finished results only open on explicit acceptance under captured project a
   assert.equal(await offer.open(), 1);
   assert.deepEqual(opened, ["v"]);
   await assert.rejects(offer.open());
+});
+
+test("finished offers expire after their immediate reply or the next agent response", async () => {
+  const opened = [];
+  const watch = { id: "t", project_id: "p", kind: "work_turn", record: "task", last: "finished" };
+  const offer = createFinishedResultOffer({
+    currentTarget: () => receiptTarget,
+    list: async () => [{ viewer_id: "v", can_open: true }],
+    open: async (id) => opened.push(id),
+  });
+  offer.offer(watch, receiptTarget);
+  offer.speech("member", "reply");
+  offer.speech("member", "reply");
+  assert.equal(await offer.open(), 1);
+  offer.offer(watch, receiptTarget);
+  offer.speech("member", "first");
+  offer.speech("member", "later");
+  await assert.rejects(offer.open());
+  offer.offer(watch, receiptTarget);
+  offer.speech("agent", "response");
+  await assert.rejects(offer.open());
+  assert.deepEqual(opened, ["v"]);
 });
 
 test("commentary queued during connection flushes once on open and is discarded after End", async () => {

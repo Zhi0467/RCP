@@ -513,6 +513,40 @@ def test_transcript_generation_revision_delete_and_member_fences(voice_setup, mo
     )
 
 
+def test_failed_upstream_leaves_live_generation_and_history_unchanged(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    enable(private)
+    records = [private.claim_voice_session() for _ in range(limits.VOICE_TRANSCRIPT_MAX_SESSIONS)]
+    record = records[-1]
+    before = {path: path.read_bytes() for path in private.root.rglob("*.json")}
+    mock_transport(monkeypatch, lambda _: reply({}, status=503))
+    assert (
+        client.post("/api/voice/sessions", json={**OFFER, "resume_id": record["id"]}).status_code
+        == 502
+    )
+    assert client.post("/api/voice/sessions", json=OFFER).status_code == 502
+    assert {path: path.read_bytes() for path in private.root.rglob("*.json")} == before
+    assert (
+        client.put(f"/api/voice/sessions/{record['id']}", json=transcript_save(record)).status_code
+        == 200
+    )
+
+
+def test_save_generation_check_and_delete_do_not_scan_history(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    record = private.claim_voice_session()
+    path = f"/api/voice/sessions/{record['id']}"
+
+    def unexpected_scan(_self):
+        pytest.fail("Single-record operations must not scan or prune history")
+
+    monkeypatch.setattr(type(private), "_voice_records", unexpected_scan)
+    assert client.put(path, json=transcript_save(record)).status_code == 200
+    assert client.get(f"{path}/generation").json() == {"generation": record["generation"]}
+    assert client.delete(path).status_code == 200
+    assert client.get(f"{path}/generation").status_code == 404
+
+
 def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_setup, monkeypatch):
     _, private, client = voice_setup
     enable(private)
@@ -528,7 +562,7 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
         {
             "speaker": "member" if i % 2 else "agent",
             "text": str(i),
-            "provider_order": i,
+            "provider_order": str(i),
             "source": "project:example" if i % 2 == 0 else None,
         }
         for i in range(150)
@@ -554,7 +588,7 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
     resumed = client.post("/api/voice/sessions", json={**OFFER, "resume_id": record["id"]}).json()
     assert resumed["input_truncated"] and resumed["session"]["receipts"] == [receipt]
     inputs = payloads[-1]["session"]["input"]
-    assert len(inputs) == limits.VOICE_RESUME_MAX_MESSAGES
+    assert 0 < len(inputs) <= limits.VOICE_RESUME_MAX_MESSAGES
     assert {item["role"] for item in inputs} == {"user", "assistant"}
     assert inputs[-1]["content"].endswith(entries[-1]["text"])
     assert entries[-2]["source"] in inputs[-2]["content"]
@@ -564,7 +598,11 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
     inputs, truncated = voice_resume_input([{**entry, "text": "漢" * 4000} for entry in entries])
     assert truncated and inputs
     assert (
-        len(json.dumps(inputs, ensure_ascii=False).encode()) <= limits.VOICE_RESUME_MAX_TOKENS * 3
+        sum(
+            len(item["content"].encode()) + limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
+            for item in inputs
+        )
+        <= limits.VOICE_RESUME_MAX_TOKENS
     )
 
     newest = {**entries[0], "text": "\\" * (limits.VOICE_TRANSCRIPT_ENTRY_MAX_BYTES - 4) + "tail"}
@@ -574,7 +612,8 @@ def test_resume_sends_only_bounded_historical_speech_and_returns_receipts(voice_
     assert newest["source"] in clipped[0]["content"]
     assert clipped[0]["content"].endswith("tail")
     assert (
-        len(json.dumps(clipped, ensure_ascii=False).encode()) <= limits.VOICE_RESUME_MAX_TOKENS * 3
+        len(clipped[0]["content"].encode()) + limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
+        <= limits.VOICE_RESUME_MAX_TOKENS
     )
 
 
@@ -594,6 +633,12 @@ def test_transcript_metadata_retention_and_disconnect_removal(voice_setup, monke
     assert all("entries" not in row and "receipts" not in row for row in page["sessions"])
     private.disconnect(connection["id"])
     assert len(private.list_voice_sessions(0, 20)["sessions"]) == 20
+    clock[0] += limits.VOICE_TRANSCRIPT_RETENTION_SECONDS - 2
+    private.claim_voice_session(records[-1]["id"])
+    clock[0] += 2
+    assert [row["id"] for row in private.list_voice_sessions(0, 20)["sessions"]] == [
+        records[-1]["id"]
+    ]
     clock[0] += limits.VOICE_TRANSCRIPT_RETENTION_SECONDS
     assert private.list_voice_sessions(0, 20)["sessions"] == []
     record = private.claim_voice_session()
@@ -613,7 +658,7 @@ def test_transcript_request_entry_and_session_byte_bounds(voice_setup, monkeypat
         == 422
     )
     monkeypatch.setattr(limits, "VOICE_TRANSCRIPT_SESSION_MAX_BYTES", 100)
-    assert client.put(path, json=transcript_save(record)).status_code == 422
+    assert client.put(path, json=transcript_save(record)).status_code == 413
     monkeypatch.setattr(limits, "VOICE_TRANSCRIPT_REQUEST_MAX_BYTES", 50)
     assert client.put(path, json=transcript_save(record)).status_code == 413
     assert private._voice_record(record["id"])["revision"] == 0

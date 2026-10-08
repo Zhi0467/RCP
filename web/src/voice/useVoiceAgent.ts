@@ -6,6 +6,7 @@ import {
   loadVoiceSettings,
   createVoiceSession,
   loadVoiceSessions,
+  loadVoiceGeneration,
   saveVoiceSession,
   deleteVoiceSession,
   registerAccessLossHandler,
@@ -30,6 +31,8 @@ import {
   createIdentityGate,
   createVoiceSaveQueue,
   appendVoiceTranscript,
+  boundVoiceTranscript,
+  createVoiceSourceLabels,
   createFinishedResultOffer,
   voiceWatchFromReceipt,
   type VoiceReceiptTarget,
@@ -254,7 +257,7 @@ export function useVoiceAgent({
     scopeRef.current = { spaceId, ready, epoch: scopeRef.current.epoch + 1 };
   }
   const ownerRef = useRef<object | null>(null);
-  const saveRef = useRef<(() => Promise<void>) | null>(null);
+  const checkGenerationRef = useRef<(() => Promise<void>) | null>(null);
   const resumeSummaryRef = useRef(false);
   const watchTargetsRef = useRef(new Map<string, VoiceReceiptTarget>());
   const offerRef = useRef<ReturnType<typeof createFinishedResultOffer> | null>(null);
@@ -366,57 +369,33 @@ export function useVoiceAgent({
         if (record) record.revision = snapshot.revision;
         await saveVoiceSession(snapshot);
       }, sameOwner);
+      const fenceFailure = async (failure: unknown) => {
+        if (!sameOwner()) return;
+        if (!(failure instanceof ApiError) || ![403, 404, 409].includes(failure.status)) return;
+        endedNotice =
+          failure.code === "voice_session_superseded"
+            ? "Voice ended because this conversation was resumed on another device."
+            : "Voice ended because this saved conversation is no longer available.";
+        if (sessionRef.current) await sessionRef.current.end("member", { immediate: true });
+        else gate.lose();
+      };
       const save = async () => {
-        if (!record) return;
+        if (!record || !bounds) return;
         try {
-          const snapshot = structuredClone(record);
-          // The server materializes optional entry/receipt fields before storing JSON.
-          // Match that shape and reserve the future timestamp/revision's numeric width.
-          snapshot.entries = snapshot.entries.map((entry) => ({
-            provider_order: null,
-            source: null,
-            ...entry,
-          }));
-          snapshot.receipts = snapshot.receipts.map((receipt) => ({
-            task_id: null,
-            episode_id: null,
-            ...receipt,
-          }));
-          const size = () =>
-            new TextEncoder().encode(
-              JSON.stringify(
-                {
-                  ...snapshot,
-                  revision: Number.MAX_SAFE_INTEGER,
-                  updated_at: Number.MAX_SAFE_INTEGER,
-                },
-                null,
-                1,
-              ),
-            ).length;
-          while (snapshot.entries.length && bounds && size() > bounds.transcript_session_max_bytes)
-            snapshot.entries.shift();
-          if (bounds && size() > bounds.transcript_session_max_bytes)
-            throw new Error("This conversation has reached its saved action limit.");
-          record.entries = snapshot.entries;
-          await saves.save(snapshot);
+          record = boundVoiceTranscript(record, {
+            entry_bytes: bounds.transcript_entry_max_bytes,
+            session_bytes: bounds.transcript_session_max_bytes,
+            max_entries: bounds.transcript_max_entries,
+          });
+          await saves.save(structuredClone(record));
         } catch (failure) {
           if (!sameOwner()) {
             gate.lose();
             throw failure;
           }
-          const code = failure instanceof ApiError ? failure.code : null;
-          const fenced = failure instanceof ApiError && [403, 404, 409].includes(failure.status);
-          if (fenced) {
-            endedNotice =
-              code === "voice_session_superseded"
-                ? "Voice ended because this conversation was resumed on another device."
-                : "Voice ended because this saved conversation is no longer available.";
-            if (sessionRef.current) await sessionRef.current.end("member", { immediate: true });
-            else gate.lose();
-          }
+          await fenceFailure(failure);
           setProblem({
-            code: code ?? null,
+            code: failure instanceof ApiError ? (failure.code ?? null) : null,
             text:
               endedNotice ??
               "Voice history could not be saved. Resume uses the last saved transcript.",
@@ -424,7 +403,18 @@ export function useVoiceAgent({
           throw failure;
         }
       };
-      saveRef.current = save;
+      checkGenerationRef.current = async () => {
+        if (!record || !sameOwner() || !gate.ok()) return;
+        try {
+          const current = await loadVoiceGeneration(record.id);
+          if (current.generation !== record.generation)
+            throw new ApiError("Voice session superseded.", 409, {
+              code: "voice_session_superseded",
+            });
+        } catch (failure) {
+          if (gate.ok()) await fenceFailure(failure);
+        }
+      };
       watchesRef.current = [];
       watchTargetsRef.current.clear();
       resumeSummaryRef.current = Boolean(resumeId);
@@ -489,8 +479,7 @@ export function useVoiceAgent({
         .catch((failure) => {
           if (gateRef.current === gate) setSettingsError(errorMessage(failure));
         });
-      let source: string | undefined;
-      let callTarget: VoiceReceiptTarget | null = null;
+      const sourceLabels = createVoiceSourceLabels();
       let executor: ReturnType<typeof createVoiceExecutor>;
       let session: VoiceSession;
       try {
@@ -506,29 +495,24 @@ export function useVoiceAgent({
           ],
           {
             onTranscript: (role, delta, order) => {
+              if (!delta) return;
+              offerRef.current?.speech(role, order);
+              const source = sourceLabels.speech(role, order);
               setTranscript((lines) => appendTranscript(lines, role, delta));
               if (record && bounds) {
-                record.entries = appendVoiceTranscript(
-                  record.entries,
-                  role,
-                  delta,
-                  {
-                    entry_bytes: bounds.transcript_entry_max_bytes,
-                    session_bytes: bounds.transcript_session_max_bytes,
-                  },
-                  order,
-                  role === "agent" ? source : undefined,
-                ).slice(-bounds.transcript_max_entries);
+                record.entries = appendVoiceTranscript(record.entries, role, delta, order, source);
                 void save().catch(() => {});
               }
             },
             onFunctionCall: (call) => {
-              callTarget = currentTarget();
+              sourceLabels.capture(call.call_id, call.name, currentTarget());
               setTranscript((lines) =>
                 setToolLine(lines, call.call_id, toolActivity(call.name, null)),
               );
               void executor.run(call).then((output) => {
-                if (output === null || !gate.ok()) return;
+                if (output === null) return;
+                sourceLabels.discard(call.call_id);
+                if (!gate.ok()) return;
                 setTranscript((lines) =>
                   setToolLine(
                     lines,
@@ -540,7 +524,7 @@ export function useVoiceAgent({
               });
             },
             onEnded: (reason) => {
-              if (record) {
+              if (record && !endedNotice) {
                 record.ended = true;
                 void save().catch(() => {});
               }
@@ -598,12 +582,7 @@ export function useVoiceAgent({
                 requestConfirmation,
                 initialReceipts: record.receipts,
                 target: currentTarget,
-                onSucceeded: (name) => {
-                  const target = callTarget;
-                  source = target
-                    ? `Project ${target.project_id}; graph ${target.graph_target.branch_id ?? target.graph_target.kind}; tool ${name}`
-                    : `Tool ${name}`;
-                },
+                onSucceeded: (_name, _args, _output, callId) => sourceLabels.succeeded(callId),
                 saveReceipt: async (receipt) => {
                   if (!record || !bounds) throw new Error("Voice history is unavailable.");
                   const index = record.receipts.findIndex(
@@ -784,8 +763,8 @@ export function useVoiceAgent({
             `Earlier work: ${finished} finished, ${running} still running, ${needsYou} need you, ${unavailable} could not be checked.`,
           );
         }
-        // A quiet older device still detects a newer Resume on its next heartbeat save.
-        if (sessionRef.current === session) void saveRef.current?.().catch(() => {});
+        // Check quiet sessions without rewriting their unchanged transcript.
+        if (sessionRef.current === session) await checkGenerationRef.current?.();
       } finally {
         polling = false;
       }

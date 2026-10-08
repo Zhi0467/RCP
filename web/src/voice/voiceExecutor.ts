@@ -66,7 +66,12 @@ export type VoiceExecutorDeps = {
   pin: (name: string, args: Record<string, unknown>) => Promise<VoicePin>;
   /** True on Confirm; false on decline, timeout, or the session ending. */
   requestConfirmation: (pin: VoicePin) => Promise<boolean>;
-  onSucceeded?: (name: string, args: Record<string, unknown>, output: string) => void;
+  onSucceeded?: (
+    name: string,
+    args: Record<string, unknown>,
+    output: string,
+    callId: string,
+  ) => void;
 };
 
 export type VoiceReceiptTarget = {
@@ -166,8 +171,10 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
     const callKey = receipt ? receiptKey(receipt) : `${call.name}:${fingerprint}`;
     const available = deps.resolve(call.name);
     const isWrite = available.ok && available.definition.annotations?.readOnlyHint !== true;
+    let pendingReceiptSaved = false;
     const refuse = async (code: VoiceRefusalCode, error: string) => {
-      if (receipt && isWrite) await deps.saveReceipt?.({ ...receipt, outcome: "refused" });
+      if (receipt && pendingReceiptSaved)
+        await deps.saveReceipt?.({ ...receipt, outcome: "refused" });
       unknownOutcomes.delete(callKey);
       return refusal(code, error);
     };
@@ -212,6 +219,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
     if (isWrite && deps.saveReceipt) {
       if (!receipt) return refusal("refused", "No project target is available.");
       await deps.saveReceipt(receipt);
+      pendingReceiptSaved = true;
       unknownOutcomes.add(callKey);
       if (!deps.gate.ok()) return refusal("identity", "RCP signed out; the voice session ended.");
       if (deps.target && stableJson(deps.target()) !== stableJson(target)) {
@@ -239,7 +247,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
         }
         unknownOutcomes.delete(callKey);
       }
-      deps.onSucceeded?.(call.name, args, output);
+      deps.onSucceeded?.(call.name, args, output, call.call_id);
       return output;
     } catch (error) {
       if (resolved.definition.annotations?.readOnlyHint !== true && outcomeUnknown(error)) {
@@ -378,7 +386,7 @@ export function voiceCommentary(
 export type VoiceTranscriptEntry = {
   speaker: "member" | "agent";
   text: string;
-  provider_order?: number | string | null;
+  provider_order?: string | null;
   source?: string | null;
 };
 
@@ -387,46 +395,126 @@ export function appendVoiceTranscript(
   entries: readonly VoiceTranscriptEntry[],
   speaker: VoiceTranscriptEntry["speaker"],
   delta: string,
-  limits: { entry_bytes: number; session_bytes: number },
-  provider_order?: number | string | null,
+  provider_order?: string | null,
   source?: string | null,
 ): VoiceTranscriptEntry[] {
-  const encoder = new TextEncoder();
-  const result = entries.map((entry) => ({ ...entry }));
-  const last = result.at(-1);
-  const tail =
+  const last = entries.at(-1);
+  if (
     last?.speaker === speaker &&
     (last.provider_order ?? null) === (provider_order ?? null) &&
     (last.source ?? null) === (source ?? null)
-      ? result.pop()!.text + delta
-      : delta;
-  // Iterate code points so byte truncation never splits a surrogate pair.
-  let text = "";
-  let bytes = 0;
-  const chunks: string[] = [];
-  for (const character of tail) {
-    const size = encoder.encode(character).length;
-    if (size > limits.entry_bytes) continue;
-    if (bytes + size > limits.entry_bytes) {
-      chunks.push(text);
-      text = "";
-      bytes = 0;
+  )
+    return [...entries.slice(0, -1), { ...last, text: last.text + delta }];
+  return [...entries, { speaker, text: delta, provider_order, source }];
+}
+
+/** Bound once at save: count each entry once, then retain its newest fitting suffix. */
+export function boundVoiceTranscript<
+  T extends {
+    entries: VoiceTranscriptEntry[];
+    receipts: VoiceReceipt[];
+    revision: number;
+    updated_at: number;
+  },
+>(record: T, limits: { entry_bytes: number; session_bytes: number; max_entries: number }): T {
+  const encoder = new TextEncoder();
+  const entries: VoiceTranscriptEntry[] = [];
+  for (const entry of record.entries) {
+    let text = "";
+    let bytes = 0;
+    const push = () =>
+      entries.push({
+        ...entry,
+        provider_order: entry.provider_order ?? null,
+        source: entry.source ?? null,
+        text,
+      });
+    for (const character of entry.text) {
+      const size = encoder.encode(character).length;
+      if (size > limits.entry_bytes) continue;
+      if (bytes + size > limits.entry_bytes) {
+        push();
+        text = "";
+        bytes = 0;
+      }
+      text += character;
+      bytes += size;
     }
-    text += character;
-    bytes += size;
+    if (text) push();
   }
-  if (text) chunks.push(text);
-  result.push(
-    ...chunks.map((text) => ({
-      speaker,
-      text,
-      ...(provider_order === undefined ? {} : { provider_order }),
-      ...(source === undefined ? {} : { source }),
+  const snapshot = {
+    ...record,
+    entries: [] as VoiceTranscriptEntry[],
+    receipts: record.receipts.map((receipt) => ({
+      ...receipt,
+      task_id: receipt.task_id ?? null,
+      episode_id: receipt.episode_id ?? null,
     })),
-  );
-  while (result.length && encoder.encode(JSON.stringify(result)).length > limits.session_bytes)
-    result.shift();
-  return result;
+  };
+  // Indented JSON conservatively covers the server's separator spaces. Reserve
+  // timestamp/revision width and include receipt and record metadata in the budget.
+  let bytes = encoder.encode(
+    JSON.stringify(
+      {
+        ...snapshot,
+        revision: Number.MAX_SAFE_INTEGER,
+        updated_at: Number.MAX_SAFE_INTEGER,
+      },
+      null,
+      1,
+    ),
+  ).length;
+  if (bytes > limits.session_bytes)
+    throw new Error("This conversation has reached its saved action limit.");
+  let start = entries.length;
+  while (start > 0 && entries.length - start < limits.max_entries) {
+    const size = encoder.encode(JSON.stringify(entries[start - 1], null, 1)).length + 2;
+    if (bytes + size > limits.session_bytes) break;
+    bytes += size;
+    start -= 1;
+  }
+  snapshot.entries = entries.slice(start);
+  return snapshot;
+}
+
+/** A tool's provenance belongs to its call and the next response item only. */
+export function createVoiceSourceLabels() {
+  const calls = new Map<string, string>();
+  let pending: string | null = null;
+  let active: string | null = null;
+  let activeItem: string | undefined;
+  return {
+    capture(callId: string, name: string, target: VoiceReceiptTarget | null) {
+      if (!calls.has(callId))
+        calls.set(
+          callId,
+          target
+            ? `${name}: ${target.project_id} (${target.graph_target.branch_id ?? "main"})`
+            : name,
+        );
+    },
+    succeeded(callId: string) {
+      pending = calls.get(callId) ?? null;
+      calls.delete(callId);
+    },
+    discard(callId: string) {
+      calls.delete(callId);
+    },
+    speech(role: "member" | "agent", itemId?: string): string | null {
+      if (role === "member") {
+        pending = null;
+        active = null;
+        activeItem = undefined;
+        return null;
+      }
+      if (pending !== null) {
+        active = pending;
+        pending = null;
+      } else if (itemId !== activeItem) active = null;
+      activeItem = itemId;
+      return active;
+    },
+  };
 }
 
 /** At most one save is in flight; a newer snapshot replaces the pending one. */
@@ -483,6 +571,8 @@ export function createFinishedResultOffer(deps: {
   open: (viewerId: string) => Promise<void>;
 }) {
   let offered: { watch: VoiceWatch; target: VoiceReceiptTarget } | null = null;
+  let replied = false;
+  let lastSpeech: { role: "member" | "agent"; itemId?: string } | null = null;
   const sameTarget = (target: VoiceReceiptTarget) => {
     const current = deps.currentTarget();
     return (
@@ -493,6 +583,15 @@ export function createFinishedResultOffer(deps: {
   return {
     offer(watch: VoiceWatch, target: VoiceReceiptTarget) {
       offered = { watch, target };
+      replied = false;
+    },
+    speech(role: "member" | "agent", itemId?: string) {
+      const newItem = lastSpeech?.role !== role || lastSpeech.itemId !== itemId;
+      lastSpeech = { role, itemId };
+      if (!offered || !newItem) return;
+      // Keep the immediate reply available to its tool call; no later turn can use it.
+      if (role === "agent" || replied) offered = null;
+      else replied = true;
     },
     async open() {
       const captured = offered;
