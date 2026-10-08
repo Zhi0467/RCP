@@ -257,13 +257,9 @@ export function ArtifactViewer() {
           </button>
         )}
         {state?.thread_href && (
-          <a
-            className="artifact-viewer-control"
-            href={state.thread_href}
-            aria-label="Open reply thread"
-            title="Open reply thread"
-          >
+          <a className="artifact-viewer-control" href={state.thread_href}>
             <MessageCircle size={16} />
+            Source chat
           </a>
         )}
         <button
@@ -293,6 +289,11 @@ export function ArtifactViewer() {
           >
             Retry
           </button>
+        </div>
+      )}
+      {state?.can_comment && (
+        <div className="artifact-viewer-comment-guidance">
+          Comments edit the artifact; use the source chat for analysis or code.
         </div>
       )}
       {source ? (

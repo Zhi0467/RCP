@@ -187,6 +187,10 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report)
         episode_id if mode == "auto_research" else None
     )
 
+    if mode == "experiment_loop":
+        from .test_saved_artifacts_api import _save_source_chat
+
+        _save_source_chat(app, task)
     client = signed_in_client(app)
     response = client.get(f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/state")
     assert response.status_code == 200

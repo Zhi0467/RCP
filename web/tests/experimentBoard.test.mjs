@@ -1655,3 +1655,38 @@ test("Runs retains healthy cards and names each unavailable branch once", () => 
   assert.equal((html.match(/title="unavailable-branch"/g) ?? []).length, 1);
   assert.match(html, /data-episode-id="episode-1"/);
 });
+
+test("embedded Experiment conversation links to its exact chat target", async () => {
+  const { ExperimentRunDetail } = await server.ssrLoadModule(
+    "/src/experiments/ExperimentRunDetail.tsx",
+  );
+  const { buildExperimentRun } = await server.ssrLoadModule("/src/experiments/runProjection.ts");
+  for (const branchId of [null, "branch-1"]) {
+    for (const chatId of [null, "chat-1"]) {
+      const target = branchId ? { kind: "branch", branch_id: branchId } : { kind: "main" };
+      const run = buildExperimentRun(
+        node("wrapping"),
+        control({ episode: episode({ graph_target: target }) }, { chat_id: chatId }),
+        [],
+        [],
+      );
+      const html = renderToStaticMarkup(
+        React.createElement(ExperimentRunDetail, {
+          apiBase: "/api/projects/project",
+          run,
+          conversation: React.createElement("div", { "data-transcript": true }),
+          episodeReportHref: () => "#report",
+        }),
+      );
+      const links = [...html.matchAll(/href="([^" ]*view=chats[^" ]*)"/g)];
+      assert.equal(links.length, chatId ? 1 : 0);
+      if (chatId) {
+        const query = new URLSearchParams(links[0][1].replaceAll("&amp;", "&").split("?")[1]);
+        assert.equal(query.get("chat"), chatId);
+        assert.equal(query.get("branch_id"), branchId);
+      }
+      assert.match(html, /data-transcript="true"/);
+      assert.doesNotMatch(html, /<textarea/);
+    }
+  }
+});

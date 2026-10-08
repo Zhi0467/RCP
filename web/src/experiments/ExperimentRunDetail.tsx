@@ -647,6 +647,19 @@ export function ExperimentRunDetail({
         <section className="experiment-run-conversation" aria-label="Run conversation">
           <div className="experiment-run-block-heading">
             <h4>Conversation</h4>
+            {episode && operational.chat_id && (
+              <a
+                href={`#/projects/${encodeURIComponent(episode.project_id)}?${new URLSearchParams({
+                  view: "chats",
+                  chat: operational.chat_id,
+                  ...(episode.graph_target.branch_id
+                    ? { branch_id: episode.graph_target.branch_id }
+                    : {}),
+                })}`}
+              >
+                Open in Agents
+              </a>
+            )}
           </div>
           {conversation}
         </section>
