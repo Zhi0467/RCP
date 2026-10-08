@@ -86,6 +86,9 @@ export const PROJECT_READ_POLICY = {
     "*.jks",
     "service-account*.json",
   ],
+  // Query flags that turn a read into work: `refresh` reruns readiness probes
+  // (provider, skill, and remote compute checks over SSH) or a source reindex.
+  refusedQuery: ["refresh"],
   windows: ["/history", "/history/summaries"],
   // These listings deliberately span graph targets on main (watchers can opt in on a branch).
   projectWideOnMain: ["/tasks", "/watchers"],
@@ -214,6 +217,7 @@ export function buildReadUrl(
       if (
         name === "project_id" ||
         name === "branch_id" ||
+        PROJECT_READ_POLICY.refusedQuery.includes(name) ||
         !route.parameters.some((p) => p.in === location && p.name === name)
       )
         throw new Error("Unknown or page-owned parameter.");
@@ -448,7 +452,12 @@ export function projectBroadReadToolDefinitions(
               .filter((p) => p.in === "path" && p.name !== "project_id")
               .map((p) => p.name),
             query: parameters
-              .filter((p) => p.in === "query" && p.name !== "branch_id")
+              .filter(
+                (p) =>
+                  p.in === "query" &&
+                  p.name !== "branch_id" &&
+                  !PROJECT_READ_POLICY.refusedQuery.includes(p.name),
+              )
               .map((p) => p.name),
           })),
           policy: {

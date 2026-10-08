@@ -175,6 +175,8 @@ test("URL confinement rejects other projects, dot encodings and non-GET argument
     { route: prefix + "/graph", query: { project_id: "q" } },
     { route: prefix + "/graph", method: "POST" },
     { route: prefix + "/graph", query: { branch_id: "other" } },
+    { route: prefix + "/readiness", query: { refresh: true } },
+    { route: prefix + "/sources", query: { refresh: true } },
     { route: prefix + "/chats", query: { limit: "5" } },
     { route: prefix + "/chats", query: { limit: 201 } },
   ])
