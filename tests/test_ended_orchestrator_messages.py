@@ -71,6 +71,9 @@ def test_ended_message_claims_notice_and_mail_and_replays_exact_request(
             ("reauthorized", continued.root_operation_id)
         ]
         assert client.post(url, json=body).json() == message
+        # A rename between a lost response and its retry is still the same member.
+        store.rename_space_user(continued.authorized_by.user_id, "Renamed researcher")
+        assert client.post(url, json=body).json() == message
         conflict = client.post(url, json={**body, "body": "A different instruction."})
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["code"] == "message_request_conflict"

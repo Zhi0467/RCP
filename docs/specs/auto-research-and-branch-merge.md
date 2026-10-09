@@ -388,8 +388,9 @@ for a continuation budget; it cannot silently authorize the default turns.
 One storage transaction creates the continuation and sender-attributed mail
 addressed to its new root, then claims both that message and the `reauthorized`
 notice for the opening turn. Replaying the same request id returns the same
-continuation and message only when both the message and N match; changing either
-under that id is refused.
+continuation and message only when the message, N, and the authorizing member
+(space and user id, not display name) all match; changing any of them under that
+id is refused.
 Concurrent sends cannot create two continuations of the same source: a sender
 that loses the race delivers its message as ordinary mail to the winning
 continuation while it runs, and its N is unused. Every refusal carries a code. Messaging

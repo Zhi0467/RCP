@@ -18,6 +18,7 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.task_policy import task_graph_capable
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore, EpisodeRecord
 from rcp.storage.models import EpisodeMode
+from rcp.transport import StateUnavailable
 
 
 class MainGraphRefResponse(BaseModel):
@@ -78,7 +79,10 @@ def project_graph_refs(
         refresh_max_age_seconds=refresh_max_age_seconds,
     )
     # Main is read after the branch reads, which refresh a remote mirror, so
-    # every ref comes from the same refreshed state.
+    # every ref comes from the same refreshed state. Without branches nothing
+    # refreshed it yet.
+    if not branches and not service.history.workspace.refresh_if_stale(refresh_max_age_seconds):
+        raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
     refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
     isolation = store.episode_isolation_states(project_id)
     main_state = _cached_main_graph(catalog, project_id)

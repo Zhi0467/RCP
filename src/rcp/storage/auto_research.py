@@ -219,8 +219,10 @@ class AutoResearchStoreMixin(StoreMixinBase):
                         saved_mail is None
                         or saved_mail["body"] != message.body
                         or stored.invocation_ceiling != episode.invocation_ceiling
-                        or self._auto_research_message_record(saved_mail).authorized_by
-                        != message.authorized_by
+                        or message.authorized_by is None
+                        or not message.authorized_by.is_same_member(
+                            self._auto_research_message_record(saved_mail).authorized_by
+                        )
                     ):
                         raise ValueError("message_request_conflict")
                     connection.rollback()

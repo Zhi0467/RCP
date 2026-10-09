@@ -154,7 +154,7 @@ def continue_auto_research(
             if (
                 saved_message is None
                 or saved_message.body != message_body
-                or saved_message.authorized_by != authorized_by
+                or not authorized_by.is_same_member(saved_message.authorized_by)
                 or replay.invocation_ceiling != invocation_ceiling
             ):
                 raise ValueError("message_request_conflict")

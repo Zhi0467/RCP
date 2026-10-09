@@ -678,7 +678,7 @@ def send_episode_message(
         owner = store.episode(saved.episode_id)
         if (
             saved.body != body.body
-            or saved.authorized_by != authorized_by
+            or not authorized_by.is_same_member(saved.authorized_by)
             or owner is None
             or owner.graph_target != episode.graph_target
             or (
