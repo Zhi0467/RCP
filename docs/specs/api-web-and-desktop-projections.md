@@ -889,8 +889,10 @@ current project member may confirm. Add applies manifest membership and the trut
 choice through a human approval transition, bound to the captured manifest/head.
 Connect preserves the manifest. Server-only setup and both repository request
 kinds expose the same setup and review controls as team creation.
-Native provisioning response parsing preserves nullable sources; transfer
-execution remains GitHub-only. Personal-to-team transfer creates linked requests
+Native provisioning and transfer parsing preserve nullable sources. The native
+relay sends no GitHub URL for a server-only repository and requires its reviewed
+commit and Git bundle; GitHub repositories keep their optional bundle choice.
+Personal-to-team transfer creates linked requests
 in the two authenticated backends and is available only in the
 source-built desktop because its native shell owns the archive relay. A direct
 team request to `/api/projects`, `/api/project-setup/preflight`,

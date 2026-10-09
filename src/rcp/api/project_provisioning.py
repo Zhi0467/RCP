@@ -618,7 +618,11 @@ def create_source_project_transfer_request(
             )
         else:
             configuration = existing.source_configuration
-            if configuration.includes_local_commits != body.include_local_commits:
+            if any(
+                (item.source_commit is not None) != body.include_local_commits
+                for item in configuration.repositories
+                if item.repository is not None
+            ):
                 raise ValueError("transfer already binds a different local-commit choice")
         actual_digest = project_transfer_source_configuration_sha256(configuration)
         if body.expected_source_configuration_sha256 not in {None, actual_digest}:

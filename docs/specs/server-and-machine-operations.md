@@ -1291,8 +1291,8 @@ project-source corruption and blocks Seed/Refresh rather than being silently
 omitted.
 
 The transfer wizard offers **Include local unpushed commits**, off by default.
-Without it, target provisioning uses the GitHub checkout and review explicitly
-warns that unpublished source commits stay behind. With it, source preparation
+For GitHub repositories, without it target provisioning uses the GitHub checkout
+and review explicitly warns that unpublished source commits stay behind. With it, source preparation
 records the exact HEAD of every declared repository and binds those commits to
 the source configuration and both human confirmations. Export rechecks those
 HEADs and includes one self-contained Git bundle per repository; no push to
@@ -1300,17 +1300,25 @@ GitHub occurs. Only the saved commit and its reachable history travel, not other
 local branches, uncommitted changes, ignored files, or external output/data
 directories. Native credentials, Git configuration, and hooks are not copied.
 
-Opt-in uses archive schema/codec `2` / `rcp-transfer-v2`; default transfers retain
-the byte-compatible v1 format and omit the new commit fields entirely. A target
+A source repository without an origin transfers as server only: its target URL
+is blank, its reviewed commit and Git bundle are required regardless of the
+optional GitHub commit choice, and the relay never manufactures a GitHub URL.
+Mixed projects bundle only the repositories whose commits were captured.
+
+Any transfer carrying bundles uses archive schema/codec `2` / `rcp-transfer-v2`;
+GitHub-only transfers without bundles retain the byte-compatible v1 format and omit the new commit fields entirely. A target
 that cannot accept the commit-bearing configuration refuses before source
 release. A changed HEAD or changed choice requires fresh review, never silent
 substitution. Existing v1 request commitments and saved archives remain valid.
 
 Before publishing research history, the target importer validates each bound
 bundle in isolation, imports its objects without remote access, and checks out
-the exact saved commit in **detached HEAD** state when the revision changes.
-An already-matching checkout is verified without changing its branch attachment;
-untracked/ignored files are preserved because no checkout is needed. This also
+the exact saved commit in **detached HEAD** state when a GitHub revision changes.
+A server-only destination is initialized from the verified bundle and attaches
+the imported commit to `main`, with no remote; later Connect can push that
+imported history. A missing required bundle refuses import.
+An already-matching GitHub checkout is verified without changing its branch
+attachment; untracked/ignored files are preserved because no checkout is needed. This also
 allows retries after RCP has published kept artifacts. Tracked changes still
 refuse. The target's origin and existing branch refs stay intact; create a branch
 before making new Git commits from detached HEAD.

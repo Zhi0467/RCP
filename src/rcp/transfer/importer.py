@@ -106,16 +106,19 @@ def import_project_transfer(
     )
     published_imported: ImportedProviderSourceInventory | None = None
     try:
-        if transfer.source_configuration.includes_local_commits:
+        if transfer.source_configuration.has_repository_bundles:
             from rcp.transfer.repository_git import install_repository_bundle
 
             for repository in transfer.source_configuration.repositories:
+                if repository.source_commit is None:
+                    continue
                 declared = owners.manifest.repository_map[repository.alias]
                 install_repository_bundle(
                     host=owners.manifest.machine_map[declared.machine].host,
                     path=declared.path,
                     bundle=archive_root / f"repositories/{repository.alias}.bundle",
                     expected_head=repository.source_commit,
+                    server_only=repository.repository is None,
                 )
         materialization = _publish_canonical(
             owners,
