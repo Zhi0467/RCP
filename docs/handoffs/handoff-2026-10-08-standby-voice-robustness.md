@@ -231,8 +231,8 @@ can only block the identical send. The human chose to fix this in this PR.
 - `GET /api/projects/{id}/client-requests/{key}` returns the admitted task or
   episode id, or 404 when nothing was admitted under that key.
 - Resume reconciles each unknown receipt through that lookup: accepted becomes
-  an accepted receipt with its id (and a watch); not found marks it refused
-  and keeps its key; a lookup that cannot answer leaves it unknown. A
+  an accepted receipt with its id (and a watch); not found (possibly still in
+  flight) or a lookup that cannot answer leaves it unknown. A
   member who asks again resends with the receipt's same key, so a send still
   in flight can never be admitted twice.
 - Terminal commands keep their per-run card and are out of scope.

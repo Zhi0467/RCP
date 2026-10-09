@@ -481,7 +481,7 @@ test("a restored keyless unknown receipt fences its exact call in its own target
   assert.equal(other.runs.length, 1);
 });
 
-test("Resume's 404 clears the unknown fence and retries with the saved key", async () => {
+test("Resume's 404 keeps the receipt unknown and a re-ask reuses the saved key", async () => {
   const receipts = [];
   const first = harness({
     mode: "none",
@@ -496,7 +496,7 @@ test("Resume's 404 clears the unknown fence and retries with the saved key", asy
   const reconciled = await reconcileVoiceReceipts(receipts, async () => {
     throw { status: 404 };
   });
-  assert.equal(reconciled[0].outcome, "refused");
+  assert.equal(reconciled[0].outcome, "unknown");
   const saved = [];
   const resumed = harness({
     confirmations: [true],

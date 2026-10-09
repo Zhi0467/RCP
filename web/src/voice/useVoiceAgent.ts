@@ -59,6 +59,8 @@ import { assertVoiceMayType, terminalCommandInput, terminalRepository } from "./
 import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp/index";
 
 const VOICE_WATCH_POLL_MS = 10_000;
+// Speech deltas batch into one saved snapshot; receipts and End save at once.
+const VOICE_TRANSCRIPT_SAVE_MS = 2_000;
 const VOICE_TRANSCRIPT_LINES = 40;
 const VOICE_CARD_PROMPT = "This needs your tap: press Confirm on the card on screen, or Decline.";
 
@@ -381,7 +383,10 @@ export function useVoiceAgent({
         if (sessionRef.current) await sessionRef.current.end("member", { immediate: true });
         else gate.lose();
       };
+      let transcriptTimer: number | null = null;
       const save = async () => {
+        if (transcriptTimer !== null) window.clearTimeout(transcriptTimer);
+        transcriptTimer = null;
         if (!record || !bounds) return;
         try {
           record = boundVoiceTranscript(record, {
@@ -503,7 +508,10 @@ export function useVoiceAgent({
               setTranscript((lines) => appendTranscript(lines, role, delta));
               if (record && bounds) {
                 record.entries = appendVoiceTranscript(record.entries, role, delta, order, source);
-                void save().catch(() => {});
+                transcriptTimer ??= window.setTimeout(
+                  () => void save().catch(() => {}),
+                  VOICE_TRANSCRIPT_SAVE_MS,
+                );
               }
             },
             onFunctionCall: (call) => {

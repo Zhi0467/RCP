@@ -698,10 +698,9 @@ export async function reconcileVoiceReceipts(
           task_id: admitted.operation_id ?? null,
           episode_id: admitted.episode_id ?? null,
         };
-      } catch (error) {
-        if ((error as { status?: number } | null)?.status === 404)
-          return { ...receipt, outcome: "refused" as const };
-        // An unanswered lookup keeps the receipt unknown, so its fence and key stay.
+      } catch {
+        // Not found may still be an admission in flight, and a failed lookup
+        // settles nothing: the receipt stays unknown and a re-ask reuses its key.
         return receipt;
       }
     }),

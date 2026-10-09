@@ -1176,8 +1176,8 @@ returns the original result, and the key from another member or route is a
 409. Rows are pruned 30 days plus one session's hard cap after admission.
 `GET /api/projects/{id}/client-requests/{key}` returns the admitted ids, or 404
 when nothing was admitted or the row is not the caller's. Resume turns a found
-key into an accepted receipt with a watch, a 404 into a refused receipt that
-keeps its key, and an unanswered lookup into an unchanged unknown receipt. A
+key into an accepted receipt with a watch; a 404, which may be an admission
+still in flight, or an unanswered lookup leaves the receipt unknown. A
 re-ask reuses the receipt's key, so a send still in flight is never admitted
 twice.
 
