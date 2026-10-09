@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
@@ -114,8 +116,7 @@ def test_repository_source_is_optional_and_round_trips(tmp_path) -> None:
             response = client.post("/api/project-provisioning/requests", json=payload)
             assert response.status_code == 201
             created = response.json()
-            assert not created["can_run_setup"] and not created["can_review"]
-            assert created["next_action"] == "Server-only repository setup is not available yet."
+            assert created["can_run_setup"] and not created["can_review"]
             reread = client.get(f"/api/project-provisioning/requests/{created['request_id']}")
             assert reread.status_code == 200
             repository = reread.json()["repositories"][0]
@@ -519,3 +520,188 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
     assert completed_projection["can_cancel"] is False
     assert completed_projection["final_review"] == projected["final_review"]
     assert completed_projection["completed_at"] == completed.completed_at
+
+
+def _ready_repository_change(store, request_id):
+    record = store.project_provisioning_request(request_id)
+    running = store.transition_project_provisioning_request(
+        request_id,
+        receipt_id="test-start",
+        phase="provisioning_start",
+        expected_revision=record.revision,
+        expected_status=record.status,
+        to_status="setup_in_progress",
+        machines=record.machines,
+        repositories=record.repositories,
+        provider_checks=[],
+    )
+    repository = running.repositories[0]
+    Path(repository.intended_path).mkdir(parents=True, exist_ok=True)
+    check = ProjectProvisioningGitCheckRecord(
+        status="ready",
+        commit="a" * 40,
+        checked_at=store.now(),
+        **(
+            {
+                "write_verified": True,
+                "deploy_key_label": f"rcp:{store.space_id}:{record.proposed_project_id}:{repository.alias}",
+                "public_key_fingerprint": "SHA256:" + "A" * 43,
+            }
+            if repository.repository
+            else {}
+        ),
+    )
+    return store.transition_project_provisioning_request(
+        request_id,
+        receipt_id="test-ready",
+        phase="provisioning_review",
+        expected_revision=running.revision,
+        expected_status=running.status,
+        to_status="ready_for_review",
+        machines=[
+            running.machines[0].model_copy(
+                update={"resolved_central_root": running.machines[0].central_root}
+            )
+        ],
+        repositories=[
+            repository.model_copy(
+                update={
+                    "resolved_path": repository.intended_path,
+                    "checkout_disposition": "request_created",
+                    "git_check": check,
+                }
+            )
+        ],
+        provider_checks=[],
+    )
+
+
+def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tests.test_team_project_provisioning import _complete_ready_request, _ready_team_app
+
+    app, creation, _, member, _ = _ready_team_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        assert _complete_ready_request(client, creation).status_code == 200
+        store = app.state.background_tasks.store
+        project_id = creation.proposed_project_id
+        for count_as_truth in (False, True):
+            alias = "context" if not count_as_truth else "code"
+            response = client.post(
+                f"/api/projects/{project_id}/repository-requests",
+                json={
+                    "kind": "add_repository",
+                    "repository": {
+                        "alias": alias,
+                        "machine_alias": "server",
+                        "count_as_project_truth": count_as_truth,
+                    },
+                },
+            )
+            assert response.status_code == 201, response.text
+            ready = _ready_repository_change(store, response.json()["request_id"])
+            if not count_as_truth:
+                transition = store.transition_project_provisioning_request
+
+                def lost_completion(*args, _transition=transition, **kwargs):
+                    if kwargs.get("to_status") == "completed":
+                        raise ValueError("Completion receipt unavailable")
+                    return _transition(*args, **kwargs)
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(store, "transition_project_provisioning_request", lost_completion)
+                    assert _complete_ready_request(client, ready).status_code == 409
+            assert _complete_ready_request(client, ready).status_code == 200
+            assert _complete_ready_request(client, ready).status_code == 200
+            service = app.state.catalog.open(project_id)
+            assert alias in service.manifest.repository_map
+            assert (alias in service.history.state().project_truth_scope) == count_as_truth
+            duplicate = client.post(
+                f"/api/projects/{project_id}/repository-requests",
+                json={
+                    "kind": "add_repository",
+                    "repository": {"alias": alias, "machine_alias": "server"},
+                },
+            )
+            assert duplicate.status_code == 409
+        before = service.history.head_ref()
+        connected = client.post(
+            f"/api/projects/{project_id}/repository-requests",
+            json={
+                "kind": "connect_repository",
+                "alias": "context",
+                "source": "https://github.com/example/context.git",
+            },
+        )
+        assert connected.status_code == 201, connected.text
+        ready = _ready_repository_change(store, connected.json()["request_id"])
+        assert _complete_ready_request(client, ready).status_code == 200
+        assert service.history.head_ref() == before
+        from rcp.provisioning_repositories import effective_repositories
+
+        inventory = effective_repositories(
+            store.project(project_id), store.completed_project_provisioning_requests(project_id)
+        )
+        assert inventory[1].repository.identity == "example/context"
+        outsider = store.preprovision_team_member("Outsider")
+        app.state.services.identity_access._trusted_principal_resolver = lambda _request, _store: (
+            outsider
+        )
+        assert (
+            client.post(
+                f"/api/projects/{project_id}/repository-requests",
+                json={
+                    "kind": "add_repository",
+                    "repository": {"alias": "other", "machine_alias": "server"},
+                },
+            ).status_code
+            == 404
+        )
+        assert _complete_ready_request(client, ready).status_code == 404
+
+
+@pytest.mark.parametrize("changed", ["manifest", "head"])
+def test_repository_confirmation_rejects_changed_review_boundary(tmp_path, monkeypatch, changed):
+    from fastapi.testclient import TestClient
+
+    from tests.test_team_project_provisioning import _complete_ready_request, _ready_team_app
+
+    app, creation, _, _, _ = _ready_team_app(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        assert _complete_ready_request(client, creation).status_code == 200
+        project_id = creation.proposed_project_id
+        response = client.post(
+            f"/api/projects/{project_id}/repository-requests",
+            json={
+                "kind": "add_repository",
+                "repository": {"alias": "code", "machine_alias": "server"},
+            },
+        )
+        assert response.status_code == 201, response.text
+        ready = _ready_repository_change(
+            app.state.background_tasks.store, response.json()["request_id"]
+        )
+        service = app.state.catalog.open(project_id)
+        if changed == "manifest":
+            manifest = service.manifest.path
+            manifest.write_text(manifest.read_text() + "\n# changed after review\n")
+        else:
+            from rcp.core.models import Patch
+
+            service.history.append(
+                Patch(
+                    kind="approval",
+                    author="human",
+                    summary="Confirm current scope",
+                    ops=[
+                        {
+                            "op": "set_project_truth_scope",
+                            "truth_scope": service.history.state().project_truth_scope,
+                        }
+                    ],
+                ),
+                authorized_by=ready.authorized_by,
+            )
+        assert _complete_ready_request(client, ready).status_code == 409
+        assert "code" not in service.manifest.repository_map

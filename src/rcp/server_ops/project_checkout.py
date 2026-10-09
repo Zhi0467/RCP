@@ -25,6 +25,9 @@ from rcp.server_ops.git_credentials import (
     DeployKeyMaterial,
     GitCredentialManager,
     GitCredentialRefused,
+    GitWriteProbe,
+    _parse_remote_refs,
+    _probe_failure,
     deploy_key_ssh_command,
     run_bounded_process,
     target_account_argv,
@@ -98,6 +101,13 @@ class ProjectCheckoutRefused(RuntimeError):
 
 
 @dataclass(frozen=True)
+class CheckoutAccount:
+    account_home: str
+    os_account: str
+    central_root: str
+
+
+@dataclass(frozen=True)
 class _PathReceipt:
     central_root: str
     repository_path: str
@@ -133,7 +143,7 @@ class ProjectCheckoutManager:
         state_repository: bool,
         expected_commit: str | None = None,
     ) -> ProjectCheckoutResult:
-        if request_kind not in {"create_team_project", "incoming_transfer"}:
+        if request_kind not in {"create_team_project", "incoming_transfer", "add_repository"}:
             raise ValueError("project checkout request kind is invalid")
         if not isinstance(state_repository, bool):
             raise ValueError("state-repository selection must be explicit")
@@ -213,6 +223,266 @@ class ProjectCheckoutManager:
             checkout_disposition=receipt.checkout_disposition,
             commit=commit,
             retained_research=retained,
+        )
+
+    def prepare_server_only(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        *,
+        request_kind: ProjectProvisioningKind,
+        project_id: str,
+        repository_alias: str,
+        state_repository: bool,
+        expected_commit: str | None = None,
+    ) -> ProjectCheckoutResult:
+        account = self._helper(machine, ("account", machine.os_account))
+        home = account.get("home")
+        if account.get("account") != machine.os_account or not isinstance(home, str):
+            raise ProjectCheckoutRefused("account_or_path", "Invalid execution account receipt.")
+        context = CheckoutAccount(
+            home,
+            machine.os_account,
+            machine.central_root or str(remote_projects_root(home)),
+        )
+        return self._prepare_initial(
+            machine,
+            context,
+            request_kind=request_kind,
+            project_id=project_id,
+            repository_alias=repository_alias,
+            state_repository=state_repository,
+            expected_commit=expected_commit,
+        )
+
+    def prepare_initial(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial,
+        *,
+        request_kind: ProjectProvisioningKind,
+        project_id: str,
+        repository_alias: str,
+        state_repository: bool,
+        expected_commit: str | None = None,
+    ) -> ProjectCheckoutResult:
+        if (material.project_id, material.repository_alias, material.machine_alias) != (
+            project_id,
+            repository_alias,
+            machine.alias,
+        ):
+            raise ProjectCheckoutRefused(
+                "account_or_path", "The checkout target differs from its key."
+            )
+        material = self._credential_manager.inspect_key(machine, material)
+        return self._prepare_initial(
+            machine,
+            material,
+            request_kind=request_kind,
+            project_id=project_id,
+            repository_alias=repository_alias,
+            state_repository=state_repository,
+            expected_commit=expected_commit,
+        )
+
+    def _prepare_initial(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial | CheckoutAccount,
+        *,
+        request_kind: ProjectProvisioningKind,
+        project_id: str,
+        repository_alias: str,
+        state_repository: bool,
+        expected_commit: str | None,
+    ) -> ProjectCheckoutResult:
+        if expected_commit is not None and _FULL_COMMIT.fullmatch(expected_commit) is None:
+            raise ValueError("expected checkout commit must be a full Git object id")
+        receipt = self._prepare_path(
+            machine, material, project_id=project_id, repository_alias=repository_alias
+        )
+        path = receipt.repository_path
+
+        def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return self._git_at(machine, material, path, arguments)
+
+        if receipt.empty:
+            if expected_commit is not None or request_kind == "connect_repository":
+                raise self._checkout_conflict(material, path, "The recorded checkout is missing.")
+            initialized = run("init", "-b", "main", "--template=")
+            if initialized.returncode != 0:
+                raise self._checkout_conflict(
+                    material, path, "Cannot initialize the central checkout."
+                )
+            self._seal_new_git_directory(machine, material, path)
+        self._verify_git_directory(machine, material, path)
+        branch = run("symbolic-ref", "--quiet", "HEAD")
+        if branch.returncode != 0 or branch.stdout.strip() != "refs/heads/main":
+            raise self._checkout_conflict(material, path, "The central checkout must be on main.")
+        # Check all execution configuration and cleanliness before making any commit.
+        account = CheckoutAccount(material.account_home, material.os_account, material.central_root)
+        remotes = run("remote")
+        no_origin = remotes.returncode == 0 and not remotes.stdout.strip()
+        context = account if no_origin else material
+        head = run("rev-parse", "--verify", "HEAD")
+        if head.returncode != 0:
+            if expected_commit is not None or request_kind == "connect_repository":
+                raise self._checkout_conflict(
+                    material, path, "The recorded main commit is missing."
+                )
+            config = run(
+                "config",
+                "--local",
+                "--name-only",
+                "--get-regexp",
+                "^(include|includeif|filter|url|remote|core\\.(sshcommand|hookspath|fsmonitor))",
+            )
+            if config.returncode not in {0, 1} or config.stdout:
+                raise self._checkout_conflict(
+                    material, path, "The unborn checkout contains unsafe configuration."
+                )
+            clean = run("status", "--porcelain=v1", "--untracked-files=all")
+            if clean.returncode != 0 or clean.stdout:
+                raise self._checkout_conflict(material, path, "The unborn checkout contains work.")
+            committed = run(
+                "-c",
+                "user.name=RCP",
+                "-c",
+                "user.email=rcp@rcp.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Start RCP project",
+            )
+            if committed.returncode != 0:
+                raise self._checkout_conflict(material, path, "Cannot create the RCP first commit.")
+        retained = (
+            self._retained_research(machine, material, path)
+            if state_repository
+            else RetainedResearchState(False, False, None, None)
+        )
+        if request_kind in {"create_team_project", "add_repository"} and retained.retained:
+            raise ProjectCheckoutRefused(
+                "retained_research",
+                "The checkout contains retained research.",
+                retained_research=retained,
+                central_root=receipt.central_root,
+                repository_path=path,
+                checkout_disposition=receipt.checkout_disposition,
+            )
+        if request_kind == "connect_repository" and expected_commit is not None:
+            if run("merge-base", "--is-ancestor", expected_commit, "HEAD").returncode != 0:
+                raise self._checkout_conflict(
+                    material, path, "The server main no longer contains the recorded commit."
+                )
+            expected_commit = None
+        commit = self._verify_repository(
+            machine,
+            context,
+            path,
+            expected_commit=expected_commit,
+            unpublished=True,
+            allow_dirty=request_kind == "connect_repository",
+        )
+        if isinstance(material, DeployKeyMaterial) and no_origin:
+            added = run("remote", "add", "origin", material.repository.ssh_clone_url)
+            if added.returncode != 0:
+                raise self._checkout_conflict(
+                    material, path, "Cannot add the reviewed GitHub origin."
+                )
+            self._verify_repository(
+                machine,
+                material,
+                path,
+                expected_commit=commit,
+                unpublished=True,
+                allow_dirty=request_kind == "connect_repository",
+            )
+        return ProjectCheckoutResult(
+            machine.alias,
+            repository_alias,
+            receipt.central_root,
+            path,
+            receipt.checkout_disposition,
+            commit,
+            retained,
+        )
+
+    def publish_initial(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial,
+        *,
+        repository_path: str,
+        expected_commit: str,
+        request_kind: ProjectProvisioningKind = "create_team_project",
+    ) -> GitWriteProbe:
+        """Push only an already durably recorded local commit, then reconcile the receipt."""
+        if _FULL_COMMIT.fullmatch(expected_commit) is None:
+            raise ValueError("first push requires a recorded full commit")
+        material = self._credential_manager.inspect_key(machine, material)
+        exact_path = str(
+            PurePosixPath(material.central_root)
+            / material.project_id
+            / "repositories"
+            / material.repository_alias
+        )
+        if repository_path != exact_path:
+            raise ProjectCheckoutRefused(
+                "account_or_path", "The push must use the exact central checkout."
+            )
+        self._verify_git_directory(machine, material, repository_path)
+        self._verify_repository(
+            machine,
+            material,
+            repository_path,
+            expected_commit=expected_commit,
+            unpublished=True,
+            allow_dirty=request_kind == "connect_repository",
+        )
+
+        def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+            return self._git_at(machine, material, repository_path, arguments)
+
+        advertised = run("ls-remote", "origin", "refs/heads/*")
+        if advertised.returncode != 0:
+            return _probe_failure(advertised, operation="read", stage="main lookup")
+        refs = _parse_remote_refs(advertised.stdout)
+        remote = refs.get("refs/heads/main")
+        divergence = GitWriteProbe(
+            "failed",
+            expected_commit,
+            None,
+            "Merge GitHub's main into the server repository, then resume. RCP never force-pushes or merges.",
+        )
+        if remote is None and refs and request_kind != "connect_repository":
+            return divergence
+        if remote is not None:
+            fetched = run("fetch", "--no-tags", "origin", "refs/heads/main")
+            if fetched.returncode != 0:
+                return _probe_failure(fetched, operation="read", stage="main fetch")
+            fetched_head = run("rev-parse", "FETCH_HEAD")
+            if fetched_head.stdout.strip() != remote:
+                return divergence
+            ancestor = run("merge-base", "--is-ancestor", remote, expected_commit)
+            if ancestor.returncode != 0:
+                return divergence
+        pushed = run("push", "--porcelain", "origin", f"{expected_commit}:refs/heads/main")
+        observed = run("ls-remote", "origin", "refs/heads/main")
+        if observed.returncode == 0:
+            current = _parse_remote_refs(observed.stdout).get("refs/heads/main")
+            if current == expected_commit:
+                return GitWriteProbe(
+                    "ready",
+                    expected_commit,
+                    None,
+                    "The recorded main commit was read back from GitHub.",
+                )
+            if current is not None and current != remote:
+                return divergence
+        return _probe_failure(
+            pushed if pushed.returncode else observed, operation="write", stage="main push readback"
         )
 
     def prepare_recovery(
@@ -405,7 +675,7 @@ class ProjectCheckoutManager:
     def _prepare_path(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         *,
         project_id: str,
         repository_alias: str,
@@ -475,7 +745,7 @@ class ProjectCheckoutManager:
     def _verify_git_directory(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
     ) -> None:
         payload = self._helper(
@@ -494,7 +764,7 @@ class ProjectCheckoutManager:
     def _seal_new_git_directory(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
     ) -> None:
         payload = self._helper(
@@ -545,10 +815,12 @@ class ProjectCheckoutManager:
     def _verify_repository(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
         *,
         expected_commit: str | None,
+        unpublished: bool = False,
+        allow_dirty: bool = False,
     ) -> str:
         checkout = self._git_at(
             machine,
@@ -563,7 +835,9 @@ class ProjectCheckoutManager:
                 "The central path is not the exact non-bare Git working tree.",
             )
         remotes = self._git_at(machine, material, repository_path, ("remote",))
-        if remotes.returncode != 0 or remotes.stdout.splitlines() != ["origin"]:
+        if remotes.returncode != 0 or remotes.stdout.splitlines() != (
+            ["origin"] if isinstance(material, DeployKeyMaterial) else []
+        ):
             raise self._checkout_conflict(
                 material,
                 repository_path,
@@ -592,6 +866,10 @@ class ProjectCheckoutManager:
                 + r"|^(remote\.origin\.(url|pushurl|fetch)|core\.(sshcommand|hookspath))$",
             ),
         )
+        if local_config.returncode not in {0, 1}:
+            raise self._checkout_conflict(
+                material, repository_path, "Cannot inspect local Git configuration."
+            )
         config: dict[str, list[str]] = {}
         for record in local_config.stdout.split("\0"):
             if record:
@@ -599,7 +877,7 @@ class ProjectCheckoutManager:
                 # Git normalizes section/variable case, but preserves subsection
                 # case. Reproduce get-all's line output, including empty values.
                 config.setdefault(key, []).extend((value + "\n").splitlines())
-        if (
+        if isinstance(material, DeployKeyMaterial) and (
             local_config.returncode != 0
             or config.get("remote.origin.url") != [material.repository.ssh_clone_url]
             or config.get("remote.origin.pushurl", [material.repository.ssh_clone_url])
@@ -610,7 +888,9 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout origin does not match the canonical GitHub repository.",
             )
-        if config.get("remote.origin.fetch") != ["+refs/heads/*:refs/remotes/origin/*"]:
+        if isinstance(material, DeployKeyMaterial) and config.get("remote.origin.fetch") != [
+            "+refs/heads/*:refs/remotes/origin/*"
+        ]:
             raise self._checkout_conflict(
                 material,
                 repository_path,
@@ -623,7 +903,9 @@ class ProjectCheckoutManager:
                 "The central checkout contains unsafe local Git execution or URL configuration; "
                 "RCP left it intact.",
             )
-        ssh_command = deploy_key_ssh_command(material)
+        ssh_command = (
+            deploy_key_ssh_command(material) if isinstance(material, DeployKeyMaterial) else None
+        )
         stored_ssh = config.get("core.sshcommand")
         if stored_ssh is not None and stored_ssh != [ssh_command]:
             raise self._checkout_conflict(
@@ -644,32 +926,35 @@ class ProjectCheckoutManager:
             repository_path,
             ("status", "--porcelain=v1", "--untracked-files=all"),
         )
-        if clean.returncode != 0 or clean.stdout:
+        if clean.returncode != 0 or (clean.stdout and not allow_dirty):
             raise self._checkout_conflict(
                 material,
                 repository_path,
                 "The central checkout contains uncommitted or untracked work; RCP left it intact.",
             )
-        fetched = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("fetch", "--no-tags", "origin"),
-        )
-        if fetched.returncode != 0:
-            raise ProjectCheckoutRefused(
-                "git_access",
-                "The central checkout could not fetch its canonical GitHub origin.",
-                central_root=material.central_root,
-                repository_path=repository_path,
+        remote_commit = expected_commit
+        if not unpublished:
+            assert isinstance(material, DeployKeyMaterial)
+            fetched = self._git_at(
+                machine,
+                material,
+                repository_path,
+                ("fetch", "--no-tags", "origin"),
             )
-        advertised = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("ls-remote", "origin", "HEAD"),
-        )
-        remote_commit = _one_head(advertised)
+            if fetched.returncode != 0:
+                raise ProjectCheckoutRefused(
+                    "git_access",
+                    "The central checkout could not fetch its canonical GitHub origin.",
+                    central_root=material.central_root,
+                    repository_path=repository_path,
+                )
+            advertised = self._git_at(
+                machine,
+                material,
+                repository_path,
+                ("ls-remote", "origin", "HEAD"),
+            )
+            remote_commit = _one_head(advertised)
         local = self._git_at(machine, material, repository_path, ("rev-parse", "HEAD"))
         local_commit = local.stdout.strip()
         if local.returncode != 0 or _FULL_COMMIT.fullmatch(local_commit) is None:
@@ -678,6 +963,8 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout HEAD is unavailable or invalid.",
             )
+        if unpublished:
+            remote_commit = local_commit
         if remote_commit != local_commit:
             raise self._checkout_conflict(
                 material,
@@ -697,13 +984,13 @@ class ProjectCheckoutManager:
             repository_path,
             ("status", "--porcelain=v1", "--untracked-files=all"),
         )
-        if final_clean.returncode != 0 or final_clean.stdout:
+        if final_clean.returncode != 0 or (final_clean.stdout and not allow_dirty):
             raise self._checkout_conflict(
                 material,
                 repository_path,
                 "The central checkout changed during verification; RCP left it intact.",
             )
-        if stored_ssh is None:
+        if stored_ssh is None and ssh_command is not None:
             configured = self._git_at(
                 machine,
                 material,
@@ -741,12 +1028,12 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout hook fence could not be read back.",
             )
-        return remote_commit
+        return local_commit
 
     def _retained_research(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
     ) -> RetainedResearchState:
         payload = self._helper(
@@ -821,7 +1108,7 @@ class ProjectCheckoutManager:
     def _git_at(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
         arguments: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
@@ -843,7 +1130,7 @@ class ProjectCheckoutManager:
     def _git(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         argv: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
         return self._target(
@@ -861,7 +1148,11 @@ class ProjectCheckoutManager:
                 "GIT_CONFIG_NOSYSTEM=1",
                 "GIT_TERMINAL_PROMPT=0",
                 "GIT_SSH_VARIANT=ssh",
-                f"GIT_SSH_COMMAND={deploy_key_ssh_command(material)}",
+                *(
+                    (f"GIT_SSH_COMMAND={deploy_key_ssh_command(material)}",)
+                    if isinstance(material, DeployKeyMaterial)
+                    else ()
+                ),
                 "python3",
                 "-c",
                 _remote_private_exec_source(),
@@ -894,7 +1185,7 @@ class ProjectCheckoutManager:
 
     @staticmethod
     def _checkout_conflict(
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
         message: str,
     ) -> ProjectCheckoutRefused:

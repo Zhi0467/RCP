@@ -404,7 +404,16 @@ one repository, or connect one existing repository to GitHub. Add and connect
 name `target_project_id`; they share its checkout namespace without consuming
 the unique project reservation held by create/transfer requests. An add retains
 the human's per-repository `count_as_project_truth` choice, defaulting to true;
-persisting this choice does not itself change canonical truth membership.
+persisting this choice does not itself change canonical truth membership. Creation
+captures an immutable hash of the current canonical manifest and graph head,
+keyed by the request identity bound into the final review digest. The requesting
+member's final confirmation checks this boundary under the canonical workspace
+and history locks. Add publishes one human approval transition containing the
+repository descriptor and the chosen truth scope, including descriptor-only
+additions outside truth. Its request identity reconciles a committed approval
+if the operational completion receipt was lost. Connect changes only completed
+checkout provenance, never manifest or graph membership. Both require current
+project membership; a changed review boundary requires a new request.
 
 `effective_repositories(project, provisioning_requests)` owns the effective
 repository inventory. It uses only completed requests for the exact project
@@ -414,8 +423,7 @@ alias; connects replace its source, deploy-key evidence, and checkout proof
 while preserving its truth choice and checkout location. Incomplete proofs or
 conflicting provenance are refused. GitHub entries retain deploy-key and write
 evidence; server-only entries have checkout commit/time evidence without a key
-or push proof. Runtime consumers and the add/connect execution paths remain
-separate implementation slices.
+or push proof.
 
 ## Durable agent task lifecycle
 

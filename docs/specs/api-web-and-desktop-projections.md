@@ -878,10 +878,17 @@ to true. The response exposes `source_kind` (`github` or `server_only`), a
 nullable repository identity and GitHub URLs, and the truth choice. Request kinds
 also include `add_repository` and `connect_repository`, whose
 `target_project_id` identifies the existing project. Reading those requests
-requires current membership in that project; the create finalizer refuses them.
-These contracts do not authorize project mutation or implement those setup flows.
-Server-only and add/connect requests disable setup and review controls with an
-explicit unavailable next action until their execution flows are implemented.
+requires current membership in that project.
+`POST /api/projects/{project_id}/repository-requests` accepts either
+`{"kind":"add_repository","repository":{"alias","source"?,"machine_alias","count_as_project_truth"}}`
+or `{"kind":"connect_repository","alias","source"}` and returns the ordinary
+provisioning response. Placement uses an existing project machine. Setup runs
+through `rcp server project provision <request-id>`. The ordinary completion
+endpoint accepts the review digest; for repository requests only the requesting
+current project member may confirm. Add applies manifest membership and the truth
+choice through a human approval transition, bound to the captured manifest/head.
+Connect preserves the manifest. Server-only setup and both repository request
+kinds expose the same setup and review controls as team creation.
 Native provisioning response parsing preserves nullable sources; transfer
 execution remains GitHub-only. Personal-to-team transfer creates linked requests
 in the two authenticated backends and is available only in the
