@@ -663,6 +663,12 @@ test("two reads through one tool and target keep distinct sources", () => {
   }
   const chained = labels.speech("agent", "item-3");
   assert.ok(chained.includes("/graph") && chained.includes("/history"));
+  // A cut through an emoji keeps whole characters, so the label stays valid UTF-8.
+  labels.capture("e", "rcp_read", "x".repeat(1_000) + "😀".repeat(40), receiptTarget);
+  labels.succeeded("e");
+  const clipped = labels.speech("agent", "item-4");
+  assert.ok(Array.from(clipped).length <= 1_024);
+  assert.ok(clipped.isWellFormed());
 });
 
 test("saves serialize, coalesce pending snapshots, and stop after identity changes", async () => {

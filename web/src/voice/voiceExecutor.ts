@@ -531,6 +531,11 @@ export function noteVoiceProject(
 /** The backend's bound on a saved entry's source label. */
 const VOICE_SOURCE_MAX_CHARS = 1_024;
 
+/** Cuts by code point, as the backend counts, so no emoji is left half a surrogate pair. */
+function clipSource(text: string): string {
+  return Array.from(text).slice(0, VOICE_SOURCE_MAX_CHARS).join("");
+}
+
 /** A tool's provenance belongs to its call and the next response item only. */
 export function createVoiceSourceLabels() {
   const calls = new Map<string, string>();
@@ -544,8 +549,7 @@ export function createVoiceSourceLabels() {
       const where = target
         ? ` on ${target.project_id} (${target.graph_target.branch_id ?? "main"})`
         : "";
-      if (!calls.has(callId))
-        calls.set(callId, `${name}(${args})${where}`.slice(0, VOICE_SOURCE_MAX_CHARS));
+      if (!calls.has(callId)) calls.set(callId, clipSource(`${name}(${args})${where}`));
     },
     succeeded(callId: string) {
       const label = calls.get(callId);
@@ -563,7 +567,7 @@ export function createVoiceSourceLabels() {
         return null;
       }
       if (pending.length) {
-        active = pending.join("; ").slice(0, VOICE_SOURCE_MAX_CHARS);
+        active = clipSource(pending.join("; "));
         pending = [];
       } else if (segment !== activeSegment) active = null;
       activeSegment = segment;
