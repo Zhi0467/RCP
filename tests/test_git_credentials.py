@@ -1116,15 +1116,15 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
     fields = {field.name: field.value for field in grant.fields}
     assert grant.target.destination_url == REPOSITORY.settings_url
     assert fields == {
-        "deploy_key_label": material.label,
-        "deploy_public_key": material.public_key,
+        "title": material.label,
+        "key": material.public_key,
         "public_key_fingerprint": material.public_key_fingerprint,
     }
     # Two values go into GitHub's form; the fingerprint is only compared.
     roles = {field.name: field.role for field in grant.fields}
     assert roles == {
-        "deploy_key_label": "input",
-        "deploy_public_key": "input",
+        "title": "input",
+        "key": "input",
         "public_key_fingerprint": "evidence",
     }
     assert grant.resume_argv == resume

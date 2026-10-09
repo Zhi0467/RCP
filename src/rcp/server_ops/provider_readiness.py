@@ -797,7 +797,6 @@ class ProviderReadinessCoordinator:
     ) -> tuple[str, ...]:
         return (
             "sudo",
-            "-n",
             "-u",
             self.layout.service_account,
             "-H",
@@ -812,7 +811,6 @@ class ProviderReadinessCoordinator:
     def _project_resume_argv(self, request_id: str) -> tuple[str, ...]:
         return (
             "sudo",
-            "-n",
             "-u",
             self.layout.service_account,
             "-H",

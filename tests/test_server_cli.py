@@ -850,6 +850,26 @@ def test_interactive_action_stop_prints_only_what_the_human_does() -> None:
         assert omitted not in text
 
 
+def test_preparation_failure_shows_the_server_refusal() -> None:
+    from rcp.server_ops.control import ServerControlError
+
+    refusal = "The selected provisioning request does not exist."
+
+    def handler(_request, _caller):
+        raise ServerControlError("operation_refused", refusal)
+
+    output = StringIO()
+    code = run_server_command(
+        _parse("server", "project", "provision", REQUEST_ID, "--machine-readable"),
+        handler=handler,
+        identity=CallerIdentity(uid=501, username="rcp", host="lab.example"),
+        stream=output,
+    )
+
+    assert code == SERVER_CLI_EXIT_FAILED
+    assert refusal in json.loads(output.getvalue().splitlines()[-1])["step"]["message"]
+
+
 def test_renderer_selection_never_changes_the_command_handler_call() -> None:
     calls: list[tuple[ServerCommandRequest, CallerIdentity]] = []
     identity = CallerIdentity(uid=501, username="rcp", host="lab.example")

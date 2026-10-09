@@ -408,10 +408,9 @@ class GitCredentialManager:
             "git@github.com",
         )
         if machine.location == "local":
-            return ("sudo", "-n", "-u", self.layout.service_account, "-H", *inner)
+            return ("sudo", "-u", self.layout.service_account, "-H", *inner)
         return (
             "sudo",
-            "-n",
             "-u",
             self.layout.service_account,
             "-H",
@@ -922,8 +921,8 @@ def deploy_key_operator_step(
 ) -> ServerStep:
     _require_resume_request(resume_argv, request_id)
     instruction = (
-        f"Open {material.repository.settings_url} and add a deploy key titled "
-        f"{material.label} with the key below."
+        "Open the repository's deploy keys and choose Add deploy key: "
+        f"{material.repository.settings_url} Paste the title and key shown below."
     )
     grant = ExternalAction(
         title="Add the key to GitHub",
@@ -955,8 +954,8 @@ def deploy_key_operator_step(
         ),
         actions=(grant, *trust),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
-            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
+            NonsecretField(name="title", value=material.label, role="input"),
+            NonsecretField(name="key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
@@ -980,9 +979,9 @@ def _github_host_trust_actions(
         ExternalAction(
             title="Know the host key before you are asked to accept it",
             instruction=(
-                f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
-                "key; accept it only if the offered fingerprint is listed there. A "
-                "successful no-shell authentication may then exit with status 1."
+                f"GitHub publishes its host key fingerprints here: {_GITHUB_FINGERPRINTS_URL} "
+                "The next command shows one and asks to accept it; accept only if it is "
+                "listed there. It may then end with exit status 1, which is expected."
             ),
         ),
         CommandAction(
@@ -1039,8 +1038,8 @@ def restore_deploy_key_operator_step(
             *_github_host_trust_actions(manager, machine, material),
         ),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
-            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
+            NonsecretField(name="title", value=material.label, role="input"),
+            NonsecretField(name="key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
@@ -1082,8 +1081,8 @@ def empty_repository_operator_step(
         actions=(
             ExternalAction(
                 instruction=(
-                    f"Push the intended codebase to {repository_url} with its first real commit. "
-                    "RCP will not create a repository or invent an initialization commit."
+                    "Push the code you want to start from as this repository's first commit: "
+                    f"{repository_url} RCP does not create a repository or an initial commit."
                 )
             ),
         ),
