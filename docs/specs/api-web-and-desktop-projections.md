@@ -1861,12 +1861,13 @@ limit. One stream records back-to-back pieces, each one upload: the first ends
 at the first 0.4 s pause after 5 s, so a failing service shows within seconds;
 later pieces end at the first pause after 40 s, and every piece ends by 55 s.
 Pieces transcribe strictly in order and append to the dictation span while the
-composer shows the elapsed time and whether a piece is transcribing. When
-recording starts the client also lists the connection's models; a 401 or 403
-returns `service_access_denied` (502, with the provider's sanitized message)
-and stops dictation at once, keeping what was recorded for Retry, while any
-other listing failure is ignored. A piece that reaches 55 s ends even when the
-next one cannot start.
+composer shows the elapsed time and whether a piece is transcribing. While the
+microphone opens, the client also lists the connection's models and waits for
+the answer before recording, so the check never holds a transcription slot an
+upload needs; a 401 or 403 returns `service_access_denied` (502, with the
+provider's sanitized message) and dictation fails before anything is recorded,
+while any other listing failure is ignored. A piece that reaches 55 s ends even
+when the next one cannot start.
 Transcription failures carry `service_access_denied` (401 or 403),
 `transcription_rejected` (another 4xx), or `transcription_upstream_failed`
 (5xx, redirect, or transport); only the last, or a lost connection, is retried
@@ -1878,8 +1879,8 @@ sending, or leaving the chat detaches dictation, every piece still to come.
 **Retry** (or **Insert**, when every kept piece is already text) continues where
 dictation stopped if the draft is unchanged, else at the cursor, and transcribes
 with the current dictation choice. Starting a dictation or sending asks before
-kept speech is discarded. A page hidden while recording (a phone locking or
-switching apps) stops like Stop and says why. macOS dictation stops at 55 s: a
+kept speech is discarded. A page hidden while recording or while dictation
+starts (a phone locking or switching apps) stops like Stop and says why. macOS dictation stops at 55 s: a
 ring on the microphone drains over that time and turns amber, with the seconds
 shown, for the last 10. Native
 dictation reports `preparing` while macOS downloads the on-device model and an

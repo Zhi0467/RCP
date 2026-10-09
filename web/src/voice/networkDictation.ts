@@ -118,13 +118,6 @@ export class NetworkDictationSession {
     this.finish();
   }
 
-  /** Stop with a known failure; every piece not yet in the draft is kept with it. */
-  fail(error: unknown): void {
-    this.failure ??= error;
-    this.kept ??= [];
-    this.finish();
-  }
-
   /** Drop everything, including results still in flight. */
   cancel(): void {
     this.cancelled = true;

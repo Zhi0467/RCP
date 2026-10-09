@@ -1063,8 +1063,25 @@ export function NodeChat({
     networkDictationRef.current = dictation;
     setDictationService(connection.label);
     microphoneRef.current = { sessionId, claim: claimMicrophone("network_dictation") };
+    // The key check runs beside the permission prompt and ends before recording,
+    // so it never takes a transcription slot an upload needs. A refused key would
+    // fail every upload; any other listing failure says nothing and is ignored.
+    const keyCheck = loadConnectionModels(connection.id).then(
+      () => null,
+      (error: unknown) => (serviceFailureCode(error) === "service_access_denied" ? error : null),
+    );
     // A Stop or typing while permission is pending releases the claim, and this throws.
     const stream = await microphoneRef.current.claim.open();
+    const refusal = await keyCheck;
+    if (refusal) throw refusal;
+    if (networkDictationRef.current !== dictation) return;
+    // Leaving the screen while startup waited fired no Stop, since nothing was
+    // recording yet; stop here rather than record in the background.
+    if (document.visibilityState === "hidden") {
+      stopDictation();
+      setDictationNote("Recording ended when the app went to the background.");
+      return;
+    }
     const meter = createQuietMeter(stream);
     const session = new NetworkDictationSession({
       mimeType,
@@ -1102,14 +1119,6 @@ export function NodeChat({
       const now = Date.now();
       session.tick(now, meter.quietMs(now));
     }, 100);
-    // A refused key fails every upload, so stop now rather than after the member speaks.
-    // Any other listing failure says nothing about transcription and is ignored.
-    loadConnectionModels(connection.id).catch((error) => {
-      if (serviceFailureCode(error) !== "service_access_denied") return;
-      if (networkDictationRef.current !== dictation) return;
-      // Speech recorded so far is kept with the refusal, for a Retry elsewhere.
-      session.fail(error);
-    });
   };
 
   /** Bring kept speech into the draft, transcribing kept audio with the current choice. */

@@ -226,14 +226,6 @@ test("a first piece whose rollover fails still ends at the next pause", async ()
   assert.deepEqual(events.at(-1), ["settled"]);
 });
 
-test("a refusal found by the key check keeps what was recorded", async () => {
-  const { dictation, events } = session(label);
-  dictation.start(0);
-  dictation.fail(new Error("denied"));
-  await settle();
-  assert.deepEqual(events, [["stopped"], ["kept", ["audio"], "denied"]]);
-});
-
 test("a piece at the cap ends even when the next one cannot start", async () => {
   const { dictation, made, events } = session(label);
   dictation.start(0);
