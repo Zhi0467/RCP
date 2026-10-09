@@ -1856,17 +1856,30 @@ loopback server another site's `audio/*` request needs a CORS preflight, which
 the server refuses, and a no-cors request loses its type and gets 415.
 
 The client records with the first accepted format `MediaRecorder` supports and
-pins the connection id when recording starts. Each upload is one segment of at
-most 55 seconds: recording rolls into the next segment on the same stream, and
-segments transcribe strictly in order, each appended to the dictation span;
-typing drops late results. When recording starts, the client also lists the
-connection's models; a 401 or 403 there returns `service_access_denied` (502,
-with the provider's sanitized message) and stops dictation at once, while any
-other listing failure is ignored. A failed segment stops recording and keeps it
-and every later segment in memory, never on disk; **Retry** transcribes them in
-order with the current dictation choice at the cursor, and starting a new
-dictation or sending discards them. macOS dictation still stops at 55 seconds,
-counting down its last 10. Native
+pins the connection id when recording starts. Network dictation has no length
+limit. One stream records back-to-back pieces, each one upload: the first ends
+at the first 0.4 s pause after 5 s, so a failing service shows within seconds;
+later pieces end at the first pause after 40 s, and every piece ends by 55 s.
+Pieces transcribe strictly in order and append to the dictation span while the
+composer shows the elapsed time and whether a piece is transcribing. When
+recording starts the client also lists the connection's models; a 401 or 403
+returns `service_access_denied` (502, with the provider's sanitized message)
+and stops dictation at once, while any other listing failure is ignored.
+Transcription failures carry `service_access_denied` (401 or 403),
+`transcription_rejected` (another 4xx), or `transcription_upstream_failed`
+(5xx, redirect, or transport); only the last, or a lost connection, is retried
+once after 2 s. A second failure stops recording.
+
+Speech that cannot reach the draft is kept in memory per chat while the app
+runs, never on disk: the failed piece and every later one, or, when typing,
+sending, or leaving the chat detaches dictation, every piece still to come.
+**Retry** (or **Insert**, when every kept piece is already text) continues where
+dictation stopped if the draft is unchanged, else at the cursor, and transcribes
+with the current dictation choice. Starting a dictation or sending asks before
+kept speech is discarded. A page hidden while recording (a phone locking or
+switching apps) stops like Stop and says why. macOS dictation stops at 55 s: a
+ring on the microphone drains over that time and turns amber, with the seconds
+shown, for the last 10. Native
 dictation reports `preparing` while macOS downloads the on-device model and an
 `engine` (`speech_analyzer` or `apple_server`) on `recording`; every result
 carries the whole session text. `desktop_stop_dictation` takes `finish`: Stop

@@ -32,6 +32,8 @@ const SERVICE_FAILURES: Record<string, string> = {
   audio_type_unsupported: "The service does not accept this recording's format.",
   transcription_busy: "Another transcription is still running; try again in a moment.",
   transcription_upstream_failed: "The transcription service failed.",
+  transcription_rejected: "The transcription service refused the recording.",
+  service_access_denied: "The service refused this connection's key.",
   address_not_allowed: "Use an https address, or http only on the RCP server itself.",
   model_list_failed: "The service's model list could not be loaded.",
 };

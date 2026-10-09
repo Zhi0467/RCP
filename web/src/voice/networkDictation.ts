@@ -1,9 +1,11 @@
 /**
- * One network dictation session. It records back-to-back segments on one
- * microphone stream, so no upload outgrows the service's limits, and
- * transcribes them strictly in order. After a failure it keeps every
- * untranscribed segment in memory for a retry; nothing is ever written to disk.
+ * Network dictation with no length limit. One microphone stream records
+ * back-to-back pieces, each small enough for one upload, cut at a pause.
+ * Pieces transcribe strictly in order. Speech that cannot reach the draft (a
+ * failure, typing, leaving the chat) is kept in memory per chat, never on disk.
  */
+
+import { useSyncExternalStore } from "react";
 
 /** The slice of `MediaRecorder` a session drives; tests pass a fake. */
 export interface DictationRecorder {
@@ -15,26 +17,64 @@ export interface DictationRecorder {
   onerror: ((event: ErrorEvent) => void) | null;
 }
 
+// The first piece is short so a failing service shows within seconds; later
+// pieces end at the first pause past 40 s, and never run past one upload.
+export const FIRST_PIECE_MIN_MS = 5_000;
+export const PIECE_MIN_MS = 40_000;
+export const PIECE_MAX_MS = 55_000;
+export const PAUSE_MS = 400;
+export const TRANSIENT_RETRY_MS = 2_000;
+
+export function shouldStartNextPiece(pieceMs: number, quietMs: number, first: boolean): boolean {
+  if (pieceMs >= PIECE_MAX_MS) return true;
+  return pieceMs >= (first ? FIRST_PIECE_MIN_MS : PIECE_MIN_MS) && quietMs >= PAUSE_MS;
+}
+
+/** One kept piece: text that came back, or audio still to transcribe. */
+export type KeptPiece = { text: string } | { audio: Blob };
+
+export interface KeptSpeech {
+  pieces: KeptPiece[];
+  mimeType: string;
+  /** Why the speech is kept: a failure, or null when typing or leaving kept it. */
+  error: unknown;
+  /** The draft and offset to continue at, while the draft is unchanged. */
+  resume: { draft: string; at: number } | null;
+}
+
+export function keptSpeechNeedsService(kept: KeptSpeech): boolean {
+  return kept.pieces.some((piece) => "audio" in piece);
+}
+
 export interface NetworkDictationHooks {
   mimeType: string;
   createRecorder: () => DictationRecorder;
   transcribe: (audio: Blob) => Promise<string>;
-  /** One segment's text, in recording order. */
+  /** A failure one retry may fix: a server error, timeout, or dropped connection. */
+  isTransient: (error: unknown) => boolean;
+  wait?: (ms: number) => Promise<void>;
+  /** One piece's text, in recording order, while the session writes the draft. */
   onText: (text: string) => void;
+  /** How many pieces are uploading or waiting to. */
+  onBusy: (pieces: number) => void;
   /** The last recorder stopped; the microphone may be released. */
   onRecordingStopped: () => void;
-  /** Every segment was transcribed after `finish()`. */
+  /** Every piece reached the draft. */
   onSettled: () => void;
-  /** A segment failed; `pending` holds it and every later segment, in order. */
-  onFailure: (error: unknown, pending: Blob[]) => void;
+  /** Some speech could not reach the draft; `error` is null when it was detached. */
+  onKept: (pieces: KeptPiece[], error: unknown) => void;
 }
 
 export class NetworkDictationSession {
-  private recorder: DictationRecorder | null = null;
-  private queue: Promise<void> = Promise.resolve();
-  private failure: { error: unknown; pending: Blob[] } | null = null;
-  private cancelled = false;
   private readonly hooks: NetworkDictationHooks;
+  private recorder: DictationRecorder | null = null;
+  private pieceStartedAt = 0;
+  private firstPiece = true;
+  private queue: Promise<void> = Promise.resolve();
+  private busy = 0;
+  private failure: unknown = null;
+  private kept: KeptPiece[] | null = null;
+  private cancelled = false;
 
   constructor(hooks: NetworkDictationHooks) {
     this.hooks = hooks;
@@ -44,35 +84,45 @@ export class NetworkDictationSession {
     return this.recorder?.state === "recording";
   }
 
-  start(): void {
-    this.record();
+  start(now: number): void {
+    this.record(now);
   }
 
-  /** Close the current segment and keep recording into the next one. */
-  rollover(): void {
-    if (this.recording) this.record();
+  /** Called on a short interval with how long the microphone has been quiet. */
+  tick(now: number, quietMs: number): void {
+    if (!this.recording) return;
+    if (shouldStartNextPiece(now - this.pieceStartedAt, quietMs, this.firstPiece)) {
+      this.firstPiece = false;
+      this.record(now);
+    }
   }
 
-  /** Stop recording; the remaining segments still transcribe. */
+  /** Stop recording; the remaining pieces still reach the draft. */
   finish(): void {
     if (this.recording) this.recorder?.stop();
+  }
+
+  /** Stop recording; every result from now on is kept instead of written. */
+  detach(): void {
+    this.kept ??= [];
+    this.finish();
   }
 
   /** Drop everything, including results still in flight. */
   cancel(): void {
     this.cancelled = true;
-    if (this.recording) this.recorder?.stop();
+    this.finish();
   }
 
-  private record(): void {
+  private record(now: number): void {
     const previous = this.recorder;
     const recorder = this.hooks.createRecorder();
     const chunks: Blob[] = [];
     recorder.ondataavailable = (event) => {
       if (event.data.size) chunks.push(event.data);
     };
+    // A lost microphone ends recording like Stop: what was heard still counts.
     recorder.onerror = () => {
-      this.failure ??= { error: new Error("Recording stopped unexpectedly."), pending: [] };
       if (recorder.state === "recording") recorder.stop();
     };
     recorder.onstop = () => {
@@ -82,55 +132,138 @@ export class NetworkDictationSession {
       this.hooks.onRecordingStopped();
       void this.queue.then(() => {
         if (this.cancelled) return;
-        if (this.failure) this.hooks.onFailure(this.failure.error, this.failure.pending);
+        if (this.kept?.length) this.hooks.onKept(this.kept, this.failure);
         else this.hooks.onSettled();
       });
     };
-    // The next segment starts before the last one stops, so no speech falls between.
+    // The next piece starts before the last one stops, so no speech falls between.
     this.recorder = recorder;
+    this.pieceStartedAt = now;
     recorder.start();
     if (previous?.state === "recording") previous.stop();
   }
 
   private enqueue(audio: Blob): void {
     if (!audio.size) return;
+    this.setBusy(1);
     this.queue = this.queue.then(async () => {
-      if (this.cancelled) return;
-      if (this.failure) {
-        this.failure.pending.push(audio);
-        return;
-      }
       try {
-        const text = await this.hooks.transcribe(audio);
-        if (!this.cancelled) this.hooks.onText(text);
-      } catch (error) {
-        this.failure = { error, pending: [audio] };
-        // Later speech would fail the same way; stop and keep it for a retry.
-        this.finish();
+        if (this.cancelled) return;
+        if (this.failure !== null) {
+          this.kept?.push({ audio });
+          return;
+        }
+        try {
+          const text = await this.transcribe(audio);
+          if (this.cancelled) return;
+          if (this.kept) this.kept.push({ text });
+          else this.hooks.onText(text);
+        } catch (error) {
+          this.failure = error;
+          this.kept ??= [];
+          this.kept.push({ audio });
+          // Later speech would fail the same way; stop and keep it.
+          this.finish();
+        }
+      } finally {
+        this.setBusy(-1);
       }
     });
   }
-}
 
-/** Transcribe kept segments in order; returns the unfinished tail on failure. */
-export async function transcribeInOrder(
-  segments: Blob[],
-  transcribe: (audio: Blob) => Promise<string>,
-  onText: (text: string) => void,
-): Promise<{ error: unknown; pending: Blob[] } | null> {
-  for (let index = 0; index < segments.length; index += 1) {
+  private async transcribe(audio: Blob): Promise<string> {
     try {
-      onText(await transcribe(segments[index]));
+      return await this.hooks.transcribe(audio);
     } catch (error) {
-      return { error, pending: segments.slice(index) };
+      if (!this.hooks.isTransient(error)) throw error;
+      const wait =
+        this.hooks.wait ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+      await wait(TRANSIENT_RETRY_MS);
+      return this.hooks.transcribe(audio);
     }
   }
-  return null;
+
+  private setBusy(delta: number): void {
+    this.busy += delta;
+    this.hooks.onBusy(this.busy);
+  }
 }
 
-/** Join a segment's text to what dictation already wrote, with one space between. */
+/** Kept pieces as text, transcribing audio in order; the unfinished tail on failure. */
+export async function resolveKeptPieces(
+  pieces: KeptPiece[],
+  transcribe: (audio: Blob) => Promise<string>,
+): Promise<{ text: string; failure: { error: unknown; pending: KeptPiece[] } | null }> {
+  let text = "";
+  for (let index = 0; index < pieces.length; index += 1) {
+    const piece = pieces[index];
+    try {
+      const next = "text" in piece ? piece.text : await transcribe(piece.audio);
+      text += joinDictatedText(text, next);
+    } catch (error) {
+      return { text, failure: { error, pending: pieces.slice(index) } };
+    }
+  }
+  return { text, failure: null };
+}
+
+/** Join a piece's text to what dictation already wrote, with one space between. */
 export function joinDictatedText(before: string, text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
   return before && !/\s$/.test(before) ? ` ${trimmed}` : trimmed;
+}
+
+/** Quiet time from the microphone level; zero when the browser cannot measure it. */
+export function createQuietMeter(stream: MediaStream): {
+  quietMs: (now: number) => number;
+  close: () => void;
+} {
+  if (typeof AudioContext === "undefined") return { quietMs: () => 0, close: () => {} };
+  const context = new AudioContext();
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 1024;
+  context.createMediaStreamSource(stream).connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+  let floor = Infinity;
+  let quietSince: number | null = null;
+  return {
+    quietMs(now) {
+      analyser.getFloatTimeDomainData(samples);
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      const level = Math.sqrt(sum / samples.length);
+      // The room's noise floor rises slowly and falls at once, so speech stays above it.
+      floor = Math.min(floor * 1.002 + 1e-5, level);
+      if (level < Math.max(0.006, floor * 2)) quietSince ??= now;
+      else quietSince = null;
+      return quietSince === null ? 0 : now - quietSince;
+    },
+    close() {
+      void context.close();
+    },
+  };
+}
+
+// Kept speech belongs to its chat while the app runs, never to disk.
+const keptByChat = new Map<string, KeptSpeech>();
+const keptListeners = new Set<() => void>();
+export function setKeptSpeech(chatKey: string, kept: KeptSpeech | null): void {
+  if (kept) keptByChat.set(chatKey, kept);
+  else keptByChat.delete(chatKey);
+  keptListeners.forEach((listener) => listener());
+}
+export function keptSpeech(chatKey: string): KeptSpeech | null {
+  return keptByChat.get(chatKey) ?? null;
+}
+export function useKeptSpeech(chatKey: string): KeptSpeech | null {
+  return useSyncExternalStore(
+    (listener) => {
+      keptListeners.add(listener);
+      return () => {
+        keptListeners.delete(listener);
+      };
+    },
+    () => keptSpeech(chatKey),
+  );
 }

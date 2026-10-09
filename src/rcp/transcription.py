@@ -142,9 +142,15 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
     try:
         status, data = await service_request("POST", url, headers=headers, **kwargs)
         if not 200 <= status < 300:
-            raise ConnectionError(
-                "transcription_upstream_failed", 502, upstream_message(status, data, key)
+            # Only a server-side failure is worth one automatic retry by the client.
+            code = (
+                "service_access_denied"
+                if status in (401, 403)
+                else "transcription_rejected"
+                if 400 <= status < 500
+                else "transcription_upstream_failed"
             )
+            raise ConnectionError(code, 502, upstream_message(status, data, key))
         body = json.loads(data)
         if not isinstance(body, dict):
             raise ValueError("Invalid service response.")

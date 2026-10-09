@@ -2,18 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  FIRST_PIECE_MIN_MS,
   NetworkDictationSession,
+  PAUSE_MS,
+  PIECE_MAX_MS,
+  PIECE_MIN_MS,
   joinDictatedText,
-  transcribeInOrder,
+  resolveKeptPieces,
+  shouldStartNextPiece,
 } from "../src/voice/networkDictation.ts";
 
-/** A recorder whose stop delivers its one chunk, like MediaRecorder, a tick later. */
+/** Recorders whose stop delivers one chunk named for the piece, a tick later. */
 function fakeRecorders() {
   const made = [];
   const createRecorder = () => {
     const recorder = {
       state: "inactive",
-      label: `segment-${made.length + 1}`,
+      label: `piece-${made.length + 1}`,
       ondataavailable: null,
       onstop: null,
       onerror: null,
@@ -34,86 +39,123 @@ function fakeRecorders() {
   return { made, createRecorder };
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+const settle = async () => {
+  for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setTimeout(resolve));
+};
 
-function session(transcribe) {
+function session(transcribe, isTransient = () => false) {
   const { made, createRecorder } = fakeRecorders();
   const events = [];
-  const hooks = {
+  const dictation = new NetworkDictationSession({
     mimeType: "audio/webm",
     createRecorder,
     transcribe,
+    isTransient,
+    wait: async () => {},
     onText: (text) => events.push(["text", text]),
+    onBusy: () => {},
     onRecordingStopped: () => events.push(["stopped"]),
     onSettled: () => events.push(["settled"]),
-    onFailure: (error, pending) => events.push(["failed", error.message, pending.length]),
-  };
-  return { dictation: new NetworkDictationSession(hooks), made, events };
+    onKept: (pieces, error) =>
+      events.push(["kept", pieces.map((piece) => piece.text ?? "audio"), error?.message ?? null]),
+  });
+  return { dictation, made, events };
 }
 
-test("rolled-over segments transcribe in recording order and settle after finish", async () => {
+const label = (audio) => audio.text();
+
+test("pieces end at a pause after their minimum, or at the upload cap", () => {
+  assert.equal(shouldStartNextPiece(FIRST_PIECE_MIN_MS - 1, PAUSE_MS, true), false);
+  assert.equal(shouldStartNextPiece(FIRST_PIECE_MIN_MS, PAUSE_MS, true), true);
+  assert.equal(shouldStartNextPiece(FIRST_PIECE_MIN_MS, PAUSE_MS, false), false);
+  assert.equal(shouldStartNextPiece(PIECE_MIN_MS, PAUSE_MS - 1, false), false);
+  assert.equal(shouldStartNextPiece(PIECE_MIN_MS, PAUSE_MS, false), true);
+  assert.equal(shouldStartNextPiece(PIECE_MAX_MS, 0, false), true);
+});
+
+test("pieces reach the draft in recording order, then settle", async () => {
   let release;
   const slowFirst = new Promise((resolve) => (release = resolve));
   const { dictation, made, events } = session(async (audio) => {
-    const label = await audio.text();
-    if (label === "segment-1") await slowFirst;
-    return label;
+    const text = await label(audio);
+    if (text === "piece-1") await slowFirst;
+    return text;
   });
-  dictation.start();
-  dictation.rollover();
+  dictation.start(0);
+  dictation.tick(FIRST_PIECE_MIN_MS, PAUSE_MS);
   dictation.finish();
   await settle();
   assert.equal(made.length, 2);
-  assert.deepEqual(events, [["stopped"]]);
   release();
   await settle();
+  assert.deepEqual(events, [["stopped"], ["text", "piece-1"], ["text", "piece-2"], ["settled"]]);
+});
+
+test("a transient failure retries once; a second failure keeps that piece and later ones", async () => {
+  const attempts = new Map();
+  const { dictation, events } = session(
+    async (audio) => {
+      const text = await label(audio);
+      attempts.set(text, (attempts.get(text) ?? 0) + 1);
+      if (text === "piece-2" || (text === "piece-1" && attempts.get(text) === 1))
+        throw new Error("upstream");
+      return text;
+    },
+    () => true,
+  );
+  dictation.start(0);
+  dictation.tick(FIRST_PIECE_MIN_MS, PAUSE_MS);
+  dictation.tick(FIRST_PIECE_MIN_MS + PIECE_MAX_MS, 0);
+  await settle();
+  assert.deepEqual(Object.fromEntries(attempts), { "piece-1": 2, "piece-2": 2 });
   assert.deepEqual(events, [
+    ["text", "piece-1"],
     ["stopped"],
-    ["text", "segment-1"],
-    ["text", "segment-2"],
-    ["settled"],
+    ["kept", ["audio", "audio"], "upstream"],
   ]);
 });
 
-test("a failed segment stops recording and keeps it and every later segment", async () => {
-  const { dictation, made, events } = session(async (audio) => {
-    const label = await audio.text();
-    if (label === "segment-1") throw new Error("denied");
-    return label;
+test("a refusal is not retried", async () => {
+  let calls = 0;
+  const { dictation, events } = session(async () => {
+    calls += 1;
+    throw new Error("denied");
   });
-  dictation.start();
-  dictation.rollover();
+  dictation.start(0);
+  dictation.finish();
   await settle();
+  assert.equal(calls, 1);
+  assert.deepEqual(events.at(-1), ["kept", ["audio"], "denied"]);
+});
+
+test("detaching keeps later text instead of writing it", async () => {
+  const { dictation, events } = session(label);
+  dictation.start(0);
+  dictation.detach();
   await settle();
-  assert.equal(made[1].state, "inactive");
-  assert.deepEqual(events, [["stopped"], ["failed", "denied", 2]]);
+  assert.deepEqual(events, [["stopped"], ["kept", ["piece-1"], null]]);
 });
 
 test("cancel drops results still in flight", async () => {
-  const { dictation, events } = session(async (audio) => audio.text());
-  dictation.start();
+  const { dictation, events } = session(label);
+  dictation.start(0);
   dictation.cancel();
   await settle();
   assert.deepEqual(events, [["stopped"]]);
 });
 
-test("a retry returns the unfinished tail from the failed segment on", async () => {
-  const texts = [];
-  const segments = ["a", "b", "c"].map((part) => new Blob([part]));
-  const failure = await transcribeInOrder(
-    segments,
-    async (audio) => {
-      const text = await audio.text();
-      if (text === "b") throw new Error("busy");
-      return text;
-    },
-    (text) => texts.push(text),
-  );
-  assert.deepEqual(texts, ["a"]);
-  assert.deepEqual(failure.pending, segments.slice(1));
+test("kept pieces resolve in order and return the tail after a failure", async () => {
+  const pieces = [{ text: "one" }, { audio: new Blob(["two"]) }, { audio: new Blob(["bad"]) }];
+  const result = await resolveKeptPieces(pieces, async (audio) => {
+    const text = await audio.text();
+    if (text === "bad") throw new Error("busy");
+    return text;
+  });
+  assert.equal(result.text, "one two");
+  assert.deepEqual(result.failure.pending, pieces.slice(2));
 });
 
-test("segment text joins with one space and drops blank results", () => {
+test("piece text joins with one space and drops blank results", () => {
   assert.equal(joinDictatedText("", " first "), "first");
   assert.equal(joinDictatedText("first", "second"), " second");
   assert.equal(joinDictatedText("first ", "second"), "second");
