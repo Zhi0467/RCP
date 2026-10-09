@@ -524,6 +524,12 @@
   grid-template-columns: 1fr 1fr;
   height: 35px;
 }
+.repository-editor > p {
+  color: var(--muted);
+  font-size: var(--type-3xs);
+  margin: 0;
+  padding: 0 14px 12px;
+}
 .repository-editor > footer {
   align-items: center;
   background: var(--surface);

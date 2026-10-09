@@ -1304,8 +1304,9 @@ export function ProvisioningStatus({
         request.kind !== "connect_repository" &&
         request.kind !== "incoming_transfer" && (
           <p>
-            Empty repositories start on main with an empty “Start RCP project” commit by RCP. Setup
-            pushes it to GitHub after you add the deploy key.
+            Empty repositories start on main with an empty “Start RCP project” commit by RCP.
+            {request.repositories.some((repository) => repository.source_kind !== "server_only") &&
+              " Setup pushes it to GitHub after you add the deploy key."}
           </p>
         )}
       {request.can_run_setup && (
