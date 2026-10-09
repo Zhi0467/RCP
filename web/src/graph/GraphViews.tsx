@@ -1335,12 +1335,8 @@ export function ExecutionView({
   );
   const inProgress = visibleEpisodes.filter((episode) => episodeRunSection(episode) === "running");
   const completed = visibleEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
-  // Expand one card by default: the selection when there is one, else the first
-  // row a human is expected to read, which is the first section carrying work.
-  const expandedEpisodeId =
-    selectedAutoResearchEpisodeId ??
-    (needsAction.length > 0 ? needsAction : inProgress)[0]?.episode_id ??
-    null;
+  // Cards start folded; only the episode a route names opens.
+  const expandedEpisodeId = selectedAutoResearchEpisodeId;
   const completedGroups = [
     {
       mode: "experiment_loop" as const,

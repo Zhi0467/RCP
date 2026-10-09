@@ -1,5 +1,4 @@
 {
-  "api/artifacts.py": 1,
   "api/digest.py": 1,
   "api/episode_timeline.py": 3,
   "api/episode_timeline_models.py": 1,

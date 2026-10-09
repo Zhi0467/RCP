@@ -90,11 +90,12 @@ class MasterRef:
 def changed_since_master(master: MasterRef, current: dict[str, object]) -> dict[str, object] | None:
     """The current values a continuation must send: those that differ from its master.
 
-    A master opened now already holds the current values. A master whose values were not
-    recorded is compared against nothing, so every current value is sent.
+    A newly bootstrapped master holds current values. Reopening a retained master after
+    replacement or revocation still needs its overlay. A master without recorded values
+    is compared against nothing, so every current value is sent.
     """
 
-    if master.bootstrap:
+    if master.bootstrap and not master.replaces and not master.after_report:
         return None
     if master.values is None:
         return dict(current) or None

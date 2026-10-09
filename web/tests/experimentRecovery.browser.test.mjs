@@ -334,6 +334,11 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       });
       await mockEpisodeArtifacts(page);
       await page.goto(`${origin}/#/projects/demo?view=runs`);
+      // Runs cards start folded; recovery actions live in the opened card.
+      await page
+        .getByRole("button", { name: /^Expand Experiment loop episode/ })
+        .first()
+        .click();
       const recovery = page.locator(".experiment-run-actions").getByRole("button", {
         name: action === "retry" ? "Retry Claude" : "Resume Claude",
         exact: true,

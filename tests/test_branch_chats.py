@@ -148,12 +148,15 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     ]
     assert client.get(transcript_url).status_code == 404
     assert client.get(f"/api/projects/{project_id}/chats").json()["items"] == []
-    assert [
-        item["chat_id"]
-        for item in client.get(
-            f"/api/projects/{project_id}/chats", params={"branch_id": branch_id}
-        ).json()["items"]
-    ] == [chat_id]
+    # The branch also lists its episode's own conversation; every row stays on the branch.
+    branch_items = client.get(
+        f"/api/projects/{project_id}/chats", params={"branch_id": branch_id}
+    ).json()["items"]
+    assert chat_id in {item["chat_id"] for item in branch_items}
+    assert all(
+        item["graph_target"] == episode.graph_target.model_dump(mode="json")
+        for item in branch_items
+    )
     branch_tasks = client.get(
         f"/api/projects/{project_id}/tasks", params={"branch_id": branch_id}
     ).json()

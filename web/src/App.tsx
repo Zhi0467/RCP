@@ -60,6 +60,7 @@ import {
 import {
   chatIndicator,
   unreadChatIdsFromReads,
+  conversationHref,
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
@@ -874,8 +875,9 @@ export default function App() {
   );
   const {
     snapshot: chatStateSnapshot,
-    chatSummariesLoading,
     visibleChatSummaries,
+    inventoryChatSummaries,
+    inventoryLoaded,
     selectChat,
     selectCanonicalChat,
     selectListedConversation,
@@ -885,12 +887,10 @@ export default function App() {
     discardDraft,
     ensureConversation,
     refreshChatSummaries,
-    loadMoreChatSummaries,
     recordTaskUpdates,
     recordWatcherResults,
     markVisibleChatRead,
     refreshChatReads,
-    ensureListedChats,
     resetProjectChats,
     restoreProjectChats,
   } = useChatState({
@@ -904,15 +904,8 @@ export default function App() {
     visibleTranscriptIds: resolveVisibleChatTranscriptIds,
     reportError: reportErrorNotice,
   });
-  const {
-    floatingChat,
-    draftConversations,
-    selectedChatId,
-    chatReads,
-    chatSummaryTotal,
-    chatSummaryNextOffset,
-    chatTranscripts,
-  } = chatStateSnapshot;
+  const { floatingChat, draftConversations, selectedChatId, chatReads, chatTranscripts } =
+    chatStateSnapshot;
   const {
     runDialogOpen,
     autoResearchDialogOpen,
@@ -2225,16 +2218,32 @@ export default function App() {
       Object.fromEntries(Object.values(presentedGraph.nodes).map((node) => [node.id, node.title])),
     [presentedGraph.nodes],
   );
-  const conversations = useMemo(
+  // Agents spans the project; node actions and composers keep exact-target selection.
+  const inventoryConversations = useMemo(
     () =>
       groupChatConversations(
-        visibleChatSummaries,
-        tasks,
+        inventoryChatSummaries,
+        projectTasks,
         nodeTitles,
         project?.name ?? "Project",
         draftConversations,
+        graphTarget,
       ),
-    [draftConversations, nodeTitles, project?.name, tasks, visibleChatSummaries],
+    [
+      draftConversations,
+      graphTarget,
+      inventoryChatSummaries,
+      nodeTitles,
+      project?.name,
+      projectTasks,
+    ],
+  );
+  const conversations = useMemo(
+    () =>
+      inventoryConversations.filter((conversation) =>
+        sameGraphTarget(conversation.graphTarget, graphTarget),
+      ),
+    [graphTarget, inventoryConversations],
   );
   useEffect(() => {
     if (selectedExperimentChatId && floatingChat?.chatId === selectedExperimentChatId) {
@@ -2456,19 +2465,14 @@ export default function App() {
   // Only a listed conversation can be opened and so marked read; counting any
   // other chat would leave the badge stuck.
   const readUnreadChatIds = useMemo(
-    () => unreadChatIdsFromReads(tasks, chatReads),
-    [chatReads, tasks],
+    () => unreadChatIdsFromReads(projectTasks, chatReads),
+    [chatReads, projectTasks],
   );
-  // An unread chat past the loaded pages is fetched into the list; one whose
-  // transcript was never written cannot be, and is left out of the count.
-  useEffect(() => {
-    ensureListedChats([...readUnreadChatIds]);
-  }, [ensureListedChats, readUnreadChatIds]);
   const unreadChatIds = useMemo(() => {
-    const listed = new Set(conversations.map((conversation) => conversation.chatId));
+    const listed = new Set(inventoryConversations.map((conversation) => conversation.chatId));
     return new Set([...readUnreadChatIds].filter((chatId) => listed.has(chatId)));
-  }, [conversations, readUnreadChatIds]);
-  const chatsIndicator = chatIndicator(tasks, unreadChatIds);
+  }, [inventoryConversations, readUnreadChatIds]);
+  const chatsIndicator = chatIndicator(projectTasks, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -2494,6 +2498,7 @@ export default function App() {
   useEffect(() => {
     if (
       !requestedChat.chatId ||
+      !inventoryLoaded ||
       loading ||
       view !== "chats" ||
       !backendSessionReady ||
@@ -2510,6 +2515,18 @@ export default function App() {
       })
       .catch((error) => {
         if (cancelled) return;
+        if (error instanceof ApiError && error.status === 404) {
+          const summary = inventoryChatSummaries.find(
+            (item) =>
+              item.chat_id === requestedChat.chatId &&
+              sameGraphTarget(item.graph_target, graphTarget),
+          );
+          if (summary && summary.message_count === 0) {
+            selectChat(summary.chat_id);
+            clearNodeSelections();
+            return;
+          }
+        }
         const message = `Conversation could not be opened: ${String(error)}`;
         reportErrorNotice(message);
       })
@@ -2524,6 +2541,9 @@ export default function App() {
     };
   }, [
     requestedChat,
+    inventoryLoaded,
+    inventoryChatSummaries,
+    selectChat,
     loading,
     view,
     backendSessionReady,
@@ -2542,8 +2562,35 @@ export default function App() {
     }
   }, [closeAutoResearchDialog, closeRunDialog, mutationsDisabled]);
 
+  // A conversation a task names but the inventory lacks has unknown ownership,
+  // so its composer stays closed; fetch the inventory once to resolve it.
+  const unlistedChatIds = useMemo(() => {
+    if (!inventoryLoaded) return "";
+    const listed = new Set(inventoryChatSummaries.map((summary) => summary.chat_id));
+    const unlisted = new Set<string>();
+    for (const task of projectTasks) {
+      const chatId = task.request?.chat_id;
+      if (
+        (task.kind === "node_chat" || task.kind === "project_chat") &&
+        typeof chatId === "string" &&
+        !listed.has(chatId)
+      )
+        unlisted.add(chatId);
+    }
+    return [...unlisted].sort().join(",");
+  }, [inventoryChatSummaries, inventoryLoaded, projectTasks]);
   useEffect(() => {
-    if (recordTaskUpdates(tasks)) {
+    if (!unlistedChatIds || !projectId) return;
+    void refreshChatSummaries(projectId, apiBase).catch((error) => {
+      setNotice({
+        kind: "error",
+        text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
+  }, [apiBase, projectId, refreshChatSummaries, unlistedChatIds]);
+
+  useEffect(() => {
+    if (recordTaskUpdates(projectTasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
           setNotice({
@@ -2560,7 +2607,7 @@ export default function App() {
     projectId,
     recordTaskUpdates,
     refreshChatSummaries,
-    tasks,
+    projectTasks,
   ]);
 
   useEffect(() => {
@@ -3682,7 +3729,7 @@ export default function App() {
         ...projectConversationToolDefinitions(
           project,
           visibleChatSummaries,
-          chatSummaryTotal,
+          visibleChatSummaries.length,
           tasks,
           webMcpConversationSource,
           taskStarting,
@@ -3729,7 +3776,6 @@ export default function App() {
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
   }, [
     autoResearchRefusal,
-    chatSummaryTotal,
     createWebMcpConversation,
     episodeAction,
     episodes,
@@ -5061,12 +5107,11 @@ export default function App() {
           {view === "chats" && (
             <ChatsWorkspace
               project={project}
-              conversations={conversations}
+              conversations={inventoryConversations}
               selectedChatId={selectedChatId}
               board={agentsBoard}
               onBoardChange={setAgentsBoard}
               nodes={presentedGraph.nodes}
-              experimentEntries={experimentLoops}
               graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
               runScope={runScope}
@@ -5075,11 +5120,15 @@ export default function App() {
               graphChangesDisabled={mutationsDisabled}
               unreadChatIds={unreadChatIds}
               chatTranscripts={chatTranscripts}
-              hasMore={chatSummaryNextOffset < chatSummaryTotal}
-              loadingMore={chatSummariesLoading}
-              onSelect={selectListedConversation}
+              onSelect={(chatId) => {
+                const conversation = inventoryConversations.find((item) => item.chatId === chatId);
+                if (conversation && !sameGraphTarget(conversation.graphTarget, graphTarget)) {
+                  window.location.hash = conversationHref(project.id, conversation);
+                  return;
+                }
+                selectListedConversation(chatId);
+              }}
               onOpenNode={openNodeById}
-              onLoadMore={() => void loadMoreChatSummaries()}
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
@@ -5089,7 +5138,6 @@ export default function App() {
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
-              onEnsureListed={ensureListedChats}
               onArchiveChange={() =>
                 void refreshChatReads().catch((error) =>
                   reportErrorNotice(
