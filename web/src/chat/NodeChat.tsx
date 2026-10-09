@@ -1422,7 +1422,7 @@ export function NodeChat({
     inlineSelectionClearRef.current?.();
     inlineSelectionClearRef.current = event.clear;
     annotationOriginRef.current = null;
-    setAnnotationComment("");
+    setAnnotationComment(event.initialText ?? "");
     setSubmitError(null);
     setAnnotationComposer({
       step: "comment",
@@ -1438,7 +1438,7 @@ export function NodeChat({
           ...(event.version ? { base_version: event.version } : {}),
         },
         name: artifact.name,
-        selection: { ...event.selection, comment: "" },
+        selection: event.selection ? { ...event.selection, comment: "" } : null,
       },
     });
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());

@@ -12,14 +12,14 @@ export interface StagedChatAnnotation {
    * artifact selection's description. */
   selectedText: string;
   comment: string;
-  /** Set when the comment is on an artifact selection, which the server stages. */
+  /** Set for an artifact comment, with a selection or the whole artifact. */
   artifact?: StagedArtifactTarget;
 }
 
 export interface StagedArtifactTarget {
   context: Omit<ArtifactContextRequest, "selections">;
   name: string;
-  selection: ArtifactSelection;
+  selection: ArtifactSelection | null;
 }
 
 export const MAX_CHAT_ANNOTATIONS = 50;
@@ -71,12 +71,17 @@ export function assembleChatTurn(
   annotations: ReadonlyArray<Pick<StagedChatAnnotation, "selectedText" | "comment" | "artifact">>,
 ): string {
   const parts = [message.trim()];
-  // Artifact comments travel as the turn's artifact selections; the server writes
-  // them into the turn in the one shape every artifact route uses.
+  // Selected regions travel as artifact selections; whole-artifact comments
+  // join the message, as they do in the viewer.
   for (const annotation of annotations) {
     const selectedText = annotation.selectedText.trim();
     const comment = annotation.comment.trim();
-    if (annotation.artifact || !selectedText || !comment) continue;
+    if (!comment) continue;
+    if (annotation.artifact) {
+      if (!annotation.artifact.selection) parts.push(comment);
+      continue;
+    }
+    if (!selectedText) continue;
     parts.push(`${selectedText}\ncomment: ${comment}`);
   }
   return parts.filter(Boolean).join("\n\n");
@@ -91,10 +96,12 @@ export function stagedArtifactContext(
   if (!first) return null;
   return {
     ...first.context,
-    selections: targeted.map((annotation) => ({
-      ...annotation.artifact!.selection,
-      comment: annotation.comment.trim(),
-    })),
+    selections: targeted
+      .filter((annotation) => annotation.artifact!.selection !== null)
+      .map((annotation) => ({
+        ...annotation.artifact!.selection!,
+        comment: annotation.comment.trim(),
+      })),
   };
 }
 
@@ -148,7 +155,9 @@ function isStagedArtifactTarget(value: unknown): boolean {
     typeof target.name === "string" &&
     typeof target.context?.operation_id === "string" &&
     typeof target.context.artifact_id === "string" &&
-    (target.selection?.kind === "text" || target.selection?.kind === "box")
+    (target.selection === null ||
+      target.selection?.kind === "text" ||
+      target.selection?.kind === "box")
   );
 }
 

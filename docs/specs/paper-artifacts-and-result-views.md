@@ -263,6 +263,14 @@ An HTML document that declares a doctype keeps it first, ahead of RCP's policy
 and bootstrap, so the page renders in the standards mode it was written for; a
 page without one keeps the mode its own browser would give it.
 
+Uncaught script errors and unhandled promise rejections show a bounded, plain-text
+notice under HTML frames, in both the reply caption and the viewer. The frame
+stays visible. The first error appears at once; later summaries update at most
+once per second. Only the current frame's private-channel summaries are accepted.
+A new version or reload clears the notice. Live data keeps refreshing, and Keep
+and Download remain available. Where Comment applies, **Ask to fix** opens its
+box with the error prefilled. The human sends the comment.
+
 ### Artifacts inside a reply
 
 A reply embeds an artifact its own turn wrote with Markdown image syntax and

@@ -13,7 +13,11 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.limits import ARTIFACT_DISPLAY_TITLE_MAX_CHARS
+from rcp.limits import (
+    ARTIFACT_DISPLAY_TITLE_MAX_CHARS,
+    ARTIFACT_ERROR_INTERVAL_MS,
+    ARTIFACT_ERROR_MAX_CHARS,
+)
 from rcp.regular_file_reader import _open_local_directory
 from rcp.regular_file_reader import read_local_regular_file as read_local_regular_file
 
@@ -338,6 +342,15 @@ class FrameAddon:
     wrapper_style: str = ""
 
 
+# Shared by the private-channel wrapper and both shell presentations.
+ARTIFACT_ERROR_VALIDATION_JS = """
+const validArtifactError=(value)=>value && typeof value==='object' &&
+  Object.keys(value).length===3 && value.kind==='rcp-artifact-error' &&
+  typeof value.message==='string' && value.message.length<=MAX_ERROR_CHARS &&
+  Number.isSafeInteger(value.count) && value.count>0;
+""".replace("MAX_ERROR_CHARS", str(ARTIFACT_ERROR_MAX_CHARS))
+
+
 def html_preview_document(
     data: bytes, *, frame_addon: FrameAddon | None = None, result_view_gestures: bool = False
 ) -> tuple[str, str]:
@@ -358,6 +371,42 @@ const listen=Function.prototype.call.bind(EventTarget.prototype.addEventListener
 const parentPost=window.parent.postMessage.bind(window.parent);
 const closest=Function.prototype.call.bind(Element.prototype.closest);
 const send=(value)=>portPost(privatePort,value);
+const ErrorType=Error, primitiveString=String;
+const slice=Function.prototype.call.bind(String.prototype.slice);
+const errorMessageGetter=Object.getOwnPropertyDescriptor(ErrorEvent.prototype,'message').get;
+const eventMessage=Function.prototype.call.bind(errorMessageGetter);
+const eventError=Function.prototype.call.bind(
+  Object.getOwnPropertyDescriptor(ErrorEvent.prototype,'error').get);
+const reasonGetter=Function.prototype.call.bind(
+  Object.getOwnPropertyDescriptor(PromiseRejectionEvent.prototype,'reason').get);
+const later=window.setTimeout.bind(window), now=Date.now.bind(Date);
+let errorCount=0, errorText='', lastErrorSent=-Infinity, errorTimer=null;
+const flushError=()=>{
+  errorTimer=null; lastErrorSent=now();
+  send({kind:'rcp-artifact-error',message:errorText,count:errorCount});
+};
+const recordError=(reason)=>{
+  let text='Unknown error';
+  try {
+    if(reason instanceof ErrorType) {
+      const message=reason.message;
+      if(typeof message==='string') text=message;
+    } else if(reason===null || (typeof reason!=='object' && typeof reason!=='function')) {
+      text=primitiveString(reason);
+    }
+  } catch {}
+  errorText=slice(text,0,MAX_ERROR_CHARS);
+  if(errorCount<9007199254740991) errorCount++;
+  if(errorTimer!==null) return;
+  const remaining=ERROR_INTERVAL-(now()-lastErrorSent);
+  if(remaining<=0) flushError();
+  else errorTimer=later(flushError,remaining);
+};
+listen(window,'error',(event)=>{
+  // Resource load events carry no script error message.
+  try { recordError(eventError(event) || eventMessage(event)); } catch {}
+},true);
+listen(window,'unhandledrejection',(event)=>recordError(reasonGetter(event)),true);
 listen(window,'click',(event)=>{
   if(!event.isTrusted || !(event.target instanceof Element)) return;
   const anchor=closest(event.target,'a[data-rcp-href]');
@@ -365,7 +414,9 @@ listen(window,'click',(event)=>{
   event.preventDefault(); event.stopImmediatePropagation();
   send({kind:'rcp-reference',url:anchor.getAttribute('data-rcp-href')});
 },true);
-"""
+""".replace("MAX_ERROR_CHARS", str(ARTIFACT_ERROR_MAX_CHARS)).replace(
+            "ERROR_INTERVAL", str(ARTIFACT_ERROR_INTERVAL_MS)
+        )
         + (frame_addon.frame_script if frame_addon else "")
         + """
 portStart(privatePort);
@@ -403,6 +454,16 @@ const URLConstructor=URL;
 let artifactPort=null;
 const channelListeners=[];
 const channelReady=[];
+"""
+        + ARTIFACT_ERROR_VALIDATION_JS
+        + """
+const errorChannel=new URLConstructor(window.location.href).searchParams.get('error_channel');
+if(window.parent!==window && errorChannel)
+  parentPost({kind:'rcp-artifact-error-clear',channel:errorChannel},'*');
+channelListeners.push((value)=>{
+  if(!validArtifactError(value) || window.parent===window || !errorChannel) return;
+  parentPost({...value,channel:errorChannel},'*');
+});
 """
         + (frame_addon.wrapper_script if frame_addon else "")
         + """

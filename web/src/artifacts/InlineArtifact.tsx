@@ -13,7 +13,8 @@ import {
 } from "./inlineArtifacts";
 
 export interface InlineArtifactSelectionEvent {
-  selection: InlineSelection;
+  selection: InlineSelection | null;
+  initialText?: string;
   description: string;
   /** Where the comment window anchors, in the chat window's coordinates. */
   anchor: { left: number; right: number; top: number };
@@ -66,6 +67,7 @@ export function InlineArtifact({
   const [near, setNear] = useState(false);
   const [state, setState] = useState<ArtifactViewerState | null>(null);
   const [error, setError] = useState("");
+  const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
   const [height, setHeight] = useState(INLINE_ARTIFACT_INITIAL_HEIGHT);
   const [commentMode, setCommentMode] = useState(false);
   // Bumped when a version moves without a turn settling: Undo in the viewer, or
@@ -126,6 +128,7 @@ export function InlineArtifact({
     if (shownVersion.current !== null && shownVersion.current !== currentVersion)
       onVersionChangeRef.current();
     shownVersion.current = currentVersion;
+    setPageError(null);
   }, [currentVersion]);
 
   // A live page saves its final snapshot without settling a turn or moving its
@@ -164,6 +167,10 @@ export function InlineArtifact({
       if (!value) return;
       if (value.kind === "size") {
         setHeight(value.height);
+        return;
+      }
+      if (value.kind === "error" || value.kind === "error-clear") {
+        setPageError(value.kind === "error" ? value : null);
         return;
       }
       if (!value.selection) {
@@ -285,6 +292,35 @@ export function InlineArtifact({
           </button>
         )}
         {download}
+        {pageError && (
+          <span
+            className="chat-inline-artifact-error chat-inline-artifact-page-error"
+            role="status"
+            data-error-count={pageError.count}
+          >
+            <span>This page hit an error: {pageError.message}</span>
+            {selectable && (
+              <button
+                type="button"
+                data-artifact-action="fix"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  onSelection({
+                    selection: null,
+                    description: artifact.name,
+                    initialText: `This page hit an error: ${pageError.message}`,
+                    anchor: { left: rect.left, right: rect.right, top: rect.top },
+                    freshSession: freshSessionRef.current,
+                    version: shownVersion.current,
+                    clear: () => {},
+                  });
+                }}
+              >
+                Ask to fix
+              </button>
+            )}
+          </span>
+        )}
         {actionError && (
           <strong className="chat-inline-artifact-error" role="alert">
             {actionError}
