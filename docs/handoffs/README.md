@@ -1,9 +1,9 @@
 # Active implementation handoffs
 
 - [Branch navigation and continuation](branch-navigation-and-continuation.md):
-  design only; unified graph refs with a branch picker, project reopen on
+  unified graph refs with a branch picker, project reopen on
   reverification, phone reload route, and human turns on ended Auto-research
-  children, and messaging an ended orchestrator; three product questions open.
+  children, and messaging an ended orchestrator; implementing, decisions settled.
 
 Unfinished agent-link work is tracked in issue #280.
 

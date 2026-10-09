@@ -1,7 +1,7 @@
 # Unified graph refs and branch continuation
 
-Status: design, not started. One PR. Nothing is implemented yet. A design
-review was folded in; three product questions remain open (see the end).
+Status: implementing in three slices on this PR. A design review was folded
+in, and the three product questions are answered (see the end).
 
 ## Problems
 
@@ -118,6 +118,13 @@ owns it:
   sender; its mode decides its authority, as on any chat. Its own watcher
   wakes, question follow-ups, and Resume, Retry, or Repair are human-owned
   and pass the same check.
+- **Chat master on an owner change.** A child's native session carries a
+  Work chat master rendered as an Auto-research child (with
+  `auto_research_child_boundary`), and the generic `chat_master_contract_key`
+  does not tell the two apart. The first human turn on an unlocked child
+  therefore replaces the master with an ordinary human chat master, and a
+  later episode turn on that session replaces it back, as an Experiment turn
+  already reopens its own master. The master's key includes its owner.
 - **Episode turns.** A child turn the orchestrator started keeps its existing
   owner. Its recovery goes through the episode route
   (`auto_research_child_work_for_operation`, child Experiment recovery behind
@@ -146,7 +153,8 @@ opening turn or cost a second paid wake. So this is one operation:
   sender-attributed mail addressed to its new root, and claims that mail
   together with the `reauthorized` notice before launch.
 - A retry with the same request id returns the same continuation and the
-  same message; a different message under that id is refused.
+  same message only when the message and N both match; a different message
+  or N under that id is refused, because N sets the authorized ceiling.
 - The message goes to the newest member of the chain. If that member is
   running, it is ordinary mail; if it has ended, it is continued.
 - Keep the existing authorizer check (`require_patch_capable_identity`) and
@@ -180,8 +188,11 @@ opening turn or cost a second paid wake. So this is one operation:
   is active; a child Experiment chat refused while that Experiment runs;
   watcher wake and Retry of an orchestrator-started child turn never admitted
   as human-owned.
+- Chat master test: child episode turn, then a human turn, then a later
+  episode turn on the same session each run under their own owner's master.
 - Ended-orchestrator message tests: one transaction claims the mail and the
-  notice; a lost response retried with the same id returns the same records;
+  notice; a lost response retried with the same id returns the same records,
+  and the same id with a different message or N is refused;
   two concurrent sends make one continuation; N = 1 works; each refusal
   reason surfaces.
 - Served-app drive on a throwaway server: branch picker switch from Agents
