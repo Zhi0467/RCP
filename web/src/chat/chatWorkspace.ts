@@ -31,6 +31,12 @@ export interface ChatConversation {
   graphTitle?: string;
   conversationKind?: "chat" | "episode" | "auto_research_child";
   orchestratorEpisodeId?: string | null;
+  humanTurnRefusal?: ChatSummary["human_turn_refusal"];
+}
+
+/** Whether messaging the orchestrator can lift a child chat's lock; isolation and merge refusals bind it too. */
+export function orchestratorCanUnlock(refusal: ChatConversation["humanTurnRefusal"]): boolean {
+  return refusal?.code === "auto_research_child_read_only";
 }
 
 export interface DraftConversation {
@@ -240,6 +246,7 @@ export function groupChatConversations(
       graphTitle: summary.graph_title,
       conversationKind: summary.conversation_kind,
       orchestratorEpisodeId: summary.orchestrator_episode_id,
+      humanTurnRefusal: summary.human_turn_refusal,
     });
   }
   for (const draft of drafts) {

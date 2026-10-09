@@ -27,6 +27,7 @@ import {
   mergeChatReads,
   unreadChatIdsFromReads,
   unsentConversation,
+  orchestratorCanUnlock,
 } from "../src/chat/chatWorkspace.ts";
 import { graphTargetFromHash } from "../src/core/graphTarget.ts";
 import { parseProjectHash } from "../src/experiments/experimentBoardModel.ts";
@@ -604,4 +605,38 @@ test("inventory retains every target while latest selection cannot reuse another
       conversation.graphTarget,
     );
   }
+});
+
+test("child conversation inventory preserves admission refusal and later unlock", () => {
+  const summary = {
+    chat_id: "child",
+    kind: "node_chat",
+    node_id: "node/a",
+    title: "Child",
+    updated_at: "",
+    message_count: 1,
+    last_message_preview: "",
+    conversation_kind: "auto_research_child",
+    orchestrator_episode_id: "parent",
+    human_turn_refusal: { code: "auto_research_child_read_only", detail: "running" },
+  };
+  const locked = groupChatConversations([summary], [], {}, "Project")[0];
+  assert.deepEqual(locked.humanTurnRefusal, summary.human_turn_refusal);
+  assert.equal(locked.orchestratorEpisodeId, "parent");
+  const unlocked = groupChatConversations(
+    [{ ...summary, human_turn_refusal: null }],
+    [],
+    {},
+    "Project",
+  )[0];
+  assert.equal(unlocked.humanTurnRefusal, null);
+  assert.equal(unlocked.conversationKind, "auto_research_child");
+});
+
+test("only a running-lineage lock offers messaging the orchestrator", () => {
+  assert.equal(orchestratorCanUnlock({ code: "auto_research_child_read_only", detail: "" }), true);
+  for (const code of ["episode_isolation_unavailable", "episode_merge_reserved"]) {
+    assert.equal(orchestratorCanUnlock({ code, detail: "" }), false);
+  }
+  assert.equal(orchestratorCanUnlock(null), false);
 });

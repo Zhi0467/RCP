@@ -20,6 +20,7 @@ import {
   type AgentListSection,
   type ConversationAgentRow,
   type ConversationAgentStatus,
+  orchestratorCanUnlock,
 } from "./chatWorkspace";
 import {
   AGENT_BOARD_COLUMNS,
@@ -690,6 +691,10 @@ export function ChatsWorkspace({
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
+  const orchestratorHref = experimentBoardHref(
+    project.id,
+    `${AUTO_RESEARCH_ROUTE_PREFIX}${selected?.orchestratorEpisodeId ?? ""}`,
+  );
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
     if (!bounds) return;
@@ -730,31 +735,37 @@ export function ChatsWorkspace({
             .
           </span>
         )}
-        {selected.conversationKind !== "auto_research_child" &&
-          needsHuman(selectedStatus) &&
-          selectedLatest && (
-            <div className="conversation-header-banner" role="status">
-              <span>{selectedLatest.status_label}</span>
-              {selectedLatest.can_resume && (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() => onResumeTask(selectedLatest)}
-                >
-                  Resume
-                </button>
+        {!selected.humanTurnRefusal && needsHuman(selectedStatus) && selectedLatest && (
+          <div className="conversation-header-banner" role="status">
+            <span>{selectedLatest.status_label}</span>
+            {selectedLatest.can_resume && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onResumeTask(selectedLatest)}
+              >
+                Resume
+              </button>
+            )}
+            {!selectedLatest.can_resume && selectedLatest.can_retry && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onRetryTask(selectedLatest)}
+              >
+                Retry
+              </button>
+            )}
+            {!selectedLatest.can_resume &&
+              !selectedLatest.can_retry &&
+              selected.conversationKind === "auto_research_child" && (
+                // Only the orchestrator recovers its own turn: message it or add turns.
+                <a className="button compact" href={orchestratorHref}>
+                  Message orchestrator
+                </a>
               )}
-              {!selectedLatest.can_resume && selectedLatest.can_retry && (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() => onRetryTask(selectedLatest)}
-                >
-                  Retry
-                </button>
-              )}
-            </div>
-          )}
+          </div>
+        )}
       </>
     ) : null;
 
@@ -767,7 +778,7 @@ export function ChatsWorkspace({
       latest?.provider_label ?? project.providers?.[provider]?.label ?? provider;
     const renaming = renamingChatId === conversation.chatId;
     const action =
-      conversation.conversationKind !== "auto_research_child" && needsHuman(status) && latest
+      !conversation.humanTurnRefusal && needsHuman(status) && latest
         ? latest.can_resume
           ? { label: "Resume", run: () => onResumeTask(latest) }
           : latest.can_retry
@@ -1121,8 +1132,19 @@ export function ChatsWorkspace({
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly={
-              selected.conversationKind !== "chat" && selected.conversationKind !== "episode"
+            readOnly={Boolean(selected.humanTurnRefusal)}
+            allowArtifactComments={selected.conversationKind === "auto_research_child"}
+            readOnlyNotice={
+              selected.humanTurnRefusal ? (
+                <div className="chat-composer" role="status">
+                  <p>{selected.humanTurnRefusal.detail}</p>
+                  {orchestratorCanUnlock(selected.humanTurnRefusal) && (
+                    <a className="button compact" href={orchestratorHref}>
+                      Message orchestrator
+                    </a>
+                  )}
+                </div>
+              ) : undefined
             }
             graphChangesDisabled={graphChangesDisabled}
             onStartTask={onStartTask}

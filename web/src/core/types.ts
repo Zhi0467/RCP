@@ -2596,6 +2596,8 @@ export interface Episode extends EpisodeLoopMetadata {
   /** Every chain member oldest first, ending with this episode; a lone episode is its own chain. */
   chain: EpisodeChainMember[];
   can_message: boolean;
+  message_requires_continuation: boolean;
+  message_refusal?: { code: string; detail: string } | null;
   live: boolean;
   health: EpisodeHealth;
   blocked_reason: EpisodeBlockedReason | null;
@@ -2798,6 +2800,7 @@ export interface ChatSummary {
   conversation_kind: "chat" | "episode" | "auto_research_child";
   graph_title: string;
   orchestrator_episode_id: string | null;
+  human_turn_refusal?: { code: string; detail: string } | null;
   chat_id: string;
   graph_target: GraphTargetRef;
   kind: "node_chat" | "project_chat";

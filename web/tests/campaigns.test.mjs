@@ -631,7 +631,7 @@ test("episode API calls use only the generic endpoints and the continuation body
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/messages",
       method: "POST",
-      body: JSON.stringify({ body: "Check the blocker" }),
+      body: JSON.stringify({ body: "Check the blocker", invocation_ceiling: null }),
     },
     { path: "/api/episodes?mode=experiment_loop", method: "GET", body: null },
     {
@@ -764,4 +764,28 @@ test("Stop visibility consumes backend can_stop and preserves an in-flight Stop"
     renderEpisodes([requestInFlight], { busyAction: `stop:${episode.episode_id}` }),
     /campaign-stop"[^>]*disabled=""/,
   );
+});
+
+test("ended orchestrator messages expose an editable continuation budget and refusal", () => {
+  const ended = {
+    ...episode,
+    live: false,
+    can_message: true,
+    can_continue: true,
+    message_requires_continuation: true,
+  };
+  const html = renderEpisodes([ended]);
+  assert.match(html, /type="number"[^>]*value="3"/);
+  assert.match(html, /data-continuation-turns="3" data-child-experiments="15"/);
+  const forwarded = renderEpisodes([{ ...ended, message_requires_continuation: false }]);
+  assert.doesNotMatch(forwarded, /data-continuation-turns=/);
+  const refused = renderEpisodes([
+    {
+      ...ended,
+      can_message: false,
+      message_refusal: { code: "episode_isolation_unavailable", detail: "refusal" },
+    },
+  ]);
+  assert.match(refused, /data-refusal-code="episode_isolation_unavailable"/);
+  assert.match(refused, /<textarea[^>]*disabled/);
 });

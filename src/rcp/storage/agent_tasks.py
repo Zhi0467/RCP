@@ -5,13 +5,13 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import PurePosixPath
 from statistics import median
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import (
     TypeAdapter,
@@ -80,6 +80,7 @@ from rcp.storage.models import (
     AgentUsageSnapshot,
     AutoResearchRole,
     ChatSessionContextRecord,
+    EpisodeRecord,
     ProviderExit,
     RunStageLifecycleRecord,
     _canonical_uuid4,
@@ -87,6 +88,9 @@ from rcp.storage.models import (
     _retention_reference_time,
 )
 from rcp.storage.question_models import QuestionRecord
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 # Ordered Apply history is a contiguous latest tail. The singular projection
 # retains the detailed latest result; history entries are concise so task JSON
@@ -582,6 +586,198 @@ class AgentTaskStoreMixin(StoreMixinBase):
         assert stored is not None
         return stored
 
+    def _child_chat_owner(
+        self, connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            "SELECT worker.episode_id, NULL AS child_episode_id FROM auto_research_child_work AS worker "
+            "JOIN graph_runs AS root ON root.operation_id = worker.root_operation_id "
+            "WHERE worker.project_id = ? AND (worker.worker_id = ? "
+            "OR json_extract(root.request_json, '$.chat_id') = ?) "
+            "UNION ALL SELECT auto_research_episode_id, child_episode_id "
+            "FROM auto_research_child_experiments WHERE project_id = ? "
+            "AND child_episode_id = ? LIMIT 1",
+            (project_id, chat_id, chat_id, project_id, chat_id),
+        ).fetchone()
+
+    def _child_human_turn_refusal(
+        self, connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> dict[str, str] | None:
+        owner = self._child_chat_owner(connection, project_id, chat_id)
+        if owner is None:
+            return None
+        running = connection.execute(
+            "SELECT 1 FROM episodes AS member JOIN episodes AS owner "
+            "ON member.project_id = owner.project_id "
+            "AND member.graph_target_json = owner.graph_target_json "
+            "WHERE owner.episode_id = ? AND member.mode = 'auto_research' "
+            "AND member.status NOT IN ('completed', 'failed', 'needs_action', 'stopped') "
+            "LIMIT 1",
+            (owner["episode_id"],),
+        ).fetchone()
+        if running is not None:
+            return {
+                "code": "auto_research_child_read_only",
+                "detail": "This child belongs to a running orchestrator lineage. Message orchestrator.",
+            }
+        if owner["child_episode_id"] is not None:
+            child = connection.execute(
+                "SELECT status FROM episodes WHERE episode_id = ?",
+                (owner["child_episode_id"],),
+            ).fetchone()
+            if child is None or child["status"] not in {
+                "completed",
+                "failed",
+                "needs_action",
+                "stopped",
+            }:
+                return {
+                    "code": "auto_research_child_read_only",
+                    "detail": "This child Experiment is still running. Message orchestrator.",
+                }
+        try:
+            cast("AppStore", self).require_episode_binding_admission_open(
+                connection, project_id, episode_id=owner["episode_id"]
+            )
+        except ValueError as exc:
+            code = str(exc)
+            return {
+                "code": code,
+                "detail": {
+                    "episode_isolation_unavailable": "This episode's isolation is being removed or has been removed. This child chat cannot accept new turns.",
+                    "episode_merge_reserved": "This episode's branch is being merged. Wait for the merge to finish.",
+                }.get(code, code),
+            }
+        return None
+
+    def _require_child_turn_admission(
+        self, connection: sqlite3.Connection, record: AgentTaskRecord
+    ) -> None:
+        if record.kind not in {"node_chat", "project_chat"} or isinstance(
+            record.request.get("artifact_edit"), dict
+        ):
+            return
+        chat_id = record.request.get("chat_id")
+        if not isinstance(chat_id, str):
+            return
+        owner = self._child_chat_owner(connection, record.project_id, chat_id)
+        if owner is None:
+            return
+        parent = connection.execute(
+            "SELECT episode_id FROM graph_runs WHERE operation_id = ?",
+            (record.parent_operation_id,),
+        ).fetchone()
+        if record.episode_id is not None:
+            if record.episode_id not in {owner["episode_id"], owner["child_episode_id"]}:
+                raise ValueError("auto_research_child_episode_owned")
+            if parent is not None and parent["episode_id"] != record.episode_id:
+                raise ValueError("auto_research_child_episode_owned")
+            return
+        # Episode recovery retains its owner; generic retries and watchers cannot
+        # convert an orchestrator allocation into a human-owned turn.
+        if self._child_turn_episode_owned(
+            connection, parent["episode_id"] if parent is not None else None, record.request
+        ):
+            raise ValueError("auto_research_child_episode_owned")
+        refusal = self._child_human_turn_refusal(connection, record.project_id, chat_id)
+        if refusal is not None:
+            raise ValueError(refusal["code"])
+
+    def _child_turn_episode_owned(
+        self,
+        connection: sqlite3.Connection,
+        parent_episode_id: str | None,
+        request: Mapping[str, object],
+    ) -> bool:
+        """Whether a child-chat turn continues an orchestrator allocation."""
+
+        if parent_episode_id is not None or request.get("trigger") == "orchestrator":
+            return True
+        watcher_ids = request.get("watcher_ids")
+        if not isinstance(watcher_ids, list) or not watcher_ids:
+            return False
+        placeholders = ",".join("?" for _ in watcher_ids)
+        return (
+            connection.execute(
+                f"SELECT 1 FROM watchers JOIN graph_runs AS origin "
+                f"ON origin.operation_id = watchers.origin_operation_id "
+                f"WHERE watchers.watcher_id IN ({placeholders}) "
+                "AND origin.episode_id IS NOT NULL LIMIT 1",
+                watcher_ids,
+            ).fetchone()
+            is not None
+        )
+
+    def episode_child_recovery_refusal(self, previous: AgentTaskRecord) -> str | None:
+        """Why generic Retry or Resume cannot continue an orchestrator-started child turn.
+
+        Child Work recovers only through its orchestrator, because a generic
+        continuation has no episode and admission refuses it as episode-owned. A
+        child Experiment turn keeps its episode, so its recovery is refused once
+        the owning orchestrator has ended, unless the child Experiment's own Stop
+        is still pending: that recovery only settles an already-paid turn behind
+        the parent's Stop or ending fence.
+        """
+
+        if previous.kind not in {"node_chat", "project_chat"} or isinstance(
+            previous.request.get("artifact_edit"), dict
+        ):
+            return None
+        chat_id = previous.request.get("chat_id")
+        if not isinstance(chat_id, str):
+            return None
+        with self.connection() as connection:
+            owner = self._child_chat_owner(connection, previous.project_id, chat_id)
+            if owner is None:
+                return None
+            if previous.episode_id is None or previous.episode_id != owner["child_episode_id"]:
+                owned = self._child_turn_episode_owned(
+                    connection, previous.episode_id, previous.request
+                )
+                return "auto_research_child_episode_owned" if owned else None
+            rows = {
+                row["episode_id"]: row
+                for row in connection.execute(
+                    "SELECT episode_id, status, stop_requested_at, stop_settled_at "
+                    "FROM episodes WHERE episode_id IN (?, ?)",
+                    (owner["episode_id"], owner["child_episode_id"]),
+                ).fetchall()
+            }
+        parent = rows.get(owner["episode_id"])
+        child = rows.get(owner["child_episode_id"])
+        if parent is not None and parent["status"] not in {
+            "completed",
+            "failed",
+            "needs_action",
+            "stopped",
+        }:
+            return None
+        if (
+            child is not None
+            and child["stop_requested_at"] is not None
+            and child["stop_settled_at"] is None
+        ):
+            return None
+        return "auto_research_child_episode_owned"
+
+    def _require_no_active_human_child_turn(
+        self, connection: sqlite3.Connection, episode: EpisodeRecord
+    ) -> None:
+        rows = connection.execute(
+            "SELECT request_json FROM graph_runs WHERE project_id = ? "
+            "AND graph_target_json = ? AND episode_id IS NULL "
+            "AND kind IN ('node_chat', 'project_chat') "
+            "AND status IN ('queued', 'running', 'pausing')",
+            (episode.project_id, graph_target_json(episode.graph_target)),
+        ).fetchall()
+        for row in rows:
+            request = json.loads(row["request_json"])
+            chat_id = request.get("chat_id")
+            if isinstance(request.get("artifact_edit"), dict) or not isinstance(chat_id, str):
+                continue
+            if self._child_chat_owner(connection, episode.project_id, chat_id) is not None:
+                raise ValueError(f"auto_research_child_turn_active:{chat_id}")
+
     def _insert_agent_task(
         self,
         connection: sqlite3.Connection,
@@ -593,23 +789,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("An agent task admission has an invalid continuation cause.")
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
-        # A child's native session belongs to its orchestrator even after it ends.
-        # Enforce this before session binding, without changing child continuations.
-        # Artifact comments stay ordinary edits on the child's own output.
-        if (
-            record.kind in {"node_chat", "project_chat"}
-            and record.request.get("trigger", "human") == "human"
-            and not isinstance(record.request.get("artifact_edit"), dict)
-        ):
-            chat_id = record.request.get("chat_id")
-            child = connection.execute(
-                "SELECT 1 FROM auto_research_child_work WHERE project_id = ? AND worker_id = ? "
-                "UNION ALL SELECT 1 FROM auto_research_child_experiments "
-                "WHERE project_id = ? AND child_episode_id = ? LIMIT 1",
-                (record.project_id, chat_id, record.project_id, chat_id),
-            ).fetchone()
-            if child is not None:
-                raise ValueError("auto_research_child_read_only")
+        self._require_child_turn_admission(connection, record)
         self._validate_dispatch_authority_insert(connection, record)
         record, session_resolution = self._bind_chat_stage(connection, record, continuation_cause)
         self._require_session_launch_available(connection, record)

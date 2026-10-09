@@ -45,6 +45,7 @@ from rcp.storage import (
     AutoResearchChildExperimentRecord,
     AutoResearchChildWorkRecord,
     AutoResearchLifecycleNoticeRecord,
+    AutoResearchMessageRecord,
     AutoResearchStateRecord,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
@@ -122,6 +123,8 @@ def continue_auto_research(
     invocation_ceiling: int,
     request_id: str,
     authorized_by: AuthorizedHuman,
+    message_body: str | None = None,
+    message_id: str | None = None,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
     """Add turns to an ended Auto-research episode on its branch and session.
 
@@ -132,6 +135,8 @@ def continue_auto_research(
     repeated ``request_id`` returns the continuation it already made.
     """
 
+    if (message_body is None) != (message_id is None):
+        raise ValueError("a continuation message requires both its body and id")
     if not authorized_by.display_name.strip():
         raise ValueError("Auto-research requires a named human authorizer snapshot.")
     store = tasks.store
@@ -144,6 +149,15 @@ def continue_auto_research(
     if replay is not None:
         if replay.continuation_request_id != request_id or replay.root_operation_id is None:
             raise ValueError("this episode has already been continued")
+        if message_body is not None:
+            saved_message = store.auto_research_message(message_id or "")
+            if (
+                saved_message is None
+                or saved_message.body != message_body
+                or saved_message.authorized_by != authorized_by
+                or replay.invocation_ceiling != invocation_ceiling
+            ):
+                raise ValueError("message_request_conflict")
         root = store.agent_task(replay.root_operation_id)
         assert root is not None
         return replay, root
@@ -269,6 +283,17 @@ def continue_auto_research(
         ),
         task,
         notice,
+        AutoResearchMessageRecord(
+            message_id=message_id,
+            episode_id=episode_id,
+            sender_role="human",
+            authorized_by=authorized_by,
+            recipient_task_id=operation_id,
+            body=message_body,
+            created_at=now,
+        )
+        if message_body is not None and message_id is not None
+        else None,
     )
     if replayed:
         return stored_episode, stored_task

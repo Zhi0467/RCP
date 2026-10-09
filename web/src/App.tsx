@@ -3601,14 +3601,26 @@ function MemberApp({
     }
   };
 
-  const messageEpisodeOrchestrator = async (episodeId: string, body: string) => {
+  const messageEpisodeOrchestrator = async (
+    episodeId: string,
+    body: string,
+    invocationCeiling?: number,
+    requestId?: string,
+  ) => {
     if (!apiBase || !projectId || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`message:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const saved = await sendEpisodeMessage(apiBase, episodeId, body);
-      recordEpisodeMessage(projectId, episodeId, saved);
-      await refreshEpisodeMessages(episodeId);
+      const saved = await sendEpisodeMessage(
+        apiBase,
+        episodeId,
+        body,
+        invocationCeiling,
+        requestId,
+      );
+      recordEpisodeMessage(projectId, saved.episode_id, saved);
+      await refreshEpisodeMessages(saved.episode_id);
+      await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;

@@ -768,6 +768,8 @@ class BackgroundAgentTasks:
             raise ValueError("consolidation_continuation_forbidden")
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Resume control.")
+        if refusal := self.store.episode_child_recovery_refusal(previous):
+            raise ValueError(refusal)
         if not previous.can_resume or not previous.native_session_id:
             raise ValueError(
                 "This task has no resumable native agent checkpoint. Retry it instead."
@@ -854,6 +856,8 @@ class BackgroundAgentTasks:
                 parent=previous,
                 continuation="retry",
             )
+        if refusal := self.store.episode_child_recovery_refusal(previous):
+            raise ValueError(refusal)
         _require_recoverable_machine(previous, original, run_on)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
@@ -2625,6 +2629,9 @@ class BackgroundAgentTasks:
         settled = self.store.agent_task(record.operation_id)
         if settled is None or settled.failure_kind != "transport_lost" or not settled.can_retry:
             return
+        # A turn only its episode may recover would fail every reattempt.
+        if self.store.episode_child_recovery_refusal(settled) is not None:
+            return
         attempt = self._transport_retry_attempt(settled)
         if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
             self.store.record_agent_task_receipt(
@@ -2749,7 +2756,11 @@ class BackgroundAgentTasks:
 
         for operation_id in self.store.owed_transport_retry_operation_ids():
             record = self.store.agent_task(operation_id)
-            if record is None or not record.can_retry:
+            if (
+                record is None
+                or not record.can_retry
+                or self.store.episode_child_recovery_refusal(record) is not None
+            ):
                 continue
             attempt = self._transport_retry_attempt(record)
             if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:

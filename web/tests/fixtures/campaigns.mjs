@@ -70,6 +70,7 @@ export const episode = {
       report: null,
     },
   ],
+  message_requires_continuation: false,
   can_message: true,
   live: true,
   health: "active",

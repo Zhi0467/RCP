@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import CHAT_TITLE_MAX_CHARS
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.storage.mixin_base import StoreMixinBase
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 
 class ChatDisplayStoreMixin(StoreMixinBase):
@@ -59,34 +62,39 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 """,
                 (project_id, chat_id, chat_id, project_id),
             ).fetchall()
-        summaries = []
-        for row in rows:
-            request = json.loads(row["request_json"])
-            target = json.loads(row["graph_target_json"])
-            orchestrator = row["orchestrator_episode_id"]
-            summaries.append(
-                {
-                    "chat_id": row["chat_id"],
-                    "graph_target": target,
-                    "graph_title": "Main" if target["kind"] == "main" else target["branch_id"][:8],
-                    "kind": row["kind"],
-                    "node_id": request.get("node_id") or request.get("control_node_id"),
-                    "title": " ".join(
-                        (request.get("message") or request.get("node_id") or "Chat").split()
-                    )[:CHAT_TITLE_MAX_CHARS],
-                    "updated_at": row["updated_at"],
-                    "message_count": 0,
-                    "last_message_preview": "",
-                    "conversation_kind": (
-                        "auto_research_child"
-                        if orchestrator
-                        else "episode"
-                        if row["is_episode"]
-                        else "chat"
-                    ),
-                    "orchestrator_episode_id": orchestrator,
-                }
-            )
+            summaries = []
+            for row in rows:
+                request = json.loads(row["request_json"])
+                target = json.loads(row["graph_target_json"])
+                orchestrator = row["orchestrator_episode_id"]
+                summaries.append(
+                    {
+                        "chat_id": row["chat_id"],
+                        "graph_target": target,
+                        "graph_title": "Main"
+                        if target["kind"] == "main"
+                        else target["branch_id"][:8],
+                        "kind": row["kind"],
+                        "node_id": request.get("node_id") or request.get("control_node_id"),
+                        "title": " ".join(
+                            (request.get("message") or request.get("node_id") or "Chat").split()
+                        )[:CHAT_TITLE_MAX_CHARS],
+                        "updated_at": row["updated_at"],
+                        "message_count": 0,
+                        "last_message_preview": "",
+                        "conversation_kind": (
+                            "auto_research_child"
+                            if orchestrator
+                            else "episode"
+                            if row["is_episode"]
+                            else "chat"
+                        ),
+                        "orchestrator_episode_id": orchestrator,
+                        "human_turn_refusal": cast("AppStore", self)._child_human_turn_refusal(
+                            connection, project_id, row["chat_id"]
+                        ),
+                    }
+                )
         return summaries
 
     def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
