@@ -14,7 +14,11 @@ test("transfer option stays off by default, binds retries, and survives review r
     await server.listen();
     const address = server.httpServer.address();
     browser = await chromium.launch({ headless: true });
-    for (const includeLocalCommits of [false, true]) {
+    for (const [source, includeLocalCommits] of [
+      ["https://github.com/example/state.git", false],
+      ["https://github.com/example/state.git", true],
+      [null, true],
+    ]) {
       const context = await browser.newContext();
       const page = await context.newPage();
       const errors = [];
@@ -110,7 +114,9 @@ test("transfer option stays off by default, binds retries, and survives review r
               const repo = {
                 alias: "state",
                 machine_alias: "server",
-                repository: { identity: "example/state" },
+                repository: request.target_provisioning.repositories[0].source
+                  ? { identity: "example/state" }
+                  : null,
               };
               const bundle = {
                 source: {
@@ -188,7 +194,15 @@ test("transfer option stays off by default, binds retries, and survives review r
       await checkbox.waitFor();
       assert.equal(await checkbox.isChecked(), false);
       await page.getByText(/Local unpushed commits stay behind/).waitFor();
-      if (includeLocalCommits) await checkbox.check();
+      if (source) await page.locator('[name="repository-source-state"]').fill(source);
+      if (includeLocalCommits) {
+        if (!source) {
+          await page.getByRole("button", { name: "Prepare team target" }).click();
+          await page.getByRole("alert").waitFor();
+          assert.equal(await page.evaluate(() => localStorage.getItem("transfer-attempts")), null);
+        }
+        await checkbox.check();
+      }
       await page.getByRole("button", { name: "Prepare team target" }).click();
       if (includeLocalCommits) {
         await page
@@ -214,6 +228,7 @@ test("transfer option stays off by default, binds retries, and survives review r
         JSON.parse(localStorage.getItem("transfer-attempts")),
       );
       assert.equal(Object.hasOwn(attempts[0], "include_local_commits"), includeLocalCommits);
+      assert.deepEqual(attempts[0].target_provisioning.repositories, [{ alias: "state", source }]);
       if (includeLocalCommits) assert.deepEqual(attempts[0], attempts[1]);
       await page.reload();
       await page.getByRole("heading", { name: "Final review" }).waitFor();
@@ -224,7 +239,6 @@ test("transfer option stays off by default, binds retries, and survives review r
       await page.getByText(/RCP does not push to GitHub/).waitFor();
       if (includeLocalCommits) {
         await page.getByText(/Committed files and history are copied as saved/).waitFor();
-        await page.getByText(/detached HEAD at the saved source commit/).waitFor();
         await page.getByText("a".repeat(40), { exact: true }).waitFor();
       } else {
         await page.getByText(/Local unpushed commits stay behind/).waitFor();

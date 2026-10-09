@@ -6,6 +6,7 @@ import {
   cancelProjectProvisioningRequest,
   completeProjectProvisioningRequest,
   createTeamProjectProvisioning,
+  createProjectRepositoryRequest,
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
 } from "../src/core/api.ts";
@@ -136,4 +137,48 @@ test("complete provisioning and transfer lifecycles remain opaque to browser cod
   assert.doesNotMatch(types, /type ProjectProvisioningCheckStatus\s*=\s*"/);
   assert.doesNotMatch(types, /type ProjectTransferPhase\s*=\s*"/);
   assert.doesNotMatch(types, /type ProjectTransferProofState\s*=\s*"/);
+});
+
+test("repository requests preserve add/connect intent and project identity", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push({ path, method: init.method, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify(projectedResponse));
+  };
+  try {
+    for (const body of [
+      {
+        kind: "add_repository",
+        repository: {
+          alias: "state",
+          source: null,
+          machine_alias: "server",
+          count_as_project_truth: false,
+        },
+      },
+      {
+        kind: "add_repository",
+        repository: {
+          alias: "code",
+          source: "https://github.com/lab/code.git",
+          machine_alias: "server",
+          count_as_project_truth: true,
+        },
+      },
+      { kind: "connect_repository", alias: "state", source: "https://github.com/lab/state.git" },
+    ]) {
+      assert.deepEqual(
+        await createProjectRepositoryRequest("project / one", body),
+        projectedResponse,
+      );
+      assert.deepEqual(calls.at(-1), {
+        path: "/api/projects/project%20%2F%20one/repository-requests",
+        method: "POST",
+        body,
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
