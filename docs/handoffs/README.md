@@ -3,7 +3,7 @@
 - [Branch navigation and continuation](branch-navigation-and-continuation.md):
   design only; unified graph refs with a branch picker, project reopen on
   reverification, phone reload route, and human turns on ended Auto-research
-  children.
+  children, and messaging an ended orchestrator; three product questions open.
 
 Unfinished agent-link work is tracked in issue #280.
 
