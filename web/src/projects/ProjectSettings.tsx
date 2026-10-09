@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, clearProjectCaches } from "../core/api";
 import { computeProbePresentation } from "../experiments/compute";
+import { RepositoryRequests } from "./RepositoryRequests";
 import { ProjectMembers } from "./ProjectMembers";
 import { MachineCard } from "./MachineCard";
 import { ProjectNotifications } from "../desktop/ProjectNotifications";
@@ -672,6 +673,9 @@ export function ProjectSettings({
             );
           })}
         </div>
+        {spaceKind === "team" && (
+          <RepositoryRequests key={project.id} project={project} disabled={writesDisabled} />
+        )}
       </article>
 
       <section className="settings-section provider-path-settings">

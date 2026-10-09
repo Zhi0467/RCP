@@ -934,10 +934,25 @@ model, runtime, authentication, or OS-account decisions.
 
 The UI renders the backend's status, diagnostic, exact next action, resolved
 paths, and final review. It cannot claim success from a desktop subprocess exit
-code. A local-only codebase is not uploaded through the wizard: the new-team
-intent tells the human to push it to a GitHub repository with a real commit
-through their ordinary Git workflow, then records that repository source. RCP
-does not collect GitHub user authentication.
+code. The new-team wizard leaves the GitHub URL optional: blank means server only.
+The draft ledger and repository review identify server-only repositories, with
+one plain notice that their code is not backed up. Setup announces the empty
+RCP first commit on main, including its push for an empty GitHub repository.
+RCP does not collect GitHub user authentication.
+
+Team Project Settings offers one-repository add and connect requests through
+`POST /api/projects/{project_id}/repository-requests`. Add takes an alias,
+optional GitHub source, machine, and a checked-by-default project-truth choice.
+Connect appears only on a server-only repository with `can_connect` from the
+Settings projection. Both open the existing request-id provisioning view, with
+its server command, polling, and explicit final review; submitting Settings
+never confirms the request. Backend execution and authority remain with their
+provisioning owners.
+
+Transfer setup has a target GitHub URL per repository. Blank means server only
+and requires the include-local-commits bundle option before preparation. The
+native target intent must preserve explicit null sources by repository alias;
+this Web flow depends on the native transfer slice implementing that intent.
 
 A saved member connection and an operator route are distinct capabilities even
 when they use the same SSH host. The source-built desktop stores the latter as

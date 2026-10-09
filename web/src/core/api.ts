@@ -285,6 +285,28 @@ export function loadServerStatus(refresh = false): Promise<ServerStatus> {
   return api<ServerStatus>(refresh ? "/api/server-status?refresh=true" : "/api/server-status");
 }
 
+export type ProjectRepositoryRequest =
+  | {
+      kind: "add_repository";
+      repository: {
+        alias: string;
+        source?: string | null;
+        machine_alias: string;
+        count_as_project_truth: boolean;
+      };
+    }
+  | { kind: "connect_repository"; alias: string; source: string };
+
+export function createProjectRepositoryRequest(
+  projectId: string,
+  body: ProjectRepositoryRequest,
+): Promise<ProjectProvisioningResponse> {
+  return api<ProjectProvisioningResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/repository-requests`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
 export function loadProjectProvisioningRequests(): Promise<ProjectProvisioningResponse[]> {
   return api<ProjectProvisioningResponse[]>("/api/project-provisioning/requests");
 }

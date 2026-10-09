@@ -3848,3 +3848,24 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-board-cards[hidden] {
   display: none;
 }
+
+.repository-requests {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.repository-request-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.repository-requests fieldset {
+  display: grid;
+  gap: 12px;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}

@@ -313,7 +313,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
 
   const validate = (targetStep: number): string | null => {
     if (!name.trim()) return "Give this shared project a name.";
-    if (!repositories[0]?.source.trim()) return "Enter the first GitHub repository.";
     if (targetStep < 1) return null;
     const machineAliases = machines.map((machine) => machine.alias.trim());
     const repositoryAliases = repositories.map((repository) => repository.alias.trim());
@@ -344,9 +343,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       )
     ) {
       return "An explicit SSH central root must be a specific absolute path.";
-    }
-    if (repositories.some((repository) => !repository.source.trim())) {
-      return "Every repository needs its GitHub source.";
     }
     if (repositories.some((repository) => !machineAliases.includes(repository.machine_alias))) {
       return "Every repository must name one configured machine.";
@@ -389,7 +385,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       repositories: repositories.map(({ id: _id, ...repository }) => ({
         ...repository,
         alias: repository.alias.trim(),
-        source: repository.source.trim(),
+        source: repository.source.trim() || null,
       })),
       providerChecks: agentProfiles.map(({ id }) => ({
         profile: id,
@@ -599,7 +595,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
             {intentChooser}
             <SectionHeading
               eyebrow="Shared project"
-              title="Name the project and its first GitHub repository."
+              title="Name the project and its first repository."
             />
             <label className="setup-field">
               <span>Project name</span>
@@ -614,7 +610,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               />
             </label>
             <label className="setup-field">
-              <span>GitHub repository</span>
+              <span>GitHub URL (optional)</span>
               <input
                 value={repositories[0].source}
                 onChange={(event) => {
@@ -628,6 +624,11 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                 placeholder="https://github.com/lab/research.git"
               />
             </label>
+            {!repositories[0].source.trim() && <p>Server only · Its code is not backed up.</p>}
+            <p>
+              New repositories start on main with an empty “Start RCP project” commit by RCP. For an
+              empty GitHub repository, setup pushes it after you add the deploy key.
+            </p>
             {savedRequests.length > 0 && (
               <div className="provisioning-resume-list">
                 <strong>Existing setup requests</strong>
@@ -975,7 +976,11 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
           <LedgerItem
             number="C"
             label="Repository identity"
-            value="GitHub deploy key per repository"
+            value={repositories
+              .map(
+                (repository) => `${repository.alias}: ${repository.source.trim() || "Server only"}`,
+              )
+              .join(" · ")}
           />
           <LedgerItem
             number="D"
@@ -1083,7 +1088,7 @@ function MachineEditor({
   );
 }
 
-function TeamRepositoryEditor({
+export function TeamRepositoryEditor({
   repository,
   machines,
   canonical,
@@ -1128,7 +1133,7 @@ function TeamRepositoryEditor({
           />
         </label>
         <label>
-          GitHub repository
+          GitHub URL (optional)
           <input
             value={repository.source}
             onChange={(event) => onChange({ source: event.target.value })}
@@ -1149,6 +1154,7 @@ function TeamRepositoryEditor({
           </select>
         </label>
       </div>
+      {!repository.source.trim() && <p>Server only · Its code is not backed up.</p>}
       <footer>
         <label className="check-control">
           <input
@@ -1261,7 +1267,7 @@ export function ProvisioningStatus({
   return (
     <div className="setup-section provisioning-status">
       <SectionHeading
-        eyebrow="Adding your RCP project"
+        eyebrow={request.target_project_id ? "Repository setup" : "Adding your RCP project"}
         title={request.name ?? "Shared project setup"}
       />
       <div className="provisioning-status-banner">
@@ -1294,6 +1300,14 @@ export function ProvisioningStatus({
         </div>
       </dl>
 
+      {request.can_run_setup &&
+        request.kind !== "connect_repository" &&
+        request.kind !== "incoming_transfer" && (
+          <p>
+            Empty repositories start on main with an empty “Start RCP project” commit by RCP. Setup
+            pushes it to GitHub after you add the deploy key.
+          </p>
+        )}
       {request.can_run_setup && (
         <p className="provisioning-hint">
           Copy the server command and run it in a shell on the server, logged in as yourself. It
@@ -1464,8 +1478,19 @@ export function ProvisioningStatus({
             <strong>
               {repository.alias} · {repository.status_label}
             </strong>
-            <span>{repository.repository?.identity ?? repository.alias}</span>
-            <span>{gitWriteFact(repository.write_verified)}</span>
+            <span>{repository.repository?.identity ?? "Server only"}</span>
+            {request.kind === "add_repository" && (
+              <span>
+                {repository.count_as_project_truth
+                  ? "Counts as project truth"
+                  : "Outside project truth"}
+              </span>
+            )}
+            {repository.source_kind === "server_only" ? (
+              <p>Its code is not backed up.</p>
+            ) : (
+              <span>{gitWriteFact(repository.write_verified)}</span>
+            )}
             <code>{repository.resolved_path ?? repository.intended_path ?? "Path pending"}</code>
             {repository.diagnostic && <p>{repository.diagnostic}</p>}
           </article>
@@ -1514,7 +1539,9 @@ export function ProvisioningStatus({
               ) : (
                 <Check size={14} />
               )}{" "}
-              Confirm and create project
+              {request.kind === "add_repository" || request.kind === "connect_repository"
+                ? "Confirm repository"
+                : "Confirm and create project"}
             </button>
           )}
         </section>
