@@ -1658,6 +1658,33 @@
   max-width: 680px;
   text-align: center;
 }
+.reconnect-dialog::backdrop {
+  background: rgb(var(--shadow-rgb) / 46%);
+}
+.reconnect-dialog {
+  color: var(--ink);
+  border-radius: 12px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  width: min(540px, 96vw);
+}
+.reconnect-dialog h2 {
+  font-family: var(--editorial);
+  font-size: var(--type-3xl);
+  font-weight: 500;
+  margin: 0;
+}
+.reconnect-dialog p {
+  color: var(--muted);
+  margin: 0;
+}
 
 .question-card {
   display: grid;

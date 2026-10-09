@@ -942,7 +942,8 @@ def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> No
     assert response.ending_diagnostic is None
     assert response.wrapup_error is None
     assert response.report is None
-    assert response.can_message is False
+    assert response.can_message is True
+    assert response.message_requires_continuation is True
     assert (response.health, response.recommendation) == ("stopped", "none")
 
 

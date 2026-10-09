@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import TypeAdapter
 
@@ -42,6 +42,9 @@ from rcp.storage.models import (
     EpisodeWrapupRecord,
     _required_timestamp,
 )
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 _LEGACY_AUTO_RESEARCH_TABLES: tuple[tuple[str, str], ...] = (
     ("campaign_invocations", "_legacy_campaign_invocations_archive"),
@@ -148,6 +151,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
         state: AutoResearchStateRecord,
         task: AgentTaskRecord,
         notice: AutoResearchLifecycleNoticeRecord,
+        message: AutoResearchMessageRecord | None = None,
     ) -> tuple[EpisodeRecord, AgentTaskRecord, bool]:
         """Add turns to an ended Auto-research episode in one transaction.
 
@@ -207,12 +211,27 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     stored = self._episode_record(replay)
                     if stored.continues_episode_id != source_id:
                         raise ValueError("the continuation request id names another episode")
+                    saved_mail = connection.execute(
+                        "SELECT * FROM auto_research_messages WHERE message_id = ?",
+                        (message.message_id if message is not None else "",),
+                    ).fetchone()
+                    if message is not None and (
+                        saved_mail is None
+                        or saved_mail["body"] != message.body
+                        or stored.invocation_ceiling != episode.invocation_ceiling
+                        or message.authorized_by is None
+                        or not message.authorized_by.is_same_member(
+                            self._auto_research_message_record(saved_mail).authorized_by
+                        )
+                    ):
+                        raise ValueError("message_request_conflict")
                     connection.rollback()
                     root = self.agent_task(stored.root_operation_id or "")
                     assert root is not None
                     return stored, root, True
                 source = self._load_auto_research_episode(connection, source_id)
                 self._require_continuable_source(connection, source, episode)
+                self.require_auto_research_continuation_available(connection, source)
                 # The branch's id is the chain root's; the walk must end there.
                 current = source
                 seen = {episode.episode_id}
@@ -260,12 +279,22 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     "orchestrator",
                     continuation_cause="lifecycle_wake",
                 )
+                if message is not None:
+                    if (
+                        message.episode_id != started.episode_id
+                        or message.recipient_task_id != task.operation_id
+                        or message.authorized_by != episode.authorized_by
+                        or message.sender_role != "human"
+                        or message.sender_task_id is not None
+                    ):
+                        raise ValueError("invalid continuation message ownership")
+                    self._insert_auto_research_message(connection, message)
                 if not self._claim_auto_research_root_inputs(
                     connection,
                     started,
                     task,
                     lifecycle_notice_ids=[notice.notice_id],
-                    message_ids=[],
+                    message_ids=[message.message_id] if message is not None else [],
                 ):
                     raise ValueError("the continuation could not claim its reauthorized notice")
         except sqlite3.IntegrityError as exc:
@@ -277,6 +306,49 @@ class AutoResearchStoreMixin(StoreMixinBase):
         stored_task = self.agent_task(task.operation_id)
         assert stored_episode is not None and stored_task is not None
         return stored_episode, stored_task, False
+
+    def require_auto_research_continuation_available(
+        self, connection: sqlite3.Connection, source: EpisodeRecord
+    ) -> None:
+        """Shared durable admission for continuation and its message composer."""
+
+        store = cast("AppStore", self)
+        if source.status not in {"completed", "failed", "needs_action", "stopped"}:
+            raise ValueError("auto_research_not_ended")
+        if (
+            connection.execute(
+                "SELECT 1 FROM episodes WHERE continues_episode_id = ?", (source.episode_id,)
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("auto_research_already_continued")
+        binding = self._auto_research_actor_latest_row(
+            connection, source.episode_id, source.root_operation_id or ""
+        )
+        if binding is None or not binding["native_session_id"] or not binding["stage_root"]:
+            raise ValueError("auto_research_session_unavailable")
+        if binding["history_only"]:
+            raise ValueError("auto_research_session_unavailable")
+        if (
+            connection.execute(
+                "SELECT 1 FROM graph_runs WHERE episode_id = ? "
+                "AND status IN ('queued', 'running', 'pausing') LIMIT 1",
+                (source.episode_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("auto_research_turn_active")
+        if store._live_episode_row(connection, source) is not None:
+            raise ValueError("auto_research_project_occupied")
+        if store._active_branch_merge_exists(connection, source.project_id, source.graph_target):
+            raise ValueError("episode_merge_reserved")
+        store.require_episode_binding_admission_open(
+            connection,
+            source.project_id,
+            episode_id=source.episode_id,
+            branch_id=source.graph_target.branch_id,
+        )
+        store._require_no_active_human_child_turn(connection, source)
 
     def _require_continuable_source(
         self,
@@ -2260,34 +2332,40 @@ class AutoResearchStoreMixin(StoreMixinBase):
                             )
                     elif recipient is None or recipient["role"] != "worker":
                         raise ValueError("the orchestrator may address only one of its workers")
-            connection.execute(
-                """
-                INSERT INTO auto_research_messages (
-                    message_id, episode_id, sender_role, sender_task_id,
-                    authorized_space_id, authorized_user_id, authorized_display_name,
-                    recipient_task_id, control_node_id, body, created_at,
-                    delivered_at, delivery_operation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.message_id,
-                    record.episode_id,
-                    record.sender_role,
-                    record.sender_task_id,
-                    record.authorized_by.space_id if record.authorized_by is not None else None,
-                    record.authorized_by.user_id if record.authorized_by is not None else None,
-                    record.authorized_by.display_name if record.authorized_by is not None else None,
-                    record.recipient_task_id,
-                    record.control_node_id,
-                    record.body,
-                    record.created_at,
-                    record.delivered_at,
-                    record.delivery_operation_id,
-                ),
-            )
+            self._insert_auto_research_message(connection, record)
         stored = self.auto_research_message(record.message_id)
         assert stored is not None
         return stored
+
+    @staticmethod
+    def _insert_auto_research_message(
+        connection: sqlite3.Connection, record: AutoResearchMessageRecord
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO auto_research_messages (
+                message_id, episode_id, sender_role, sender_task_id,
+                authorized_space_id, authorized_user_id, authorized_display_name,
+                recipient_task_id, control_node_id, body, created_at,
+                delivered_at, delivery_operation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.message_id,
+                record.episode_id,
+                record.sender_role,
+                record.sender_task_id,
+                record.authorized_by.space_id if record.authorized_by is not None else None,
+                record.authorized_by.user_id if record.authorized_by is not None else None,
+                record.authorized_by.display_name if record.authorized_by is not None else None,
+                record.recipient_task_id,
+                record.control_node_id,
+                record.body,
+                record.created_at,
+                record.delivered_at,
+                record.delivery_operation_id,
+            ),
+        )
 
     def readdress_auto_research_question_answer(
         self, question_id: str

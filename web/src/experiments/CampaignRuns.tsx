@@ -20,7 +20,7 @@ import {
   formatTokenCount,
 } from "./campaigns";
 import { MarkdownAnswer } from "../core/chatMarkdown";
-import { fetchEpisodeTimeline } from "../core/api";
+import { ApiError, fetchEpisodeTimeline } from "../core/api";
 import { useRunArtifacts } from "./useRunArtifacts";
 import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
@@ -69,7 +69,12 @@ export function AutoResearchEpisodeCard({
   onStop: (episodeId: string) => Promise<void>;
   onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   onContinue: (episodeId: string, invocationCeiling: number) => Promise<void>;
-  onSendMessage: (episodeId: string, body: string) => Promise<void>;
+  onSendMessage: (
+    episodeId: string,
+    body: string,
+    invocationCeiling?: number,
+    requestId?: string,
+  ) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSwitchProvider: (task: AgentTask) => void;
   onArchive: ArchiveEpisodeAction;
@@ -79,6 +84,19 @@ export function AutoResearchEpisodeCard({
   const [expanded, setExpanded] = useState(initiallyExpanded);
   const [additionalTurns, setAdditionalTurns] = useState("");
   const [message, setMessage] = useState("");
+  const [messageTurns, setMessageTurns] = useState("3");
+  const messageRequest = useRef<{
+    body: string;
+    turns: string;
+    invocationCeiling?: number;
+    id: string;
+  } | null>(null);
+  const parsedMessageTurns = Number(messageTurns);
+  const messageContinues = episode.message_requires_continuation;
+  const [messageRefused, setMessageRefused] = useState(false);
+  const messageTurnsValid = Number.isSafeInteger(parsedMessageTurns) && parsedMessageTurns >= 1;
+  const messageDisabled =
+    messageRefused || !episode.can_message || (messageContinues && !messageTurnsValid);
   const [localError, setLocalError] = useState<string | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const apiBase = `/api/projects/${encodeURIComponent(episode.project_id)}`;
@@ -159,15 +177,37 @@ export function AutoResearchEpisodeCard({
     }
   };
 
+  useEffect(() => {
+    setMessageRefused(false);
+  }, [episode]);
+
   const submitMessage = async () => {
     const body = message.trim();
-    if (!body || anotherActionBusy) return;
+    if (!body || anotherActionBusy || messageDisabled) return;
     setLocalError(null);
     try {
-      await onSendMessage(episode.episode_id, body);
+      if (messageRequest.current?.body !== body || messageRequest.current?.turns !== messageTurns) {
+        messageRequest.current = {
+          body,
+          turns: messageTurns,
+          invocationCeiling: messageContinues ? parsedMessageTurns : undefined,
+          id: crypto.randomUUID(),
+        };
+      }
+      await onSendMessage(
+        episode.episode_id,
+        body,
+        messageRequest.current.invocationCeiling,
+        messageRequest.current.id,
+      );
+      messageRequest.current = null;
       setTimelineRefresh((value) => value + 1);
       setMessage("");
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        messageRequest.current = null;
+        setMessageRefused(true);
+      }
       setLocalError(error instanceof Error ? error.message : String(error));
     }
   };
@@ -464,7 +504,7 @@ export function AutoResearchEpisodeCard({
               onOpenExperimentEntry={onOpenExperimentEntry}
             />
           )}
-          {episode.can_message && (
+          {(episode.can_message || messageContinues || episode.message_refusal) && (
             <form
               className="campaign-message-composer"
               onSubmit={(event) => {
@@ -472,17 +512,48 @@ export function AutoResearchEpisodeCard({
                 void submitMessage();
               }}
             >
+              {messageContinues && (
+                <label className="campaign-reauthorize" style={{ gridColumn: "1 / -1" }}>
+                  Turns
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    aria-label="Message continuation turns"
+                    value={messageTurns}
+                    disabled={anotherActionBusy || messageRefused || !episode.can_message}
+                    onChange={(event) => setMessageTurns(event.target.value)}
+                  />
+                  {messageTurnsValid && (
+                    <span
+                      data-continuation-turns={parsedMessageTurns}
+                      data-child-experiments={5 * parsedMessageTurns}
+                    >
+                      {parsedMessageTurns} turns · {5 * parsedMessageTurns} child Experiments
+                    </span>
+                  )}
+                </label>
+              )}
+              {episode.message_refusal && (
+                <p
+                  style={{ gridColumn: "1 / -1" }}
+                  role="status"
+                  data-refusal-code={episode.message_refusal.code}
+                >
+                  {episode.message_refusal.detail}
+                </p>
+              )}
               <textarea
                 rows={2}
                 aria-label="Message orchestrator"
                 value={message}
-                disabled={anotherActionBusy}
+                disabled={anotherActionBusy || messageRefused || !episode.can_message}
                 onChange={(event) => setMessage(event.target.value)}
               />
               <button
                 className="button primary compact"
                 type="submit"
-                disabled={!message.trim() || anotherActionBusy}
+                disabled={!message.trim() || anotherActionBusy || messageDisabled}
               >
                 {messageBusy ? <LoaderCircle className="spin" size={12} /> : <Send size={12} />}
                 Send

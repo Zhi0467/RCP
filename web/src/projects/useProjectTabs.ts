@@ -306,10 +306,6 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     setSetupOpen(nextSetupOpen);
     setProjectId(nextProjectId);
   }, []);
-  const clearProjectRoute = useCallback(() => {
-    setSetupOpen(false);
-    setProjectId(null);
-  }, []);
   const openSetup = useCallback(() => {
     setSetupOpen(true);
     setProjectId(null);
@@ -523,7 +519,6 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     refreshSpaceRuns,
     replaceEpisodeRunArchive,
     applyHashRoute,
-    clearProjectRoute,
     openSetup,
     returnToProjects,
     commitProjectOpen,

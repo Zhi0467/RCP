@@ -1,4 +1,5 @@
-import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
+import { memberDraftKey } from "../core/draftStorage.ts";
+import { MAIN_GRAPH, projectViewHash, sameGraphTarget } from "../core/graphTarget.ts";
 import type {
   ProjectReferenceSelector,
   AgentRunConfig,
@@ -31,6 +32,12 @@ export interface ChatConversation {
   graphTitle?: string;
   conversationKind?: "chat" | "episode" | "auto_research_child";
   orchestratorEpisodeId?: string | null;
+  humanTurnRefusal?: ChatSummary["human_turn_refusal"];
+}
+
+/** Whether messaging the orchestrator can lift a child chat's lock; isolation and merge refusals bind it too. */
+export function orchestratorCanUnlock(refusal: ChatConversation["humanTurnRefusal"]): boolean {
+  return refusal?.code === "auto_research_child_read_only";
 }
 
 export interface DraftConversation {
@@ -40,8 +47,12 @@ export interface DraftConversation {
   title: string;
 }
 
-export function chatDraftStorageKey(projectId: string, chatId: string): string {
-  return `rcp:chat-draft:${projectId}:${chatId}`;
+export function chatDraftStorageKey(
+  actorId: string | null,
+  projectId: string,
+  chatId: string,
+): string | null {
+  return memberDraftKey(actorId, `chat-draft:${projectId}:${chatId}`);
 }
 
 export function chatModeStorageKey(projectId: string, chatId: string): string {
@@ -240,6 +251,7 @@ export function groupChatConversations(
       graphTitle: summary.graph_title,
       conversationKind: summary.conversation_kind,
       orchestratorEpisodeId: summary.orchestrator_episode_id,
+      humanTurnRefusal: summary.human_turn_refusal,
     });
   }
   for (const draft of drafts) {
@@ -564,8 +576,7 @@ function comparableTime(value: string): number {
 
 /** Inventory rows enter the existing route so the target loads before the chat. */
 export function conversationHref(projectId: string, conversation: ChatConversation): string {
-  const params = new URLSearchParams({ view: "chats", chat: conversation.chatId });
-  if (conversation.graphTarget?.kind === "branch")
-    params.set("branch_id", conversation.graphTarget.branch_id);
-  return `#/projects/${encodeURIComponent(projectId)}?${params}`;
+  return projectViewHash(projectId, conversation.graphTarget ?? MAIN_GRAPH, "chats", {
+    chatId: conversation.chatId,
+  });
 }

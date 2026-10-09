@@ -77,6 +77,13 @@ const initialWatcher = {
 const noop = () => {};
 const ready = async () => {};
 
+const ownerIdentity = {
+  space_id: "personal",
+  space_kind: "personal",
+  space_name: "Personal",
+  user: { user_id: "owner", display_name: "Owner", identity_kind: "local_owner" },
+};
+
 function Fixture() {
   const [project, setProject] = useState(initialProject);
   const [watcher, setWatcher] = useState(initialWatcher);
@@ -91,7 +98,7 @@ function Fixture() {
       <ProjectSettings
         apiBase="/api/projects/project"
         project={project as never}
-        identity={null}
+        identity={ownerIdentity as never}
         onLeftProject={noop}
         usage={null}
         onRefreshUsage={ready}

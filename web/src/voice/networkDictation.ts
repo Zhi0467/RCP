@@ -258,11 +258,13 @@ export function createQuietMeter(stream: MediaStream): {
   };
 }
 
-// Kept speech belongs to its chat while the app runs, never to disk.
+// Kept speech belongs to its chat and member while the app runs, never to disk.
+// It shares the chat's member-scoped draft key; with no member there is none.
 const keptByChat = new Map<string, KeptSpeech>();
 const keptListeners = new Set<() => void>();
 /** Add speech after what the chat already keeps, so overlapping sessions lose nothing. */
-export function addKeptSpeech(chatKey: string, kept: KeptSpeech): void {
+export function addKeptSpeech(chatKey: string | null, kept: KeptSpeech): void {
+  if (!chatKey) return;
   const current = keptByChat.get(chatKey);
   setKeptSpeech(
     chatKey,
@@ -275,15 +277,16 @@ export function addKeptSpeech(chatKey: string, kept: KeptSpeech): void {
       : kept,
   );
 }
-export function setKeptSpeech(chatKey: string, kept: KeptSpeech | null): void {
+export function setKeptSpeech(chatKey: string | null, kept: KeptSpeech | null): void {
+  if (!chatKey) return;
   if (kept) keptByChat.set(chatKey, kept);
   else keptByChat.delete(chatKey);
   keptListeners.forEach((listener) => listener());
 }
-export function keptSpeech(chatKey: string): KeptSpeech | null {
-  return keptByChat.get(chatKey) ?? null;
+export function keptSpeech(chatKey: string | null): KeptSpeech | null {
+  return chatKey ? (keptByChat.get(chatKey) ?? null) : null;
 }
-export function useKeptSpeech(chatKey: string): KeptSpeech | null {
+export function useKeptSpeech(chatKey: string | null): KeptSpeech | null {
   return useSyncExternalStore(
     (listener) => {
       keptListeners.add(listener);

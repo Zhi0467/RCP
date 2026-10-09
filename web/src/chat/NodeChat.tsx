@@ -1,3 +1,4 @@
+import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
 import { ReferenceChip } from "../core/ReferenceChip";
@@ -198,6 +199,8 @@ import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./Wo
 
 interface Props {
   project: ProjectSnapshot;
+  /** The signed-in member whose persisted drafts this chat restores and saves. */
+  actorId: string | null;
   graphTarget: GraphTargetRef;
   node?: GraphNode | null;
   nodes?: Readonly<Record<string, GraphNode>>;
@@ -214,6 +217,8 @@ interface Props {
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
   readOnly?: boolean;
+  readOnlyNotice?: ReactNode;
+  allowArtifactComments?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
   onStartTask: StartAgentTask;
@@ -299,6 +304,7 @@ export function reconcileChatRunScope(
 
 export function NodeChat({
   project,
+  actorId,
   graphTarget,
   node,
   nodes = {},
@@ -314,6 +320,8 @@ export function NodeChat({
   presentation = "floating",
   fixedConversation = false,
   readOnly = false,
+  allowArtifactComments = false,
+  readOnlyNotice,
   reviewPending = false,
   graphChangesDisabled = false,
   onStartTask,
@@ -408,9 +416,9 @@ export function NodeChat({
   const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const requestedScopeKey = runScope.join("\0");
   const projectTruthScopeKey = project.project_truth_scope.join("\0");
-  const draftKey = chatDraftStorageKey(project.id, chatId);
+  const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
-  const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
+  const annotationsKey = chatAnnotationsStorageKey(actorId, project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
@@ -425,6 +433,7 @@ export function NodeChat({
     readStagedChatAnnotations(annotationsKey),
   );
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
+  const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
   const [annotationViewport, setAnnotationViewport] =
@@ -467,7 +476,12 @@ export function NodeChat({
   }, [optionsOpen]);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
-  const referencesKey = referenceDraftKey(project.id, project.graph_target ?? MAIN_GRAPH, chatId);
+  const referencesKey = referenceDraftKey(
+    actorId,
+    project.id,
+    project.graph_target ?? MAIN_GRAPH,
+    chatId,
+  );
   const [references, setReferences] = useState<DraftReference[]>(() =>
     parseReferenceDraft(readStorage(referencesKey)),
   );
@@ -1787,7 +1801,7 @@ export function NodeChat({
   };
 
   const send = async () => {
-    if (readOnly) return;
+    if (!canCompose) return;
     if (steeringTask) return steer(steeringTask);
     if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
@@ -2127,7 +2141,7 @@ export function NodeChat({
         artifact={artifact}
         title={alt.trim() || artifact.name}
         refreshToken={inlineArtifactRefreshToken}
-        canComment={!readOnly}
+        canComment={!readOnly || allowArtifactComments}
         keeping={keepingArtifacts.has(key)}
         actionError={artifactShellErrors.get(key)}
         onExpand={() => void openArtifact(taskId, artifact)}
@@ -2579,7 +2593,8 @@ export function NodeChat({
             />
           ))}
       </div>
-      {!readOnly && (
+      {!canCompose && readOnlyNotice}
+      {canCompose && (
         <div
           className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
           data-mode={mode}
@@ -3544,7 +3559,8 @@ function serviceFailureCode(error: unknown): string | null {
   return typeof code === "string" ? code : null;
 }
 
-function readStorage(key: string): string | null {
+function readStorage(key: string | null): string | null {
+  if (!key) return null;
   try {
     return localStorage.getItem(key);
   } catch {
@@ -3552,23 +3568,33 @@ function readStorage(key: string): string | null {
   }
 }
 
-function writeStorage(key: string, value: string): void {
+function writeStorage(key: string | null, value: string): void {
+  if (!key) return;
   try {
     localStorage.setItem(key, value);
   } catch {}
 }
 
-function removeStorage(key: string): void {
+function removeStorage(key: string | null): void {
+  if (!key) return;
   try {
     localStorage.removeItem(key);
   } catch {}
 }
 
-function chatAnnotationsStorageKey(projectId: string, chatId: string): string {
-  return `rcp:chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
+function chatAnnotationsStorageKey(
+  actorId: string | null,
+  projectId: string,
+  chatId: string,
+): string | null {
+  return memberDraftKey(
+    actorId,
+    `chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`,
+  );
 }
 
-function readStagedChatAnnotations(key: string): StagedChatAnnotation[] {
+function readStagedChatAnnotations(key: string | null): StagedChatAnnotation[] {
+  if (!key) return [];
   try {
     return parseStagedChatAnnotations(sessionStorage.getItem(key));
   } catch {
@@ -3576,13 +3602,15 @@ function readStagedChatAnnotations(key: string): StagedChatAnnotation[] {
   }
 }
 
-function writeSessionStorage(key: string, value: string): void {
+function writeSessionStorage(key: string | null, value: string): void {
+  if (!key) return;
   try {
     sessionStorage.setItem(key, value);
   } catch {}
 }
 
-function removeSessionStorage(key: string): void {
+function removeSessionStorage(key: string | null): void {
+  if (!key) return;
   try {
     sessionStorage.removeItem(key);
   } catch {}

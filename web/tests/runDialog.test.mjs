@@ -1299,7 +1299,7 @@ test("Run presents other-target live episodes before submission without disablin
   }
 });
 
-test("Auto-research children keep their transcript and Runs route without a composer", () => {
+test("A locked Auto-research child keeps its transcript and Runs route without a composer", () => {
   const graphTarget = { kind: "branch", branch_id: "child-branch" };
   const conversation = {
     chatId: "child-worker",
@@ -1311,6 +1311,8 @@ test("Auto-research children keep their transcript and Runs route without a comp
     graphTarget,
     conversationKind: "auto_research_child",
     orchestratorEpisodeId: "parent-run",
+    // While its lineage runs, the backend refuses a human turn on the child.
+    humanTurnRefusal: { code: "auto_research_child_read_only", detail: "Locked" },
   };
   const common = {
     project: { ...project, id: "project" },
@@ -1347,12 +1349,16 @@ test("Auto-research children keep their transcript and Runs route without a comp
     },
   };
   const child = renderToStaticMarkup(React.createElement(ChatsWorkspace, common));
-  assert.doesNotMatch(child, /class="chat-composer/);
+  assert.doesNotMatch(child, /<textarea/);
   assert.match(child, /class="node-chat-line agent"/);
   const link = [...child.matchAll(/href="([^"]+)"/g)].map((match) =>
     match[1].replaceAll("&amp;", "&"),
   );
-  assert.ok(link.includes("#/projects/project?view=runs&mode=auto_research&episode=parent-run"));
+  assert.ok(
+    link.includes(
+      "#/projects/project?view=runs&mode=auto_research&episode=parent-run&branch_id=child-branch",
+    ),
+  );
 });
 
 test("a selected inventory row cannot mount the composer on another target", () => {

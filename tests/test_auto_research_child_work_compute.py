@@ -260,3 +260,154 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         assert watchers[0].watcher_id in launcher.wake_contract
         assert wake.native_session_id == child.native_session_id
         assert store.episode(episode.episode_id).invocations_used == 3
+
+
+def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp_path):
+    from rcp.agents.continuation_prompt import master_key
+    from rcp.agents.prompts import WORK_POLICY_VERSION, chat_master_contract_key
+    from rcp.runs.auto_research_admission import start_auto_research_child_work_message_wake
+    from rcp.runs.auto_research_delivery import record_auto_research_message
+    from rcp.runs.session_master import SESSION_MASTER_KEY_ROLE
+
+    data_dir = tmp_path / "owner-data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    session_id = "owner-change-session"
+    calls = []
+    snapshots = []
+
+    class Launcher:
+        async def stream(self, provider, prompt, **kwargs):
+            calls.append(kwargs)
+            yield AgentEvent(event="session", session_id=session_id)
+            yield AgentEvent(event="answer", text="Turn complete.")
+            yield AgentEvent(event="done")
+
+    launcher = Launcher()
+
+    async def stream(project_id, kind, request, execution):
+        if kind == "auto_research":
+            yield 'data: {"event":"session","session_id":"owner-root-session"}\n\n'
+            yield 'data: {"event":"done"}\n\n'
+            return
+        route = store.auto_research_child_work_for_operation(execution.operation_id)
+        frames = (
+            child_work.stream_auto_research_child_work_run(
+                service, launcher, request, data_dir, execution, route=route
+            )
+            if route is not None
+            else work.stream_work_run(service, launcher, request, data_dir, execution)
+        )
+        async for frame in frames:
+            yield frame
+
+    background = BackgroundAgentTasks(store, stream)
+    episode, root = start_auto_research(
+        background,
+        project_id,
+        AutoResearchStartRequest(
+            code_worktree=False,
+            invocation_ceiling=5,
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
+        ),
+        authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _: None,
+        episode_id="owner-change-episode",
+    )
+    root = wait_for_task(store, root.operation_id, expect="succeeded")
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="node",
+        node_id="hyp/replanning-restores-plasticity",
+        chat_id="00000000-0000-4000-8000-000000000992",
+        message="Inspect the result.",
+        mode="work",
+        trigger="orchestrator",
+        patch_kind="work",
+    )
+    child = start_auto_research_child_work(
+        background,
+        episode.episode_id,
+        request,
+        admitted_by_operation_id=root.operation_id,
+        worker_id=request.chat_id,
+        instruction=request.message,
+        instruction_sha256=hashlib.sha256(request.message.encode()).hexdigest(),
+    )
+    child = wait_for_task(store, child.operation_id, expect="succeeded")
+
+    def capture_master(task, owner):
+        current = store.chat_session_context("codex", "laptop", session_id)
+        assert current is not None
+        snapshot = json.loads(current.snapshot_json)
+        expected = chat_master_contract_key(ontology_extensions=False, owner=owner)
+        assert snapshot["contract_key"] == expected
+        assert snapshot["master_operation_id"] == task.operation_id
+        assert store.agent_task_contract(task.operation_id, SESSION_MASTER_KEY_ROLE) == expected
+        snapshots.append(snapshot)
+
+    capture_master(child, f"episode:{episode.episode_id}")
+    # Control only the fixture lifecycle so the same routed session can exercise
+    # both master transitions; admission and all three prompt streams stay real.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (episode.episode_id,)
+        )
+    human = background.start(
+        project_id,
+        "node_chat",
+        request.model_copy(
+            update={
+                "trigger": "human",
+                "session_id": session_id,
+                "message": "Continue my investigation.",
+            }
+        ),
+        authorized_by=episode.authorized_by,
+        graph_target=episode.graph_target,
+    )
+    human = wait_for_task(store, human.operation_id, expect="succeeded")
+    assert human.episode_id is None
+    capture_master(human, None)
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'running' WHERE episode_id = ?", (episode.episode_id,)
+        )
+    message = record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="orchestrator",
+        sender_task_id=root.operation_id,
+        authorized_by=None,
+        recipient_task_id=child.operation_id,
+        body="Check the new evidence.",
+    )
+    wake = start_auto_research_child_work_message_wake(
+        background, episode.episode_id, request.chat_id, [message.message_id]
+    )
+    assert wake is not None
+    wake = wait_for_task(store, wake.operation_id, expect="succeeded")
+    assert wake.episode_id == episode.episode_id
+    # A routed wake uses the Work continuation protocol; its active master is
+    # recorded separately from the ordinary chat baseline retained for humans.
+    expected = master_key(
+        f"{WORK_POLICY_VERSION}:episode:{episode.episode_id}", ontology_extensions=False
+    )
+    active_master = store.latest_session_master(project_id, session_id)
+    assert active_master is not None
+    assert active_master[0] == wake.operation_id
+    assert active_master[2] == expected
+    assert store.agent_task_contract(wake.operation_id, SESSION_MASTER_KEY_ROLE) == expected
+    assert len(calls) == 3
+    assert [call["session_id"] for call in calls] == [None, session_id, session_id]
+    assert len({str(call["cwd"]) for call in calls}) == 1
+    assert snapshots[0]["contract_key"] != snapshots[1]["contract_key"]
