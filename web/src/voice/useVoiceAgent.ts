@@ -364,6 +364,9 @@ export function useVoiceAgent({
         ownerRef.current === owner &&
         scopeRef.current.ready &&
         scopeRef.current.epoch === capturedEpoch;
+      // A retired session still finishes its own saves (its End snapshot among
+      // them) while the member's identity scope holds; a new owner never blocks it.
+      const sameScope = () => scopeRef.current.ready && scopeRef.current.epoch === capturedEpoch;
       let record: VoiceSavedSession | null = null;
       let bounds: VoiceSessionResponse["limits"] | null = null;
       let endedNotice: string | null = null;
@@ -372,7 +375,7 @@ export function useVoiceAgent({
         snapshot.revision = (record?.revision ?? snapshot.revision) + 1;
         if (record) record.revision = snapshot.revision;
         await saveVoiceSession(snapshot);
-      }, sameOwner);
+      }, sameScope);
       const fenceFailure = async (failure: unknown) => {
         if (!sameOwner()) return;
         if (!(failure instanceof ApiError) || ![403, 404, 409].includes(failure.status)) return;
