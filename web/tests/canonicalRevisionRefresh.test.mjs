@@ -438,10 +438,13 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
       stored.delete(key);
     },
   };
-  persistProjectHumanDraft(storage, "alpha", next.humanDraft);
-  assert.equal(JSON.parse(stored.get("rcp:human-draft:alpha")).base_revision, 5);
-  persistProjectHumanDraft(storage, "alpha", null);
-  assert.equal(stored.has("rcp:human-draft:alpha"), false);
+  persistProjectHumanDraft(storage, "member", "alpha", next.humanDraft);
+  assert.equal(
+    JSON.parse(stored.get("rcp:member-draft:member:human-draft:alpha")).base_revision,
+    5,
+  );
+  persistProjectHumanDraft(storage, "member", "alpha", null);
+  assert.equal(stored.has("rcp:member-draft:member:human-draft:alpha"), false);
 });
 
 test("authoritative inactive snapshots prune resolved choices and clear missing node targets", () => {
@@ -556,12 +559,14 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
         stored.delete(key);
       },
     },
+    "member",
     "alpha",
     next.humanDraft,
   );
-  assert.deepEqual(Object.keys(JSON.parse(stored.get("rcp:human-draft:alpha")).proposals), [
-    pending.id,
-  ]);
+  assert.deepEqual(
+    Object.keys(JSON.parse(stored.get("rcp:member-draft:member:human-draft:alpha")).proposals),
+    [pending.id],
+  );
 
   const stale = reconcileInactiveProjectTabState(retained, {
     ...snapshot,

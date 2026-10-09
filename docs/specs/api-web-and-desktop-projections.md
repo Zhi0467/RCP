@@ -1970,6 +1970,13 @@ cached target selection, URL fragments, artifact messages, and provider output
 cannot select a different project, conversation, branch, authorizer, or graph
 target.
 
+Unsent drafts kept in browser storage (graph drafts, chat messages, chat
+references and staged comments, and project Settings edits) are keyed by the
+signed-in member's user id, so another member on the same browser never sees
+or submits them. Until a member is verified, no draft is restored or saved.
+Drafts stored before this scoping have no known owner; the web client deletes
+them on load instead of restoring them.
+
 ## Provider sign-in resume response
 
 Verified sign-in, token save, and successful device sign-in retain

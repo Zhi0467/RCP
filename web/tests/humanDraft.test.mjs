@@ -42,6 +42,8 @@ const {
   unstageNodeRemoval,
   toHumanSyncRequest,
 } = await server.ssrLoadModule("/src/graph/humanDraft.ts");
+const { persistProjectHumanDraft } = await server.ssrLoadModule("/src/graph/projectSession.ts");
+const { dropUnscopedDrafts } = await server.ssrLoadModule("/src/core/draftStorage.ts");
 
 after(() => server.close());
 
@@ -696,6 +698,44 @@ test("direct Decision choices merge with wording edits and supersede targeted pr
   );
 });
 
+test("a persisted graph draft is restored only for the member who staged it", () => {
+  const draft = stageNodeEdit(emptyHumanDraft(4), graph, "hyp/example", { title: "Revised" });
+  const stored = new Map();
+  const storage = {
+    setItem: (key, value) => stored.set(key, value),
+    removeItem: (key) => stored.delete(key),
+  };
+  const restore = (actorId) => {
+    const key = humanDraftStorageKey(actorId, "project");
+    return key ? deserializeHumanDraft(stored.get(key) ?? null) : null;
+  };
+  persistProjectHumanDraft(storage, "member-a", "project", draft);
+  assert.deepEqual(restore("member-a"), draft);
+  assert.equal(restore("member-b"), null);
+  assert.equal(restore(null), null);
+  persistProjectHumanDraft(storage, null, "project", draft);
+  assert.equal(stored.size, 1);
+});
+
+test("drafts saved before member scoping are dropped, member drafts are kept", () => {
+  const scoped = humanDraftStorageKey("member-a", "project");
+  const entries = new Map([
+    ["rcp:human-draft:project", "{}"],
+    ["rcp:chat-draft:project:chat", "unsent"],
+    ["rcp:text-scale", "1"],
+    [scoped, "{}"],
+  ]);
+  const keys = () => [...entries.keys()];
+  dropUnscopedDrafts({
+    get length() {
+      return entries.size;
+    },
+    key: (index) => keys()[index] ?? null,
+    removeItem: (key) => entries.delete(key),
+  });
+  assert.deepEqual(keys().sort(), ["rcp:text-scale", scoped].sort());
+});
+
 test("serialization survives localStorage round trips and request conversion strips editor metadata", () => {
   let draft = stageNodeEdit(emptyHumanDraft(4), graph, "hyp/example", {
     title: "Revised",
@@ -705,7 +745,6 @@ test("serialization survives localStorage round trips and request conversion str
   const restored = deserializeHumanDraft(serializeHumanDraft(draft));
   assert.deepEqual(restored, draft);
   assert.equal("ambiguities" in emptyHumanDraft(4), false);
-  assert.equal(humanDraftStorageKey("project one"), "rcp:human-draft:project one");
   assert.equal(deserializeHumanDraft("not json"), null);
 
   const legacyStoredDraft = JSON.parse(serializeHumanDraft(draft));

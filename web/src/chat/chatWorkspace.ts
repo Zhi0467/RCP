@@ -1,3 +1,4 @@
+import { memberDraftKey } from "../core/draftStorage.ts";
 import { MAIN_GRAPH, projectViewHash, sameGraphTarget } from "../core/graphTarget.ts";
 import type {
   ProjectReferenceSelector,
@@ -46,8 +47,12 @@ export interface DraftConversation {
   title: string;
 }
 
-export function chatDraftStorageKey(projectId: string, chatId: string): string {
-  return `rcp:chat-draft:${projectId}:${chatId}`;
+export function chatDraftStorageKey(
+  actorId: string | null,
+  projectId: string,
+  chatId: string,
+): string | null {
+  return memberDraftKey(actorId, `chat-draft:${projectId}:${chatId}`);
 }
 
 export function chatModeStorageKey(projectId: string, chatId: string): string {

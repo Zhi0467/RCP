@@ -1,3 +1,4 @@
+import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
 import { ReferenceChip } from "../core/ReferenceChip";
@@ -183,6 +184,8 @@ import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./Wo
 
 interface Props {
   project: ProjectSnapshot;
+  /** The signed-in member whose persisted drafts this chat restores and saves. */
+  actorId: string | null;
   graphTarget: GraphTargetRef;
   node?: GraphNode | null;
   nodes?: Readonly<Record<string, GraphNode>>;
@@ -281,6 +284,7 @@ export function reconcileChatRunScope(
 
 export function NodeChat({
   project,
+  actorId,
   graphTarget,
   node,
   nodes = {},
@@ -392,9 +396,9 @@ export function NodeChat({
   const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const requestedScopeKey = runScope.join("\0");
   const projectTruthScopeKey = project.project_truth_scope.join("\0");
-  const draftKey = chatDraftStorageKey(project.id, chatId);
+  const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
-  const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
+  const annotationsKey = chatAnnotationsStorageKey(actorId, project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
@@ -452,7 +456,12 @@ export function NodeChat({
   }, [optionsOpen]);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
-  const referencesKey = referenceDraftKey(project.id, project.graph_target ?? MAIN_GRAPH, chatId);
+  const referencesKey = referenceDraftKey(
+    actorId,
+    project.id,
+    project.graph_target ?? MAIN_GRAPH,
+    chatId,
+  );
   const [references, setReferences] = useState<DraftReference[]>(() =>
     parseReferenceDraft(readStorage(referencesKey)),
   );
@@ -3267,7 +3276,8 @@ function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
   ref.current = null;
 }
 
-function readStorage(key: string): string | null {
+function readStorage(key: string | null): string | null {
+  if (!key) return null;
   try {
     return localStorage.getItem(key);
   } catch {
@@ -3275,23 +3285,33 @@ function readStorage(key: string): string | null {
   }
 }
 
-function writeStorage(key: string, value: string): void {
+function writeStorage(key: string | null, value: string): void {
+  if (!key) return;
   try {
     localStorage.setItem(key, value);
   } catch {}
 }
 
-function removeStorage(key: string): void {
+function removeStorage(key: string | null): void {
+  if (!key) return;
   try {
     localStorage.removeItem(key);
   } catch {}
 }
 
-function chatAnnotationsStorageKey(projectId: string, chatId: string): string {
-  return `rcp:chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
+function chatAnnotationsStorageKey(
+  actorId: string | null,
+  projectId: string,
+  chatId: string,
+): string | null {
+  return memberDraftKey(
+    actorId,
+    `chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`,
+  );
 }
 
-function readStagedChatAnnotations(key: string): StagedChatAnnotation[] {
+function readStagedChatAnnotations(key: string | null): StagedChatAnnotation[] {
+  if (!key) return [];
   try {
     return parseStagedChatAnnotations(sessionStorage.getItem(key));
   } catch {
@@ -3299,13 +3319,15 @@ function readStagedChatAnnotations(key: string): StagedChatAnnotation[] {
   }
 }
 
-function writeSessionStorage(key: string, value: string): void {
+function writeSessionStorage(key: string | null, value: string): void {
+  if (!key) return;
   try {
     sessionStorage.setItem(key, value);
   } catch {}
 }
 
-function removeSessionStorage(key: string): void {
+function removeSessionStorage(key: string | null): void {
+  if (!key) return;
   try {
     sessionStorage.removeItem(key);
   } catch {}
