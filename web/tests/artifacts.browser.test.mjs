@@ -519,11 +519,17 @@ test("viewer persists placement and follows an edit through publication and Undo
     await page.mouse.up();
     assert.ok((await panel.boundingBox()).width > docked.width);
     await page.getByRole("button", { name: "Dock viewer" }).click();
-    const tab = page.getByRole("button", { name: "Restore Saved plot" });
-    const tabRect = await tab.boundingBox();
-    assert.ok(tabRect.y > 0, "The dock tab clears the project header");
-    assert.equal(tabRect.x + tabRect.width, 1200);
-    await tab.click();
+    // Docked, the viewer leaves the page; the project's dock renders its item.
+    await panel.waitFor({ state: "detached" });
+    assert.equal(
+      await page.evaluate(async () => {
+        const model = await import("/src/artifacts/artifactViewerModel.ts");
+        const docked = model.currentDockedArtifact();
+        docked?.restore();
+        return docked?.title ?? null;
+      }),
+      "Saved plot",
+    );
     const title = panel.locator("header strong");
     await title.waitFor();
     const titleRect = await title.boundingBox();

@@ -1884,7 +1884,7 @@ newest first, without dated snapshots or transcription, speech, realtime, live,
 image, search, or instruct models; live ids start with `gpt-live` and are not
 transcription models. Ids with a `shutdown_date` are hidden. Gemini lists only
 its `generateContent` transcribe models, because RCP sends audio without an
-instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502) and the card falls
+instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502), or `service_access_denied` when the provider refuses the key, and the card falls
 back to a text box with that reason. The save check stays the authority.
 Connect takes `live_model` and `delegation_model` for an OpenAI key, with or
 without `voice`, and checks each changed one with `GET models/{id}` using the
@@ -1915,9 +1915,34 @@ middleware admits the two audio types on this route only. On the personal
 loopback server another site's `audio/*` request needs a CORS preflight, which
 the server refuses, and a no-cors request loses its type and gets 415.
 
-The client records with the first accepted format `MediaRecorder` supports,
-pins the connection id when recording starts, and replaces the dictation span
-with the returned text in one step; typing drops a late result. Native
+The client records with the first accepted format `MediaRecorder` supports and
+pins the connection id when recording starts. Network dictation has no length
+limit. One stream records back-to-back pieces, each one upload: the first ends
+at the first 0.4 s pause after 5 s, so a failing service shows within seconds;
+later pieces end at the first pause after 40 s, and every piece ends by 55 s.
+Pieces transcribe strictly in order and append to the dictation span while the
+composer shows the elapsed time and whether a piece is transcribing. While the
+microphone opens, the client also lists the connection's models and waits for
+the answer before recording, so the check never holds a transcription slot an
+upload needs; a 401 or 403 returns `service_access_denied` (502, with the
+provider's sanitized message) and dictation fails before anything is recorded,
+while any other listing failure is ignored. A piece that reaches 55 s ends even
+when the next one cannot start.
+Transcription failures carry `service_access_denied` (401 or 403),
+`transcription_rejected` (another 4xx), or `transcription_upstream_failed`
+(5xx, redirect, or transport); only the last, or a lost connection, is retried
+once after 2 s. A second failure stops recording.
+
+Speech that cannot reach the draft is kept in memory per chat while the app
+runs, never on disk: the failed piece and every later one, or, when typing,
+sending, or leaving the chat detaches dictation, every piece still to come.
+**Retry** (or **Insert**, when every kept piece is already text) continues where
+dictation stopped if the draft is unchanged, else at the cursor, and transcribes
+with the current dictation choice. Starting a dictation or sending asks before
+kept speech is discarded. A page hidden while recording or while dictation
+starts (a phone locking or switching apps) stops like Stop and says why. macOS dictation stops at 55 s: a
+ring on the microphone drains over that time and turns amber, with the seconds
+shown, for the last 10. Native
 dictation reports `preparing` while macOS downloads the on-device model and an
 `engine` (`speech_analyzer` or `apple_server`) on `recording`; every result
 carries the whole session text. `desktop_stop_dictation` takes `finish`: Stop

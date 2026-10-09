@@ -333,7 +333,7 @@ permission. Refused and unknown input is not silently sent as a subsequent turn.
 The [provider lifecycle](providers-and-containment.md#live-human-steering) owns
 acknowledgment, completion races, and disconnect handling.
 
-The composer may turn one bounded dictation segment into editable text, through
+The composer may turn dictated speech into editable text, through
 macOS dictation in the desktop app or through the member's own transcription
 service (see [dictation](api-web-and-desktop-projections.md#dictation)). It never
 sends automatically, and RCP never stores the audio. SpeechAnalyzer recognizes

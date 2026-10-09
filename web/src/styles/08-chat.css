@@ -1471,6 +1471,44 @@
 .chat-dictation-status {
   color: var(--muted);
 }
+/* macOS dictation: a ring drains over the 55 s cap, amber for the last 10 s. */
+.chat-dictation-button.counting::after {
+  animation: none;
+  border: none;
+  border-radius: 12px;
+  content: "";
+  inset: -4px;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  background: conic-gradient(var(--red) calc(var(--dictation-left, 1) * 360deg), transparent 0);
+  padding: 2px;
+  position: absolute;
+}
+.chat-dictation-button.counting.ending {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.chat-dictation-button.counting.ending::after {
+  background: conic-gradient(var(--amber) calc(var(--dictation-left, 1) * 360deg), transparent 0);
+}
+.chat-dictation-countdown {
+  color: var(--amber);
+  font-size: var(--type-2xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.chat-dictation-error {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: 280px;
+}
 @keyframes dictation-ring {
   from {
     opacity: 0.65;

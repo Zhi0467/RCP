@@ -323,3 +323,24 @@ def test_raw_upload_returns_text_without_persisting_audio(setup, monkeypatch):
     )
     assert response.json() == {"text": "transcript"}
     assert set(private.root.rglob("*")) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (403, "service_access_denied"),
+        (429, "transcription_rejected"),
+        (503, "transcription_upstream_failed"),
+    ],
+)
+async def test_an_upstream_failure_says_whether_a_retry_can_help(monkeypatch, status, code):
+    mock_transport(
+        monkeypatch,
+        lambda _: httpx.Response(
+            status, stream=httpx.ByteStream(json.dumps({"error": {"message": "no"}}).encode())
+        ),
+    )
+    with pytest.raises(ConnectionError) as error:
+        await transcription.transcribe(connection(), KEY, b"audio", MIME)
+    assert error.value.code == code

@@ -57,9 +57,11 @@ import {
 import { createPortal } from "react-dom";
 import {
   api,
+  ApiError,
   loadServiceConnections,
   removeChatAttachment,
   steerChatTurn,
+  loadConnectionModels,
   transcribeAudio,
   uploadChatAttachment,
 } from "../core/api";
@@ -138,6 +140,19 @@ import {
 import { errorMessage } from "../core/errors";
 import type { GlossaryIndex } from "../graph/glossary";
 import { claimMicrophone, type MicrophoneClaim } from "../voice/microphone";
+import {
+  createQuietMeter,
+  joinDictatedText,
+  addKeptSpeech,
+  keptSpeech,
+  keptSpeechNeedsService,
+  NetworkDictationSession,
+  resolveKeptPieces,
+  setKeptSpeech,
+  useKeptSpeech,
+  type KeptPiece,
+  type KeptSpeech,
+} from "../voice/networkDictation";
 import {
   graphConditionLabel,
   isExternalWatcherRecord,
@@ -237,10 +252,12 @@ interface ComposerAttachment {
   error?: string;
 }
 
-/** A network dictation session; `recorder` is null until the microphone opens. */
+/** A network dictation session; `session` is null until the microphone opens. */
 interface NetworkDictation {
   sessionId: string;
-  recorder: MediaRecorder | null;
+  session: NetworkDictationSession | null;
+  /** Where a detached session's kept speech continues, while the draft is unchanged. */
+  resume?: { draft: string; at: number } | null;
 }
 
 interface SelectedChatAnnotationComposer {
@@ -263,7 +280,10 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+// macOS dictation stops at 55 s, counting down the last 10; network dictation
+// has no limit (see networkDictation.ts).
 const DICTATION_SEGMENT_MS = 55_000;
+const DICTATION_COUNTDOWN_MS = 10_000;
 const SYSTEM_DICTATION_ELSEWHERE =
   "Your dictation service is macOS, which works only in the desktop app. Choose a connection in Space settings, under Dictation and voice.";
 
@@ -501,6 +521,12 @@ export function NodeChat({
   );
   const [dictationService, setDictationService] = useState<string | null>(null);
   const [dictationUnavailable, setDictationUnavailable] = useState<string | null>(null);
+  const [dictationNote, setDictationNote] = useState<string | null>(null);
+  const [dictationStartedAt, setDictationStartedAt] = useState<number | null>(null);
+  const [dictationPiecesBusy, setDictationPiecesBusy] = useState(0);
+  const [discardPrompt, setDiscardPrompt] = useState<"dictate" | "send" | null>(null);
+  const [dictationDeadline, setDictationDeadline] = useState<number | null>(null);
+  const [dictationClock, setDictationClock] = useState(() => Date.now());
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
     () => new Set(),
@@ -623,14 +649,32 @@ export function NodeChat({
   annotationComposerOpenRef.current = annotationComposerOpen;
   const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
   const dictating = dictationState !== "idle" && dictationState !== "error";
+  const kept = useKeptSpeech(draftKey);
+  const messageRef = useRef(message);
+  messageRef.current = message;
+  // macOS: the ring drains over the whole cap; the last 10 s also show the seconds.
+  const dictationMsLeft =
+    dictationState === "recording" && dictationDeadline !== null
+      ? Math.max(0, dictationDeadline - dictationClock)
+      : null;
+  const dictationSecondsLeft =
+    dictationMsLeft !== null && dictationMsLeft <= DICTATION_COUNTDOWN_MS
+      ? Math.ceil(dictationMsLeft / 1000)
+      : null;
+  const dictationElapsed =
+    dictationState === "recording" && dictationStartedAt !== null
+      ? formatDictationElapsed(dictationClock - dictationStartedAt)
+      : null;
   const dictationStatus =
-    dictationState === "preparing"
-      ? "Downloading the macOS speech model…"
-      : dictationState === "transcribing"
-        ? `Transcribing with ${dictationService ?? "your service"}…`
-        : dictationState === "recording" && dictationEngine === "apple_server"
-          ? "Dictating with Apple's server recognizer"
-          : null;
+    dictationElapsed !== null
+      ? `Recording ${dictationElapsed}${dictationPiecesBusy ? " · transcribing…" : ""}`
+      : dictationState === "preparing"
+        ? "Downloading the macOS speech model…"
+        : dictationState === "transcribing"
+          ? `Transcribing with ${dictationService ?? "your service"}…`
+          : dictationState === "recording" && dictationEngine === "apple_server"
+            ? "Dictating with Apple's server recognizer"
+            : null;
   useEffect(() => {
     const identity = `${project.id}\0${chatId}`;
     const reset = scopeIdentityRef.current !== identity;
@@ -798,11 +842,13 @@ export function NodeChat({
         setDictationState("recording");
         setDictationEngine(payload.engine ?? null);
         // The cap counts recording, not a first-use model download.
-        if (dictationTimerRef.current === null)
+        if (dictationTimerRef.current === null) {
           dictationTimerRef.current = window.setTimeout(
             () => stopDictation(),
             DICTATION_SEGMENT_MS,
           );
+          setDictationDeadline(Date.now() + DICTATION_SEGMENT_MS);
+        }
       }
       if (payload.state === "error") {
         clearDictationTimer(dictationTimerRef);
@@ -823,6 +869,27 @@ export function NodeChat({
     // The event bridge belongs to the native shell lifetime, not each draft render.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- subscribe once per native shell; handlers read refs
   }, [desktop]);
+
+  useEffect(() => {
+    if (dictationState !== "recording" || (dictationDeadline ?? dictationStartedAt) === null)
+      return;
+    setDictationClock(Date.now());
+    const timer = window.setInterval(() => setDictationClock(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [dictationDeadline, dictationStartedAt, dictationState]);
+
+  useEffect(() => {
+    // A phone cuts the microphone when the app leaves the screen; treat that as Stop.
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden" || !networkDictationRef.current?.session?.recording)
+        return;
+      stopDictation();
+      setDictationNote("Recording ended when the app went to the background.");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stopDictation reads refs
+  }, []);
 
   useEffect(
     () => () => {
@@ -908,8 +975,8 @@ export function NodeChat({
     setDictationError(serviceConnectionFailure(error) ?? errorMessage(error));
   };
 
-  /** The member's Stop finishes the segment; `invalidate` (typing, sending) drops it. */
-  const stopDictation = (invalidate = false) => {
+  /** Stop finishes the dictation; `detach` (typing, sending, leaving) keeps what is unwritten. */
+  const stopDictation = (detach = false) => {
     const sessionId = dictationSpanRef.current?.sessionId;
     if (!sessionId) return;
     clearDictationTimer(dictationTimerRef);
@@ -918,56 +985,94 @@ export function NodeChat({
     const native =
       microphoneRef.current?.sessionId === sessionId &&
       microphoneRef.current.claim.holder === "native_dictation";
-    const recording = network?.recorder?.state === "recording";
-    if (invalidate || (!native && !recording)) {
-      // Nothing from this session may land any more, including a late transcription.
+    if (network?.session) {
+      if (detach) {
+        // Nothing may land in the draft any more; the session keeps it for Insert,
+        // which continues here if the draft is unchanged by then.
+        const span = dictationSpanRef.current;
+        network.resume = span ? { draft: messageRef.current, at: span.end } : null;
+        dictationSpanRef.current = null;
+        setDictationState("idle");
+        network.session.detach();
+        return;
+      }
+      setDictationState("transcribing");
+      network.session.finish();
+      return;
+    }
+    if (detach || !native) {
+      // Nothing from this session may land any more, including a late result.
       dictationSpanRef.current = null;
       setDictationState("idle");
     }
     if (network) {
-      if (recording && !invalidate) {
-        setDictationState("transcribing");
-        network.recorder?.stop();
-        return;
-      }
+      // The microphone was still opening; nothing was recorded.
       networkDictationRef.current = null;
-      if (recording) network.recorder?.stop();
       releaseMicrophone(sessionId);
       return;
     }
     if (!native) return;
-    if (!invalidate) setDictationState("stopping");
-    void stopDesktopDictation(sessionId, { finish: !invalidate }).catch((error) => {
+    if (!detach) setDictationState("stopping");
+    void stopDesktopDictation(sessionId, { finish: !detach }).catch((error) => {
       releaseMicrophone(sessionId);
       failDictation(sessionId, error);
     });
   };
 
-  const transcribe = async (
+  /** Insert dictated text at `at`, joined with one space; returns the new end. */
+  /** Insert kept text at `at`; returns where the rest of that speech continues. */
+  const insertDictatedText = (at: number, text: string) => {
+    const current = messageRef.current;
+    const addition = joinDictatedText(current.slice(0, at), text);
+    const next = replaceTextSpan(current, { start: at, end: at }, addition);
+    messageRef.current = next.value;
+    setMessage(next.value);
+    skills.readMessage(next.value);
+    window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(next.end, next.end));
+    return { draft: next.value, at: next.end };
+  };
+
+  /** Append one piece's text to the live span; typing detached the span first. */
+  const appendDictatedText = (sessionId: string, text: string) => {
+    const span = liveDictationSpan(dictationSpanRef.current, sessionId);
+    if (!span) return;
+    // Read once: an updater may run twice, and must append once.
+    const { end } = span;
+    setMessage((current) => {
+      const addition = joinDictatedText(current.slice(0, end), text);
+      const next = replaceTextSpan(current, { start: end, end }, addition);
+      span.end = next.end;
+      skills.readMessage(next.value);
+      return next.value;
+    });
+    window.requestAnimationFrame(() => {
+      const active = liveDictationSpan(dictationSpanRef.current, sessionId);
+      if (active) textareaRef.current?.setSelectionRange(active.end, active.end);
+    });
+  };
+
+  const finishDictatedSpan = (sessionId: string) => {
+    if (!liveDictationSpan(dictationSpanRef.current, sessionId)) return;
+    dictationSpanRef.current = null;
+    setDictationState("idle");
+  };
+
+  /** Keep speech that could not reach the draft; a live span is where it continues. */
+  const keepSpeech = (
     sessionId: string,
-    connectionId: string,
-    audio: Blob,
-    mimeType: string,
+    pieces: KeptPiece[],
+    error: unknown,
+    detachedResume: NetworkDictation["resume"] = null,
   ) => {
-    try {
-      const { text } = audio.size
-        ? await transcribeAudio(connectionId, audio, mimeType)
-        : { text: "" };
-      const span = liveDictationSpan(dictationSpanRef.current, sessionId);
-      // Typing during transcription invalidated the span; the late result is dropped.
-      if (!span) return;
-      dictationSpanRef.current = null;
-      setDictationState("idle");
-      const end = span.start + text.length;
-      setMessage((current) => {
-        const next = replaceTextSpan(current, span, text);
-        skills.readMessage(next.value);
-        return next.value;
-      });
-      window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(end, end));
-    } catch (error) {
-      failDictation(sessionId, error);
-    }
+    const span = liveDictationSpan(dictationSpanRef.current, sessionId);
+    addKeptSpeech(draftKey, {
+      pieces,
+      error,
+      resume: span ? { draft: messageRef.current, at: span.end } : (detachedResume ?? null),
+    });
+    if (!span) return;
+    dictationSpanRef.current = null;
+    setDictationState("idle");
   };
 
   const startNetworkDictation = async (sessionId: string, connection: ServiceConnection) => {
@@ -979,33 +1084,128 @@ export function NodeChat({
       throw new Error(
         `${connection.label} accepts ${connection.formats.join(" or ")}, and this browser records neither.`,
       );
-    const dictation: NetworkDictation = { sessionId, recorder: null };
+    const dictation: NetworkDictation = { sessionId, session: null };
     networkDictationRef.current = dictation;
     setDictationService(connection.label);
     microphoneRef.current = { sessionId, claim: claimMicrophone("network_dictation") };
+    // The key check runs beside the permission prompt and ends before recording,
+    // so it never takes a transcription slot an upload needs. A refused key would
+    // fail every upload; any other listing failure says nothing and is ignored.
+    const keyCheck = loadConnectionModels(connection.id).then(
+      () => null,
+      (error: unknown) => (serviceFailureCode(error) === "service_access_denied" ? error : null),
+    );
     // A Stop or typing while permission is pending releases the claim, and this throws.
     const stream = await microphoneRef.current.claim.open();
-    const recorder = new MediaRecorder(stream, { mimeType });
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) chunks.push(event.data);
-    };
-    recorder.onerror = () => {
-      networkDictationRef.current = null;
-      releaseMicrophone(sessionId);
-      failDictation(sessionId, new Error("Recording stopped unexpectedly."));
-    };
-    recorder.onstop = () => {
-      releaseMicrophone(sessionId);
-      // An invalidated session cleared its entry first: its audio goes nowhere.
-      if (networkDictationRef.current !== dictation) return;
-      networkDictationRef.current = null;
-      void transcribe(sessionId, connection.id, new Blob(chunks, { type: mimeType }), mimeType);
-    };
-    dictation.recorder = recorder;
-    recorder.start();
+    const refusal = await keyCheck;
+    if (refusal) throw refusal;
+    if (networkDictationRef.current !== dictation) return;
+    // Leaving the screen while startup waited fired no Stop, since nothing was
+    // recording yet; stop here rather than record in the background.
+    if (document.visibilityState === "hidden") {
+      stopDictation();
+      setDictationNote("Recording ended when the app went to the background.");
+      return;
+    }
+    const meter = createQuietMeter(stream);
+    const session = new NetworkDictationSession({
+      mimeType,
+      createRecorder: () => new MediaRecorder(stream, { mimeType }),
+      transcribe: async (audio) => (await transcribeAudio(connection.id, audio, mimeType)).text,
+      isTransient: transientTranscriptionFailure,
+      onText: (text) => appendDictatedText(sessionId, text),
+      onBusy: setDictationPiecesBusy,
+      onRecordingStopped: () => {
+        if (networkDictationRef.current === dictation) clearDictationTimer(dictationTimerRef);
+        meter.close();
+        releaseMicrophone(sessionId);
+      },
+      // The session stays reachable until it settles, so typing after Stop still keeps speech.
+      onSettled: () => {
+        if (networkDictationRef.current === dictation) networkDictationRef.current = null;
+        finishDictatedSpan(sessionId);
+      },
+      // Leaving the chat detached the session; its speech stays with this chat.
+      onKept: (pieces, error) => {
+        if (networkDictationRef.current === dictation) networkDictationRef.current = null;
+        keepSpeech(sessionId, pieces, error, dictation.resume);
+      },
+    });
+    dictation.session = session;
+    try {
+      session.start(Date.now());
+    } catch (error) {
+      meter.close();
+      throw error;
+    }
+    setDictationStartedAt(Date.now());
     setDictationState("recording");
-    dictationTimerRef.current = window.setTimeout(() => stopDictation(), DICTATION_SEGMENT_MS);
+    dictationTimerRef.current = window.setInterval(() => {
+      const now = Date.now();
+      session.tick(now, meter.quietMs(now));
+    }, 100);
+  };
+
+  /** Bring kept speech into the draft, transcribing kept audio with the current choice. */
+  const insertKeptSpeech = async () => {
+    const kept = keptSpeech(draftKey);
+    if (!kept || readOnly || dictating) return;
+    const at =
+      kept.resume && kept.resume.draft === message
+        ? kept.resume.at
+        : (textareaRef.current?.selectionStart ?? message.length);
+    // A span like dictation's: typing, sending, or leaving detaches it, and the
+    // result is kept again instead of landing at a stale offset.
+    const sessionId = crypto.randomUUID();
+    dictationSpanRef.current = { sessionId, start: at, end: at };
+    setKeptSpeech(draftKey, null);
+    setDictationError(null);
+    setDictationNote(null);
+    let result: Awaited<ReturnType<typeof resolveKeptPieces>>;
+    try {
+      let transcribe = async (_audio: Blob): Promise<string> => "";
+      if (keptSpeechNeedsService(kept)) {
+        setDictationState("transcribing");
+        const settings = await loadServiceConnections();
+        const connection = settings.connections.find((item) => item.id === settings.dictation);
+        if (!connection)
+          throw new Error("Choose a dictation connection in Space settings to retry.");
+        setDictationService(connection.label);
+        transcribe = async (audio) => {
+          if (!connection.formats.includes(audio.type))
+            throw new Error(`${connection.label} does not accept this recording's format.`);
+          return (await transcribeAudio(connection.id, audio, audio.type)).text;
+        };
+      }
+      result = await resolveKeptPieces(kept.pieces, transcribe);
+    } catch (error) {
+      result = { text: "", failure: { error, pending: kept.pieces } };
+    }
+    const resolved: KeptPiece[] = result.text
+      ? [{ text: result.text, order: kept.pieces[0]?.order ?? 0 }]
+      : [];
+    const span = liveDictationSpan(dictationSpanRef.current, sessionId);
+    let resume: KeptSpeech["resume"] = null;
+    if (span) {
+      dictationSpanRef.current = null;
+      setDictationState("idle");
+      resume = insertDictatedText(span.end, result.text);
+    }
+    const remaining = [...(span ? [] : resolved), ...(result.failure?.pending ?? [])];
+    if (remaining.length)
+      addKeptSpeech(draftKey, {
+        pieces: remaining,
+        error: result.failure?.error ?? null,
+        // A tail left by a partial Retry continues after the text it inserted.
+        resume,
+      });
+  };
+
+  /** A new dictation or a send asks before kept speech is dropped. */
+  const confirmDiscardKeptSpeech = (action: "dictate" | "send"): boolean => {
+    if (!keptSpeech(draftKey)) return true;
+    setDiscardPrompt(action);
+    return false;
   };
 
   const toggleDictation = async () => {
@@ -1014,6 +1214,7 @@ export function NodeChat({
       stopDictation();
       return;
     }
+    if (!confirmDiscardKeptSpeech("dictate")) return;
     const textarea = textareaRef.current;
     const start = textarea?.selectionStart ?? message.length;
     const sessionId = crypto.randomUUID();
@@ -1026,6 +1227,9 @@ export function NodeChat({
     setDictationError(null);
     setDictationEngine(null);
     setDictationService(null);
+    setDictationNote(null);
+    setDictationDeadline(null);
+    setDictationStartedAt(null);
     setDictationState("starting");
     try {
       // The choice is read now and kept, so a Settings change elsewhere cannot redirect this audio.
@@ -1639,6 +1843,7 @@ export function NodeChat({
       reviewPending
     )
       return;
+    if (!confirmDiscardKeptSpeech("send")) return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const clientId = `pending-${crypto.randomUUID()}`;
@@ -2815,7 +3020,16 @@ export function NodeChat({
               <button
                 className={`icon-button chat-dictation-button${
                   dictating && dictationState !== "transcribing" ? " recording" : ""
+                }${dictationMsLeft !== null ? " counting" : ""}${
+                  dictationSecondsLeft !== null ? " ending" : ""
                 }`}
+                style={
+                  dictationMsLeft !== null
+                    ? ({
+                        "--dictation-left": dictationMsLeft / DICTATION_SEGMENT_MS,
+                      } as React.CSSProperties)
+                    : undefined
+                }
                 type="button"
                 aria-label={dictating ? "Stop dictation" : "Start dictation"}
                 aria-pressed={dictating}
@@ -2837,6 +3051,11 @@ export function NodeChat({
                   <Mic size={16} />
                 )}
               </button>
+              {dictationSecondsLeft !== null && (
+                <span className="chat-dictation-countdown" aria-live="polite">
+                  {dictationSecondsLeft}s
+                </span>
+              )}
               <button
                 className="icon-button primary chat-send-button"
                 disabled={
@@ -2862,13 +3081,56 @@ export function NodeChat({
                 <Send size={16} />
               </button>
             </div>
-            {dictationError ? (
+            {discardPrompt ? (
+              <span className="chat-dictation-error" role="alert">
+                Discard the kept dictation?
+                <button
+                  className="button compact secondary"
+                  type="button"
+                  onClick={() => {
+                    const action = discardPrompt;
+                    setDiscardPrompt(null);
+                    setKeptSpeech(draftKey, null);
+                    void (action === "send" ? send() : toggleDictation());
+                  }}
+                >
+                  Discard
+                </button>
+                <button
+                  className="button compact secondary"
+                  type="button"
+                  onClick={() => setDiscardPrompt(null)}
+                >
+                  Keep
+                </button>
+              </span>
+            ) : kept && !dictating ? (
+              <span className="chat-dictation-error" role="alert">
+                {kept.error
+                  ? (serviceConnectionFailure(kept.error) ?? errorMessage(kept.error))
+                  : "Dictation stopped when you typed; its text is kept."}
+                <button
+                  className="button compact secondary"
+                  type="button"
+                  onClick={() => void insertKeptSpeech()}
+                >
+                  {keptSpeechNeedsService(kept) ? "Retry" : "Insert"}
+                </button>
+                <button
+                  className="button compact secondary"
+                  type="button"
+                  onClick={() => setKeptSpeech(draftKey, null)}
+                >
+                  Discard
+                </button>
+              </span>
+            ) : dictationError ? (
               <span className="chat-dictation-error" role="alert">
                 {dictationError}
               </span>
-            ) : dictationStatus ? (
+            ) : dictationStatus || dictationNote ? (
               <span className="chat-dictation-status" role="status">
-                {dictationStatus}
+                {dictationStatus ?? dictationNote}
               </span>
             ) : null}
           </div>
@@ -3286,8 +3548,29 @@ function formatBytes(bytes: number): string {
 }
 
 function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
-  if (ref.current !== null) window.clearTimeout(ref.current);
+  // One ref holds the macOS stop timeout or the network piece interval.
+  if (ref.current !== null) {
+    window.clearTimeout(ref.current);
+    window.clearInterval(ref.current);
+  }
   ref.current = null;
+}
+
+function formatDictationElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** A server error, timeout, or lost connection; a refusal or rejection never retries. */
+function transientTranscriptionFailure(error: unknown): boolean {
+  const code = serviceFailureCode(error);
+  if (code) return code === "transcription_upstream_failed" || code === "transcription_busy";
+  return !(error instanceof ApiError) || error.status >= 500;
+}
+
+function serviceFailureCode(error: unknown): string | null {
+  const code = (error as { detail?: { code?: unknown } } | null)?.detail?.code;
+  return typeof code === "string" ? code : null;
 }
 
 function readStorage(key: string | null): string | null {

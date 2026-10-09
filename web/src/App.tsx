@@ -59,6 +59,8 @@ import {
   closeArtifactViewer,
   openArtifact,
   openEpisodeReport,
+  setArtifactViewerHidden,
+  useDockedArtifact,
 } from "./artifacts/artifactViewerModel";
 import {
   chatIndicator,
@@ -785,6 +787,12 @@ function MemberApp({
   // Space settings is a page over the current route; any navigation leaves it.
   useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
   useEffect(() => closeArtifactViewer(), [projectId]);
+  const dockedArtifact = useDockedArtifact();
+  // The viewer belongs to the project; a space-level page covers both.
+  useEffect(
+    () => setArtifactViewerHidden(spaceSettingsOpen || setupOpen),
+    [spaceSettingsOpen, setupOpen],
+  );
   const appearance = useTheme();
   const phone = useNarrowViewport();
   const [loading, setLoading] = useState(true);
@@ -5018,13 +5026,24 @@ function MemberApp({
           }
         />
       )}
-      {dockedNodes.length > 0 && (
-        <section className="node-window-dock" aria-label="Docked node windows">
+      {(dockedNodes.length > 0 || dockedArtifact) && (
+        <section className="node-window-dock" aria-label="Docked windows">
           <div className="node-window-dock-label">
             <Network size={14} />
-            <span>Docked nodes</span>
+            <span>Docked</span>
           </div>
           <div className="node-window-dock-items">
+            {dockedArtifact && (
+              <button
+                className="node-window-dock-item"
+                type="button"
+                aria-label={`Restore ${dockedArtifact.title}`}
+                onClick={dockedArtifact.restore}
+              >
+                <FileText size={14} />
+                <span>{dockedArtifact.title}</span>
+              </button>
+            )}
             {dockedNodes.map(({ nodeId, node }) => (
               <button
                 className="node-window-dock-item"
