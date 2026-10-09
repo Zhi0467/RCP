@@ -58,11 +58,7 @@ import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
 import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
 import { NodeChat } from "./NodeChat";
-import {
-  AUTO_RESEARCH_ROUTE_PREFIX,
-  experimentBoardHref,
-} from "../experiments/experimentBoardModel";
-import { sameGraphTarget, MAIN_GRAPH } from "../core/graphTarget";
+import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 
 interface Props {
@@ -691,9 +687,14 @@ export function ChatsWorkspace({
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
-  const orchestratorHref = experimentBoardHref(
+  // An Auto-research child lives on its orchestrator's branch; its links stay there.
+  const orchestratorHref = projectViewHash(
     project.id,
-    `${AUTO_RESEARCH_ROUTE_PREFIX}${selected?.orchestratorEpisodeId ?? ""}`,
+    selected?.graphTarget ?? MAIN_GRAPH,
+    "execution",
+    selected?.orchestratorEpisodeId
+      ? { autoResearchEpisodeId: selected.orchestratorEpisodeId }
+      : {},
   );
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
@@ -719,20 +720,7 @@ export function ChatsWorkspace({
         </span>
         {selected.conversationKind === "auto_research_child" && (
           <span className="conversation-header-meta">
-            Managed by the orchestrator in{" "}
-            {selected.orchestratorEpisodeId ? (
-              <a
-                href={experimentBoardHref(
-                  project.id,
-                  `${AUTO_RESEARCH_ROUTE_PREFIX}${selected.orchestratorEpisodeId}`,
-                )}
-              >
-                Runs
-              </a>
-            ) : (
-              <a href={experimentBoardHref(project.id, AUTO_RESEARCH_ROUTE_PREFIX)}>Runs</a>
-            )}
-            .
+            Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
           </span>
         )}
         {!selected.humanTurnRefusal && needsHuman(selectedStatus) && selectedLatest && (

@@ -64,7 +64,6 @@ def project_graph_refs(
     """Main first, then unique branches in newest-chain-member order, without filtering."""
 
     service = get_project_service(catalog, project_id)
-    refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
     branches: dict[str, EpisodeRecord] = {}
     episodes = store.episodes(project_id, limit=None)
     by_id = {episode.episode_id: episode for episode in episodes}
@@ -78,6 +77,9 @@ def project_graph_refs(
         catalog=catalog,
         refresh_max_age_seconds=refresh_max_age_seconds,
     )
+    # Main is read after the branch reads, which refresh a remote mirror, so
+    # every ref comes from the same refreshed state.
+    refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
     isolation = store.episode_isolation_states(project_id)
     main_state = _cached_main_graph(catalog, project_id)
     for episode in branches.values():

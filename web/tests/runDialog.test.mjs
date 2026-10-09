@@ -1354,7 +1354,11 @@ test("A locked Auto-research child keeps its transcript and Runs route without a
   const link = [...child.matchAll(/href="([^"]+)"/g)].map((match) =>
     match[1].replaceAll("&amp;", "&"),
   );
-  assert.ok(link.includes("#/projects/project?view=runs&mode=auto_research&episode=parent-run"));
+  assert.ok(
+    link.includes(
+      "#/projects/project?view=runs&mode=auto_research&episode=parent-run&branch_id=child-branch",
+    ),
+  );
 });
 
 test("a selected inventory row cannot mount the composer on another target", () => {
