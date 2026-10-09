@@ -7,6 +7,7 @@ import {
   startEpisode,
   startExperimentRun,
   loadClientRequest,
+  TURN_REFUSAL_REASONS,
   api,
   clearAllProjectCaches,
   clearProjectCaches,
@@ -740,6 +741,32 @@ test("admission helpers attach only supplied keys and lookup reads the exact req
     );
     assert.equal((await loadClientRequest("p", "request-one")).episode_id, "episode-one");
     assert.equal(requests.at(-1).path, "/api/projects/p/client-requests/request-one");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// Exercise the refusal response, preserving machine-readable details for callers.
+test("turn admission refusals resolve through the shared code map", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const code of ["episode_merge_reserved", "episode_isolation_unavailable"]) {
+      for (const detail of [code, { code }]) {
+        globalThis.fetch = async () =>
+          new Response(JSON.stringify({ detail }), {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          });
+        await assert.rejects(api("/api/projects/p/tasks", { method: "POST" }), (error) => {
+          assert.equal(error.code, code);
+          assert.equal(error.status, 409);
+          assert.ok(Object.hasOwn(TURN_REFUSAL_REASONS, error.code));
+          // Identity with the mapping, without locking down its prose.
+          assert.equal(error.message, TURN_REFUSAL_REASONS[code]);
+          return true;
+        });
+      }
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }

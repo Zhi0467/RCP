@@ -14,6 +14,7 @@ from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_project_membership import _create_project, _team_app
+from .test_saved_artifacts_api import _save_source_chat
 
 
 @pytest.fixture
@@ -101,6 +102,7 @@ def _state(client, artifact):
 def test_state_version_undo_and_current_viewer(viewer_app):
     app, client, store = viewer_app
     task = _task(store, app.state.default_project_id)
+    _save_source_chat(app, task)
     artifact = _artifact(store, task)
     original = _state(client, artifact)
     assert original["version_number"] == 1

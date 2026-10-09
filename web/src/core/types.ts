@@ -2776,6 +2776,9 @@ export interface AgentUsageSnapshot {
 export type StartAgentTask = (kind: AgentTaskKind, request: AgentTaskRequest) => Promise<AgentTask>;
 
 export interface ChatSummary {
+  conversation_kind: "chat" | "episode" | "auto_research_child";
+  graph_title: string;
+  orchestrator_episode_id: string | null;
   chat_id: string;
   graph_target: GraphTargetRef;
   kind: "node_chat" | "project_chat";

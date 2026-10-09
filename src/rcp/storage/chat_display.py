@@ -6,16 +6,89 @@ Pins and read markers are per user; a marker records the newest turn end seen.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
+from rcp.limits import CHAT_TITLE_MAX_CHARS
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 from rcp.storage.mixin_base import StoreMixinBase
 
 
 class ChatDisplayStoreMixin(StoreMixinBase):
+    def chat_inventory(self, project_id: str, chat_id: str | None = None) -> list[dict[str, Any]]:
+        """Project-wide newest chat tasks, with durable episode ownership and no recency cap."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                WITH chats AS (
+                    SELECT project_id, kind, request_json, graph_target_json, updated_at,
+                           json_extract(request_json, '$.chat_id') AS chat_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY json_extract(request_json, '$.chat_id')
+                               ORDER BY created_at DESC, operation_id DESC
+                           ) AS position
+                    FROM graph_runs
+                    WHERE project_id = ? AND visible = 1
+                      AND kind IN ('node_chat', 'project_chat')
+                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                      AND (? IS NULL OR json_extract(request_json, '$.chat_id') = ?)
+                ),
+                episode_chats AS (
+                    SELECT DISTINCT json_extract(run.request_json, '$.chat_id') AS chat_id,
+                           run.graph_target_json
+                    FROM graph_runs AS run
+                    JOIN episodes AS episode ON episode.episode_id = run.episode_id
+                     AND episode.project_id = run.project_id
+                    WHERE run.project_id = ? AND episode.mode = 'experiment_loop'
+                )
+                SELECT chats.*, episode_chats.chat_id IS NOT NULL AS is_episode,
+                       COALESCE(worker.episode_id, child.auto_research_episode_id)
+                           AS orchestrator_episode_id
+                FROM chats
+                LEFT JOIN episode_chats
+                  ON episode_chats.chat_id = chats.chat_id
+                 AND episode_chats.graph_target_json = chats.graph_target_json
+                LEFT JOIN auto_research_child_work AS worker
+                  ON worker.worker_id = chats.chat_id AND worker.project_id = chats.project_id
+                LEFT JOIN auto_research_child_experiments AS child
+                  ON child.child_episode_id = chats.chat_id AND child.project_id = chats.project_id
+                WHERE chats.position = 1
+                """,
+                (project_id, chat_id, chat_id, project_id),
+            ).fetchall()
+        summaries = []
+        for row in rows:
+            request = json.loads(row["request_json"])
+            target = json.loads(row["graph_target_json"])
+            orchestrator = row["orchestrator_episode_id"]
+            summaries.append(
+                {
+                    "chat_id": row["chat_id"],
+                    "graph_target": target,
+                    "graph_title": "Main" if target["kind"] == "main" else target["branch_id"][:8],
+                    "kind": row["kind"],
+                    "node_id": request.get("node_id") or request.get("control_node_id"),
+                    "title": " ".join(
+                        (request.get("message") or request.get("node_id") or "Chat").split()
+                    )[:CHAT_TITLE_MAX_CHARS],
+                    "updated_at": row["updated_at"],
+                    "message_count": 0,
+                    "last_message_preview": "",
+                    "conversation_kind": (
+                        "auto_research_child"
+                        if orchestrator
+                        else "episode"
+                        if row["is_episode"]
+                        else "chat"
+                    ),
+                    "orchestrator_episode_id": orchestrator,
+                }
+            )
+        return summaries
+
     def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
         with self.connection() as connection:
             return self._chat_browser_requested(connection, project_id, chat_id)
@@ -163,9 +236,9 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         )
 
     def chat_reads(
-        self, project_id: str, user_id: str, graph_target: GraphTargetRef
+        self, project_id: str, user_id: str, graph_target: GraphTargetRef | None
     ) -> dict[str, Any]:
-        """A chat without a marker counts as read through the migration that added markers."""
+        """Read markers and finishes for one target, or the whole project when target is None."""
         with self.connection() as connection:
             baseline = connection.execute(
                 "SELECT completed_at FROM storage_schema_migrations "
@@ -186,7 +259,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 LEFT JOIN chat_display AS display
                   ON display.project_id = runs.project_id
                  AND display.chat_id = json_extract(runs.request_json, '$.chat_id')
-                WHERE runs.project_id = ? AND runs.graph_target_json = ?
+                WHERE runs.project_id = ? AND (? IS NULL OR runs.graph_target_json = ?)
                   AND runs.visible = 1
                   AND runs.kind IN ('node_chat', 'project_chat')
                   AND runs.status IN ('succeeded', 'failed', 'interrupted')
@@ -195,7 +268,11 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                   AND display.archived_at IS NULL
                 GROUP BY 1
                 """,
-                (project_id, graph_target_json(graph_target)),
+                (
+                    project_id,
+                    graph_target_json(graph_target) if graph_target else None,
+                    graph_target_json(graph_target) if graph_target else None,
+                ),
             ).fetchall()
             archived = connection.execute(
                 "SELECT chat_id FROM chat_display "

@@ -45,7 +45,6 @@ from rcp.runs.artifact_edit_admission import (
     ArtifactFreshSessionRequired,
     admit_artifact_edit,
     artifact_edit_availability,
-    artifact_reply_origin,
     start_artifact_edit,
 )
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
@@ -101,128 +100,125 @@ def _source_node_id(
     return node_id if isinstance(node_id, str) and node_id else None
 
 
-def _episode_runs_query(
-    store: AppStore,
-    project_id: str,
-    task: AgentTaskRecord,
-    branch_id: str,
-) -> dict[str, str] | None:
-    """Name the Runs surface that owns one episode-bound branch conversation."""
-    # Edits retain episode provenance in their immutable admission, but never
-    # participate in episode operations. Validate the operational origin before
-    # exposing its bounded transcript, including edits of forked edit outputs.
-    visited: set[str] = set()
-    while isinstance(task.request.get("artifact_edit"), dict):
-        if task.operation_id in visited:
-            return None
-        visited.add(task.operation_id)
-        edit = task.request["artifact_edit"]
-        origin = store.agent_task(edit.get("origin_operation_id", ""))
-        if (
-            origin is None
-            or origin.project_id != project_id
-            or origin.graph_target != task.graph_target
-            or edit.get("episode_id") != _task_artifact_episode_id(origin)
-        ):
-            return None
-        task = origin
-    episode = store.episode(task.episode_id) if task.episode_id else None
-    if (
-        episode is None
-        or episode.project_id != project_id
-        or episode.graph_target != task.graph_target
-    ):
-        return None
-    if episode.mode == "auto_research":
-        # Ordinary Work the Auto-research parent spawned on its own branch. Its
-        # turns are listed under that episode in Runs, where each transcript is
-        # inspected without a composer.
-        work = store.auto_research_child_work_for_operation(task.operation_id)
-        if (
-            episode.graph_target.branch_id != branch_id
-            or work is None
-            or work.project_id != project_id
-            or work.episode_id != episode.episode_id
-        ):
-            return None
-        return {"view": "runs", "mode": "auto_research", "episode": episode.episode_id}
-    experiment = store.auto_research_child_experiment(episode.episode_id)
-    if (
-        not episode.control_node_id
-        or not episode_on_branch(store, episode.episode_id, branch_id)
-        or (
-            experiment is not None
-            and (
-                experiment.project_id != project_id
-                or experiment.control_node_id != episode.control_node_id
-                or not episode_on_branch(store, experiment.auto_research_episode_id, branch_id)
-            )
-        )
-    ):
-        return None
-    return {
-        "view": "runs",
-        "experiment": episode.control_node_id,
-        "episode": episode.episode_id,
-        "target": "branch",
-        "branch": branch_id,
-        **({"parent": experiment.auto_research_episode_id} if experiment else {}),
-    }
-
-
-def _saved_chat_origins(
+def _artifact_source_hrefs(
     catalog: ProjectCatalog,
     store: AppStore,
     project_id: str,
-    tasks: list[AgentTaskRecord],
+    sources: list[AgentTaskRecord | Artifact],
 ) -> dict[str, str]:
-    """Verify source conversations once per exact graph, without reading report bytes."""
-    by_target: dict[str | None, list[AgentTaskRecord]] = {}
-    for task in tasks:
-        if task.project_id != project_id or task.kind not in {
-            "node_chat",
-            "project_chat",
-            "artifact_edit",
-        }:
+    """Resolve validated provenance for inventory and viewer, batching exact-target chats."""
+    by_target: dict[str | None, list[tuple[str, str]]] = {}
+    destinations: dict[str, str] = {}
+    base = f"#/projects/{quote(project_id, safe='')}?"
+    for source in sources:
+        if source.project_id != project_id:
             continue
+        key = source.artifact_id if isinstance(source, Artifact) else source.operation_id
+        task = (
+            store.agent_task(source.origin_operation_id or "")
+            if isinstance(source, Artifact)
+            else source
+        )
+        if task is None or task.project_id != project_id:
+            continue
+        episode_id = _task_artifact_episode_id(task)
+        if isinstance(source, Artifact) and source.episode_id not in {None, episode_id}:
+            continue
+        target = task.graph_target
         chat_id = task.request.get("chat_id")
-        if not isinstance(chat_id, str):
-            continue
-        try:
-            if str(uuid.UUID(chat_id)) != chat_id:
+        visited: set[str] = set()
+        while isinstance(task.request.get("artifact_edit"), dict) or task.kind == "episode_report":
+            if task.operation_id in visited:
+                break
+            visited.add(task.operation_id)
+            edit = task.request.get("artifact_edit")
+            origin = store.agent_task(
+                edit.get("origin_operation_id", "")
+                if isinstance(edit, dict)
+                else task.parent_operation_id or ""
+            )
+            if (
+                origin is None
+                or origin.project_id != project_id
+                or origin.graph_target != target
+                or _task_artifact_episode_id(origin) != episode_id
+            ):
+                break
+            task = origin
+            chat_id = chat_id or task.request.get("chat_id")
+        else:
+            if isinstance(source, Artifact) and source.supplier == "episode_ending" and episode_id:
+                wrapup = store.episode_wrapup(episode_id)
+                if wrapup is not None and wrapup.concluding_operation_id != task.operation_id:
+                    continue
+            episode = store.episode(episode_id) if episode_id else None
+            if episode_id and (
+                episode is None
+                or episode.project_id != project_id
+                or episode.graph_target != target
+            ):
                 continue
-        except ValueError:
-            continue
-        by_target.setdefault(task.graph_target.branch_id, []).append(task)
+            if episode is not None:
+                if episode.mode == "auto_research":
+                    if task.kind == "auto_research" and not chat_id:
+                        root = store.agent_task(episode.root_operation_id or "")
+                        if (
+                            root is not None
+                            and root.kind == "auto_research"
+                            and root.project_id == project_id
+                            and root.graph_target == target
+                            and root.episode_id == episode_id
+                        ):
+                            # The orchestrator has no chat; its Runs card lists project-wide.
+                            destinations[key] = base + urlencode(
+                                {"view": "runs", "mode": "auto_research", "episode": episode_id}
+                            )
+                        continue
+                    work = store.auto_research_child_work_for_operation(task.operation_id)
+                    if (
+                        work is None
+                        or work.project_id != project_id
+                        or work.episode_id != episode_id
+                    ):
+                        continue
+                else:
+                    child = store.auto_research_child_experiment(episode.episode_id)
+                    if not episode.control_node_id or (
+                        child is not None
+                        and (
+                            child.project_id != project_id
+                            or child.control_node_id != episode.control_node_id
+                            or target.branch_id is None
+                            or not episode_on_branch(
+                                store, child.auto_research_episode_id, target.branch_id
+                            )
+                        )
+                    ):
+                        continue
+            if task.kind not in {"node_chat", "project_chat"} or not isinstance(chat_id, str):
+                continue
+            try:
+                if str(uuid.UUID(chat_id)) != chat_id:
+                    continue
+            except ValueError:
+                continue
+            by_target.setdefault(target.branch_id, []).append((key, chat_id))
 
-    origins: dict[str, str] = {}
     for branch_id, group in by_target.items():
-        chat_ids = sorted({task.request["chat_id"] for task in group})
         try:
             service = get_graph_service(catalog, project_id, branch_id, initialize=False)
-            transcripts = service.chat_transcripts(chat_ids)
+            transcripts = service.chat_transcripts(sorted({chat_id for _, chat_id in group}))
         except (HTTPException, OSError, StateUnavailable) as exc:
-            # Losing a source conversation never removes an independently saved preview.
             logger.warning("Saved artifact source conversations unavailable: %s", exc)
             continue
-        for task in group:
-            chat_id = task.request["chat_id"]
+        for key, chat_id in group:
             if chat_id not in transcripts:
                 continue
             query = {"view": "chats", "chat": chat_id}
             if branch_id is not None:
                 query["branch_id"] = branch_id
-                if _task_artifact_episode_id(task) is not None:
-                    # This session belongs to a bounded episode. Runs owns its
-                    # read-only transcript; ordinary Chats would expose a composer.
-                    runs_query = _episode_runs_query(store, project_id, task, branch_id)
-                    if runs_query is None:
-                        continue
-                    query = runs_query
-            origins[task.operation_id] = (
-                f"#/projects/{quote(project_id, safe='')}?{urlencode(query)}"
-            )
-    return origins
+            destinations[key] = base + urlencode(query)
+    return destinations
 
 
 def _temporary(artifact: Artifact) -> bool:
@@ -251,8 +247,9 @@ def saved_artifacts(
             origin = store.agent_task(wrapup.concluding_operation_id)
             if origin is not None:
                 report_origins[report.episode_id] = origin
-    chat_origins = _saved_chat_origins(
-        catalog, store, project_id, [*artifact_tasks, *report_origins.values()]
+    stored_artifacts = store.artifacts(project_id)
+    chat_origins = _artifact_source_hrefs(
+        catalog, store, project_id, [*artifact_tasks, *stored_artifacts]
     )
     for task in artifact_tasks:
         raw_artifacts = task.result.get("artifacts") if task.result else None
@@ -316,7 +313,7 @@ def saved_artifacts(
                 artifact_id=stored_report.artifact_id,
                 episode_id=report.episode_id,
                 episode_mode=report.mode,
-                source_chat_href=chat_origins.get(origin.operation_id) if origin else None,
+                source_chat_href=chat_origins.get(stored_report.artifact_id),
                 source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
                 viewer_url=f"{artifact_url}/viewer",
             )
@@ -327,7 +324,7 @@ def saved_artifacts(
         for summary in reports
         if (report := store.episode_report(summary.episode_id)) is not None
     )
-    for artifact in store.artifacts(project_id):
+    for artifact in stored_artifacts:
         if artifact.artifact_id in represented or _temporary(artifact):
             continue
         view = artifact_view(artifact.media_type)
@@ -341,6 +338,7 @@ def saved_artifacts(
                 artifact_id=artifact.artifact_id,
                 operation_id=artifact.origin_operation_id,
                 episode_id=artifact.episode_id,
+                source_chat_href=chat_origins.get(artifact.artifact_id),
                 source_node_id=_source_node_id(
                     store,
                     project_id,
@@ -414,26 +412,6 @@ class RunArtifactEntry(BaseModel):
     created_at: str
 
 
-def _artifact_thread_href(store: AppStore, artifact) -> str | None:
-    try:
-        origin, reply_episode_id = artifact_reply_origin(store, artifact)
-    except AgentTaskAdmissionConflict:
-        return None
-    if reply_episode_id:
-        query = {"view": "runs", "mode": "auto_research", "episode": reply_episode_id}
-    else:
-        query = {"view": "chats", "chat": origin.request["chat_id"]}
-        branch_id = origin.graph_target.branch_id
-        episode = store.episode(artifact.episode_id or origin.episode_id or "")
-        if branch_id:
-            query["branch_id"] = branch_id
-            if episode:
-                query = _episode_runs_query(store, artifact.project_id, origin, branch_id)
-                if query is None:
-                    return None
-    return f"#/projects/{quote(artifact.project_id, safe='')}?{urlencode(query)}"
-
-
 @router.get(
     "/api/projects/{project_id}/artifacts/{artifact_id}/state",
     response_model=ArtifactViewerState,
@@ -485,7 +463,7 @@ def stored_artifact_state(
         can_comment=can_comment,
         comment_unavailable_reason=reason,
         fresh_session_required=fresh,
-        thread_href=_artifact_thread_href(store, artifact),
+        thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
         viewer_url=f"{base}/viewer"
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
         else None,

@@ -320,7 +320,11 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert client.get(retained_report["download_url"]).status_code == 200
         assert retained_report["episode_id"] == episode.episode_id
         assert retained_report["created_at"] == report.created_at
-        assert retained_report["source_chat_href"] is None
+        assert parse_qs(urlsplit(retained_report["source_chat_href"][1:]).query) == {
+            "view": ["runs"],
+            "mode": ["auto_research"],
+            "episode": [episode.episode_id],
+        }
         assert retained_report["episode_mode"] == "auto_research"
         assert retained_report["source_node_id"] is None
         assert store.project_episode_report_summaries(str(uuid.uuid4())) == []
@@ -412,7 +416,7 @@ def test_saved_origins_use_exact_main_and_branch_chats_in_one_scan_per_target(
 
 
 @pytest.mark.parametrize("branch_owned", [False, True])
-def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_composer(
+def test_report_links_to_its_concluding_chat_on_exact_target(
     manifest, tmp_path, branch_owned, monkeypatch
 ):
     if branch_owned:
@@ -437,12 +441,9 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
     if branch_owned:
         query = parse_qs(urlsplit(entry["source_chat_href"].removeprefix("#")).query)
         assert query == {
-            "view": ["runs"],
-            "experiment": [task.request["node_id"]],
-            "episode": [task.episode_id],
-            "target": ["branch"],
-            "branch": [parent.episode_id],
-            "parent": [parent.episode_id],
+            "view": ["chats"],
+            "chat": [task.request["chat_id"]],
+            "branch_id": [parent.episode_id],
         }
         transcript = client.get(
             f"/api/projects/{project_id}/chats/{task.request['chat_id']}",
@@ -455,7 +456,7 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
 
 
 @pytest.mark.parametrize("routed", [True, False])
-def test_auto_research_worker_artifact_opens_its_parent_episode_in_runs(manifest, tmp_path, routed):
+def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest, tmp_path, routed):
     app, _, parent, parent_root = _app_branch(manifest, tmp_path)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -479,7 +480,7 @@ def test_auto_research_worker_artifact_opens_its_parent_episode_in_runs(manifest
     _save_source_chat(app, task)
     if not routed:
         # Damaged provenance: the episode still claims the turn, but its worker
-        # route is gone. Fail closed rather than open the branch composer for it.
+        # route is gone. Do not expose a destination with unverifiable ancestry.
         with store.connection() as connection:
             connection.execute(
                 "DELETE FROM auto_research_child_work_attempts WHERE operation_id = ?",
@@ -496,9 +497,9 @@ def test_auto_research_worker_artifact_opens_its_parent_episode_in_runs(manifest
     route = urlsplit(entry["source_chat_href"].removeprefix("#"))
     assert route.path == f"/projects/{project_id}"
     assert parse_qs(route.query) == {
-        "view": ["runs"],
-        "mode": ["auto_research"],
-        "episode": [parent.episode_id],
+        "view": ["chats"],
+        "chat": [worker_id],
+        "branch_id": [parent.episode_id],
     }
     transcript = client.get(
         f"/api/projects/{project_id}/chats/{worker_id}",
@@ -513,10 +514,16 @@ def test_saved_preview_survives_missing_or_unavailable_source_chat(
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    task, _ = create_saved_artifact(app, project_id, with_chat=False)
+    task, artifact = create_saved_artifact(app, project_id, with_chat=False)
     client = signed_in_client(app)
     entry = client.get(f"/api/projects/{project_id}/artifacts").json()[0]
     assert entry["source_chat_href"] is None
+    assert (
+        client.get(f"/api/projects/{project_id}/artifacts/{artifact.artifact_id}/state").json()[
+            "thread_href"
+        ]
+        is None
+    )
     assert client.get(entry["viewer_url"]).status_code == 200
     _save_source_chat(app, task)
 
@@ -539,7 +546,7 @@ def test_report_provenance_cannot_link_to_another_projects_chat(manifest, tmp_pa
     second = _create_project(client, tmp_path / "second", name="Second")
     foreign, _ = create_saved_artifact(app, second)
     store = app.state.background_tasks.store
-    episode, _, _ = create_terminal_auto_episode(
+    episode, _, report = create_terminal_auto_episode(
         store,
         app.state.catalog.open(first).history,
         first,
@@ -555,6 +562,9 @@ def test_report_provenance_cannot_link_to_another_projects_chat(manifest, tmp_pa
     entries = client.get(f"/api/projects/{first}/artifacts").json()
     assert len(entries) == 1
     assert entries[0]["source_chat_href"] is None
+    assert report is not None
+    state = client.get(f"/api/projects/{first}/artifacts/{report.artifact_id}/state")
+    assert state.json()["thread_href"] is None
     assert entries[0]["can_open"] is True
 
 
@@ -564,7 +574,7 @@ def test_report_without_a_subject_uses_a_plain_title_instead_of_its_episode_hash
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    create_terminal_auto_episode(
+    episode, _, _ = create_terminal_auto_episode(
         store,
         app.state.catalog.open(project_id).history,
         project_id,
@@ -575,7 +585,11 @@ def test_report_without_a_subject_uses_a_plain_title_instead_of_its_episode_hash
     entry = signed_in_client(app).get(f"/api/projects/{project_id}/artifacts").json()[0]
     assert entry["name"] == "Report"
     assert entry["episode_mode"] == "auto_research"
-    assert entry["source_chat_href"] is None
+    assert parse_qs(urlsplit(entry["source_chat_href"][1:]).query) == {
+        "view": ["runs"],
+        "mode": ["auto_research"],
+        "episode": [episode.episode_id],
+    }
 
 
 def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tmp_path):
@@ -596,7 +610,9 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
 
 @pytest.mark.parametrize("owner", ["experiment", "worker"])
 @pytest.mark.parametrize("valid_origin", [True, False])
-def test_edit_outputs_keep_bounded_runs_links(manifest, tmp_path, owner, valid_origin):
+def test_forked_edit_outputs_validate_ancestry_before_linking_chat(
+    manifest, tmp_path, owner, valid_origin
+):
     app, _, parent, parent_root = _app_branch(manifest, tmp_path, include_experiment=True)
     store = app.state.background_tasks.store
     if owner == "experiment":
@@ -632,6 +648,22 @@ def test_edit_outputs_keep_bounded_runs_links(manifest, tmp_path, owner, valid_o
         }
     )
     store.create_artifact_edit_task(edit)
+    store.complete_agent_task(edit.operation_id, applied_revision=None, result={})
+    edit = edit.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "request": {
+                **edit.request,
+                "chat_id": str(uuid.uuid4()),
+                "artifact_edit": {
+                    "episode_id": origin.episode_id,
+                    "origin_operation_id": edit.operation_id,
+                },
+            },
+        }
+    )
+    store.create_artifact_edit_task(edit)
+    _save_source_chat(app, edit)
     result = _keep_task_artifact(app, edit.model_copy(update={"episode_id": origin.episode_id}))
     store.complete_agent_task(edit.operation_id, applied_revision=None, result=result)
     artifact_id = result["artifacts"][0]["artifact_id"]
@@ -650,5 +682,33 @@ def test_edit_outputs_keep_bounded_runs_links(manifest, tmp_path, owner, valid_o
     )
     assert state.json()["thread_href"] == saved["source_chat_href"]
     query = parse_qs(urlsplit(saved["source_chat_href"].removeprefix("#")).query)
-    assert query["view"] == ["runs"]
-    assert query["episode"] == [origin.episode_id]
+    assert query == {
+        "view": ["chats"],
+        "chat": [edit.request["chat_id"]],
+        "branch_id": [origin.graph_target.branch_id],
+    }
+
+
+def test_stored_artifact_without_task_result_uses_same_source_as_viewer(manifest, tmp_path):
+    app, _, branch, _ = _app_branch(manifest, tmp_path)
+    store = app.state.background_tasks.store
+    task, artifact = create_saved_artifact(
+        app, app.state.default_project_id, graph_target=branch.graph_target
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET result_json = '{}' WHERE operation_id = ?",
+            (task.operation_id,),
+        )
+    client = signed_in_client(app)
+    entry = client.get(f"/api/projects/{task.project_id}/artifacts").json()[0]
+    assert entry["id"] == f"artifact:{artifact.artifact_id}"
+    state = client.get(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/state"
+    ).json()
+    assert entry["source_chat_href"] == state["thread_href"]
+    assert parse_qs(urlsplit(state["thread_href"][1:]).query) == {
+        "view": ["chats"],
+        "chat": [task.request["chat_id"]],
+        "branch_id": [branch.graph_target.branch_id],
+    }

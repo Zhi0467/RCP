@@ -99,7 +99,10 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
       column(name)
         .locator("[data-card-id]")
         .evaluateAll((cards) => cards.map((c) => c.dataset.cardId));
-    await column("archived").getByText("Archived chat").waitFor();
+    await column("archived").locator("[data-card-id]").waitFor({ state: "attached" });
+    assert.equal(await column("archived").locator(".agent-board-cards").isHidden(), true);
+    await column("archived").locator(".agent-board-fold").click();
+    assert.equal(await column("archived").locator(".agent-board-cards").isVisible(), true);
 
     // A card's menu shows on hover, so Rename, Pin, and Archive are reachable.
     const menu = card("Claude chat").getByRole("button", { name: "More actions for Claude chat" });
@@ -158,6 +161,51 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
       () => document.activeElement?.getAttribute("aria-label") === "Message",
     );
     assert.match(await page.locator(".conversation-header-meta").innerText(), /Codex/);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("Agents graph filter includes branch inventory and keeps graph and kind tags", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/projects/*/chat-display", (route) =>
+      route.fulfill({ json: { archived: [], titles: {}, pinned: [] } }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentsList.html?board&inventory`,
+    );
+    const filter = page.locator(".agent-graph-filter");
+    const card = page.locator('[data-card-id="branch-chat"]');
+    await card.waitFor();
+    assert.deepEqual(
+      await filter
+        .locator("option")
+        .evaluateAll((options) => options.map((option) => option.value)),
+      ["all", "main", "branch-one"],
+    );
+    assert.equal(await card.locator('[data-graph-target="branch-one"]').count(), 1);
+    assert.equal(await card.locator('[data-conversation-kind="auto_research_child"]').count(), 1);
+    await filter.selectOption("main");
+    await card.waitFor({ state: "detached" });
+    assert.equal(await page.locator("[data-card-id]").count(), 4);
+    await filter.selectOption("branch-one");
+    await card.waitFor();
+    assert.equal(await page.locator("[data-card-id]").count(), 1);
+    await filter.selectOption("all");
+    assert.equal(await page.locator("[data-card-id]").count(), 5);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

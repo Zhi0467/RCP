@@ -23,6 +23,24 @@ export async function loadChatSummaryPage(
   return page;
 }
 
+/** The whole project inventory, as one consistent snapshot, before viewer filters apply. */
+export async function loadChatInventory(
+  apiBase: string,
+  request: ChatPageRequest,
+): Promise<ChatSummary[]> {
+  const page = await request(`${apiBase}/chats?inventory=true`);
+  if (page.items.length !== page.total) throw new Error("Conversation inventory is incomplete.");
+  return mergeChatSummaryPage([], page.items, "append");
+}
+
+/** Selection is exact-target even though the Agents inventory spans the project. */
+export function chatSummariesForTarget(
+  summaries: readonly ChatSummary[],
+  graphTarget: GraphTargetRef,
+): ChatSummary[] {
+  return summaries.filter((summary) => sameGraphTarget(summary.graph_target, graphTarget));
+}
+
 export function mergeChatSummaryPage(
   current: ChatSummary[],
   page: ChatSummary[],
@@ -80,7 +98,7 @@ export async function loadChatTranscript(
   const transcript = await request(
     graphTargetUrl(`${apiBase}/chats/${encodeURIComponent(chatId)}`, graphTarget),
   );
-  if (graphTarget.kind === "branch" && !sameGraphTarget(transcript.graph_target, graphTarget))
+  if (!sameGraphTarget(transcript.graph_target, graphTarget))
     throw new Error("Conversation returned a different graph target.");
   return transcript;
 }

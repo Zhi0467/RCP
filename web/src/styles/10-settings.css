@@ -1056,18 +1056,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 1px 6px;
   vertical-align: 1px;
 }
-/* A branch episode keeps the chat card's look and also tells which graph it is on. */
-.agent-branch-pill {
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  color: var(--muted);
-  display: inline-block;
-  font-size: var(--type-3xs);
-  font-weight: 650;
-  margin-right: 6px;
-  padding: 0 6px;
-  vertical-align: 1px;
-}
 .conversation-list a[role="option"] {
   color: inherit;
   text-decoration: none;
@@ -3827,4 +3815,32 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .machine-dependencies-untested {
   color: color-mix(in srgb, var(--mustard) 55%, var(--ink));
   font-weight: 650;
+}
+
+.agent-conversation-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.agent-conversation-tags > span {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: var(--type-2xs);
+}
+.agent-graph-filter {
+  max-width: 150px;
+  min-width: 80px;
+  font-size: var(--type-xs);
+}
+.agent-board-fold {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.agent-board-cards[hidden] {
+  display: none;
 }

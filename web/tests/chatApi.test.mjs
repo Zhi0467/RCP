@@ -12,6 +12,9 @@ const server = await createServer({
 after(() => server.close());
 const {
   loadChatSummaryPage,
+  loadChatInventory,
+  chatSummariesForTarget,
+  loadChatTranscript,
   mergeChatSummaryPage,
   nextChatSummaryOffset,
   reconcileChatSelectionAfterRefresh,
@@ -141,4 +144,47 @@ test("load more resumes from the refreshed cursor and preserves a valid selectio
     { selectedChatId: "selected", retainedSummary: null, deleteTranscript: false },
   );
   assert.equal(nextChatSummaryOffset(page), 3);
+});
+
+test("inventory loads one complete snapshot before exact-target selection excludes other graphs", async () => {
+  const branch = { kind: "branch", branch_id: "branch-1" };
+  const main = { kind: "main" };
+  const summaries = Array.from({ length: 201 }, (_, index) => ({
+    chat_id: `chat-${index}`,
+    graph_target: index === 200 ? branch : main,
+    message_count: index === 200 ? 0 : 2,
+  }));
+  const calls = [];
+  const inventory = await loadChatInventory("/api/projects/project", async (path) => {
+    const params = new URL(path, "http://rcp").searchParams;
+    assert.equal(params.get("inventory"), "true");
+    assert.equal(params.has("branch_id"), false);
+    calls.push(path);
+    return { items: summaries, offset: 0, total: 201, limit: 200 };
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(inventory.length, 201);
+  assert.deepEqual(
+    chatSummariesForTarget(inventory, branch).map((item) => item.chat_id),
+    ["chat-200"],
+  );
+  assert.equal(chatSummariesForTarget(inventory, main).length, 200);
+  await assert.rejects(
+    loadChatInventory("/api/projects/project", async () => ({
+      items: summaries.slice(0, 200),
+      offset: 0,
+      total: 201,
+      limit: 200,
+    })),
+  );
+});
+
+test("transcript validation refuses a branch transcript when viewing main", async () => {
+  await assert.rejects(
+    loadChatTranscript("/api/projects/project", "chat", async () => ({
+      chat_id: "chat",
+      graph_target: { kind: "branch", branch_id: "branch-1" },
+      messages: [],
+    })),
+  );
 });

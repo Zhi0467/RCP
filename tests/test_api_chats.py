@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.runs.chat import _append_chat_exchange
-from rcp.service import RunRequest
+from rcp.service import ChatSummary, RunRequest
 from rcp.transport import StateUnavailable
 from tests.helpers import signed_in_client
 
@@ -419,3 +419,83 @@ def test_reenabling_browser_cancels_deferred_delete_unless_archived(
         assert client.put(f"{url}/browser", json={"browser_requested": True}).status_code == 200
         pending = store.browser_owners(project_id)[0]
         assert (pending["close_requested"], pending["delete_profile"]) == (1, 1)
+
+
+def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.storage import AgentTaskRecord
+    from tests.test_auto_research_children_storage import _identity
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    service, store = app.state.service, app.state.catalog.store
+    project_id = app.state.default_project_id
+    branch = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
+    main_chat, branch_chat, task_chat = (str(uuid.uuid4()) for _ in range(3))
+    for chat_id in [main_chat, branch_chat]:
+        _append_chat_exchange(
+            service,
+            RunRequest(chat_id=chat_id, chat_scope="project", message="question"),
+            "answer",
+            None,
+            None,
+        )
+    path = manifest.research_dir / "chat" / f"project-{branch_chat}.jsonl"
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    path.write_text(
+        "".join(json.dumps({**row, "graphTarget": branch.model_dump()}) + "\n" for row in records)
+    )
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request={"chat_id": task_chat},
+            created_at=now,
+            updated_at=now,
+            status_message="",
+            authorized_by=_identity(store),
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json = ? WHERE project_id = ?",
+            (branch.model_dump_json(), project_id),
+        )
+    parsed = []
+    original = service._read_chat_transcript
+
+    def counted(path):
+        parsed.append(path)
+        return original(path)
+
+    monkeypatch.setattr(service, "_read_chat_transcript", counted)
+    url = f"/api/projects/{project_id}/chats"
+    # The inventory is one complete snapshot; paging parameters do not slice it.
+    for _ in range(2):
+        page = client.get(
+            f"{url}?inventory=true&branch_id={branch.branch_id}&limit=1&offset=2"
+        ).json()
+        assert page["total"] == len(page["items"]) == 3
+    rows = {row["chat_id"]: row for row in page["items"]}
+    assert set(rows) == {main_chat, branch_chat, task_chat}
+    assert len(parsed) == 2  # The second request reuses the cached scan.
+    assert rows[task_chat]["message_count"] == 0
+    assert (
+        rows[task_chat]["graph_target"] == rows[branch_chat]["graph_target"] == branch.model_dump()
+    )
+    assert rows[branch_chat]["conversation_kind"] == "chat"
+    assert [row["chat_id"] for row in client.get(url).json()["items"]] == [main_chat]
+    # The paged per-target list keeps only conversations its transcript route opens,
+    # even when a task-only conversation sits on the viewed target.
+    on_main = [
+        ChatSummary.model_validate({**row, "graph_target": {"kind": "main"}})
+        for row in store.chat_inventory(project_id)
+    ]
+    assert task_chat not in {
+        row.chat_id for row in service.chat_summaries(task_summaries=on_main).items
+    }

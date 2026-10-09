@@ -16,6 +16,7 @@ const {
   transcriptAbsenceIsExpected,
   experimentChatFreshnessToken,
   visibleUnreadChatId,
+  shouldLoadVisibleChatTranscript,
 } = await server.ssrLoadModule("/src/chat/useChatState.ts");
 const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
 const { MAIN_GRAPH } = await server.ssrLoadModule("/src/core/graphTarget.ts");
@@ -155,4 +156,25 @@ test("a cross-graph chat with no progress yet still yields a stable token", () =
 test("the Agents board shows no transcript, so it marks no chat read", () => {
   assert.equal(visibleUnreadChatId("chats", "chat-1", null, true), null);
   assert.equal(visibleUnreadChatId("chats", "chat-1", null, false), "chat-1");
+});
+
+test("a task-only inventory row loads no transcript until messages exist", () => {
+  for (const experimentId of [null, "task-chat"]) {
+    assert.equal(
+      shouldLoadVisibleChatTranscript(
+        "task-chat",
+        [{ chat_id: "task-chat", message_count: 0 }],
+        experimentId,
+      ),
+      false,
+    );
+    assert.equal(
+      shouldLoadVisibleChatTranscript(
+        "task-chat",
+        [{ chat_id: "task-chat", message_count: 1 }],
+        experimentId,
+      ),
+      true,
+    );
+  }
 });

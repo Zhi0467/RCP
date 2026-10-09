@@ -171,7 +171,9 @@ delivery and graph delivery through the isolation owner.
 
 Agent mail is star topology: the orchestrator may address workers it spawned,
 and those workers may reply. The orchestrator addresses a spawned worker by its
-stable child worker id. The human messages the orchestrator, not a child.
+stable child worker id. The human messages the orchestrator, not a child: a
+child's chat is listed in Agents read-only, and task admission refuses a human
+turn on it (`auto_research_child_read_only`).
 Mail is Markdown hearsay and carries no graph authority; `patch.json` remains the
 only graph channel.
 

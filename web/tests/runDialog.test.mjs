@@ -124,43 +124,6 @@ test("a closed run dialog renders no message field", () => {
   assert.equal(html, "");
 });
 
-test("chat history exposes one explicit end-of-list page control", () => {
-  const common = {
-    project,
-    conversations: [],
-    selectedChatId: null,
-    nodes: {},
-    experimentEntries: [],
-    graphTarget: { kind: "main", branch_id: null },
-    runScope: [],
-    tasks: [],
-    activeTask: null,
-    watchers: [],
-    graphChangesDisabled: false,
-    unreadChatIds: new Set(),
-    chatTranscripts: new Map(),
-    onSelect() {},
-    onLoadMore() {},
-    onStartTask() {},
-  };
-  const ready = renderToStaticMarkup(
-    React.createElement(ChatsWorkspace, {
-      ...common,
-      hasMore: true,
-      loadingMore: false,
-    }),
-  );
-  const complete = renderToStaticMarkup(
-    React.createElement(ChatsWorkspace, {
-      ...common,
-      hasMore: false,
-      loadingMore: false,
-    }),
-  );
-  assert.match(ready, /<button class="button primary compact" type="button">/);
-  assert.doesNotMatch(complete, /<button class="button primary compact" type="button">/);
-});
-
 test("experiment detail hides attempt history, shows the exact gate, and keeps Ask available", () => {
   const node = {
     id: "experiment/demo",
@@ -1334,4 +1297,92 @@ test("Run presents other-target live episodes before submission without disablin
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test("Auto-research children keep their transcript and Runs route without a composer", () => {
+  const graphTarget = { kind: "branch", branch_id: "child-branch" };
+  const conversation = {
+    chatId: "child-worker",
+    kind: "project_chat",
+    nodeId: null,
+    title: "Child",
+    tasks: [],
+    updatedAt: "",
+    graphTarget,
+    conversationKind: "auto_research_child",
+    orchestratorEpisodeId: "parent-run",
+  };
+  const common = {
+    project: { ...project, id: "project" },
+    conversations: [conversation],
+    selectedChatId: conversation.chatId,
+    board: false,
+    nodes: {},
+    graphTarget,
+    glossaryIndex: { entriesByInitial: new Map() },
+    runScope: [],
+    tasks: [],
+    watchers: [],
+    graphChangesDisabled: false,
+    unreadChatIds: new Set(),
+    chatTranscripts: new Map([
+      [
+        conversation.chatId,
+        {
+          messages: [
+            {
+              message_id: "child-answer",
+              operation_id: "child-turn",
+              role: "assistant",
+              text: "Evidence",
+              timestamp: "2026-10-01T00:00:00Z",
+              trigger: "human",
+            },
+          ],
+        },
+      ],
+    ]),
+    onStartTask() {
+      assert.fail("child cannot start a human turn");
+    },
+  };
+  const child = renderToStaticMarkup(React.createElement(ChatsWorkspace, common));
+  assert.doesNotMatch(child, /class="chat-composer/);
+  assert.match(child, /class="node-chat-line agent"/);
+  const link = [...child.matchAll(/href="([^"]+)"/g)].map((match) =>
+    match[1].replaceAll("&amp;", "&"),
+  );
+  assert.ok(link.includes("#/projects/project?view=runs&mode=auto_research&episode=parent-run"));
+});
+
+test("a selected inventory row cannot mount the composer on another target", () => {
+  const common = {
+    project: { ...project, id: "project" },
+    conversations: [
+      {
+        chatId: "branch-chat",
+        kind: "project_chat",
+        nodeId: null,
+        title: "Branch",
+        tasks: [],
+        updatedAt: "",
+        graphTarget: { kind: "branch", branch_id: "b" },
+        conversationKind: "chat",
+      },
+    ],
+    selectedChatId: "branch-chat",
+    board: false,
+    nodes: {},
+    glossaryIndex: { entriesByInitial: new Map() },
+    runScope: [],
+    tasks: [],
+    watchers: [],
+    graphChangesDisabled: false,
+    unreadChatIds: new Set(),
+    chatTranscripts: new Map(),
+  };
+  const render = (graphTarget) =>
+    renderToStaticMarkup(React.createElement(ChatsWorkspace, { ...common, graphTarget }));
+  assert.doesNotMatch(render({ kind: "main" }), /class="chat-composer/);
+  assert.match(render({ kind: "branch", branch_id: "b" }), /class="chat-composer/);
 });

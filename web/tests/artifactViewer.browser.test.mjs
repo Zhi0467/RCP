@@ -31,6 +31,7 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
         }
       };
     });
+    let threadHref = "#/projects/project?view=chats&chat=chat&branch_id=branch";
     let version = 1;
     let status = 200;
     let requests = 0;
@@ -63,7 +64,7 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
                 editing_operation_id: null,
                 viewer_url: `/api/projects/project/artifacts/a/viewer?v=${version}`,
                 download_url: "/api/projects/project/artifacts/a/download",
-                thread_href: null,
+                thread_href: threadHref,
               },
       });
     });
@@ -80,9 +81,28 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
       }),
     );
     await page.locator('iframe[src$="v=1"]').waitFor();
+    const source = page.locator('.artifact-viewer-header a[href^="#/projects/"]');
+    assert.equal(await source.getAttribute("href"), threadHref);
+    assert.equal(await source.locator("svg").count(), 1);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        value: {
+          writeText: async (text) => {
+            window.copiedReference = text;
+          },
+        },
+      });
+    });
+    await page.locator(".artifact-viewer-header button").first().click();
+    assert.equal(
+      new URL(await page.evaluate(() => window.copiedReference)).hash,
+      "#/projects/project/targets/branch/artifact/a",
+    );
+    threadHref = null;
     version = 2;
     await page.clock.runFor(1600);
     await page.locator('iframe[src$="v=2"]').waitFor();
+    assert.equal(await source.count(), 0);
     version = 1; // Another member's Undo.
     await page.clock.runFor(1600);
     await page.locator('iframe[src$="v=1"]').waitFor();

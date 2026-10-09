@@ -5,6 +5,9 @@
   transcripts with Resume, non-strict tools, broad reads, playbook, request
   ids for voice writes); slice 1 partly live-checked; remaining: the live
   checks.
+- [Source chat for every artifact](handoff-2026-10-08-source-chat-for-every-artifact.md)
+  — design settled after astra review; nothing implemented. Session-rule
+  fixes, Agents across all graphs, one source link, folding and a filter.
 - [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
   — implemented on its PR: chat wake sessions, event parsing, the validator
   poller, state-transfer retry, and Apply again; live checks and the remaining
