@@ -97,7 +97,7 @@ const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
-  { id: "orchestrator", label: "Orchestrator" },
+  { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 
 let machineSequence = 1;
