@@ -350,6 +350,14 @@ def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     head = add_forward_migration(candidate / "rcp" / "storage" / "base.py")
+    # The worker runs in its own process; give it the captured layout too.
+    layout = storage_models.DEFAULT_SERVER_LAYOUT
+    with (candidate / "rcp" / "storage" / "models.py").open("a", encoding="utf-8") as models:
+        models.write(
+            "\nDEFAULT_SERVER_LAYOUT = __import__('types').SimpleNamespace("
+            f"service_account={layout.service_account!r}, "
+            f"projects_root=Path({str(layout.projects_root)!r}))\n"
+        )
     worker_request = {
         "version": 1,
         "proof_path": prepared["proof_path"],
