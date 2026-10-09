@@ -59,7 +59,7 @@ unique host. Project manifests stay the source of truth for a project's
 machines: setup and **Add machine** copy a card's host and account, so the
 wrong-account check still runs when the route does not name the user, and a
 project machine finds its
-card by host. Nothing on the space page writes a manifest. The list fills from
+card by host. The space page can add a card but never writes a manifest. The list fills from
 registered projects' accepted manifests at startup, on registration, and when a
 machine is added; when two manifests name different accounts for one host, its
 card names none (and a warning is logged) rather than keeping one at random; raw manifest loads, preflight, history reload, backup, and
