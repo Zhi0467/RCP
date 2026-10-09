@@ -275,7 +275,9 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     const poll = async () => {
       try {
         const next = await loadProjectProvisioningRequest(watchedRequestId);
-        if (active && next.revision !== watchedRevision.current) setCurrentRequest(next);
+        // Only a newer revision replaces the view, so a poll that overlapped
+        // Run setup cannot put an older answer back.
+        if (active && next.revision > (watchedRevision.current ?? -1)) setCurrentRequest(next);
       } catch {
         // The next tick retries; a lasting failure surfaces through actions.
       } finally {
