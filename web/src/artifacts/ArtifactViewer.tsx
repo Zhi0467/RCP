@@ -1,6 +1,6 @@
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { graphTargetFromHash } from "../core/graphTarget";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageCircle, PanelRight, X } from "lucide-react";
 import { api, ApiError } from "../core/api";
 import {
@@ -8,6 +8,8 @@ import {
   closeArtifactViewer,
   openArtifact,
   openEpisodeReport,
+  publishDockedArtifact,
+  useArtifactViewerHidden,
   useArtifactViewerTarget,
   type ArtifactViewerTarget,
 } from "./artifactViewerModel";
@@ -39,8 +41,17 @@ function readPlacement() {
   }
 }
 
+function writePlacement(next: ViewerPlacement) {
+  try {
+    localStorage.setItem(placementKey, JSON.stringify(next));
+  } catch {
+    /* Optional preference. */
+  }
+}
+
 export function ArtifactViewer() {
   const target = useArtifactViewerTarget();
+  const hidden = useArtifactViewerHidden();
   const [placement, setPlacement] = useState(readPlacement);
   const [loaded, setLoaded] = useState<{
     target: ArtifactViewerTarget;
@@ -56,12 +67,15 @@ export function ArtifactViewer() {
   const requestGeneration = useRef(0);
   const updatePlacement = (next: ViewerPlacement) => {
     setPlacement(next);
-    try {
-      localStorage.setItem(placementKey, JSON.stringify(next));
-    } catch {
-      /* Optional preference. */
-    }
+    writePlacement(next);
   };
+  const restore = useCallback(() => {
+    setPlacement((current) => {
+      const next = collapseViewer(current, false);
+      writePlacement(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setLoaded(null);
@@ -181,21 +195,18 @@ export function ArtifactViewer() {
     };
   }, [target, collapsed]);
 
-  if (!target) return null;
-  const title =
-    target.kind === "repository"
+  const title = !target
+    ? null
+    : target.kind === "repository"
       ? target.path.split("/").pop() || target.path
       : (state?.name ?? "Artifact");
-  if (collapsed)
-    return (
-      <button
-        className="artifact-viewer-tab"
-        onClick={() => updatePlacement(collapseViewer(placement, false))}
-        aria-label={`Restore ${title}`}
-      >
-        {title}
-      </button>
-    );
+  // A docked viewer is an item in the project's dock, which the workspace renders.
+  useEffect(() => {
+    publishDockedArtifact(collapsed && title ? { title, restore } : null);
+  }, [collapsed, title, restore]);
+  useEffect(() => () => publishDockedArtifact(null), []);
+
+  if (!target || !title || collapsed || hidden) return null;
   const source =
     target.kind === "repository"
       ? repositoryFilePreviewUrl(target.projectId, { path: target.path, line: target.line ?? null })
