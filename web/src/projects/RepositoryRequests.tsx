@@ -35,6 +35,10 @@ export function RepositoryRequests({
       active.current = false;
     };
   }, []);
+  useEffect(() => {
+    setSource("");
+    setError(null);
+  }, [connectAlias]);
 
   function close() {
     setAdding(false);

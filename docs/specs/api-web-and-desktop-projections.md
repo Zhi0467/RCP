@@ -949,10 +949,9 @@ its server command, polling, and explicit final review; submitting Settings
 never confirms the request. Backend execution and authority remain with their
 provisioning owners.
 
-Transfer setup has a target GitHub URL per repository. Blank means server only
-and requires the include-local-commits bundle option before preparation. The
-native target intent must preserve explicit null sources by repository alias;
-this Web flow depends on the native transfer slice implementing that intent.
+Transfer setup does not choose target URLs. A repository with a GitHub origin
+keeps that identity on the team server; one without an origin transfers as
+server only, which the review shows, and its Git bundle is required.
 
 A saved member connection and an operator route are distinct capabilities even
 when they use the same SSH host. The source-built desktop stores the latter as
