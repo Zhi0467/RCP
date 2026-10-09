@@ -84,9 +84,9 @@ literal zero network traffic.
 
 A turn with a browser grant can run `rcp-artifact-preview <dir> --port 0` on
 its execution host. The command prints a loopback URL. It serves the artifact
-directory with the viewer's opaque-sandbox CSP and the inline view's default
-light palette. Blocked loads appear as console CSP errors. It does not sanitize
-HTML. Paths outside the directory and symlinks are refused. The agent stops the
+directory through the viewer's sanitizer and opaque-sandbox CSP, which
+`artifact_preview.py` owns for both. It sets no palette, so a page shows the
+fallback colors Expand and a download use. Paths outside the directory and symlinks are refused. The agent stops the
 server when its check is done. Turns without a browser keep direct logic checks.
 
 Every card offers Download and Keep. A reply can instead show an artifact in

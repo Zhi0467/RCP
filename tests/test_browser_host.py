@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from rcp import artifact_preview
-from rcp.artifact_theme import DEFAULT_COLOR_MODE, DEFAULT_THEME, artifact_theme_css
 from rcp.browser.host import HostRuntime, UnavailableError, dispatch, pinned_config
 
 
@@ -19,7 +18,6 @@ def request(tmp_path: Path, owner: str = "first", **extra) -> dict:
     workspace.mkdir(exist_ok=True)
     return {
         "artifact_preview_source": Path(artifact_preview.__file__).read_text(),
-        "artifact_preview_css": artifact_theme_css(DEFAULT_THEME, DEFAULT_COLOR_MODE),
         "root": str(tmp_path / "browser"),
         "action": "ensure",
         "owner_token": owner,
@@ -564,6 +562,3 @@ def test_artifact_preview_launcher_runs_shipped_source(tmp_path):
     assert (runtime.tools / "artifact_preview.py").read_text() == runtime.request[
         "artifact_preview_source"
     ]
-    assert (runtime.tools / "artifact_preview.css").read_text() == artifact_theme_css(
-        DEFAULT_THEME, DEFAULT_COLOR_MODE
-    )

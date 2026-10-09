@@ -703,11 +703,9 @@ class HostRuntime:
         )
         launcher.chmod(0o700)
         preview_source = self.tools / "artifact_preview.py"
-        preview_palette = self.tools / "artifact_preview.css"
         atomic_write(preview_source, self.request["artifact_preview_source"])
-        atomic_write(preview_palette, self.request["artifact_preview_css"])
         preview_launcher = launcher.parent / PREVIEW_COMMAND
-        command = shlex.join(["python3", str(preview_source), "--palette", str(preview_palette)])
+        command = shlex.join(["python3", str(preview_source)])
         atomic_write(preview_launcher, f'#!/bin/sh\nexec {command} "$@"\n')
         preview_launcher.chmod(0o700)
         return str(launcher.parent)
