@@ -160,8 +160,9 @@ opening turn or cost a second paid wake. So this is one operation:
   sender-attributed mail addressed to its new root, and claims that mail
   together with the `reauthorized` notice before launch.
 - A retry with the same request id returns the same continuation and the
-  same message only when the message and N both match; a different message
-  or N under that id is refused, because N sets the authorized ceiling.
+  same message only when the message, N, and the authorizing member all
+  match; a different message, N, or member under that id is refused, because
+  N sets the authorized ceiling and the mail carries its sender.
 - The message goes to the newest member of the chain. If that member is
   running, it is ordinary mail; if it has ended, it is continued.
 - Keep the existing authorizer check (`require_patch_capable_identity`) and
@@ -202,7 +203,7 @@ opening turn or cost a second paid wake. So this is one operation:
   episode turn on the same session each run under their own owner's master.
 - Ended-orchestrator message tests: one transaction claims the mail and the
   notice; a lost response retried with the same id returns the same records,
-  and the same id with a different message or N is refused;
+  and the same id with a different message, N, or member is refused;
   two concurrent sends make one continuation; N = 1 works; each refusal
   reason surfaces.
 - Served-app drive on a throwaway server: branch picker switch from Agents
