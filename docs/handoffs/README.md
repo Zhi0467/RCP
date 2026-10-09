@@ -1,6 +1,8 @@
 # Active implementation handoffs
 
-None. Unfinished agent-link work is tracked in issue #280.
+- [Server-only and empty team repositories](2026-10-09-server-only-and-empty-team-repositories.md)
+
+Unfinished agent-link work is tracked in issue #280.
 
 ## Open live checks
 
