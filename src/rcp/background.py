@@ -854,6 +854,19 @@ class BackgroundAgentTasks:
                 parent=previous,
                 continuation="retry",
             )
+        child_work = self.store.auto_research_child_work_for_operation(operation_id)
+        child_experiment = self.store.auto_research_child_experiment(previous.episode_id or "")
+        if child_work is not None:
+            raise ValueError("auto_research_child_episode_owned")
+        if child_experiment is not None:
+            parent_episode = self.store.episode(child_experiment.auto_research_episode_id)
+            if parent_episode is None or parent_episode.status in {
+                "completed",
+                "failed",
+                "needs_action",
+                "stopped",
+            }:
+                raise ValueError("auto_research_child_episode_owned")
         _require_recoverable_machine(previous, original, run_on)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(

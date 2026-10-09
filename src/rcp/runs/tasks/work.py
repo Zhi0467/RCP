@@ -80,6 +80,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
+    chat_master_owner,
     chat_prompt_values,
     stage_artifact_context,
 )
@@ -288,7 +289,9 @@ def _prepare_work_chat_prompt(
         local_stage=local_stage,
         remote_stage=remote_stage,
         master_context=master_context,
-        contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
+        contract_key=chat_master_contract_key(
+            ontology_extensions=ontology_extensions, owner=chat_master_owner(execution)
+        ),
         values=stable_values
         if browser_grant is None
         else {**stable_values, "browser": browser_prompt_line(browser_grant)},
@@ -844,7 +847,10 @@ def _stage_work_contract(
             turn.execution.store,
             turn.execution.operation_id,
             contract,
-            master_key(WORK_POLICY_VERSION, ontology_extensions=turn.context.ontology_extensions),
+            master_key(
+                f"{WORK_POLICY_VERSION}:{chat_master_owner(turn.execution)}",
+                ontology_extensions=turn.context.ontology_extensions,
+            ),
             values if values is not None else _work_prompt_values(turn, staged),
         )
     return contract_path

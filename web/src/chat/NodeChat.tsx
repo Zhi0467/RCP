@@ -199,6 +199,8 @@ interface Props {
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
   readOnly?: boolean;
+  readOnlyNotice?: ReactNode;
+  allowArtifactComments?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
   onStartTask: StartAgentTask;
@@ -294,6 +296,8 @@ export function NodeChat({
   presentation = "floating",
   fixedConversation = false,
   readOnly = false,
+  allowArtifactComments = false,
+  readOnlyNotice,
   reviewPending = false,
   graphChangesDisabled = false,
   onStartTask,
@@ -405,6 +409,7 @@ export function NodeChat({
     readStagedChatAnnotations(annotationsKey),
   );
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
+  const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
   const [annotationViewport, setAnnotationViewport] =
@@ -1583,7 +1588,7 @@ export function NodeChat({
   };
 
   const send = async () => {
-    if (readOnly) return;
+    if (!canCompose) return;
     if (steeringTask) return steer(steeringTask);
     if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
@@ -1922,7 +1927,7 @@ export function NodeChat({
         artifact={artifact}
         title={alt.trim() || artifact.name}
         refreshToken={inlineArtifactRefreshToken}
-        canComment={!readOnly}
+        canComment={!readOnly || allowArtifactComments}
         keeping={keepingArtifacts.has(key)}
         actionError={artifactShellErrors.get(key)}
         onExpand={() => void openArtifact(taskId, artifact)}
@@ -2374,7 +2379,8 @@ export function NodeChat({
             />
           ))}
       </div>
-      {!readOnly && (
+      {!canCompose && readOnlyNotice}
+      {canCompose && (
         <div
           className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
           data-mode={mode}

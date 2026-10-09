@@ -421,7 +421,14 @@ def chat(
             if transcript.graph_target.kind == "main"
             else (transcript.graph_target.branch_id or "")[:8],
             **(
-                {key: summary[key] for key in ("conversation_kind", "orchestrator_episode_id")}
+                {
+                    key: summary[key]
+                    for key in (
+                        "conversation_kind",
+                        "orchestrator_episode_id",
+                        "human_turn_refusal",
+                    )
+                }
                 if summary is not None
                 else {}
             ),

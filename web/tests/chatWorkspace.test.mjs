@@ -605,3 +605,29 @@ test("inventory retains every target while latest selection cannot reuse another
     );
   }
 });
+
+test("child conversation inventory preserves admission refusal and later unlock", () => {
+  const summary = {
+    chat_id: "child",
+    kind: "node_chat",
+    node_id: "node/a",
+    title: "Child",
+    updated_at: "",
+    message_count: 1,
+    last_message_preview: "",
+    conversation_kind: "auto_research_child",
+    orchestrator_episode_id: "parent",
+    human_turn_refusal: { code: "auto_research_child_read_only", detail: "running" },
+  };
+  const locked = groupChatConversations([summary], [], {}, "Project")[0];
+  assert.deepEqual(locked.humanTurnRefusal, summary.human_turn_refusal);
+  assert.equal(locked.orchestratorEpisodeId, "parent");
+  const unlocked = groupChatConversations(
+    [{ ...summary, human_turn_refusal: null }],
+    [],
+    {},
+    "Project",
+  )[0];
+  assert.equal(unlocked.humanTurnRefusal, null);
+  assert.equal(unlocked.conversationKind, "auto_research_child");
+});

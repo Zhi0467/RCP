@@ -31,6 +31,7 @@ export interface ChatConversation {
   graphTitle?: string;
   conversationKind?: "chat" | "episode" | "auto_research_child";
   orchestratorEpisodeId?: string | null;
+  humanTurnRefusal?: ChatSummary["human_turn_refusal"];
 }
 
 export interface DraftConversation {
@@ -240,6 +241,7 @@ export function groupChatConversations(
       graphTitle: summary.graph_title,
       conversationKind: summary.conversation_kind,
       orchestratorEpisodeId: summary.orchestrator_episode_id,
+      humanTurnRefusal: summary.human_turn_refusal,
     });
   }
   for (const draft of drafts) {

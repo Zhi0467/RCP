@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from functools import partial
 from typing import Annotated, Literal, cast
 from urllib.parse import quote
@@ -29,6 +30,7 @@ from rcp.api.episodes import (
     EpisodeResponse,
     StartEpisodeBody,
     _episode_for_http,
+    auto_research_message_refusal,
     serialize_episode,
     serialize_episodes,
 )
@@ -603,21 +605,70 @@ def send_episode_message(
     episode = _episode_for_http(store, catalog, project_id, episode_id)
     if episode.mode != "auto_research":
         raise HTTPException(status_code=409, detail="This episode has no Auto-research mail.")
-    if episode.status != "running" or episode.ending is not None:
-        raise HTTPException(status_code=409, detail="Episode is not accepting new mail")
-    if episode.root_operation_id is None:
-        raise HTTPException(status_code=409, detail="Episode orchestrator is unavailable")
-    try:
-        saved = record_auto_research_message(
-            store,
-            episode_id=episode.episode_id,
-            sender_role="human",
-            sender_task_id=None,
-            authorized_by=authorized_by,
-            recipient_task_id=episode.root_operation_id,
-            body=body.body,
+    message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:{episode.project_id}:{body.request_id}"))
+    saved = store.auto_research_message(message_id)
+    if saved is not None:
+        owner = store.episode(saved.episode_id)
+        if (
+            saved.body != body.body
+            or saved.authorized_by != authorized_by
+            or owner is None
+            or owner.graph_target != episode.graph_target
+            or (
+                owner.continuation_request_id == body.request_id
+                and owner.invocation_ceiling != body.invocation_ceiling
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "message_request_conflict",
+                    "message": "This request id already carries a different message or turn allowance.",
+                },
+            )
+        return saved
+    while (newer := store.episode_continuation(episode.episode_id)) is not None:
+        episode = newer
+    refusal = auto_research_message_refusal(store, episode)
+    if refusal is not None:
+        raise HTTPException(
+            status_code=409, detail={"code": refusal["code"], "message": refusal["detail"]}
         )
-    except ValueError as exc:
+    try:
+        if episode.status in {"completed", "failed", "needs_action", "stopped"}:
+            if body.invocation_ceiling is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "auto_research_continuation_required",
+                        "message": "The orchestrator has ended. Choose how many turns to authorize before sending.",
+                    },
+                )
+            get_project_service(catalog, project_id).history.require_writable()
+            episode, _ = continue_auto_research(
+                background_tasks,
+                episode,
+                invocation_ceiling=body.invocation_ceiling,
+                request_id=body.request_id,
+                authorized_by=authorized_by,
+                message_body=body.body,
+                message_id=message_id,
+            )
+            saved = store.auto_research_message(message_id)
+            assert saved is not None
+        else:
+            assert episode.root_operation_id is not None
+            saved = record_auto_research_message(
+                store,
+                message_id=message_id,
+                episode_id=episode.episode_id,
+                sender_role="human",
+                sender_task_id=None,
+                authorized_by=authorized_by,
+                recipient_task_id=episode.root_operation_id,
+                body=body.body,
+            )
+    except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         started = deliver_pending_auto_research_lifecycle(
@@ -628,7 +679,7 @@ def send_episode_message(
             deliver_pending_auto_research_mail(
                 background_tasks,
                 episode_id=episode.episode_id,
-                recipient_task_id=episode.root_operation_id,
+                recipient_task_id=saved.recipient_task_id,
             )
     except Exception as exc:
         logger.warning(

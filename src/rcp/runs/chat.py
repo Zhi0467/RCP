@@ -370,7 +370,7 @@ def _prepare_chat_prompt_state(
             ):
                 master_operation_id = execution.operation_id
                 master_sha256 = record_session_master(
-                    execution.store, execution.operation_id, legacy
+                    execution.store, execution.operation_id, legacy, contract_key
                 )
                 master_source = "legacy_capture"
     displaced = latest is not None and latest[1] != master_sha256
@@ -397,7 +397,7 @@ def _prepare_chat_prompt_state(
         if execution is not None:
             master_operation_id = execution.operation_id
             master_sha256 = record_session_master(
-                execution.store, execution.operation_id, master_context, values=values
+                execution.store, execution.operation_id, master_context, contract_key, values
             )
 
     # The delta is a complete overlay on the master, never on the previous turn: a value a
@@ -522,6 +522,17 @@ def _committed_chat_prompt_state(
     )
 
 
+def chat_master_owner(execution: AgentTaskExecution | None) -> str:
+    """Use durable turn ownership, never the chat's origin or its trigger wording."""
+
+    if execution is None:
+        return "human"
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        raise ValueError("The chat master owner has no task record.")
+    return f"episode:{task.episode_id}" if task.episode_id is not None else "human"
+
+
 def chat_continuation_master(
     execution: AgentTaskExecution | None,
     request: RunRequest,
@@ -558,7 +569,9 @@ def chat_continuation_master(
     if (
         previous is not None
         and previous.contract_key
-        == chat_master_contract_key(ontology_extensions=ontology_extensions)
+        == chat_master_contract_key(
+            ontology_extensions=ontology_extensions, owner=chat_master_owner(execution)
+        )
         and previous.master_operation_id is not None
         and previous.master_sha256 is not None
     ):
@@ -599,7 +612,10 @@ def chat_continuation_master(
         remote_stage=remote_stage,
         native_session_id=session_id,
         label_prefix=policy_version,
-        key=master_key(policy_version, ontology_extensions=ontology_extensions),
+        key=master_key(
+            f"{policy_version}:{chat_master_owner(execution)}",
+            ontology_extensions=ontology_extensions,
+        ),
         render=render,
         values=values,
         force_bootstrap=force_bootstrap,
@@ -617,7 +633,7 @@ def _retained_chat_patch_values(
 
     previous, _ = _committed_chat_prompt_state(execution, request)
     if previous is None or previous.contract_key != chat_master_contract_key(
-        ontology_extensions=ontology_extensions
+        ontology_extensions=ontology_extensions, owner=chat_master_owner(execution)
     ):
         return None
     value = previous.values.get("patch")
