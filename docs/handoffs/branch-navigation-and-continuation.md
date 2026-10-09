@@ -1,7 +1,13 @@
 # Unified graph refs and branch continuation
 
-Status: implementing in three slices on this PR. A design review was folded
-in, and the three product questions are answered (see the end).
+Status: implemented on this PR (reverification and reload route; graph refs
+and picker; child unlock and orchestrator continuation), each slice reviewed
+once. Served-app drive on seeded data: a picker switch from Agents keeps the
+view with no project reopen, and an ended orchestrator's composer offers N = 3
+(15 child Experiments) or shows its refusal. Still open: messaging an ended
+orchestrator end to end with a real provider session, and the phone live
+check below. The exact Experiment route in `experimentBoardHref` stays
+hand-built (its own target fields and encoding).
 
 ## Problems
 
