@@ -272,14 +272,24 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     if (watchedRequestId === null) return;
     let active = true;
     let timer = 0;
+    let failures = 0;
     const poll = async () => {
       try {
         const next = await loadProjectProvisioningRequest(watchedRequestId);
+        if (failures >= 3 && active) setError(null);
+        failures = 0;
         // Only a newer revision replaces the view, so a poll that overlapped
         // Run setup cannot put an older answer back.
         if (active && next.revision > (watchedRevision.current ?? -1)) setCurrentRequest(next);
-      } catch {
-        // The next tick retries; a lasting failure surfaces through actions.
+      } catch (caught) {
+        // Keep polling, but say so once a few checks in a row have failed,
+        // since the page has no other way to notice progress.
+        failures += 1;
+        if (failures === 3 && active) {
+          setError(
+            `Cannot reach the server to check setup (${caught instanceof Error ? caught.message : String(caught)}). Still retrying.`,
+          );
+        }
       } finally {
         if (active) timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
       }

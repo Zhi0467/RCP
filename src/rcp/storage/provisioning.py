@@ -3597,7 +3597,13 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                             "target_space_id": row["target_space_id"],
                             "authorized_by": json.loads(row["authorized_by_json"]),
                             "proposed_project_id": row["proposed_project_id"],
-                            "target_project_id": row["target_project_id"],
+                            # A pre-migration snapshot (backup before update)
+                            # has no column yet; only create requests existed.
+                            "target_project_id": (
+                                row["target_project_id"]
+                                if "target_project_id" in row.keys()  # noqa: SIM118 - Row iterates values
+                                else None
+                            ),
                             **project_config,
                             "machines": json.loads(row["machines_json"]),
                             "repositories": json.loads(row["repositories_json"]),
