@@ -1,6 +1,6 @@
 # Server-only and empty team repositories
 
-Status: design confirmed 2026-10-09; implementation not started. Ships in
+Status: design confirmed and reviewed 2026-10-09; implementation not started. Ships in
 PR #284 with the setup-page and wizard trims already on that branch.
 
 Decision: [team repositories may live only on the server](../decisions/2026-10-09-team-repositories-may-live-only-on-the-server.md).
@@ -30,40 +30,61 @@ Decision: [team repositories may live only on the server](../decisions/2026-10-0
   built from the transfer Git bundle; the bundle is required for that
   repository.
 - Branch name `main` everywhere RCP creates history.
+- An added repository carries a "count as project truth" choice, on by
+  default. The requesting member's final Confirm is the human approval: it
+  publishes manifest membership and truth scope through the existing approval
+  transition and `StateWorkspace`, bound to the reviewed manifest and head.
+- Empty or connect push: list GitHub's real refs (not only advertised `HEAD`),
+  fetch remote `main`, push the recorded local `main` with a non-forced refspec
+  only when remote `main` is absent or an ancestor of it. The RCP first commit
+  is created and recorded before any push so a retry reuses it. A lost receipt
+  is reconciled by reading the remote back; a human push that wins the race
+  returns the request to the diverged-history stop.
+
+## Design review (astra, 2026-10-09)
+
+Folded in above and in the slices: existing-project authority and storage
+migration; one effective repository inventory for backup, restore, doctor,
+terminals, agent launches, and Settings (backup otherwise refuses the whole
+project); a replacement checkout proof after restore instead of the old
+provisioning SHA; native transfer contracts and bundle install on `main`;
+race-safe first push.
 
 ## Slices
 
 Each slice updates the specs it changes and adds tests in proportion to its
-diff. Shared contracts (`src/rcp/storage/models.py`, `web/src/core/types.ts`)
-change only in slice 1 and slice 3.
+diff.
 
-1. **Source model and setup** — `storage/models.py`, `storage/provisioning.py`,
-   `api/project_provisioning.py`, `server_ops/project_provision.py`,
-   `server_ops/git_credentials.py`, `server_ops/project_checkout.py`,
-   `server_ops/remote_project_checkout.py`, `web/src/core/types.ts`.
-   The repository intent carries `repository: GitHubRepositoryRef | None`.
-   Server-only repositories skip the key and probe targets and get one
-   checkout target that initializes the repository. An empty GitHub probe
-   result becomes "create and push the first commit" instead of a stop.
-   Specs: projects-spaces-and-operations, server-and-machine-operations,
-   api-web-and-desktop-projections.
-2. **Backup and restore** — `server_ops/backup_models.py`,
-   `server_ops/backup_checkout.py`, `server_ops/backup.py`,
-   `server_ops/restore.py`. The recovery descriptor allows a server-only
-   repository; capture verifies it has no origin; restore initializes it and
-   publishes `.research`; the backup report names server-only repositories as
-   not backed up.
-3. **Connect and add later** — new provisioning kinds `add_repository` and
-   `connect_repository` in `storage/models.py`, their API routes and
-   coordinator targets, the fast-forward check, the diverged-history stop, and
-   the manifest append for an existing project.
-4. **Transfer** — `transfer/`, `project_transfer.py`: blank target URL makes a
-   server-only repository from the bundle; refuse when the bundle is missing.
-5. **Web** — `web/src/projects/TeamProjectSetup.tsx` (optional URL, server-only
-   label and backup note), `ProjectSettings.tsx` (Add repository, Connect to
-   GitHub), `TransferProjectSetup.tsx` (blank target URL).
+**A. Contracts (serial, first).** Storage migration: provisioning kinds
+`add_repository` and `connect_repository`, a nullable GitHub source per
+repository, existing-project targeting (`target_project_id`), and the truth
+choice. One owner, `effective_repositories(project)`, that resolves each
+repository's source (GitHub or server only), deploy-key evidence, and latest
+checkout proof from completed requests. API response fields and
+`web/src/core/types.ts`. Native transfer structs gain the optional source.
 
-Order: slice 1 first; then 2, 3, 4, and 5 in parallel.
+**B. Parallel after A, one owner each.**
+
+1. Setup and first push — `server_ops/project_provision.py`,
+   `git_credentials.py`, `project_checkout.py`, `remote_project_checkout.py`:
+   server-only init, empty-repo first commit and race-safe push.
+2. Backup, restore, doctor — `projects.py` descriptor builder,
+   `server_ops/backup*.py`, `transport/remote_backup_checkout.py`,
+   `server_ops/restore.py`, `server_ops/doctor.py`: consume the effective
+   inventory, record a replacement proof after restore, surface the
+   not-backed-up notice durably; prove backup → restore → backup.
+3. Add and connect — coordinator targets for the two new kinds, the
+   approval-transition completion, the diverged-history stop.
+4. Transfer — `transfer/configuration.py`, `project_transfer.py`,
+   `transport/remote_transfer_git.py`, `web/src-tauri/src/project_transfer.rs`:
+   blank target source, per-repository bundle requirement, bundle installed on
+   `main`.
+5. Runtime — `api/terminals.py`, `terminals/manager.py`,
+   `transport/remote_terminal.py`, `agents/git_access.py`, `service.py`
+   Settings projection: no deploy key for server-only repositories, member Git
+   identity kept.
+6. Web — setup wizard optional URL and backup note, Settings Add repository
+   and Connect to GitHub with the truth checkbox, transfer blank target URL.
 
 ## Checks
 
