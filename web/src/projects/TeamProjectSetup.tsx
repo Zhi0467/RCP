@@ -1258,7 +1258,7 @@ export function ProvisioningStatus({
   return (
     <div className="setup-section provisioning-status">
       <SectionHeading
-        eyebrow="Durable server setup"
+        eyebrow="Adding your RCP project"
         title={request.name ?? "Shared project setup"}
       />
       <div className="provisioning-status-banner">
@@ -1290,6 +1290,59 @@ export function ProvisioningStatus({
           </dd>
         </div>
       </dl>
+
+      {request.can_run_setup && (
+        <p className="provisioning-hint">
+          Copy the server command and run it in a shell on the server, logged in as yourself. It
+          runs as rcp through sudo.
+        </p>
+      )}
+      {desktop && connection && request.can_run_setup && !overrideOpen && (
+        <p className="provisioning-hint">
+          The app runs setup over your SSH login, {connection.ssh_target}. Use a different login
+          only if this one cannot use sudo on the server, such as when an admin account does setup.{" "}
+          <button className="button ghost tiny" type="button" onClick={() => setOverrideOpen(true)}>
+            Use a different SSH login
+          </button>
+        </p>
+      )}
+      {desktop && connection && request.can_run_setup && overrideOpen && (
+        <section className="operator-route-card">
+          <header>
+            <strong>SSH login for server setup</strong>
+            <span>{operatorRouteReady ? "Ready" : "Not checked"}</span>
+          </header>
+          <div>
+            <label>
+              SSH target
+              <input
+                value={operatorTarget}
+                onChange={(event) => onOperatorTarget(event.target.value)}
+                placeholder="operator@server"
+              />
+            </label>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={busy !== null}
+              onClick={onSaveAndProbe}
+            >
+              {busy === "probe" ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <ShieldCheck size={14} />
+              )}{" "}
+              Use this login
+            </button>
+          </div>
+          <p className="provisioning-hint">
+            {serverOperatorModeFor(operatorTarget) === "direct_rcp"
+              ? "Signs in as rcp and runs the setup command directly."
+              : "Signs in as this account, then runs the setup command as rcp with sudo. If sudo asks for a password, use Open in Terminal."}
+          </p>
+          {probe?.diagnostic && <p role="alert">{probe.diagnostic}</p>}
+        </section>
+      )}
 
       <div className="provisioning-controls">
         {request.can_run_setup && (
@@ -1333,55 +1386,6 @@ export function ProvisioningStatus({
           </button>
         )}
       </div>
-      {request.can_run_setup && (
-        <p className="provisioning-hint">
-          Paste the server command into a shell on the server under your own login. It runs as rcp
-          through sudo.
-        </p>
-      )}
-
-      {desktop && connection && request.can_run_setup && !overrideOpen && (
-        <button className="button ghost tiny" type="button" onClick={() => setOverrideOpen(true)}>
-          Use a different SSH login
-        </button>
-      )}
-      {desktop && connection && request.can_run_setup && overrideOpen && (
-        <section className="operator-route-card">
-          <header>
-            <strong>SSH login for server setup</strong>
-            <span>{operatorRouteReady ? "Ready" : "Not checked"}</span>
-          </header>
-          <div>
-            <label>
-              SSH target
-              <input
-                value={operatorTarget}
-                onChange={(event) => onOperatorTarget(event.target.value)}
-                placeholder="operator@server"
-              />
-            </label>
-            <button
-              className="button secondary"
-              type="button"
-              disabled={busy !== null}
-              onClick={onSaveAndProbe}
-            >
-              {busy === "probe" ? (
-                <LoaderCircle className="spin" size={14} />
-              ) : (
-                <ShieldCheck size={14} />
-              )}{" "}
-              Use this login
-            </button>
-          </div>
-          <p className="provisioning-hint">
-            {serverOperatorModeFor(operatorTarget) === "direct_rcp"
-              ? "Signs in as rcp and runs the setup command directly."
-              : "Signs in as this account, then runs the setup command as rcp with sudo. If sudo asks for a password, use Open in Terminal."}
-          </p>
-          {probe?.diagnostic && <p role="alert">{probe.diagnostic}</p>}
-        </section>
-      )}
 
       {events.length > 0 && (
         <section
