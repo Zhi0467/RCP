@@ -47,6 +47,22 @@ def downgrade_artifacts(
     for row in AppStore._legacy_storage_schema_cache:
         if row[0] == "table" and row[1] == "result_views":
             connection.execute(row[3])
+    # Migration 46 rebuilt the provisioning table; restore its pre-46 shape.
+    connection.execute("DROP TABLE project_provisioning_requests")
+    legacy = sorted(
+        (
+            row
+            for row in AppStore._legacy_storage_schema_cache
+            if row[2] == "project_provisioning_requests" and row[3]
+        ),
+        key=lambda row: row[0] != "table",
+    )
+    for row in legacy:
+        connection.execute(row[3])
+    connection.execute(
+        "DELETE FROM storage_schema_migrations "
+        "WHERE migration_name = 'repository_provisioning_contracts_v1'"
+    )
     connection.execute(
         "DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31, 32)"
     )
