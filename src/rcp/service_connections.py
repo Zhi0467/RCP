@@ -97,6 +97,18 @@ class VoiceSessionProject(BaseModel):
     project_name: str = Field(max_length=500)
 
 
+def _voice_session_projects(record: dict) -> list[dict]:
+    """The saved project list; a record from before it existed falls back to its receipts."""
+    if record.get("projects"):
+        return record["projects"]
+    named: dict[str, str] = {}
+    for receipt in record["receipts"]:
+        named[receipt["target"]["project_id"]] = receipt["target"]["project_name"]
+    return [{"project_id": key, "project_name": name} for key, name in named.items()][
+        : limits.VOICE_SESSION_MAX_PROJECTS
+    ]
+
+
 class VoiceTranscriptSave(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     member_id: str = Field(max_length=200)
@@ -322,7 +334,7 @@ class ServiceConnections:
                     {
                         **{key: record[key] for key in ("id", "created_at", "updated_at", "ended")},
                         "entry_count": len(record["entries"]),
-                        "projects": record.get("projects", []),
+                        "projects": _voice_session_projects(record),
                     }
                     for record in records[offset : offset + limit]
                 ],

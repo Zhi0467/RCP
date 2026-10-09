@@ -497,6 +497,12 @@ def test_history_rows_name_the_projects_a_session_worked_in(voice_setup, monkeyp
     assert saved.status_code == 200
     (row,) = client.get("/api/voice/sessions").json()["sessions"]
     assert row["projects"] == projects
+    from rcp.service_connections import _voice_session_projects
+
+    # A record saved before the project list existed names its receipts' projects.
+    target = {"project_id": "p", "project_name": "Project"}
+    older = {"receipts": [{"target": target}, {"target": target}]}
+    assert _voice_session_projects(older) == [target]
     too_many = [{"project_id": str(i), "project_name": "P"} for i in range(21)]
     refused = client.put(
         f"/api/voice/sessions/{record['id']}",

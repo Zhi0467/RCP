@@ -1,16 +1,20 @@
 # Standby voice robustness
 
 Date: 2026-10-08
-Status: slices 1 to 6 implemented. Slice 1 is partly
-live-checked (2026-10-08): talking on another Space stayed connected, and a
-minimized, silent session released the microphone at a 1-minute idle limit.
-The fully occluded and app-hidden cases, speech in each state, and timer and
-media measurements remain in the final live check; the native deadline
-backstop stays deferred until that check, not ruled out. Each slice had one cross-model review and one
-fix round.
+Status: slices 1 to 6 implemented, plus the fixes from the first full live
+session. Each slice had one cross-model review and one fix round.
 
-Implemented: slices 1 to 6.
-Remaining: the live checks below for slices 1 to 6.
+Live-checked on 2026-10-08 in `RCP Dev.app` on disposable data: talking on
+another Space stayed connected; a minimized, silent session released the
+microphone at a 1-minute idle limit; the agent described a project without
+asking for pasted text; it found and opened a saved artifact; Resume recalled
+the earlier topic; the voice panel drags and resizes. The dashboard request
+reached a node agent but exposed three bugs, now fixed and not yet re-driven:
+it claimed the send before it happened, it could not open the chat while its
+first turn ran, and after Resume a no-offer refusal read as "another project".
+
+Remaining: the live checks below. The native deadline backstop stays deferred
+until the occluded and app-hidden checks, not ruled out.
 
 Settled with the human on 2026-10-08:
 
@@ -45,7 +49,7 @@ Settled with the human on 2026-10-08:
 - A plain-language playbook gives page agents RCP domain knowledge.
 - One PR holds all five slices.
 
-## What is wrong today
+## The problems it fixes
 
 1. **Hiding ends the session.** `endOnPageSuspend`
    (`web/src/voice/voiceSession.ts`) ends voice on `visibilitychange` to
@@ -255,12 +259,14 @@ are serialized.
 
 With a real OpenAI key in a rebuilt `RCP Dev.app` on disposable data:
 
-- Slice 1's hidden-window check, before slice 2 starts.
+- Fully occluded and app-hidden windows keep voice, with speech in each
+  state; measure page timers while hidden.
 - On macOS 13 (if available), hiding still ends voice, with the notice.
 - Kill the network mid-session, then Resume from the voice button. The agent
   remembers the topic; work started before the drop is summarized once.
 - Resume the same session on a second device; the first ends with a notice.
-- Ask for artifacts, a saved Artifacts-panel item, and last night's
-  consolidation report. All answer. Open a PDF artifact.
-- Ask "make me a live dashboard for experiment X" with no other hint. It names
-  the node, sends a Work turn, announces the finish, and opens it on yes.
+- Ask for last night's consolidation report and open a PDF artifact.
+- Re-drive "make me a live dashboard": it waits for the tap before saying it
+  started, opens the running chat on request, announces the finish, and opens
+  the result on yes, also after Resume.
+- A new session's history row shows the project it worked in.
