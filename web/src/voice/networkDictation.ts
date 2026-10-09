@@ -96,7 +96,9 @@ export class NetworkDictationSession {
     try {
       this.record(now);
     } catch {
-      // The current piece keeps recording and the next tick tries again.
+      // At a pause the current piece keeps recording and the next tick tries
+      // again; at the cap it must end, or it would outgrow one upload.
+      if (now - this.pieceStartedAt >= PIECE_MAX_MS) this.finish();
     }
   }
 
@@ -107,6 +109,13 @@ export class NetworkDictationSession {
 
   /** Stop recording; every result from now on is kept instead of written. */
   detach(): void {
+    this.kept ??= [];
+    this.finish();
+  }
+
+  /** Stop with a known failure; every piece not yet in the draft is kept with it. */
+  fail(error: unknown): void {
+    this.failure ??= error;
     this.kept ??= [];
     this.finish();
   }
@@ -283,5 +292,6 @@ export function useKeptSpeech(chatKey: string): KeptSpeech | null {
       };
     },
     () => keptSpeech(chatKey),
+    () => null,
   );
 }

@@ -191,3 +191,25 @@ test("speech kept by overlapping sessions is appended, never replaced", () => {
   assert.equal(kept.resume, null);
   setKeptSpeech("chat", null);
 });
+
+test("a refusal found by the key check keeps what was recorded", async () => {
+  const { dictation, events } = session(label);
+  dictation.start(0);
+  dictation.fail(new Error("denied"));
+  await settle();
+  assert.deepEqual(events, [["stopped"], ["kept", ["audio"], "denied"]]);
+});
+
+test("a piece at the cap ends even when the next one cannot start", async () => {
+  const { dictation, made, events } = session(label);
+  dictation.start(0);
+  dictation.hooks.createRecorder = () => ({
+    ...made[0],
+    start() {
+      throw new Error("busy");
+    },
+  });
+  dictation.tick(PIECE_MAX_MS, 0);
+  await settle();
+  assert.deepEqual(events, [["stopped"], ["text", "piece-1"], ["settled"]]);
+});

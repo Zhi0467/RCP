@@ -1864,7 +1864,9 @@ Pieces transcribe strictly in order and append to the dictation span while the
 composer shows the elapsed time and whether a piece is transcribing. When
 recording starts the client also lists the connection's models; a 401 or 403
 returns `service_access_denied` (502, with the provider's sanitized message)
-and stops dictation at once, while any other listing failure is ignored.
+and stops dictation at once, keeping what was recorded for Retry, while any
+other listing failure is ignored. A piece that reaches 55 s ends even when the
+next one cannot start.
 Transcription failures carry `service_access_denied` (401 or 403),
 `transcription_rejected` (another 4xx), or `transcription_upstream_failed`
 (5xx, redirect, or transport); only the last, or a lost connection, is retried

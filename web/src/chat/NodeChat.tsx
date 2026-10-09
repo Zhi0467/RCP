@@ -1107,9 +1107,8 @@ export function NodeChat({
     loadConnectionModels(connection.id).catch((error) => {
       if (serviceFailureCode(error) !== "service_access_denied") return;
       if (networkDictationRef.current !== dictation) return;
-      networkDictationRef.current = null;
-      session.cancel();
-      failDictation(sessionId, error);
+      // Speech recorded so far is kept with the refusal, for a Retry elsewhere.
+      session.fail(error);
     });
   };
 

@@ -121,7 +121,17 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
     await page.keyboard.press("ArrowLeft");
     assert.ok(Number(await separator.getAttribute("aria-valuenow")) > width);
     await page.getByRole("button", { name: "Dock viewer", exact: true }).click();
-    await page.getByRole("button", { name: "Restore Test artifact", exact: true }).click();
+    // Docked, the project's dock restores it; this harness has no project shell.
+    await panel.waitFor({ state: "detached" });
+    assert.equal(
+      await page.evaluate(async () => {
+        const model = await import("/src/artifacts/artifactViewerModel.ts");
+        const docked = model.currentDockedArtifact();
+        docked?.restore();
+        return docked?.title ?? null;
+      }),
+      "Test artifact",
+    );
     await page.locator('iframe[src$="v=1"]').waitFor();
 
     status = 404;

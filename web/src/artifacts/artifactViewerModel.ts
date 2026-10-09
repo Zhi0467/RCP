@@ -75,7 +75,7 @@ export function currentDockedArtifact(): DockedArtifact | null {
   return docked;
 }
 export function useDockedArtifact(): DockedArtifact | null {
-  return useSyncExternalStore(subscribeShell, currentDockedArtifact);
+  return useSyncExternalStore(subscribeShell, currentDockedArtifact, () => null);
 }
 export function setArtifactViewerHidden(next: boolean): void {
   if (hidden === next) return;
@@ -83,7 +83,11 @@ export function setArtifactViewerHidden(next: boolean): void {
   shellListeners.forEach((listener) => listener());
 }
 export function useArtifactViewerHidden(): boolean {
-  return useSyncExternalStore(subscribeShell, () => hidden);
+  return useSyncExternalStore(
+    subscribeShell,
+    () => hidden,
+    () => false,
+  );
 }
 
 export async function openEpisodeReport(input: {
