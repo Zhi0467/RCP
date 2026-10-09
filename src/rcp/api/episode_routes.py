@@ -75,9 +75,11 @@ from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
 from rcp.transport import StateUnavailable
 
 from .episode_branches import (
+    GraphRefResponse,
     ensure_episode_graph_target,
     graph_branch_summaries,
     graph_branch_summary,
+    project_graph_refs,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,25 @@ def _branch_summary(
         store=store,
         catalog=catalog,
         refresh_max_age_seconds=refresh_max_age_seconds,
+    )
+
+
+@router.get(
+    "/api/projects/{project_id}/graph-refs",
+    response_model=list[GraphRefResponse],
+)
+def graph_refs(
+    project_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> list[GraphRefResponse]:
+    require_registered_project(catalog, project_id)
+    return project_graph_refs(
+        project_id,
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     )
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import get_project_service
 from rcp.core.models import BranchMergeReceipt, GraphBranchMetadata, GraphBranchSummary
@@ -9,6 +11,71 @@ from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.projects import ProjectCatalog
 from rcp.runs.task_policy import task_graph_capable
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore, EpisodeRecord
+
+
+class MainGraphRefResponse(BaseModel):
+    """Main has a head but no branch base, episode owner, or merge state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["main"] = "main"
+    branch_id: None = None
+    episode_id: None = None
+    current_episode_id: None = None
+    base_head: None = None
+    head: GraphHeadRef
+    merge_eligible: Literal[False] = False
+    merge_blocked_reason: None = None
+    merge_state: None = None
+    latest_successful_merge: None = None
+    active_merge_task_id: None = None
+    merge_diagnostic: None = None
+    archived: Literal[False] = False
+
+
+class BranchGraphRefResponse(GraphBranchSummary):
+    kind: Literal["branch"] = "branch"
+    archived: bool
+
+
+GraphRefResponse = Annotated[
+    MainGraphRefResponse | BranchGraphRefResponse, Field(discriminator="kind")
+]
+
+
+def project_graph_refs(
+    project_id: str,
+    *,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+) -> list[GraphRefResponse]:
+    """Main first, then unique branches in newest-chain-member order, without filtering."""
+
+    service = get_project_service(catalog, project_id)
+    refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
+    branches: dict[str, EpisodeRecord] = {}
+    for episode in store.episodes(project_id, limit=None):
+        if episode.graph_target.kind == "branch":
+            assert episode.graph_target.branch_id is not None
+            branches.setdefault(episode.graph_target.branch_id, episode)
+    summaries = graph_branch_summaries(
+        list(branches.values()),
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=refresh_max_age_seconds,
+    )
+    for episode in branches.values():
+        summary = summaries[episode.episode_id]
+        state = store.episode_isolation_state(
+            project_id, episode.isolation_owner_episode_id or summary.episode_id
+        )
+        refs.append(
+            BranchGraphRefResponse(
+                **summary.model_dump(), archived=state.graph_archived if state else False
+            )
+        )
+    return refs
 
 
 def ensure_episode_graph_target(
@@ -241,6 +308,8 @@ def graph_branch_summary(
 
 
 __all__ = [
+    "GraphRefResponse",
+    "project_graph_refs",
     "ensure_episode_graph_target",
     "graph_branch_summaries",
     "graph_branch_summary",
