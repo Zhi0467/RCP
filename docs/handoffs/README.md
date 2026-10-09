@@ -1,8 +1,9 @@
 # Active implementation handoffs
 
 - [Branch navigation and continuation](branch-navigation-and-continuation.md):
-  design only; project reopen on reverification, phone reload route, branch
-  picker, and human turns on ended Auto-research children.
+  design only; unified graph refs with a branch picker, project reopen on
+  reverification, phone reload route, and human turns on ended Auto-research
+  children.
 
 Unfinished agent-link work is tracked in issue #280.
 
