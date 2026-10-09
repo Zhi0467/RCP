@@ -1292,14 +1292,16 @@ export function ProvisioningStatus({
       </dl>
 
       <div className="provisioning-controls">
-        <button
-          className="button secondary"
-          type="button"
-          disabled={busy !== null}
-          onClick={onCopy}
-        >
-          <Clipboard size={14} /> Copy server command
-        </button>
+        {request.can_run_setup && (
+          <button
+            className="button secondary"
+            type="button"
+            disabled={busy !== null}
+            onClick={onCopy}
+          >
+            <Clipboard size={14} /> Copy server command
+          </button>
+        )}
         {desktop && connection && request.can_run_setup && operatorRouteReady && (
           <button className="button primary" type="button" disabled={busy !== null} onClick={onRun}>
             {busy === "run" ? <LoaderCircle className="spin" size={14} /> : <Server size={14} />}{" "}
@@ -1331,10 +1333,12 @@ export function ProvisioningStatus({
           </button>
         )}
       </div>
-      <p className="provisioning-hint">
-        Paste the server command into a shell on the server under your own login. It runs as rcp
-        through sudo.
-      </p>
+      {request.can_run_setup && (
+        <p className="provisioning-hint">
+          Paste the server command into a shell on the server under your own login. It runs as rcp
+          through sudo.
+        </p>
+      )}
 
       {desktop && connection && request.can_run_setup && !overrideOpen && (
         <button className="button ghost tiny" type="button" onClick={() => setOverrideOpen(true)}>
