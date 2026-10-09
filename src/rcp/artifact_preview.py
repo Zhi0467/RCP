@@ -20,6 +20,10 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 PREVIEW_COMMAND = "rcp-artifact-preview"
+# Set by RCP, never by the agent's argv: an allowlisted shell may run the preview
+# with any arguments, so neither the served folder nor the lifetime comes from them.
+WORKSPACE_ENV = "RCP_ARTIFACT_PREVIEW_WORKSPACE"
+IDLE_ENV = "RCP_ARTIFACT_PREVIEW_IDLE_SECONDS"
 
 # Chromium ignores navigate-to; the opaque sandbox prevents access to the parent,
 # but scripts can still navigate their own frame. This is not zero network access.
@@ -231,18 +235,35 @@ def preview_server(directory: Path, port: int = 0) -> PreviewServer:
     return server
 
 
+def turn_artifact_directory(directory: Path, workspace: str) -> Path:
+    """Admit only a turn's own artifact folder, ``<workspace>/turns/<scope>/artifacts``.
+
+    The preview runs in the agent's shell, outside the browser's hidden-read
+    wrapper, so serving any other folder would let the browser read it.
+    """
+    resolved = directory.resolve()
+    turns = Path(workspace).resolve() / "turns"
+    if directory.is_symlink() or resolved.name != "artifacts" or resolved.parent.parent != turns:
+        raise ValueError("The preview serves only this turn's artifact directory")
+    return resolved
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--idle-seconds", type=float, required=True)
     args = parser.parse_args(argv)
-    with preview_server(args.directory, args.port) as server:
+    try:
+        directory = turn_artifact_directory(args.directory, os.environ[WORKSPACE_ENV])
+        idle_seconds = float(os.environ[IDLE_ENV])
+    except (KeyError, ValueError) as exc:
+        parser.exit(2, f"{PREVIEW_COMMAND}: {exc}\n")
+    with preview_server(directory, args.port) as server:
         print(f"http://127.0.0.1:{server.server_port}/", flush=True)
         # Exit once idle: the agent's shell may not be allowed to kill this process.
         server.timeout = 1
         with suppress(KeyboardInterrupt):
-            while time.monotonic() - server.last_request < args.idle_seconds:
+            while time.monotonic() - server.last_request < idle_seconds:
                 server.handle_request()
 
 

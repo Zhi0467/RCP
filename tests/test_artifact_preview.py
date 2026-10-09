@@ -7,7 +7,9 @@ import threading
 import time
 from http.client import HTTPConnection
 
-from rcp.artifact_preview import main, preview_server
+import pytest
+
+from rcp.artifact_preview import IDLE_ENV, WORKSPACE_ENV, main, preview_server
 from rcp.artifacts import html_preview_document
 
 
@@ -61,7 +63,15 @@ def test_preview_matches_viewer_and_refuses_escaping_paths(tmp_path):
             thread.join()
 
 
-def test_preview_exits_once_idle(tmp_path):
+def test_preview_serves_only_the_turn_artifact_directory_and_exits_once_idle(tmp_path, monkeypatch):
+    artifacts = tmp_path / "turns" / "turn-1" / "artifacts"
+    artifacts.mkdir(parents=True)
+    monkeypatch.setenv(WORKSPACE_ENV, str(tmp_path))
+    monkeypatch.setenv(IDLE_ENV, "0.5")
+    for refused in ("/", str(tmp_path), str(artifacts.parent)):
+        with pytest.raises(SystemExit) as exited:
+            main([refused])
+        assert exited.value.code == 2
     started = time.monotonic()
-    main([str(tmp_path), "--idle-seconds", "0.5"])
+    main([str(artifacts)])
     assert time.monotonic() - started < 5
