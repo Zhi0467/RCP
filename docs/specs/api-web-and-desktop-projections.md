@@ -21,18 +21,33 @@ For a branch, `episode_id` is the chain-root owner and `current_episode_id`
 is the newest chain member. `archived` is the owner's graph-isolation archive
 state, independent of episode-history archiving. Merge fields reuse the episode
 branch summary, including its reservation and live-writer checks.
+A branch row also carries the chain root's `mode` and a display `title`: an
+Auto-research starting instruction, or the Experiment's title from the main
+display cache; `title` is null when neither is known.
 Main has its exact current head, `archived: false`, `merge_eligible: false`,
 and null branch, episode, base, and merge-detail fields. Branch ownership and
 persisted records are unchanged: `branch_id == episode_id` names the root.
 
-The standalone Web picker model puts main first, preserves inventory branch
-order, and hides archived refs unless requested or active. Its switch model
-retains the view when supported by the destination, otherwise choosing Overview;
-it retains node, chat, and episode selections only when they belong to the
-destination. View owners supply that membership and supported-view set. The
-picker component exposes an Episode & tasks link slot for the current chain
-member. Project-shell activation and wiring remain pending in the active
-branch-navigation handoff.
+The project shell shows a graph picker whenever the project has a branch, on
+main too, and on any branch route. It puts main first, preserves inventory
+branch order, and hides archived refs unless requested or active; an active
+branch missing from the list still has its own option. A branch is named by its
+`title`, else a short id; the active branch shows its revision and merge state.
+When the list cannot be read the picker is disabled, says so, and still names
+the current ref. **Episode & tasks** is a link to the ref's current chain
+member, shown only when it has one.
+
+Choosing a ref keeps the view and carries a chat or Auto-research episode
+selection only when it belongs to the destination; a node stays selected only
+when the destination's snapshot has it. A ref switch is not a project open: no
+opening screen, the header and view stay mounted, and the previous ref's
+snapshot stays on screen with the panel inert until the new ref's snapshot
+arrives. A ref visited before restores from its `(project, ref)` tab state. The
+session's target fences still drop responses for a ref already left, and each
+ref keeps its own staged draft. Heartbeat single-flight is keyed by project and
+ref. All project view URLs come from one helper over (project, ref, view) plus
+an optional chat or episode; an exact Experiment run route keeps its own
+`experiment`/`target`/`branch` fields.
 
 ## Personal owner admission
 

@@ -5,12 +5,19 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import get_project_service
-from rcp.core.models import BranchMergeReceipt, GraphBranchMetadata, GraphBranchSummary
+from rcp.control import experiment_node
+from rcp.core.models import (
+    BranchMergeReceipt,
+    GraphBranchMetadata,
+    GraphBranchSummary,
+    GraphState,
+)
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.projects import ProjectCatalog
 from rcp.runs.task_policy import task_graph_capable
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore, EpisodeRecord
+from rcp.storage.models import EpisodeMode
 
 
 class MainGraphRefResponse(BaseModel):
@@ -36,6 +43,10 @@ class MainGraphRefResponse(BaseModel):
 class BranchGraphRefResponse(GraphBranchSummary):
     kind: Literal["branch"] = "branch"
     archived: bool
+    #: The chain root's mode and display title: an Auto-research starting
+    #: instruction, or an Experiment's title from the main display cache.
+    mode: EpisodeMode
+    title: str | None
 
 
 GraphRefResponse = Annotated[
@@ -55,7 +66,9 @@ def project_graph_refs(
     service = get_project_service(catalog, project_id)
     refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
     branches: dict[str, EpisodeRecord] = {}
-    for episode in store.episodes(project_id, limit=None):
+    episodes = store.episodes(project_id, limit=None)
+    by_id = {episode.episode_id: episode for episode in episodes}
+    for episode in episodes:
         if episode.graph_target.kind == "branch":
             assert episode.graph_target.branch_id is not None
             branches.setdefault(episode.graph_target.branch_id, episode)
@@ -66,15 +79,38 @@ def project_graph_refs(
         refresh_max_age_seconds=refresh_max_age_seconds,
     )
     isolation = store.episode_isolation_states(project_id)
+    main_state = _cached_main_graph(catalog, project_id)
     for episode in branches.values():
         summary = summaries[episode.episode_id]
         state = isolation.get(episode.isolation_owner_episode_id or summary.episode_id)
+        root = by_id[summary.episode_id]
         refs.append(
             BranchGraphRefResponse(
-                **summary.model_dump(), archived=state.graph_archived if state else False
+                **summary.model_dump(),
+                archived=state.graph_archived if state else False,
+                mode=root.mode,
+                title=_branch_title(root, store=store, main_state=main_state),
             )
         )
     return refs
+
+
+def _cached_main_graph(catalog: ProjectCatalog, project_id: str) -> GraphState | None:
+    _status, snapshot = catalog.cached_snapshot_status(project_id)
+    try:
+        return GraphState.model_validate(snapshot["graph"]) if snapshot is not None else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _branch_title(
+    root: EpisodeRecord, *, store: AppStore, main_state: GraphState | None
+) -> str | None:
+    if root.mode == "auto_research":
+        state = store.auto_research_state(root.episode_id)
+        return state.starting_instruction if state is not None else None
+    node = experiment_node(main_state, root.control_node_id) if main_state else None
+    return node.title if node is not None else None
 
 
 def ensure_episode_graph_target(

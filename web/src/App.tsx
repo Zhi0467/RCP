@@ -4,7 +4,8 @@ import { UpdateNotice } from "./desktop/UpdateNotice";
 import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
-import { branchMergeStateLabel } from "./experiments/CampaignRuns";
+import { GraphPicker } from "./graph/GraphPicker";
+import { selectionAfterGraphSwitch } from "./graph/graphPickerModel";
 import {
   branchOwnerEpisode,
   experimentStartTarget,
@@ -13,6 +14,7 @@ import {
   graphTargetUrl,
   graphViewHash,
   MAIN_GRAPH,
+  projectViewHash,
   sameGraphTarget,
 } from "./core/graphTarget";
 import type { GraphEditingProps } from "./graph/GraphEditingControls";
@@ -74,6 +76,7 @@ import {
   archiveEpisode,
   ApiError,
   loadEpisodes,
+  loadGraphRefs,
   loadProjectExperimentEpisodes,
   loadTeamSessions,
   loadProjectReadiness,
@@ -212,6 +215,7 @@ import {
 } from "./graph/humanDraft";
 import type {
   AgentRunConfig,
+  GraphRef,
   AgentTask,
   AgentTaskKind,
   AgentTaskRequest,
@@ -442,6 +446,13 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings size={14} /> },
 ];
+
+/** Every project view renders on main and on a branch; main-only rules live inside views. */
+const GRAPH_REF_VIEWS: ReadonlySet<AppView> = new Set<AppView>([
+  ...navItems.map((item) => item.view),
+  "dag",
+  "paper",
+]);
 
 /** A tab stays highlighted while one of its sub-views is open. */
 function navItemActive(item: AppView, view: AppView): boolean {
@@ -735,11 +746,22 @@ function MemberApp({
     project: sessionProject,
     reportError: reportErrorNotice,
   });
-  const { project, humanDraft } = projectDraftPreviewEffectInputs(
+  const { project: targetProject, humanDraft } = projectDraftPreviewEffectInputs(
     projectSession,
     projectId,
     graphTarget,
   );
+  // A ref switch keeps the previous ref's snapshot on screen, inert, until the
+  // new ref's snapshot arrives; it is never cached or drafted against. Until the
+  // open effect resets the session, that snapshot is still the session's own.
+  const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
+  const project =
+    targetProject ??
+    (sessionProject?.id === projectId
+      ? sessionProject
+      : heldRefProject?.id === projectId
+        ? heldRefProject
+        : null);
   const graph = project?.graph ?? emptyGraph;
   const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
@@ -755,6 +777,11 @@ function MemberApp({
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
+  useEffect(() => {
+    // The new ref painted, or failed like any open: stop holding the old one.
+    if (heldRefProject && (targetProject || projectReconciliation === "failed"))
+      setHeldRefProject(null);
+  }, [heldRefProject, projectReconciliation, targetProject]);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const [providerReadinessRequests, setProviderReadinessRequests] = useState<
@@ -981,6 +1008,32 @@ function MemberApp({
     runsVisible: view === "execution",
   });
   const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
+  // undefined while loading; null when the list could not be read.
+  const [graphRefs, setGraphRefs] = useState<{
+    projectId: string;
+    refs: GraphRef[] | null;
+  } | null>(null);
+  const [showArchivedRefs, setShowArchivedRefs] = useState(false);
+  const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
+  const graphTargetKey = graphSessionKey("", graphTarget);
+  // Episode changes are what move a branch's head, merge state, or chain member.
+  const graphRefsKey = JSON.stringify(
+    episodes.map((episode) => [episode.episode_id, episode.status, episode.graph_branch]),
+  );
+  useEffect(() => {
+    if (!projectId || !backendSessionReady) return;
+    let current = true;
+    loadGraphRefs(projectId)
+      .then((refs) => {
+        if (current) setGraphRefs({ projectId, refs });
+      })
+      .catch(() => {
+        if (current) setGraphRefs({ projectId, refs: null });
+      });
+    return () => {
+      current = false;
+    };
+  }, [backendSessionReady, graphRefsKey, graphTargetKey, projectId]);
   // The branch diff's merge marks come from the same preview the Merge panel reads.
   const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
   const branchMergeKey = activeBranchEpisode
@@ -1027,10 +1080,10 @@ function MemberApp({
     projectHistoryOpen,
     dismissedHistoryNoticeIds,
   } = projectHistorySnapshot;
-  currentProjectStateRef.current = project
+  currentProjectStateRef.current = targetProject
     ? {
         ...serializeProjectSessionTabState(projectSession),
-        project,
+        project: targetProject,
         projectHeaderCollapsed,
         runScope,
         selectedNodeId: selectedNode?.id ?? null,
@@ -1304,12 +1357,14 @@ function MemberApp({
   );
 
   const heartbeatProjectCache = useCallback(
-    (requestedProjectId: string): Promise<void> =>
-      runProjectHeartbeat(requestedProjectId, async () => {
+    (requestedProjectId: string): Promise<void> => {
+      const requestedTarget = isActiveProject(requestedProjectId)
+        ? activeGraphTargetRef.current
+        : MAIN_GRAPH;
+      // Single flight per (project, ref): a heartbeat for the ref just left
+      // must not swallow the first one for the ref now shown.
+      return runProjectHeartbeat(graphSessionKey(requestedProjectId, requestedTarget), async () => {
         const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-        const requestedTarget = isActiveProject(requestedProjectId)
-          ? activeGraphTargetRef.current
-          : MAIN_GRAPH;
         let observation: GraphRevisionSnapshot;
         try {
           observation = await loadGraphRevision(
@@ -1393,7 +1448,8 @@ function MemberApp({
         } catch {
           // A background cache refresh must not discard the in-memory draft.
         }
-      }),
+      });
+    },
     [
       cacheProjectState,
       closeProjectRoute,
@@ -1885,6 +1941,19 @@ function MemberApp({
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
     const retained = retainedOpen?.state;
+    // Activating another ref of the open project is not a project open: the
+    // shell, view, and header stay, and the old ref's snapshot is held inert.
+    const previousRefProject = getProjectSessionState().project;
+    const activatesRef =
+      !!projectId &&
+      !setupOpen &&
+      previousOpen !== null &&
+      previousOpen.backendKey === backendKey &&
+      previousOpen.projectId === projectId &&
+      !previousOpen.setupOpen &&
+      !sameGraphTarget(previousOpen.graphTarget, graphTarget) &&
+      previousRefProject?.id === projectId;
+    setHeldRefProject(activatesRef && !retained ? previousRefProject : null);
     setNotice(null);
     if (projectId && retained) {
       restoreProjectTabState(
@@ -1893,7 +1962,7 @@ function MemberApp({
         routeMatchesProject && requestedRoute.projectViewSpecified ? requestedRoute : undefined,
       );
     } else {
-      setLoading(true);
+      if (!activatesRef) setLoading(true);
       setProjectReconciliation("opening");
       authoritativeProjectId.current = null;
       let storedDraft: HumanDraft | null = null;
@@ -1915,19 +1984,21 @@ function MemberApp({
         graph_target: graphTarget,
         human_draft: storedDraft,
       });
-      resetProjectSelection(
-        routeMatchesProject ? requestedRoute.view : "overview",
-        routeMatchesProject ? requestedRoute.experimentId : null,
-        routeMatchesProject ? requestedRoute.experimentRoute : null,
-        routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
-      );
+      // The hash already set the view; a node survives only if the new ref has it.
+      if (!activatesRef)
+        resetProjectSelection(
+          routeMatchesProject ? requestedRoute.view : "overview",
+          routeMatchesProject ? requestedRoute.experimentId : null,
+          routeMatchesProject ? requestedRoute.experimentRoute : null,
+          routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
+        );
       resetProjectChats();
       resetProjectTasks();
       resetProjectHistory(projectId, graphTarget);
       setUsage(null);
       setWatchers([]);
       setExperimentStartOverlap(null);
-      resetProjectHeader(projectId);
+      if (!activatesRef) resetProjectHeader(projectId);
     }
     if (setupOpen) {
       setLoading(false);
@@ -4676,6 +4747,65 @@ function MemberApp({
       />
     </>
   );
+  const activeGraphRef =
+    graphTarget.kind === "branch"
+      ? projectGraphRefs?.find(
+          (ref): ref is Extract<GraphRef, { kind: "branch" }> =>
+            ref.kind === "branch" && ref.branch_id === graphTarget.branch_id,
+        )
+      : undefined;
+  const chainMemberId =
+    activeGraphRef?.current_episode_id ?? activeBranchEpisode?.episode_id ?? null;
+  const chainMember =
+    episodes.find((episode) => episode.episode_id === chainMemberId) ??
+    (activeBranchEpisode?.episode_id === chainMemberId ? activeBranchEpisode : null);
+  const episodeTasksHref =
+    chainMemberId === null
+      ? null
+      : chainMember?.mode === "experiment_loop" && chainMember.control_node_id
+        ? experimentBoardHref(project.id, {
+            experiment_id: chainMember.control_node_id,
+            episode_id: chainMember.episode_id,
+            graph_target: graphTarget,
+            parent_episode_id: null,
+          })
+        : (activeGraphRef?.mode ?? chainMember?.mode) === "auto_research"
+          ? projectViewHash(project.id, graphTarget, "execution", {
+              autoResearchEpisodeId: chainMemberId,
+            })
+          : projectViewHash(project.id, graphTarget, "execution");
+  const selectGraphRef = (target: GraphTargetRef) => {
+    if (sameGraphTarget(target, graphTarget)) return;
+    // Nodes are not in the URL: the open effect keeps one only if the new ref has it.
+    const next = selectionAfterGraphSwitch(
+      {
+        view,
+        nodeId: null,
+        chatId: view === "chats" ? selectedChatId : null,
+        episodeId: selectedAutoResearchEpisodeId,
+      },
+      {
+        nodeIds: new Set(),
+        chatIds: new Set(
+          inventoryConversations
+            .filter((conversation) => sameGraphTarget(conversation.graphTarget, target))
+            .map((conversation) => conversation.chatId),
+        ),
+        episodeIds: new Set(
+          episodes
+            .filter((episode) => sameGraphTarget(episode.graph_target, target))
+            .map((episode) => episode.episode_id),
+        ),
+        views: GRAPH_REF_VIEWS,
+      },
+    );
+    window.location.hash = projectViewHash(project.id, target, next.view, {
+      ...(next.view === "chats" && next.chatId ? { chatId: next.chatId } : {}),
+      ...(next.view === "execution" && next.episodeId
+        ? { autoResearchEpisodeId: next.episodeId }
+        : {}),
+    });
+  };
   const renderNavItem = (item: (typeof navItems)[number]) =>
     item.view === "terminals" ? (
       <TerminalTab
@@ -4838,43 +4968,24 @@ function MemberApp({
         </nav>
       )}
 
-      {graphTarget.kind === "branch" && (
-        <section className="branch-graph-banner" aria-label="Active graph target">
-          <span>
-            <GitBranch size={16} />
-            <strong>Episode branch</strong>
-            <span className="mono">{graphTarget.branch_id.slice(0, 8)}</span>
-            <span>Revision {graph.revision}</span>
-            {activeBranchEpisode?.graph_branch && (
-              <span>{branchMergeStateLabel(activeBranchEpisode.graph_branch.merge_state)}</span>
-            )}
-          </span>
-          <div>
-            <button
-              type="button"
-              className="button compact secondary"
-              onClick={() => {
-                if (activeBranchEpisode) {
-                  window.location.hash =
-                    activeBranchEpisode.mode === "experiment_loop" &&
-                    activeBranchEpisode.control_node_id
-                      ? experimentBoardHref(project.id, {
-                          experiment_id: activeBranchEpisode.control_node_id,
-                          episode_id: activeBranchEpisode.episode_id,
-                          graph_target: graphTarget,
-                          parent_episode_id: null,
-                        })
-                      : `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
-                } else changeView("execution");
-              }}
-            >
-              Episode & tasks
-            </button>
-            <a className="button compact secondary" href={graphViewHash(project.id, MAIN_GRAPH)}>
-              Main graph
-            </a>
-          </div>
-        </section>
+      {(projectGraphRefs === null ||
+        graphTarget.kind === "branch" ||
+        projectGraphRefs?.some((ref) => ref.kind === "branch")) && (
+        <GraphPicker
+          refs={projectGraphRefs === undefined ? [] : projectGraphRefs}
+          activeRef={graphTarget}
+          revision={graph.revision}
+          showArchived={showArchivedRefs}
+          onShowArchivedChange={setShowArchivedRefs}
+          onSelect={selectGraphRef}
+          episodeTasksLink={
+            episodeTasksHref && (
+              <a className="button compact secondary" href={episodeTasksHref}>
+                Episode & tasks
+              </a>
+            )
+          }
+        />
       )}
       {dockedNodes.length > 0 && (
         <section className="node-window-dock" aria-label="Docked node windows">

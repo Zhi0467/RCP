@@ -42,7 +42,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
-  const target = { kind: "main", branch_id: null };
+  const mainTarget = { kind: "main", branch_id: null };
   const providers = {};
   const profile = { provider: "codex", model: "", reasoning: "high", run_on: "local" };
   const state = {
@@ -59,10 +59,16 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     reconnectLoads: 0,
     reconnectObservations: 0,
     reconnectRequested: Promise.withResolvers(),
+    graphRefs: options.graphRefs ?? [],
+    branchGate: null,
+    branchNames: {},
   };
-  const project = (id = "demo") => ({
+  const project = (id = "demo", target = mainTarget) => ({
     id,
-    name: state.projectName ?? `Project for ${state.member} (${id})`,
+    name:
+      state.branchNames[target.branch_id] ??
+      state.projectName ??
+      `Project for ${state.member} (${id})`,
     revision: 1,
     graph_target: target,
     graph_head: { target, revision: 1, transition_id: null },
@@ -121,8 +127,10 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     validation_messages: [],
   });
   await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    state.requests.push(path);
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const branchId = url.searchParams.get("branch_id");
+    state.requests.push(branchId ? `${path}?branch_id=${branchId}` : path);
     const projectId = path.split("/")[3];
     let json = [];
     if (path === "/api/health" || path === "/api/health/details") {
@@ -144,7 +152,8 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         space_kind: state.health.space_kind,
         user: { user_id: state.member, display_name: "Researcher" },
       };
-    } else if (path === "/api/projects")
+    } else if (path.endsWith("/graph-refs")) json = state.graphRefs;
+    else if (path === "/api/projects")
       json = ["demo", "second"].map((id) => ({ id, name: project(id).name, revision: 1 }));
     else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
       if (state.connected) {
@@ -153,8 +162,12 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       }
       if (state.projectStatus !== 200)
         return route.fulfill({ status: state.projectStatus, json: { detail: "unavailable" } });
-      const snapshot = project(projectId);
+      const snapshot = project(
+        projectId,
+        branchId ? { kind: "branch", branch_id: branchId } : mainTarget,
+      );
       if (state.projectGate) await state.projectGate.promise;
+      if (branchId && state.branchGate) await state.branchGate.promise;
       if (!state.admitted) return route.fulfill({ status: 403, json: { detail: "denied" } });
       json = snapshot;
     } else if (path.endsWith("/readiness")) json = project(projectId);
@@ -549,5 +562,108 @@ test(
     await reverify(page);
     await page.locator(".project-dock-select").filter({ hasText: "Current response" }).waitFor();
     assert.equal(await shellStillMounted(page), true);
+  },
+);
+
+const branchRef = (branchId) => ({
+  kind: "branch",
+  branch_id: branchId,
+  episode_id: branchId,
+  current_episode_id: branchId,
+  base_head: { target: { kind: "main" }, revision: 1, transition_id: null },
+  head: { target: { kind: "branch", branch_id: branchId }, revision: 1, transition_id: null },
+  merge_eligible: false,
+  merge_blocked_reason: null,
+  merge_state: "unmerged",
+  latest_successful_merge: null,
+  active_merge_task_id: null,
+  merge_diagnostic: null,
+  archived: false,
+  mode: "auto_research",
+  title: null,
+});
+
+test(
+  "a ref switch keeps the view and shell, and drops a late response for the ref left",
+  { timeout: 25000 },
+  async (t) => {
+    const main = {
+      ...branchRef("main"),
+      kind: "main",
+      branch_id: null,
+      episode_id: null,
+      current_episode_id: null,
+      base_head: null,
+      head: { target: { kind: "main" }, revision: 1, transition_id: null },
+      merge_state: null,
+    };
+    const { page, errors, state } = await openDemoProject(t, "fresh", {
+      graphRefs: [main, branchRef("b1"), branchRef("b2")],
+    });
+    const picker = page.locator(".branch-graph-banner select");
+    await picker.waitFor();
+    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Agents", exact: true }).click();
+    await page.evaluate(() => {
+      window.__projectNode = document.querySelector(".project-tabs");
+      window.__sawLoadingScreen = false;
+      new MutationObserver(() => {
+        if (document.querySelector(".app-loading")) window.__sawLoadingScreen = true;
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+    const agents = page.getByRole("button", { name: "Agents", exact: true });
+
+    // The new ref's snapshot is pending: the shell and view stay, the panel is inert.
+    state.branchGate = Promise.withResolvers();
+    const b1Requested = page.waitForRequest(
+      (request) => new URL(request.url()).searchParams.get("branch_id") === "b1",
+    );
+    await picker.selectOption(":branch:b1");
+    await b1Requested;
+    await page.locator(".project-panel[inert]").waitFor();
+    assert.equal(await page.evaluate(() => window.__projectNode.isConnected), true);
+    assert.equal(await agents.getAttribute("aria-current"), "page");
+    const hash = new URLSearchParams((await page.evaluate(() => location.hash)).split("?")[1]);
+    assert.equal(hash.get("view"), "chats");
+    assert.equal(hash.get("branch_id"), "b1");
+    state.branchGate.resolve();
+    state.branchGate = null;
+    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    assert.equal(await agents.getAttribute("aria-current"), "page");
+
+    // Leave b2 before its snapshot answers; the late answer must not paint on main.
+    state.branchGate = Promise.withResolvers();
+    state.branchNames.b2 = "Late branch response";
+    const b2Requested = page.waitForRequest(
+      (request) => new URL(request.url()).searchParams.get("branch_id") === "b2",
+    );
+    await picker.selectOption(":branch:b2");
+    await b2Requested;
+    await picker.selectOption({ index: 0 });
+    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    const late = page.waitForResponse(
+      (response) => new URL(response.url()).searchParams.get("branch_id") === "b2",
+    );
+    state.branchGate.resolve();
+    await (await late).finished();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(
+      await page
+        .locator(".project-dock-select")
+        .filter({ hasText: "Late branch response" })
+        .count(),
+      0,
+    );
+    assert.equal(
+      await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).has("branch_id")),
+      false,
+    );
+    assert.equal(await agents.getAttribute("aria-current"), "page");
+    assert.equal(await page.evaluate(() => window.__projectNode.isConnected), true);
+    assert.equal(await page.evaluate(() => window.__sawLoadingScreen), false);
+    assert.deepEqual(
+      errors.filter((message) => !message.includes("Failed to load resource")),
+      [],
+    );
   },
 );
