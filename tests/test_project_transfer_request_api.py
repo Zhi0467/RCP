@@ -867,3 +867,16 @@ def test_restored_target_reentry_route_is_exact_and_idempotent(tmp_path: Path) -
 def _session_count(path: Path) -> int:
     with sqlite3.connect(path) as connection:
         return int(connection.execute("SELECT COUNT(*) FROM team_sessions").fetchone()[0])
+
+
+def test_target_request_accepts_a_server_only_source_repository() -> None:
+    from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
+
+    configuration = _source_configuration().model_dump(mode="json")
+    configuration["repositories"][0].update(repository=None, source_commit="c" * 40)
+    configuration["supported_archive_codecs"] = ["rcp-transfer-v2"]
+
+    stored = ProjectTransferSourceConfigurationRequest.model_validate(configuration).storage_model()
+
+    assert stored.repositories[0].repository is None
+    assert stored.repositories[0].source_commit == "c" * 40

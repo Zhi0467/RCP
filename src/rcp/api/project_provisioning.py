@@ -237,7 +237,7 @@ class ProjectProvisioningCompleteRequest(_StrictModel):
 
 class ProjectTransferRepositorySourceRequest(_StrictModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
     machine_alias: str
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 

@@ -425,7 +425,7 @@ export type ProjectTransferProofState = {
 
 export interface ProjectTransferRepositorySource {
   alias: string;
-  repository: GitHubRepositoryRef;
+  repository: GitHubRepositoryRef | null;
   machine_alias: string;
   source_commit?: string;
 }

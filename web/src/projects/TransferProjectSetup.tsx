@@ -227,8 +227,10 @@ function initialProviderChecks(
 
 export function TransferRepositoryPolicy({
   includeLocalCommits,
+  serverOnlyAliases = [],
 }: {
   includeLocalCommits: boolean;
+  serverOnlyAliases?: string[];
 }) {
   return (
     <div className="transfer-archive-policy">
@@ -237,6 +239,12 @@ export function TransferRepositoryPolicy({
           ? "Committed files and history are copied as saved onto main."
           : "Team checkouts are cloned from GitHub. Local unpushed commits stay behind."}
       </p>
+      {!includeLocalCommits && serverOnlyAliases.length > 0 && (
+        <p>
+          {serverOnlyAliases.join(", ")} {serverOnlyAliases.length === 1 ? "has" : "have"} no GitHub
+          origin, so committed files and history are copied as saved onto main.
+        </p>
+      )}
       <p>
         Uncommitted files and external data/output directories remain excluded. RCP does not push to
         GitHub.
@@ -1171,15 +1179,22 @@ export function TransferProjectSetup({
               </header>
               <TransferRepositoryPolicy
                 includeLocalCommits={bundle.include_local_commits ?? false}
+                serverOnlyAliases={bundle.source.source_configuration.repositories
+                  .filter((repository) => repository.repository === null)
+                  .map((repository) => repository.alias)}
               />
-              {bundle.include_local_commits && (
+              {bundle.source.source_configuration.repositories.some(
+                (repository) => repository.source_commit,
+              ) && (
                 <div className="transfer-path-list">
-                  {bundle.source.source_configuration.repositories.map((repository) => (
-                    <div className="transfer-path" key={repository.alias}>
-                      <span>{repository.alias} · saved source commit</span>
-                      <code>{repository.source_commit}</code>
-                    </div>
-                  ))}
+                  {bundle.source.source_configuration.repositories
+                    .filter((repository) => repository.source_commit)
+                    .map((repository) => (
+                      <div className="transfer-path" key={repository.alias}>
+                        <span>{repository.alias} · saved source commit</span>
+                        <code>{repository.source_commit}</code>
+                      </div>
+                    ))}
                 </div>
               )}
             </section>
