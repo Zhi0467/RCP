@@ -58,7 +58,10 @@ in, and the three product questions are answered (see the end).
 - (2) A browser reload keeps the project route. Desktop keeps the S107 rule
   (reload and relaunch start on the index). A successful team sign-in keeps a
   pending route too. Restoring a route never skips identity admission; the
-  project open still checks access.
+  project open still checks access. Retained project and tab state is bound
+  to the member who loaded it: a sign-in as a different member, or any
+  change of actor identity, clears every retained snapshot before a route is
+  restored, so nothing from another member paints before admission.
 - (3) Unify graph refs; keep episode ownership. Main is one ref among them,
   with its own rules made explicit rather than implied by absence:
   - One project API lists every graph ref: main plus each branch, with head,
@@ -113,7 +116,11 @@ owns it:
 
 - **Human turns.** A fresh human Send is allowed only when the child's
   episode lineage (its chain) has no running member, and for a child
-  Experiment chat only when that child Experiment has itself ended. The turn
+  Experiment chat only when that child Experiment has itself ended, and only
+  while the episode's isolation is available: once Merge cleanup marks it
+  `removing` or `removed`, admission would refuse with
+  `episode_isolation_unavailable`, so the composer stays locked with that
+  reason instead of offering a Send the backend refuses. The turn
   runs outside the episode as an ordinary chat turn, authorized by the
   sender; its mode decides its authority, as on any chat. Its own watcher
   wakes, question follow-ups, and Resume, Retry, or Repair are human-owned
@@ -182,7 +189,10 @@ opening turn or cost a second paid wake. So this is one operation:
 - Web unit test for the reload rule: browser reload keeps the route, desktop
   reload does not; team sign-in keeps a pending route. Update
   `projectTabs.test.mjs` and the S107 acceptance note.
-- `tests/` admission tests that attempt each violation: child human turn
+- Web test: a sign-in as a different member on the same backend never
+  paints the previous member's retained project.
+- `tests/` admission tests that attempt each violation, including a child
+  whose episode isolation was removed: child human turn
   refused while the lineage runs, allowed after it ends, refused again under
   a running continuation; continuation refused while a human-owned child turn
   is active; a child Experiment chat refused while that Experiment runs;
