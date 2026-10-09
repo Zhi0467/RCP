@@ -142,14 +142,9 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
     try:
         status, data = await service_request("POST", url, headers=headers, **kwargs)
         if not 200 <= status < 300:
-            message = f"Service returned HTTP {status}."
-            with suppress(ValueError, TypeError, AttributeError):
-                service_error = json.loads(data).get("error", {})
-                if isinstance(service_error, dict) and isinstance(
-                    service_error.get("message"), str
-                ):
-                    message = service_error["message"]
-            raise ConnectionError("transcription_upstream_failed", 502, sanitized(message, key))
+            raise ConnectionError(
+                "transcription_upstream_failed", 502, upstream_message(status, data, key)
+            )
         body = json.loads(data)
         if not isinstance(body, dict):
             raise ValueError("Invalid service response.")
@@ -181,6 +176,16 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
             502,
             sanitized("The transcription service request failed.", key),
         ) from None
+
+
+def upstream_message(status: int, data: bytes, key: str) -> str:
+    """The provider's own error message when it sends one, never carrying the key."""
+    message = f"Service returned HTTP {status}."
+    with suppress(ValueError, TypeError, AttributeError):
+        service_error = json.loads(data).get("error", {})
+        if isinstance(service_error, dict) and isinstance(service_error.get("message"), str):
+            message = service_error["message"]
+    return sanitized(message, key)
 
 
 async def service_request(method: str, url: str, **kwargs) -> tuple[int, bytes]:
@@ -264,6 +269,9 @@ async def list_models(connection: dict, key: str) -> dict[str, list[str]]:
         url = f"{base}/models"
     try:
         status, data = await service_request("GET", url, headers=headers)
+        # A refused key or account fails every call, so dictation can stop before it records.
+        if status in (401, 403):
+            raise ConnectionError("service_access_denied", 502, upstream_message(status, data, key))
         if not 200 <= status < 300:
             raise ConnectionError("model_list_failed", 502, f"Service returned HTTP {status}.")
         body = json.loads(data)

@@ -1824,7 +1824,7 @@ newest first, without dated snapshots or transcription, speech, realtime, live,
 image, search, or instruct models; live ids start with `gpt-live` and are not
 transcription models. Ids with a `shutdown_date` are hidden. Gemini lists only
 its `generateContent` transcribe models, because RCP sends audio without an
-instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502) and the card falls
+instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502), or `service_access_denied` when the provider refuses the key, and the card falls
 back to a text box with that reason. The save check stays the authority.
 Connect takes `live_model` and `delegation_model` for an OpenAI key, with or
 without `voice`, and checks each changed one with `GET models/{id}` using the
@@ -1855,9 +1855,18 @@ middleware admits the two audio types on this route only. On the personal
 loopback server another site's `audio/*` request needs a CORS preflight, which
 the server refuses, and a no-cors request loses its type and gets 415.
 
-The client records with the first accepted format `MediaRecorder` supports,
-pins the connection id when recording starts, and replaces the dictation span
-with the returned text in one step; typing drops a late result. Native
+The client records with the first accepted format `MediaRecorder` supports and
+pins the connection id when recording starts. Each upload is one segment of at
+most 55 seconds: recording rolls into the next segment on the same stream, and
+segments transcribe strictly in order, each appended to the dictation span;
+typing drops late results. When recording starts, the client also lists the
+connection's models; a 401 or 403 there returns `service_access_denied` (502,
+with the provider's sanitized message) and stops dictation at once, while any
+other listing failure is ignored. A failed segment stops recording and keeps it
+and every later segment in memory, never on disk; **Retry** transcribes them in
+order with the current dictation choice at the cursor, and starting a new
+dictation or sending discards them. macOS dictation still stops at 55 seconds,
+counting down its last 10. Native
 dictation reports `preparing` while macOS downloads the on-device model and an
 `engine` (`speech_analyzer` or `apple_server`) on `recording`; every result
 carries the whole session text. `desktop_stop_dictation` takes `finish`: Stop
