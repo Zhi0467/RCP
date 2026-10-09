@@ -986,7 +986,10 @@ is open. A browser reload keeps the project route, so a phone browser that
 reloads a discarded tab returns to the same project; a desktop reload or
 relaunch starts on the index with an empty dock. A successful team sign-in
 keeps the route it interrupted. A restored route never skips identity
-admission: the project open still checks access.
+admission: the project open still checks access. Retained project state and all
+project tab snapshots belong to the backend and member that loaded them. A
+change of backend or actor identity discards them before restoring the route,
+including when another member signs in on the same backend.
 
 An explicit Runs route is authoritative over cached selection, including a route
 with an absent or malformed branch identifier. Invalid branch identity resolves

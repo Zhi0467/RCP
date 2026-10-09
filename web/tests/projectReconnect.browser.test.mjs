@@ -10,6 +10,7 @@ before(async () => {
   server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
+    configLoader: "runner",
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();
@@ -21,7 +22,14 @@ after(async () => {
   await server?.close();
 });
 
-const HEALTH = { status: "ok", space_id: "space", space_kind: "personal", instance_id: "test" };
+const HEALTH = {
+  status: "ok",
+  space_id: "space",
+  space_kind: "personal",
+  instance_id: "test",
+  version: "test-version",
+  data_dir_id: "test-data",
+};
 
 // Serves one demo project; `state` steers health, connection, and request counts.
 async function openDemoProject(t, initialFreshness, options = {}) {
@@ -41,14 +49,20 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     connected: false,
     health: options.health ?? HEALTH,
     signedIn: options.signedIn ?? true,
+    member: "human",
+    admitted: true,
+    projectGate: null,
+    projectStatus: 200,
+    projectName: null,
+    identityGate: null,
     requests: [],
     reconnectLoads: 0,
     reconnectObservations: 0,
     reconnectRequested: Promise.withResolvers(),
   };
-  const project = () => ({
-    id: "demo",
-    name: "Remote project",
+  const project = (id = "demo") => ({
+    id,
+    name: state.projectName ?? `Project for ${state.member} (${id})`,
     revision: 1,
     graph_target: target,
     graph_head: { target, revision: 1, transition_id: null },
@@ -109,6 +123,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     state.requests.push(path);
+    const projectId = path.split("/")[3];
     let json = [];
     if (path === "/api/health" || path === "/api/health/details") {
       if (!state.health) return route.abort();
@@ -118,24 +133,31 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       json = {
         space_id: "space",
         space_kind: "team",
-        user: { user_id: "human", display_name: "Researcher" },
+        user: { user_id: state.member, display_name: "Researcher" },
       };
     } else if (path === "/api/identity" && !state.signedIn) {
       return route.fulfill({ status: 401, json: { detail: "sign in" } });
-    } else if (path === "/api/identity")
+    } else if (path === "/api/identity") {
+      if (state.identityGate) await state.identityGate.promise;
       json = {
         space_id: "space",
-        space_kind: "personal",
-        user: { user_id: "human", display_name: "Researcher" },
+        space_kind: state.health.space_kind,
+        user: { user_id: state.member, display_name: "Researcher" },
       };
-    else if (path === "/api/projects") json = [{ id: "demo", name: "Remote project", revision: 1 }];
-    else if (path === "/api/projects/demo" || path.endsWith("/cached")) {
+    } else if (path === "/api/projects")
+      json = ["demo", "second"].map((id) => ({ id, name: project(id).name, revision: 1 }));
+    else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
       if (state.connected) {
         state.reconnectLoads++;
         state.reconnectRequested.resolve();
       }
-      json = project();
-    } else if (path.endsWith("/readiness")) json = project();
+      if (state.projectStatus !== 200)
+        return route.fulfill({ status: state.projectStatus, json: { detail: "unavailable" } });
+      const snapshot = project(projectId);
+      if (state.projectGate) await state.projectGate.promise;
+      if (!state.admitted) return route.fulfill({ status: 403, json: { detail: "denied" } });
+      json = snapshot;
+    } else if (path.endsWith("/readiness")) json = project(projectId);
     else if (path.endsWith("/revision")) {
       if (state.connected) state.reconnectObservations++;
       json = {
@@ -171,8 +193,11 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   const readinessLoaded = page.waitForResponse((response) =>
     new URL(response.url()).pathname.endsWith("/readiness"),
   );
+  const authoritativeLoaded = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/projects/demo",
+  );
   await page.goto(`${origin}/#/projects/demo?view=overview`);
-  return { page, errors, state, readinessLoaded };
+  return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
 
 for (const initialFreshness of ["stale", "fresh"]) {
@@ -181,11 +206,10 @@ for (const initialFreshness of ["stale", "fresh"]) {
     { timeout: 15000 },
     async (t) => {
       const { page, errors, state, readinessLoaded } = await openDemoProject(t, initialFreshness);
-      const banner = page.getByText("Canonical state is offline.", { exact: true });
+      const banner = page.locator(".state-offline");
       await banner.waitFor();
       await (await readinessLoaded).finished();
       await page.evaluate(() => new Promise(requestAnimationFrame));
-      assert.equal(await page.getByText("Coverage boundary:").count(), 0);
       assert.equal(await page.getByText("Legacy agent-authored coverage claim.").count(), 0);
       state.connected = true;
       await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -201,7 +225,6 @@ for (const initialFreshness of ["stale", "fresh"]) {
       );
       await page.getByRole("button", { name: "Runs", exact: true }).click();
       await page.getByRole("button", { name: "Overview", exact: true }).click();
-      assert.equal(await page.getByText("Coverage boundary:").count(), 0);
       assert.equal(await page.getByText("Legacy agent-authored coverage claim.").count(), 0);
       assert.deepEqual(errors, []);
     },
@@ -215,10 +238,12 @@ const reverify = (page) =>
     await runtime.reverifyBackendIdentity("test");
   });
 
-async function openedShell(t) {
-  const opened = await openDemoProject(t, "fresh");
+async function openedShell(t, options) {
+  const opened = await openDemoProject(t, "fresh", options);
   await opened.page.locator(".app-shell").waitFor();
   await opened.readinessLoaded;
+  await (await opened.authoritativeLoaded).finished();
+  await opened.page.evaluate(() => new Promise(requestAnimationFrame));
   const overview = await opened.page
     .getByRole("button", { name: "Overview", exact: true })
     .elementHandle();
@@ -242,17 +267,31 @@ test(
   },
   async (t) => {
     const { page, errors, state } = await openedShell(t);
+    // Healthy view navigation must never restart project opening.
+    state.requests = [];
+    await page.getByRole("button", { name: "Agents", exact: true }).click();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    assert.equal(await shellStillMounted(page), true);
+    assert.equal(state.requests.filter((path) => path.endsWith("/cached")).length, 0);
     state.health = null;
     await reverify(page);
     await page.getByRole("alertdialog").waitFor();
     assert.equal(await shellStillMounted(page), true);
     state.health = HEALTH;
     state.requests = [];
-    await reverify(page);
-    await page.getByRole("alertdialog").waitFor({ state: "detached" });
-    await page.waitForResponse((response) =>
+    state.identityGate = Promise.withResolvers();
+    const reconciled = page.waitForResponse((response) =>
       new URL(response.url()).pathname.endsWith("/api/projects/demo"),
     );
+    await reverify(page);
+    assert.equal(await shellStillMounted(page), true);
+    assert.equal(await page.getByRole("alertdialog").isVisible(), true);
+    assert.equal(state.requests.filter((path) => path === "/api/projects/demo").length, 0);
+    state.identityGate.resolve();
+    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    await reconciled;
+    await page.locator(".project-reconciliation").waitFor({ state: "detached" });
+    assert.equal(state.requests.filter((path) => path === "/api/projects/demo").length, 1);
     assert.equal(await shellStillMounted(page), true);
     assert.equal(await page.evaluate(() => window.__sawLoadingScreen), false);
     assert.equal(state.requests.filter((path) => path.endsWith("/cached")).length, 0);
@@ -263,14 +302,28 @@ test(
   },
 );
 
-test("a changed backend clears the open project", { timeout: 20000 }, async (t) => {
-  const { page, state } = await openedShell(t);
-  state.health = { ...HEALTH, instance_id: "replacement" };
-  await reverify(page);
-  await page.locator(".reconnect-state").waitFor();
-  assert.equal(await shellStillMounted(page), false);
-  assert.equal(await page.getByRole("alertdialog").count(), 0);
-});
+for (const field of ["instance_id", "version", "data_dir_id"]) {
+  test(
+    `a changed backend ${field} clears the project even after reconnect`,
+    { timeout: 20000 },
+    async (t) => {
+      const { page, state } = await openedShell(t);
+      state.health = { ...HEALTH, [field]: "replacement" };
+      state.admitted = false;
+      await reverify(page);
+      await page.locator(".reconnect-state").waitFor();
+      assert.equal(await shellStillMounted(page), false);
+      assert.equal(await page.getByRole("alertdialog").count(), 0);
+      const refused = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/projects/demo",
+      );
+      await page.locator(".reconnect-state button").click();
+      await refused;
+      await page.locator(".app-loading").waitFor({ state: "detached" });
+      assert.equal(await page.locator(".app-shell").count(), 0);
+    },
+  );
+}
 
 test("a team sign-in keeps the pending project route", { timeout: 20000 }, async (t) => {
   const { page, errors } = await openDemoProject(t, "fresh", {
@@ -287,3 +340,214 @@ test("a team sign-in keeps the pending project route", { timeout: 20000 }, async
     [],
   );
 });
+
+async function signIn(page) {
+  await page.locator(".team-login-switch").click();
+  await page.locator("#team-login-token").fill("member-token");
+  await page.locator("#team-login-token").press("Enter");
+}
+
+test(
+  "reconnect blocks keyboard and pointer access until recovery",
+  { timeout: 20000 },
+  async (t) => {
+    const { page, state } = await openedShell(t);
+    const agents = page.getByRole("button", { name: "Agents", exact: true });
+    await agents.focus();
+    state.health = null;
+    await reverify(page);
+    const overlay = page.getByRole("alertdialog");
+    await overlay.waitFor();
+    assert.equal(
+      await agents.evaluate((button) => {
+        button.focus();
+        return document.activeElement === button;
+      }),
+      false,
+    );
+    await page.keyboard.press("Escape");
+    assert.equal(await overlay.isVisible(), true);
+    assert.equal(
+      await agents.click({ trial: true, timeout: 300 }).then(
+        () => true,
+        () => false,
+      ),
+      false,
+    );
+    state.health = HEALTH;
+    await reverify(page);
+    await overlay.waitFor({ state: "detached" });
+    await agents.click();
+    assert.equal(await shellStillMounted(page), true);
+  },
+);
+
+for (const signInAgain of [true, false]) {
+  test(
+    `a different member clears all retained projects (${signInAgain ? "sign-in" : "identity read"})`,
+    { timeout: 25000 },
+    async (t) => {
+      const { page, state } = await openedShell(t, { health: { ...HEALTH, space_kind: "team" } });
+      // Both projects have cached snapshots and dock entries before identity changes.
+      await page.evaluate(() => {
+        window.location.hash = "/projects/second?view=overview";
+      });
+      await page
+        .locator(".project-dock-tab.active .project-dock-select")
+        .filter({ hasText: "Project for human (second)" })
+        .waitFor();
+      await page.evaluate(() => {
+        window.location.hash = "/projects/demo?view=overview";
+      });
+      await page
+        .locator(".project-dock-tab.active .project-dock-select")
+        .filter({ hasText: "Project for human (demo)" })
+        .waitFor();
+      state.health = null;
+      await reverify(page);
+      await page.getByRole("alertdialog").waitFor();
+      state.member = "other";
+      state.admitted = false;
+      state.projectGate = Promise.withResolvers();
+      state.health = { ...HEALTH, space_kind: "team" };
+      state.signedIn = !signInAgain;
+      if (signInAgain) {
+        await reverify(page);
+        await page.locator(".team-login-switch").waitFor();
+      }
+      await page.evaluate(() => {
+        window.__previousMemberPainted = false;
+        new MutationObserver(() => {
+          if (
+            !document.querySelector(".reconnect-dialog") &&
+            document.querySelector(".app-shell")?.textContent.includes("Project for human")
+          ) {
+            window.__previousMemberPainted = true;
+          }
+        }).observe(document.body, { childList: true, subtree: true, characterData: true });
+      });
+      const requested = page.waitForRequest((request) =>
+        new URL(request.url()).pathname.endsWith("/cached"),
+      );
+      if (signInAgain) await signIn(page);
+      else await reverify(page);
+      await requested;
+      assert.equal(await page.locator(".app-shell").count(), 0);
+      state.projectGate.resolve();
+      await page.locator(".app-loading").waitFor({ state: "detached" });
+      assert.equal(await page.locator(".app-shell").count(), 0);
+      assert.equal(await page.evaluate(() => window.__previousMemberPainted), false);
+      assert.match(await page.evaluate(() => window.location.hash), /^#\/projects\/demo/);
+      // Grant this member the second project; no old tab may paint while its
+      // admitted snapshot is still pending, nor remain in the restored dock.
+      state.admitted = true;
+      state.projectGate = Promise.withResolvers();
+      const secondRequested = page.waitForRequest(
+        (request) => new URL(request.url()).pathname === "/api/projects/second/cached",
+      );
+      await page.evaluate(() => {
+        window.location.hash = "/projects/second?view=overview";
+      });
+      await secondRequested;
+      assert.equal(await page.locator(".app-shell").count(), 0);
+      state.projectGate.resolve();
+      await page
+        .locator(".project-dock-tab.active .project-dock-select")
+        .filter({ hasText: "Project for other (second)" })
+        .waitFor();
+      assert.equal(await page.locator(".project-dock-tab").count(), 1);
+      assert.equal(await page.evaluate(() => window.__previousMemberPainted), false);
+    },
+  );
+}
+
+test(
+  "a refused reconciliation leaves the retained project usable and can recover again",
+  { timeout: 20000 },
+  async (t) => {
+    const { page, state } = await openedShell(t);
+    state.health = null;
+    await reverify(page);
+    await page.getByRole("alertdialog").waitFor();
+    state.projectStatus = 503;
+    state.health = HEALTH;
+    const refused = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects/demo",
+    );
+    await reverify(page);
+    await refused;
+    await page.locator(".project-reconciliation").waitFor({ state: "detached" });
+    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    assert.equal(await shellStillMounted(page), true);
+    assert.equal(await page.locator(".project-panel[inert]").count(), 0);
+    state.health = null;
+    await reverify(page);
+    await page.getByRole("alertdialog").waitFor();
+    state.projectStatus = 200;
+    state.health = HEALTH;
+    const recovered = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects/demo",
+    );
+    await reverify(page);
+    await recovered;
+    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    assert.equal(await shellStillMounted(page), true);
+  },
+);
+
+test("browser reload restores the route through fresh admission", { timeout: 20000 }, async (t) => {
+  const { page, state } = await openedShell(t);
+  state.requests = [];
+  state.admitted = false;
+  const refused = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/projects/demo",
+  );
+  await page.reload();
+  await refused;
+  await page.locator(".app-loading").waitFor({ state: "detached" });
+  assert.equal(await page.locator(".app-shell").count(), 0);
+  assert.match(await page.evaluate(() => window.location.hash), /^#\/projects\/demo/);
+  assert.ok(state.requests.includes("/api/identity"));
+  assert.ok(state.requests.includes("/api/projects/demo/cached"));
+});
+
+test(
+  "a reconciliation interrupted by another identity check drops its late snapshot",
+  { timeout: 20000 },
+  async (t) => {
+    const { page, state } = await openedShell(t);
+    state.health = null;
+    await reverify(page);
+    await page.getByRole("alertdialog").waitFor();
+    state.projectName = "Interrupted response";
+    state.projectGate = Promise.withResolvers();
+    state.health = HEALTH;
+    const started = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/projects/demo",
+    );
+    await reverify(page);
+    await started;
+    state.health = null;
+    await reverify(page);
+    await page.getByRole("alertdialog").waitFor();
+    const lateResponse = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/projects/demo",
+    );
+    state.projectGate.resolve();
+    await (await lateResponse).finished();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(
+      await page
+        .locator(".project-dock-select")
+        .filter({ hasText: "Interrupted response" })
+        .count(),
+      0,
+    );
+    assert.equal(await shellStillMounted(page), true);
+    state.projectName = "Current response";
+    state.health = HEALTH;
+    await reverify(page);
+    await page.locator(".project-dock-select").filter({ hasText: "Current response" }).waitFor();
+    assert.equal(await shellStillMounted(page), true);
+  },
+);

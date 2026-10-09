@@ -38,6 +38,8 @@ export function useActorIdentity() {
   const [actorNameSaving, setActorNameSaving] = useState(false);
   const [actorNameError, setActorNameError] = useState<string | null>(null);
 
+  const identityIssueRef = useRef(identityIssue);
+  identityIssueRef.current = identityIssue;
   const actorIdentityRef = useRef<IdentityResponse | null>(null);
   const actorNamePromptResolver = useRef<((saved: boolean) => void) | null>(null);
   const verifiedHealthRef = useRef<PublicHealth | Health | null>(null);
@@ -84,10 +86,26 @@ export function useActorIdentity() {
   useEffect(() => {
     const onIdentity = (event: Event) => {
       const detail = (event as CustomEvent<BackendIdentityEventDetail>).detail;
+      // Close admission in the same update that clears the reconnect error.
+      // Otherwise App starts a reload with the previous actor, then the passive
+      // identity effect cancels it and starts a second recovery.
+      if (detail.ok && identityIssueRef.current) {
+        setActorIdentityChecked(false);
+        setIdentityRetry((count) => count + 1);
+      }
+      identityIssueRef.current = detail.ok ? null : detail.message;
       setIdentityReady(true);
       setIdentityIssue(detail.ok ? null : detail.message || "RCP could not verify its backend.");
       if (detail.health) {
-        if (verifiedHealthRef.current?.instance_id !== detail.health.instance_id) {
+        const previous = verifiedHealthRef.current;
+        const backendChanged =
+          previous &&
+          (["version", "instance_id", "data_dir_id", "space_id", "space_kind"] as const).some(
+            (field) => previous[field] !== detail.health![field],
+          );
+        if (backendChanged) {
+          setActorIdentity(null);
+          setActorIdentityChecked(false);
           setAuthenticatedHealth(null);
         }
         const health =
@@ -168,7 +186,9 @@ export function useActorIdentity() {
     identityIssue,
     identityReady,
     identityRetry,
+    verifiedHealth?.version,
     verifiedHealth?.instance_id,
+    verifiedHealth?.data_dir_id,
     verifiedHealth?.space_id,
     verifiedHealth?.space_kind,
   ]);
@@ -233,6 +253,7 @@ export function useActorIdentity() {
         verifiedHealth.instance_id,
         verifiedHealth.data_dir_id,
         verifiedHealth.space_id,
+        verifiedHealth.space_kind,
       ].join("\n")
     : null;
 

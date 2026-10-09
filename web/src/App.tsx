@@ -1,6 +1,7 @@
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
+import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
 import { branchMergeStateLabel } from "./experiments/CampaignRuns";
@@ -512,7 +513,7 @@ export {
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
-  const [initialRoute] = useState(() => {
+  useState(() => {
     const navigation = window.performance.getEntriesByType("navigation")[0] as
       PerformanceNavigationTiming | undefined;
     const requestedHash = window.location.hash;
@@ -522,12 +523,35 @@ export default function App() {
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return {
-      project: parseProjectHash(hash),
-      graphTarget: graphTargetFromHash(hash),
-      setupOpen: isSetupHash(hash),
-    };
+    return null;
   });
+  const identity = useActorIdentity();
+  // All retained project state belongs to this backend and member. Replacing
+  // the boundary drops rendered state, tab snapshots and in-flight owners in
+  // one commit, before the pending route can open under another identity.
+  const sessionKey = JSON.stringify([
+    identity.backendKey,
+    identity.actorIdentity?.space_id,
+    identity.actorIdentity?.space_kind,
+    identity.actorIdentity?.user.user_id,
+    identity.actorIdentity?.user.identity_kind,
+  ]);
+  useLayoutEffect(() => closeArtifactViewer(), [sessionKey]);
+  return <MemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+}
+
+function MemberApp({
+  desktop,
+  identity,
+}: {
+  desktop: boolean;
+  identity: ReturnType<typeof useActorIdentity>;
+}) {
+  const [initialRoute] = useState(() => ({
+    project: parseProjectHash(window.location.hash),
+    graphTarget: graphTargetFromHash(window.location.hash),
+    setupOpen: isSetupHash(window.location.hash),
+  }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
@@ -567,7 +591,7 @@ export default function App() {
     reverifyIdentity,
     currentActiveAgentTasks,
     updateActorNameDraft,
-  } = useActorIdentity();
+  } = identity;
   // Every backend-facing surface, including the WebMCP inventory, waits for the
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
@@ -577,6 +601,8 @@ export default function App() {
     !!actorIdentity &&
     !teamSessionRequired &&
     !ownerSessionRequired;
+  const backendSessionReadyRef = useRef(backendSessionReady);
+  backendSessionReadyRef.current = backendSessionReady;
   const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
@@ -1425,6 +1451,7 @@ export default function App() {
     const cleanups: Array<() => void> = [];
     // Reload what the window shows: the active project, or the project index.
     const reloadVisibleState = async () => {
+      if (stopped || !backendSessionReadyRef.current) return;
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
@@ -1805,6 +1832,7 @@ export default function App() {
     const resumesOpen =
       projectOpenInterrupted.current &&
       previousOpen !== null &&
+      (!projectId || getProjectSessionState().project !== null) &&
       previousOpen.backendKey === backendKey &&
       previousOpen.projectId === projectId &&
       previousOpen.setupOpen === setupOpen &&
@@ -1816,20 +1844,30 @@ export default function App() {
       if (setupOpen) return;
       if (!projectId) {
         void refreshProjectInvitations();
-        void loadProjectIndex().catch((error) =>
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          }),
-        );
-        return;
+        let cancelled = false;
+        void loadProjectIndex()
+          .catch((error) => {
+            if (!cancelled)
+              setNotice({
+                kind: "error",
+                text: error instanceof Error ? error.message : String(error),
+              });
+          })
+          .finally(() => {
+            if (!cancelled) setLoading(false);
+          });
+        return () => {
+          cancelled = true;
+        };
       }
       let cancelled = false;
       setProjectReconciliation((current) => (current === "opening" ? current : "reconciling"));
       void reload()
         .catch((error) => {
           if (cancelled || !isActiveGraph(projectId)) return;
-          if (authoritativeProjectId.current !== projectId) setProjectReconciliation("failed");
+          setProjectReconciliation(
+            authoritativeProjectId.current === projectId ? "authoritative" : "failed",
+          );
           setNotice({
             kind: "error",
             text: error instanceof Error ? error.message : String(error),
@@ -1840,6 +1878,7 @@ export default function App() {
         });
       return () => {
         cancelled = true;
+        beginProjectSnapshotRequest(projectId);
       };
     }
     const requestedRoute = parseProjectHash(window.location.hash);
@@ -1960,6 +1999,7 @@ export default function App() {
     });
     return () => {
       cancelled = true;
+      beginProjectSnapshotRequest(projectId);
     };
   }, [
     applyProjectSnapshot,
@@ -1967,6 +2007,7 @@ export default function App() {
     backendKey,
     beginProjectSnapshotRequest,
     cachedProjectStateForOpen,
+    getProjectSessionState,
     dispatchProjectSession,
     identityIssue,
     identityReady,
@@ -4018,7 +4059,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !backendSessionReady) return;
     const onProjectTabKeyDown = (event: KeyboardEvent) => {
       const action = projectTabShortcut(event, isEditableShortcutTarget(event.target));
       if (!action) return;
@@ -4125,39 +4166,12 @@ export default function App() {
     !ownerSessionRequired;
   const reverificationSurface =
     holdRenderedTree && (identityIssue || !actorIdentityChecked) ? (
-      <div className="modal-backdrop reconnect-backdrop">
-        <section
-          className="reconnect-dialog"
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="reconnect-title"
-        >
-          {identityIssue ? (
-            <>
-              <TriangleAlert aria-hidden="true" />
-              <h2 id="reconnect-title">Reconnect to RCP</h2>
-              <p>{identityIssue}</p>
-              <button
-                className="button secondary"
-                disabled={reconnecting}
-                onClick={() => void reconnectBackend()}
-              >
-                {reconnecting ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : (
-                  <RefreshCw size={16} />
-                )}{" "}
-                {backendReconnectLabel(desktop)}
-              </button>
-            </>
-          ) : (
-            <>
-              <LoaderCircle className="spin" aria-hidden="true" />
-              <h2 id="reconnect-title">Verifying your identity</h2>
-            </>
-          )}
-        </section>
-      </div>
+      <ReconnectOverlay
+        issue={identityIssue}
+        reconnecting={reconnecting}
+        desktop={desktop}
+        onReconnect={() => void reconnectBackend()}
+      />
     ) : null;
   const actorNameSurface = actorNamePromptOpen ? (
     <div className="modal-backdrop identity-name-backdrop">

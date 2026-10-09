@@ -1620,11 +1620,12 @@
   max-width: 680px;
   text-align: center;
 }
-.reconnect-backdrop {
+.reconnect-dialog::backdrop {
   background: rgb(var(--shadow-rgb) / 46%);
-  z-index: 190;
 }
 .reconnect-dialog {
+  color: var(--ink);
+  border-radius: 12px;
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--line-strong);
