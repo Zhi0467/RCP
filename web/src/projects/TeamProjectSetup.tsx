@@ -6,14 +6,14 @@ import {
   FolderGit2,
   LoaderCircle,
   Plus,
-  RefreshCw,
   Server,
   ShieldCheck,
   SquareTerminal,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { EXPERIMENT_BOARD_POLL_DELAY_MS } from "./useProjectTabs";
 import {
   api,
   cancelProjectProvisioningRequest,
@@ -246,10 +246,21 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
           }
         });
         if (!current || stopped) return;
-        setConnection(current);
-        if (current.operator_route) {
-          setOperatorTarget(current.operator_route.ssh_target);
-          const checked = await probeDesktopServerOperator(current.connection_id);
+        // Server setup goes through the login this connection already uses
+        // unless the human chose another one; the probe then decides between
+        // running it here and opening a terminal where sudo can prompt.
+        const routed =
+          current.operator_route === null
+            ? await configureDesktopServerOperatorRoute(current.connection_id, {
+                ssh_target: current.ssh_target,
+                mode: serverOperatorModeFor(current.ssh_target),
+              })
+            : current;
+        if (stopped) return;
+        setConnection(routed);
+        if (routed.operator_route) {
+          setOperatorTarget(routed.operator_route.ssh_target);
+          const checked = await probeDesktopServerOperator(routed.connection_id);
           if (!stopped) setProbe(checked);
         }
       })
@@ -260,6 +271,32 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       stopped = true;
     };
   }, [desktop]);
+
+  // While the request waits on the server, follow it here instead of asking
+  // the human to refresh after each terminal step.
+  const watchedRequestId = request?.can_run_setup ? request.request_id : null;
+  const watchedRevision = useRef(request?.revision);
+  watchedRevision.current = request?.revision;
+  useEffect(() => {
+    if (watchedRequestId === null) return;
+    let active = true;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const next = await loadProjectProvisioningRequest(watchedRequestId);
+        if (active && next.revision !== watchedRevision.current) setCurrentRequest(next);
+      } catch {
+        // The next tick retries; a lasting failure surfaces through actions.
+      } finally {
+        if (active) timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+      }
+    };
+    timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [watchedRequestId]);
 
   const canonicalMachine = useMemo(() => {
     const repository = repositories.find((item) => item.alias === stateRepository);
@@ -392,19 +429,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     setError(null);
     try {
       setCurrentRequest(await createTeamProjectProvisioning(provisioningBody()));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const refreshRequest = async () => {
-    if (!request) return;
-    setBusy("refresh");
-    setError(null);
-    try {
-      setCurrentRequest(await loadProjectProvisioningRequest(request.request_id));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -884,7 +908,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
             }}
             onSaveAndProbe={() => void saveAndProbeRoute()}
             onCopy={() => void copyCommand()}
-            onRefresh={() => void refreshRequest()}
             onRun={() => void runSetup()}
             onTerminal={() => void openTerminal()}
             onCancel={() => void cancelRequest()}
@@ -1210,7 +1233,6 @@ export function ProvisioningStatus({
   onOperatorTarget,
   onSaveAndProbe,
   onCopy,
-  onRefresh,
   onRun,
   onTerminal,
   onCancel,
@@ -1226,13 +1248,13 @@ export function ProvisioningStatus({
   onOperatorTarget: (value: string) => void;
   onSaveAndProbe: () => void;
   onCopy: () => void;
-  onRefresh: () => void;
   onRun: () => void;
   onTerminal: () => void;
   onCancel: () => void;
   onComplete: () => void;
 }) {
   const operatorRouteReady = serverOperatorProbeMatchesDraft(probe, operatorTarget);
+  const [overrideOpen, setOverrideOpen] = useState(false);
   return (
     <div className="setup-section provisioning-status">
       <SectionHeading
@@ -1278,19 +1300,6 @@ export function ProvisioningStatus({
         >
           <Clipboard size={14} /> Copy server command
         </button>
-        <button
-          className="button secondary"
-          type="button"
-          disabled={busy !== null}
-          onClick={onRefresh}
-        >
-          {busy === "refresh" ? (
-            <LoaderCircle className="spin" size={14} />
-          ) : (
-            <RefreshCw size={14} />
-          )}{" "}
-          Refresh
-        </button>
         {desktop && connection && request.can_run_setup && operatorRouteReady && (
           <button className="button primary" type="button" disabled={busy !== null} onClick={onRun}>
             {busy === "run" ? <LoaderCircle className="spin" size={14} /> : <Server size={14} />}{" "}
@@ -1327,11 +1336,16 @@ export function ProvisioningStatus({
         through sudo.
       </p>
 
-      {desktop && connection && request.can_run_setup && (
+      {desktop && connection && request.can_run_setup && !overrideOpen && (
+        <button className="button ghost tiny" type="button" onClick={() => setOverrideOpen(true)}>
+          Use a different SSH login
+        </button>
+      )}
+      {desktop && connection && request.can_run_setup && overrideOpen && (
         <section className="operator-route-card">
           <header>
-            <strong>Desktop server operator route</strong>
-            <span>{operatorRouteReady ? "Ready" : "Not proved"}</span>
+            <strong>SSH login for server setup</strong>
+            <span>{operatorRouteReady ? "Ready" : "Not checked"}</span>
           </header>
           <div>
             <label>
@@ -1353,7 +1367,7 @@ export function ProvisioningStatus({
               ) : (
                 <ShieldCheck size={14} />
               )}{" "}
-              Save and check
+              Use this login
             </button>
           </div>
           <p className="provisioning-hint">
@@ -1398,7 +1412,6 @@ export function ProvisioningStatus({
           step={request.operator_action}
           route={connection?.operator_route ?? null}
           routeProved={routeProvedBy(probe, connection?.connection_id, connection?.operator_route)}
-          onRefresh={onRefresh}
         />
       )}
 
