@@ -2408,6 +2408,17 @@ def test_human_cannot_admit_a_turn_on_an_auto_research_child(tmp_path, child_kin
         store.create_agent_task(human)
     assert str(error.value) == "auto_research_child_read_only"
     assert store.agent_task(human.operation_id) is None
+    # A comment edit on the child's artifact is not a chat turn and is not refused here.
+    edit = human.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "request": {"chat_id": chat_id, "artifact_edit": {"launch_kind": "discuss"}},
+        }
+    )
+    try:
+        store.create_artifact_edit_task(edit)
+    except ValueError as exc:
+        assert str(exc) != "auto_research_child_read_only"
     row = next(row for row in store.chat_inventory(parent.project_id) if row["chat_id"] == chat_id)
     assert row["conversation_kind"] == "auto_research_child"
     assert row["orchestrator_episode_id"] == parent.episode_id

@@ -594,9 +594,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         # A child's native session belongs to its orchestrator even after it ends.
         # Enforce this before session binding, without changing child continuations.
+        # Artifact comments stay ordinary edits on the child's own output.
         if (
             record.kind in {"node_chat", "project_chat"}
             and record.request.get("trigger", "human") == "human"
+            and not isinstance(record.request.get("artifact_edit"), dict)
         ):
             chat_id = record.request.get("chat_id")
             child = connection.execute(
