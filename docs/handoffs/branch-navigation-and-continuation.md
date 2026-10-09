@@ -54,7 +54,7 @@ review was folded in; three product questions remain open (see the end).
   Reconcile with an ordinary reload, not a cold open. A changed backend still
   clears the project. Keeping state is not enough: the render gate that swaps
   in the reconnect or checking screen must also stop unmounting the project
-  for a reverification (see open question C).
+  for a reverification (see answered question C).
 - (2) A browser reload keeps the project route. Desktop keeps the S107 rule
   (reload and relaunch start on the index). A successful team sign-in keeps a
   pending route too. Restoring a route never skips identity admission; the
@@ -122,7 +122,7 @@ owns it:
   owner. Its recovery goes through the episode route
   (`auto_research_child_work_for_operation`, child Experiment recovery behind
   the parent ending fence) or is refused. It never becomes a human turn by
-  being retried from an unlocked composer (see open question A).
+  being retried from an unlocked composer (see answered question A).
 - **Continuations.** Admission of an Add N turns continuation refuses while a
   human-owned turn is active on any child of that lineage, naming the chat.
   A running continuation re-locks the children; the composer says why.
@@ -197,22 +197,13 @@ opening turn or cost a second paid wake. So this is one operation:
   team space. Record the navigation type the browser reports; the code fix
   covers `reload` only.
 
-## Open product questions
+## Answered product questions
 
-A. **Retry on an ended episode's child turn.** When a human opens an
-   unlocked child chat whose last orchestrator-started turn failed, what does
-   Retry do? Options: (1) refuse, pointing to **Add N turns**; (2) run it as
-   a new human-owned turn with the same request, outside the episode;
-   (3) hide Retry and leave only Send. Recommendation: (1). It keeps episode
-   turns with their owner and leaves Send as the human path.
-B. **Default N for an ended-orchestrator message.** Every orchestrator and
-   worker turn spends one unit of B, so N = 1 lets the orchestrator reply but
-   not dispatch any worker. Options: (1) default 1, a reply only; (2) default
-   3, a reply plus a little work; (3) default to the source's last ceiling.
-   Recommendation: (2), shown with its E = 5N cost.
-C. **What shows during a backend check failure.** Options: (1) keep the
-   full-screen reconnect page but keep the project's session state, so
-   recovery is a warm reload; (2) keep the project mounted under a blocking
-   reconnect overlay, so view state such as scroll and unsent text also
-   survives. Recommendation: (2), because the complaint is lost place, not
-   only the wait.
+- A. **Retry on an ended episode's child turn** started by the orchestrator is
+  refused, pointing to messaging the orchestrator or **Add N turns**. Send
+  stays the human path in that chat.
+- B. **Messaging an ended orchestrator defaults to N = 3**, editable before
+  sending, with the cost shown as N turns and E = 5N child Experiments.
+- C. **A backend check failure keeps the project mounted** under a blocking
+  reconnect overlay, so scroll, open panels, and unsent text survive. A
+  changed backend still clears the project.
