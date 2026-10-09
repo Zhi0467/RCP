@@ -237,7 +237,8 @@ export function createQuietMeter(stream: MediaStream): {
   analyser.fftSize = 1024;
   context.createMediaStreamSource(stream).connect(analyser);
   const samples = new Float32Array(analyser.fftSize);
-  let floor = Infinity;
+  // Start from a quiet room, so speech heard first never becomes the floor.
+  let floor = 0.003;
   let quietSince: number | null = null;
   return {
     quietMs(now) {
