@@ -1,7 +1,8 @@
 # Server-only and empty team repositories
 
-Status: slice A contracts implemented and locally checked; slice B behavior and
-served-app/remote journeys remain. Design confirmed and reviewed 2026-10-09.
+Status: slice A contracts and W1 (B1 setup/first push and B3 add/connect)
+implemented and locally checked. Other slice B owners and live served-app/remote
+journeys remain. Design confirmed and reviewed 2026-10-09.
 Ships in PR #284 with the setup-page and wizard trims already on that branch.
 
 Decision: [team repositories may live only on the server](../decisions/2026-10-09-team-repositories-may-live-only-on-the-server.md).
@@ -66,7 +67,7 @@ checkout proof from completed requests. API response fields and
 
 **B. Parallel after A, one owner each.**
 
-1. Setup and first push — `server_ops/project_provision.py`,
+1. Setup and first push (implemented in W1) — `server_ops/project_provision.py`,
    `git_credentials.py`, `project_checkout.py`, `remote_project_checkout.py`:
    server-only init, empty-repo first commit and race-safe push.
 2. Backup, restore, doctor — `projects.py` descriptor builder,
@@ -74,7 +75,7 @@ checkout proof from completed requests. API response fields and
    `server_ops/restore.py`, `server_ops/doctor.py`: consume the effective
    inventory, record a replacement proof after restore, surface the
    not-backed-up notice durably; prove backup → restore → backup.
-3. Add and connect — coordinator targets for the two new kinds, the
+3. Add and connect (implemented in W1) — coordinator targets for the two new kinds, the
    approval-transition completion, the diverged-history stop.
 4. Transfer — `transfer/configuration.py`, `project_transfer.py`,
    `transport/remote_transfer_git.py`, `web/src-tauri/src/project_transfer.rs`:

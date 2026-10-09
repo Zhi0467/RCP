@@ -32,7 +32,6 @@ from rcp.server_ops.git_credentials import (
 )
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
-from rcp.server_ops.models import ExternalServiceTarget
 from rcp.server_ops.project_checkout import (
     ProjectCheckoutRefused,
     ProjectCheckoutResult,
@@ -116,7 +115,7 @@ class _Credentials:
             location=machine.location,
             host=machine.host,
             os_account=machine.os_account,
-            central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
+            central_root=machine.central_root or str(DEFAULT_SERVER_LAYOUT.projects_root),
             account_home=str(DEFAULT_SERVER_LAYOUT.service_home),
             credentials_root=str(DEFAULT_SERVER_LAYOUT.credentials_root),
             private_key_path=str(
@@ -184,7 +183,7 @@ class _Checkouts:
         expected_commit: str | None,
     ) -> ProjectCheckoutResult:
         self.calls += 1
-        assert request_kind == "create_team_project"
+        assert request_kind in {"create_team_project", "add_repository", "connect_repository"}
         assert isinstance(state_repository, bool)
         assert expected_commit == "a" * 40
         root = material.central_root
@@ -232,6 +231,7 @@ def _store_and_request(
     repository_aliases: tuple[str, ...] = ("paper",),
     configured: bool = True,
     provider_only_machine: bool = False,
+    server_only: bool = False,
 ):
     store, _bootstrap = AppStore.initialize_team_space(
         tmp_path / "data" / "rcp.sqlite3",
@@ -277,7 +277,11 @@ def _store_and_request(
         repositories=[
             ProjectProvisioningRepositoryIntent(
                 alias=alias,
-                repository=parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{index}.git"),
+                repository=(
+                    None
+                    if server_only
+                    else parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{index}.git")
+                ),
                 machine_alias="server",
             )
             for index, alias in enumerate(repository_aliases, start=1)
@@ -673,65 +677,99 @@ def test_missing_github_grant_persists_exact_project_resume_then_completes(
     assert ready is not None and ready.status == "ready_for_review"
 
 
-def test_empty_repository_persists_first_commit_action_on_the_planned_target(
+class _InitialCheckouts(_Checkouts):
+    def __init__(self, store, request_id):
+        super().__init__()
+        self.store = store
+        self.request_id = request_id
+        self.fail_push = True
+        self.expected_commits = []
+
+    def prepare_initial(self, machine, material, **kwargs):
+        self.expected_commits.append(kwargs["expected_commit"])
+        return super().prepare(machine, material, **{**kwargs, "expected_commit": "a" * 40})
+
+    def publish_initial(self, machine, material, *, repository_path, expected_commit, request_kind):
+        recorded = self.store.project_provisioning_request(self.request_id).repositories[0]
+        assert recorded.git_check.commit == expected_commit
+        assert recorded.resolved_path == repository_path
+        assert not recorded.git_check.write_verified
+        return GitWriteProbe(
+            status="failed" if self.fail_push else "ready",
+            commit=expected_commit,
+            temporary_ref=None,
+            diagnostic="Git push outcome",
+        )
+
+    def prepare_server_only(self, machine, **kwargs):
+        self.calls += 1
+        root = machine.central_root or str(DEFAULT_SERVER_LAYOUT.projects_root)
+        return ProjectCheckoutResult(
+            machine_alias=machine.alias,
+            repository_alias=kwargs["repository_alias"],
+            central_root=root,
+            repository_path=f"{root}/{kwargs['project_id']}/repositories/{kwargs['repository_alias']}",
+            checkout_disposition="request_created",
+            commit="a" * 40,
+            retained_research=RetainedResearchState(False, False, None, None),
+        )
+
+
+def test_empty_repository_records_first_commit_before_push_and_reuses_after_failure(
     tmp_path: Path,
 ) -> None:
     store, request = _store_and_request(tmp_path)
     credentials = _Credentials(probe_status="empty_repository")
-    coordinator, _, _ = _coordinator(store, tmp_path, credentials=credentials)
+    checkouts = _InitialCheckouts(store, request.request_id)
+    coordinator, _, _ = _coordinator(
+        store,
+        tmp_path,
+        credentials=credentials,
+        checkouts=checkouts,
+    )
     plan = coordinator.plan(request.request_id)
     boundary = plan.boundary_sha256
-
-    for target in plan.targets[:2]:
+    for target in plan.targets[:3]:
         result = coordinator.advance(
             request.request_id,
             boundary_sha256=boundary,
             target_id=target.target_id,
         )
-        assert result.step.state == "succeeded"
         boundary = result.next_boundary_sha256
-
-    paused = coordinator.advance(
-        request.request_id,
-        boundary_sha256=boundary,
-        target_id=plan.targets[2].target_id,
-    )
-
-    assert paused.step.state == "operator_action_needed"
-    assert paused.step.target == plan.targets[2].step.target
+    assert result.step.state == "operator_action_needed"
     stored = store.project_provisioning_request(request.request_id)
-    assert stored is not None and stored.status == "operator_action_needed"
-    assert stored.operator_action == paused.step
-
-    legacy_action = paused.step.model_copy(
-        update={
-            "target": ExternalServiceTarget(
-                service="github.com",
-                resource=stored.repositories[0].repository.identity,
-                destination_url=(
-                    f"https://github.com/{stored.repositories[0].repository.identity}"
-                ),
-                required_authority_role="repository contributor",
-            )
-        }
-    )
-    with store.connection() as connection:
-        connection.execute(
-            """
-            UPDATE project_provisioning_requests
-            SET operator_action_json = ?
-            WHERE request_id = ?
-            """,
-            (legacy_action.model_dump_json(), request.request_id),
-        )
-    compatible = store.project_provisioning_request(request.request_id)
-    assert compatible is not None
-    assert compatible.operator_action == legacy_action
-
-    credentials.probe_status = "ready"
+    assert stored.repositories[0].git_check.commit == "a" * 40
+    assert not stored.repositories[0].git_check.write_verified
+    checkouts.fail_push = False
     _advance_all(coordinator, request.request_id)
-    ready = store.project_provisioning_request(request.request_id)
-    assert ready is not None and ready.status == "ready_for_review"
+    assert checkouts.expected_commits == [None, "a" * 40]
+    assert credentials.probe_calls == 1
+    assert (
+        store.project_provisioning_request(request.request_id)
+        .repositories[0]
+        .git_check.write_verified
+    )
+
+
+def test_server_only_setup_has_one_checkout_target_and_no_git_credentials(tmp_path: Path) -> None:
+    store, request = _store_and_request(tmp_path, server_only=True)
+    checkouts = _InitialCheckouts(store, request.request_id)
+    coordinator, credentials, _ = _coordinator(store, tmp_path, checkouts=checkouts)
+    phases = [target.step.phase for target in coordinator.plan(request.request_id).targets]
+    assert phases == [
+        "provisioning_start",
+        "repository_checkout",
+        "provider_readiness",
+        "provisioning_review",
+    ]
+    _advance_all(coordinator, request.request_id)
+    repository = store.project_provisioning_request(request.request_id).repositories[0]
+    assert repository.git_check.status == "ready"
+    assert repository.git_check.commit == "a" * 40
+    assert not repository.git_check.write_verified
+    assert credentials.prepare_calls == credentials.probe_calls == 0
+    _advance_all(coordinator, request.request_id)
+    assert checkouts.calls == 1
 
 
 def test_unsafe_credential_path_pauses_with_exact_account_and_project_resume(
@@ -943,6 +981,7 @@ def _ready_team_app(
     monkeypatch: pytest.MonkeyPatch,
     *,
     include_appendix: bool = False,
+    server_only: bool = False,
 ):
     layout = _test_server_layout(tmp_path / "installation")
     monkeypatch.setattr(storage_models, "DEFAULT_SERVER_LAYOUT", layout)
@@ -980,7 +1019,11 @@ def _ready_team_app(
         repositories=[
             ProjectProvisioningRepositoryIntent(
                 alias=alias,
-                repository=parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{alias}.git"),
+                repository=(
+                    None
+                    if server_only
+                    else parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{alias}.git")
+                ),
                 machine_alias="server",
             )
             for alias in repository_aliases
@@ -1026,11 +1069,13 @@ def _ready_team_app(
                 "git_check": ProjectProvisioningGitCheckRecord(
                     status="ready",
                     commit="a" * 40,
-                    write_verified=True,
+                    write_verified=not server_only,
                     deploy_key_label=(
-                        f"rcp:{store.space_id}:{request.proposed_project_id}:{repository.alias}"
+                        None
+                        if server_only
+                        else f"rcp:{store.space_id}:{request.proposed_project_id}:{repository.alias}"
                     ),
-                    public_key_fingerprint="SHA256:" + ("A" * 43),
+                    public_key_fingerprint=None if server_only else "SHA256:" + ("A" * 43),
                     checked_at=checked_at,
                 ),
             }
@@ -1086,11 +1131,17 @@ def _complete_ready_request(client: TestClient, request) -> object:
     )
 
 
+@pytest.mark.parametrize("server_only", [False, True])
 def test_final_review_creates_exact_reserved_project_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    server_only: bool,
 ) -> None:
-    app, ready, _alice, bob, repository_path = _ready_team_app(tmp_path, monkeypatch)
+    app, ready, _alice, bob, repository_path = _ready_team_app(
+        tmp_path,
+        monkeypatch,
+        server_only=server_only,
+    )
 
     with TestClient(app) as client:
         completed = _complete_ready_request(client, ready)
@@ -1305,3 +1356,37 @@ def test_final_review_recovers_after_each_durable_boundary(
     ]
     receipts = store.project_provisioning_step_receipts(ready.request_id)
     assert [receipt.phase for receipt in receipts].count("member_finalize") == 1
+
+
+def test_existing_project_coordinator_prepares_add_and_connect(tmp_path, monkeypatch):
+    app, creation, _, _, _ = _ready_team_app(tmp_path, monkeypatch, server_only=True)
+    with TestClient(app) as client:
+        assert _complete_ready_request(client, creation).status_code == 200
+        store = app.state.services.store
+        for body in (
+            {"kind": "add_repository", "repository": {"alias": "code", "machine_alias": "server"}},
+            {
+                "kind": "connect_repository",
+                "alias": "paper",
+                "source": "https://github.com/example/paper.git",
+            },
+        ):
+            response = client.post(
+                f"/api/projects/{creation.proposed_project_id}/repository-requests",
+                json=body,
+            )
+            assert response.status_code == 201, response.text
+            request_id = response.json()["request_id"]
+            checkouts = _InitialCheckouts(store, request_id)
+            checkouts.fail_push = False
+            coordinator, credentials, _ = _coordinator(store, tmp_path, checkouts=checkouts)
+            assert "provider_readiness" not in [
+                target.step.phase for target in coordinator.plan(request_id).targets
+            ]
+            _advance_all(coordinator, request_id)
+            ready = store.project_provisioning_request(request_id)
+            Path(ready.repositories[0].resolved_path).mkdir(parents=True, exist_ok=True)
+            assert _complete_ready_request(client, ready).status_code == 200
+            if body["kind"] == "connect_repository":
+                assert credentials.probe_calls == 0
+                assert ready.repositories[0].git_check.write_verified

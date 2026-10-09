@@ -429,7 +429,7 @@ class GitCredentialManager:
         advertised = self._git(
             machine,
             material,
-            ("git", "ls-remote", origin, "HEAD"),
+            ("git", "ls-remote", origin, "HEAD", "refs/heads/*"),
         )
         if advertised.returncode != 0:
             return _probe_failure(
@@ -444,8 +444,8 @@ class GitCredentialManager:
                 commit=None,
                 temporary_ref=None,
                 diagnostic=(
-                    "The GitHub repository has no commit. Push the local code through the "
-                    "ordinary human Git workflow, then resume the same provisioning request."
+                    "The GitHub repository has no branch history. RCP will create the empty "
+                    "Start RCP project commit as RCP and push main with the deploy key."
                 ),
             )
         source_ref, advertised_commit = _preferred_source_ref(refs)
@@ -1051,47 +1051,6 @@ def restore_deploy_key_operator_step(
     )
 
 
-def empty_repository_operator_step(
-    material: DeployKeyMaterial,
-    *,
-    number: int,
-    request_id: str,
-    resume_argv: tuple[str, ...],
-) -> ServerStep:
-    _require_resume_request(resume_argv, request_id)
-    repository_url = f"https://github.com/{material.repository.identity}"
-    return ServerStep(
-        number=number,
-        title="Push the repository's first commit",
-        purpose="Give the central checkout one real human-authored Git commit to clone.",
-        performed_by="human",
-        target=ExternalServiceTarget(
-            service="github.com",
-            resource=material.repository.identity,
-            destination_url=material.repository.settings_url,
-            required_authority_role="repository administrator",
-        ),
-        phase="github_initial_commit",
-        state="operator_action_needed",
-        expected_success="GitHub advertises one existing commit for the provisioning write probe.",
-        message=(
-            "This repository is empty. Push the local code through the ordinary human Git "
-            "workflow, then resume the same provisioning request."
-        ),
-        actions=(
-            ExternalAction(
-                instruction=(
-                    "Push the code you want to start from as this repository's first commit: "
-                    f"{repository_url} RCP does not create a repository or an initial commit."
-                )
-            ),
-        ),
-        fields=(NonsecretField(name="repository", value=material.repository.identity),),
-        resume_argv=resume_argv,
-        resume_execution=OPERATOR_SHELL,
-    )
-
-
 def cleanup_ref_operator_step(
     material: DeployKeyMaterial,
     probe: GitWriteProbe,
@@ -1245,9 +1204,12 @@ def _parse_remote_refs(output: str) -> dict[str, str]:
 
 
 def _preferred_source_ref(refs: dict[str, str]) -> tuple[str, str]:
-    if set(refs) != {"HEAD"}:
-        raise GitCredentialRefused("GitHub did not advertise exactly one HEAD commit.")
-    return "HEAD", refs["HEAD"]
+    if "HEAD" in refs:
+        return "HEAD", refs["HEAD"]
+    if "refs/heads/main" in refs:
+        return "refs/heads/main", refs["refs/heads/main"]
+    ref = sorted(refs)[0]
+    return ref, refs[ref]
 
 
 def _probe_failure(
@@ -1405,7 +1367,6 @@ __all__ = [
     "cleanup_ref_operator_step",
     "deploy_key_ssh_command",
     "deploy_key_operator_step",
-    "empty_repository_operator_step",
     "restore_deploy_key_operator_step",
     "run_bounded_process",
     "target_account_argv",

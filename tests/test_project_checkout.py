@@ -22,12 +22,13 @@ from rcp.server_ops.git_credentials import DeployKeyMaterial, _run_process
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.layout import ServerLayout
 from rcp.server_ops.project_checkout import (
+    CheckoutAccount,
     ProjectCheckoutManager,
     ProjectCheckoutRefused,
     retained_research_operator_step,
 )
 from rcp.ssh_agent import agent_socket_path, agent_status
-from rcp.storage import ProjectProvisioningMachineIntent
+from rcp.storage import ProjectProvisioningKind, ProjectProvisioningMachineIntent
 
 SPACE_ID = "7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2"
 PROJECT_ID = "2ad064a6-f015-4703-a223-1d64cde75cc8"
@@ -165,7 +166,7 @@ class _LocalOriginCheckoutManager(ProjectCheckoutManager):
     def _git(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
+        material: DeployKeyMaterial | CheckoutAccount,
         argv: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
         mapped = list(argv)
@@ -411,6 +412,10 @@ def test_manager_clones_verifies_and_recovers_without_renaming(
     origin, commit = _origin(tmp_path)
     manager, layout, machine, material, runner = _manager(tmp_path, origin)
 
+    # The shipped helper probes the account's own agent socket; expect the same.
+    home = Path(material.account_home)
+    socket = str(agent_socket_path(home)) if agent_status(home) == "running" else None
+    monkeypatch.setattr("rcp.ssh_agent.running_agent_socket", lambda: socket)
     first = manager.prepare(
         machine,
         material,
@@ -421,12 +426,6 @@ def test_manager_clones_verifies_and_recovers_without_renaming(
         expected_commit=commit,
     )
     checkout = Path(first.repository_path)
-    # The shipped helper probes the account's own agent socket; expect the same.
-    home = Path(material.account_home)
-    monkeypatch.setattr(
-        "rcp.ssh_agent.running_agent_socket",
-        lambda: str(agent_socket_path(home)) if agent_status(home) == "running" else None,
-    )
     command = deploy_key_ssh_command(material.private_key_path, material.account_home)
     assert _git_command("config", "--local", "--get", "core.sshCommand", cwd=checkout) == command
     _git_command("config", "--local", "--unset", "core.sshCommand", cwd=checkout)
@@ -1602,3 +1601,144 @@ def test_shipped_helper_reads_identity_from_a_batched_patch_directory(
         "project_id": PROJECT_ID,
         "home_space_id": SPACE_ID,
     }
+
+
+@pytest.mark.parametrize("location", ["local", "ssh"])
+def test_server_only_first_commit_is_private_and_reused(tmp_path: Path, location: str) -> None:
+    manager, _layout_value, machine, _key, _runner = _manager(tmp_path, tmp_path / "unused")
+    if location == "ssh":
+        machine = machine.model_copy(update={"location": "ssh", "host": "fixture-host"})
+
+        def ssh_runner(argv, *, timeout):
+            assert "ssh" in argv
+            return _run_process(tuple(shlex.split(argv[-1])), timeout=timeout)
+
+        manager._runner = ssh_runner
+    result = manager.prepare_server_only(
+        machine,
+        request_kind="create_team_project",
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+        state_repository=True,
+    )
+    path = Path(result.repository_path)
+    assert _git_command("branch", "--show-current", cwd=path) == "main"
+    assert (
+        _git_command("show", "-s", "--format=%an <%ae>|%s", cwd=path)
+        == "RCP <rcp@rcp.invalid>|Start RCP project"
+    )
+    assert _git_command("ls-tree", "HEAD", cwd=path) == ""
+    assert _git_command("remote", cwd=path) == ""
+    assert (
+        manager.prepare_server_only(
+            machine,
+            expected_commit=result.commit,
+            request_kind="create_team_project",
+            project_id=PROJECT_ID,
+            repository_alias=ALIAS,
+            state_repository=True,
+        ).commit
+        == result.commit
+    )
+    assert stat.S_IMODE((path / ".git").stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("request_kind", ["create_team_project", "connect_repository"])
+def test_first_push_reconciles_lost_receipt_and_refuses_divergence(
+    tmp_path: Path, request_kind: ProjectProvisioningKind
+) -> None:
+    origin = tmp_path / "remote.git"
+    _git_command("init", "--bare", "-b", "main", str(origin))
+    manager, _layout_value, machine, material, _runner = _manager(tmp_path, origin)
+    original_git = manager._git
+    lose_receipt = [True]
+    race_push = [False]
+
+    def mapped_git(machine, material, argv):
+        mapped = list(argv)
+        if any(operation in mapped for operation in ("push", "fetch", "ls-remote")):
+            mapped = [str(origin) if arg == "origin" else arg for arg in mapped]
+        if "push" in mapped and race_push[0]:
+            race_push[0] = False
+            _git_command("push", "origin", "main", cwd=human)
+        result = original_git(machine, material, tuple(mapped))
+        if "push" in mapped and lose_receipt[0]:
+            lose_receipt[0] = False
+            return subprocess.CompletedProcess(argv, 255, "", "Connection lost")
+        return result
+
+    manager._git = mapped_git
+    if request_kind == "connect_repository":
+        existing = manager.prepare_server_only(
+            machine,
+            request_kind="create_team_project",
+            project_id=PROJECT_ID,
+            repository_alias=ALIAS,
+            state_repository=True,
+        )
+        research = Path(existing.repository_path) / ".research"
+        research.mkdir()
+        (research / "scratch.txt").write_text("keep human work")
+    result = manager.prepare_initial(
+        machine,
+        material,
+        request_kind=request_kind,
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+        state_repository=True,
+    )
+    assert _git_command("ls-remote", str(origin)) == ""
+    assert manager.publish_initial(
+        machine,
+        material,
+        repository_path=result.repository_path,
+        expected_commit=result.commit,
+        request_kind=request_kind,
+    ).ready
+    human = tmp_path / "human"
+    _git_command("clone", str(origin), str(human))
+    _git_command(
+        "-c",
+        "user.name=Human",
+        "-c",
+        "user.email=human@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "human",
+        cwd=human,
+    )
+    race_push[0] = True
+    human_commit = _git_command("rev-parse", "HEAD", cwd=human)
+    assert not manager.publish_initial(
+        machine,
+        material,
+        repository_path=result.repository_path,
+        expected_commit=result.commit,
+        request_kind=request_kind,
+    ).ready
+    assert _git_command("rev-parse", "main", cwd=origin) == human_commit
+    if request_kind == "connect_repository":
+        assert (
+            Path(result.repository_path) / ".research" / "scratch.txt"
+        ).read_text() == "keep human work"
+        checkout = Path(result.repository_path)
+        _git_command("fetch", str(origin), "main", cwd=checkout)
+        _git_command("merge", "--ff-only", "FETCH_HEAD", cwd=checkout)
+        resumed = manager.prepare_initial(
+            machine,
+            material,
+            request_kind="connect_repository",
+            project_id=PROJECT_ID,
+            repository_alias=ALIAS,
+            state_repository=True,
+            expected_commit=result.commit,
+        )
+        assert resumed.commit == human_commit
+        assert manager.publish_initial(
+            machine,
+            material,
+            repository_path=resumed.repository_path,
+            expected_commit=resumed.commit,
+            request_kind="connect_repository",
+        ).ready

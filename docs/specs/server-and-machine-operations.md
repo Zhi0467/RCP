@@ -968,10 +968,20 @@ retained in the provisioning receipt. This is recovery metadata, not a secret:
 it lets a replacement server tell the operator exactly which old GitHub grant
 to revoke while private key bytes remain outside SQLite and backup.
 
-The write proof points a temporary request-scoped ref at an existing commit,
-reads it back, and removes it. An empty repository therefore stays **operator
-action needed** until the operator creates and pushes its first real commit; RCP
-does not manufacture a hidden initialization commit.
+For a GitHub repository with history, the write proof points a temporary
+request-scoped ref at an existing commit, reads it back, and removes it. RCP
+lists real branch refs as well as HEAD. If there is no branch history, the
+announced setup step initializes `main` in the exact central checkout and
+creates the empty `Start RCP project` commit as `RCP <rcp@rcp.invalid>`.
+The checkout path and commit are durably recorded before the deploy-key push;
+that push and its remote readback are the write proof. Retries reuse the recorded
+commit. Pushes use a non-forced refspec, and a lost receipt is reconciled by
+reading remote `main`. A competing human push stops preparation for human repair.
+
+An omitted GitHub source creates a server-only repository in the same exact
+central path, with the same empty commit and a ready checkout proof. It has no
+remote, deploy key, or write-probe target. Local and SSH execution use the same
+account and path checks. Server-only code is not included in backups.
 
 Cancellation removes only request-owned local/remote private-key material after
 an explicit disposition. If its public key was already added to GitHub, the
@@ -1037,9 +1047,8 @@ member cancellation returns the same durable result.
 The command is resumable and exhaustive. If a deploy key is not yet installed,
 it prints the exact GitHub repository settings destination, label, public key,
 **Allow write access** requirement, and the same command to rerun. If the source
-repository has no commit, it explains that the member must push their local code
-through their normal GitHub workflow and names the repository plus the recheck
-command; it never reaches into the member checkout. Missing SSH or provider
+repository has no branch history, the plan announces the RCP first commit
+before creating and publishing it; it never reaches into the member checkout. Missing SSH or provider
 authentication similarly names the execution account and provider-native or
 OpenSSH action, then resumes the same request after the operator performs it.
 
@@ -1095,6 +1104,19 @@ paths, truth scopes, provider runtimes, and fixed permission contracts into the
 manifest, then appends one system-owned `created` identity with the already
 reserved id. The reviewer becomes the first project member and is retained as
 the seating actor.
+
+Members may also request one added repository or connect a server-only repository
+to GitHub from an existing project's Settings. These requests use the same
+operator command and final-review confirmation, without provider setup. Add
+prepares one new central checkout; connect keeps the existing checkout, adds the
+reviewed GitHub remote, and requires the repository deploy-key grant. Connect
+pushes its recorded local `main` only when GitHub's `main` is absent or an
+ancestor. Otherwise preparation stops with the instruction to merge GitHub's
+`main` into the server repository and resume; RCP never merges or force-pushes.
+Final confirmation requires current project membership. Add applies manifest
+membership and the reviewed truth choice through the human approval transition
+and `StateWorkspace`, bound to the reviewed manifest and canonical head. Connect
+changes provisioning provenance without changing the manifest.
 
 The recoverable product boundaries are manifest publication, exact identity
 Patch, catalog registration, first-member seating, and request completion.

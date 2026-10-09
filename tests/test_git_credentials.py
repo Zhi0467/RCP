@@ -22,7 +22,6 @@ from rcp.server_ops.git_credentials import (
     _run_process,
     cleanup_ref_operator_step,
     deploy_key_operator_step,
-    empty_repository_operator_step,
 )
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.layout import ServerLayout, remote_project_deploy_key_path
@@ -327,27 +326,26 @@ def test_shipped_helper_refuses_a_checkout_inside_the_credential_root(
     assert list(root.iterdir()) == []
 
 
-def test_shipped_helper_creates_and_removes_only_its_request_probe_directory() -> None:
-    account = pwd.getpwuid(os.getuid()).pw_name
-    prepared = _helper("probe-prepare", account, REQUEST_ID)
-    assert prepared.returncode == 0, prepared.stderr
-    path = Path(json.loads(prepared.stdout)["probe_directory"])
-    try:
-        assert path.parent == Path(pwd.getpwuid(os.getuid()).pw_dir) / ".rcp" / "tmp"
-        assert path.name.startswith(f"rcp-git-probe.{REQUEST_ID}.")
-        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+def test_shipped_helper_creates_and_removes_only_its_request_probe_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.server_ops import remote_git_credentials as helper
 
-        wrong_request = _helper("probe-cleanup", account, SPACE_ID, str(path))
-        assert wrong_request.returncode == 2
-        assert path.exists()
-
-        cleaned = _helper("probe-cleanup", account, REQUEST_ID, str(path))
-        assert cleaned.returncode == 0, cleaned.stderr
-        assert json.loads(cleaned.stdout) == {"removed": True}
-        assert not path.exists()
-    finally:
-        if path.exists():
-            path.rmdir()
+    account = pwd.getpwuid(os.getuid())
+    monkeypatch.setattr(helper, "_account", lambda _expected: (account, tmp_path))
+    path = Path(
+        str(helper._prepare_probe_directory(account.pw_name, REQUEST_ID)["probe_directory"])
+    )
+    assert path.parent == tmp_path / ".rcp" / "tmp"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    with pytest.raises(ValueError):
+        helper._cleanup_probe_directory(account.pw_name, SPACE_ID, str(path))
+    assert path.exists()
+    assert helper._cleanup_probe_directory(account.pw_name, REQUEST_ID, str(path)) == {
+        "removed": True
+    }
+    assert not path.exists()
 
 
 class QueueRunner:
@@ -655,7 +653,7 @@ def _probe_script(
     return (
         GitScript(
             GitResult(
-                ("git", "ls-remote", origin, "HEAD"),
+                ("git", "ls-remote", origin, "HEAD", "refs/heads/*"),
                 stdout=f"{COMMIT}\tHEAD\n",
             ),
             GitResult(("git", "ls-remote", origin, temporary_ref)),
@@ -735,6 +733,7 @@ def test_write_probe_pushes_reads_back_and_removes_one_request_scoped_ref(
         "ls-remote",
         REPOSITORY.ssh_clone_url,
         "HEAD",
+        "refs/heads/*",
     )
     outer = script.outer_calls[0]
     assert outer[:4] == ("runuser", "--user", "rcp", "--")
@@ -950,7 +949,7 @@ def test_write_probe_reports_host_grant_network_and_empty_repository_states(
     origin = REPOSITORY.ssh_clone_url
     script = GitScript(
         GitResult(
-            ("git", "ls-remote", origin, "HEAD"),
+            ("git", "ls-remote", origin, "HEAD", "refs/heads/*"),
             returncode=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
@@ -973,7 +972,7 @@ def test_write_probe_names_the_exact_unrecognized_failure_stage(tmp_path: Path) 
     origin = REPOSITORY.ssh_clone_url
     script = GitScript(
         GitResult(
-            ("git", "ls-remote", origin, "HEAD"),
+            ("git", "ls-remote", origin, "HEAD", "refs/heads/*"),
             returncode=128,
             stderr="an intentionally unclassified Git failure",
         )
@@ -996,7 +995,7 @@ def test_write_probe_never_deletes_a_preexisting_request_ref(tmp_path: Path) -> 
     temporary_ref = f"refs/heads/rcp-provisioning-{REQUEST_ID}"
     script = GitScript(
         GitResult(
-            ("git", "ls-remote", origin, "HEAD"),
+            ("git", "ls-remote", origin, "HEAD", "refs/heads/*"),
             stdout=f"{COMMIT}\tHEAD\n",
         ),
         GitResult(
@@ -1148,16 +1147,6 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
         host_trust_needed=False,
     )
     assert [action.kind for action in trusted.actions] == ["external"]
-
-    empty = empty_repository_operator_step(
-        material,
-        number=3,
-        request_id=REQUEST_ID,
-        resume_argv=resume,
-    )
-    assert empty.phase == "github_initial_commit"
-    assert empty.state == "operator_action_needed"
-    assert empty.resume_argv == resume
 
     temporary_ref = f"refs/heads/rcp-provisioning-{REQUEST_ID}"
     cleanup = cleanup_ref_operator_step(

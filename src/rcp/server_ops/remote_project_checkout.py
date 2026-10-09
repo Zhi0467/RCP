@@ -718,7 +718,11 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
         operation = arguments.pop(0)
-        if operation == "prepare" and len(arguments) == 6:
+        if operation == "account" and len(arguments) == 1:
+            account = pwd.getpwuid(os.getuid())
+            _account(arguments[0], account.pw_dir)
+            payload = {"account": account.pw_name, "home": account.pw_dir}
+        elif operation == "prepare" and len(arguments) == 6:
             payload = _prepare(*arguments)
         elif operation == "seal-git-directory" and len(arguments) == 3:
             payload = _seal_git_directory(*arguments)
