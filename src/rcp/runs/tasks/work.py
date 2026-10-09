@@ -80,6 +80,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
+    chat_master_label,
     chat_master_owner,
     chat_prompt_values,
     stage_artifact_context,
@@ -848,7 +849,7 @@ def _stage_work_contract(
             turn.execution.operation_id,
             contract,
             master_key(
-                f"{WORK_POLICY_VERSION}:{chat_master_owner(turn.execution)}",
+                chat_master_label(WORK_POLICY_VERSION, turn.execution),
                 ontology_extensions=turn.context.ontology_extensions,
             ),
             values if values is not None else _work_prompt_values(turn, staged),

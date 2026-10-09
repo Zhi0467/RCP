@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+import rcp.api.episode_routes as routes
 from rcp.agents import AgentEvent
 from rcp.runs.auto_research import auto_research_exhaustion_signal, auto_research_wrapup_spec
 from rcp.runs.auto_research_admission import continue_auto_research
@@ -41,14 +41,15 @@ def _ended_app(manifest, tmp_path, monkeypatch, *, launch=False):
     )
 
 
-@pytest.mark.parametrize("ceiling", [None, 1])
 def test_ended_message_claims_notice_and_mail_and_replays_exact_request(
-    manifest, tmp_path, monkeypatch, ceiling
+    manifest, tmp_path, monkeypatch
 ):
     app, store, original, url = _ended_app(manifest, tmp_path, monkeypatch)
-    body = {"body": "Investigate the alternative explanation.", "request_id": str(uuid.uuid4())}
-    if ceiling is not None:
-        body["invocation_ceiling"] = ceiling
+    body = {
+        "body": "Investigate the alternative explanation.",
+        "invocation_ceiling": 1,
+        "request_id": str(uuid.uuid4()),
+    }
     with signed_in_client(app) as client:
         sent = client.post(url, json=body)
         assert sent.status_code == 201, sent.text
@@ -56,7 +57,7 @@ def test_ended_message_claims_notice_and_mail_and_replays_exact_request(
         continued = store.episode(message["episode_id"])
         assert continued is not None
         assert continued.continues_episode_id == original.episode_id
-        assert continued.invocation_ceiling == (3 if ceiling is None else ceiling)
+        assert continued.invocation_ceiling == 1
         assert continued.invocations_used == 1
         assert message["recipient_task_id"] == continued.root_operation_id
         assert message["delivery_operation_id"] == continued.root_operation_id
@@ -110,25 +111,44 @@ def test_ended_message_claims_notice_and_mail_and_replays_exact_request(
         assert storage_conflict.value.args == ("message_request_conflict",)
 
 
-def test_concurrent_senders_share_one_continuation(manifest, tmp_path, monkeypatch):
+def test_a_sender_racing_a_continuation_mails_it_instead(manifest, tmp_path, monkeypatch):
     app, store, original, url = _ended_app(manifest, tmp_path, monkeypatch)
-    with signed_in_client(app) as client:
+    projected = routes.auto_research_message_refusal
+    first = {}
 
-        def send(index):
-            return client.post(
-                url, json={"body": f"Instruction {index}", "request_id": str(uuid.uuid4())}
+    def another_sender_continues_first(store_, episode):
+        refusal = projected(store_, episode)
+        if not first:
+            # Sender A's continuation commits after sender B passed the ended check.
+            first["episode"], _ = continue_auto_research(
+                app.state.background_tasks,
+                episode,
+                invocation_ceiling=2,
+                request_id=str(uuid.uuid4()),
+                authorized_by=episode.authorized_by,
+                message_body="Instruction A",
+                message_id=str(uuid.uuid4()),
             )
+        return refusal
 
-        with ThreadPoolExecutor(max_workers=2) as workers:
-            replies = list(workers.map(send, range(2)))
-        assert [reply.status_code for reply in replies] == [201, 201]
-        episode_ids = {reply.json()["episode_id"] for reply in replies}
-        assert len(episode_ids) == 1
-        continuation = store.episode_continuation(original.episode_id)
-        assert continuation is not None
-        assert episode_ids == {continuation.episode_id}
-        assert store.episode_continuation(continuation.episode_id) is None
-        assert len(store.auto_research_messages(continuation.episode_id)) == 2
+    monkeypatch.setattr(routes, "auto_research_message_refusal", another_sender_continues_first)
+    with signed_in_client(app) as client:
+        reply = client.post(
+            url,
+            json={
+                "body": "Instruction B",
+                "invocation_ceiling": 5,
+                "request_id": str(uuid.uuid4()),
+            },
+        )
+    assert reply.status_code == 201, reply.text
+    continuation = first["episode"]
+    assert reply.json()["episode_id"] == continuation.episode_id
+    assert reply.json()["recipient_task_id"] == continuation.root_operation_id
+    assert store.episode_continuation(original.episode_id).episode_id == continuation.episode_id
+    assert store.episode_continuation(continuation.episode_id) is None
+    assert store.episode(continuation.episode_id).invocation_ceiling == 2
+    assert len(store.auto_research_messages(continuation.episode_id)) == 2
 
 
 def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
@@ -155,7 +175,11 @@ def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
 
     app.state.background_tasks.stream = stream
     with signed_in_client(app) as client:
-        payload = {"body": "Follow the original evidence.", "request_id": str(uuid.uuid4())}
+        payload = {
+            "body": "Follow the original evidence.",
+            "invocation_ceiling": 3,
+            "request_id": str(uuid.uuid4()),
+        }
         first = client.post(url, json=payload)
         assert first.status_code == 201, first.text
         first_message = first.json()
@@ -170,7 +194,12 @@ def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
         assert store.episode(first_episode.episode_id).status == "needs_action"
 
         second = client.post(
-            url, json={"body": "Now check the alternative.", "request_id": str(uuid.uuid4())}
+            url,
+            json={
+                "body": "Now check the alternative.",
+                "invocation_ceiling": 3,
+                "request_id": str(uuid.uuid4()),
+            },
         )
         assert second.status_code == 201, second.text
         second_message = second.json()
@@ -190,17 +219,16 @@ def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
         assert len(seen) == 2
 
 
-def test_ordinary_mail_consent_cannot_start_a_continuation(manifest, tmp_path, monkeypatch):
+@pytest.mark.parametrize("ceiling", ["omitted", None])
+def test_ordinary_mail_consent_cannot_start_a_continuation(
+    manifest, tmp_path, monkeypatch, ceiling
+):
     app, store, original, url = _ended_app(manifest, tmp_path, monkeypatch)
+    body = {"body": "Ordinary mail.", "request_id": str(uuid.uuid4())}
+    if ceiling != "omitted":
+        body["invocation_ceiling"] = ceiling
     with signed_in_client(app) as client:
-        response = client.post(
-            url,
-            json={
-                "body": "Ordinary mail.",
-                "invocation_ceiling": None,
-                "request_id": str(uuid.uuid4()),
-            },
-        )
+        response = client.post(url, json=body)
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "auto_research_continuation_required"
     assert store.episode_continuation(original.episode_id) is None

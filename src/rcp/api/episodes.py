@@ -121,8 +121,8 @@ class ContinueEpisodeBody(BaseModel):
 class EpisodeMessageBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    # Null is ordinary-mail-only consent; omission uses the continuation default.
-    invocation_ceiling: int | None = Field(default=3, ge=1)
+    # Null or omitted is ordinary-mail-only consent; an ended orchestrator needs an explicit N.
+    invocation_ceiling: int | None = Field(default=None, ge=1)
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=120)
 
     body: str = Field(min_length=1, max_length=_EPISODE_TEXT_MAX_LENGTH)

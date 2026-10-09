@@ -376,7 +376,7 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
     )
     human = wait_for_task(store, human.operation_id, expect="succeeded")
     assert human.episode_id is None
-    capture_master(human, "human")
+    capture_master(human, None)
 
     with store.connection() as connection:
         connection.execute(

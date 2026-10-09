@@ -27,6 +27,7 @@ import {
   mergeChatReads,
   unreadChatIdsFromReads,
   unsentConversation,
+  orchestratorCanUnlock,
 } from "../src/chat/chatWorkspace.ts";
 import { graphTargetFromHash } from "../src/core/graphTarget.ts";
 import { parseProjectHash } from "../src/experiments/experimentBoardModel.ts";
@@ -630,4 +631,12 @@ test("child conversation inventory preserves admission refusal and later unlock"
   )[0];
   assert.equal(unlocked.humanTurnRefusal, null);
   assert.equal(unlocked.conversationKind, "auto_research_child");
+});
+
+test("only a running-lineage lock offers messaging the orchestrator", () => {
+  assert.equal(orchestratorCanUnlock({ code: "auto_research_child_read_only", detail: "" }), true);
+  for (const code of ["episode_isolation_unavailable", "episode_merge_reserved"]) {
+    assert.equal(orchestratorCanUnlock({ code, detail: "" }), false);
+  }
+  assert.equal(orchestratorCanUnlock(null), false);
 });

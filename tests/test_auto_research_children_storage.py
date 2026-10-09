@@ -2569,7 +2569,9 @@ def test_child_episode_recovery_cannot_become_a_human_turn(tmp_path, trigger):
 
 
 @pytest.mark.parametrize("child_kind", ["work", "experiment"])
-def test_generic_retry_of_ended_episode_child_is_refused(tmp_path, child_kind):
+def test_generic_recovery_of_ended_episode_child_is_refused(tmp_path, child_kind):
+    from rcp.api.tasks import _agent_task_response
+
     store, parent, root = _setup_parent(tmp_path)
     chat_id = str(uuid.uuid4())
     if child_kind == "work":
@@ -2577,23 +2579,35 @@ def test_generic_retry_of_ended_episode_child_is_refused(tmp_path, child_kind):
         store.create_auto_research_child_work(route, task)
     else:
         task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+        task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
         store.create_experiment_episode_with_invocation(
             task, auto_research_route=_experiment_route(store, parent, root, task)
         )
-    store.fail_agent_task(task.operation_id, error="failed")
+    store.fail_agent_task(task.operation_id, error="failed", failure_kind="transport_lost")
     with store.connection() as connection:
         connection.execute(
             "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (parent.episode_id,)
         )
 
     async def stream(*_args):
-        pytest.fail("Episode-owned retry must not launch a provider")
+        pytest.fail("Episode-owned recovery must not launch a provider")
         yield ""
 
     background = BackgroundAgentTasks(store, stream)
-    with pytest.raises(ValueError) as error:
-        background.retry(task.operation_id, authorized_by=parent.authorized_by)
-    assert str(error.value) == "auto_research_child_episode_owned"
+    for recover in (background.retry, background.resume):
+        with pytest.raises(ValueError) as error:
+            recover(task.operation_id, authorized_by=parent.authorized_by)
+        assert str(error.value) == "auto_research_child_episode_owned"
+    failed = store.agent_task(task.operation_id)
+    assert failed.can_retry
+    response = _agent_task_response(store, failed, background)
+    assert (response["can_retry"], response["can_resume"]) == (False, False)
+    background._auto_retry_transport_loss(failed)
+    assert not store.agent_task_has_receipt(task.operation_id, "transport_auto_retry")
+    if child_kind == "experiment":
+        # The child's own Stop recovery behind the parent's ending fence stays open.
+        store.request_episode_stop(task.episode_id)
+        assert store.episode_child_recovery_refusal(failed) is None
 
 
 @pytest.mark.parametrize("child_kind", ["work", "experiment"])

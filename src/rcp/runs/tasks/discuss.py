@@ -56,6 +56,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
+    chat_master_label,
     chat_master_owner,
     chat_prompt_values,
     finalize_artifact_edit,
@@ -1011,7 +1012,7 @@ async def stream_discuss_run(
                             execution.operation_id,
                             contract,
                             master_key(
-                                f"{DISCUSS_POLICY_VERSION}:{chat_master_owner(execution)}",
+                                chat_master_label(DISCUSS_POLICY_VERSION, execution),
                                 ontology_extensions=context.ontology_extensions,
                             ),
                             discuss_values,

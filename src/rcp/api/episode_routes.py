@@ -74,6 +74,7 @@ from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
 from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
+from rcp.storage.models import EpisodeRecord
 from rcp.transport import StateUnavailable
 
 from .episode_branches import (
@@ -567,6 +568,51 @@ def continue_episode(
     )
 
 
+_ENDED_EPISODE_STATUSES = frozenset({"completed", "failed", "needs_action", "stopped"})
+
+
+def _newest_chain_member(store: AppStore, episode: EpisodeRecord) -> EpisodeRecord:
+    while (newer := store.episode_continuation(episode.episode_id)) is not None:
+        episode = newer
+    return episode
+
+
+def _episode_accepts_mail(episode: EpisodeRecord) -> bool:
+    return (
+        episode.status == "running"
+        and episode.ending is None
+        and episode.root_operation_id is not None
+    )
+
+
+def _message_refusal(
+    store: AppStore,
+    episode: EpisodeRecord,
+    invocation_ceiling: int | None,
+    exc: Exception | None,
+) -> HTTPException:
+    """A coded refusal for a message the newest orchestrator cannot take now."""
+
+    refusal = auto_research_message_refusal(store, episode)
+    if refusal is not None:
+        detail = {"code": refusal["code"], "message": refusal["detail"]}
+    elif invocation_ceiling is None and not _episode_accepts_mail(
+        _newest_chain_member(store, episode)
+    ):
+        detail = {
+            "code": "auto_research_continuation_required",
+            "message": "The orchestrator has ended. Choose how many turns to authorize before sending.",
+        }
+    elif exc is not None and str(exc) == "message_request_conflict":
+        detail = {
+            "code": "message_request_conflict",
+            "message": "This request id already carries a different message or turn allowance.",
+        }
+    else:
+        detail = {"code": "auto_research_message_unavailable", "message": str(exc)}
+    return HTTPException(status_code=409, detail=detail)
+
+
 @router.get(
     "/api/projects/{project_id}/episodes/{episode_id}/messages",
     response_model=list[AutoResearchMessageRecord],
@@ -627,23 +673,30 @@ def send_episode_message(
                 },
             )
         return saved
-    while (newer := store.episode_continuation(episode.episode_id)) is not None:
-        episode = newer
+    episode = _newest_chain_member(store, episode)
     refusal = auto_research_message_refusal(store, episode)
     if refusal is not None:
         raise HTTPException(
             status_code=409, detail={"code": refusal["code"], "message": refusal["detail"]}
         )
+
+    def mail(recipient: EpisodeRecord) -> AutoResearchMessageRecord:
+        assert recipient.root_operation_id is not None
+        return record_auto_research_message(
+            store,
+            message_id=message_id,
+            episode_id=recipient.episode_id,
+            sender_role="human",
+            sender_task_id=None,
+            authorized_by=authorized_by,
+            recipient_task_id=recipient.root_operation_id,
+            body=body.body,
+        )
+
     try:
-        if episode.status in {"completed", "failed", "needs_action", "stopped"}:
+        if episode.status in _ENDED_EPISODE_STATUSES:
             if body.invocation_ceiling is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "auto_research_continuation_required",
-                        "message": "The orchestrator has ended. Choose how many turns to authorize before sending.",
-                    },
-                )
+                raise _message_refusal(store, episode, body.invocation_ceiling, None)
             get_project_service(catalog, project_id).history.require_writable()
             episode, _ = continue_auto_research(
                 background_tasks,
@@ -657,19 +710,20 @@ def send_episode_message(
             saved = store.auto_research_message(message_id)
             assert saved is not None
         else:
-            assert episode.root_operation_id is not None
-            saved = record_auto_research_message(
-                store,
-                message_id=message_id,
-                episode_id=episode.episode_id,
-                sender_role="human",
-                sender_task_id=None,
-                authorized_by=authorized_by,
-                recipient_task_id=episode.root_operation_id,
-                body=body.body,
-            )
+            saved = mail(episode)
     except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # Another request continued this orchestrator first; its continuation now
+        # receives this message as ordinary mail, never a second continuation.
+        raced = store.episode_continuation(episode.episode_id)
+        if raced is None or raced.continuation_request_id == body.request_id:
+            raise _message_refusal(store, episode, body.invocation_ceiling, exc) from exc
+        episode = _newest_chain_member(store, raced)
+        if not _episode_accepts_mail(episode):
+            raise _message_refusal(store, episode, None, exc) from exc
+        try:
+            saved = mail(episode)
+        except (EpisodeNotRunning, StateUnavailable, ValueError) as mail_exc:
+            raise _message_refusal(store, episode, None, mail_exc) from mail_exc
     try:
         started = deliver_pending_auto_research_lifecycle(
             background_tasks,

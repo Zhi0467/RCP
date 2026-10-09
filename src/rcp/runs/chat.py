@@ -522,15 +522,25 @@ def _committed_chat_prompt_state(
     )
 
 
-def chat_master_owner(execution: AgentTaskExecution | None) -> str:
-    """Use durable turn ownership, never the chat's origin or its trigger wording."""
+def chat_master_owner(execution: AgentTaskExecution | None) -> str | None:
+    """Use durable turn ownership, never the chat's origin or its trigger wording.
+
+    ``None`` is a human-owned turn, whose master keys stay the ones existing sessions hold.
+    """
 
     if execution is None:
-        return "human"
+        return None
     task = execution.store.agent_task(execution.operation_id)
     if task is None:
         raise ValueError("The chat master owner has no task record.")
-    return f"episode:{task.episode_id}" if task.episode_id is not None else "human"
+    return f"episode:{task.episode_id}" if task.episode_id is not None else None
+
+
+def chat_master_label(label: str, execution: AgentTaskExecution | None) -> str:
+    """Suffix a policy master label with its episode owner; a human turn keeps the label."""
+
+    owner = chat_master_owner(execution)
+    return label if owner is None else f"{label}:{owner}"
 
 
 def chat_continuation_master(
@@ -613,7 +623,7 @@ def chat_continuation_master(
         native_session_id=session_id,
         label_prefix=policy_version,
         key=master_key(
-            f"{policy_version}:{chat_master_owner(execution)}",
+            chat_master_label(policy_version, execution),
             ontology_extensions=ontology_extensions,
         ),
         render=render,

@@ -34,6 +34,11 @@ export interface ChatConversation {
   humanTurnRefusal?: ChatSummary["human_turn_refusal"];
 }
 
+/** Whether messaging the orchestrator can lift a child chat's lock; isolation and merge refusals bind it too. */
+export function orchestratorCanUnlock(refusal: ChatConversation["humanTurnRefusal"]): boolean {
+  return refusal?.code === "auto_research_child_read_only";
+}
+
 export interface DraftConversation {
   chatId: string;
   kind: ChatKind;

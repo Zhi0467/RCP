@@ -182,15 +182,23 @@ with `episode_isolation_unavailable`, matching task admission. The sender
 authorizes that turn outside the episode, and Discuss or Work determines its
 authority. Its watcher wakes,
 question follow-ups, Resume, Retry, and Repair pass the same lineage fence.
-The native-session master key includes its human or episode owner. The first
-human turn replaces the child's master with an ordinary chat master; a later
-episode turn on that session reopens its episode-owned master. Retained Patch
+The native-session master key of an episode-owned turn names its episode; a
+human-owned turn keeps the ordinary chat key, so existing chats keep their
+masters. The first human turn replaces the child's master with an ordinary chat
+master; a later episode turn on that session reopens its episode-owned master. Retained Patch
 values and recovery masters use the same owner check.
 
 An orchestrator-started child turn retains its episode ownership. Recovery uses
 the child Work or child Experiment episode route and its ending fence; generic
-Retry never converts it to human-owned work. Retry after its parent ends is
-refused, pointing to **Message orchestrator** or **Add N turns**. A new Send is
+Retry or Resume never converts it to human-owned work. One store rule
+(`episode_child_recovery_refusal`) refuses generic Retry and Resume of child
+Work turns, and of child Experiment turns once their orchestrator has ended
+unless the child Experiment's own Stop is still pending; that recovery settles
+an already-paid turn behind the ending fence. Task projections clear Retry and
+Resume by the same rule, the chat points to **Message orchestrator** instead,
+and transport auto-retry skips such turns. The locked composer offers
+**Message orchestrator** only while a running lineage holds the lock, not for
+isolation or merge refusals. A new Send is
 the ordinary human path. Add N turns refuses while a human-owned turn is active
 on any child of the lineage and names the chat; an admitted continuation locks
 those composers again. The native-session and stage exclusion still prevents
@@ -369,8 +377,9 @@ stopped. See
 
 **Message orchestrator** addresses the newest member of the chain. A running
 member receives ordinary human mail. Messaging an ended member authorizes an
-Add N turns continuation carrying that message. N defaults to 3 and is editable
-before sending; the composer shows N operational turns (budget B) and the derived
+Add N turns continuation carrying that message. The composer defaults N to 3,
+editable before sending, and always sends it; the API has no default N, and a
+send without N is ordinary mail only; the composer shows N operational turns (budget B) and the derived
 E = 5N child-Experiment invocations. This remains an orchestrator with branch
 authority, not an ordinary chat.
 An ordinary-mail-only send that races with the episode ending refuses and asks
@@ -381,7 +390,9 @@ addressed to its new root, then claims both that message and the `reauthorized`
 notice for the opening turn. Replaying the same request id returns the same
 continuation and message only when both the message and N match; changing either
 under that id is refused.
-Concurrent sends cannot create two continuations of the same source. Messaging
+Concurrent sends cannot create two continuations of the same source: a sender
+that loses the race delivers its message as ordinary mail to the winning
+continuation while it runs, and its N is unused. Every refusal carries a code. Messaging
 does not bypass continuation admission: a missing session or stage, another live
 Auto-research episode, an active merge, removed isolation, or an active
 human-owned child turn refuses continuation. The composer shows the refusal

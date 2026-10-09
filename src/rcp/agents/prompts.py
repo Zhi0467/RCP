@@ -109,12 +109,15 @@ CHAT_MASTER_CONTEXT_VERSION = 17
 COMMAND_CLIENT = "<command client>"
 
 
-def chat_master_contract_key(*, ontology_extensions: bool, owner: str = "human") -> str:
-    """Identify the owner's master shape; owner or graph-rule changes replace it."""
+def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = None) -> str:
+    """Identify one master-context shape; changed graph rules re-send it to existing chats.
 
+    A human turn keeps the key existing sessions hold; an episode owner gets its own.
+    """
+
+    label = f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}"
     return master_key(
-        f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}:{owner}",
-        ontology_extensions=ontology_extensions,
+        label if owner is None else f"{label}:{owner}", ontology_extensions=ontology_extensions
     )
 
 

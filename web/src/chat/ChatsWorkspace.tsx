@@ -20,6 +20,7 @@ import {
   type AgentListSection,
   type ConversationAgentRow,
   type ConversationAgentStatus,
+  orchestratorCanUnlock,
 } from "./chatWorkspace";
 import {
   AGENT_BOARD_COLUMNS,
@@ -690,6 +691,10 @@ export function ChatsWorkspace({
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
+  const orchestratorHref = experimentBoardHref(
+    project.id,
+    `${AUTO_RESEARCH_ROUTE_PREFIX}${selected?.orchestratorEpisodeId ?? ""}`,
+  );
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
     if (!bounds) return;
@@ -751,6 +756,14 @@ export function ChatsWorkspace({
                 Retry
               </button>
             )}
+            {!selectedLatest.can_resume &&
+              !selectedLatest.can_retry &&
+              selected.conversationKind === "auto_research_child" && (
+                // Only the orchestrator recovers its own turn: message it or add turns.
+                <a className="button compact" href={orchestratorHref}>
+                  Message orchestrator
+                </a>
+              )}
           </div>
         )}
       </>
@@ -1125,15 +1138,11 @@ export function ChatsWorkspace({
               selected.humanTurnRefusal ? (
                 <div className="chat-composer" role="status">
                   <p>{selected.humanTurnRefusal.detail}</p>
-                  <a
-                    className="button compact"
-                    href={experimentBoardHref(
-                      project.id,
-                      `${AUTO_RESEARCH_ROUTE_PREFIX}${selected.orchestratorEpisodeId ?? ""}`,
-                    )}
-                  >
-                    Message orchestrator
-                  </a>
+                  {orchestratorCanUnlock(selected.humanTurnRefusal) && (
+                    <a className="button compact" href={orchestratorHref}>
+                      Message orchestrator
+                    </a>
+                  )}
                 </div>
               ) : undefined
             }
