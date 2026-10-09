@@ -7,6 +7,7 @@ from typing import Literal, get_args, get_origin
 
 from pydantic import BaseModel
 
+from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.artifact_theme import ARTIFACT_THEME_TOKENS
 from rcp.artifacts import artifact_view
 from rcp.limits import (
@@ -137,8 +138,8 @@ def inline_contract(artifact_path: str) -> str:
             "- Use an embedded HTML page whenever interaction helps the reader: a figure to hover or filter, a parameter to drag, a diagram to explore, a simulation or a game. Use SVG or an image for a figure that only needs to be looked at. Keep prose in the reply itself, not in the page.",
             "- Embed only what the reader will use. A reply that prose answers needs no artifact; one page per idea is enough, and a reply rarely needs more than two. Draw from the project's real data when it exists, and label anything simulated or illustrative as such.",
             f"- The page's own content sets its height, up to {ARTIFACT_INLINE_MAX_HEIGHT_PX}px, after which it scrolls inside itself. Size from content and width: never from the viewport (no `100vh`, no full-window layouts). Scale a canvas to the frame's width with a fixed aspect ratio.",
-            f"- RCP paints an embedded page with the reply's theme. These CSS custom properties are set on `:root`: {tokens}. RCP fixes the page's `color-scheme` to the reply's light or dark mode, and `--rcp-color-mode` names it, so do not set `color-scheme` yourself. Only the reply sets them; Expand, a download, and a browser check do not, so give each one a fallback, as in `var(--rcp-ink, #1f2328)`. Leave the page background transparent and draw cards with `--rcp-panel` and `--rcp-rule` so the page reads as part of the reply. A page drawn for one fixed palette, such as an arcade game, paints its own background and text colors.",
+            f"- RCP paints an embedded page with the reply's theme. These CSS custom properties are set on `:root`: {tokens}. RCP fixes the page's `color-scheme` to the reply's light or dark mode, and `--rcp-color-mode` names it, so do not set `color-scheme` yourself. The reply and RCP browser preview set them; Expand and a download do not, so give each one a fallback, as in `var(--rcp-ink, #1f2328)`. Leave the page background transparent and draw cards with `--rcp-panel` and `--rcp-rule` so the page reads as part of the reply. A page drawn for one fixed palette, such as an arcade game, paints its own background and text colors.",
             "- Inside a reply, handle keys on your own focusable element rather than `window`, start with sound off, set `touch-action: none` on a surface the pointer drags, and support pointer, touch, and keyboard input.",
-            "- To check a page when this turn has a browser, serve the artifact directory on `127.0.0.1` (for example `python3 -m http.server --bind 127.0.0.1 --directory <dir> <port>`), open it with `goto`, read the console for errors, and stop the server before you finish; the browser refuses `file:` URLs. Without a browser grant, do not install or launch one: check the script's logic directly, and say in the reply what you could not render.",
+            f"- To check a page when this turn has a browser, run `{PREVIEW_COMMAND} <dir> --port 0`. It prints a loopback URL and serves with RCP's opaque sandbox and default light palette; blocked loads show as console CSP errors. It does not sanitize the page. Open the printed URL with `goto`, read the console for errors, and stop the server before you finish; the browser refuses `file:` URLs. Without a browser grant, do not install or launch one: check the script's logic directly, and say in the reply what you could not render.",
         ]
     )

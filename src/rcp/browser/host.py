@@ -24,6 +24,7 @@ from rcp.agents.staged_hidden_read import (
     bwrap_argv,
     probe_hidden_read_wrapper,
 )
+from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.browser.libraries import apt_install_command, missing_library_packages
 from rcp.transport.compute_process_owner import (
     owner_alive,
@@ -701,6 +702,14 @@ class HostRuntime:
             f'#!/bin/sh\n{export}exec {shlex.join([self.node, str(self.cli)])} "$@"\n',
         )
         launcher.chmod(0o700)
+        preview_source = self.tools / "artifact_preview.py"
+        preview_palette = self.tools / "artifact_preview.css"
+        atomic_write(preview_source, self.request["artifact_preview_source"])
+        atomic_write(preview_palette, self.request["artifact_preview_css"])
+        preview_launcher = launcher.parent / PREVIEW_COMMAND
+        command = shlex.join(["python3", str(preview_source), "--palette", str(preview_palette)])
+        atomic_write(preview_launcher, f'#!/bin/sh\nexec {command} "$@"\n')
+        preview_launcher.chmod(0o700)
         return str(launcher.parent)
 
     def release(self) -> dict:

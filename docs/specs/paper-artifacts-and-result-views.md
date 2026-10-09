@@ -82,6 +82,13 @@ artifact. Inline JavaScript remains useful and may navigate only its isolated
 child frame, which can still cause a navigation request; RCP does not claim
 literal zero network traffic.
 
+A turn with a browser grant can run `rcp-artifact-preview <dir> --port 0` on
+its execution host. The command prints a loopback URL. It serves the artifact
+directory with the viewer's opaque-sandbox CSP and the inline view's default
+light palette. Blocked loads appear as console CSP errors. It does not sanitize
+HTML. Paths outside the directory and symlinks are refused. The agent stops the
+server when its check is done. Turns without a browser keep direct logic checks.
+
 Every card offers Download and Keep. A reply can instead show an artifact in
 place ([Artifacts inside a reply](#artifacts-inside-a-reply)). The file's type
 decides how it is viewed:

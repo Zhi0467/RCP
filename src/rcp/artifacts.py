@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rcp.artifact_preview import ARTIFACT_CSP
 from rcp.limits import ARTIFACT_DISPLAY_TITLE_MAX_CHARS
 from rcp.regular_file_reader import _open_local_directory
 from rcp.regular_file_reader import read_local_regular_file as read_local_regular_file
@@ -373,20 +374,10 @@ parentPost({kind:'rcp-artifact-channel',version:1},'*',[outwardPort]);
 document.currentScript?.remove();
 })();</script>"""
     )
-    # Chromium does not currently enforce ``navigate-to``. The opaque sandbox is
-    # the boundary that prevents this document from navigating the RCP parent;
-    # inline scripts may still navigate their own isolated child frame. Keep the
-    # directive as defense in depth for engines that do implement it.
-    artifact_csp = (
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; "
-        "frame-src 'none'; child-src 'none'; media-src 'none'; worker-src 'none'; "
-        "form-action 'none'; base-uri 'none'; navigate-to 'none'"
-    )
     frame_style = frame_addon.frame_style if frame_addon else ""
     artifact = (
         (sanitizer.doctype or "")
-        + f'<meta http-equiv="Content-Security-Policy" content="{html.escape(artifact_csp)}">'
+        + f'<meta http-equiv="Content-Security-Policy" content="{html.escape(ARTIFACT_CSP)}">'
         + bootstrap
         + (f"<style>{frame_style}</style>" if frame_style else "")
         + "".join(sanitizer.parts)
