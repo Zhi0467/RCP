@@ -1260,20 +1260,21 @@
   margin-left: 8px;
 }
 .voice-panel {
+  align-content: start;
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 7px;
-  bottom: 18px;
   box-shadow: var(--shadow);
+  box-sizing: border-box;
+  cursor: grab;
   display: grid;
   gap: 10px;
-  max-height: min(560px, calc(100vh - 36px));
+  height: 100%;
   overflow-y: auto;
   padding: 12px 14px;
-  position: fixed;
-  right: 18px;
-  width: min(360px, calc(100vw - 32px));
-  z-index: 160;
+}
+.voice-panel [data-text-selectable] {
+  cursor: auto;
 }
 .voice-panel > header {
   align-items: center;
@@ -1393,14 +1394,6 @@
 .voice-panel .voice-disclosure {
   color: var(--muted);
   font-size: var(--type-xs);
-}
-@media (max-width: 560px) {
-  .voice-panel {
-    bottom: 16px;
-    left: 16px;
-    right: 16px;
-    width: auto;
-  }
 }
 .transcription-group {
   border-top: 1px solid var(--line);

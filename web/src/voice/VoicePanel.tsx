@@ -1,5 +1,7 @@
 import { AudioLines, Check, LoaderCircle, PhoneOff, Settings, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DraggableWindow } from "../ui/DraggableWindow";
+import { VOICE_PANEL_SIZE_STORAGE_KEY } from "../ui/floatingWindow";
 import type { VoiceAgent } from "./useVoiceAgent";
 import type { VoicePin } from "./voiceExecutor";
 
@@ -135,18 +137,30 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
   );
 }
 
-/** The floating voice panel; it shows while a session runs or after one failed. */
-export function VoicePanel({
-  voice,
-  onOpenSettings,
-}: {
-  voice: VoiceAgent;
-  onOpenSettings: () => void;
-}) {
+type VoicePanelProps = { voice: VoiceAgent; onOpenSettings: () => void };
+
+/** The floating voice panel; it shows while a session runs or after one failed.
+ * It is a window the member can drag and resize so it never pins over the page. */
+export function VoicePanel(props: VoicePanelProps) {
+  const { voice } = props;
+  if (voice.phase === "idle" && !voice.historyOpen && !voice.problem) return null;
+  return (
+    <DraggableWindow
+      className="voice-window"
+      kind="voice"
+      resizable
+      sizeStorageKey={VOICE_PANEL_SIZE_STORAGE_KEY}
+    >
+      <VoicePanelContent {...props} />
+    </DraggableWindow>
+  );
+}
+
+function VoicePanelContent({ voice, onOpenSettings }: VoicePanelProps) {
   if (voice.phase === "idle") {
     if (voice.historyOpen)
       return (
-        <aside className="voice-panel" aria-label="Voice conversations">
+        <aside className="voice-panel" aria-label="Voice conversations" data-drag-handle>
           <header>
             <strong>Voice</strong>
             <button
@@ -203,7 +217,7 @@ export function VoicePanel({
     if (!voice.problem) return null;
     const notConnected = voice.problem.code === "voice_not_connected";
     return (
-      <aside className="voice-panel voice-panel-problem" role="status">
+      <aside className="voice-panel voice-panel-problem" role="status" data-drag-handle>
         <p>
           {notConnected
             ? "The standby voice agent needs your own OpenAI connection. Choose one in Settings, under Standby voice agent, Runs on."
@@ -235,7 +249,7 @@ export function VoicePanel({
     );
   }
   return (
-    <aside className="voice-panel" aria-label="Voice">
+    <aside className="voice-panel" aria-label="Voice" data-drag-handle>
       <header>
         <AudioLines size={16} aria-hidden="true" />
         <strong>Voice</strong>
@@ -273,7 +287,7 @@ export function VoicePanel({
         </p>
       ) : null}
       {voice.card ? <ConfirmationCard pin={voice.card} voice={voice} /> : null}
-      <ol className="voice-transcript" aria-live="polite">
+      <ol className="voice-transcript" aria-live="polite" data-text-selectable>
         {voice.transcript.map((line, index) => (
           <li key={index} data-role={line.role}>
             {line.text}

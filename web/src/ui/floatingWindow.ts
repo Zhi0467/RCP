@@ -119,6 +119,10 @@ export function nodeDetailSizeStorageKey(projectId: string): string {
   return `rcp:node-detail-size:${projectId}`;
 }
 
+export type FloatingWindowKind = "detail" | "chat" | "voice";
+
+export const VOICE_PANEL_SIZE_STORAGE_KEY = "rcp:voice-panel-size";
+
 export function movedPosition(origin: Point, pointerOrigin: Point, pointer: Point): Point {
   return {
     x: origin.x + pointer.x - pointerOrigin.x,
@@ -126,7 +130,12 @@ export function movedPosition(origin: Point, pointerOrigin: Point, pointer: Poin
   };
 }
 
-export function floatingWindowSize(kind: "detail" | "chat", viewport: Size): Size {
+export function floatingWindowSize(kind: FloatingWindowKind, viewport: Size): Size {
+  if (kind === "voice")
+    return {
+      width: Math.min(380, viewport.width - FLOATING_WINDOW_MARGIN * 2),
+      height: Math.min(480, viewport.height - FLOATING_WINDOW_MARGIN * 2),
+    };
   const maximumWidth = kind === "detail" ? 590 : 620;
   const sharedWidth = Math.max(
     280,
@@ -141,9 +150,15 @@ export function floatingWindowSize(kind: "detail" | "chat", viewport: Size): Siz
   };
 }
 
-export function defaultFloatingPosition(kind: "detail" | "chat", viewport: Size): Point {
+export function defaultFloatingPosition(kind: FloatingWindowKind, viewport: Size): Point {
   if (kind === "chat") return { x: FLOATING_WINDOW_MARGIN, y: FLOATING_WINDOW_TOP };
-  const width = floatingWindowSize(kind, viewport).width;
+  const { width, height } = floatingWindowSize(kind, viewport);
+  // Voice opens in the bottom-right corner it used to be pinned to.
+  if (kind === "voice")
+    return {
+      x: viewport.width - width - FLOATING_WINDOW_MARGIN,
+      y: viewport.height - height - FLOATING_WINDOW_MARGIN,
+    };
   return { x: viewport.width - width - FLOATING_WINDOW_MARGIN, y: FLOATING_WINDOW_TOP };
 }
 

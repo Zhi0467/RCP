@@ -9,6 +9,7 @@ import {
   parseFloatingSize,
   resizedFloatingRect,
   type DetailWindowSlot,
+  type FloatingWindowKind,
   type Point,
   type ResizeCorner,
   type Size,
@@ -29,7 +30,7 @@ let topFloatingZIndex = 110;
 interface Props {
   children: React.ReactNode;
   className: string;
-  kind: "detail" | "chat";
+  kind: FloatingWindowKind;
   resizable?: boolean;
   sizeStorageKey?: string;
   detailSlot?: DetailWindowSlot;
