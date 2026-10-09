@@ -1794,6 +1794,31 @@ export interface GraphBranchSummary {
   merge_diagnostic: string | null;
 }
 
+/** Project-wide graph inventory; branch ownership remains the chain root. */
+export type GraphRef =
+  | (GraphBranchSummary & {
+      kind: "branch";
+      archived: boolean;
+      /** The chain root's mode and display title, when the backend has one. */
+      mode: EpisodeMode;
+      title: string | null;
+    })
+  | {
+      kind: "main";
+      branch_id: null;
+      episode_id: null;
+      current_episode_id: null;
+      base_head: null;
+      head: GraphHeadRef;
+      merge_eligible: false;
+      merge_blocked_reason: null;
+      merge_state: null;
+      latest_successful_merge: null;
+      active_merge_task_id: null;
+      merge_diagnostic: null;
+      archived: false;
+    };
+
 export type TransitionCauseRef =
   | { kind: "action"; action_index: number; event_id?: null }
   | { kind: "event"; action_index?: null; event_id: string };
@@ -2585,6 +2610,8 @@ export interface Episode extends EpisodeLoopMetadata {
   /** Every chain member oldest first, ending with this episode; a lone episode is its own chain. */
   chain: EpisodeChainMember[];
   can_message: boolean;
+  message_requires_continuation: boolean;
+  message_refusal?: { code: string; detail: string } | null;
   live: boolean;
   health: EpisodeHealth;
   blocked_reason: EpisodeBlockedReason | null;
@@ -2787,6 +2814,7 @@ export interface ChatSummary {
   conversation_kind: "chat" | "episode" | "auto_research_child";
   graph_title: string;
   orchestrator_episode_id: string | null;
+  human_turn_refusal?: { code: string; detail: string } | null;
   chat_id: string;
   graph_target: GraphTargetRef;
   kind: "node_chat" | "project_chat";

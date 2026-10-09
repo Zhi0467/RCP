@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   SteerRequest,
   Episode,
+  GraphRef,
   EpisodeMessage,
   EpisodeTimelineResponse,
   MergeEpisodeBody,
@@ -362,7 +363,9 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
   episode_isolation_unavailable:
     "This branch's code worktree is no longer available. Start a conversation on Main to continue.",
   auto_research_child_read_only:
-    "This conversation belongs to its Auto-research orchestrator. Message the orchestrator in Runs.",
+    "The orchestrator lineage or its child Experiment is still running. Message the orchestrator in Runs.",
+  auto_research_child_episode_owned:
+    "This turn belongs to its Auto-research episode. Message the orchestrator or use Add N turns.",
 };
 
 function apiError(status: number, body: unknown): ApiError {
@@ -510,6 +513,10 @@ export function removeChatAttachment(
   );
 }
 
+export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
+  return api<GraphRef[]>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`);
+}
+
 export function loadEpisodes(
   apiBase: string,
   mode?: EpisodeMode,
@@ -640,10 +647,16 @@ export function sendEpisodeMessage(
   apiBase: string,
   episodeId: string,
   body: string,
+  invocationCeiling?: number,
+  requestId?: string,
 ): Promise<EpisodeMessage> {
   return api<EpisodeMessage>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/messages`, {
     method: "POST",
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({
+      body,
+      invocation_ceiling: invocationCeiling ?? null,
+      request_id: requestId,
+    }),
   });
 }
 

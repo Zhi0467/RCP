@@ -8,8 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from rcp.background import BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import AuthorizedHuman, EpisodeIsolation
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 from rcp.runs.auto_research import project_auto_research_episode
@@ -2422,3 +2423,300 @@ def test_human_cannot_admit_a_turn_on_an_auto_research_child(tmp_path, child_kin
     row = next(row for row in store.chat_inventory(parent.project_id) if row["chat_id"] == chat_id)
     assert row["conversation_kind"] == "auto_research_child"
     assert row["orchestrator_episode_id"] == parent.episode_id
+
+
+@pytest.mark.parametrize("child_kind", ["work", "experiment"])
+def test_child_human_ownership_follows_lineage_and_child_ending(tmp_path, child_kind):
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    if child_kind == "work":
+        route, task = _work_pair(store, parent, root, worker_id=chat_id, chat_id=chat_id)
+        store.create_auto_research_child_work(route, task)
+    else:
+        task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+        task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+        store.create_experiment_episode_with_invocation(
+            task, auto_research_route=_experiment_route(store, parent, root, task)
+        )
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    human = AgentTaskRecord(
+        operation_id=str(uuid.uuid4()),
+        project_id=parent.project_id,
+        kind="node_chat",
+        graph_target=parent.graph_target,
+        status="queued",
+        request={"chat_id": chat_id},
+        created_at=store.now(),
+        updated_at=store.now(),
+        status_message="",
+        authorized_by=parent.authorized_by,
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (parent.episode_id,)
+        )
+    if child_kind == "experiment":
+        with pytest.raises(ValueError) as error:
+            store.create_agent_task(human)
+        assert str(error.value) == "auto_research_child_read_only"
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (chat_id,)
+            )
+    assert store.chat_inventory(parent.project_id, chat_id)[0]["human_turn_refusal"] is None
+    admitted = store.create_agent_task(human)
+    assert admitted.episode_id is None
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="orchestrator-session",
+        stage_root=str(tmp_path / "stage"),
+    )
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    continuation_id, root_id = str(uuid.uuid4()), str(uuid.uuid4())
+    continuation = parent.model_copy(
+        update={
+            "episode_id": continuation_id,
+            "continues_episode_id": parent.episode_id,
+            "continuation_request_id": str(uuid.uuid4()),
+            "status": "queued",
+            "root_operation_id": None,
+            "invocations_used": 0,
+        }
+    )
+    continuation_root = root.model_copy(
+        update={
+            "episode_id": continuation_id,
+            "operation_id": root_id,
+            "native_session_id": "orchestrator-session",
+            "stage_root": str(tmp_path / "stage"),
+            "request": {
+                **root.request,
+                "episode_id": continuation_id,
+                "actor_operation_id": root_id,
+                "session_id": "orchestrator-session",
+            },
+            "dispatch_authority": AgentDispatchAuthority(
+                profile="orchestrator",
+                task_contract="orchestrate",
+                scope=AgentDispatchScope(
+                    run_truth_scope=["repo"], episode_id=continuation_id, patch_kind="work"
+                ),
+            ),
+        }
+    )
+    state = AutoResearchStateRecord(
+        episode_id=continuation_id, created_at=store.now(), updated_at=store.now()
+    )
+    notice = AutoResearchLifecycleNoticeRecord(
+        notice_id=str(uuid.uuid4()),
+        episode_id=continuation_id,
+        source_kind="episode",
+        source_id=parent.episode_id,
+        source_event="reauthorized",
+        payload={},
+        created_at=store.now(),
+    )
+    with pytest.raises(ValueError) as error:
+        store.create_auto_research_continuation(continuation, state, continuation_root, notice)
+    assert str(error.value) == f"auto_research_child_turn_active:{chat_id}"
+    assert store.episode_continuation(parent.episode_id) is None
+    assert store.episode(continuation_id) is None
+    assert store.agent_task(root_id) is None
+    assert store.auto_research_lifecycle_notices(continuation_id) == []
+    store.complete_agent_task(human.operation_id, applied_revision=None, result={})
+    continued, _, replayed = store.create_auto_research_continuation(
+        continuation, state, continuation_root, notice
+    )
+    assert continued.episode_id == continuation_id
+    assert replayed is False
+    followup = human.model_copy(
+        update={"operation_id": str(uuid.uuid4()), "parent_operation_id": human.operation_id}
+    )
+    for cause in ("fresh", "resume", "retry", "graph_repair", "message_wake", "watcher_wake"):
+        with pytest.raises(ValueError) as error:
+            store.create_agent_task(followup, continuation_cause=cause)
+        assert str(error.value) == "auto_research_child_read_only"
+    assert (
+        store.chat_inventory(parent.project_id, chat_id)[0]["human_turn_refusal"]["code"]
+        == "auto_research_child_read_only"
+    )
+
+
+@pytest.mark.parametrize("trigger", ["human", "watcher", "orchestrator"])
+def test_child_episode_recovery_cannot_become_a_human_turn(tmp_path, trigger):
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    route, task = _work_pair(store, parent, root, worker_id=chat_id, chat_id=chat_id)
+    store.create_auto_research_child_work(route, task)
+    store.fail_agent_task(task.operation_id, error="failed")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (parent.episode_id,)
+        )
+    retry = task.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "episode_id": None,
+            "parent_operation_id": task.operation_id,
+            "attempt": 2,
+            "request": {**task.request, "trigger": trigger},
+        }
+    )
+    with pytest.raises(ValueError) as error:
+        store.create_agent_task(retry)
+    assert str(error.value) == "auto_research_child_episode_owned"
+    assert store.agent_task(retry.operation_id) is None
+
+
+@pytest.mark.parametrize("child_kind", ["work", "experiment"])
+def test_generic_recovery_of_ended_episode_child_is_refused(tmp_path, child_kind):
+    from rcp.api.tasks import _agent_task_response
+
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    if child_kind == "work":
+        route, task = _work_pair(store, parent, root, worker_id=chat_id, chat_id=chat_id)
+        store.create_auto_research_child_work(route, task)
+    else:
+        task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+        task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+        store.create_experiment_episode_with_invocation(
+            task, auto_research_route=_experiment_route(store, parent, root, task)
+        )
+    store.fail_agent_task(task.operation_id, error="failed", failure_kind="transport_lost")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (parent.episode_id,)
+        )
+
+    async def stream(*_args):
+        pytest.fail("Episode-owned recovery must not launch a provider")
+        yield ""
+
+    background = BackgroundAgentTasks(store, stream)
+    for recover in (background.retry, background.resume):
+        with pytest.raises(ValueError) as error:
+            recover(task.operation_id, authorized_by=parent.authorized_by)
+        assert str(error.value) == "auto_research_child_episode_owned"
+    failed = store.agent_task(task.operation_id)
+    assert failed.can_retry
+    response = _agent_task_response(store, failed, background)
+    assert (response["can_retry"], response["can_resume"]) == (False, False)
+    background._auto_retry_transport_loss(failed)
+    assert not store.agent_task_has_receipt(task.operation_id, "transport_auto_retry")
+    if child_kind == "experiment":
+        # The child's own Stop recovery behind the parent's ending fence stays open.
+        store.request_episode_stop(task.episode_id)
+        assert store.episode_child_recovery_refusal(failed) is None
+
+
+@pytest.mark.parametrize("child_kind", ["work", "experiment"])
+@pytest.mark.parametrize("isolation_status", ["removing", "removed"])
+def test_ended_child_stays_locked_when_isolation_is_unavailable(
+    tmp_path, child_kind, isolation_status
+):
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    if child_kind == "work":
+        route, task = _work_pair(store, parent, root, worker_id=chat_id, chat_id=chat_id)
+        store.create_auto_research_child_work(route, task)
+    else:
+        task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+        task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+        store.create_experiment_episode_with_invocation(
+            task, auto_research_route=_experiment_route(store, parent, root, task)
+        )
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id IN (?, ?)",
+            (parent.episode_id, chat_id),
+        )
+    store.create_episode_isolation(
+        parent.project_id,
+        EpisodeIsolation(owner_episode_id=parent.episode_id, graph_branch_id=parent.episode_id),
+    )
+    store.set_episode_isolation_status(
+        parent.project_id, parent.episode_id, expected_status="creating", status="ready"
+    )
+    assert store.chat_inventory(parent.project_id, chat_id)[0]["human_turn_refusal"] is None
+    human = AgentTaskRecord(
+        operation_id=str(uuid.uuid4()),
+        project_id=parent.project_id,
+        kind="node_chat",
+        graph_target=parent.graph_target,
+        status="queued",
+        request={"chat_id": chat_id},
+        created_at=store.now(),
+        updated_at=store.now(),
+        status_message="",
+        authorized_by=parent.authorized_by,
+    )
+    store.create_agent_task(human)
+    store.complete_agent_task(human.operation_id, applied_revision=None, result={})
+    store.set_episode_isolation_status(
+        parent.project_id, parent.episode_id, expected_status="ready", status="removing"
+    )
+    if isolation_status == "removed":
+        store.set_episode_isolation_status(
+            parent.project_id, parent.episode_id, expected_status="removing", status="removed"
+        )
+    refusal = store.chat_inventory(parent.project_id, chat_id)[0]["human_turn_refusal"]
+    assert refusal["code"] == "episode_isolation_unavailable"
+    refused = human.model_copy(update={"operation_id": str(uuid.uuid4())})
+    with pytest.raises(ValueError) as error:
+        store.create_agent_task(refused)
+    assert error.value.args == (refusal["code"],)
+    assert store.agent_task(refused.operation_id) is None
+
+
+def test_a_child_experiment_continuation_owns_its_child_chat(tmp_path):
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+    task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+    store.create_experiment_episode_with_invocation(
+        task, auto_research_route=_experiment_route(store, parent, root, task)
+    )
+    child = store.episode(task.episode_id)
+    continuation_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (child.episode_id,)
+        )
+    store.create_episode(
+        child.model_copy(
+            update={
+                "episode_id": continuation_id,
+                "continues_episode_id": child.episode_id,
+                "status": "queued",
+                "root_operation_id": None,
+                "invocations_used": 0,
+                "ending": None,
+                "wrapup_state": "not_started",
+                "report_attempts_used": 0,
+                "stop_requested_at": None,
+                "stop_settled_at": None,
+                "ended_at": None,
+            }
+        )
+    )
+    first_turn = task.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "episode_id": continuation_id,
+            "parent_operation_id": task.operation_id,
+        }
+    )
+    with store.connection() as connection:
+        store._require_child_turn_admission(connection, first_turn)
+        with pytest.raises(ValueError, match="auto_research_child_episode_owned"):
+            store._require_child_turn_admission(
+                connection, first_turn.model_copy(update={"episode_id": str(uuid.uuid4())})
+            )
+        # While the continuation runs, the child chat is locked to humans.
+        refusal = store._child_human_turn_refusal(connection, task.project_id, chat_id)
+    assert refusal is not None and refusal["code"] == "auto_research_child_read_only"
+    # While the orchestrator runs, the continuation's turns keep generic recovery.
+    assert store.episode_child_recovery_refusal(first_turn) is None

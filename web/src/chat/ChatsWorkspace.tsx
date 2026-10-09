@@ -20,6 +20,7 @@ import {
   type AgentListSection,
   type ConversationAgentRow,
   type ConversationAgentStatus,
+  orchestratorCanUnlock,
 } from "./chatWorkspace";
 import {
   AGENT_BOARD_COLUMNS,
@@ -58,15 +59,13 @@ import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
 import { NodeChat } from "./NodeChat";
-import {
-  AUTO_RESEARCH_ROUTE_PREFIX,
-  experimentBoardHref,
-} from "../experiments/experimentBoardModel";
-import { sameGraphTarget, MAIN_GRAPH } from "../core/graphTarget";
+import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 
 interface Props {
   project: ProjectSnapshot;
+  /** The signed-in member whose persisted chat drafts this workspace shows. */
+  actorId: string | null;
   conversations: ChatConversation[];
   selectedChatId: string | null;
   /** The board of every agent, shown on entry from the Agents tab; a card opens its chat. */
@@ -351,6 +350,7 @@ const BOARD_LABELS: Record<AgentBoardColumn, string> = {
 
 export function ChatsWorkspace({
   project,
+  actorId,
   conversations: storedConversations,
   selectedChatId,
   board,
@@ -691,6 +691,15 @@ export function ChatsWorkspace({
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
+  // An Auto-research child lives on its orchestrator's branch; its links stay there.
+  const orchestratorHref = projectViewHash(
+    project.id,
+    selected?.graphTarget ?? MAIN_GRAPH,
+    "execution",
+    selected?.orchestratorEpisodeId
+      ? { autoResearchEpisodeId: selected.orchestratorEpisodeId }
+      : {},
+  );
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
     if (!bounds) return;
@@ -715,47 +724,40 @@ export function ChatsWorkspace({
         </span>
         {selected.conversationKind === "auto_research_child" && (
           <span className="conversation-header-meta">
-            Managed by the orchestrator in{" "}
-            {selected.orchestratorEpisodeId ? (
-              <a
-                href={experimentBoardHref(
-                  project.id,
-                  `${AUTO_RESEARCH_ROUTE_PREFIX}${selected.orchestratorEpisodeId}`,
-                )}
-              >
-                Runs
-              </a>
-            ) : (
-              <a href={experimentBoardHref(project.id, AUTO_RESEARCH_ROUTE_PREFIX)}>Runs</a>
-            )}
-            .
+            Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
           </span>
         )}
-        {selected.conversationKind !== "auto_research_child" &&
-          needsHuman(selectedStatus) &&
-          selectedLatest && (
-            <div className="conversation-header-banner" role="status">
-              <span>{selectedLatest.status_label}</span>
-              {selectedLatest.can_resume && (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() => onResumeTask(selectedLatest)}
-                >
-                  Resume
-                </button>
+        {!selected.humanTurnRefusal && needsHuman(selectedStatus) && selectedLatest && (
+          <div className="conversation-header-banner" role="status">
+            <span>{selectedLatest.status_label}</span>
+            {selectedLatest.can_resume && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onResumeTask(selectedLatest)}
+              >
+                Resume
+              </button>
+            )}
+            {!selectedLatest.can_resume && selectedLatest.can_retry && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onRetryTask(selectedLatest)}
+              >
+                Retry
+              </button>
+            )}
+            {!selectedLatest.can_resume &&
+              !selectedLatest.can_retry &&
+              selected.conversationKind === "auto_research_child" && (
+                // Only the orchestrator recovers its own turn: message it or add turns.
+                <a className="button compact" href={orchestratorHref}>
+                  Message orchestrator
+                </a>
               )}
-              {!selectedLatest.can_resume && selectedLatest.can_retry && (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() => onRetryTask(selectedLatest)}
-                >
-                  Retry
-                </button>
-              )}
-            </div>
-          )}
+          </div>
+        )}
       </>
     ) : null;
 
@@ -768,7 +770,7 @@ export function ChatsWorkspace({
       latest?.provider_label ?? project.providers?.[provider]?.label ?? provider;
     const renaming = renamingChatId === conversation.chatId;
     const action =
-      conversation.conversationKind !== "auto_research_child" && needsHuman(status) && latest
+      !conversation.humanTurnRefusal && needsHuman(status) && latest
         ? latest.can_resume
           ? { label: "Resume", run: () => onResumeTask(latest) }
           : latest.can_retry
@@ -1110,6 +1112,7 @@ export function ChatsWorkspace({
           <NodeChat
             key={selected.chatId}
             project={project}
+            actorId={actorId}
             graphTarget={graphTarget}
             node={selected.nodeId ? (nodes[selected.nodeId] ?? null) : null}
             nodes={nodes}
@@ -1123,8 +1126,19 @@ export function ChatsWorkspace({
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}
             chatId={selected.chatId}
             presentation="workspace"
-            readOnly={
-              selected.conversationKind !== "chat" && selected.conversationKind !== "episode"
+            readOnly={Boolean(selected.humanTurnRefusal)}
+            allowArtifactComments={selected.conversationKind === "auto_research_child"}
+            readOnlyNotice={
+              selected.humanTurnRefusal ? (
+                <div className="chat-composer" role="status">
+                  <p>{selected.humanTurnRefusal.detail}</p>
+                  {orchestratorCanUnlock(selected.humanTurnRefusal) && (
+                    <a className="button compact" href={orchestratorHref}>
+                      Message orchestrator
+                    </a>
+                  )}
+                </div>
+              ) : undefined
             }
             graphChangesDisabled={graphChangesDisabled}
             onStartTask={onStartTask}

@@ -137,7 +137,7 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
 }
 
 /** The staged edits for this project, or the manifest's values when none exist. */
-function stagedOrSaved(project: ProjectSnapshot) {
+function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
   const saved = {
     scope: project.default_run_truth_scope,
     autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
@@ -148,8 +148,9 @@ function stagedOrSaved(project: ProjectSnapshot) {
     computeConnections: project.compute_connections ?? [],
   };
   let staged: ReturnType<typeof deserializeSettingsDraft> = null;
+  const key = settingsDraftStorageKey(actorId, project.id);
   try {
-    staged = deserializeSettingsDraft(localStorage.getItem(settingsDraftStorageKey(project.id)));
+    if (key) staged = deserializeSettingsDraft(localStorage.getItem(key));
   } catch {
     // A staged draft is a convenience; storage failures fall back to the manifest.
   }
@@ -189,8 +190,9 @@ export function ProjectSettings({
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
+  const actorId = identity?.user.user_id ?? null;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once per project; a snapshot refresh must not reset the form
-  const restoredSettings = useMemo(() => stagedOrSaved(project), [project.id]);
+  const restoredSettings = useMemo(() => stagedOrSaved(project, actorId), [project.id]);
   const [connectAlias, setConnectAlias] = useState<string | null>(null);
   const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
@@ -296,7 +298,8 @@ export function ProjectSettings({
   // Stage machine settings alongside provider paths. Compute connection metadata
   // stays in memory until Save; clearing a clean form drops the staged copy.
   useEffect(() => {
-    const key = settingsDraftStorageKey(project.id);
+    const key = settingsDraftStorageKey(actorId, project.id);
+    if (!key) return;
     try {
       if (dirty) {
         localStorage.setItem(
@@ -321,7 +324,7 @@ export function ProjectSettings({
       // Staging edits is a convenience; storage failures must not affect Settings.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- current fingerprints every staged field
-  }, [dirty, current, project.id]);
+  }, [dirty, current, project.id, actorId]);
   const machineByAlias = Object.fromEntries(
     project.machines.map((machine) => [machine.alias, machine]),
   );

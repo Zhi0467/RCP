@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { mergeEpisodeToMain } from "../../src/core/api";
+import { mergeEpisodeToMain, sendEpisodeMessage } from "../../src/core/api";
 import { AutoResearchEpisodeCard } from "../../src/experiments/CampaignRuns";
 import type { Episode } from "../../src/core/types";
 import "../../src/styles.css";
@@ -35,7 +35,15 @@ function Fixture() {
           }
         }}
         onContinue={idle}
-        onSendMessage={idle}
+        onSendMessage={async (episodeId, body, turns, requestId) => {
+          await sendEpisodeMessage(
+            `/api/projects/${episode.project_id}`,
+            episodeId,
+            body,
+            turns,
+            requestId,
+          );
+        }}
         onOperateTask={idle}
         onArchive={idle}
       />

@@ -1,9 +1,11 @@
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
+import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
-import { branchMergeStateLabel } from "./experiments/CampaignRuns";
+import { GraphPicker } from "./graph/GraphPicker";
+import { selectionAfterGraphSwitch } from "./graph/graphPickerModel";
 import {
   branchOwnerEpisode,
   experimentStartTarget,
@@ -12,6 +14,7 @@ import {
   graphTargetUrl,
   graphViewHash,
   MAIN_GRAPH,
+  projectViewHash,
   sameGraphTarget,
 } from "./core/graphTarget";
 import type { GraphEditingProps } from "./graph/GraphEditingControls";
@@ -73,6 +76,7 @@ import {
   archiveEpisode,
   ApiError,
   loadEpisodes,
+  loadGraphRefs,
   loadProjectExperimentEpisodes,
   loadTeamSessions,
   loadProjectReadiness,
@@ -183,6 +187,7 @@ import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
 import { TeamLoginBoundary } from "./desktop/TeamLoginBoundary";
+import { dropUnscopedDrafts } from "./core/draftStorage";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
@@ -211,6 +216,7 @@ import {
 } from "./graph/humanDraft";
 import type {
   AgentRunConfig,
+  GraphRef,
   AgentTask,
   AgentTaskKind,
   AgentTaskRequest,
@@ -442,6 +448,13 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "settings", label: "Settings", icon: <Settings size={14} /> },
 ];
 
+/** Every project view renders on main and on a branch; main-only rules live inside views. */
+const GRAPH_REF_VIEWS: ReadonlySet<AppView> = new Set<AppView>([
+  ...navItems.map((item) => item.view),
+  "dag",
+  "paper",
+]);
+
 /** A tab stays highlighted while one of its sub-views is open. */
 function navItemActive(item: AppView, view: AppView): boolean {
   return (
@@ -512,22 +525,45 @@ export {
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
-  const [initialRoute] = useState(() => {
+  useState(() => {
     const navigation = window.performance.getEntriesByType("navigation")[0] as
       PerformanceNavigationTiming | undefined;
     const requestedHash = window.location.hash;
     const hash = isSetupHash(requestedHash)
       ? requestedHash
-      : initialProjectHash(requestedHash, navigation?.type);
+      : initialProjectHash(requestedHash, navigation?.type, desktop);
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return {
-      project: parseProjectHash(hash),
-      graphTarget: graphTargetFromHash(hash),
-      setupOpen: isSetupHash(hash),
-    };
+    return null;
   });
+  const identity = useActorIdentity();
+  // All retained project state belongs to this backend and member. Replacing
+  // the boundary drops rendered state, tab snapshots and in-flight owners in
+  // one commit, before the pending route can open under another identity.
+  const sessionKey = JSON.stringify([
+    identity.backendKey,
+    identity.actorIdentity?.space_id,
+    identity.actorIdentity?.space_kind,
+    identity.actorIdentity?.user.user_id,
+    identity.actorIdentity?.user.identity_kind,
+  ]);
+  useLayoutEffect(() => closeArtifactViewer(), [sessionKey]);
+  return <MemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+}
+
+function MemberApp({
+  desktop,
+  identity,
+}: {
+  desktop: boolean;
+  identity: ReturnType<typeof useActorIdentity>;
+}) {
+  const [initialRoute] = useState(() => ({
+    project: parseProjectHash(window.location.hash),
+    graphTarget: graphTargetFromHash(window.location.hash),
+    setupOpen: isSetupHash(window.location.hash),
+  }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
@@ -546,6 +582,7 @@ export default function App() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    backendKey,
     authenticatedHealth,
     actorIdentity,
     actorIdentityError,
@@ -560,13 +597,13 @@ export default function App() {
     requestActorName,
     settleActorNamePrompt,
     saveActorName,
-    authenticateTeamSession: authenticateIdentityTeamSession,
-    pairTeamDevice: pairIdentityTeamDevice,
+    authenticateTeamSession,
+    pairTeamDevice,
     reportIdentityIssue,
     reverifyIdentity,
     currentActiveAgentTasks,
     updateActorNameDraft,
-  } = useActorIdentity();
+  } = identity;
   // Every backend-facing surface, including the WebMCP inventory, waits for the
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
@@ -576,6 +613,20 @@ export default function App() {
     !!actorIdentity &&
     !teamSessionRequired &&
     !ownerSessionRequired;
+  const backendSessionReadyRef = useRef(backendSessionReady);
+  backendSessionReadyRef.current = backendSessionReady;
+  // Persisted drafts are scoped to this member; none is read or written without one.
+  const draftActorId = backendSessionReady ? (actorIdentity?.user.user_id ?? null) : null;
+  const draftActorIdRef = useRef(draftActorId);
+  draftActorIdRef.current = draftActorId;
+  useEffect(() => {
+    try {
+      dropUnscopedDrafts(localStorage);
+      dropUnscopedDrafts(sessionStorage);
+    } catch {
+      // Unavailable storage holds no drafts to drop.
+    }
+  }, []);
   const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
@@ -684,7 +735,6 @@ export default function App() {
     refreshSpaceRuns,
     replaceEpisodeRunArchive,
     applyHashRoute,
-    clearProjectRoute,
     openSetup,
     returnToProjects: returnToProjectIndex,
     commitProjectOpen: commitProjectRoute,
@@ -709,11 +759,22 @@ export default function App() {
     project: sessionProject,
     reportError: reportErrorNotice,
   });
-  const { project, humanDraft } = projectDraftPreviewEffectInputs(
+  const { project: targetProject, humanDraft } = projectDraftPreviewEffectInputs(
     projectSession,
     projectId,
     graphTarget,
   );
+  // A ref switch keeps the previous ref's snapshot on screen, inert, until the
+  // new ref's snapshot arrives; it is never cached or drafted against. Until the
+  // open effect resets the session, that snapshot is still the session's own.
+  const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
+  const project =
+    targetProject ??
+    (sessionProject?.id === projectId
+      ? sessionProject
+      : heldRefProject?.id === projectId
+        ? heldRefProject
+        : null);
   const graph = project?.graph ?? emptyGraph;
   const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
@@ -729,6 +790,11 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
+  useEffect(() => {
+    // The new ref painted, or failed like any open: stop holding the old one.
+    if (heldRefProject && (targetProject || projectReconciliation === "failed"))
+      setHeldRefProject(null);
+  }, [heldRefProject, projectReconciliation, targetProject]);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const [providerReadinessRequests, setProviderReadinessRequests] = useState<
@@ -797,6 +863,15 @@ export default function App() {
   );
   const selectedTargetExperiment = selectedExperimentUsesIndex ? selectedIndexedExperiment : null;
   const authoritativeProjectId = useRef<string | null>(null);
+  // The last open the project effect ran, and whether a backend reverification
+  // has interrupted it since. Recovery on the same backend reconciles that open.
+  const lastProjectOpen = useRef<{
+    backendKey: string | null;
+    projectId: string | null;
+    graphTarget: GraphTargetRef;
+    setupOpen: boolean;
+  } | null>(null);
+  const projectOpenInterrupted = useRef(false);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
     projectId: string;
@@ -946,6 +1021,34 @@ export default function App() {
     runsVisible: view === "execution",
   });
   const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
+  // undefined while loading; null when the list could not be read.
+  const [graphRefs, setGraphRefs] = useState<{
+    projectId: string;
+    refs: GraphRef[] | null;
+  } | null>(null);
+  const [showArchivedRefs, setShowArchivedRefs] = useState(false);
+  const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
+  const graphTargetKey = graphSessionKey("", graphTarget);
+  // Episode changes move a branch's chain member or merge state; any turn on
+  // the shown ref moves its head, which can also change its merge state.
+  const graphRefsKey = JSON.stringify([
+    graph.revision,
+    episodes.map((episode) => [episode.episode_id, episode.status, episode.graph_branch]),
+  ]);
+  useEffect(() => {
+    if (!projectId || !backendSessionReady) return;
+    let current = true;
+    loadGraphRefs(projectId)
+      .then((refs) => {
+        if (current) setGraphRefs({ projectId, refs });
+      })
+      .catch(() => {
+        if (current) setGraphRefs({ projectId, refs: null });
+      });
+    return () => {
+      current = false;
+    };
+  }, [backendSessionReady, graphRefsKey, graphTargetKey, projectId]);
   // The branch diff's merge marks come from the same preview the Merge panel reads.
   const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
   const branchMergeKey = activeBranchEpisode
@@ -992,10 +1095,10 @@ export default function App() {
     projectHistoryOpen,
     dismissedHistoryNoticeIds,
   } = projectHistorySnapshot;
-  currentProjectStateRef.current = project
+  currentProjectStateRef.current = targetProject
     ? {
         ...serializeProjectSessionTabState(projectSession),
-        project,
+        project: targetProject,
         projectHeaderCollapsed,
         runScope,
         selectedNodeId: selectedNode?.id ?? null,
@@ -1114,7 +1217,13 @@ export default function App() {
       const authoritative = nextProject.snapshot_freshness === "fresh";
       applyCanonicalProject(next.project, authoritative);
       try {
-        persistProjectHumanDraft(localStorage, next.project.id, next.humanDraft, next.graphTarget);
+        persistProjectHumanDraft(
+          localStorage,
+          draftActorIdRef.current,
+          next.project.id,
+          next.humanDraft,
+          next.graphTarget,
+        );
       } catch {
         // The in-memory draft remains usable if browser storage is unavailable.
       }
@@ -1269,12 +1378,14 @@ export default function App() {
   );
 
   const heartbeatProjectCache = useCallback(
-    (requestedProjectId: string): Promise<void> =>
-      runProjectHeartbeat(requestedProjectId, async () => {
+    (requestedProjectId: string): Promise<void> => {
+      const requestedTarget = isActiveProject(requestedProjectId)
+        ? activeGraphTargetRef.current
+        : MAIN_GRAPH;
+      // Single flight per (project, ref): a heartbeat for the ref just left
+      // must not swallow the first one for the ref now shown.
+      return runProjectHeartbeat(graphSessionKey(requestedProjectId, requestedTarget), async () => {
         const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-        const requestedTarget = isActiveProject(requestedProjectId)
-          ? activeGraphTargetRef.current
-          : MAIN_GRAPH;
         let observation: GraphRevisionSnapshot;
         try {
           observation = await loadGraphRevision(
@@ -1354,11 +1465,17 @@ export default function App() {
         if (next === disposition.state) return;
         cacheProjectState(requestedProjectId, next);
         try {
-          persistProjectHumanDraft(localStorage, requestedProjectId, next.humanDraft);
+          persistProjectHumanDraft(
+            localStorage,
+            draftActorIdRef.current,
+            requestedProjectId,
+            next.humanDraft,
+          );
         } catch {
           // A background cache refresh must not discard the in-memory draft.
         }
-      }),
+      });
+    },
     [
       cacheProjectState,
       closeProjectRoute,
@@ -1410,33 +1527,13 @@ export default function App() {
     backendSessionReady,
   ]);
 
-  const settleTeamSignIn = useCallback(() => {
-    clearProjectRoute();
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-  }, [clearProjectRoute]);
-
-  const authenticateTeamSession = useCallback(
-    async (token: string) => {
-      await authenticateIdentityTeamSession(token);
-      settleTeamSignIn();
-    },
-    [authenticateIdentityTeamSession, settleTeamSignIn],
-  );
-
-  const pairTeamDevice = useCallback(
-    async (code: string, label: string) => {
-      await pairIdentityTeamDevice(code, label);
-      settleTeamSignIn();
-    },
-    [pairIdentityTeamDevice, settleTeamSignIn],
-  );
-
   useEffect(() => {
     if (!desktop) return;
     let stopped = false;
     const cleanups: Array<() => void> = [];
     // Reload what the window shows: the active project, or the project index.
     const reloadVisibleState = async () => {
+      if (stopped || !backendSessionReadyRef.current) return;
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
@@ -1809,11 +1906,80 @@ export default function App() {
   }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
   useLayoutEffect(() => {
-    if (!backendSessionReady) return;
+    if (!backendSessionReady) {
+      if (lastProjectOpen.current) projectOpenInterrupted.current = true;
+      return;
+    }
+    const previousOpen = lastProjectOpen.current;
+    const resumesOpen =
+      projectOpenInterrupted.current &&
+      previousOpen !== null &&
+      (!projectId || getProjectSessionState().project !== null) &&
+      previousOpen.backendKey === backendKey &&
+      previousOpen.projectId === projectId &&
+      previousOpen.setupOpen === setupOpen &&
+      sameGraphTarget(previousOpen.graphTarget, graphTarget);
+    lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
+    projectOpenInterrupted.current = false;
+    if (resumesOpen) {
+      // The same backend came back: reload what is shown, never reopen it.
+      if (setupOpen) return;
+      if (!projectId) {
+        void refreshProjectInvitations();
+        let cancelled = false;
+        void loadProjectIndex()
+          .catch((error) => {
+            if (!cancelled)
+              setNotice({
+                kind: "error",
+                text: error instanceof Error ? error.message : String(error),
+              });
+          })
+          .finally(() => {
+            if (!cancelled) setLoading(false);
+          });
+        return () => {
+          cancelled = true;
+        };
+      }
+      let cancelled = false;
+      setProjectReconciliation((current) => (current === "opening" ? current : "reconciling"));
+      void reload()
+        .catch((error) => {
+          if (cancelled || !isActiveGraph(projectId)) return;
+          setProjectReconciliation(
+            authoritativeProjectId.current === projectId ? "authoritative" : "failed",
+          );
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+        beginProjectSnapshotRequest(projectId);
+      };
+    }
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
     const retained = retainedOpen?.state;
+    // Activating another ref of the open project is not a project open: the
+    // shell, view, and header stay, and the old ref's snapshot is held inert.
+    const previousRefProject = getProjectSessionState().project;
+    const activatesRef =
+      !!projectId &&
+      !setupOpen &&
+      previousOpen !== null &&
+      previousOpen.backendKey === backendKey &&
+      previousOpen.projectId === projectId &&
+      !previousOpen.setupOpen &&
+      !sameGraphTarget(previousOpen.graphTarget, graphTarget) &&
+      previousRefProject?.id === projectId;
+    setHeldRefProject(activatesRef && !retained ? previousRefProject : null);
     setNotice(null);
     if (projectId && retained) {
       restoreProjectTabState(
@@ -1822,15 +1988,16 @@ export default function App() {
         routeMatchesProject && requestedRoute.projectViewSpecified ? requestedRoute : undefined,
       );
     } else {
-      setLoading(true);
+      if (!activatesRef) setLoading(true);
       setProjectReconciliation("opening");
       authoritativeProjectId.current = null;
       let storedDraft: HumanDraft | null = null;
-      if (projectId) {
+      const draftKey = projectId
+        ? humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget)
+        : null;
+      if (draftKey) {
         try {
-          storedDraft = deserializeHumanDraft(
-            localStorage.getItem(humanDraftStorageKey(projectId, graphTarget)),
-          );
+          storedDraft = deserializeHumanDraft(localStorage.getItem(draftKey));
         } catch (error) {
           setNotice({
             kind: "error",
@@ -1844,19 +2011,21 @@ export default function App() {
         graph_target: graphTarget,
         human_draft: storedDraft,
       });
-      resetProjectSelection(
-        routeMatchesProject ? requestedRoute.view : "overview",
-        routeMatchesProject ? requestedRoute.experimentId : null,
-        routeMatchesProject ? requestedRoute.experimentRoute : null,
-        routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
-      );
+      // The hash already set the view; a node survives only if the new ref has it.
+      if (!activatesRef)
+        resetProjectSelection(
+          routeMatchesProject ? requestedRoute.view : "overview",
+          routeMatchesProject ? requestedRoute.experimentId : null,
+          routeMatchesProject ? requestedRoute.experimentRoute : null,
+          routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
+        );
       resetProjectChats();
       resetProjectTasks();
       resetProjectHistory(projectId, graphTarget);
       setUsage(null);
       setWatchers([]);
       setExperimentStartOverlap(null);
-      resetProjectHeader(projectId);
+      if (!activatesRef) resetProjectHeader(projectId);
     }
     if (setupOpen) {
       setLoading(false);
@@ -1928,12 +2097,15 @@ export default function App() {
     });
     return () => {
       cancelled = true;
+      beginProjectSnapshotRequest(projectId);
     };
   }, [
     applyProjectSnapshot,
     actorIdentityChecked,
+    backendKey,
     beginProjectSnapshotRequest,
     cachedProjectStateForOpen,
+    getProjectSessionState,
     dispatchProjectSession,
     identityIssue,
     identityReady,
@@ -2841,7 +3013,7 @@ export default function App() {
     setNotice(null);
     const { next } = updateProjectHumanDraft(projectId, graph, update);
     try {
-      persistProjectHumanDraft(localStorage, projectId, next.humanDraft, graphTarget);
+      persistProjectHumanDraft(localStorage, draftActorId, projectId, next.humanDraft, graphTarget);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2851,7 +3023,8 @@ export default function App() {
     if (!projectId) return;
     dispatchProjectSession({ kind: "human_draft_updated", project_id: projectId, draft: null });
     try {
-      localStorage.removeItem(humanDraftStorageKey(projectId, graphTarget));
+      const key = humanDraftStorageKey(draftActorId, projectId, graphTarget);
+      if (key) localStorage.removeItem(key);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2967,6 +3140,7 @@ export default function App() {
       try {
         persistProjectHumanDraft(
           localStorage,
+          draftActorIdRef.current,
           requestedProjectId,
           committedSession.humanDraft,
           expectedHead.target,
@@ -3527,14 +3701,26 @@ export default function App() {
     }
   };
 
-  const messageEpisodeOrchestrator = async (episodeId: string, body: string) => {
+  const messageEpisodeOrchestrator = async (
+    episodeId: string,
+    body: string,
+    invocationCeiling?: number,
+    requestId?: string,
+  ) => {
     if (!apiBase || !projectId || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`message:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const saved = await sendEpisodeMessage(apiBase, episodeId, body);
-      recordEpisodeMessage(projectId, episodeId, saved);
-      await refreshEpisodeMessages(episodeId);
+      const saved = await sendEpisodeMessage(
+        apiBase,
+        episodeId,
+        body,
+        invocationCeiling,
+        requestId,
+      );
+      recordEpisodeMessage(projectId, saved.episode_id, saved);
+      await refreshEpisodeMessages(saved.episode_id);
+      await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -3966,7 +4152,8 @@ export default function App() {
     removeProject(id);
     forgetProjectViewport(id);
     try {
-      localStorage.removeItem(humanDraftStorageKey(id));
+      const key = humanDraftStorageKey(draftActorId, id);
+      if (key) localStorage.removeItem(key);
     } catch {
       // The project is already deleted; a stranded draft key must not fail the action.
     }
@@ -3985,7 +4172,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !backendSessionReady) return;
     const onProjectTabKeyDown = (event: KeyboardEvent) => {
       const action = projectTabShortcut(event, isEditableShortcutTarget(event.target));
       if (!action) return;
@@ -4080,6 +4267,25 @@ export default function App() {
       </section>
     </div>
   ) : null;
+  // A reverification of the backend this page last opened keeps the rendered
+  // tree mounted (scroll, panels, unsent text) under a blocking overlay. A
+  // changed backend fails this test and replaces the tree as before.
+  const holdRenderedTree =
+    lastProjectOpen.current !== null &&
+    lastProjectOpen.current.backendKey === backendKey &&
+    !!actorIdentity &&
+    !!authenticatedHealth &&
+    !teamSessionRequired &&
+    !ownerSessionRequired;
+  const reverificationSurface =
+    holdRenderedTree && (identityIssue || !actorIdentityChecked) ? (
+      <ReconnectOverlay
+        issue={identityIssue}
+        reconnecting={reconnecting}
+        desktop={desktop}
+        onReconnect={() => void reconnectBackend()}
+      />
+    ) : null;
   const actorNameSurface = actorNamePromptOpen ? (
     <div className="modal-backdrop identity-name-backdrop">
       <form
@@ -4152,7 +4358,7 @@ export default function App() {
         {acceptanceAgentSurface}
       </div>
     );
-  if (identityIssue)
+  if (identityIssue && !holdRenderedTree)
     return (
       <div className="fatal-state reconnect-state">
         <TriangleAlert />
@@ -4170,7 +4376,7 @@ export default function App() {
         {acceptanceAgentSurface}
       </div>
     );
-  if (!actorIdentityChecked)
+  if (!actorIdentityChecked && !holdRenderedTree)
     return (
       <div className="app-loading">
         <LoaderCircle className="spin" />
@@ -4188,6 +4394,8 @@ export default function App() {
         onPair={async () => {}}
       />
     );
+  // A successful sign-in keeps the pending route; the project open that follows
+  // still checks access.
   if (teamSessionRequired)
     return (
       <>
@@ -4206,6 +4414,7 @@ export default function App() {
       <>
         <ProjectLocatorBoundary />
         {actorNameSurface}
+        {reverificationSurface}
       </>
     );
   }
@@ -4217,6 +4426,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </div>
@@ -4235,6 +4445,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </>
@@ -4260,6 +4471,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </>
@@ -4303,6 +4515,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </>
@@ -4315,6 +4528,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </div>
@@ -4331,6 +4545,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </div>
@@ -4389,6 +4604,7 @@ export default function App() {
         <NodeChat
           key={selectedExperimentChatId}
           project={project}
+          actorId={draftActorId}
           graphTarget={selectedExperimentChatTarget}
           node={selectedExperimentNode}
           nodes={selectedExperimentNodes}
@@ -4562,6 +4778,65 @@ export default function App() {
       />
     </>
   );
+  const activeGraphRef =
+    graphTarget.kind === "branch"
+      ? projectGraphRefs?.find(
+          (ref): ref is Extract<GraphRef, { kind: "branch" }> =>
+            ref.kind === "branch" && ref.branch_id === graphTarget.branch_id,
+        )
+      : undefined;
+  const chainMemberId =
+    activeGraphRef?.current_episode_id ?? activeBranchEpisode?.episode_id ?? null;
+  const chainMember =
+    episodes.find((episode) => episode.episode_id === chainMemberId) ??
+    (activeBranchEpisode?.episode_id === chainMemberId ? activeBranchEpisode : null);
+  const episodeTasksHref =
+    chainMemberId === null
+      ? null
+      : chainMember?.mode === "experiment_loop" && chainMember.control_node_id
+        ? experimentBoardHref(project.id, {
+            experiment_id: chainMember.control_node_id,
+            episode_id: chainMember.episode_id,
+            graph_target: graphTarget,
+            parent_episode_id: null,
+          })
+        : (activeGraphRef?.mode ?? chainMember?.mode) === "auto_research"
+          ? projectViewHash(project.id, graphTarget, "execution", {
+              autoResearchEpisodeId: chainMemberId,
+            })
+          : projectViewHash(project.id, graphTarget, "execution");
+  const selectGraphRef = (target: GraphTargetRef) => {
+    if (sameGraphTarget(target, graphTarget)) return;
+    // Nodes are not in the URL: the open effect keeps one only if the new ref has it.
+    const next = selectionAfterGraphSwitch(
+      {
+        view,
+        nodeId: null,
+        chatId: view === "chats" ? selectedChatId : null,
+        episodeId: selectedAutoResearchEpisodeId,
+      },
+      {
+        nodeIds: new Set(),
+        chatIds: new Set(
+          inventoryConversations
+            .filter((conversation) => sameGraphTarget(conversation.graphTarget, target))
+            .map((conversation) => conversation.chatId),
+        ),
+        episodeIds: new Set(
+          episodes
+            .filter((episode) => sameGraphTarget(episode.graph_target, target))
+            .map((episode) => episode.episode_id),
+        ),
+        views: GRAPH_REF_VIEWS,
+      },
+    );
+    window.location.hash = projectViewHash(project.id, target, next.view, {
+      ...(next.view === "chats" && next.chatId ? { chatId: next.chatId } : {}),
+      ...(next.view === "execution" && next.episodeId
+        ? { autoResearchEpisodeId: next.episodeId }
+        : {}),
+    });
+  };
   const renderNavItem = (item: (typeof navItems)[number]) =>
     item.view === "terminals" ? (
       <TerminalTab
@@ -4724,43 +4999,24 @@ export default function App() {
         </nav>
       )}
 
-      {graphTarget.kind === "branch" && (
-        <section className="branch-graph-banner" aria-label="Active graph target">
-          <span>
-            <GitBranch size={16} />
-            <strong>Episode branch</strong>
-            <span className="mono">{graphTarget.branch_id.slice(0, 8)}</span>
-            <span>Revision {graph.revision}</span>
-            {activeBranchEpisode?.graph_branch && (
-              <span>{branchMergeStateLabel(activeBranchEpisode.graph_branch.merge_state)}</span>
-            )}
-          </span>
-          <div>
-            <button
-              type="button"
-              className="button compact secondary"
-              onClick={() => {
-                if (activeBranchEpisode) {
-                  window.location.hash =
-                    activeBranchEpisode.mode === "experiment_loop" &&
-                    activeBranchEpisode.control_node_id
-                      ? experimentBoardHref(project.id, {
-                          experiment_id: activeBranchEpisode.control_node_id,
-                          episode_id: activeBranchEpisode.episode_id,
-                          graph_target: graphTarget,
-                          parent_episode_id: null,
-                        })
-                      : `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
-                } else changeView("execution");
-              }}
-            >
-              Episode & tasks
-            </button>
-            <a className="button compact secondary" href={graphViewHash(project.id, MAIN_GRAPH)}>
-              Main graph
-            </a>
-          </div>
-        </section>
+      {(projectGraphRefs === null ||
+        graphTarget.kind === "branch" ||
+        projectGraphRefs?.some((ref) => ref.kind === "branch")) && (
+        <GraphPicker
+          refs={projectGraphRefs === undefined ? [] : projectGraphRefs}
+          activeRef={graphTarget}
+          revision={graph.revision}
+          showArchived={showArchivedRefs}
+          onShowArchivedChange={setShowArchivedRefs}
+          onSelect={selectGraphRef}
+          episodeTasksLink={
+            episodeTasksHref && (
+              <a className="button compact secondary" href={episodeTasksHref}>
+                Episode & tasks
+              </a>
+            )
+          }
+        />
       )}
       {dockedNodes.length > 0 && (
         <section className="node-window-dock" aria-label="Docked node windows">
@@ -5163,6 +5419,7 @@ export default function App() {
           {view === "chats" && (
             <ChatsWorkspace
               project={project}
+              actorId={draftActorId}
               conversations={inventoryConversations}
               selectedChatId={selectedChatId}
               board={agentsBoard}
@@ -5356,6 +5613,7 @@ export default function App() {
             <NodeChat
               key={floatingChat.chatId}
               project={project}
+              actorId={draftActorId}
               graphTarget={project.graph_target}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
               nodes={presentedGraph.nodes}
@@ -5474,6 +5732,7 @@ export default function App() {
       )}
       {desktopAccessSurface}
       {actorNameSurface}
+      {reverificationSurface}
     </div>
   );
 }

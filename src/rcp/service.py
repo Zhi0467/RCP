@@ -364,6 +364,7 @@ class ChatSummary(BaseModel):
     last_message_preview: str
     conversation_kind: Literal["chat", "episode", "auto_research_child"] = "chat"
     orchestrator_episode_id: str | None = None
+    human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"
 
 
@@ -1322,6 +1323,7 @@ class ProjectService:
                     update={
                         "conversation_kind": task.conversation_kind,
                         "orchestrator_episode_id": task.orchestrator_episode_id,
+                        "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
                     }
                 )
