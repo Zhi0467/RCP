@@ -142,6 +142,7 @@ import { claimMicrophone, type MicrophoneClaim } from "../voice/microphone";
 import {
   createQuietMeter,
   joinDictatedText,
+  addKeptSpeech,
   keptSpeech,
   keptSpeechNeedsService,
   NetworkDictationSession,
@@ -1037,11 +1038,10 @@ export function NodeChat({
   };
 
   /** Keep speech that could not reach the draft; a live span is where it continues. */
-  const keepSpeech = (sessionId: string, pieces: KeptPiece[], mimeType: string, error: unknown) => {
+  const keepSpeech = (sessionId: string, pieces: KeptPiece[], error: unknown) => {
     const span = liveDictationSpan(dictationSpanRef.current, sessionId);
-    setKeptSpeech(draftKey, {
+    addKeptSpeech(draftKey, {
       pieces,
-      mimeType,
       error,
       resume: span ? { draft: messageRef.current, at: span.end } : null,
     });
@@ -1074,19 +1074,28 @@ export function NodeChat({
       onText: (text) => appendDictatedText(sessionId, text),
       onBusy: setDictationPiecesBusy,
       onRecordingStopped: () => {
-        if (networkDictationRef.current === dictation) {
-          networkDictationRef.current = null;
-          clearDictationTimer(dictationTimerRef);
-        }
+        if (networkDictationRef.current === dictation) clearDictationTimer(dictationTimerRef);
         meter.close();
         releaseMicrophone(sessionId);
       },
-      onSettled: () => finishDictatedSpan(sessionId),
+      // The session stays reachable until it settles, so typing after Stop still keeps speech.
+      onSettled: () => {
+        if (networkDictationRef.current === dictation) networkDictationRef.current = null;
+        finishDictatedSpan(sessionId);
+      },
       // Leaving the chat detached the session; its speech stays with this chat.
-      onKept: (pieces, error) => keepSpeech(sessionId, pieces, mimeType, error),
+      onKept: (pieces, error) => {
+        if (networkDictationRef.current === dictation) networkDictationRef.current = null;
+        keepSpeech(sessionId, pieces, error);
+      },
     });
     dictation.session = session;
-    session.start(Date.now());
+    try {
+      session.start(Date.now());
+    } catch (error) {
+      meter.close();
+      throw error;
+    }
     setDictationStartedAt(Date.now());
     setDictationState("recording");
     dictationTimerRef.current = window.setInterval(() => {
@@ -1098,6 +1107,7 @@ export function NodeChat({
     loadConnectionModels(connection.id).catch((error) => {
       if (serviceFailureCode(error) !== "service_access_denied") return;
       if (networkDictationRef.current !== dictation) return;
+      networkDictationRef.current = null;
       session.cancel();
       failDictation(sessionId, error);
     });
@@ -1111,37 +1121,47 @@ export function NodeChat({
       kept.resume && kept.resume.draft === message
         ? kept.resume.at
         : (textareaRef.current?.selectionStart ?? message.length);
+    // A span like dictation's: typing, sending, or leaving detaches it, and the
+    // result is kept again instead of landing at a stale offset.
+    const sessionId = crypto.randomUUID();
+    dictationSpanRef.current = { sessionId, start: at, end: at };
     setKeptSpeech(draftKey, null);
     setDictationError(null);
     setDictationNote(null);
-    let transcribe = async (_audio: Blob): Promise<string> => "";
+    let result: Awaited<ReturnType<typeof resolveKeptPieces>>;
     try {
+      let transcribe = async (_audio: Blob): Promise<string> => "";
       if (keptSpeechNeedsService(kept)) {
         setDictationState("transcribing");
         const settings = await loadServiceConnections();
         const connection = settings.connections.find((item) => item.id === settings.dictation);
         if (!connection)
           throw new Error("Choose a dictation connection in Space settings to retry.");
-        if (!connection.formats.includes(kept.mimeType))
-          throw new Error(`${connection.label} does not accept this recording's format.`);
         setDictationService(connection.label);
-        transcribe = async (audio) =>
-          (await transcribeAudio(connection.id, audio, kept.mimeType)).text;
+        transcribe = async (audio) => {
+          if (!connection.formats.includes(audio.type))
+            throw new Error(`${connection.label} does not accept this recording's format.`);
+          return (await transcribeAudio(connection.id, audio, audio.type)).text;
+        };
       }
-      const { text, failure } = await resolveKeptPieces(kept.pieces, transcribe);
-      insertDictatedText(at, text);
-      setDictationState("idle");
-      if (failure)
-        setKeptSpeech(draftKey, {
-          ...kept,
-          pieces: failure.pending,
-          error: failure.error,
-          resume: null,
-        });
+      result = await resolveKeptPieces(kept.pieces, transcribe);
     } catch (error) {
-      setDictationState("idle");
-      setKeptSpeech(draftKey, { ...kept, error, resume: null });
+      result = { text: "", failure: { error, pending: kept.pieces } };
     }
+    const resolved: KeptPiece[] = result.text ? [{ text: result.text }] : [];
+    const span = liveDictationSpan(dictationSpanRef.current, sessionId);
+    if (span) {
+      dictationSpanRef.current = null;
+      setDictationState("idle");
+      insertDictatedText(span.end, result.text);
+    }
+    const remaining = [...(span ? [] : resolved), ...(result.failure?.pending ?? [])];
+    if (remaining.length)
+      addKeptSpeech(draftKey, {
+        pieces: remaining,
+        error: result.failure?.error ?? null,
+        resume: null,
+      });
   };
 
   /** A new dictation or a send asks before kept speech is dropped. */

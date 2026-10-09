@@ -34,8 +34,8 @@ export function shouldStartNextPiece(pieceMs: number, quietMs: number, first: bo
 export type KeptPiece = { text: string } | { audio: Blob };
 
 export interface KeptSpeech {
+  /** Each kept audio piece carries its recording's type. */
   pieces: KeptPiece[];
-  mimeType: string;
   /** Why the speech is kept: a failure, or null when typing or leaving kept it. */
   error: unknown;
   /** The draft and offset to continue at, while the draft is unchanged. */
@@ -91,9 +91,12 @@ export class NetworkDictationSession {
   /** Called on a short interval with how long the microphone has been quiet. */
   tick(now: number, quietMs: number): void {
     if (!this.recording) return;
-    if (shouldStartNextPiece(now - this.pieceStartedAt, quietMs, this.firstPiece)) {
-      this.firstPiece = false;
+    if (!shouldStartNextPiece(now - this.pieceStartedAt, quietMs, this.firstPiece)) return;
+    this.firstPiece = false;
+    try {
       this.record(now);
+    } catch {
+      // The current piece keeps recording and the next tick tries again.
     }
   }
 
@@ -137,9 +140,10 @@ export class NetworkDictationSession {
       });
     };
     // The next piece starts before the last one stops, so no speech falls between.
+    // A recorder that cannot start throws here and leaves the current one recording.
+    recorder.start();
     this.recorder = recorder;
     this.pieceStartedAt = now;
-    recorder.start();
     if (previous?.state === "recording") previous.stop();
   }
 
@@ -248,6 +252,20 @@ export function createQuietMeter(stream: MediaStream): {
 // Kept speech belongs to its chat while the app runs, never to disk.
 const keptByChat = new Map<string, KeptSpeech>();
 const keptListeners = new Set<() => void>();
+/** Add speech after what the chat already keeps, so overlapping sessions lose nothing. */
+export function addKeptSpeech(chatKey: string, kept: KeptSpeech): void {
+  const current = keptByChat.get(chatKey);
+  setKeptSpeech(
+    chatKey,
+    current
+      ? {
+          pieces: [...current.pieces, ...kept.pieces],
+          error: kept.error ?? current.error,
+          resume: null,
+        }
+      : kept,
+  );
+}
 export function setKeptSpeech(chatKey: string, kept: KeptSpeech | null): void {
   if (kept) keptByChat.set(chatKey, kept);
   else keptByChat.delete(chatKey);

@@ -5,6 +5,9 @@ import {
   FIRST_PIECE_MIN_MS,
   NetworkDictationSession,
   PAUSE_MS,
+  addKeptSpeech,
+  keptSpeech,
+  setKeptSpeech,
   PIECE_MAX_MS,
   PIECE_MIN_MS,
   joinDictatedText,
@@ -160,4 +163,31 @@ test("piece text joins with one space and drops blank results", () => {
   assert.equal(joinDictatedText("first", "second"), " second");
   assert.equal(joinDictatedText("first ", "second"), "second");
   assert.equal(joinDictatedText("first", "  "), "");
+});
+
+test("a next piece that cannot start leaves the current one recording", async () => {
+  const { dictation, made, events } = session(label);
+  dictation.start(0);
+  const create = made[0];
+  // Swap in a factory whose recorder throws on start.
+  dictation.hooks.createRecorder = () => ({
+    ...create,
+    start() {
+      throw new Error("busy");
+    },
+  });
+  dictation.tick(FIRST_PIECE_MIN_MS, PAUSE_MS);
+  assert.equal(made[0].state, "recording");
+  dictation.finish();
+  await settle();
+  assert.deepEqual(events, [["stopped"], ["text", "piece-1"], ["settled"]]);
+});
+
+test("speech kept by overlapping sessions is appended, never replaced", () => {
+  setKeptSpeech("chat", { pieces: [{ text: "first" }], error: null, resume: { draft: "", at: 0 } });
+  addKeptSpeech("chat", { pieces: [{ text: "second" }], error: new Error("x"), resume: null });
+  const kept = keptSpeech("chat");
+  assert.deepEqual(kept.pieces, [{ text: "first" }, { text: "second" }]);
+  assert.equal(kept.resume, null);
+  setKeptSpeech("chat", null);
 });
