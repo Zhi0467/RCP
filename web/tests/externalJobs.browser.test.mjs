@@ -98,7 +98,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     );
     assert.equal(await local.getByRole("textbox", { name: "Jobs root" }).inputValue(), "/new");
     const staged = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("rcp:settings-draft:project")),
+      JSON.parse(localStorage.getItem("rcp:member-draft:owner:settings-draft:project")),
     );
     assert.deepEqual(staged.machineComputeEdits, {
       cluster: { job_manager: "slurm", jobs_root: "/cluster-edited" },

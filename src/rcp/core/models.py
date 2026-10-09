@@ -1372,6 +1372,14 @@ class AuthorizedHuman(BaseModel):
     _validate_uuid4 = field_validator("space_id", "user_id")(_canonical_uuid4)
     _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
 
+    def is_same_member(self, other: AuthorizedHuman | None) -> bool:
+        """The same member, whatever display name either snapshot carries."""
+
+        return other is not None and (self.space_id, self.user_id) == (
+            other.space_id,
+            other.user_id,
+        )
+
 
 class EpisodeUnfinishedJob(BaseModel):
     """A job that may still write an episode worktree, as the human confirmed it at Merge."""

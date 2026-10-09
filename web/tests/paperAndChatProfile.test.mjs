@@ -12,6 +12,7 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { chatDraftStorageKey } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
 const { loadPaperSnapshot, PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
   "/src/paper/PaperWorkspace.tsx",
 );
@@ -110,6 +111,27 @@ test("the chat composer marks where to type with field shape, never placeholder 
 
   assert.match(html, /<textarea/);
   assert.doesNotMatch(html, /placeholder=/);
+});
+
+test("a persisted chat draft is restored only for the member who wrote it", () => {
+  const stored = new Map([[chatDraftStorageKey("member-a", "project", "chat"), "unsent words"]]);
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (key) => stored.get(key) ?? null,
+    setItem: (key, value) => stored.set(key, value),
+    removeItem: (key) => stored.delete(key),
+  };
+  try {
+    const composer = (actorId) =>
+      renderToStaticMarkup(React.createElement(NodeChat, { ...chatProps, actorId })).match(
+        /<textarea[^>]*>([^<]*)<\/textarea>/,
+      )[1];
+    assert.equal(composer("member-a"), "unsent words");
+    assert.equal(composer("member-b"), "");
+    assert.equal(composer(null), "");
+  } finally {
+    globalThis.localStorage = previous;
+  }
 });
 
 test("paper preview renders unsaved Markdown in the editor pane and keeps status", () => {

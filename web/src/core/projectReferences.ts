@@ -1,3 +1,4 @@
+import { memberDraftKey } from "./draftStorage";
 import { buildNotificationLink, parseNotificationLink } from "./notificationLinks";
 import type {
   GraphTargetRef,
@@ -162,11 +163,15 @@ export function labelArtifactReferences(
 }
 
 export function referenceDraftKey(
+  actorId: string | null,
   projectId: string,
   target: GraphTargetRef,
   chatId: string,
-): string {
-  return `rcp:chat-inputs:${JSON.stringify([projectId, target.kind === "branch" ? target.branch_id : null, chatId])}`;
+): string | null {
+  return memberDraftKey(
+    actorId,
+    `chat-inputs:${JSON.stringify([projectId, target.kind === "branch" ? target.branch_id : null, chatId])}`,
+  );
 }
 
 export function parseReferenceDraft(value: string | null): DraftReference[] {

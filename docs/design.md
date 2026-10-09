@@ -141,8 +141,10 @@ number here.
   durable admission fence; every already-authorized turn settles honestly. A
   human may post in a human-started Experiment's conversation between its turns
   as an ordinary chat turn outside the episode; each owner reopens its own
-  contract after another owner's turn. Auto-research children stay the
-  orchestrator's and are read-only to humans.
+  contract after another owner's turn. Auto-research child chats admit ordinary
+  human turns only after their episode lineage and any child Experiment have
+  ended. Episode-owned turns retain their owner through recovery; a continuation
+  re-locks child chats and waits for active human-owned child turns to settle.
 - **The browser renders one revision at a time.** A committed project response
   carries graph, graph-derived control, guidance validity, and head from the
   same transition. The client replaces that snapshot atomically. It never

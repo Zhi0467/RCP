@@ -1,3 +1,4 @@
+import { memberDraftKey } from "../core/draftStorage";
 import { graphSessionKey, MAIN_GRAPH } from "../core/graphTarget";
 import { isChooser } from "./researchType";
 import type { GraphTargetRef } from "../core/types";
@@ -564,10 +565,11 @@ export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanS
 }
 
 export function humanDraftStorageKey(
+  actorId: string | null,
   projectId: string,
   graphTarget: GraphTargetRef = MAIN_GRAPH,
-): string {
-  return `rcp:human-draft:${graphSessionKey(projectId, graphTarget)}`;
+): string | null {
+  return memberDraftKey(actorId, `human-draft:${graphSessionKey(projectId, graphTarget)}`);
 }
 
 export function humanSyncFailure(error: unknown): {
