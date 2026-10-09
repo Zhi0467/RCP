@@ -48,7 +48,6 @@ const {
   serverOperatorModeFor,
   serverOperatorProbeMatchesDraft,
   TeamProjectSetup,
-  TeamRepositoryEditor,
 } = await server.ssrLoadModule("/src/projects/TeamProjectSetup.tsx");
 
 after(() => server.close());
@@ -904,28 +903,4 @@ test("Project Settings opens the move route only for a personal project", () => 
 
   assert.match(personal, /project-home-settings/);
   assert.doesNotMatch(team, /project-home-settings/);
-});
-
-test("server-only repository controls preserve optional sources and scope controls", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(TeamRepositoryEditor, {
-      repository: {
-        id: 1,
-        alias: "state",
-        source: "",
-        machine_alias: "server",
-        default_read: true,
-      },
-      machines: [{ alias: "server" }],
-      canonical: true,
-      removable: false,
-      onChange() {},
-      onCanonical() {},
-      onRemove() {},
-    }),
-  );
-  assert.doesNotMatch(html, /required=""/);
-  assert.match(html, /value=""/);
-  assert.match(html, /type="checkbox" checked=""/);
-  assert.match(html, /type="radio"[^>]*checked=""/);
 });

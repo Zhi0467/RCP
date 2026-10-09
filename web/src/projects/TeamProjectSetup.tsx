@@ -1088,7 +1088,7 @@ function MachineEditor({
   );
 }
 
-export function TeamRepositoryEditor({
+function TeamRepositoryEditor({
   repository,
   machines,
   canonical,

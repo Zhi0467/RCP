@@ -25,7 +25,7 @@ from rcp.limits import (
     TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
-from rcp.provisioning_repositories import effective_repositories
+from rcp.provisioning_repositories import is_server_only, team_repository_sources
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
 from rcp.terminals.models import DETACHED, TerminalAlreadyOpen
@@ -166,20 +166,9 @@ async def open_session(
             raise HTTPException(
                 503, "Cannot establish repository ownership; a registered project is unavailable."
             ) from exc
-        github = False
-        if services.store.space_kind == "team":
-            project = services.store.project(project_id)
-            if project is None:
-                raise ValueError("The terminal project is not registered.")
-            sources = {
-                item.alias: item
-                for item in effective_repositories(
-                    project, services.store.completed_project_provisioning_requests(project_id)
-                )
-            }
-            if body.repository_id not in sources:
-                raise ValueError("The terminal repository has no completed provisioning proof.")
-            github = sources[body.repository_id].repository is not None
+        github = services.store.space_kind == "team" and not is_server_only(
+            team_repository_sources(services.store, project_id), body.repository_id
+        )
         key = (
             request.app.state.server_layout.project_deploy_key_path(project_id, body.repository_id)
             if github

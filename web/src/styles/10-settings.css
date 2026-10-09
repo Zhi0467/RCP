@@ -3855,13 +3855,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   margin-top: 16px;
 }
 
-.repository-request-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-
 .repository-requests fieldset {
   display: grid;
   gap: 12px;

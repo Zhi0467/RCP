@@ -191,6 +191,7 @@ export function ProjectSettings({
   const savedSkillDefaults = skillDefaultsFrom(project);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once per project; a snapshot refresh must not reset the form
   const restoredSettings = useMemo(() => stagedOrSaved(project), [project.id]);
+  const [connectAlias, setConnectAlias] = useState<string | null>(null);
   const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
     () => restoredSettings.autoResearchInvocationCeiling,
@@ -668,13 +669,33 @@ export function ProjectSettings({
                 <span className="settings-repository-meta">
                   <Server size={12} /> {machine?.host ? repository.machine : "local"}
                   {canonical && <em>canonical state</em>}
+                  {repository.source === "server_only" && <em>server only, not backed up</em>}
+                  {repository.can_connect && spaceKind === "team" && (
+                    <button
+                      type="button"
+                      className="button ghost tiny"
+                      disabled={writesDisabled}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setConnectAlias(repository.alias);
+                      }}
+                    >
+                      Connect to GitHub
+                    </button>
+                  )}
                 </span>
               </label>
             );
           })}
         </div>
         {spaceKind === "team" && (
-          <RepositoryRequests key={project.id} project={project} disabled={writesDisabled} />
+          <RepositoryRequests
+            key={project.id}
+            project={project}
+            disabled={writesDisabled}
+            connectAlias={connectAlias}
+            onCloseConnect={() => setConnectAlias(null)}
+          />
         )}
       </article>
 

@@ -53,12 +53,9 @@ test("repository requests preserve intent and open the bound provisioning review
     });
     const url = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/repositoryRequests.html`;
     for (const kind of ["add_repository", "connect_repository"]) {
-      await page.goto(url);
-      const buttons = page.locator(".repository-requests > button, .repository-request-row button");
-      await buttons.first().waitFor();
-      assert.equal(await buttons.count(), 2);
-      await buttons.nth(kind === "add_repository" ? 1 : 0).click();
+      await page.goto(kind === "add_repository" ? url : `${url}?connect`);
       if (kind === "add_repository") {
+        await page.locator(".repository-requests > button").click();
         await page.locator('[name="alias"]').fill("analysis");
         assert.equal(await page.locator('[name="truth"]').isChecked(), true);
         await page.locator('[name="truth"]').uncheck();

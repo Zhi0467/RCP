@@ -1900,6 +1900,10 @@ export interface Repository {
   alias: string;
   machine: string;
   path: string;
+  /** Team projects only, from the effective repository inventory. */
+  source?: "github" | "server_only";
+  github_identity?: string | null;
+  can_connect?: boolean;
 }
 
 export interface Machine {

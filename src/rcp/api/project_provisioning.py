@@ -16,6 +16,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_setup,
     get_store,
+    require_project_membership,
 )
 from rcp.api.identity import IdentityAccess
 from rcp.config import (
@@ -1211,6 +1212,7 @@ def _repository_review_boundary(service: ProjectService) -> str:
     "/api/projects/{project_id}/repository-requests",
     response_model=ProjectProvisioningResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_project_membership)],
 )
 def create_project_repository_request(
     project_id: str,

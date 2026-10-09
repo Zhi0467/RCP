@@ -59,6 +59,7 @@ import type {
   Episode,
   ProjectSnapshot,
   ProviderReadiness,
+  ProjectTransferTargetProvisioningIntent,
   SetupAgentProfile,
 } from "../core/types";
 
@@ -265,7 +266,6 @@ export function TransferProjectSetup({
   const [targetName, setTargetName] = useState("");
   const [targetCeiling, setTargetCeiling] = useState(10);
   const [includeLocalCommits, setIncludeLocalCommits] = useState(false);
-  const [repositorySources, setRepositorySources] = useState<Record<string, string>>({});
   const [preparedRequestIds, setPreparedRequestIds] = useState<{
     sourceRequestId: string;
     targetRequestId: string;
@@ -303,16 +303,6 @@ export function TransferProjectSetup({
         setTargetName(project.name);
         setTargetCeiling(project.default_auto_research_invocation_ceiling);
         setMachines(initialMachines(project));
-        setRepositorySources(
-          Object.fromEntries(
-            project.repositories.map((repository) => {
-              const identity = (
-                repository as typeof repository & { github_identity?: string | null }
-              ).github_identity;
-              return [repository.alias, identity ? `https://github.com/${identity}.git` : ""];
-            }),
-          ),
-        );
       })
       .catch((caught) => {
         if (!stopped && !routeHasRequestPair) {
@@ -476,12 +466,6 @@ export function TransferProjectSetup({
   function validateTargetConfiguration(): string | null {
     if (!source || !selectedConnection) return "The source and target must be loaded.";
     if (!targetName.trim()) return "Give the team project a name.";
-    if (
-      !includeLocalCommits &&
-      source.project.repositories.some((repository) => !repositorySources[repository.alias]?.trim())
-    ) {
-      return "Include local commits for server-only repositories.";
-    }
     if (!Number.isSafeInteger(targetCeiling) || targetCeiling < 1) {
       return "Set the auto-research ceiling to at least 1 operational invocation.";
     }
@@ -522,11 +506,7 @@ export function TransferProjectSetup({
       "",
       `${window.location.pathname}${window.location.search}${hash}`,
     );
-    const targetProvisioning = {
-      repositories: source.project.repositories.map((repository) => ({
-        alias: repository.alias,
-        source: repositorySources[repository.alias]?.trim() || null,
-      })),
+    const targetProvisioning: ProjectTransferTargetProvisioningIntent = {
       name: targetName.trim(),
       default_auto_research_invocation_ceiling: targetCeiling,
       machines: machines.map((machine) => ({
@@ -879,28 +859,6 @@ export function TransferProjectSetup({
               title="Review the central machines and provider accounts."
             />
             <section className="transfer-card">
-              {source.project.repositories.map((repository) => (
-                <label className="setup-field" key={repository.alias}>
-                  <span>{repository.alias} · GitHub URL (optional)</span>
-                  <input
-                    name={`repository-source-${repository.alias}`}
-                    disabled={preparationLocked}
-                    value={repositorySources[repository.alias] ?? ""}
-                    onChange={(event) =>
-                      setRepositorySources((current) => ({
-                        ...current,
-                        [repository.alias]: event.target.value,
-                      }))
-                    }
-                    placeholder="https://github.com/lab/research.git"
-                  />
-                  {!repositorySources[repository.alias]?.trim() && (
-                    <span>
-                      Server only · Include local commits is required. Its code is not backed up.
-                    </span>
-                  )}
-                </label>
-              ))}
               <label className="transfer-target-option">
                 <input
                   type="checkbox"

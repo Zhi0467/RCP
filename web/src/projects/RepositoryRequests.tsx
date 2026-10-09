@@ -1,26 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { createProjectRepositoryRequest, type ProjectRepositoryRequest } from "../core/api";
-import type { ProjectSnapshot, Repository } from "../core/types";
+import type { ProjectSnapshot } from "../core/types";
 import { projectProvisioningHash } from "./projectSetupModel";
 
-// Settings provenance is supplied by the effective repository inventory (W4).
-type SettingsRepository = Repository & {
-  source?: "github" | "server_only";
-  github_identity?: string | null;
-  can_connect?: boolean;
-};
-
+/** Add a repository, or connect the one the Repos list chose, through a setup request. */
 export function RepositoryRequests({
   project,
   disabled,
+  connectAlias,
+  onCloseConnect,
 }: {
-  project: Pick<ProjectSnapshot, "id" | "repositories" | "machines">;
+  project: Pick<ProjectSnapshot, "id" | "machines">;
   disabled: boolean;
+  connectAlias: string | null;
+  onCloseConnect: () => void;
 }) {
-  const [editing, setEditing] = useState<{
-    kind: "add_repository" | "connect_repository";
-    alias: string;
-  } | null>(null);
+  const [adding, setAdding] = useState(false);
+  const editing: { kind: "add_repository" | "connect_repository"; alias: string } | null =
+    connectAlias !== null
+      ? { kind: "connect_repository", alias: connectAlias }
+      : adding
+        ? { kind: "add_repository", alias: "" }
+        : null;
   const [alias, setAlias] = useState("");
   const [source, setSource] = useState("");
   const [machine, setMachine] = useState(project.machines[0]?.alias ?? "");
@@ -35,8 +36,9 @@ export function RepositoryRequests({
     };
   }, []);
 
-  function open(kind: "add_repository" | "connect_repository", repositoryAlias = "") {
-    setEditing({ kind, alias: repositoryAlias });
+  function close() {
+    setAdding(false);
+    onCloseConnect();
     setAlias("");
     setSource("");
     setTruth(true);
@@ -71,31 +73,12 @@ export function RepositoryRequests({
 
   return (
     <div className="repository-requests">
-      {(project.repositories as SettingsRepository[]).map((repository) => (
-        <div className="repository-request-row" key={repository.alias}>
-          <span>
-            {repository.alias} ·{" "}
-            {repository.source === "server_only" ? "Server only" : repository.github_identity}
-          </span>
-          {repository.source === "server_only" && <span>Its code is not backed up.</span>}
-          {repository.source === "server_only" && repository.can_connect && (
-            <button
-              type="button"
-              className="button secondary"
-              disabled={disabled || busy}
-              onClick={() => open("connect_repository", repository.alias)}
-            >
-              Connect to GitHub
-            </button>
-          )}
-        </div>
-      ))}
       {!editing ? (
         <button
           type="button"
           className="button secondary"
           disabled={disabled}
-          onClick={() => open("add_repository")}
+          onClick={() => setAdding(true)}
         >
           Add repository
         </button>
@@ -118,7 +101,7 @@ export function RepositoryRequests({
                 <input
                   name="alias"
                   required
-                  pattern="[a-z][a-z0-9-]{0,47}"
+                  pattern="[a-z][a-z0-9\-]{0,47}"
                   value={alias}
                   onChange={(event) => setAlias(event.target.value)}
                 />
@@ -164,7 +147,7 @@ export function RepositoryRequests({
               </>
             )}
             <div className="setup-actions">
-              <button type="button" className="button secondary" onClick={() => setEditing(null)}>
+              <button type="button" className="button secondary" onClick={close}>
                 Cancel
               </button>
               <button

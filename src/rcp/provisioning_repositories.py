@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from rcp.storage.models import (
     ProjectProvisioningRepositoryRecord,
@@ -106,3 +107,41 @@ def _completion_order(request: ProjectProvisioningRequestRecord) -> tuple[dateti
         request.kind not in {"create_team_project", "incoming_transfer"},
         request.request_id,
     )
+
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
+
+
+def team_repository_sources(
+    store: AppStore, project_id: str
+) -> dict[str, ProjectProvisioningRepositoryRecord] | None:
+    """Return each team repository's effective record, or None when unknown.
+
+    Readers use this to tell a proven server-only repository from one that has
+    a GitHub source. A project whose provisioning evidence cannot be resolved,
+    such as one created before provisioning requests, is unknown; callers keep
+    today's GitHub behavior for it rather than treating it as server only.
+    """
+
+    if store.space_kind != "team":
+        return None
+    project = store.project(project_id)
+    if project is None:
+        return None
+    try:
+        records = effective_repositories(
+            project, store.completed_project_provisioning_requests(project_id)
+        )
+    except ValueError:
+        return None
+    return {record.alias: record for record in records}
+
+
+def is_server_only(
+    sources: dict[str, ProjectProvisioningRepositoryRecord] | None, alias: str
+) -> bool:
+    """True only when the evidence proves the repository has no GitHub source."""
+
+    record = (sources or {}).get(alias)
+    return record is not None and record.repository is None

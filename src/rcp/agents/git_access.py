@@ -10,7 +10,7 @@ from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.config import Manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.git_identity import GitIdentity
-from rcp.provisioning_repositories import effective_repositories
+from rcp.provisioning_repositories import is_server_only, team_repository_sources
 from rcp.server_ops.layout import ServerLayout, remote_project_deploy_key_relative_path
 from rcp.storage import AppStore
 
@@ -46,19 +46,7 @@ def provider_git_access(
     layout: ServerLayout,
 ) -> ProviderGitAccess:
     host = manifest.machine_map[run_on].host
-    sources = {}
-    if store.space_kind == "team":
-        project = store.project(project_id)
-        if project is None:
-            raise ValueError("The provider project is not registered.")
-        sources = {
-            repository.alias: repository
-            for repository in effective_repositories(
-                project, store.completed_project_provisioning_requests(project_id)
-            )
-        }
-        if any(repository.alias not in sources for repository in manifest.repositories):
-            raise ValueError("A provider repository has no completed provisioning proof.")
+    sources = team_repository_sources(store, project_id)
     checkouts = tuple(
         (
             repository.path,
@@ -68,7 +56,7 @@ def provider_git_access(
         )
         for repository in manifest.repositories
         if store.space_kind == "team"
-        and sources[repository.alias].repository is not None
+        and not is_server_only(sources, repository.alias)
         and manifest.machine_map[repository.machine].host == host
     )
     return ProviderGitAccess(

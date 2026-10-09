@@ -6248,14 +6248,6 @@
                     "endColumn": 41,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 38,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/server_ops/provider_readiness.py": [
