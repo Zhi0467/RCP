@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import threading
 from http.client import HTTPConnection
@@ -44,9 +45,13 @@ def test_preview_matches_viewer_and_refuses_escaping_paths(tmp_path):
                     response.getheader("Content-Security-Policy") == f"sandbox allow-scripts; {csp}"
                 )
                 if path == "/":
-                    # The viewer's own markup for the page, after its policy and bootstrap.
-                    assert frame.endswith(content.decode().removeprefix("<!DOCTYPE html>"))
-                    assert frame.startswith("<!DOCTYPE html>")
+                    # The viewer's own markup for the page, after a report of what it removed.
+                    served = content.decode().removeprefix("<!DOCTYPE html>")
+                    report, markup = served.split("</script>", 1)
+                    assert json.loads(report.removeprefix("<script>console.error(")[:-1]).endswith(
+                        "<script src>"
+                    )
+                    assert frame.startswith("<!DOCTYPE html>") and frame.endswith(markup)
                 elif path == "/data.bin":
                     assert content == b"\x00\xff"
         finally:

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import html
 import io
+import json
 import os
 import stat
 from contextlib import suppress
@@ -57,6 +58,8 @@ class ArtifactHTMLSanitizer(HTMLParser):
         # RCP's own policy and bootstrap precede the page, so a doctype left in
         # place would follow content and drop the page into quirks mode.
         self.doctype: str | None = None
+        # Each loading attribute removed, as ``<tag attr>``, for the preview to report.
+        self.removed: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "meta" and any(
@@ -70,16 +73,20 @@ class ArtifactHTMLSanitizer(HTMLParser):
             if tag == "img" and lowered == "src" and _is_inline_image(value):
                 rendered.append((name, value))
                 continue
+            if lowered in {"download", "target"}:
+                continue
             if (
                 lowered in self._request_attributes
-                or lowered in {"download", "target"}
                 or lowered.endswith(":href")
                 or lowered.endswith(":src")
             ):
+                self.removed.append(f"<{tag} {name}>")
                 continue
             if lowered == "href":
                 if tag == "a" and value and _is_http_url(value):
                     rendered.append(("data-rcp-href", value))
+                elif tag != "a":
+                    self.removed.append(f"<{tag} {name}>")
                 continue
             if lowered == "http-equiv" and tag == "meta":
                 continue
@@ -185,7 +192,18 @@ class PreviewHandler(SimpleHTTPRequestHandler):
             sanitizer = ArtifactHTMLSanitizer()
             sanitizer.feed(source)
             sanitizer.close()
-            stream = io.BytesIO(((sanitizer.doctype or "") + "".join(sanitizer.parts)).encode())
+            # RCP removes these silently, so the browser reports no blocked load.
+            report = (
+                "<script>console.error("
+                + json.dumps("RCP removed these loads: " + ", ".join(sanitizer.removed)).replace(
+                    "<", "\\u003c"
+                )
+                + ")</script>"
+                if sanitizer.removed
+                else ""
+            )
+            page = (sanitizer.doctype or "") + report + "".join(sanitizer.parts)
+            stream = io.BytesIO(page.encode())
         stream.seek(0, os.SEEK_END)
         size = stream.tell()
         stream.seek(0)
