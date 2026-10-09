@@ -254,20 +254,22 @@ class ProjectCheckoutManager:
                 repository_path=result.repository_path,
                 checkout_disposition=result.checkout_disposition,
             )
-        self._verify_recovery_research(
+        self.verify_recovery_research(
             machine,
-            material,
             result.repository_path,
+            account_home=material.account_home,
+            central_root=material.central_root,
             archived_research=archived_research,
         )
         return result
 
-    def _verify_recovery_research(
+    def verify_recovery_research(
         self,
         machine: ProjectProvisioningMachineIntent,
-        material: DeployKeyMaterial,
         repository_path: str,
         *,
+        account_home: str,
+        central_root: str,
         archived_research: Mapping[str, tuple[str, int]],
     ) -> None:
         for path, proof in archived_research.items():
@@ -310,7 +312,7 @@ class ProjectCheckoutManager:
                     (
                         "recovery-research",
                         machine.os_account,
-                        material.account_home,
+                        account_home,
                         repository_path,
                         policy,
                     ),
@@ -319,7 +321,7 @@ class ProjectCheckoutManager:
                 raise ProjectCheckoutRefused(
                     "retained_research",
                     "The reconstructed checkout contains unsafe or unclassified .research input.",
-                    central_root=material.central_root,
+                    central_root=central_root,
                     repository_path=repository_path,
                 ) from exc
             if set(payload) != {
@@ -329,7 +331,7 @@ class ProjectCheckoutManager:
                 "research_present",
                 "total_files",
             }:
-                raise self._recovery_inventory_refused(material, repository_path)
+                raise self._recovery_inventory_refused(central_root, repository_path)
             files = payload["files"]
             next_offset = payload["next_offset"]
             signature = (
@@ -349,7 +351,7 @@ class ProjectCheckoutManager:
                 or isinstance(next_offset, bool)
                 or stable not in {None, signature}
             ):
-                raise self._recovery_inventory_refused(material, repository_path)
+                raise self._recovery_inventory_refused(central_root, repository_path)
             stable = signature
             for item in files:
                 item_path = item.get("path") if isinstance(item, dict) else None
@@ -370,14 +372,14 @@ class ProjectCheckoutManager:
                     or item_size < 0
                     or item_path in observed
                 ):
-                    raise self._recovery_inventory_refused(material, repository_path)
+                    raise self._recovery_inventory_refused(central_root, repository_path)
                 observed[item_path] = (item_sha256, item_size)
             if next_offset is None:
                 if len(observed) != signature[2]:
-                    raise self._recovery_inventory_refused(material, repository_path)
+                    raise self._recovery_inventory_refused(central_root, repository_path)
                 break
             if next_offset != offset + len(files) or next_offset <= offset:
-                raise self._recovery_inventory_refused(material, repository_path)
+                raise self._recovery_inventory_refused(central_root, repository_path)
             offset = next_offset
         if any(archived_research.get(path) != proof for path, proof in observed.items()):
             raise ProjectCheckoutRefused(
@@ -386,19 +388,19 @@ class ProjectCheckoutManager:
                     "The reconstructed checkout contains retained .research input that is newer, "
                     "unknown, or different from the validated archive. RCP left it intact."
                 ),
-                central_root=material.central_root,
+                central_root=central_root,
                 repository_path=repository_path,
             )
 
     @staticmethod
     def _recovery_inventory_refused(
-        material: DeployKeyMaterial,
+        central_root: str,
         repository_path: str,
     ) -> ProjectCheckoutRefused:
         return ProjectCheckoutRefused(
             "retained_research",
             "The reconstructed checkout returned an invalid retained-research inventory.",
-            central_root=material.central_root,
+            central_root=central_root,
             repository_path=repository_path,
         )
 

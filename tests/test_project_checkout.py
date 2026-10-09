@@ -411,6 +411,13 @@ def test_manager_clones_verifies_and_recovers_without_renaming(
     origin, commit = _origin(tmp_path)
     manager, layout, machine, material, runner = _manager(tmp_path, origin)
 
+    # The shipped helper probes the account's own agent socket; expect the same.
+    home = Path(material.account_home)
+    monkeypatch.setattr(
+        "rcp.ssh_agent.running_agent_socket",
+        lambda: str(agent_socket_path(home)) if agent_status(home) == "running" else None,
+    )
+
     first = manager.prepare(
         machine,
         material,
@@ -421,12 +428,6 @@ def test_manager_clones_verifies_and_recovers_without_renaming(
         expected_commit=commit,
     )
     checkout = Path(first.repository_path)
-    # The shipped helper probes the account's own agent socket; expect the same.
-    home = Path(material.account_home)
-    monkeypatch.setattr(
-        "rcp.ssh_agent.running_agent_socket",
-        lambda: str(agent_socket_path(home)) if agent_status(home) == "running" else None,
-    )
     command = deploy_key_ssh_command(material.private_key_path, material.account_home)
     assert _git_command("config", "--local", "--get", "core.sshCommand", cwd=checkout) == command
     _git_command("config", "--local", "--unset", "core.sshCommand", cwd=checkout)

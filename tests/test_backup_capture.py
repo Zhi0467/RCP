@@ -338,7 +338,11 @@ def _inventory_for_space(
     recovery_document["repositories"] = tuple(
         {
             **repository.model_dump(mode="python"),
-            "deploy_key_label": (f"rcp:{space_id}:{inventory.project_id}:{repository.alias}"),
+            "deploy_key_label": (
+                f"rcp:{space_id}:{inventory.project_id}:{repository.alias}"
+                if repository.repository is not None
+                else None
+            ),
         }
         for repository in recovery.repositories
     )
@@ -452,7 +456,9 @@ def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefi
         assert hashlib.sha256(captured.read_bytes()).hexdigest() == entry.sha256
 
 
-@pytest.mark.parametrize("failure", ["missing_branch_directory", "untrusted_exception"])
+@pytest.mark.parametrize(
+    "failure", ["missing_branch_directory", "untrusted_exception", "server_only"]
+)
 def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
@@ -474,13 +480,27 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
     inventory, repository = _project_inventory(
         tmp_path, project_id=str(uuid.uuid4()), task_id=str(uuid.uuid4()), with_files=True
     )
+    if failure == "server_only":
+        _git(repository, "remote", "remove", "origin")
+        recovered = inventory.recovery.repositories[0].model_copy(
+            update={
+                "repository": None,
+                "deploy_key_label": None,
+                "public_key_fingerprint": None,
+            }
+        )
+        inventory = inventory.model_copy(
+            update={
+                "recovery": inventory.recovery.model_copy(update={"repositories": (recovered,)})
+            }
+        )
     receipt_path, digest = _sqlite_capture_with_projects(data_dir, (inventory,))
     if failure == "missing_branch_directory":
         component = next((repository / ".research/branches").glob("*/patches"))
         component.rmdir()
         expected = component.relative_to(repository).as_posix()
         category = "local_state_missing"
-    else:
+    elif failure == "untrusted_exception":
 
         def fail_checkout(*_args):
             raise CheckoutInspectionError("token=private-secret ssh://private-host/private-path")
@@ -493,9 +513,10 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         .capture(receipt_path, expected_sha256=digest)
         .receipt
     )
-    assert receipt.status == "partial"
-    assert category in receipt.projects[0].unavailable_reason
-    assert expected in receipt.projects[0].unavailable_reason
+    assert receipt.status == ("complete" if failure == "server_only" else "partial")
+    if failure != "server_only":
+        assert category in receipt.projects[0].unavailable_reason
+        assert expected in receipt.projects[0].unavailable_reason
     problems = backup.project_capture_problems(receipt.projects)
     assert inventory.project_id in problems[0]
     assert all(
@@ -504,9 +525,9 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
     destination = tmp_path / "backups"
     archive = _archive_receipt(destination).model_copy(
         update={
-            "capture_status": "partial",
-            "protected_project_count": 1,
-            "uncaptured_project_count": 1,
+            "capture_status": "complete" if failure == "server_only" else "partial",
+            "protected_project_count": 2 if failure == "server_only" else 1,
+            "uncaptured_project_count": 0 if failure == "server_only" else 1,
         }
     )
     outcome = backup.BackupRunOutcome(
@@ -515,7 +536,7 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         destination=str(destination),
         started_at=CAPTURED_AT,
         completed_at=CAPTURED_AT,
-        status="partial",
+        status="protected" if failure == "server_only" else "partial",
         archive=archive,
         archive_receipt_sha256="c" * 64,
         problems=problems,
