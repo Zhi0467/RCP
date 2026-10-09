@@ -228,6 +228,7 @@ def test_adoption_crash_reentry_selects_only_the_safe_data_and_launch_pair(runti
     runtime.crash = "adoption_" + phase
     with pytest.raises(Crash):
         migration.adopt(runtime, runtime.target)
+    assert migration.unfinished(runtime) is (phase != "committed")
     before_recovery = len(runtime.calls)
     runtime.startup = True
     migration.recover(runtime)
@@ -283,6 +284,7 @@ def test_committed_adoption_defers_startup_authority_to_later_operations(runtime
     runtime.paths.current.unlink()
     runtime.paths.current.symlink_to(runtime.paths.releases_root / "413")
     assert migration.startup_allowed(runtime) is False
+    assert migration.unfinished(runtime) is False
     assert migration.recover(runtime) is None
     assert json.loads(runtime.paths.selected.read_text()) == later
 

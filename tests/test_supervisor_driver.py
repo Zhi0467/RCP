@@ -725,3 +725,34 @@ def test_browser_libraries_never_block_an_update_or_rollback(monkeypatch, tmp_pa
 
     monkeypatch.setattr(driver.subprocess, "run", failing)
     assert "apt lock held" in driver.install_browser_libraries(tmp_path)
+
+
+@pytest.mark.parametrize("unfinished", [True, False])
+def test_dry_run_refuses_only_an_unfinished_adoption(monkeypatch, tmp_path, unfinished):
+    from rcp_supervisor import migration
+
+    runtime = DryRunRuntime(tmp_path, "ready")
+    runtime.paths.supervisor.mkdir(parents=True, exist_ok=True)
+    (runtime.paths.supervisor / "adoption.json").write_text("{}")
+    monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(active=lambda: None))
+    inspected: list[dict] = []
+    monkeypatch.setattr(
+        driver, "SystemRuntime", lambda *args, **kwargs: inspected.append(kwargs) or runtime
+    )
+    monkeypatch.setattr(migration, "unfinished", lambda runtime: unfinished)
+    monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
+
+    class PastTheCheck(Exception):
+        pass
+
+    def past_the_check(runtime):
+        raise PastTheCheck
+
+    monkeypatch.setattr(driver, "followed_release", past_the_check)
+    emitter = EventEmitter("server update", machine_readable=True)
+    with pytest.raises(SupervisorError if unfinished else PastTheCheck):
+        driver.update.__wrapped__(
+            SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+        )
+    # An adoption may stop before the schema 3 config exists.
+    assert inspected[0] == {"allow_legacy_config": True}

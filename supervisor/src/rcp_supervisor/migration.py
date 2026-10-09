@@ -712,6 +712,14 @@ def _adopt_guarded(runtime, target: dict, previous: dict, legacy_backup: str) ->
         raise
 
 
+def unfinished(runtime) -> bool:
+    """A committed adoption journal stays as the workspace's record; earlier phases need recovery."""
+    journal = _journal(runtime)
+    if not journal.exists() and not journal.is_symlink():
+        return False
+    return _validate(runtime, _read(journal))["phase"] != "committed"
+
+
 def startup_allowed(runtime) -> bool:
     """Read-only busy-lock guard after a durable adoption admission decision."""
     journal = _journal(runtime)
