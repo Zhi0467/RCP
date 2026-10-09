@@ -23,6 +23,8 @@ interface Props {
   onChange: (value: AgentRunConfig) => void;
   locked?: boolean;
   runOnLocked?: boolean;
+  /** A launch that must run on the profile's machine hides Run on rather than locking it. */
+  showRunOn?: boolean;
   compact?: boolean;
   collapsible?: boolean;
   defaultCollapsed?: boolean;
@@ -79,6 +81,7 @@ export function AgentConfigControls({
   onChange,
   locked = false,
   runOnLocked = false,
+  showRunOn = true,
   compact = false,
   collapsible = false,
   defaultCollapsed = false,
@@ -194,21 +197,23 @@ export function AgentConfigControls({
             </select>
           </label>
         )}
-        <label className={runOnLocked ? "agent-machine-fixed" : undefined}>
-          <span>Run on {runOnLocked ? <LockKeyhole size={12} aria-hidden="true" /> : null}</span>
-          <select
-            value={value.run_on}
-            disabled={locked || runOnLocked}
-            onChange={(event) => update({ run_on: event.target.value })}
-          >
-            {project.machines.map((item) => (
-              <option value={item.alias} key={item.alias}>
-                {item.alias}
-                {item.host ? ` · ${item.host}` : " · local"}
-              </option>
-            ))}
-          </select>
-        </label>
+        {showRunOn && (
+          <label className={runOnLocked ? "agent-machine-fixed" : undefined}>
+            <span>Run on {runOnLocked ? <LockKeyhole size={12} aria-hidden="true" /> : null}</span>
+            <select
+              value={value.run_on}
+              disabled={locked || runOnLocked}
+              onChange={(event) => update({ run_on: event.target.value })}
+            >
+              {project.machines.map((item) => (
+                <option value={item.alias} key={item.alias}>
+                  {item.alias}
+                  {item.host ? ` · ${item.host}` : " · local"}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
       {!compact && (
         <>

@@ -708,6 +708,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   margin: 6px -10px -6px;
   padding: 9px 10px;
 }
+.agent-config-note {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+  margin: 8px 0 0;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .agent-config-summary > svg,
@@ -738,6 +743,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-weight: 700;
   min-height: 26px;
   padding: 4px 7px;
+}
+button.agent-provider-label {
+  color: var(--ink);
+  cursor: pointer;
+  gap: 5px;
 }
 .coach-column > .agent-provider-label {
   align-self: flex-start;

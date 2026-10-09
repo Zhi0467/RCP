@@ -72,9 +72,9 @@ const chatProps = {
   onClose() {},
 };
 
-test("chat shows passive provider identity, New session, and a self-labelling scope picker", () => {
+test("chat shows its agent identity, New session, and a self-labelling scope picker", () => {
   const fresh = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
-  assert.match(fresh, />Codex</);
+  assert.match(fresh, /class="agent-provider-label"[^>]*>Codex/);
   assert.match(fresh, /class="chat-new-session"/);
 
   assert.doesNotMatch(fresh, /agent-config-summary/);
@@ -102,7 +102,7 @@ test("chat shows passive provider identity, New session, and a self-labelling sc
       ],
     }),
   );
-  assert.match(resumed, />Claude</);
+  assert.match(resumed, /class="agent-provider-label"[^>]*>Claude/);
 });
 
 test("the chat composer marks where to type with field shape, never placeholder copy", () => {

@@ -119,6 +119,9 @@ Human turns and watcher wakes differ in what blocks them and what they compare:
   continues its session.
 - A human turn keeps the current session across a model change. A human
   provider or machine change starts a fresh session and records that reason.
+  The composer offers provider, model, and reasoning per turn, defaulting to
+  the conversation's last turn, else the Settings profile, and says when a
+  provider change will start a fresh session. The machine is not offered.
 - A wake's recorded provider, model, or machine must match the current
   session. A mismatch records a failed notification task with an actionable
   reason; its completion is claimed once, no provider launches, and the task
@@ -565,6 +568,12 @@ inspector keeps the plain start against the node's own limit, which it shows
 beside it. Historical episodes
 retain their pinned used/ceiling values while the current node value remains
 separately visible as **Next episode limit**.
+
+A human fresh start may pick provider, model, and reasoning, defaulting to the
+Settings node_chat profile; the machine stays the profile's. The pick is pinned
+for every turn and watcher wake of that episode, like any resolved binding. A
+continuation keeps its source's binding, and an Auto-research child, which
+names none, takes the Settings profile.
 
 Human Experiment-loop episode starts, including a completed-watcher start, are
 not gated on compute readiness. The helper probes when invoked; Settings shows

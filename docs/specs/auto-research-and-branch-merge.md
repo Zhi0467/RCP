@@ -9,7 +9,9 @@ and human-dispatched semantic merge to main.
 One human action starts one Auto-research episode for the whole project. Exactly
 one project-owned orchestrator profile and one live Auto-research episode exist
 per project. The optional human instruction guides the first paid invocation but
-grants no authority.
+grants no authority. The human start may pick the orchestrator's provider,
+model, and reasoning, defaulting to that profile; the pick holds for the
+episode, and the children it spawns still take the Settings node_chat profile.
 
 Human start and reauthorization resolve the execution machine without gating
 on compute readiness. The helper probes when invoked, and Settings shows the

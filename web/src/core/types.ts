@@ -2719,6 +2719,10 @@ export interface StartEpisodeRequest {
   graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;
+  /** The orchestrator's agent; omitted, the Settings orchestrator profile. */
+  provider?: ProviderId;
+  model?: string | null;
+  reasoning?: string;
 }
 
 export interface AgentUsageRecord {

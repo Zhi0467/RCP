@@ -29,6 +29,7 @@ from rcp.episode_health import (
 )
 from rcp.loop_status import EpisodeLoopMetadata, episode_loop_metadata
 from rcp.projects import ProjectCatalog
+from rcp.providers import ProviderId
 from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.storage import (
     AgentFailureKind,
@@ -91,6 +92,11 @@ class StartEpisodeBody(BaseModel):
         default=None,
         max_length=_EPISODE_TEXT_MAX_LENGTH,
     )
+    # The human's pick for this episode; unset fields follow the orchestrator
+    # profile. Spawned Experiments still take the node-chat profile.
+    provider: ProviderId | None = None
+    model: str | None = None
+    reasoning: str | None = None
 
     @field_validator("starting_instruction", mode="before")
     @classmethod

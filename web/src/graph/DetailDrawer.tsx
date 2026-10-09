@@ -5,9 +5,10 @@ import {
   experimentStartOverlap,
 } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
+import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
-import type { GraphTargetRef } from "../core/types";
+import type { AgentRunConfig, GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
 import { Check, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
@@ -93,7 +94,13 @@ interface Props {
   onStage: (changes: Record<string, DraftNodeValue>) => void;
   onApplyField?: (changes: Record<string, DraftNodeValue>, fieldKey: string) => void;
   onDecisionChoice?: (selectedOption: string) => void;
-  onRunExperiment?: (isolation: EpisodeIsolationChoice, browserRequested: boolean) => void;
+  /** Offers the Experiment agent picker, defaulting from the Node chat profile. */
+  project?: ProjectSnapshot;
+  onRunExperiment?: (
+    isolation: EpisodeIsolationChoice,
+    browserRequested: boolean,
+    launchConfig?: AgentRunConfig,
+  ) => void;
   /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
   inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
@@ -169,6 +176,7 @@ export function DetailDrawer({
   onStage,
   onApplyField,
   onDecisionChoice,
+  project,
   onRunExperiment,
   inheritedIsolation,
   onOpenChat,
@@ -181,6 +189,12 @@ export function DetailDrawer({
   ).length;
   const [browserRequested, setBrowserRequested] = useState(false);
   useEffect(() => setBrowserRequested(false), [node.id]);
+  const launchProfile = project?.agent_profiles.node_chat;
+  // Only an explicit pick is state; untouched, the picker follows the current profile.
+  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
+  useEffect(() => setLaunchConfig(null), [node.id]);
+  const launchConfig =
+    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
   const [editing, setEditing] = useState(behind);
   const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
   const [isolation, setIsolation] = useState<EpisodeIsolationChoice>({
@@ -678,7 +692,11 @@ export function DetailDrawer({
                         )
                       }
                       onClick={() =>
-                        onRunExperiment(inheritedIsolation ?? isolation, browserRequested)
+                        onRunExperiment(
+                          inheritedIsolation ?? isolation,
+                          browserRequested,
+                          launchConfig,
+                        )
                       }
                     >
                       <FlaskConical size={14} />{" "}
@@ -719,6 +737,24 @@ export function DetailDrawer({
                     disabled={nodeMutationDisabled || experimentRunBusy}
                     onChange={setBrowserRequested}
                   />
+                  {project && launchProfile && launchConfig && (
+                    <AgentConfigControls
+                      project={project}
+                      value={launchConfig}
+                      onChange={setLaunchConfig}
+                      effectiveModel={
+                        launchConfig.provider === launchProfile.provider
+                          ? launchProfile.effective_model
+                          : ""
+                      }
+                      workLikeCapable={launchProfile.work_like_capable}
+                      locked={nodeMutationDisabled || experimentRunBusy}
+                      showRunOn={false}
+                      compact
+                      collapsible
+                      defaultCollapsed
+                    />
+                  )}
                   {startReasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
                       {startReasons.map((reason) => (

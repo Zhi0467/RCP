@@ -2295,7 +2295,8 @@ def test_unbound_initial_provider_limit_remains_clean_retry_eligible(loop, tmp_p
     assert loop.store.agent_task_continuation_cause(child.operation_id) == "handoff"
 
 
-def test_initial_run_uses_current_node_chat_profile_not_client_overrides(loop, tmp_path) -> None:
+def test_initial_run_takes_the_humans_pick_on_the_profiles_machine(loop, tmp_path) -> None:
+    store_test_claude_token(loop.store)
     loop.record_answers()
 
     response = loop.client.post(
@@ -2311,9 +2312,9 @@ def test_initial_run_uses_current_node_chat_profile_not_client_overrides(loop, t
 
     assert response.status_code == 202, response.text
     request = response.json()["request"]
-    assert request["provider"] == "codex"
-    assert request["model"] == ""
-    assert request["reasoning"] == "medium"
+    assert request["provider"] == "claude"
+    assert request["model"] == "client-model"
+    assert request["reasoning"] == "high"
     assert request["run_on"] == "laptop"
 
 

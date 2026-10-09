@@ -1,4 +1,6 @@
 import { BrowserToggle } from "../core/BrowserControls";
+import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import type { AgentRunConfig, ProjectSnapshot } from "../core/types";
 import { LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -79,6 +81,8 @@ interface Props {
   busy: boolean;
   error: string | null;
   initialInvocationCeiling: number;
+  /** Offers the orchestrator agent picker, defaulting from the Orchestrator profile. */
+  project?: ProjectSnapshot;
   onClose: () => void;
   /** `codeWorktree` false opts out; true leaves the choice to the server's eligibility check. */
   onAuthorize: (
@@ -86,6 +90,7 @@ interface Props {
     startingInstruction: string | null,
     codeWorktree: boolean,
     browserRequested: boolean,
+    launchConfig?: AgentRunConfig,
   ) => void;
 }
 
@@ -94,6 +99,7 @@ export function AutoResearchDialog({
   busy,
   error,
   initialInvocationCeiling,
+  project,
   onClose,
   onAuthorize,
 }: Props) {
@@ -104,6 +110,14 @@ export function AutoResearchDialog({
   const [instruction, setInstruction] = useState("");
   const [browserRequested, setBrowserRequested] = useState(false);
   const [codeWorktree, setCodeWorktree] = useState(true);
+  const launchProfile = project?.agent_profiles.orchestrator;
+  // Only an explicit pick is state; untouched, the picker follows the current profile.
+  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
+  useEffect(() => {
+    if (open) setLaunchConfig(null);
+  }, [open, project?.id]);
+  const launchConfig =
+    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
 
   useEffect(() => {
     if (!open) return;
@@ -162,6 +176,7 @@ export function AutoResearchDialog({
             instruction.trim() || null,
             codeWorktree,
             browserRequested,
+            launchConfig,
           );
         }}
       >
@@ -224,6 +239,28 @@ export function AutoResearchDialog({
               Code worktree
             </label>
           </div>
+          {project && launchProfile && launchConfig && (
+            <AgentConfigControls
+              project={project}
+              value={launchConfig}
+              onChange={setLaunchConfig}
+              effectiveModel={
+                launchConfig.provider === launchProfile.provider
+                  ? launchProfile.effective_model
+                  : ""
+              }
+              workLikeCapable={launchProfile.work_like_capable}
+              locked={busy}
+              showRunOn={false}
+              compact
+              collapsible
+              defaultCollapsed
+            >
+              <p className="agent-config-note">
+                Experiments it spawns use the Settings Node chat profile.
+              </p>
+            </AgentConfigControls>
+          )}
         </div>
         {error && (
           <div className="campaign-dialog-error" role="alert">

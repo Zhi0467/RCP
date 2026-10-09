@@ -120,6 +120,43 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
         assert [item.operation_id for item in store.episode_tasks(episode_id)] == [operation_id]
 
 
+def test_episode_start_takes_the_humans_pick_over_the_orchestrator_profile(
+    manifest, tmp_path
+) -> None:
+    _distinct_orchestrator_profile(manifest)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / "auto-stage"
+    stage.mkdir()
+    app.state.background_tasks.stream = settling_auto_research_stream(stage)
+
+    with signed_in_client(app) as client:
+        response = client.post(
+            f"/api/projects/{project_id}/episodes",
+            json={
+                "mode": "auto_research",
+                "invocation_ceiling": 2,
+                "provider": "codex",
+                "model": "picked-model",
+                "reasoning": "max",
+            },
+        )
+        assert response.status_code == 202
+        operation_id = response.json()["root_operation_id"]
+        root = store.agent_task(operation_id)
+        assert root is not None
+        request = AutoResearchRunRequest.model_validate(root.request)
+        assert (request.provider, request.model, request.reasoning) == (
+            "codex",
+            "picked-model",
+            "max",
+        )
+        assert request.run_on == "laptop"
+        wait_for_task(store, operation_id, expect="succeeded")
+
+
 def test_episode_profile_resolution_failure_is_pre_mutation(
     manifest,
     tmp_path,
@@ -131,7 +168,7 @@ def test_episode_profile_resolution_failure_is_pre_mutation(
     store = app.state.background_tasks.store
     service = app.state.catalog.open(project_id)
 
-    def reject_profile(_surface):
+    def reject_profile(_surface, **_picked):
         raise ValueError("orchestrator profile is not launchable")
 
     monkeypatch.setattr(service, "resolve_agent_profile", reject_profile)
