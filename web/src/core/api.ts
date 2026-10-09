@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   SteerRequest,
   Episode,
+  GraphRef,
   EpisodeMessage,
   EpisodeTimelineResponse,
   MergeEpisodeBody,
@@ -486,6 +487,10 @@ export function removeChatAttachment(
     `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
     { method: "DELETE" },
   );
+}
+
+export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
+  return api<GraphRef[]>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`);
 }
 
 export function loadEpisodes(

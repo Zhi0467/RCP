@@ -1,6 +1,7 @@
 import {
   graphTargetFromHash,
   graphViewHash,
+  projectViewHash,
   MAIN_GRAPH,
   sameGraphTarget,
 } from "../core/graphTarget.ts";
@@ -289,11 +290,11 @@ export function projectHashAfterViewChange(hash: string, nextView: AppView): str
   if (target.kind === "branch" && route.projectId)
     return graphViewHash(route.projectId, target, nextView);
   if ((nextView === "artifacts" || nextView === "terminals") && route.projectId)
-    return `#/projects/${encodeURIComponent(route.projectId)}?view=${nextView}`;
+    return projectViewHash(route.projectId, target, nextView);
   if ((route.view === "artifacts" || route.view === "terminals") && route.projectId)
-    return `#/projects/${encodeURIComponent(route.projectId)}`;
+    return projectViewHash(route.projectId, target, null);
   if (nextView === "execution" || route.view !== "execution" || !route.projectId) return null;
-  return `#/projects/${encodeURIComponent(route.projectId)}`;
+  return projectViewHash(route.projectId, target, null);
 }
 
 export function experimentIndexEntryForRoute(

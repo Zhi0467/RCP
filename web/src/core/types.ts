@@ -1790,6 +1790,25 @@ export interface GraphBranchSummary {
   merge_diagnostic: string | null;
 }
 
+/** Project-wide graph inventory; branch ownership remains the chain root. */
+export type GraphRef =
+  | (GraphBranchSummary & { kind: "branch"; archived: boolean })
+  | {
+      kind: "main";
+      branch_id: null;
+      episode_id: null;
+      current_episode_id: null;
+      base_head: null;
+      head: GraphHeadRef;
+      merge_eligible: false;
+      merge_blocked_reason: null;
+      merge_state: null;
+      latest_successful_merge: null;
+      active_merge_task_id: null;
+      merge_diagnostic: null;
+      archived: false;
+    };
+
 export type TransitionCauseRef =
   | { kind: "action"; action_index: number; event_id?: null }
   | { kind: "event"; action_index?: null; event_id: string };

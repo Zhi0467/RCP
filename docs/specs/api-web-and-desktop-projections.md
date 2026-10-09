@@ -5,6 +5,35 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Project graph-ref inventory
+
+`GET /api/projects/{project_id}/graph-refs` returns a list of graph refs,
+with main first and one row per unique episode-owned branch, ordered by newest
+chain-member creation time (descending). It reads all project episodes without the recent-50 window or the episode list's archive
+filter; a client needs no separate episode read to discover refs or ownership.
+Existing project membership admission applies.
+
+Each row contains `kind`, `branch_id`, `head`, `base_head`, `episode_id`,
+`current_episode_id`, `archived`, and the existing branch-summary merge fields:
+`merge_state`, `merge_eligible`, `merge_blocked_reason`,
+`latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
+For a branch, `episode_id` is the chain-root owner and `current_episode_id`
+is the newest chain member. `archived` is the owner's graph-isolation archive
+state, independent of episode-history archiving. Merge fields reuse the episode
+branch summary, including its reservation and live-writer checks.
+Main has its exact current head, `archived: false`, `merge_eligible: false`,
+and null branch, episode, base, and merge-detail fields. Branch ownership and
+persisted records are unchanged: `branch_id == episode_id` names the root.
+
+The standalone Web picker model puts main first, preserves inventory branch
+order, and hides archived refs unless requested or active. Its switch model
+retains the view when supported by the destination, otherwise choosing Overview;
+it retains node, chat, and episode selections only when they belong to the
+destination. View owners supply that membership and supported-view set. The
+picker component exposes an Episode & tasks link slot for the current chain
+member. Project-shell activation and wiring remain pending in the active
+branch-navigation handoff.
+
 ## Personal owner admission
 
 Personal API requests and terminal upgrades require an owner session. Public

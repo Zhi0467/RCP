@@ -1,4 +1,4 @@
-import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
+import { MAIN_GRAPH, projectViewHash, sameGraphTarget } from "../core/graphTarget.ts";
 import type {
   ProjectReferenceSelector,
   AgentRunConfig,
@@ -564,8 +564,7 @@ function comparableTime(value: string): number {
 
 /** Inventory rows enter the existing route so the target loads before the chat. */
 export function conversationHref(projectId: string, conversation: ChatConversation): string {
-  const params = new URLSearchParams({ view: "chats", chat: conversation.chatId });
-  if (conversation.graphTarget?.kind === "branch")
-    params.set("branch_id", conversation.graphTarget.branch_id);
-  return `#/projects/${encodeURIComponent(projectId)}?${params}`;
+  return projectViewHash(projectId, conversation.graphTarget ?? MAIN_GRAPH, "chats", {
+    chatId: conversation.chatId,
+  });
 }

@@ -91,6 +91,15 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
             ).fetchone()
         return None if row is None else EpisodeIsolationState.model_validate_json(row[0])
 
+    def episode_isolation_states(self, project_id: str) -> dict[str, EpisodeIsolationState]:
+        """Every isolation state of one project, keyed by owner episode, in one read."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT owner_episode_id, state_json FROM episode_isolation_states WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+        return {str(row[0]): EpisodeIsolationState.model_validate_json(row[1]) for row in rows}
+
     def set_episode_isolation_status(
         self, project_id: str, owner_episode_id: str, *, expected_status: str, status: str
     ) -> EpisodeIsolationState:
