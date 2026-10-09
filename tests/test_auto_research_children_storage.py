@@ -2718,3 +2718,5 @@ def test_a_child_experiment_continuation_owns_its_child_chat(tmp_path):
         # While the continuation runs, the child chat is locked to humans.
         refusal = store._child_human_turn_refusal(connection, task.project_id, chat_id)
     assert refusal is not None and refusal["code"] == "auto_research_child_read_only"
+    # While the orchestrator runs, the continuation's turns keep generic recovery.
+    assert store.episode_child_recovery_refusal(first_turn) is None

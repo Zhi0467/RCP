@@ -758,7 +758,13 @@ class AgentTaskStoreMixin(StoreMixinBase):
             owner = self._child_chat_owner(connection, previous.project_id, chat_id)
             if owner is None:
                 return None
-            if previous.episode_id is None or previous.episode_id != owner["child_episode_id"]:
+            # Any member of the child Experiment's continuation chain is that child.
+            child_chain = (
+                self._continuation_chain_ids(connection, owner["child_episode_id"])
+                if owner["child_episode_id"] is not None
+                else set()
+            )
+            if previous.episode_id is None or previous.episode_id not in child_chain:
                 owned = self._child_turn_episode_owned(
                     connection, previous.episode_id, previous.request
                 )
@@ -768,11 +774,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 for row in connection.execute(
                     "SELECT episode_id, status, stop_requested_at, stop_settled_at "
                     "FROM episodes WHERE episode_id IN (?, ?)",
-                    (owner["episode_id"], owner["child_episode_id"]),
+                    (owner["episode_id"], previous.episode_id),
                 ).fetchall()
             }
         parent = rows.get(owner["episode_id"])
-        child = rows.get(owner["child_episode_id"])
+        child = rows.get(previous.episode_id)
         if parent is not None and parent["status"] not in {
             "completed",
             "failed",
