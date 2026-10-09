@@ -44,7 +44,7 @@ def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> No
         arguments = (
             machine.os_account,
             repository.resolved_path,
-            repository.repository.ssh_clone_url,
+            repository.repository.ssh_clone_url if repository.repository is not None else "",
             repository.git_commit,
         )
         if machine.location == "local":

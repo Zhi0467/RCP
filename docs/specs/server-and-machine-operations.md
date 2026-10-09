@@ -1568,6 +1568,24 @@ required only for a machine that owns a repository and keeps its provisioned
 host and account. A missing, credential-bearing, or inconsistent descriptor
 makes that project uncaptured.
 
+The descriptor uses `effective_repositories` across completed creation, add, and
+connect requests. Server-only checkouts must have no remote; GitHub checkouts
+retain their exact origin and retained-commit checks. Server-only code and Git
+history are never archived. Each such repository is durably named as "code not
+backed up" in the operation-bound backup diagnostics, surfaced by the backup
+report and doctor even when research capture is complete.
+
+Restore recreates a missing server-only checkout with `git init -b main` and
+one empty `Start RCP project` commit authored by `RCP <rcp@rcp.invalid>`, without
+credentials or a remote, before publishing archived research. A private
+`checkout-recovery/<project-id>.json` receipt records replacement commit and
+public deploy-key evidence separately from historical provisioning requests.
+It is bound to each effective provisioned repository and execution machine;
+a later connect supersedes that repository's replacement proof. Backup embeds
+the resolved proof in its recovery descriptor, and restore reconstructs the
+local receipt from that descriptor. Raw receipt files are excluded from the
+archive. Provisioning reviews and step receipts remain unchanged.
+
 Skill configuration comparisons use the fields declared in the manifest, not
 release-resolved defaults. New recovery descriptors retain that declaration,
 including omitted fields; restore and validation overlays preserve it. Older

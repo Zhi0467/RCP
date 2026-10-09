@@ -46,6 +46,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Optional repository sources and existing-project provisioning (v46),
+        # fresh plus the immutable fixture upgrades and in-place graph-run shape.
+        "3ea6a2df34cb94d46fe0d641e695e165d0a18c925f94963411f19d9835a5cf85",
+        "0c93c3c6c3b5972830f86de586dc9490b44c3de206e5d4ad21beb05327ea1961",
+        "ae73688486278e856ac8a9cbd7c92a200a23eff23740a108141618e89e23d7b9",
+        "e5609f0192afe5a5394523f4cfc8c01760eafa9e2f9c36cdead16b4f7a90ee43",
+        "605d3118fadb7abbefc6921357d3c7403ff9e5a6bff0722ca091bc2f0d6bb6ea",
+        "59fa391df515ceefa52c5ee560e4f2db7c11b385e5562013bb3376c47dbdea31",
+        "64479cd97268577be05dcd19ab8a61277cc4f0a6fbeab6cf32587ea795984f9e",
+        "3dc06a75f620242bd2f72e190d37f9617d37021384103f51a0b1a1a3115be095",
+        "b859fb2e270948d8d52b2c26b2f2372c3b74492f0bf7feaf2e786a4fb7b73662",
         # Voice client request ids, fresh and historical in-place upgrades.
         "8239c39dfa87e7d8bc3acb91e54a06ccc2f645c9e6df4eaff6617038dc2872be",
         "40fb26ddf973e8c5c105b0301cc60700f1df3a7714598abc7513770047aeaf0a",
@@ -231,6 +242,7 @@ class RestoreRepositoryRecovery(_StrictModel):
     repository_alias: str
     machine_alias: str
     state: Literal["key_started", "key_ready", "checkout_ready"]
+    source: Literal["github", "server_only"] = "github"
     deploy_key_label: str | None = None
     deploy_public_key: str | None = None
     public_key_fingerprint: str | None = None
@@ -302,6 +314,17 @@ class RestoreRepositoryRecovery(_StrictModel):
             self.checkout_disposition,
             self.checkout_commit,
         )
+        if self.source == "server_only":
+            if (
+                self.state != "checkout_ready"
+                or not all(checkout_fields)
+                or any(key_fields)
+                or self.probed_commit is not None
+            ):
+                raise ValueError(
+                    "server-only restore requires checkout proof without GitHub authority"
+                )
+            return self
         if self.state == "key_started" and any((*key_fields, self.probed_commit, *checkout_fields)):
             raise ValueError("a restore key-start receipt cannot claim later effects")
         if self.state in {"key_ready", "checkout_ready"} and not all(key_fields):
@@ -759,6 +782,103 @@ def _recovery_machine(archived):
     )
 
 
+def _recover_server_only(checkouts, machine, repository, saved, archived_research):
+    import json
+
+    from rcp.server_ops.backup_checkout import _remote_checkout_source
+
+    result = checkouts._target(
+        machine,
+        (
+            "python3",
+            "-c",
+            _remote_checkout_source(),
+            "restore-server-only",
+            machine.os_account,
+            machine.central_root,
+            repository.resolved_path,
+            saved.checkout_commit if saved is not None else "",
+        ),
+    )
+    if result.returncode != 0:
+        raise RestoreRefused("The server-only replacement checkout could not be verified.")
+    payload = json.loads(result.stdout)
+    account_home = payload.pop("account_home", None)
+    commit = payload.get("head")
+    if payload != {
+        "account": machine.os_account,
+        "repository_path": repository.resolved_path,
+        "origin": "",
+        "head": commit,
+        "recorded_commit": saved.checkout_commit if saved is not None else commit,
+    } or (saved is not None and commit != saved.checkout_commit):
+        raise RestoreRefused("The server-only replacement checkout proof changed.")
+    if (
+        not isinstance(account_home, str)
+        or not isinstance(commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", commit)
+    ):
+        raise RestoreRefused("The server-only replacement proof is incomplete.")
+    checkouts.verify_recovery_research(
+        machine,
+        repository.resolved_path,
+        account_home=account_home,
+        central_root=machine.central_root,
+        archived_research=archived_research,
+    )
+    return commit
+
+
+def _record_restored_checkout_proofs(store, data_dir, capture, progress):
+    from rcp.provisioning_repositories import effective_repositories
+    from rcp.server_ops.backup_models import BackupRecoveryRepository
+    from rcp.server_ops.backup_recovery import record_replacement_proofs
+
+    recovery = capture.recovery
+    repositories = effective_repositories(
+        store.project(capture.project_id),
+        store.completed_project_provisioning_requests(capture.project_id),
+    )
+    provisioned = recovery.model_copy(
+        update={
+            "repositories": tuple(
+                BackupRecoveryRepository(
+                    alias=r.alias,
+                    repository=r.repository,
+                    machine_alias=r.machine_alias,
+                    resolved_path=r.resolved_path,
+                    git_commit=r.git_check.commit,
+                    deploy_key_label=r.git_check.deploy_key_label,
+                    public_key_fingerprint=r.git_check.public_key_fingerprint,
+                )
+                for r in repositories
+                if r.resolved_path is not None and r.git_check.commit is not None
+            )
+        }
+    )
+    replacements = {r.alias: r for r in recovery.repositories}
+    for saved in progress:
+        if saved.project_id != capture.project_id:
+            continue
+        repository = replacements[saved.repository_alias]
+        if saved.state != "checkout_ready" or (saved.source == "server_only") != (
+            repository.repository is None
+        ):
+            raise RestoreRefused("Restored repository proof has an inconsistent source or state.")
+        replacements[saved.repository_alias] = repository.model_copy(
+            update={
+                "git_commit": saved.checkout_commit,
+                "deploy_key_label": saved.deploy_key_label,
+                "public_key_fingerprint": saved.public_key_fingerprint,
+            }
+        )
+    record_replacement_proofs(
+        data_dir,
+        provisioned,
+        recovery.model_copy(update={"repositories": tuple(replacements.values())}),
+    )
+
+
 def _recover_repositories(request, manifest, previous_store, members):
     from rcp.projects import inspect_backup_project_registration
     from rcp.server_ops.backup_checkout import verify_checkout_identities
@@ -811,6 +931,41 @@ def _recover_repositories(request, manifest, previous_store, members):
                 ),
                 None,
             )
+            archived = (
+                {
+                    e.source_relative_path: (e.sha256, e.size_bytes)
+                    for e in capture.files
+                    if e.source_relative_path.startswith(".research/")
+                }
+                if repository.alias == recovery.configuration.state_repository
+                else {}
+            )
+            if repository.repository is None:
+                if saved is not None and saved.source != "server_only":
+                    raise RestoreRefused("Server-only restore progress carries GitHub authority.")
+                commit = _recover_server_only(checkouts, machine, repository, saved, archived)
+                if saved is None:
+                    progress.append(
+                        RestoreRepositoryRecovery(
+                            project_id=capture.project_id,
+                            repository_alias=repository.alias,
+                            machine_alias=repository.machine_alias,
+                            source="server_only",
+                            state="checkout_ready",
+                            central_root=machine.central_root,
+                            repository_path=repository.resolved_path,
+                            checkout_disposition="request_created",
+                            checkout_commit=commit,
+                        )
+                    )
+                    return {
+                        "version": 1,
+                        "status": "continue",
+                        "progress": [p.model_dump(mode="json") for p in progress],
+                    }
+                continue
+            if saved is not None and saved.source != "github":
+                raise RestoreRefused("GitHub restore progress has a different source.")
             if saved is None:
                 credentials.preflight_recovery_key(
                     machine,
@@ -898,15 +1053,6 @@ def _recover_repositories(request, manifest, previous_store, members):
                     actions=[a.model_dump(mode="json") for a in step.actions],
                     extra_fields=step.fields,
                 )
-            archived = (
-                {
-                    e.source_relative_path: (e.sha256, e.size_bytes)
-                    for e in capture.files
-                    if e.source_relative_path.startswith(".research/")
-                }
-                if repository.alias == recovery.configuration.state_repository
-                else {}
-            )
             result = checkouts.prepare_recovery(
                 machine,
                 material,
@@ -1245,6 +1391,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 and previous.project(capture.project_id) is not None,
             )
             complete_restored_project_publication(store, capture, owners, materialization)
+            _record_restored_checkout_proofs(store, app, capture, request.progress)
             if record.state_remote:
                 with closing(sqlite3.connect(database)) as connection, connection:
                     connection.execute(

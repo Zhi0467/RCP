@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import re
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -246,6 +247,24 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
         )
         database.write_bytes(gzip.decompress(fixture.read_bytes()))
     store = AppStore(database)
+    # Undo v46's table rebuild before reconstructing the historical v30 schema.
+    historical_database = tmp_path / "historical-schema.sqlite3"
+    historical_database.write_bytes(
+        gzip.decompress(
+            Path(
+                "tests/fixtures/restore_schema/provider-readiness-upgraded-v21-16248cea.sqlite3.gz"
+            ).read_bytes()
+        )
+    )
+    with sqlite3.connect(historical_database) as historical:
+        statements = historical.execute(
+            "SELECT sql FROM sqlite_schema WHERE tbl_name='project_provisioning_requests' "
+            "AND sql IS NOT NULL ORDER BY type DESC"
+        ).fetchall()
+    with store.connection() as connection:
+        connection.execute("DROP TABLE project_provisioning_requests")
+        for (statement,) in statements:
+            connection.execute(statement)
     # Migration 31 only adds this table and its index. Reconstruct its preceding
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
