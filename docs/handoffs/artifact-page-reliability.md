@@ -13,9 +13,6 @@ Status: design, not started. One PR. Nothing is implemented yet.
 2. **A broken page is silent.** When a page script throws, the embed or viewer
    shows whatever drew before the error, often nothing. The human cannot tell
    a broken page from an empty one.
-3. **Agents rebuild charts every time.** With CDNs blocked, each agent writes
-   its own chart and table code, with uneven axes, missing-data handling, and
-   theming.
 
 Context: this came from comparing RCP with ChatGPT's generated UI, which
 validates model output against a component catalog and keeps the last good
@@ -24,7 +21,7 @@ parts that fit that model.
 
 ## Settled decisions
 
-- One PR for all three.
+- One PR for both.
 - (1) **Faithful preview, no static checker.** No collection-time HTML lint and
   no stored diagnostics: a browser check that matches RCP covers the same
   failures with real evidence. RCP ships a small self-contained preview server
@@ -39,11 +36,8 @@ parts that fit that model.
   blank) and no automatic last-good render.
 - (2) One click on the notice opens the existing Comment box prefilled with the
   error. The human sends it; nothing reaches the agent without that click.
-- (3) **Copy-in kit, not injected.** A new official skill carries vetted
-  `lineChart` and `sortableTable` functions in a reference file. The agent
-  pastes them into its page, so every page stays one self-contained file that
-  works the same inline, in Expand, and as a Download, and a later kit change
-  never redraws an old figure.
+- No chart or table kit. Agents write their own page code; the faithful
+  preview shows them when it breaks.
 
 ## Plan
 
@@ -77,16 +71,6 @@ parts that fit that model.
 - Invariant 10e holds: the page gains no new request capability, and the
   notice triggers nothing without a human click.
 
-### Kit skill
-
-- New official skill (for example `page-kit`) with `SKILL.md` and
-  `references/kit.js`: `lineChart(el, {series, xLabel, yLabel})` and
-  `sortableTable(el, {columns, rows})`. Both read `--rcp-*` tokens with
-  fallbacks, draw missing values as gaps or "n/a", never as zero, and use no
-  network or storage.
-- The artifact contract names the skill where it already discusses HTML
-  pages. Live pages may use the kit; the live-pages skill points to it.
-
 ## Checks
 
 - Preview: a test serves a page with an external `<script src>` and a remote
@@ -97,7 +81,4 @@ parts that fit that model.
   forged message from the page, a flood, hostile text, and a stale frame;
   Download and Keep stay available. A served-app drive: inline, Expand, the
   prefilled comment, and the next version clearing the notice.
-- Kit: a browser test renders `references/kit.js` through the real sandbox with
-  a gap in a series and a null cell, and sorts a column.
-- Frozen candidate: the shipped preview module and the skill files are in the
-  packaged inventory.
+- Frozen candidate: the shipped preview module is in the packaged inventory.
