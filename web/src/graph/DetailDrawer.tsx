@@ -5,7 +5,11 @@ import {
   experimentStartOverlap,
 } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
-import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type { AgentRunConfig, GraphTargetRef, ProjectSnapshot } from "../core/types";
@@ -192,9 +196,17 @@ export function DetailDrawer({
   const launchProfile = project?.agent_profiles.node_chat;
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
-  useEffect(() => setLaunchConfig(null), [node.id]);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  useEffect(() => {
+    setLaunchConfig(null);
+    setLaunchOpen(false);
+  }, [node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchEffectiveModel =
+    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
+      ? launchProfile.effective_model
+      : "";
   const [editing, setEditing] = useState(behind);
   const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
   const [isolation, setIsolation] = useState<EpisodeIsolationChoice>({
@@ -676,6 +688,17 @@ export function DetailDrawer({
                     {experimentPausedAtLimit && (
                       <span className="experiment-loop-marker paused">Paused at limit</span>
                     )}
+                    {project && launchProfile && launchConfig && (
+                      <AgentConfigChip
+                        project={project}
+                        value={launchConfig}
+                        effectiveModel={launchEffectiveModel}
+                        open={launchOpen}
+                        disabled={nodeMutationDisabled || experimentRunBusy}
+                        label="Experiment agent"
+                        onToggle={() => setLaunchOpen((open) => !open)}
+                      />
+                    )}
                     <button
                       className="button primary compact experiment-run-button"
                       type="button"
@@ -737,22 +760,16 @@ export function DetailDrawer({
                     disabled={nodeMutationDisabled || experimentRunBusy}
                     onChange={setBrowserRequested}
                   />
-                  {project && launchProfile && launchConfig && (
+                  {launchOpen && project && launchProfile && launchConfig && (
                     <AgentConfigControls
                       project={project}
                       value={launchConfig}
                       onChange={setLaunchConfig}
-                      effectiveModel={
-                        launchConfig.provider === launchProfile.provider
-                          ? launchProfile.effective_model
-                          : ""
-                      }
+                      effectiveModel={launchEffectiveModel}
                       workLikeCapable={launchProfile.work_like_capable}
                       locked={nodeMutationDisabled || experimentRunBusy}
                       showRunOn={false}
                       compact
-                      collapsible
-                      defaultCollapsed
                     />
                   )}
                   {startReasons.length > 0 && (

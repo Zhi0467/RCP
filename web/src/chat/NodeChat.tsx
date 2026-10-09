@@ -177,7 +177,11 @@ import {
   CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../core/uiConstants";
-import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
@@ -1973,25 +1977,17 @@ export function NodeChat({
   );
 
   const profile = project.agent_profiles[surface];
-  const shownModel =
-    config.model || (config.provider === profile.provider ? profile.effective_model : "");
+  const effectiveModel = config.provider === profile.provider ? profile.effective_model : "";
   const agentSummary = (
-    <button
-      className="agent-provider-label"
-      type="button"
-      aria-busy={readiness === undefined}
-      aria-expanded={configOpen}
-      aria-label={`Chat agent: ${readiness?.label || config.provider}`}
+    <AgentConfigChip
+      project={project}
+      value={config}
+      effectiveModel={effectiveModel}
+      open={configOpen}
       disabled={readOnly}
-      onClick={() => setConfigOpen((open) => !open)}
-    >
-      {[readiness?.label || config.provider, shownModel, config.reasoning]
-        .filter(Boolean)
-        .join(" · ")}
-      {readiness === undefined && (
-        <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
-      )}
-    </button>
+      label="Chat agent"
+      onToggle={() => setConfigOpen((open) => !open)}
+    />
   );
 
   const contextControls = (showProvider: boolean) => (
@@ -2053,7 +2049,7 @@ export function NodeChat({
           project={project}
           value={config}
           onChange={(next) => setConfigOverride({ chatId, config: next })}
-          effectiveModel={config.provider === profile.provider ? profile.effective_model : ""}
+          effectiveModel={effectiveModel}
           workLikeCapable={profile.work_like_capable}
           showRunOn={false}
           compact

@@ -1,5 +1,9 @@
 import { BrowserToggle } from "../core/BrowserControls";
-import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
@@ -131,9 +135,17 @@ export function ExperimentRunDetail({
   const launchProfile = project?.agent_profiles.node_chat;
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
-  useEffect(() => setLaunchConfig(null), [run.node.id]);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  useEffect(() => {
+    setLaunchConfig(null);
+    setLaunchOpen(false);
+  }, [run.node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchEffectiveModel =
+    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
+      ? launchProfile.effective_model
+      : "";
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
   // Untouched, the field follows the node's own limit, which the human sees as
@@ -338,6 +350,17 @@ export function ExperimentRunDetail({
               {authorizedCeiling === null ? "Add turns" : `Add ${authorizedCeiling} turns`}
             </button>
           )}
+          {allowStart && !control.node_closed && project && launchConfig && (
+            <AgentConfigChip
+              project={project}
+              value={launchConfig}
+              effectiveModel={launchEffectiveModel}
+              open={launchOpen}
+              disabled={runDisabled || startDisabled || runBusy}
+              label="Experiment agent"
+              onToggle={() => setLaunchOpen((open) => !open)}
+            />
+          )}
           {allowStart && !control.node_closed && (
             <button
               type="button"
@@ -374,22 +397,23 @@ export function ExperimentRunDetail({
           onChange={setBrowserRequested}
         />
       )}
-      {allowStart && !control.node_closed && project && launchProfile && launchConfig && (
-        <AgentConfigControls
-          project={project}
-          value={launchConfig}
-          onChange={setLaunchConfig}
-          effectiveModel={
-            launchConfig.provider === launchProfile.provider ? launchProfile.effective_model : ""
-          }
-          workLikeCapable={launchProfile.work_like_capable}
-          locked={runDisabled || startDisabled || runBusy}
-          showRunOn={false}
-          compact
-          collapsible
-          defaultCollapsed
-        />
-      )}
+      {launchOpen &&
+        allowStart &&
+        !control.node_closed &&
+        project &&
+        launchProfile &&
+        launchConfig && (
+          <AgentConfigControls
+            project={project}
+            value={launchConfig}
+            onChange={setLaunchConfig}
+            effectiveModel={launchEffectiveModel}
+            workLikeCapable={launchProfile.work_like_capable}
+            locked={runDisabled || startDisabled || runBusy}
+            showRunOn={false}
+            compact
+          />
+        )}
 
       {episode && (
         <EpisodeQuestions

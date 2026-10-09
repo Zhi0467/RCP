@@ -1,5 +1,9 @@
 import { BrowserToggle } from "../core/BrowserControls";
-import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import type { AgentRunConfig, ProjectSnapshot } from "../core/types";
 import { LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
@@ -113,11 +117,18 @@ export function AutoResearchDialog({
   const launchProfile = project?.agent_profiles.orchestrator;
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
+  const [launchOpen, setLaunchOpen] = useState(false);
   useEffect(() => {
-    if (open) setLaunchConfig(null);
+    if (!open) return;
+    setLaunchConfig(null);
+    setLaunchOpen(false);
   }, [open, project?.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchEffectiveModel =
+    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
+      ? launchProfile.effective_model
+      : "";
 
   useEffect(() => {
     if (!open) return;
@@ -239,22 +250,16 @@ export function AutoResearchDialog({
               Code worktree
             </label>
           </div>
-          {project && launchProfile && launchConfig && (
+          {launchOpen && project && launchProfile && launchConfig && (
             <AgentConfigControls
               project={project}
               value={launchConfig}
               onChange={setLaunchConfig}
-              effectiveModel={
-                launchConfig.provider === launchProfile.provider
-                  ? launchProfile.effective_model
-                  : ""
-              }
+              effectiveModel={launchEffectiveModel}
               workLikeCapable={launchProfile.work_like_capable}
               locked={busy}
               showRunOn={false}
               compact
-              collapsible
-              defaultCollapsed
             >
               <p className="agent-config-note">
                 Experiments it spawns use the Settings Node chat profile.
@@ -268,6 +273,17 @@ export function AutoResearchDialog({
           </div>
         )}
         <footer>
+          {project && launchConfig && (
+            <AgentConfigChip
+              project={project}
+              value={launchConfig}
+              effectiveModel={launchEffectiveModel}
+              open={launchOpen}
+              disabled={busy}
+              label="Orchestrator agent"
+              onToggle={() => setLaunchOpen((current) => !current)}
+            />
+          )}
           <button className="button secondary" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>

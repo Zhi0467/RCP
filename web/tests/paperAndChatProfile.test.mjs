@@ -74,7 +74,7 @@ const chatProps = {
 
 test("chat shows its agent identity, New session, and a self-labelling scope picker", () => {
   const fresh = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
-  assert.match(fresh, /class="agent-provider-label"[^>]*>Codex/);
+  assert.match(fresh, /aria-label="Chat agent: Codex"/);
   assert.match(fresh, /class="chat-new-session"/);
 
   assert.doesNotMatch(fresh, /agent-config-summary/);
@@ -102,7 +102,7 @@ test("chat shows its agent identity, New session, and a self-labelling scope pic
       ],
     }),
   );
-  assert.match(resumed, /class="agent-provider-label"[^>]*>Claude/);
+  assert.match(resumed, /aria-label="Chat agent: Claude"/);
 });
 
 test("the chat composer marks where to type with field shape, never placeholder copy", () => {

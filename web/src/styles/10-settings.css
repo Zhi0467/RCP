@@ -3854,3 +3854,14 @@ button.agent-provider-label {
 .agent-board-cards[hidden] {
   display: none;
 }
+/* A launch chip sits before its start button and takes the row's free space. */
+.campaign-dialog > footer > .agent-config-chip {
+  margin-right: auto;
+}
+.experiment-control-heading > .agent-config-chip,
+.experiment-run-actions > .agent-config-chip {
+  margin-left: auto;
+}
+.agent-config-chip + .experiment-run-button {
+  margin-left: 0;
+}

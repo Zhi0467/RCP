@@ -67,6 +67,50 @@ export function profileRunConfig(profile: AgentProfile): AgentRunConfig {
   };
 }
 
+/**
+ * The folded form of a launch picker: `provider · model · effort` as one chip
+ * that opens the fields. Every launch surface shows the same chip, so what the
+ * next run will use reads the same in chat, Experiment, and Auto-research.
+ */
+export function AgentConfigChip({
+  project,
+  value,
+  effectiveModel = "",
+  open,
+  disabled = false,
+  label,
+  onToggle,
+}: {
+  project: ProjectSnapshot;
+  value: AgentRunConfig;
+  effectiveModel?: string;
+  open: boolean;
+  disabled?: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  const readiness = project.provider_readiness[value.run_on]?.[value.provider];
+  const providerName = readiness?.label || value.provider;
+  return (
+    <button
+      className="agent-provider-label agent-config-chip"
+      type="button"
+      aria-busy={readiness === undefined}
+      aria-expanded={open}
+      aria-label={`${label}: ${providerName}`}
+      disabled={disabled}
+      onClick={onToggle}
+    >
+      {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
+      {readiness === undefined ? (
+        <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
+      ) : (
+        <ChevronDown size={12} aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
 export async function settleReadinessRefresh(refresh: () => Promise<void>): Promise<void> {
   try {
     await refresh();
