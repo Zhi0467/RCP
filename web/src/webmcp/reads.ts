@@ -93,7 +93,9 @@ export const PROJECT_READ_POLICY = {
   ],
   // Query flags that turn a read into work: `refresh` reruns readiness probes
   // (provider, skill, and remote compute checks over SSH) or a source reindex.
-  refusedQuery: ["refresh"],
+  // `inventory` drops the displayed branch and lists chats across every graph,
+  // which a branch-scoped read would mislabel as the displayed graph's.
+  refusedQuery: ["refresh", "inventory"],
   windows: ["/history", "/history/summaries"],
   // These listings deliberately span graph targets on main (watchers can opt in on a branch).
   projectWideOnMain: ["/tasks", "/watchers"],

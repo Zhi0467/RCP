@@ -1064,8 +1064,9 @@ routes, GETs with side effects (terminal reconciliation, Experiment stop
 settlement, digest marks, project reconciliation, merge-preview Git writes,
 the conversation worktree route's remote Git contact, the machine browser
 readiness probe, and live artifact snapshots, which read remote files over
-SSH), and the `refresh`
-query flag, which reruns probes. Repository file reads refuse any path whose
+SSH), the `refresh`
+query flag, which reruns probes, and the chat `inventory` flag, which would list
+every graph's chats as the displayed one's. Repository file reads refuse any path whose
 component matches the credential denylist (for example `.env*`, `*.pem`, `.git`,
 `.ssh`, `id_rsa*`). Requests are built from admitted templates with validated
 parameters; the normalized URL must stay same-origin and in the open project.
