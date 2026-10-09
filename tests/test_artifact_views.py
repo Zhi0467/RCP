@@ -100,3 +100,23 @@ def test_html_preview_keeps_only_inline_image_sources() -> None:
     # The srcdoc frame inherits the wrapper policy, so it must admit the same sources.
     directives = dict(part.strip().split(" ", 1) for part in wrapper_csp.split(";"))
     assert set(directives["img-src"].split()) == {"data:", "blob:"}
+
+
+def test_html_shell_loads_have_distinct_error_channels_and_keep_the_version() -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from rcp.artifacts import AgentArtifactDescriptor
+
+    descriptor = AgentArtifactDescriptor(
+        artifact_id="a" * 24, name="page.html", media_type="text/html", size_bytes=1
+    )
+    channels = []
+    for _ in range(2):
+        document, _ = artifact_views.artifact_viewer_document(
+            descriptor, content_url="/content?version_id=v1", state="temporary"
+        )
+        url = next(attrs["src"] for tag, attrs in Elements(document).tags if tag == "iframe")
+        query = parse_qs(urlsplit(url).query)
+        assert query["version_id"] == ["v1"]
+        channels.append(query["error_channel"][0])
+    assert channels[0] != channels[1]

@@ -4,7 +4,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-import { stagedArtifactContext } from "../src/chat/chatInput.ts";
+import {
+  assembleChatTurn,
+  parseStagedChatAnnotations,
+  stagedArtifactContext,
+} from "../src/chat/chatInput.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -16,6 +20,7 @@ const server = await createServer({
 const { MarkdownAnswer } = await server.ssrLoadModule("/src/core/chatMarkdown.ts");
 const {
   INLINE_ARTIFACT_MAX_HEIGHT,
+  ARTIFACT_ERROR_MAX_CHARS,
   inlineArtifactFor,
   inlineArtifactNames,
   inlineViewerUrl,
@@ -113,6 +118,7 @@ test("shell messages are read only from that frame and bounded", () => {
   assert.equal(
     read({ type: "rcp-artifact-size", version: 1, height: 1e9 }).height,
     INLINE_ARTIFACT_MAX_HEIGHT,
+    ARTIFACT_ERROR_MAX_CHARS,
   );
   assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 40 }, {}), null);
   assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 40 }, frame, "null"), null);
@@ -240,4 +246,45 @@ test("a version the panel moves reaches every inline copy of that artifact", () 
   stop();
   announceArtifactVersionChange("b");
   assert.deepEqual(seen, ["a"]);
+});
+
+test("inline errors accept only the current shell's bounded exact payload", () => {
+  const frame = {};
+  const origin = "http://rcp.test";
+  const read = (data, source = frame, from = origin) =>
+    readInlineShellMessage({ source, origin: from, data }, frame, origin);
+  const payload = { kind: "rcp-artifact-error", message: "<b>failure</b>", count: 2 };
+  assert.deepEqual(read(payload), { kind: "error", message: payload.message, count: 2 });
+  for (const bad of [
+    { ...payload, extra: 1 },
+    { ...payload, message: {} },
+    { ...payload, message: "x".repeat(ARTIFACT_ERROR_MAX_CHARS + 1) },
+    { ...payload, count: 0 },
+    { ...payload, count: 1.5 },
+    { ...payload, count: Number.MAX_SAFE_INTEGER + 1 },
+  ])
+    assert.equal(read(bad), null);
+  assert.equal(read(payload, {}), null);
+  assert.equal(read(payload, frame, "null"), null);
+  assert.deepEqual(read({ kind: "rcp-artifact-error-clear" }), { kind: "error-clear" });
+  assert.equal(read({ kind: "rcp-artifact-error-clear", extra: 1 }), null);
+});
+
+test("a whole-artifact inline draft keeps its target and sends only on turn assembly", () => {
+  const annotation = {
+    id: "error",
+    selectedText: "page.html",
+    comment: "failure",
+    artifact: {
+      name: "page.html",
+      selection: null,
+      context: { source: "task", operation_id: "op-1", artifact_id: "a", base_version: "v1" },
+    },
+  };
+  assert.deepEqual(parseStagedChatAnnotations(JSON.stringify([annotation])), [annotation]);
+  assert.equal(assembleChatTurn("", [annotation]), "failure");
+  assert.deepEqual(stagedArtifactContext([annotation]), {
+    ...annotation.artifact.context,
+    selections: [],
+  });
 });

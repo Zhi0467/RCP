@@ -159,6 +159,9 @@ ARTIFACT_PREVIEW_MAX_LINES = 10_000
 CHAT_ARTIFACT_MAX_COUNT = 8
 ARTIFACT_VIEWER_STATE_REFRESH_MS = 2000
 ARTIFACT_DISPLAY_TITLE_MAX_CHARS = 240
+# Runtime error summaries use UTF-16 code units, as measured by JavaScript.
+ARTIFACT_ERROR_MAX_CHARS = 1024
+ARTIFACT_ERROR_INTERVAL_MS = 1000
 # An artifact shown inside a reply grows with its content up to this height and
 # scrolls within itself past it; the web mirrors it.
 ARTIFACT_INLINE_MAX_HEIGHT_PX = 1200
