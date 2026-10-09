@@ -66,6 +66,8 @@ import { useNarrowViewport } from "../ui/useNarrowViewport";
 
 interface Props {
   project: ProjectSnapshot;
+  /** The signed-in member whose persisted chat drafts this workspace shows. */
+  actorId: string | null;
   conversations: ChatConversation[];
   selectedChatId: string | null;
   /** The board of every agent, shown on entry from the Agents tab; a card opens its chat. */
@@ -350,6 +352,7 @@ const BOARD_LABELS: Record<AgentBoardColumn, string> = {
 
 export function ChatsWorkspace({
   project,
+  actorId,
   conversations: storedConversations,
   selectedChatId,
   board,
@@ -1108,6 +1111,7 @@ export function ChatsWorkspace({
           <NodeChat
             key={selected.chatId}
             project={project}
+            actorId={actorId}
             graphTarget={graphTarget}
             node={selected.nodeId ? (nodes[selected.nodeId] ?? null) : null}
             nodes={nodes}

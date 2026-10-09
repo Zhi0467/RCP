@@ -89,12 +89,14 @@ test("dedupe respects node source target and shares the eight-item cap with uplo
 
 test("draft round trip is isolated by project, graph target, and chat", () => {
   const keys = [
-    referenceDraftKey("p", main, "c"),
-    referenceDraftKey("p", branch, "c"),
-    referenceDraftKey("other", main, "c"),
-    referenceDraftKey("p", main, "other"),
+    referenceDraftKey("a", "p", main, "c"),
+    referenceDraftKey("a", "p", branch, "c"),
+    referenceDraftKey("a", "other", main, "c"),
+    referenceDraftKey("a", "p", main, "other"),
+    referenceDraftKey("b", "p", main, "c"),
   ];
-  assert.equal(new Set(keys).size, 4);
+  assert.equal(new Set(keys).size, 5);
+  assert.equal(referenceDraftKey(null, "p", main, "c"), null);
   const storage = new Map([[keys[0], JSON.stringify([ref("a"), ref("a")])]]);
   assert.deepEqual(
     parseReferenceDraft(storage.get(keys[0])).map((item) => referenceKey(item.selector)),

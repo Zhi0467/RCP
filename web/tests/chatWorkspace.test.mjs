@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
-  chatDraftStorageKey,
   conversationHref,
   chatIdForTask,
   chatIndicator,
@@ -273,7 +272,6 @@ test("a turn is unread when it ended after the viewer's marker for its chat", ()
 });
 
 test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
-  assert.equal(chatDraftStorageKey("project", "chat"), "rcp:chat-draft:project:chat");
   assert.equal(chatModeStorageKey("project", "chat"), "rcp:chat-mode:project:chat");
   assert.equal(toggleConversationMode("discuss"), "work");
   assert.equal(toggleConversationMode("work"), "discuss");

@@ -183,6 +183,7 @@ import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
 import { TeamLoginBoundary } from "./desktop/TeamLoginBoundary";
+import { dropUnscopedDrafts } from "./core/draftStorage";
 import {
   applyHumanDraft,
   deserializeHumanDraft,
@@ -576,6 +577,18 @@ export default function App() {
     !!actorIdentity &&
     !teamSessionRequired &&
     !ownerSessionRequired;
+  // Persisted drafts are scoped to this member; none is read or written without one.
+  const draftActorId = backendSessionReady ? (actorIdentity?.user.user_id ?? null) : null;
+  const draftActorIdRef = useRef(draftActorId);
+  draftActorIdRef.current = draftActorId;
+  useEffect(() => {
+    try {
+      dropUnscopedDrafts(localStorage);
+      dropUnscopedDrafts(sessionStorage);
+    } catch {
+      // Unavailable storage holds no drafts to drop.
+    }
+  }, []);
   const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
@@ -1114,7 +1127,13 @@ export default function App() {
       const authoritative = nextProject.snapshot_freshness === "fresh";
       applyCanonicalProject(next.project, authoritative);
       try {
-        persistProjectHumanDraft(localStorage, next.project.id, next.humanDraft, next.graphTarget);
+        persistProjectHumanDraft(
+          localStorage,
+          draftActorIdRef.current,
+          next.project.id,
+          next.humanDraft,
+          next.graphTarget,
+        );
       } catch {
         // The in-memory draft remains usable if browser storage is unavailable.
       }
@@ -1354,7 +1373,12 @@ export default function App() {
         if (next === disposition.state) return;
         cacheProjectState(requestedProjectId, next);
         try {
-          persistProjectHumanDraft(localStorage, requestedProjectId, next.humanDraft);
+          persistProjectHumanDraft(
+            localStorage,
+            draftActorIdRef.current,
+            requestedProjectId,
+            next.humanDraft,
+          );
         } catch {
           // A background cache refresh must not discard the in-memory draft.
         }
@@ -1826,11 +1850,12 @@ export default function App() {
       setProjectReconciliation("opening");
       authoritativeProjectId.current = null;
       let storedDraft: HumanDraft | null = null;
-      if (projectId) {
+      const draftKey = projectId
+        ? humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget)
+        : null;
+      if (draftKey) {
         try {
-          storedDraft = deserializeHumanDraft(
-            localStorage.getItem(humanDraftStorageKey(projectId, graphTarget)),
-          );
+          storedDraft = deserializeHumanDraft(localStorage.getItem(draftKey));
         } catch (error) {
           setNotice({
             kind: "error",
@@ -2841,7 +2866,7 @@ export default function App() {
     setNotice(null);
     const { next } = updateProjectHumanDraft(projectId, graph, update);
     try {
-      persistProjectHumanDraft(localStorage, projectId, next.humanDraft, graphTarget);
+      persistProjectHumanDraft(localStorage, draftActorId, projectId, next.humanDraft, graphTarget);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2851,7 +2876,8 @@ export default function App() {
     if (!projectId) return;
     dispatchProjectSession({ kind: "human_draft_updated", project_id: projectId, draft: null });
     try {
-      localStorage.removeItem(humanDraftStorageKey(projectId, graphTarget));
+      const key = humanDraftStorageKey(draftActorId, projectId, graphTarget);
+      if (key) localStorage.removeItem(key);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
@@ -2967,6 +2993,7 @@ export default function App() {
       try {
         persistProjectHumanDraft(
           localStorage,
+          draftActorIdRef.current,
           requestedProjectId,
           committedSession.humanDraft,
           expectedHead.target,
@@ -3966,7 +3993,8 @@ export default function App() {
     removeProject(id);
     forgetProjectViewport(id);
     try {
-      localStorage.removeItem(humanDraftStorageKey(id));
+      const key = humanDraftStorageKey(draftActorId, id);
+      if (key) localStorage.removeItem(key);
     } catch {
       // The project is already deleted; a stranded draft key must not fail the action.
     }
@@ -4389,6 +4417,7 @@ export default function App() {
         <NodeChat
           key={selectedExperimentChatId}
           project={project}
+          actorId={draftActorId}
           graphTarget={selectedExperimentChatTarget}
           node={selectedExperimentNode}
           nodes={selectedExperimentNodes}
@@ -5163,6 +5192,7 @@ export default function App() {
           {view === "chats" && (
             <ChatsWorkspace
               project={project}
+              actorId={draftActorId}
               conversations={inventoryConversations}
               selectedChatId={selectedChatId}
               board={agentsBoard}
@@ -5356,6 +5386,7 @@ export default function App() {
             <NodeChat
               key={floatingChat.chatId}
               project={project}
+              actorId={draftActorId}
               graphTarget={project.graph_target}
               node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
               nodes={presentedGraph.nodes}

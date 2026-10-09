@@ -1,3 +1,4 @@
+import { memberDraftKey } from "../core/draftStorage.ts";
 import type {
   AgentExecutionProfile,
   AgentProfileSettings,
@@ -86,8 +87,8 @@ function withSortedKeys(value: unknown): unknown {
   );
 }
 
-export function settingsDraftStorageKey(projectId: string): string {
-  return `rcp:settings-draft:${projectId}`;
+export function settingsDraftStorageKey(actorId: string | null, projectId: string): string | null {
+  return memberDraftKey(actorId, `settings-draft:${projectId}`);
 }
 
 export function serializeSettingsDraft(draft: SettingsDraft): string {
