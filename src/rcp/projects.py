@@ -66,7 +66,12 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryMachine,
     BackupRecoveryRepository,
 )
-from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
+from rcp.service import (
+    ProjectService,
+    ProjectSettingsRequest,
+    _ProjectSnapshotDraft,
+    project_repository_descriptors,
+)
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.sources import (
     ImportedProviderSourceInventory,
@@ -2612,6 +2617,11 @@ class ProjectDisplayCache:
         payload["skill_catalog"] = official_registry().catalog()
         _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
+        repositories = payload["repositories"]
+        assert isinstance(repositories, list)
+        payload["repositories"] = project_repository_descriptors(
+            repositories, store=self._store, project_id=str(payload["id"])
+        )
         payload["machines"] = [
             {
                 **machine,

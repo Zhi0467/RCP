@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
+import uuid
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
@@ -73,6 +74,7 @@ def _create_project(
     *,
     seat_member: str | None = None,
     name: str = "membership-paper",
+    github: bool = True,
 ) -> str:
     """Prepare membership fixtures through the internal setup owner.
 
@@ -86,7 +88,77 @@ def _create_project(
         assert identity.status_code == 200, identity.text
         seat_member = str(identity.json()["user"]["user_id"])
     request = ProjectSetupRequest.model_validate(_setup_payload(repository_path, name))
-    return str(client.app.state.setup.create(request, seat_member=seat_member)["id"])
+    project_id = str(client.app.state.setup.create(request, seat_member=seat_member)["id"])
+    _record_repository_provenance(
+        client.app.state.services.store, project_id, seat_member, github=github
+    )
+    return project_id
+
+
+def _record_repository_provenance(
+    store, project_id, member_id, *, github=True, aliases=("paper-repo",)
+):
+    """Supply reviewed sources skipped by internal membership/manifest fixtures."""
+    from rcp.core.models import AuthorizedHuman
+    from rcp.server_ops.github import parse_github_repository_ref
+    from rcp.storage.models import ProjectProvisioningRequestRecord
+    from rcp.storage.provisioning import project_provisioning_review_digest
+    from tests.test_project_provisioning_storage import _machine, _provider, _repository
+
+    stamp = store.now()
+    machine = _machine().model_dump()
+    root = f"{machine['central_root']}/{project_id}/repositories"
+    existing = store.completed_project_provisioning_requests(project_id)
+    record = ProjectProvisioningRequestRecord.model_validate(
+        {
+            "request_id": existing[0].request_id if existing else str(uuid.uuid4()),
+            "kind": "create_team_project",
+            "status": "completed",
+            "target_space_id": store.space_id,
+            "proposed_project_id": project_id,
+            "authorized_by": AuthorizedHuman(
+                space_id=store.space_id, user_id=member_id, display_name="Member"
+            ),
+            "machines": [{**machine, "resolved_central_root": machine["central_root"]}],
+            "repositories": [
+                {
+                    **_repository().model_dump(),
+                    "alias": alias,
+                    "repository": parse_github_repository_ref(f"https://github.com/example/{alias}")
+                    if github
+                    else None,
+                    "intended_path": f"{root}/{alias}",
+                    "resolved_path": f"{root}/{alias}",
+                    "git_check": {
+                        "status": "ready",
+                        "commit": "a" * 40,
+                        "write_verified": github,
+                        "checked_at": stamp,
+                        "deploy_key_label": f"rcp:{store.space_id}:{project_id}:{alias}"
+                        if github
+                        else None,
+                        "public_key_fingerprint": "SHA256:" + "A" * 43 if github else None,
+                    },
+                }
+                for alias in aliases
+            ],
+            "provider_checks": [
+                {**_provider().model_dump(), "status": "ready", "checked_at": stamp}
+            ],
+            "revision": 0,
+            "created_at": stamp,
+            "updated_at": stamp,
+            "ready_at": stamp,
+            "completed_at": stamp,
+            "final_review_digest": "0" * 64,
+        }
+    )
+    record.final_review_digest = project_provisioning_review_digest(record)
+    with store.connection() as connection:
+        connection.execute(
+            "DELETE FROM project_provisioning_requests WHERE request_id = ?", (record.request_id,)
+        )
+        store._insert_project_provisioning_request(connection, record)
 
 
 def _project_scoped_routes(app: FastAPI) -> list[APIRoute]:
@@ -257,6 +329,8 @@ def _register_legacy_project(path: Path, locator: str, project_id: str) -> None:
     connection = sqlite3.connect(path)
     connection.execute("DROP TABLE IF EXISTS project_members")
     downgrade_artifacts(connection)
+    connection.execute("DROP TABLE project_provisioning_requests")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 46")
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)")
     connection.execute(
         """
