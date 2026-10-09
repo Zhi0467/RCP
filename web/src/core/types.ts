@@ -3341,6 +3341,7 @@ export interface ProjectArtifact {
   episode_mode: EpisodeMode | null;
   source_chat_href: string | null;
   source_node_id: string | null;
+  authorized_by: AuthorizedHuman | null;
   viewer_url: string | null;
   view: ArtifactView;
   available: boolean;

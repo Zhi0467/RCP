@@ -602,6 +602,8 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
     assert entry["episode_mode"] == "experiment_loop"
     assert entry["source_node_id"] == "exp/bounded-loop"
     assert entry["kind"] == "artifact"
+    assert task.authorized_by is not None
+    assert entry["authorized_by"]["user_id"] == task.authorized_by.user_id
     # The episode it came from, so an episode filter still finds it after its task ages out.
     assert task.episode_id and entry["episode_id"] == task.episode_id
     assert "/tasks/" in entry["viewer_url"]
