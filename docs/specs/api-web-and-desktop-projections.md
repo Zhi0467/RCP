@@ -882,8 +882,10 @@ requires current membership in that project; the create finalizer refuses them.
 These contracts do not authorize project mutation or implement those setup flows.
 Server-only and add/connect requests disable setup and review controls with an
 explicit unavailable next action until their execution flows are implemented.
-Native provisioning response parsing preserves nullable sources; transfer
-execution remains GitHub-only. Personal-to-team transfer creates linked requests
+Native provisioning and transfer parsing preserve nullable sources. The native
+relay sends no GitHub URL for a server-only repository and requires its reviewed
+commit and Git bundle; GitHub repositories keep their optional bundle choice.
+Personal-to-team transfer creates linked requests
 in the two authenticated backends and is available only in the
 source-built desktop because its native shell owns the archive relay. A direct
 team request to `/api/projects`, `/api/project-setup/preflight`,

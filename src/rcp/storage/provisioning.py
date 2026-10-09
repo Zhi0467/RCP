@@ -480,15 +480,11 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                     repository=repository.repository,
                 )
                 for repository in sorted(provisioning.repositories, key=lambda item: item.alias)
-                if repository.repository is not None
             )
-            if len(target_repositories) != len(provisioning.repositories):
-                raise ValueError("server-only transfer repositories are not supported yet")
             source_repositories = {
-                repository.alias: repository.repository.identity
-                for repository in configuration.repositories
+                repository.alias: repository.repository for repository in configuration.repositories
             }
-            if {item.alias: item.repository.identity for item in target_repositories} != (
+            if {item.alias: item.repository for item in target_repositories} != (
                 source_repositories
             ):
                 raise ValueError(
@@ -2622,12 +2618,11 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             current.linked_request_id if current.side == "source" else current.request_id
         )
         source_repositories = {
-            repository.alias: repository.repository.identity
+            repository.alias: repository.repository
             for repository in current.source_configuration.repositories
         }
         target_repositories = {
-            repository.alias: repository.repository.identity
-            for repository in receipt.target_repositories
+            repository.alias: repository.repository for repository in receipt.target_repositories
         }
         if (
             expected_source_request_id is None

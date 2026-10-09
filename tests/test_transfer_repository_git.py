@@ -357,7 +357,13 @@ def test_ssh_transport_executes_the_same_shipped_source_with_streamed_bundle(
         calls.append(host)
         arguments = shlex.split(command)
         assert arguments[:2] == ["python3", "-c"]
-        return [sys.executable, *arguments[1:]]
+        # The shipped helper resolves its own account home in the child process.
+        script = (
+            "from pathlib import Path; "
+            f"Path.home = classmethod(lambda cls: Path({str(tmp_path)!r})); "
+            f"exec({arguments[2]!r})"
+        )
+        return [sys.executable, "-c", script, *arguments[3:]]
 
     monkeypatch.setattr(repository_git, "ssh_arguments", local_ssh)
     head = probe_repository_revision("source-host", str(source))
@@ -461,3 +467,25 @@ def test_live_ssh_transfer_round_trip(
         assert _git(origin, "rev-parse", "HEAD") == published_head
     finally:
         remote("rm", "-rf", "--", fixture_root)
+
+
+@pytest.mark.parametrize("initialized", [False, True])
+def test_server_only_bundle_installs_main_and_refuses_missing_bundle(
+    repositories, tmp_path, initialized
+):
+    source, _target, _origin = repositories
+    target = tmp_path / "server-only"
+    target.mkdir()
+    if initialized:
+        _git(target, "init", "-b", "main")
+        _git(target, "commit", "--allow-empty", "-m", "Start RCP project")
+    bundle, head = _capture(source, tmp_path)
+    with pytest.raises(ValueError, match="requires.*Git bundle"):
+        install_repository_bundle("", str(target), tmp_path / "missing", head, server_only=True)
+    install_repository_bundle("", str(target), bundle, head, server_only=True)
+    (target / "artifact.txt").write_text("retained")
+    install_repository_bundle("", str(target), bundle, head, server_only=True)
+    assert _git(target, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert _git(target, "rev-parse", "main") == head
+    assert _git(target, "remote") == ""
+    assert (target / "artifact.txt").read_text() == "retained"

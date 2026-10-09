@@ -1005,7 +1005,7 @@ class ProjectProvisioningStepReceiptRecord(_StrictProvisioningModel):
 
 class ProjectTransferRepositorySource(_StrictProvisioningModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
     machine_alias: str
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
@@ -1101,14 +1101,27 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
 
     @model_validator(mode="after")
     def validate_repository_provenance(self) -> ProjectTransferSourceConfiguration:
+        if any(
+            item.repository is None and item.source_commit is None for item in self.repositories
+        ):
+            raise ValueError("server-only transfer requires a reviewed commit and Git bundle")
+        github_commits = [
+            item.source_commit for item in self.repositories if item.repository is not None
+        ]
+        if any(github_commits) and not all(github_commits):
+            raise ValueError("local-commit choice must cover every GitHub repository")
         commits = [repository.source_commit for repository in self.repositories]
         if any(commits):
-            if not all(commits) or self.supported_archive_codecs != ("rcp-transfer-v2",):
-                raise ValueError("local-commit transfer requires every reviewed HEAD and v2")
+            if self.supported_archive_codecs != ("rcp-transfer-v2",):
+                raise ValueError("local-commit transfer requires v2")
         elif "rcp-transfer-v2" in self.supported_archive_codecs:
             raise ValueError("v2 transfer requires reviewed repository commits")
         aliases = [repository.alias for repository in self.repositories]
-        identities = [repository.repository.identity for repository in self.repositories]
+        identities = [
+            repository.repository.identity
+            for repository in self.repositories
+            if repository.repository is not None
+        ]
         if len(aliases) != len(set(aliases)):
             raise ValueError("transfer repository aliases must be unique")
         if len(identities) != len(set(identities)):
@@ -1130,6 +1143,15 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
 
     @property
     def includes_local_commits(self) -> bool:
+        """The optional GitHub commit choice, excluding mandatory server-only bundles."""
+        return any(
+            repository.source_commit
+            for repository in self.repositories
+            if repository.repository is not None
+        )
+
+    @property
+    def has_repository_bundles(self) -> bool:
         return any(repository.source_commit for repository in self.repositories)
 
 
@@ -1153,7 +1175,7 @@ class ProjectTransferResolvedPath(_StrictProvisioningModel):
 
 class ProjectTransferRepositoryBinding(_StrictProvisioningModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
 
     @field_validator("alias")
     @classmethod
@@ -1217,7 +1239,11 @@ class ProjectTransferLinkReceipt(_StrictProvisioningModel):
         if self.source_space_id == self.target_space_id:
             raise ValueError("a transfer link must cross spaces")
         aliases = [item.alias for item in self.target_repositories]
-        identities = [item.repository.identity for item in self.target_repositories]
+        identities = [
+            item.repository.identity
+            for item in self.target_repositories
+            if item.repository is not None
+        ]
         if len(aliases) != len(set(aliases)):
             raise ValueError("linked target repository aliases must be unique")
         if aliases != sorted(aliases):
