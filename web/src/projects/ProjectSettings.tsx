@@ -639,7 +639,7 @@ export function ProjectSettings({
           <span>
             <GitBranch size={16} />
           </span>
-          <h2>Project boundary</h2>
+          <h2>Repos</h2>
         </header>
         <div className="settings-repositories">
           {project.repositories.map((repository) => {
