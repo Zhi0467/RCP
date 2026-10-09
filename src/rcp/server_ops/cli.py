@@ -998,7 +998,7 @@ class _InteractiveServerRenderer:
             # paste, and how to resume. The full record stays machine-readable.
             self._render_destination(step)
             self._render_actions(step, heading=False)
-            self._render_fields(tuple(field for field in step.fields if field.role != "evidence"))
+            self._render_fields(step.fields, paste_only=True)
             self._render_resume(step)
             return
         _print_wrapped(step.message, self.stream, indent="  ")
@@ -1045,17 +1045,26 @@ class _InteractiveServerRenderer:
         print("  Open:", file=self.stream)
         print(f"  {_link(url, color=self.color)}", file=self.stream)
 
-    def _render_fields(self, fields: tuple[NonsecretField, ...]) -> None:
-        if not fields:
+    def _render_fields(
+        self,
+        fields: tuple[NonsecretField, ...],
+        *,
+        paste_only: bool = False,
+    ) -> None:
+        # A value the operator pastes somewhere and one they only compare read
+        # alike in a terminal; the panel separates them visually. A human stop
+        # shows only what to paste, and the record keeps the rest.
+        labelled = [(field, field.role == "evidence") for field in fields]
+        if paste_only:
+            labelled = [(field, compare) for field, compare in labelled if not compare]
+        if not labelled:
             return
         print(file=self.stream)
-        shown = fields[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
-        for field in shown:
-            # A value the operator pastes somewhere and one they only compare
-            # read alike in a terminal; the panel separates them visually.
-            compare = " (compare only)" if field.role == "evidence" else ""
+        shown = labelled[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
+        for field, compare_only in shown:
+            compare = " (compare only)" if compare_only else ""
             print(f"  {field.name.replace('_', ' ')}: {field.value}{compare}", file=self.stream)
-        hidden = len(fields) - len(shown)
+        hidden = len(labelled) - len(shown)
         if hidden:
             print(
                 f"  … {hidden} more field(s); use --machine-readable for the complete record.",

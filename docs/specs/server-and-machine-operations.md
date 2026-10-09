@@ -366,7 +366,11 @@ lines; `--machine-readable` remains the complete append-only JSON event record.
 
 A human stop names the typed machine or external-service target, responsible
 authority, nonsecret values, ordered safe actions, plain success signal, and
-exact continue command. It is titled for the human's own task rather than for
+exact continue command. The interactive terminal shows only what the human
+does: the target machine or the place to open, the ordered actions, the values
+to paste, and the resume command. Authority, compare-only evidence, and the
+success signal stay in the machine-readable record and the desktop panel. A
+stop is titled for the human's own task rather than for
 the machine check it interrupted, so a pause may replace its planned title and
 purpose; everything else that identifies the step stays pinned to the plan. A
 displayed command may also name the shell it belongs to, which is not the
