@@ -3683,6 +3683,7 @@ export default function App() {
         selectCanonicalChat(transcript);
         openChatsRef.current(transcript.chat_id);
       },
+      openRunningConversation: (chatId) => openChatsRef.current(chatId),
       // Like the exact-selection owners, replace the address in place and apply its
       // selection; the route keeps the page's graph target and fires no hashchange.
       openRunRoute: (hash) => {

@@ -1108,7 +1108,9 @@ Auto-research episode, stopped through `POST .../episodes/{id}/stop`.
 `rcp_open_view({kind, id})` shows one exact node, conversation, run, or
 artifact viewer, or the Inbox, through the page's own owners. A run id is an
 episode id, opened through the same exact route as an episode notification: its
-Auto-research route or its Experiment's Runs entry. The view stays in the
+Auto-research route or its Experiment's Runs entry. A conversation whose
+first turn still runs has no saved transcript yet; it opens from its task, as
+the Agents board opens it. The view stays in the
 current project and graph target. It checks that the page still shows them
 before opening and never switches project or branch; only `rcp_open_project`
 changes project.

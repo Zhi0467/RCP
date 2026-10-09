@@ -643,7 +643,10 @@ export function createFinishedResultOffer(deps: {
     },
     async open() {
       const captured = offered;
-      if (!captured || !sameTarget(captured.target))
+      // Only a result the page just announced is offered; anything else opens by artifact.
+      if (!captured)
+        throw new Error("No finished result is on offer now; find and open it as an artifact.");
+      if (!sameTarget(captured.target))
         throw new Error("The offered result is not in the current project and graph.");
       const artifacts = await deps.list(captured.watch);
       if (offered !== captured || !sameTarget(captured.target))

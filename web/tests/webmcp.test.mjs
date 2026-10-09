@@ -2389,6 +2389,7 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
   const owners = {
     openNode: (id) => calls.push(["node", id]),
     openConversation: (opened) => calls.push(["conversation", opened.chat_id]),
+    openRunningConversation: (chatId) => calls.push(["running", chatId]),
     openRunRoute: (hash) => calls.push(["run", hash]),
     openTab: (view) => calls.push(["tab", view]),
     openArtifact: (record) => {
@@ -2418,6 +2419,16 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
   );
   assert.deepEqual(calls.at(-1), ["tab", "settings"]);
   await assert.rejects(open({ kind: "tab", id: "constructor" }));
+  // A chat whose first turn still runs has no saved transcript; its task opens it.
+  source.loadTranscript = async () => {
+    throw Object.assign(new Error("Chat not found"), { status: 404 });
+  };
+  const runningChat = tasks.find((task) => task.request?.chat_id)?.request.chat_id;
+  assert.ok(runningChat);
+  await open({ kind: "conversation", id: runningChat });
+  assert.deepEqual(calls.at(-1), ["running", runningChat]);
+  await assert.rejects(open({ kind: "conversation", id: "no-such-chat" }));
+  source.loadTranscript = async () => transcript;
   const [autoRoute, experimentRoute] = calls
     .filter(([kind]) => kind === "run")
     .map(([, hash]) => {
