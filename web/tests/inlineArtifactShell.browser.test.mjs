@@ -199,8 +199,12 @@ test("script errors preserve the drawing and actions and prefill only a human co
   assert.equal(await artifact.locator("#drawn").count(), 1);
   assert.equal(await page.locator("a[download]").count(), 1);
   assert.equal(await shell.locator("#keep").isVisible(), true);
+  await shell.locator("#message").evaluate((field) => (field.value = "my draft"));
   await shell.locator("#askFix").click();
-  assert.ok((await shell.locator("#message").inputValue()).endsWith("broken <img src=x>"));
+  const draft = await shell.locator("#message").inputValue();
+  assert.ok(draft.startsWith("my draft") && draft.endsWith("broken <img src=x>"));
+  await shell.locator("#askFix").click();
+  assert.equal(await shell.locator("#message").inputValue(), draft);
   assert.deepEqual(posts, []);
 });
 

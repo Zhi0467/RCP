@@ -1422,7 +1422,12 @@ export function NodeChat({
     inlineSelectionClearRef.current?.();
     inlineSelectionClearRef.current = event.clear;
     annotationOriginRef.current = null;
-    setAnnotationComment(event.initialText ?? "");
+    // A prefill joins an unsent draft below it rather than replacing it.
+    const draft = annotationComposer?.step === "comment" ? annotationComment.trim() : "";
+    const prefill = event.initialText ?? "";
+    setAnnotationComment(
+      !draft || !prefill ? prefill : draft.includes(prefill) ? draft : `${draft}\n\n${prefill}`,
+    );
     setSubmitError(null);
     setAnnotationComposer({
       step: "comment",

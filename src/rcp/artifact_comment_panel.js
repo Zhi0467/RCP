@@ -161,8 +161,13 @@ const offerComposer = installSelectionConfirmation(
   addComment,
   clearSelection,
 );
+// A prefill joins an unsent draft below it rather than replacing it.
+function withPrefill(draft, text) {
+  if (!draft.trim()) return text;
+  return draft.includes(text) ? draft : `${draft.trimEnd()}\n\n${text}`;
+}
 function offerSelection(selection, initialText) {
-  if (initialText !== undefined) message.value = initialText;
+  if (initialText !== undefined) message.value = withPrefill(message.value, initialText);
   current = selection;
   offerComposer(selection);
   if (selection) message.focus();
