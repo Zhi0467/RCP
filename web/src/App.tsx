@@ -1,6 +1,7 @@
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
+import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
 import { branchMergeStateLabel } from "./experiments/CampaignRuns";
@@ -512,22 +513,45 @@ export {
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
-  const [initialRoute] = useState(() => {
+  useState(() => {
     const navigation = window.performance.getEntriesByType("navigation")[0] as
       PerformanceNavigationTiming | undefined;
     const requestedHash = window.location.hash;
     const hash = isSetupHash(requestedHash)
       ? requestedHash
-      : initialProjectHash(requestedHash, navigation?.type);
+      : initialProjectHash(requestedHash, navigation?.type, desktop);
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return {
-      project: parseProjectHash(hash),
-      graphTarget: graphTargetFromHash(hash),
-      setupOpen: isSetupHash(hash),
-    };
+    return null;
   });
+  const identity = useActorIdentity();
+  // All retained project state belongs to this backend and member. Replacing
+  // the boundary drops rendered state, tab snapshots and in-flight owners in
+  // one commit, before the pending route can open under another identity.
+  const sessionKey = JSON.stringify([
+    identity.backendKey,
+    identity.actorIdentity?.space_id,
+    identity.actorIdentity?.space_kind,
+    identity.actorIdentity?.user.user_id,
+    identity.actorIdentity?.user.identity_kind,
+  ]);
+  useLayoutEffect(() => closeArtifactViewer(), [sessionKey]);
+  return <MemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+}
+
+function MemberApp({
+  desktop,
+  identity,
+}: {
+  desktop: boolean;
+  identity: ReturnType<typeof useActorIdentity>;
+}) {
+  const [initialRoute] = useState(() => ({
+    project: parseProjectHash(window.location.hash),
+    graphTarget: graphTargetFromHash(window.location.hash),
+    setupOpen: isSetupHash(window.location.hash),
+  }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
@@ -546,6 +570,7 @@ export default function App() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    backendKey,
     authenticatedHealth,
     actorIdentity,
     actorIdentityError,
@@ -560,13 +585,13 @@ export default function App() {
     requestActorName,
     settleActorNamePrompt,
     saveActorName,
-    authenticateTeamSession: authenticateIdentityTeamSession,
-    pairTeamDevice: pairIdentityTeamDevice,
+    authenticateTeamSession,
+    pairTeamDevice,
     reportIdentityIssue,
     reverifyIdentity,
     currentActiveAgentTasks,
     updateActorNameDraft,
-  } = useActorIdentity();
+  } = identity;
   // Every backend-facing surface, including the WebMCP inventory, waits for the
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
@@ -576,6 +601,8 @@ export default function App() {
     !!actorIdentity &&
     !teamSessionRequired &&
     !ownerSessionRequired;
+  const backendSessionReadyRef = useRef(backendSessionReady);
+  backendSessionReadyRef.current = backendSessionReady;
   const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
@@ -684,7 +711,6 @@ export default function App() {
     refreshSpaceRuns,
     replaceEpisodeRunArchive,
     applyHashRoute,
-    clearProjectRoute,
     openSetup,
     returnToProjects: returnToProjectIndex,
     commitProjectOpen: commitProjectRoute,
@@ -797,6 +823,15 @@ export default function App() {
   );
   const selectedTargetExperiment = selectedExperimentUsesIndex ? selectedIndexedExperiment : null;
   const authoritativeProjectId = useRef<string | null>(null);
+  // The last open the project effect ran, and whether a backend reverification
+  // has interrupted it since. Recovery on the same backend reconciles that open.
+  const lastProjectOpen = useRef<{
+    backendKey: string | null;
+    projectId: string | null;
+    graphTarget: GraphTargetRef;
+    setupOpen: boolean;
+  } | null>(null);
+  const projectOpenInterrupted = useRef(false);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
     projectId: string;
@@ -1410,33 +1445,13 @@ export default function App() {
     backendSessionReady,
   ]);
 
-  const settleTeamSignIn = useCallback(() => {
-    clearProjectRoute();
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-  }, [clearProjectRoute]);
-
-  const authenticateTeamSession = useCallback(
-    async (token: string) => {
-      await authenticateIdentityTeamSession(token);
-      settleTeamSignIn();
-    },
-    [authenticateIdentityTeamSession, settleTeamSignIn],
-  );
-
-  const pairTeamDevice = useCallback(
-    async (code: string, label: string) => {
-      await pairIdentityTeamDevice(code, label);
-      settleTeamSignIn();
-    },
-    [pairIdentityTeamDevice, settleTeamSignIn],
-  );
-
   useEffect(() => {
     if (!desktop) return;
     let stopped = false;
     const cleanups: Array<() => void> = [];
     // Reload what the window shows: the active project, or the project index.
     const reloadVisibleState = async () => {
+      if (stopped || !backendSessionReadyRef.current) return;
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
@@ -1809,7 +1824,63 @@ export default function App() {
   }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
   useLayoutEffect(() => {
-    if (!backendSessionReady) return;
+    if (!backendSessionReady) {
+      if (lastProjectOpen.current) projectOpenInterrupted.current = true;
+      return;
+    }
+    const previousOpen = lastProjectOpen.current;
+    const resumesOpen =
+      projectOpenInterrupted.current &&
+      previousOpen !== null &&
+      (!projectId || getProjectSessionState().project !== null) &&
+      previousOpen.backendKey === backendKey &&
+      previousOpen.projectId === projectId &&
+      previousOpen.setupOpen === setupOpen &&
+      sameGraphTarget(previousOpen.graphTarget, graphTarget);
+    lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
+    projectOpenInterrupted.current = false;
+    if (resumesOpen) {
+      // The same backend came back: reload what is shown, never reopen it.
+      if (setupOpen) return;
+      if (!projectId) {
+        void refreshProjectInvitations();
+        let cancelled = false;
+        void loadProjectIndex()
+          .catch((error) => {
+            if (!cancelled)
+              setNotice({
+                kind: "error",
+                text: error instanceof Error ? error.message : String(error),
+              });
+          })
+          .finally(() => {
+            if (!cancelled) setLoading(false);
+          });
+        return () => {
+          cancelled = true;
+        };
+      }
+      let cancelled = false;
+      setProjectReconciliation((current) => (current === "opening" ? current : "reconciling"));
+      void reload()
+        .catch((error) => {
+          if (cancelled || !isActiveGraph(projectId)) return;
+          setProjectReconciliation(
+            authoritativeProjectId.current === projectId ? "authoritative" : "failed",
+          );
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+        beginProjectSnapshotRequest(projectId);
+      };
+    }
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
@@ -1928,12 +1999,15 @@ export default function App() {
     });
     return () => {
       cancelled = true;
+      beginProjectSnapshotRequest(projectId);
     };
   }, [
     applyProjectSnapshot,
     actorIdentityChecked,
+    backendKey,
     beginProjectSnapshotRequest,
     cachedProjectStateForOpen,
+    getProjectSessionState,
     dispatchProjectSession,
     identityIssue,
     identityReady,
@@ -3985,7 +4059,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !backendSessionReady) return;
     const onProjectTabKeyDown = (event: KeyboardEvent) => {
       const action = projectTabShortcut(event, isEditableShortcutTarget(event.target));
       if (!action) return;
@@ -4080,6 +4154,25 @@ export default function App() {
       </section>
     </div>
   ) : null;
+  // A reverification of the backend this page last opened keeps the rendered
+  // tree mounted (scroll, panels, unsent text) under a blocking overlay. A
+  // changed backend fails this test and replaces the tree as before.
+  const holdRenderedTree =
+    lastProjectOpen.current !== null &&
+    lastProjectOpen.current.backendKey === backendKey &&
+    !!actorIdentity &&
+    !!authenticatedHealth &&
+    !teamSessionRequired &&
+    !ownerSessionRequired;
+  const reverificationSurface =
+    holdRenderedTree && (identityIssue || !actorIdentityChecked) ? (
+      <ReconnectOverlay
+        issue={identityIssue}
+        reconnecting={reconnecting}
+        desktop={desktop}
+        onReconnect={() => void reconnectBackend()}
+      />
+    ) : null;
   const actorNameSurface = actorNamePromptOpen ? (
     <div className="modal-backdrop identity-name-backdrop">
       <form
@@ -4152,7 +4245,7 @@ export default function App() {
         {acceptanceAgentSurface}
       </div>
     );
-  if (identityIssue)
+  if (identityIssue && !holdRenderedTree)
     return (
       <div className="fatal-state reconnect-state">
         <TriangleAlert />
@@ -4170,7 +4263,7 @@ export default function App() {
         {acceptanceAgentSurface}
       </div>
     );
-  if (!actorIdentityChecked)
+  if (!actorIdentityChecked && !holdRenderedTree)
     return (
       <div className="app-loading">
         <LoaderCircle className="spin" />
@@ -4188,6 +4281,8 @@ export default function App() {
         onPair={async () => {}}
       />
     );
+  // A successful sign-in keeps the pending route; the project open that follows
+  // still checks access.
   if (teamSessionRequired)
     return (
       <>
@@ -4206,6 +4301,7 @@ export default function App() {
       <>
         <ProjectLocatorBoundary />
         {actorNameSurface}
+        {reverificationSurface}
       </>
     );
   }
@@ -4217,6 +4313,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </div>
@@ -4235,6 +4332,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </>
@@ -4260,6 +4358,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </>
@@ -4303,6 +4402,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </>
@@ -4315,6 +4415,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </div>
@@ -4331,6 +4432,7 @@ export default function App() {
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
+        {reverificationSurface}
         {acceptanceAgentSurface}
         {voiceSurface}
       </div>
@@ -5474,6 +5576,7 @@ export default function App() {
       )}
       {desktopAccessSurface}
       {actorNameSurface}
+      {reverificationSurface}
     </div>
   );
 }
