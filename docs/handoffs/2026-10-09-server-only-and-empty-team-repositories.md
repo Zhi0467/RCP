@@ -1,7 +1,8 @@
 # Server-only and empty team repositories
 
-Status: design confirmed and reviewed 2026-10-09; implementation not started. Ships in
-PR #284 with the setup-page and wizard trims already on that branch.
+Status: slice A contracts implemented and locally checked; slice B behavior and
+served-app/remote journeys remain. Design confirmed and reviewed 2026-10-09.
+Ships in PR #284 with the setup-page and wizard trims already on that branch.
 
 Decision: [team repositories may live only on the server](../decisions/2026-10-09-team-repositories-may-live-only-on-the-server.md).
 
@@ -55,7 +56,7 @@ race-safe first push.
 Each slice updates the specs it changes and adds tests in proportion to its
 diff.
 
-**A. Contracts (serial, first).** Storage migration: provisioning kinds
+**A. Contracts (implemented).** Storage migration: provisioning kinds
 `add_repository` and `connect_repository`, a nullable GitHub source per
 repository, existing-project targeting (`target_project_id`), and the truth
 choice. One owner, `effective_repositories(project)`, that resolves each

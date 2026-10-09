@@ -871,9 +871,20 @@ detection.
 
 The modes retain their separate authority owners behind that shared surface.
 Personal setup calls the ordinary path-based preflight/finalizer. Team creation
-creates a backend-owned durable provisioning request from GitHub repository
-sources and derived central paths. Personal-to-team transfer creates linked
-requests in the two authenticated backends and is available only in the
+creates a backend-owned durable provisioning request with derived central paths.
+Each repository accepts an optional GitHub `source`; omitted, null, or blank
+means server only. The repository truth choice `count_as_project_truth` defaults
+to true. The response exposes `source_kind` (`github` or `server_only`), a
+nullable repository identity and GitHub URLs, and the truth choice. Request kinds
+also include `add_repository` and `connect_repository`, whose
+`target_project_id` identifies the existing project. Reading those requests
+requires current membership in that project; the create finalizer refuses them.
+These contracts do not authorize project mutation or implement those setup flows.
+Server-only and add/connect requests disable setup and review controls with an
+explicit unavailable next action until their execution flows are implemented.
+Native provisioning response parsing preserves nullable sources; transfer
+execution remains GitHub-only. Personal-to-team transfer creates linked requests
+in the two authenticated backends and is available only in the
 source-built desktop because its native shell owns the archive relay. A direct
 team request to `/api/projects`, `/api/project-setup/preflight`,
 `/api/project-setup/ssh-paths`, or `/api/project-setup/create` is refused before

@@ -444,7 +444,9 @@ def _validate_target_manifest(
         raise ValueError("target manifest changes transferred scope provenance")
     source_repositories = {item.alias: item.repository.identity for item in source.repositories}
     target_repositories = {
-        alias: item.repository.identity for alias, item in expected_repositories.items()
+        alias: item.repository.identity
+        for alias, item in expected_repositories.items()
+        if item.repository is not None
     }
     if target_repositories != source_repositories:
         raise ValueError("target manifest review names different GitHub repositories")

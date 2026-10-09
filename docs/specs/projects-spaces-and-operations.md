@@ -398,6 +398,25 @@ Routes never write a manifest, Patch, branch, or materialized output directly.
 State workspaces own locks, atomic temp-file replacement, and explicit local or
 remote publication.
 
+Provisioning storage represents a repository source as a GitHub reference or
+null (server only). Requests can create a team project, receive a transfer, add
+one repository, or connect one existing repository to GitHub. Add and connect
+name `target_project_id`; they share its checkout namespace without consuming
+the unique project reservation held by create/transfer requests. An add retains
+the human's per-repository `count_as_project_truth` choice, defaulting to true;
+persisting this choice does not itself change canonical truth membership.
+
+`effective_repositories(project, provisioning_requests)` owns the effective
+repository inventory. It uses only completed requests for the exact project
+and home space, validates their review digests, and folds one create/transfer
+request followed by add/connect requests in completion order. Adds append an
+alias; connects replace its source, deploy-key evidence, and checkout proof
+while preserving its truth choice and checkout location. Incomplete proofs or
+conflicting provenance are refused. GitHub entries retain deploy-key and write
+evidence; server-only entries have checkout commit/time evidence without a key
+or push proof. Runtime consumers and the add/connect execution paths remain
+separate implementation slices.
+
 ## Durable agent task lifecycle
 
 `AppStore` may keep one SQLite file. Add compound transactions for proven harmful

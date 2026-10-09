@@ -149,20 +149,24 @@ class ProjectProvisioningMachineRequest(_StrictModel):
 
 class ProjectProvisioningRepositoryRequest(_StrictModel):
     alias: str
-    source: str
+    source: str | None = None
     machine_alias: str
+    count_as_project_truth: bool = True
 
     @field_validator("source")
     @classmethod
-    def validate_source(cls, value: str) -> str:
+    def validate_source(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         parse_github_repository_ref(value)
         return value
 
     def intent(self) -> ProjectProvisioningRepositoryIntent:
         return ProjectProvisioningRepositoryIntent(
             alias=self.alias,
-            repository=parse_github_repository_ref(self.source),
+            repository=parse_github_repository_ref(self.source) if self.source else None,
             machine_alias=self.machine_alias,
+            count_as_project_truth=self.count_as_project_truth,
         )
 
 
@@ -329,10 +333,12 @@ class ProjectProvisioningMachineProjection(_StrictModel):
 
 class ProjectProvisioningRepositoryProjection(_StrictModel):
     alias: str
-    repository: GitHubRepositoryRef
-    https_clone_url: str
-    ssh_clone_url: str
-    settings_url: str
+    repository: GitHubRepositoryRef | None
+    source_kind: Literal["github", "server_only"]
+    count_as_project_truth: bool
+    https_clone_url: str | None
+    ssh_clone_url: str | None
+    settings_url: str | None
     machine_alias: str
     intended_path: str | None
     resolved_path: str | None
@@ -385,7 +391,9 @@ class ProjectProvisioningFinalReview(_StrictModel):
 
 class ProjectProvisioningResponse(_StrictModel):
     request_id: str
-    kind: Literal["create_team_project", "incoming_transfer"]
+    kind: Literal[
+        "create_team_project", "incoming_transfer", "add_repository", "connect_repository"
+    ]
     status: ProjectProvisioningStatus
     status_label: str
     next_action: str | None
@@ -393,6 +401,7 @@ class ProjectProvisioningResponse(_StrictModel):
     can_review: bool
     can_cancel: bool
     target_space_id: str
+    target_project_id: str | None
     proposed_project_id: str
     name: str | None
     state_repository: str | None
@@ -1186,7 +1195,11 @@ def project_provisioning_requests(
     return [
         _project_provisioning_response(record, viewer_user_id=viewer.user_id)
         for record in store.project_provisioning_requests()
-        if record.kind == "create_team_project"
+        if record.kind != "incoming_transfer"
+        and (
+            record.target_project_id is None
+            or store.is_project_member(record.target_project_id, viewer.user_id)
+        )
     ]
 
 
@@ -1204,7 +1217,10 @@ def project_provisioning_request(
     identity_access.require_team_space()
     viewer = identity_access.acting_user(request)
     record = _request_or_404(store, request_id)
-    if record.kind != "create_team_project":
+    if record.kind == "incoming_transfer" or (
+        record.target_project_id is not None
+        and not store.is_project_member(record.target_project_id, viewer.user_id)
+    ):
         raise HTTPException(status_code=404, detail="Provisioning request not found")
     return _project_provisioning_response(record, viewer_user_id=viewer.user_id)
 
@@ -1550,21 +1566,26 @@ def _project_provisioning_response(
         and all(repository.ready for repository in repositories)
         and all(provider.ready for provider in providers),
     )
+    supported_setup = record.kind in {"create_team_project", "incoming_transfer"} and all(
+        repository.repository is not None for repository in record.repositories
+    )
     return ProjectProvisioningResponse(
         request_id=record.request_id,
         kind=record.kind,
         status=record.status,
         status_label=_STATUS_LABELS[record.status],
         next_action=_next_action(record),
-        can_run_setup=record.status
+        can_run_setup=supported_setup
+        and record.status
         in {"waiting_for_server_setup", "setup_in_progress", "operator_action_needed"},
-        can_review=record.status == "ready_for_review",
+        can_review=supported_setup and record.status == "ready_for_review",
         can_cancel=(
             record.kind == "create_team_project"
             and record.status == "waiting_for_server_setup"
             and record.authorized_by.user_id == viewer_user_id
         ),
         target_space_id=record.target_space_id,
+        target_project_id=record.target_project_id,
         proposed_project_id=record.proposed_project_id,
         name=record.name,
         state_repository=record.state_repository,
@@ -1612,6 +1633,11 @@ def _project_provisioning_response(
 
 
 def _next_action(record: ProjectProvisioningRequestRecord) -> str | None:
+    if record.status not in {"completed", "cancelled"}:
+        if record.kind in {"add_repository", "connect_repository"}:
+            return "Adding or connecting repositories is not available yet."
+        if any(repository.repository is None for repository in record.repositories):
+            return "Server-only repository setup is not available yet."
     if record.status == "waiting_for_server_setup":
         return "Run server setup."
     if record.status == "setup_in_progress":
@@ -1647,9 +1673,11 @@ def _repository_projection(
     return ProjectProvisioningRepositoryProjection(
         alias=repository.alias,
         repository=repository.repository,
-        https_clone_url=repository.repository.https_clone_url,
-        ssh_clone_url=repository.repository.ssh_clone_url,
-        settings_url=repository.repository.settings_url,
+        source_kind=repository.source_kind,
+        count_as_project_truth=repository.count_as_project_truth,
+        https_clone_url=repository.repository.https_clone_url if repository.repository else None,
+        ssh_clone_url=repository.repository.ssh_clone_url if repository.repository else None,
+        settings_url=repository.repository.settings_url if repository.repository else None,
         machine_alias=repository.machine_alias,
         intended_path=repository.intended_path,
         resolved_path=repository.resolved_path,

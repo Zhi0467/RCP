@@ -564,6 +564,7 @@ pub struct ProjectProvisioningProjection {
     pub can_review: bool,
     pub can_cancel: bool,
     pub target_space_id: String,
+    pub target_project_id: Option<String>,
     pub proposed_project_id: String,
     pub name: Option<String>,
     pub state_repository: Option<String>,
@@ -621,10 +622,12 @@ pub struct ProjectProvisioningMachineProjection {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ProjectProvisioningRepositoryProjection {
     pub alias: String,
-    pub repository: ProjectTransferRepositoryIdentity,
-    pub https_clone_url: String,
-    pub ssh_clone_url: String,
-    pub settings_url: String,
+    pub repository: Option<ProjectTransferRepositoryIdentity>,
+    pub source_kind: String,
+    pub count_as_project_truth: bool,
+    pub https_clone_url: Option<String>,
+    pub ssh_clone_url: Option<String>,
+    pub settings_url: Option<String>,
     pub machine_alias: String,
     pub intended_path: Option<String>,
     pub resolved_path: Option<String>,
@@ -2927,8 +2930,9 @@ fn validate_bundle(bundle: &ProjectTransferBundle) -> Result<(), String> {
                     .iter()
                     .any(|source_repository| {
                         source_repository.alias == repository.alias
-                            && source_repository.repository.identity
-                                == repository.repository.identity
+                            && repository.repository.as_ref().is_some_and(|identity| {
+                                source_repository.repository.identity == identity.identity
+                            })
                             && source_repository.machine_alias == repository.machine_alias
                     })
             })
@@ -3008,6 +3012,7 @@ fn parse_project_provisioning_projection(
         can_review: required_bool(object, "can_review")?,
         can_cancel: required_bool(object, "can_cancel")?,
         target_space_id,
+        target_project_id: optional_text(object, "target_project_id")?,
         proposed_project_id,
         name: optional_text(object, "name")?,
         state_repository: optional_text(object, "state_repository")?,
@@ -3104,18 +3109,49 @@ fn parse_repository_projection(
     let object = value
         .as_object()
         .ok_or_else(|| "the target repository projection is invalid".to_string())?;
-    let repository_object = object
-        .get("repository")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "the target repository projection has no repository identity".to_string())?;
-    let identity = required_text(repository_object, "identity")?.to_string();
-    validate_repository_identity(&identity)?;
+    let repository = match object.get("repository") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let repository_object = value.as_object().ok_or_else(|| {
+                "the target repository projection has an invalid repository identity".to_string()
+            })?;
+            let identity = required_text(repository_object, "identity")?.to_string();
+            validate_repository_identity(&identity)?;
+            Some(ProjectTransferRepositoryIdentity { identity })
+        }
+    };
+    let expected_kind = if repository.is_some() {
+        "github"
+    } else {
+        "server_only"
+    };
+    let source_kind =
+        optional_text(object, "source_kind")?.unwrap_or_else(|| expected_kind.to_string());
+    if source_kind != expected_kind {
+        return Err("the target repository source kind does not match its identity".into());
+    }
+    let count_as_project_truth = match object.get("count_as_project_truth") {
+        None => true,
+        Some(_) => required_bool(object, "count_as_project_truth")?,
+    };
+    let source_url = |field| {
+        if repository.is_some() {
+            required_text(object, field).map(|value| Some(value.to_string()))
+        } else {
+            optional_text(object, field)
+        }
+    };
+    let https_clone_url = source_url("https_clone_url")?;
+    let ssh_clone_url = source_url("ssh_clone_url")?;
+    let settings_url = source_url("settings_url")?;
     Ok(ProjectProvisioningRepositoryProjection {
         alias: required_text(object, "alias")?.to_string(),
-        repository: ProjectTransferRepositoryIdentity { identity },
-        https_clone_url: required_text(object, "https_clone_url")?.to_string(),
-        ssh_clone_url: required_text(object, "ssh_clone_url")?.to_string(),
-        settings_url: required_text(object, "settings_url")?.to_string(),
+        repository,
+        source_kind,
+        count_as_project_truth,
+        https_clone_url,
+        ssh_clone_url,
+        settings_url,
         machine_alias: required_text(object, "machine_alias")?.to_string(),
         intended_path: optional_text(object, "intended_path")?,
         resolved_path: optional_text(object, "resolved_path")?,
@@ -4702,6 +4738,41 @@ mod tests {
                 request
             );
         }
+    }
+
+    #[test]
+    fn provisioning_decodes_optional_repository_source() {
+        let mut payload =
+            incoming_projection_payload("waiting_for_server_setup", Value::Null, Value::Null);
+        let mut missing_github_url = payload.clone();
+        missing_github_url["repositories"][0]["https_clone_url"] = Value::Null;
+        assert!(parse_project_provisioning_projection(
+            &missing_github_url,
+            TARGET_ID,
+            TARGET_SPACE_ID
+        )
+        .is_err());
+        for field in [
+            "repository",
+            "https_clone_url",
+            "ssh_clone_url",
+            "settings_url",
+        ] {
+            payload["repositories"][0][field] = Value::Null;
+        }
+        payload["repositories"][0]["source_kind"] = serde_json::json!("server_only");
+        let projection =
+            parse_project_provisioning_projection(&payload, TARGET_ID, TARGET_SPACE_ID).unwrap();
+        let repository = &projection.repositories[0];
+        assert!(repository.repository.is_none());
+        assert_eq!(repository.source_kind, "server_only");
+        assert!(repository.https_clone_url.is_none());
+        assert!(repository.ssh_clone_url.is_none());
+        assert!(repository.settings_url.is_none());
+        payload["repositories"][0]["source_kind"] = serde_json::json!("github");
+        assert!(
+            parse_project_provisioning_projection(&payload, TARGET_ID, TARGET_SPACE_ID).is_err()
+        );
     }
 
     fn incoming_projection_payload(

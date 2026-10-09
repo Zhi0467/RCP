@@ -256,7 +256,8 @@ def inspect_backup_project_registration(
                     public_key_fingerprint=repository.git_check.public_key_fingerprint,
                 )
                 for repository in request.repositories
-                if repository.resolved_path is not None
+                if repository.repository is not None
+                and repository.resolved_path is not None
                 and repository.git_check.commit is not None
                 and repository.git_check.deploy_key_label is not None
                 and repository.git_check.public_key_fingerprint is not None

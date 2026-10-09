@@ -105,6 +105,28 @@ def _operator_action(request_id: str) -> ServerStep:
     )
 
 
+def test_repository_source_is_optional_and_round_trips(tmp_path) -> None:
+    _data, _members, _selected, app = _team_app(tmp_path, "Alice")
+    with signed_in_client(app) as client:
+        for source in ({}, {"source": None}, {"source": "  "}):
+            payload = _payload()
+            payload["repositories"] = [{"alias": "paper", "machine_alias": "server", **source}]
+            response = client.post("/api/project-provisioning/requests", json=payload)
+            assert response.status_code == 201
+            created = response.json()
+            assert not created["can_run_setup"] and not created["can_review"]
+            assert created["next_action"] == "Server-only repository setup is not available yet."
+            reread = client.get(f"/api/project-provisioning/requests/{created['request_id']}")
+            assert reread.status_code == 200
+            repository = reread.json()["repositories"][0]
+            assert repository["source_kind"] == "server_only"
+            assert repository["count_as_project_truth"] is True
+            assert all(
+                repository[key] is None
+                for key in ("repository", "https_clone_url", "ssh_clone_url", "settings_url")
+            )
+
+
 def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_path) -> None:
     data_dir, (alice, bob), selected, app = _team_app(tmp_path, "Alice", "Bob")
     with signed_in_client(app) as client:

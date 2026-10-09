@@ -1452,7 +1452,7 @@ export function ProvisioningStatus({
             <strong>
               {repository.alias} · {repository.status_label}
             </strong>
-            <span>{repository.repository.identity}</span>
+            <span>{repository.repository?.identity ?? repository.alias}</span>
             <span>{gitWriteFact(repository.write_verified)}</span>
             <code>{repository.resolved_path ?? repository.intended_path ?? "Path pending"}</code>
             {repository.diagnostic && <p>{repository.diagnostic}</p>}

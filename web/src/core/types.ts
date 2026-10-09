@@ -186,7 +186,8 @@ export interface ProjectProvisioningMachineRequest {
 
 export interface ProjectProvisioningRepositoryRequest {
   alias: string;
-  source: string;
+  source?: string | null;
+  count_as_project_truth?: boolean;
   machine_alias: string;
 }
 
@@ -311,10 +312,12 @@ export interface GitHubRepositoryRef {
 
 export interface ProjectProvisioningRepositoryProjection {
   alias: string;
-  repository: GitHubRepositoryRef;
-  https_clone_url: string;
-  ssh_clone_url: string;
-  settings_url: string;
+  repository: GitHubRepositoryRef | null;
+  source_kind: "github" | "server_only";
+  count_as_project_truth: boolean;
+  https_clone_url: string | null;
+  ssh_clone_url: string | null;
+  settings_url: string | null;
   machine_alias: string;
   intended_path: string | null;
   resolved_path: string | null;
@@ -373,7 +376,7 @@ export type ProjectProvisioningCancellationDisposition =
 
 export interface ProjectProvisioningResponse {
   request_id: string;
-  kind: "create_team_project" | "incoming_transfer";
+  kind: "create_team_project" | "incoming_transfer" | "add_repository" | "connect_repository";
   status: ProjectProvisioningStatus;
   status_label: string;
   next_action: string | null;
@@ -381,6 +384,7 @@ export interface ProjectProvisioningResponse {
   can_review: boolean;
   can_cancel: boolean;
   target_space_id: string;
+  target_project_id: string | null;
   proposed_project_id: string;
   name: string | null;
   state_repository: string | null;

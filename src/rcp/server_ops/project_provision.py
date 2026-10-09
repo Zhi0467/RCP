@@ -287,6 +287,12 @@ class ProjectProvisionCoordinator:
         request = self.store.project_provisioning_request(request_id)
         if request is None or request.target_space_id != self.store.space_id:
             raise ProjectProvisionRefused("The selected provisioning request does not exist.")
+        if request.kind in {"add_repository", "connect_repository"} or any(
+            repository.repository is None for repository in request.repositories
+        ):
+            raise ProjectProvisionRefused(
+                "This server does not yet prepare server-only or existing-project repositories."
+            )
         if request.status in {"completed", "cancelled"}:
             raise ProjectProvisionRefused(
                 f"The selected provisioning request is already {request.status}."
@@ -361,6 +367,7 @@ class ProjectProvisionCoordinator:
             identity="start",
         )
         for index, repository in enumerate(request.repositories):
+            assert repository.repository is not None  # Checked at the plan boundary.
             machine = machine_map[repository.machine_alias]
             machine_target = self._machine_target(machine)
             repository_target = ExternalServiceTarget(
@@ -568,6 +575,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
+        assert repository.repository is not None  # Checked at the plan boundary.
         machine = self._machine(request, repository.machine_alias)
         try:
             material = self.credential_manager.prepare_key(
@@ -625,6 +633,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
+        assert repository.repository is not None  # Checked at the plan boundary.
         machine = self._machine(request, repository.machine_alias)
         try:
             material = self.credential_manager.prepare_key(
@@ -736,6 +745,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
+        assert repository.repository is not None  # Checked at the plan boundary.
         check = repository.git_check
         if (
             check.status == "ready"
@@ -1267,6 +1277,7 @@ class ProjectProvisionCoordinator:
         check: ProjectProvisioningGitCheckRecord,
     ) -> tuple[NonsecretField, ...]:
         assert check.commit is not None and check.public_key_fingerprint is not None
+        assert repository.repository is not None
         return (
             NonsecretField(name="repository", value=repository.repository.identity),
             NonsecretField(name="git_commit", value=check.commit),
