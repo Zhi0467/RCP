@@ -31,7 +31,12 @@ export function shouldStartNextPiece(pieceMs: number, quietMs: number, first: bo
 }
 
 /** One kept piece: text that came back, or audio still to transcribe. */
-export type KeptPiece = { text: string } | { audio: Blob };
+/**
+ * One kept piece: text that came back, or audio still to transcribe. `order` is
+ * when the piece began recording, so speech kept by overlapping sessions stays
+ * in recording order however their uploads finish.
+ */
+export type KeptPiece = ({ text: string } | { audio: Blob }) & { order: number };
 
 export interface KeptSpeech {
   /** Each kept audio piece carries its recording's type. */
@@ -92,9 +97,9 @@ export class NetworkDictationSession {
   tick(now: number, quietMs: number): void {
     if (!this.recording) return;
     if (!shouldStartNextPiece(now - this.pieceStartedAt, quietMs, this.firstPiece)) return;
-    this.firstPiece = false;
     try {
       this.record(now);
+      this.firstPiece = false;
     } catch {
       // At a pause the current piece keeps recording and the next tick tries
       // again; at the cap it must end, or it would outgrow one upload.
@@ -127,6 +132,7 @@ export class NetworkDictationSession {
   }
 
   private record(now: number): void {
+    const startedAt = now;
     const previous = this.recorder;
     const recorder = this.hooks.createRecorder();
     const chunks: Blob[] = [];
@@ -138,7 +144,7 @@ export class NetworkDictationSession {
       if (recorder.state === "recording") recorder.stop();
     };
     recorder.onstop = () => {
-      if (!this.cancelled) this.enqueue(new Blob(chunks, { type: this.hooks.mimeType }));
+      if (!this.cancelled) this.enqueue(new Blob(chunks, { type: this.hooks.mimeType }), startedAt);
       if (recorder !== this.recorder) return;
       this.recorder = null;
       this.hooks.onRecordingStopped();
@@ -156,25 +162,25 @@ export class NetworkDictationSession {
     if (previous?.state === "recording") previous.stop();
   }
 
-  private enqueue(audio: Blob): void {
+  private enqueue(audio: Blob, order: number): void {
     if (!audio.size) return;
     this.setBusy(1);
     this.queue = this.queue.then(async () => {
       try {
         if (this.cancelled) return;
         if (this.failure !== null) {
-          this.kept?.push({ audio });
+          this.kept?.push({ audio, order });
           return;
         }
         try {
           const text = await this.transcribe(audio);
           if (this.cancelled) return;
-          if (this.kept) this.kept.push({ text });
+          if (this.kept) this.kept.push({ text, order });
           else this.hooks.onText(text);
         } catch (error) {
           this.failure = error;
           this.kept ??= [];
-          this.kept.push({ audio });
+          this.kept.push({ audio, order });
           // Later speech would fail the same way; stop and keep it.
           this.finish();
         }
@@ -268,7 +274,7 @@ export function addKeptSpeech(chatKey: string, kept: KeptSpeech): void {
     chatKey,
     current
       ? {
-          pieces: [...current.pieces, ...kept.pieces],
+          pieces: [...current.pieces, ...kept.pieces].sort((a, b) => a.order - b.order),
           error: kept.error ?? current.error,
           resume: null,
         }

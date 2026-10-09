@@ -1147,7 +1147,9 @@ export function NodeChat({
     } catch (error) {
       result = { text: "", failure: { error, pending: kept.pieces } };
     }
-    const resolved: KeptPiece[] = result.text ? [{ text: result.text }] : [];
+    const resolved: KeptPiece[] = result.text
+      ? [{ text: result.text, order: kept.pieces[0]?.order ?? 0 }]
+      : [];
     const span = liveDictationSpan(dictationSpanRef.current, sessionId);
     if (span) {
       dictationSpanRef.current = null;

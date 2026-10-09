@@ -148,7 +148,11 @@ test("cancel drops results still in flight", async () => {
 });
 
 test("kept pieces resolve in order and return the tail after a failure", async () => {
-  const pieces = [{ text: "one" }, { audio: new Blob(["two"]) }, { audio: new Blob(["bad"]) }];
+  const pieces = [
+    { text: "one", order: 1 },
+    { audio: new Blob(["two"]), order: 2 },
+    { audio: new Blob(["bad"]), order: 3 },
+  ];
   const result = await resolveKeptPieces(pieces, async (audio) => {
     const text = await audio.text();
     if (text === "bad") throw new Error("busy");
@@ -183,13 +187,43 @@ test("a next piece that cannot start leaves the current one recording", async ()
   assert.deepEqual(events, [["stopped"], ["text", "piece-1"], ["settled"]]);
 });
 
-test("speech kept by overlapping sessions is appended, never replaced", () => {
-  setKeptSpeech("chat", { pieces: [{ text: "first" }], error: null, resume: { draft: "", at: 0 } });
-  addKeptSpeech("chat", { pieces: [{ text: "second" }], error: new Error("x"), resume: null });
+test("speech kept by overlapping sessions stays in recording order", () => {
+  setKeptSpeech("chat", {
+    pieces: [{ text: "later", order: 20 }],
+    error: null,
+    resume: { draft: "", at: 0 },
+  });
+  addKeptSpeech("chat", {
+    pieces: [{ text: "earlier", order: 10 }],
+    error: new Error("x"),
+    resume: null,
+  });
   const kept = keptSpeech("chat");
-  assert.deepEqual(kept.pieces, [{ text: "first" }, { text: "second" }]);
+  assert.deepEqual(
+    kept.pieces.map((piece) => piece.text),
+    ["earlier", "later"],
+  );
   assert.equal(kept.resume, null);
   setKeptSpeech("chat", null);
+});
+
+test("a first piece whose rollover fails still ends at the next pause", async () => {
+  const { dictation, made, events } = session(label);
+  const create = dictation.hooks.createRecorder;
+  dictation.start(0);
+  dictation.hooks.createRecorder = () => ({
+    ...made[0],
+    start() {
+      throw new Error("busy");
+    },
+  });
+  dictation.tick(FIRST_PIECE_MIN_MS, PAUSE_MS);
+  dictation.hooks.createRecorder = create;
+  dictation.tick(FIRST_PIECE_MIN_MS + 100, PAUSE_MS);
+  assert.equal(made.length, 2);
+  dictation.finish();
+  await settle();
+  assert.deepEqual(events.at(-1), ["settled"]);
 });
 
 test("a refusal found by the key check keeps what was recorded", async () => {
