@@ -735,7 +735,10 @@ def test_dry_run_refuses_only_an_unfinished_adoption(monkeypatch, tmp_path, unfi
     runtime.paths.supervisor.mkdir(parents=True, exist_ok=True)
     (runtime.paths.supervisor / "adoption.json").write_text("{}")
     monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(active=lambda: None))
-    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: runtime)
+    inspected: list[dict] = []
+    monkeypatch.setattr(
+        driver, "SystemRuntime", lambda *args, **kwargs: inspected.append(kwargs) or runtime
+    )
     monkeypatch.setattr(migration, "unfinished", lambda runtime: unfinished)
     monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
 
@@ -751,3 +754,5 @@ def test_dry_run_refuses_only_an_unfinished_adoption(monkeypatch, tmp_path, unfi
         driver.update.__wrapped__(
             SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
         )
+    # An adoption may stop before the schema 3 config exists.
+    assert inspected[0] == {"allow_legacy_config": True}

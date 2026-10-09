@@ -369,7 +369,7 @@ def _adoption_unfinished(paths: Paths) -> bool:
         return False
     from rcp_supervisor import migration
 
-    return migration.unfinished(SystemRuntime(paths))
+    return migration.unfinished(SystemRuntime(paths, allow_legacy_config=True))
 
 
 @_serialized_preparation
