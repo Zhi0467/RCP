@@ -1,6 +1,10 @@
 # Active implementation handoffs
 
-None. Unfinished agent-link work is tracked in issue #280.
+- [Branch navigation and continuation](branch-navigation-and-continuation.md):
+  design only; project reopen on reverification, phone reload route, branch
+  picker, and human turns on ended Auto-research children.
+
+Unfinished agent-link work is tracked in issue #280.
 
 ## Open live checks
 
