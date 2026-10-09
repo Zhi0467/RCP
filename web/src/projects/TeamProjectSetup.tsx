@@ -246,21 +246,12 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
           }
         });
         if (!current || stopped) return;
-        // Server setup goes through the login this connection already uses
-        // unless the human chose another one; the probe then decides between
-        // running it here and opening a terminal where sudo can prompt.
-        const routed =
-          current.operator_route === null
-            ? await configureDesktopServerOperatorRoute(current.connection_id, {
-                ssh_target: current.ssh_target,
-                mode: serverOperatorModeFor(current.ssh_target),
-              })
-            : current;
-        if (stopped) return;
-        setConnection(routed);
-        if (routed.operator_route) {
-          setOperatorTarget(routed.operator_route.ssh_target);
-          const checked = await probeDesktopServerOperator(routed.connection_id);
+        setConnection(current);
+        // An operator route is a separate capability the human grants, so the
+        // connection's own login is only offered as the draft until they check it.
+        setOperatorTarget(current.operator_route?.ssh_target ?? current.ssh_target);
+        if (current.operator_route) {
+          const checked = await probeDesktopServerOperator(current.connection_id);
           if (!stopped) setProbe(checked);
         }
       })
@@ -1299,8 +1290,21 @@ export function ProvisioningStatus({
       )}
       {desktop && connection && request.can_run_setup && !overrideOpen && (
         <p className="provisioning-hint">
-          The app runs setup over your SSH login, {connection.ssh_target}. Use a different login
-          only if this one cannot use sudo on the server, such as when an admin account does setup.{" "}
+          {connection.operator_route
+            ? `The app runs setup over ${connection.operator_route.ssh_target}.`
+            : `The app can run setup for you over your SSH login, ${connection.ssh_target}, if it can use sudo there without a password.`}{" "}
+          Use a different login only if this one cannot use sudo on the server, such as when an
+          admin account does setup.{" "}
+          {!connection.operator_route && (
+            <button
+              className="button ghost tiny"
+              type="button"
+              disabled={busy !== null}
+              onClick={onSaveAndProbe}
+            >
+              Check this login
+            </button>
+          )}
           <button className="button ghost tiny" type="button" onClick={() => setOverrideOpen(true)}>
             Use a different SSH login
           </button>
