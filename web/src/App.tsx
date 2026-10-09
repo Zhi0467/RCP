@@ -1016,10 +1016,12 @@ function MemberApp({
   const [showArchivedRefs, setShowArchivedRefs] = useState(false);
   const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
   const graphTargetKey = graphSessionKey("", graphTarget);
-  // Episode changes are what move a branch's head, merge state, or chain member.
-  const graphRefsKey = JSON.stringify(
+  // Episode changes move a branch's chain member or merge state; any turn on
+  // the shown ref moves its head, which can also change its merge state.
+  const graphRefsKey = JSON.stringify([
+    graph.revision,
     episodes.map((episode) => [episode.episode_id, episode.status, episode.graph_branch]),
-  );
+  ]);
   useEffect(() => {
     if (!projectId || !backendSessionReady) return;
     let current = true;
