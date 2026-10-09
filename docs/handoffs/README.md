@@ -1,11 +1,5 @@
 # Active implementation handoffs
 
-- [Standby voice robustness](handoff-2026-10-08-standby-voice-robustness.md)
-  — all slices implemented (hidden-window voice, idle limit, saved
-  transcripts with Resume, non-strict tools, broad reads, playbook, request
-  ids for voice writes, project tags in history, a draggable panel); first
-  live session passed and its three bugs are fixed; remaining: the live
-  checks it did not cover and a re-drive of the dashboard flow.
 - [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
   — implemented on its PR: chat wake sessions, event parsing, the validator
   poller, state-transfer retry, and Apply again; live checks and the remaining
@@ -95,7 +89,17 @@ stands in for it. Run one on disposable data, then delete its line here.
   including after moving to another project; gracefully stop a running
   Experiment and Auto-research episode; run one terminal command; repeat from a
   team member's phone web app; a forgotten session ends at the idle limit, and
-  closing or suspending the page ends the paid session.
+  closing or suspending the page ends the paid session. On macOS 14 or later
+  (checked 2026-10-08: another Space and a minimized window), a fully occluded
+  or app-hidden window keeps talking, with page timers measured while hidden
+  (if they lag, the deadlines need a native backstop);
+  on macOS 13, hiding ends voice with a notice. Kill the network mid-session
+  and Resume: the topic returns and earlier work is summarized once; Resume
+  on a second device ends the first with a notice. Ask for last night's
+  consolidation report and open a PDF artifact. "Make me a live dashboard"
+  waits for the tap before saying it started, opens the running chat on
+  request, and opens the finished result on yes, also after Resume; the
+  session's history row names that project.
 - Agent browser: a Codex Work turn with Browser on, on a disposable team
   server, opens a localhost service the agent started there, and the session
   survives a service restart; a real OpenCode Work turn reuses a page and

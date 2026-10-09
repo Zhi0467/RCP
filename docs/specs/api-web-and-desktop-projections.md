@@ -1054,7 +1054,9 @@ artifacts live, and what only the member may do. It names no tools. Voice sends
 the same text with its session request.
 
 `rcp_list_read_routes` and `rcp_read` (`web/src/webmcp/reads.ts`) give voice and
-WebMCP one broad reader over the open project's GET routes. One code-owned
+WebMCP one broad reader over the open project's GET routes. Reads are broad and
+writes stay named and card-gated. Voice gets no page-driving or browser tool:
+it could press Confirm itself and would send the screen to OpenAI. One code-owned
 policy drives both discovery and enforcement: discovery is the backend OpenAPI
 schema intersected with it. It admits every GET under
 `/api/projects/{open project}`, root included, except downloads, redirect-only
