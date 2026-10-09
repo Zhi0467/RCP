@@ -178,7 +178,9 @@ if (restoredSelection && message.value.trim()) offerSelection(restoredSelection)
 general.addEventListener("click", () => offerSelection({ kind: "whole" }));
 askFix?.addEventListener("click", () => {
   if (!viewerState?.can_comment) return;
-  offerSelection({ kind: "whole" }, document.getElementById("pageErrorMessage").textContent);
+  // A draft already anchored to a selection keeps it.
+  const selection = current && message.value.trim() ? current : { kind: "whole" };
+  offerSelection(selection, document.getElementById("pageErrorMessage").textContent);
 });
 // Cancel drops the comment being written, so its text never lands on the next selection.
 const dropCurrent = () => {
