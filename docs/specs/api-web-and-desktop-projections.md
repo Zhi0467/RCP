@@ -1177,7 +1177,9 @@ receipt before dispatch and sends it as the `Idempotency-Key` header. The
 admission route records (project, member, key) with the admitted task or
 episode in the same transaction as the admission; a repeat by the same member
 returns the original result, and the key from another member or route is a
-409. Rows are pruned 30 days plus one session's hard cap after admission.
+409. Rows are never pruned, because Resume renews a transcript's retention and
+its receipts can resend a key at any later time; they go with their task or
+episode.
 `GET /api/projects/{id}/client-requests/{key}` returns the admitted ids, or 404
 when nothing was admitted or the row is not the caller's. Resume turns a found
 key into an accepted receipt with a watch; a 404, which may be an admission

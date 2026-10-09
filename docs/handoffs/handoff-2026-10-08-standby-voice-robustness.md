@@ -227,7 +227,8 @@ can only block the identical send. The human chose to fix this in this PR.
   table, written in the same transaction as the admission. A repeat of the
   same key by the same member returns the original result and admits nothing
   new; the same key from another member or another route is refused. Rows
-  older than the transcript retention plus one hard cap are pruned.
+  are never pruned (Resume renews a transcript's retention, so a receipt can
+  resend its key at any later time).
 - `GET /api/projects/{id}/client-requests/{key}` returns the admitted task or
   episode id, or 404 when nothing was admitted under that key.
 - Resume reconciles each unknown receipt through that lookup: accepted becomes

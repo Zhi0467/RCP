@@ -163,32 +163,24 @@ def test_failed_admission_rolls_back_request_and_task(request_app, monkeypatch):
     assert store.agent_tasks(project_id) == []
 
 
-def test_new_request_prunes_expired_keys(request_app):
-    from datetime import datetime, timedelta
-
-    from rcp.limits import VOICE_HARD_CAP_SECONDS, VOICE_TRANSCRIPT_RETENTION_SECONDS
-
+def test_an_old_key_still_returns_its_original_admission(request_app):
     store = request_app.state.background_tasks.store
     project_id = request_app.state.default_project_id
-    old_key, new_key = str(uuid.uuid4()), str(uuid.uuid4())
+    key = str(uuid.uuid4())
     with signed_in_client(request_app) as client:
         url = f"/api/projects/{project_id}/tasks/project_chat"
-        first = client.post(url, json=chat_request(), headers={"Idempotency-Key": old_key})
+        first = client.post(url, json=chat_request(), headers={"Idempotency-Key": key})
         assert first.status_code == 202
-        expired_at = (
-            datetime.fromisoformat(store.now())
-            - timedelta(seconds=VOICE_TRANSCRIPT_RETENTION_SECONDS + VOICE_HARD_CAP_SECONDS + 1)
-        ).isoformat()
-        expire = "UPDATE client_requests SET created_at = ?"
+        # Far past any transcript window, a resumed receipt's re-ask still matches.
         with store.connection() as connection:
-            connection.execute(expire, (expired_at,))
-        second = client.post(url, json=chat_request(), headers={"Idempotency-Key": new_key})
-        assert second.status_code == 202
-        with store.connection() as connection:
-            keys = {row["key"] for row in connection.execute("SELECT key FROM client_requests")}
-            assert keys == {new_key}
-            # With no later admission to prune it, the lookup itself refuses the key.
-            connection.execute(expire, (expired_at,))
-        lookup = f"/api/projects/{project_id}/client-requests/{new_key}"
-        assert client.get(lookup).status_code == 404
-    assert store.agent_task(first.json()["operation_id"]) is not None
+            connection.execute(
+                "UPDATE client_requests SET created_at = '2000-01-01T00:00:00+00:00'"
+            )
+        other = client.post(
+            url, json=chat_request(), headers={"Idempotency-Key": str(uuid.uuid4())}
+        )
+        assert other.status_code == 202
+        again = client.post(url, json=chat_request(), headers={"Idempotency-Key": key})
+        assert again.json()["operation_id"] == first.json()["operation_id"]
+        lookup = client.get(f"/api/projects/{project_id}/client-requests/{key}")
+        assert lookup.status_code == 200
