@@ -68,7 +68,12 @@ def test_client_request_replay_admits_once_and_lookup_returns_id(request_app, tm
         assert {task.operation_id for task in store.agent_tasks(project_id)} == before
         found = client.get(f"/api/projects/{project_id}/client-requests/{key}")
         assert found.status_code == 200
-        assert found.json() == {"route": route, result_id: first.json()[result_id]}
+        expected = {"route": route, result_id: first.json()[result_id]}
+        if route == "experiments/run":
+            # The started episode comes back too, so Resume watches the whole loop.
+            expected["episode_id"] = store.agent_task(operation_id).episode_id
+            assert expected["episode_id"]
+        assert found.json() == expected
         assert (
             client.get(f"/api/projects/{project_id}/client-requests/{uuid.uuid4()}").status_code
             == 404

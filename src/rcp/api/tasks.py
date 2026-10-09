@@ -434,7 +434,12 @@ def client_request(
     if record is None or record.user_id != member.user_id:
         raise HTTPException(status_code=404, detail="Client request not found")
     if record.operation_id is not None:
-        return {"route": record.route, "operation_id": record.operation_id}
+        found = {"route": record.route, "operation_id": record.operation_id}
+        # An Experiment start admits its first turn; Resume watches the whole episode.
+        task = store.agent_task(record.operation_id)
+        if task is not None and task.episode_id is not None:
+            found["episode_id"] = task.episode_id
+        return found
     assert record.episode_id is not None
     return {"route": record.route, "episode_id": record.episode_id}
 
