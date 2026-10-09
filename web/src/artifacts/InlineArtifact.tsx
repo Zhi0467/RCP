@@ -281,7 +281,7 @@ export function InlineArtifact({
         </button>
         {onKeep && state?.can_keep !== false && (
           <button type="button" data-artifact-action="keep" disabled={keeping} onClick={onKeep}>
-            Keep
+            Save to Artifacts
           </button>
         )}
         {download}
