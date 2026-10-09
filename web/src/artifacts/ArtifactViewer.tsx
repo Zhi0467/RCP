@@ -114,7 +114,7 @@ export function ArtifactViewer() {
   const collapsed = placement.collapsed;
   useEffect(() => {
     const generation = ++requestGeneration.current;
-    if (!target || target.kind !== "artifact" || collapsed) return;
+    if (!target || target.kind !== "artifact" || collapsed || hidden) return;
     let disposed = false;
     let permanentError = false;
     const controller = new AbortController();
@@ -193,7 +193,7 @@ export function ArtifactViewer() {
       // reread their state when the panel lets go of the artifact.
       announceArtifactVersionChange(target.artifactId);
     };
-  }, [target, collapsed]);
+  }, [target, collapsed, hidden]);
 
   const title = !target
     ? null
