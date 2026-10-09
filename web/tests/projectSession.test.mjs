@@ -11,6 +11,7 @@ const server = await createServer({
 });
 const {
   emptyProjectSessionState,
+  heartbeatNamesUnknownTask,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   projectHeartbeatMetadataChanged,
@@ -986,4 +987,12 @@ test("unchanged branch heartbeat ignores main-cache freshness metadata", () => {
     }),
     { kind: "ignore" },
   );
+});
+
+test("a heartbeat naming an unloaded task asks for the task list", () => {
+  const loaded = [{ operation_id: "mine" }];
+  assert.equal(heartbeatNamesUnknownTask({ latest_task_id: "teammate" }, loaded), true);
+  assert.equal(heartbeatNamesUnknownTask({ latest_task_id: "mine" }, loaded), false);
+  assert.equal(heartbeatNamesUnknownTask({ latest_task_id: null }, loaded), false);
+  assert.equal(heartbeatNamesUnknownTask({}, loaded), false);
 });

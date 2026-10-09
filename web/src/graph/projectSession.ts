@@ -549,6 +549,15 @@ export function projectHeartbeatMetadataChanged(
   );
 }
 
+/** True when the heartbeat names a task the page has not loaded, such as a teammate's. */
+export function heartbeatNamesUnknownTask(
+  observed: { latest_task_id?: string | null },
+  tasks: readonly { operation_id: string }[],
+): boolean {
+  const latest = observed.latest_task_id;
+  return Boolean(latest) && !tasks.some((task) => task.operation_id === latest);
+}
+
 export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =
   { kind: "ignore" } | { kind: "reload_active" } | { kind: "reconcile_inactive"; state: T };
 

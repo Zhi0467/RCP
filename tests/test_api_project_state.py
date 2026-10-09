@@ -253,6 +253,21 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
             AssertionError("an unchanged head must not start a full refresh")
         ),
     )
+    # A teammate's new task changes no graph revision; the heartbeat names it.
+    store = app.state.background_tasks.store
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="teammate-task",
+            project_id=project_id,
+            kind="node_chat",
+            status="running",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
 
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -273,6 +288,7 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "snapshot_freshness": "fresh",
         "last_remote_sync_at": None,
         "compute_probes_probed_at": None,
+        "latest_task_id": "teammate-task",
     }
     assert probes == 1
 

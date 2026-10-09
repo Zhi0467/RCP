@@ -172,6 +172,7 @@ def _branch_revision(
             "snapshot_freshness": "fresh",
             "last_remote_sync_at": None,
             "graph_mutation": availability.model_dump(mode="json"),
+            "latest_task_id": store.latest_agent_task_id(project_id),
         }
 
 
@@ -315,6 +316,8 @@ async def cached_project_revision(
         # Probes finish in the background after startup or a settings save;
         # a change here tells an open page to reload their results.
         "compute_probes_probed_at": snapshot["compute_probes_probed_at"],
+        # A teammate's new task changes no graph revision; this tells the page.
+        "latest_task_id": await asyncio.to_thread(store.latest_agent_task_id, project_id),
     }
 
 

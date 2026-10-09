@@ -152,6 +152,7 @@ import {
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
+  heartbeatNamesUnknownTask,
   projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
@@ -850,6 +851,8 @@ export default function App() {
     restoreProjectTasks,
   } = useAgentTasks({ projectId, reportError: reportErrorNotice });
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
+  const projectTasksRef = useRef(projectTasks);
+  projectTasksRef.current = projectTasks;
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1301,6 +1304,10 @@ export default function App() {
         if (isActiveProject(requestedProjectId)) {
           if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
           window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
+          if (heartbeatNamesUnknownTask(observation, projectTasksRef.current)) {
+            const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
+            if (isActiveProject(requestedProjectId)) replaceTasks(nextTasks);
+          }
           if (
             canonicalRevisionNeedsReload(
               observedRevision,
@@ -1370,6 +1377,7 @@ export default function App() {
       isProjectTabOpen,
       reloadAuthoritativeProject,
       removeProject,
+      replaceTasks,
       runProjectHeartbeat,
     ],
   );

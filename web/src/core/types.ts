@@ -1852,6 +1852,8 @@ export interface GraphRevisionSnapshot {
   last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
   compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
   graph_mutation?: GraphMutationAvailability;
+  /** The newest visible task, so a teammate's new task reaches an open page. */
+  latest_task_id?: string | null;
 }
 
 export interface RevisionedTransitionGraph {
