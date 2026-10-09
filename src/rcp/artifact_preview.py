@@ -11,6 +11,7 @@ import io
 import json
 import os
 import stat
+import time
 from contextlib import suppress
 from functools import partial
 from html.parser import HTMLParser
@@ -150,6 +151,8 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def send_head(self):
+        if isinstance(self.server, PreviewServer):
+            self.server.last_request = time.monotonic()
         parts = unquote(urlsplit(self.path).path).split("/")
         if any(part in {"..", "."} or "\x00" in part for part in parts):
             self.send_error(403)
@@ -214,23 +217,33 @@ class PreviewHandler(SimpleHTTPRequestHandler):
         return stream
 
 
-def preview_server(directory: Path, port: int = 0) -> ThreadingHTTPServer:
+class PreviewServer(ThreadingHTTPServer):
+    last_request = 0.0
+
+
+def preview_server(directory: Path, port: int = 0) -> PreviewServer:
     # Resolve platform aliases in parent paths, but refuse a symlink as the root.
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("Preview directory must be a real directory")
     handler = partial(PreviewHandler, directory=str(directory.resolve()))
-    return ThreadingHTTPServer(("127.0.0.1", port), handler)
+    server = PreviewServer(("127.0.0.1", port), handler)
+    server.last_request = time.monotonic()
+    return server
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--idle-seconds", type=float, required=True)
     args = parser.parse_args(argv)
     with preview_server(args.directory, args.port) as server:
         print(f"http://127.0.0.1:{server.server_port}/", flush=True)
+        # Exit once idle: the agent's shell may not be allowed to kill this process.
+        server.timeout = 1
         with suppress(KeyboardInterrupt):
-            server.serve_forever()
+            while time.monotonic() - server.last_request < args.idle_seconds:
+                server.handle_request()
 
 
 if __name__ == "__main__":

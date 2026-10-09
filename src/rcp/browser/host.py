@@ -705,7 +705,8 @@ class HostRuntime:
         preview_source = self.tools / "artifact_preview.py"
         atomic_write(preview_source, self.request["artifact_preview_source"])
         preview_launcher = launcher.parent / PREVIEW_COMMAND
-        command = shlex.join(["python3", str(preview_source)])
+        idle = str(self.request["limits"]["preview_idle"])
+        command = shlex.join(["python3", str(preview_source), "--idle-seconds", idle])
         atomic_write(preview_launcher, f'#!/bin/sh\nexec {command} "$@"\n')
         preview_launcher.chmod(0o700)
         return str(launcher.parent)

@@ -594,6 +594,9 @@ OWNER_SIGN_IN_TTL_MINUTES = 10
 
 # Host browser lifecycle; CLI idle values convert to milliseconds at launch.
 BROWSER_SESSION_IDLE_SECONDS = 1800
+# An agent's artifact preview exits on its own after this long without a request,
+# since a Discuss shell may not be allowed to kill it.
+ARTIFACT_PREVIEW_IDLE_SECONDS = 120
 BROWSER_SESSION_START_TIMEOUT_SECONDS = 60
 BROWSER_SESSION_CLOSE_TIMEOUT_SECONDS = 30
 BROWSER_READINESS_TIMEOUT_SECONDS = 60

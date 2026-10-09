@@ -4,9 +4,10 @@ import html
 import json
 import re
 import threading
+import time
 from http.client import HTTPConnection
 
-from rcp.artifact_preview import preview_server
+from rcp.artifact_preview import main, preview_server
 from rcp.artifacts import html_preview_document
 
 
@@ -58,3 +59,9 @@ def test_preview_matches_viewer_and_refuses_escaping_paths(tmp_path):
             connection.close()
             server.shutdown()
             thread.join()
+
+
+def test_preview_exits_once_idle(tmp_path):
+    started = time.monotonic()
+    main([str(tmp_path), "--idle-seconds", "0.5"])
+    assert time.monotonic() - started < 5

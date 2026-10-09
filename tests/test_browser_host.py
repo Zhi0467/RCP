@@ -31,6 +31,7 @@ def request(tmp_path: Path, owner: str = "first", **extra) -> dict:
             "readiness": 10,
             "install": 10,
             "idle": 1800,
+            "preview_idle": 120,
             "cap": 1,
         },
         **extra,

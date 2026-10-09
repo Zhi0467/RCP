@@ -45,6 +45,7 @@ def _data_dir(data_dir: Path) -> Path:
 def _limits() -> dict[str, int]:
     return {
         "idle": limits.BROWSER_SESSION_IDLE_SECONDS,
+        "preview_idle": limits.ARTIFACT_PREVIEW_IDLE_SECONDS,
         "start": limits.BROWSER_SESSION_START_TIMEOUT_SECONDS,
         "close": limits.BROWSER_SESSION_CLOSE_TIMEOUT_SECONDS,
         "readiness": limits.BROWSER_READINESS_TIMEOUT_SECONDS,

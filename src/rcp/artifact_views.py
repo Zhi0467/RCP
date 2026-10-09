@@ -231,7 +231,7 @@ def artifact_viewer_document(
         if keep_url and not descriptor.is_kept()
         else ""
     )
-    scripts = [_error_shell_script(error_channel, inline=False)] if kind == "html" else []
+    scripts: list[str] = []
     if keep:
         config = json.dumps({"keepUrl": keep_url}).replace("<", "\\u003c")
         scripts.append(
@@ -261,6 +261,10 @@ def artifact_viewer_document(
         else ""
     )
     rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
+    # Only the Keep and comment scripts call RCP; the error notice needs no connection.
+    connects = bool(scripts)
+    if kind == "html":
+        scripts.insert(0, _error_shell_script(error_channel, inline=False))
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><script>(()=>{{{_THEME_SYNC_JS}}})();</script><style>
@@ -276,7 +280,7 @@ iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:bloc
 {panel.style if panel else ""}</style></head><body>
 {header}<main><div class="canvas">{preview}</div>{page_error}{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
     csp = "default-src 'none'; script-src 'unsafe-inline'; "
-    if scripts:
+    if connects:
         csp += "connect-src 'self'; "
     csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
     return document, csp

@@ -88,8 +88,9 @@ directory through the viewer's sanitizer and opaque-sandbox CSP, which
 `artifact_preview.py` owns for both. It sets no palette, so a page shows the
 fallback colors Expand and a download use. Because removed loads cause no
 browser error, the preview logs each removed loading attribute to the page
-console. Paths outside the directory and symlinks are refused. The agent stops the
-server when its check is done. Turns without a browser keep direct logic checks.
+console. Paths outside the directory and symlinks are refused. The server exits after
+`ARTIFACT_PREVIEW_IDLE_SECONDS` without a request, since a Discuss shell may
+not be allowed to stop it. Turns without a browser keep direct logic checks.
 
 Every card offers Download and Keep. A reply can instead show an artifact in
 place ([Artifacts inside a reply](#artifacts-inside-a-reply)). The file's type
