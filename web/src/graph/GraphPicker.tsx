@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from "react";
 import { graphSessionKey } from "../core/graphTarget";
 import type { GraphRef, GraphTargetRef } from "../core/types";
-import { graphPickerOptions, graphRefTarget } from "./graphPickerModel";
+import { graphPickerOptions, graphRefTarget, unlistedActiveBranch } from "./graphPickerModel";
 
 interface GraphPickerProps {
   refs: readonly GraphRef[];
@@ -22,6 +22,8 @@ export function GraphPicker({
 }: GraphPickerProps) {
   const selectId = useId();
   const options = graphPickerOptions(refs, activeRef, showArchived);
+  // Without its own option the select would show Main and could not switch to it.
+  const unlisted = unlistedActiveBranch(refs, activeRef);
   return (
     <section className="branch-graph-banner" aria-label="Graph picker">
       <span>
@@ -37,6 +39,7 @@ export function GraphPicker({
             if (ref) onSelect(graphRefTarget(ref));
           }}
         >
+          {unlisted !== null && <option value={graphSessionKey("", activeRef)}>{unlisted}</option>}
           {options.map((ref) => (
             <option
               key={graphSessionKey("", graphRefTarget(ref))}

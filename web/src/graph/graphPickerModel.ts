@@ -5,6 +5,17 @@ export function graphRefTarget(ref: GraphRef): GraphTargetRef {
   return ref.kind === "main" ? { kind: "main" } : { kind: "branch", branch_id: ref.branch_id };
 }
 
+/** The active branch when the loaded list does not have it yet (a branch newer than the list). */
+export function unlistedActiveBranch(
+  refs: readonly GraphRef[],
+  activeRef: GraphTargetRef,
+): string | null {
+  return activeRef.kind === "branch" &&
+    !refs.some((ref) => sameGraphTarget(graphRefTarget(ref), activeRef))
+    ? activeRef.branch_id
+    : null;
+}
+
 /** Main first; retain the API's branch order and always expose the active ref. */
 export function graphPickerOptions(
   refs: readonly GraphRef[],

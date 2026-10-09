@@ -65,11 +65,10 @@ def project_graph_refs(
         catalog=catalog,
         refresh_max_age_seconds=refresh_max_age_seconds,
     )
+    isolation = store.episode_isolation_states(project_id)
     for episode in branches.values():
         summary = summaries[episode.episode_id]
-        state = store.episode_isolation_state(
-            project_id, episode.isolation_owner_episode_id or summary.episode_id
-        )
+        state = isolation.get(episode.isolation_owner_episode_id or summary.episode_id)
         refs.append(
             BranchGraphRefResponse(
                 **summary.model_dump(), archived=state.graph_archived if state else False

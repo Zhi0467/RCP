@@ -15,9 +15,8 @@ const { conversationHref } = await server.ssrLoadModule("/src/chat/chatWorkspace
 const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
   "/src/experiments/experimentBoardModel.ts",
 );
-const { graphPickerOptions, selectionAfterGraphSwitch } = await server.ssrLoadModule(
-  "/src/graph/graphPickerModel.ts",
-);
+const { graphPickerOptions, selectionAfterGraphSwitch, unlistedActiveBranch } =
+  await server.ssrLoadModule("/src/graph/graphPickerModel.ts");
 const main = { kind: "main" };
 const branch = { kind: "branch", branch_id: "branch /+" };
 
@@ -30,7 +29,7 @@ test("project hashes encode refs and optional selections with existing wire valu
     projectViewHash("p", branch, "chats", { chatId: "chat /+" }),
     "#/projects/p?view=chats&chat=chat+%2F%2B&branch_id=branch+%2F%2B",
   );
-  const hash = projectViewHash("p", branch, "execution", { episodeId: "episode /+" });
+  const hash = projectViewHash("p", branch, "execution", { autoResearchEpisodeId: "episode /+" });
   const params = new URLSearchParams(hash.split("?")[1]);
   assert.equal(params.get("episode"), "episode /+");
   assert.equal(parseProjectHash(hash).autoResearchEpisodeId, "episode /+");
@@ -69,6 +68,9 @@ test("picker puts main first, retains branch order, and keeps an archived active
   assert.deepEqual(graphPickerOptions(refs, { kind: "branch", branch_id: "c" }), [m, b, c]);
   assert.deepEqual(graphPickerOptions(refs, main, true), [m, a, b, c]);
   assert.deepEqual(refs, [a, b, m, c]);
+  assert.equal(unlistedActiveBranch(refs, { kind: "branch", branch_id: "new" }), "new");
+  assert.equal(unlistedActiveBranch(refs, { kind: "branch", branch_id: "c" }), null);
+  assert.equal(unlistedActiveBranch(refs, main), null);
 });
 
 test("switch preserves view and only destination-owned selections", () => {

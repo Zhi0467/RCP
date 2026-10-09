@@ -57,7 +57,7 @@ export function graphTargetFromHash(hash: string): GraphTargetRef {
 export interface ProjectHashSelection {
   chatId?: string;
   /** Exact Auto-research selection on Runs; Experiment routes carry additional identity. */
-  episodeId?: string;
+  autoResearchEpisodeId?: string;
 }
 
 /** null view preserves the existing bare project route. */
@@ -70,9 +70,9 @@ export function projectViewHash(
   const params = new URLSearchParams();
   if (view !== null) params.set("view", view === "execution" ? "runs" : view);
   if (selection.chatId !== undefined) params.set("chat", selection.chatId);
-  if (selection.episodeId !== undefined) {
+  if (selection.autoResearchEpisodeId !== undefined) {
     params.set("mode", "auto_research");
-    params.set("episode", selection.episodeId);
+    params.set("episode", selection.autoResearchEpisodeId);
   }
   if (target.kind === "branch") params.set("branch_id", target.branch_id);
   return `#/projects/${encodeURIComponent(projectId)}${params.size ? `?${params}` : ""}`;
