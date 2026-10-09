@@ -364,14 +364,20 @@ def _check_update_source(previous: dict, capability: dict, emitter: EventEmitter
     return False
 
 
+def _adoption_unfinished(paths: Paths) -> bool:
+    if not os.path.lexists(paths.supervisor / "adoption.json"):
+        return False
+    from rcp_supervisor import migration
+
+    return migration.unfinished(SystemRuntime(paths))
+
+
 @_serialized_preparation
 def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     dry_run = arguments.confirm_target is None
     if not dry_run:
         recover(paths=paths)
-    elif store_for(paths).active() is not None or os.path.lexists(
-        paths.supervisor / "adoption.json"
-    ):
+    elif store_for(paths).active() is not None or _adoption_unfinished(paths):
         raise SupervisorError(
             "An unfinished deployment needs recovery, which a dry run never performs; "
             "restart the service or rerun a confirmed update to recover it first."
