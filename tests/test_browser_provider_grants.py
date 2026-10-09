@@ -15,6 +15,7 @@ import pytest
 
 from rcp.agents.command_mailbox import stage_command_mailbox
 from rcp.agents.provider_environment import ProviderProcessEnvironment
+from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.providers import ProviderTurnRequest, profile_for
 from rcp.providers.browser_grant import BrowserGrant
@@ -102,7 +103,7 @@ def test_discuss_browser_rules_and_command_config_agree(
         if provider == "claude":
             expected_bash = []
             if status == "granted":
-                expected_bash.append("Bash(playwright-cli:*)")
+                expected_bash += ["Bash(playwright-cli:*)", f"Bash({PREVIEW_COMMAND}:*)"]
             if broker:
                 expected_bash.append(f"Bash({client}:*)")
             assert [arg for arg in turn.command if arg.startswith("Bash(")] == expected_bash
@@ -126,6 +127,7 @@ def test_discuss_browser_rules_and_command_config_agree(
             expected_bash = {"*": "deny"}
             if status == "granted":
                 expected_bash["playwright-cli *"] = "allow"
+                expected_bash[f"{PREVIEW_COMMAND} *"] = "allow"
             if broker:
                 expected_bash[f"{client} *"] = "allow"
             assert rules.get("bash") == (expected_bash if len(expected_bash) > 1 else None)
