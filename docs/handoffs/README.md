@@ -1,9 +1,6 @@
 # Active implementation handoffs
 
-- [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
-  — implemented on its PR: chat wake sessions, event parsing, the validator
-  poller, state-transfer retry, and Apply again; live checks and the remaining
-  tool audit remain.
+None. Unfinished agent-link work is tracked in issue #280.
 
 ## Open live checks
 
@@ -81,6 +78,9 @@ stands in for it. Run one on disposable data, then delete its line here.
   connection saves (OpenAI and Gemini were checked live on 2026-10-04); in the
   desktop app, entering a team space right after a server update shows the new
   page without quitting.
+- Chat watcher wakes: with a real provider, a watcher wake continues the
+  chat's own native session, and the acceptance watcher tests pass where the
+  command broker's Unix socket is allowed.
 - Standby voice agent: with a real OpenAI key in a rebuilt desktop app (the
   microphone usage string changed), open a session, ask about a project and
   hear a correct answer, and have it open a node; by voice, send a Work
