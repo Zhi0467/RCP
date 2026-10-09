@@ -1,6 +1,8 @@
 # Active implementation handoffs
 
-None. Unfinished agent-link work is tracked in issue #280.
+- [Artifact page reliability](artifact-page-reliability.md): design, not started.
+
+Unfinished agent-link work is tracked in issue #280.
 
 ## Open live checks
 
