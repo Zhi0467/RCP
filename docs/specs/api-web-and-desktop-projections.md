@@ -1743,14 +1743,15 @@ record), execution profiles, compute connections, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
 
-Repository descriptors include `source` (`github` or `server_only`), nullable
-`github_identity`, and `can_connect`. For team projects these come from
-`effective_repositories`; only a server-only team repository has `can_connect`
-set. The display completion path reads this operational provenance afresh even
-for cached graph snapshots, so a completed Connect is immediately reflected.
-Personal repositories have no team provisioning source or Connect action; their
-descriptors use `server_only`, null identity, and false. These fields describe
-RCP-managed provisioning, not discovery of a personal checkout's Git remotes.
+Team repository descriptors include `source` (`github` or `server_only`),
+nullable `github_identity`, and `can_connect`, from `effective_repositories`;
+only a server-only team repository has `can_connect` set. The display
+completion path reads this operational provenance afresh even for cached graph
+snapshots, so a completed Connect is immediately reflected. Personal
+repositories, and team repositories whose provisioning evidence cannot be
+resolved, omit all three fields: nothing claims a server-only state or offers
+Connect without proof. These fields describe RCP-managed provisioning, not
+discovery of a personal checkout's Git remotes.
 
 `/api/space/machines` lists, creates, renames, and deletes machine cards; a card
 in use by any project, or whose use cannot be established, cannot be deleted,
