@@ -568,12 +568,16 @@ TRANSCRIPTION_UPLOAD_SECONDS = 15.0
 TRANSCRIPTION_ERROR_MAX_CHARS = 500
 
 # Standby voice lifetime (enforced by the page) and bounded session setup.
-VOICE_IDLE_SECONDS = 180
+# The member picks the idle limit in minutes, within this range.
+VOICE_IDLE_MINUTES_DEFAULT = 5
+VOICE_IDLE_MINUTES_MIN = 1
+VOICE_IDLE_MINUTES_MAX = 60
 VOICE_HARD_CAP_SECONDS = 1800
 VOICE_CONFIRM_TIMEOUT_SECONDS = 60
 VOICE_COMMENTARY_MAX_CHARS = 240
 VOICE_TOOLS_MAX_BYTES = 64 * 1024
 VOICE_SDP_MAX_CHARS = 64 * 1024
+VOICE_PLAYBOOK_MAX_CHARS = 8 * 1024
 
 # Pull-only digest projector lifecycle.
 DIGEST_RECHECK_SECONDS = 10.0
@@ -631,3 +635,18 @@ def ask_hold_seconds(shell_timeout_seconds: int | None) -> int:
         SHELL_TIMEOUT_DEFAULT_SECONDS if shell_timeout_seconds is None else shell_timeout_seconds
     )
     return timeout - COMMAND_CLIENT_WAIT_MARGIN_SECONDS
+
+
+# Member-private saved voice transcripts and bounded text-only Resume context.
+VOICE_TRANSCRIPT_REQUEST_MAX_BYTES = 512 * 1024
+VOICE_TRANSCRIPT_ENTRY_MAX_BYTES = 16 * 1024
+VOICE_TRANSCRIPT_SESSION_MAX_BYTES = 256 * 1024
+VOICE_TRANSCRIPT_MAX_ENTRIES = 512
+VOICE_TRANSCRIPT_MAX_RECEIPTS = 256
+# Projects one saved voice session names in its history row.
+VOICE_SESSION_MAX_PROJECTS = 20
+VOICE_TRANSCRIPT_MAX_SESSIONS = 20
+VOICE_TRANSCRIPT_RETENTION_SECONDS = 30 * 24 * 60 * 60
+VOICE_RESUME_MAX_MESSAGES = 128
+VOICE_RESUME_MAX_TOKENS = 8192
+VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS = 16

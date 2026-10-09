@@ -4,6 +4,9 @@ import test from "node:test";
 
 import {
   ApiError,
+  startEpisode,
+  startExperimentRun,
+  loadClientRequest,
   TURN_REFUSAL_REASONS,
   api,
   clearAllProjectCaches,
@@ -715,6 +718,29 @@ test("browser clients encode owners and send strict preference and install bodie
         { mode: "auto_research", invocation_ceiling: 2, browser_requested: true },
       ],
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("admission helpers attach only supplied keys and lookup reads the exact request", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (path, init) => {
+    requests.push({ path, init });
+    return new Response(JSON.stringify({ route: "experiments", episode_id: "episode-one" }));
+  };
+  try {
+    for (const start of [startEpisode, startExperimentRun]) {
+      await start("/api/projects/p", {});
+      await start("/api/projects/p", {}, "request-one");
+    }
+    assert.deepEqual(
+      requests.map(({ init }) => new Headers(init.headers).get("Idempotency-Key")),
+      [null, "request-one", null, "request-one"],
+    );
+    assert.equal((await loadClientRequest("p", "request-one")).episode_id, "episode-one");
+    assert.equal(requests.at(-1).path, "/api/projects/p/client-requests/request-one");
   } finally {
     globalThis.fetch = originalFetch;
   }

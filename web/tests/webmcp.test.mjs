@@ -13,6 +13,7 @@ const server = await createServer({
 const {
   WEBMCP_NODE_CONTENT_MAX_CHARS,
   WEBMCP_RESULT_MAX_CHARS,
+  RCP_PLAYBOOK,
   authorizeProjectAutoResearch,
   boundJsonToBudget,
   createWebMcpToolRegistry,
@@ -27,6 +28,7 @@ const {
   openProjectFromIndex,
   openProjectArtifact,
   openProjectView,
+  playbookToolDefinitions,
   projectArtifactToolDefinitions,
   projectAutoResearchToolDefinitions,
   projectConversationSendToolDefinitions,
@@ -48,6 +50,7 @@ const {
 } = await server.ssrLoadModule("/src/webmcp/index.ts");
 const { catalog, catalogAsFunctionTools, publishToolSurface, resolve, webMcpHostDefinitions } =
   await server.ssrLoadModule("/src/voice/toolCatalog.ts");
+const { projectBroadReadToolDefinitions } = await server.ssrLoadModule("/src/webmcp/reads.ts");
 const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } = await server.ssrLoadModule(
   "/src/voice/voiceTerminal.ts",
 );
@@ -927,7 +930,12 @@ const noEpisodeFetch = async () => {
 const noTaskFetch = async () => {
   throw new Error("the recent-task window should have answered without a fetch");
 };
-const noArtifactFetch = { loadEpisode: noEpisodeFetch, loadTask: noTaskFetch };
+const noSavedArtifacts = async () => [];
+const noArtifactFetch = {
+  loadEpisode: noEpisodeFetch,
+  loadTask: noTaskFetch,
+  loadSavedArtifacts: noSavedArtifacts,
+};
 
 test("artifact listing returns current task artifacts, kept state, and episode reports", async () => {
   const project = projectFixture();
@@ -975,6 +983,7 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
       {
         loadEpisode: noEpisodeFetch,
         loadTask: async () => null,
+        loadSavedArtifacts: noSavedArtifacts,
       },
     ),
     /Task missing is not present/,
@@ -1015,7 +1024,7 @@ test("an exact episode outside the recent window is fetched once from the backen
     tasks,
     episodes,
     { episode_id: "episode-old" },
-    { loadEpisode, loadTask: noTaskFetch },
+    { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
   );
   assert.deepEqual(
     listed.artifacts.map((artifact) => artifact.viewer_id),
@@ -1028,7 +1037,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       tasks,
       episodes,
       { episode_id: "episode-none" },
-      { loadEpisode, loadTask: noTaskFetch },
+      { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
     ),
     /Episode episode-none is not present/,
   );
@@ -1043,7 +1052,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       opened.push(record.viewer_url);
       return true;
     },
-    { loadEpisode, loadTask: noTaskFetch },
+    { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
   );
   assert.equal(receipt.viewer_id, "report:episode-old");
   assert.deepEqual(opened, ["/api/projects/project-1/episodes/episode-old/report/viewer"]);
@@ -1054,7 +1063,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       episodes,
       { viewer_id: "report:episode-none" },
       () => true,
-      { loadEpisode, loadTask: noTaskFetch },
+      { loadEpisode, loadTask: noTaskFetch, loadSavedArtifacts: noSavedArtifacts },
     ),
     /Artifact viewer report:episode-none is not present/,
   );
@@ -1074,6 +1083,7 @@ test("an exact task outside the recent window is fetched once for listing and op
   const fetched = [];
   const source = {
     loadEpisode: noEpisodeFetch,
+    loadSavedArtifacts: noSavedArtifacts,
     loadTask: async (operationId) => {
       fetched.push(operationId);
       return operationId === "task-old" ? older : null;
@@ -1126,6 +1136,7 @@ test("an exact task outside the recent window is fetched once for listing and op
     openProjectArtifact(project, tasks, episodes, { viewer_id: "task::artifact-1" }, () => true, {
       loadEpisode: noEpisodeFetch,
       loadTask: noTaskFetch,
+      loadSavedArtifacts: noSavedArtifacts,
     }),
     /is not present/,
   );
@@ -1550,6 +1561,23 @@ test("the conversation read tools are one bounded listing and one exact inspecti
   assert.match(result.content[0].text, /"chat_id":"chat-1"/);
 });
 
+test("a keyed fresh Send that replays its first turn reports that turn's chat", async () => {
+  const project = projectFixture();
+  const { transcript } = conversationFixtures();
+  const result = await sendProjectConversationMessage(
+    project,
+    [],
+    { message: "Draw the curve.", mode: "work" },
+    conversationSource(transcript),
+    false,
+    () => "chat-minted-on-retry",
+    async () => ({ operation_id: "task-first", request: { chat_id: "chat-first" } }),
+    "request-one",
+  );
+  assert.equal(result.chat_id, "chat-first");
+  assert.equal(result.task_id, "task-first");
+});
+
 test("conversation Send resumes the exact saved route and returns after durable task acceptance", async () => {
   const project = projectFixture();
   const { task, transcript } = conversationFixtures();
@@ -1572,15 +1600,18 @@ test("conversation Send resumes the exact saved route and returns after durable 
       created.push([kind, node]);
       return "new-chat";
     },
-    async (submission) => {
+    async (submission, requestId) => {
+      assert.equal(requestId, "request-one");
       submissions.push(submission);
       return {
         operation_id: "task-chat-2",
+        request: { chat_id: submission.chatId },
         status_label: "Queued",
         active: true,
         queued: true,
       };
     },
+    "request-one",
   );
   assert.deepEqual(created, []);
   assert.deepEqual(submissions, [
@@ -1633,6 +1664,7 @@ test("conversation Send creates only one fresh project or node conversation afte
         submissions.push(submission);
         return {
           operation_id: `task-${submissions.length}`,
+          request: { chat_id: submission.chatId },
           status_label: "Queued",
           active: true,
           queued: true,
@@ -1890,7 +1922,8 @@ test("Experiment Start revalidates the exact node and returns durable task ident
   const receipt = await startProjectExperiment(
     project,
     { experiment_id: "exp-1" },
-    async (node) => {
+    async (node, _ceiling, requestId) => {
+      assert.equal(requestId, "request-one");
       calls.push(node.id);
       return {
         operation_id: "experiment-task-1",
@@ -1902,6 +1935,7 @@ test("Experiment Start revalidates the exact node and returns durable task ident
         queued: true,
       };
     },
+    "request-one",
   );
   assert.deepEqual(calls, ["exp-1"]);
   assert.deepEqual(receipt, {
@@ -2085,11 +2119,14 @@ function evalToolDefinitions(state) {
   const { task, transcript } = conversationFixtures();
   const { tasks, episodes } = artifactFixtures();
   return [
+    ...playbookToolDefinitions(),
     ...projectReadToolDefinitions(project),
+    ...projectBroadReadToolDefinitions(project, () => new AbortController().signal),
     ...providerLoginToolDefinitions(async () => []),
     ...projectArtifactToolDefinitions(project, tasks, episodes, () => true, {
       loadEpisode: async () => null,
       loadTask: async () => null,
+      loadSavedArtifacts: noSavedArtifacts,
     }),
     ...projectConversationToolDefinitions(
       project,
@@ -2333,14 +2370,18 @@ test("Auto-research authorization takes the form's inputs and is offered only un
   assert.deepEqual(projectAutoResearchToolDefinitions(project, "refused", start), []);
   const [tool] = projectAutoResearchToolDefinitions(project, null, start);
   const receipt = JSON.parse(
-    (await tool.execute({ invocation_ceiling: 500, starting_instruction: " Probe " })).content[0]
-      .text,
+    (
+      await tool.execute(
+        { invocation_ceiling: 500, starting_instruction: " Probe " },
+        "request-one",
+      )
+    ).content[0].text,
   );
   assert.equal(receipt.episode_id, "auto-1");
   await tool.execute({ invocation_ceiling: 1, code_worktree: false });
   assert.deepEqual(starts, [
-    [500, "Probe", true],
-    [1, null, false],
+    [500, "Probe", true, "request-one"],
+    [1, null, false, undefined],
   ]);
   for (const invocation_ceiling of [0, 1.5, "3", undefined]) {
     await assert.rejects(authorizeProjectAutoResearch(project, { invocation_ceiling }, start));
@@ -2367,6 +2408,7 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
   const owners = {
     openNode: (id) => calls.push(["node", id]),
     openConversation: (opened) => calls.push(["conversation", opened.chat_id]),
+    openRunningConversation: (chatId) => calls.push(["running", chatId]),
     openRunRoute: (hash) => calls.push(["run", hash]),
     openTab: (view) => calls.push(["tab", view]),
     openArtifact: (record) => {
@@ -2396,6 +2438,16 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
   );
   assert.deepEqual(calls.at(-1), ["tab", "settings"]);
   await assert.rejects(open({ kind: "tab", id: "constructor" }));
+  // A chat whose first turn still runs has no saved transcript; its task opens it.
+  source.loadTranscript = async () => {
+    throw Object.assign(new Error("Chat not found"), { status: 404 });
+  };
+  const runningChat = tasks.find((task) => task.request?.chat_id)?.request.chat_id;
+  assert.ok(runningChat);
+  await open({ kind: "conversation", id: runningChat });
+  assert.deepEqual(calls.at(-1), ["running", runningChat]);
+  await assert.rejects(open({ kind: "conversation", id: "no-such-chat" }));
+  source.loadTranscript = async () => transcript;
   const [autoRoute, experimentRoute] = calls
     .filter(([kind]) => kind === "run")
     .map(([, hash]) => {
@@ -2463,13 +2515,13 @@ test("ordinary branch conversations can send from their matching graph view", as
     },
     async (submission) => {
       started.push(submission);
-      return { operation_id: "task-next" };
+      return { operation_id: "task-next", request: { chat_id: submission.chatId } };
     },
   );
   assert.equal(started.length, 1);
 });
 
-test("download-only files and PDFs are listed but never sent to the visual opener", async () => {
+test("download-only files are never opened; a PDF goes to the opener, which picks the PDF path", async () => {
   const project = projectFixture();
   const { tasks } = artifactFixtures();
   for (const view of ["file", "pdf"]) {
@@ -2485,20 +2537,20 @@ test("download-only files and PDFs are listed but never sent to the visual opene
     assert.equal(listed.artifacts[0].can_open, false);
     assert.equal(listed.artifacts[0].can_download, true);
     let opened = false;
-    await assert.rejects(
-      openProjectArtifact(
-        project,
-        [tasks[0]],
-        [],
-        { viewer_id: listed.artifacts[0].viewer_id },
-        () => {
-          opened = true;
-          return true;
-        },
-        noArtifactFetch,
-      ),
+    const opening = openProjectArtifact(
+      project,
+      [tasks[0]],
+      [],
+      { viewer_id: listed.artifacts[0].viewer_id },
+      () => {
+        opened = true;
+        return true;
+      },
+      noArtifactFetch,
     );
-    assert.equal(opened, false);
+    if (view === "pdf") await opening;
+    else await assert.rejects(opening);
+    assert.equal(opened, view === "pdf");
   }
 });
 
@@ -2545,4 +2597,80 @@ test("Experiment inspection filters same-node tasks and watchers by the open gra
       [`watch-${index}`],
     );
   });
+});
+
+test("artifact search covers the Artifacts panel without repeating what turns already show", async () => {
+  const project = projectFixture();
+  const { tasks } = artifactFixtures();
+  const saved = (id, artifactId, node) => ({
+    id,
+    name: `${id}.html`,
+    kind: "artifact",
+    created_at: "2026-08-31T10:00:00Z",
+    path: null,
+    operation_id: null,
+    artifact_id: artifactId,
+    episode_id: null,
+    episode_mode: null,
+    source_chat_href: null,
+    source_node_id: node,
+    viewer_url: null,
+    view: "html",
+    available: true,
+    can_download: true,
+    download_url: null,
+    can_open: true,
+    unavailable_reason: null,
+  });
+  const source = {
+    ...noArtifactFetch,
+    loadSavedArtifacts: async () => [
+      saved("artifact:task-1:artifact-1", "artifact-1", "hyp-1"),
+      saved("artifact:old", "old", "hyp-1"),
+    ],
+  };
+  const listed = await listProjectArtifacts(project, [tasks[0]], [], {}, source);
+  // The panel's copy of the turn's artifact marks it; only the panel-only entry is added.
+  const names = listed.artifacts.map((record) => record.name);
+  assert.deepEqual(names.sort(), ["artifact:old.html", "calibration.html"]);
+  assert.ok(listed.artifacts.every((record) => record.in_artifacts_panel));
+  const old = listed.artifacts.find((record) => record.name === "artifact:old.html");
+  assert.equal(
+    (await listProjectArtifacts(project, [tasks[0]], [], { node_id: "hyp-1" }, source)).total,
+    2,
+  );
+  const opened = [];
+  await openProjectArtifact(
+    project,
+    [tasks[0]],
+    [],
+    { viewer_id: old.viewer_id },
+    (record) => opened.push(record.artifact_id) > 0,
+    source,
+  );
+  assert.deepEqual(opened, ["old"]);
+  // Listed while its task was old, opened after the task entered the recent window.
+  const turnSaved = { ...saved("artifact:task-1:artifact-1", "artifact-1", "hyp-1") };
+  turnSaved.source_chat_href = "#/projects/project-1?view=chats&chat=chat-old";
+  const panelOnly = { ...source, loadSavedArtifacts: async () => [turnSaved] };
+  const before = await listProjectArtifacts(project, [], [], { chat_id: "chat-old" }, panelOnly);
+  assert.equal(before.total, 1);
+  opened.length = 0;
+  await openProjectArtifact(
+    project,
+    [tasks[0]],
+    [],
+    { viewer_id: before.artifacts[0].viewer_id },
+    (record) => opened.push(record.artifact_id) > 0,
+    panelOnly,
+  );
+  assert.deepEqual(opened, ["artifact-1"]);
+});
+
+test("voice and WebMCP hosts read one playbook, within the backend's size limit", async () => {
+  const [tool] = playbookToolDefinitions();
+  const result = JSON.parse((await tool.execute({})).content[0].text);
+  assert.equal(result.playbook, RCP_PLAYBOOK);
+  // src/rcp/limits.py VOICE_PLAYBOOK_MAX_CHARS refuses a longer voice session request.
+  assert.ok(RCP_PLAYBOOK.length <= 8 * 1024);
 });

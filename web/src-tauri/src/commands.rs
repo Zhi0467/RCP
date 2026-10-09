@@ -832,6 +832,11 @@ pub fn desktop_stop_dictation(session_id: String, finish: bool) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn desktop_keeps_voice_while_hidden() -> bool {
+    windows::keeps_voice_while_hidden()
+}
+
+#[tauri::command]
 pub fn desktop_notifications_enabled(
     app: AppHandle,
     window: WebviewWindow,

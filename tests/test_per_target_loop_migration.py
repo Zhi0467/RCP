@@ -57,7 +57,8 @@ def _legacy_database(path: Path) -> AppStore:
             "ON auto_research_child_experiments(project_id, control_node_id) "
             "WHERE state = 'pending'"
         )
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 44")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 44")
+        connection.execute("DROP TABLE client_requests")
         connection.execute(
             "UPDATE episodes SET stop_requested_at = ?, stop_initiated_by = 'legacy-actor' "
             "WHERE episode_id = 'live-main'",
@@ -97,8 +98,8 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
         43,
-        44,
-        ("per_target_experiment_loops_v1",),
+        45,
+        ("per_target_experiment_loops_v1", "client_requests_v1"),
     )
     readonly.close()
     with sqlite3.connect(path) as connection:
@@ -183,7 +184,7 @@ def test_per_target_migration_failure_rolls_back_and_reopens(tmp_path: Path, mon
         assert target != graph_target_json(GraphTargetRef())
         assert json.loads(target) == GraphTargetRef().model_dump()
     reopened = AppStore(path)
-    assert reopened.storage_schema_ledger_head() == 44
+    assert reopened.storage_schema_ledger_head() == 45
 
 
 def test_migration_cancellation_wakes_parent_once_without_launching(tmp_path: Path):

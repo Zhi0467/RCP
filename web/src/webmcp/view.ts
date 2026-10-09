@@ -14,6 +14,7 @@ import {
   type WebMcpToolDefinition,
   type WebMcpToolSpec,
   requiredStringInput,
+  taskChatId,
   webMcpTextResult,
   withExecute,
 } from "./shared";
@@ -28,6 +29,8 @@ import {
 export type WebMcpViewOwners = {
   openNode: (nodeId: string) => void;
   openConversation: (transcript: ChatTranscript) => void;
+  /** Opens a chat whose first turn still runs, as the Agents board does. */
+  openRunningConversation: (chatId: string) => void;
   openRunRoute: (hash: string) => void;
   openTab: (view: AppView) => void;
   openArtifact: (record: ProjectArtifactRecord, projectId: string) => boolean | Promise<boolean>;
@@ -87,12 +90,20 @@ export async function openProjectView(
     assertCurrent();
     owners.openNode(id);
   } else if (kind === "conversation") {
-    const transcript = await source.loadTranscript(id);
-    if (transcript.chat_id !== id) {
+    let transcript: ChatTranscript | null = null;
+    try {
+      transcript = await source.loadTranscript(id);
+    } catch (error) {
+      // A chat is saved when its first turn ends; until then only its task names it.
+      const notSaved = (error as { status?: number } | null)?.status === 404;
+      if (!notSaved || !tasks.some((task) => taskChatId(task) === id)) throw error;
+    }
+    if (transcript && transcript.chat_id !== id) {
       throw new Error(`Conversation ${id} returned a mismatched transcript.`);
     }
     assertCurrent();
-    owners.openConversation(transcript);
+    if (transcript) owners.openConversation(transcript);
+    else owners.openRunningConversation(id);
   } else if (kind === "run") {
     const episode = (await withExactEpisode(episodes, id, source)).find(
       (candidate) => candidate.episode_id === id,

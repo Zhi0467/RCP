@@ -1,5 +1,7 @@
 import { AudioLines, Check, LoaderCircle, PhoneOff, Settings, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DraggableWindow } from "../ui/DraggableWindow";
+import { VOICE_PANEL_SIZE_STORAGE_KEY } from "../ui/floatingWindow";
 import type { VoiceAgent } from "./useVoiceAgent";
 import type { VoicePin } from "./voiceExecutor";
 
@@ -14,7 +16,7 @@ export function VoiceButton({ voice, className }: { voice: VoiceAgent; className
       aria-label={label}
       aria-pressed={active}
       title={label}
-      onClick={() => (active ? voice.end() : void voice.open())}
+      onClick={() => (active ? voice.end() : voice.toggleHistory())}
     >
       {voice.phase === "starting" ? (
         <LoaderCircle className="spin" size={16} aria-hidden="true" />
@@ -135,19 +137,94 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
   );
 }
 
-/** The floating voice panel; it shows while a session runs or after one failed. */
-export function VoicePanel({
-  voice,
-  onOpenSettings,
-}: {
-  voice: VoiceAgent;
-  onOpenSettings: () => void;
-}) {
+type VoicePanelProps = { voice: VoiceAgent; onOpenSettings: () => void };
+
+/** The floating voice panel; it shows while a session runs or after one failed.
+ * It is a window the member can drag and resize so it never pins over the page. */
+export function VoicePanel(props: VoicePanelProps) {
+  const { voice } = props;
+  if (voice.phase === "idle" && !voice.historyOpen && !voice.problem) return null;
+  return (
+    <DraggableWindow
+      className="voice-window"
+      kind="voice"
+      resizable
+      sizeStorageKey={VOICE_PANEL_SIZE_STORAGE_KEY}
+    >
+      <VoicePanelContent {...props} />
+    </DraggableWindow>
+  );
+}
+
+function VoicePanelContent({ voice, onOpenSettings }: VoicePanelProps) {
   if (voice.phase === "idle") {
+    if (voice.historyOpen)
+      return (
+        <aside className="voice-panel" aria-label="Voice conversations" data-drag-handle>
+          <header>
+            <strong>Voice</strong>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Close"
+              onClick={voice.closeHistory}
+            >
+              <X size={14} />
+            </button>
+          </header>
+          <button
+            className="button primary compact"
+            type="button"
+            onClick={() => void voice.open()}
+          >
+            New conversation
+          </button>
+          {voice.historyError ? (
+            <p className="voice-panel-error" role="alert">
+              {voice.historyError}
+            </p>
+          ) : null}
+          <ol className="voice-history">
+            {voice.recentSessions.map((session) => (
+              <li key={session.id}>
+                <div className="voice-history-label">
+                  <time dateTime={new Date(session.updated_at * 1000).toISOString()}>
+                    {new Date(session.updated_at * 1000).toLocaleString()}
+                  </time>
+                  {session.projects?.length ? (
+                    <span className="voice-history-projects">
+                      {session.projects.map((project) => project.project_name).join(", ")}
+                    </span>
+                  ) : null}
+                </div>
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => void voice.open(session.id)}
+                >
+                  Resume
+                </button>
+                <button
+                  className="button secondary compact"
+                  type="button"
+                  onClick={() => void voice.deleteSession(session.id)}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ol>
+          {voice.nextOffset !== null ? (
+            <button className="button secondary compact" type="button" onClick={voice.moreHistory}>
+              More
+            </button>
+          ) : null}
+        </aside>
+      );
     if (!voice.problem) return null;
     const notConnected = voice.problem.code === "voice_not_connected";
     return (
-      <aside className="voice-panel voice-panel-problem" role="status">
+      <aside className="voice-panel voice-panel-problem" role="status" data-drag-handle>
         <p>
           {notConnected
             ? "The standby voice agent needs your own OpenAI connection. Choose one in Settings, under Standby voice agent, Runs on."
@@ -179,7 +256,7 @@ export function VoicePanel({
     );
   }
   return (
-    <aside className="voice-panel" aria-label="Voice">
+    <aside className="voice-panel" aria-label="Voice" data-drag-handle>
       <header>
         <AudioLines size={16} aria-hidden="true" />
         <strong>Voice</strong>
@@ -206,13 +283,18 @@ export function VoicePanel({
           </label>
         ))}
       </div>
+      {voice.problem ? (
+        <p className="voice-panel-error" role="status">
+          {voice.problem.text}
+        </p>
+      ) : null}
       {voice.settingsError ? (
         <p className="voice-panel-error" role="alert">
           {voice.settingsError}
         </p>
       ) : null}
       {voice.card ? <ConfirmationCard pin={voice.card} voice={voice} /> : null}
-      <ol className="voice-transcript" aria-live="polite">
+      <ol className="voice-transcript" aria-live="polite" data-text-selectable>
         {voice.transcript.map((line, index) => (
           <li key={index} data-role={line.role}>
             {line.text}
@@ -220,7 +302,8 @@ export function VoicePanel({
         ))}
       </ol>
       <p className="voice-disclosure">
-        Your audio, and the project content the agent reads, go to OpenAI. RCP keeps no transcript.
+        Your audio and the content the agent reads go to OpenAI. RCP saves text for 30 days; Resume
+        sends the saved conversation to OpenAI.
       </p>
     </aside>
   );

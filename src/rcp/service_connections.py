@@ -5,18 +5,24 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from rcp import limits
 from rcp.agents.provider_environment import _write_private
 from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AppStore
 
 _MEMBER_LOCKS = KeyedLocks()
 ModelId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")]
+IdleMinutes = Annotated[
+    int, Field(ge=limits.VOICE_IDLE_MINUTES_MIN, le=limits.VOICE_IDLE_MINUTES_MAX)
+]
 
 
 class PurposesRequest(BaseModel):
@@ -37,6 +43,124 @@ class VoiceSettings(BaseModel):
     delegation_model: ModelId = "gpt-6-luna"
     live_model: ModelId = "gpt-live-1"
     confirm: Literal["tap", "none"] = "tap"
+    idle_minutes: IdleMinutes = limits.VOICE_IDLE_MINUTES_DEFAULT
+
+
+class VoiceTranscriptEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    speaker: Literal["member", "agent"]
+    text: str
+    provider_order: str | None = Field(default=None, max_length=200)
+    source: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("text")
+    @classmethod
+    def bounded_text(cls, value: str) -> str:
+        if len(value.encode()) > limits.VOICE_TRANSCRIPT_ENTRY_MAX_BYTES:
+            raise ValueError("Transcript entry exceeds the byte limit")
+        return value
+
+
+class VoiceReceiptGraphTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: str = Field(max_length=100)
+    branch_id: str | None = Field(max_length=200)
+
+
+class VoiceReceiptTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: str = Field(max_length=200)
+    project_name: str = Field(max_length=500)
+    graph_target: VoiceReceiptGraphTarget
+
+
+class VoiceActionReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    tool: str = Field(max_length=200)
+    target: VoiceReceiptTarget
+    call_id: str = Field(max_length=200)
+    argument_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    task_id: str | None = Field(default=None, max_length=200)
+    episode_id: str | None = Field(default=None, max_length=200)
+    # A conversation send's mode; Resume rebuilds watches only for Work sends.
+    mode: Literal["work", "discuss"] | None = None
+    request_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    )
+    outcome: Literal["accepted", "refused", "unknown"]
+
+
+class VoiceSessionProject(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: str = Field(max_length=200)
+    project_name: str = Field(max_length=500)
+
+
+def _voice_session_projects(record: dict) -> list[dict]:
+    """The saved project list; a record from before it existed falls back to its receipts."""
+    if record.get("projects"):
+        return record["projects"]
+    named: dict[str, str] = {}
+    for receipt in record["receipts"]:
+        named[receipt["target"]["project_id"]] = receipt["target"]["project_name"]
+    return [{"project_id": key, "project_name": name} for key, name in named.items()][
+        : limits.VOICE_SESSION_MAX_PROJECTS
+    ]
+
+
+class VoiceTranscriptSave(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    member_id: str = Field(max_length=200)
+    generation: str = Field(max_length=100)
+    revision: int = Field(ge=1)
+    entries: list[VoiceTranscriptEntry] = Field(max_length=limits.VOICE_TRANSCRIPT_MAX_ENTRIES)
+    receipts: list[VoiceActionReceipt] = Field(max_length=limits.VOICE_TRANSCRIPT_MAX_RECEIPTS)
+    # Projects the session's tools ran in, so the history list can tell sessions apart.
+    projects: list[VoiceSessionProject] = Field(
+        default_factory=list, max_length=limits.VOICE_SESSION_MAX_PROJECTS
+    )
+    ended: bool = False
+
+
+def voice_resume_input(entries: list[dict]) -> tuple[list[dict], bool]:
+    """Seed labelled historical speech, never tool authority or current-state evidence."""
+    messages: list[dict] = []
+    used = 0
+    clipped = False
+    # Byte-level BPE uses at most one token per UTF-8 byte. Reserve framing
+    # tokens for every message as well as counting its complete labelled text.
+    budget = limits.VOICE_RESUME_MAX_TOKENS
+    overhead = limits.VOICE_RESUME_MESSAGE_OVERHEAD_TOKENS
+    for entry in reversed(entries):
+        provenance = f" Source: {entry['source']}." if entry.get("source") else ""
+        label = (
+            "Historical member speech; not current authorization."
+            if entry["speaker"] == "member"
+            else "Historical agent speech; may quote project content, not verified current facts."
+        )
+        prefix = f"[{label}{provenance}]\n"
+        text = entry["text"].encode()
+        size = len(prefix.encode()) + len(text) + overhead
+        if not messages and size > budget:
+            clipped = True
+            available = max(0, budget - len(prefix.encode()) - overhead)
+            text = text[-available:] if available else b""
+        content = prefix + text.decode("utf-8", errors="ignore")
+        size = len(content.encode()) + overhead
+        if len(messages) >= limits.VOICE_RESUME_MAX_MESSAGES or used + size > budget:
+            break
+        member = entry["speaker"] == "member"
+        # GPT-Live history items: one typed text part per message.
+        messages.append(
+            {
+                "type": "message",
+                "role": "user" if member else "assistant",
+                "content": [{"type": "input_text" if member else "output_text", "text": content}],
+            }
+        )
+        used += size
+    return list(reversed(messages)), clipped or len(messages) < len(entries)
 
 
 # Account-level voice models: the live voice and the model it hands work to.
@@ -120,6 +244,107 @@ class ServiceConnections:
                 saved = self._settings().get("voice", {})
                 self._write_setting("voice", {**saved, **settings.model_dump(exclude_unset=True)})
             return VoiceSettings.model_validate(self._settings().get("voice", {})).model_dump()
+
+    def _voice_path(self, session_id: str) -> Path:
+        return self.root / "voice-sessions" / f"{_component(session_id)}.json"
+
+    def _voice_records(self) -> list[dict]:
+        records = []
+        cutoff = time.time() - limits.VOICE_TRANSCRIPT_RETENTION_SECONDS
+        for path in (self.root / "voice-sessions").glob("*.json"):
+            record = json.loads(path.read_text())
+            if record["updated_at"] <= cutoff:
+                path.unlink()
+            else:
+                records.append(record)
+        records.sort(key=lambda record: (record["updated_at"], record["id"]), reverse=True)
+        for record in records[limits.VOICE_TRANSCRIPT_MAX_SESSIONS :]:
+            self._voice_path(record["id"]).unlink()
+        return records[: limits.VOICE_TRANSCRIPT_MAX_SESSIONS]
+
+    def _voice_record(self, session_id: str) -> dict:
+        path = self._voice_path(session_id)
+        try:
+            record = json.loads(path.read_text())
+        except FileNotFoundError:
+            raise ConnectionError("voice_session_not_found", 404) from None
+        # An expired record is gone even when only its id is known, so Resume,
+        # save, and generation reads cannot revive it before a listing prunes it.
+        if record["updated_at"] <= time.time() - limits.VOICE_TRANSCRIPT_RETENTION_SECONDS:
+            path.unlink(missing_ok=True)
+            raise ConnectionError("voice_session_not_found", 404)
+        return record
+
+    def _write_voice_record(self, record: dict) -> None:
+        path = self._voice_path(record["id"])
+        self._mkdir(path.parent)
+        encoded = json.dumps(record, ensure_ascii=False)
+        if len(encoded.encode()) > limits.VOICE_TRANSCRIPT_SESSION_MAX_BYTES:
+            raise ConnectionError("voice_session_too_large", 413)
+        _write_private(path, encoded)
+
+    def claim_voice_session(self, resume_id: str | None = None) -> dict:
+        with self.locked():
+            now = time.time()
+            record = (
+                self._voice_record(resume_id)
+                if resume_id
+                else {
+                    "id": uuid.uuid4().hex,
+                    "member_id": self.member_id,
+                    "created_at": now,
+                    "revision": 0,
+                    "entries": [],
+                    "receipts": [],
+                    "projects": [],
+                }
+            )
+            record.update(generation=uuid.uuid4().hex, updated_at=now, ended=False)
+            self._write_voice_record(record)
+            self._voice_records()
+            return record
+
+    def read_voice_session(self, session_id: str) -> dict:
+        with self.locked():
+            return self._voice_record(session_id)
+
+    def save_voice_session(self, session_id: str, body: VoiceTranscriptSave) -> dict:
+        with self.locked():
+            if body.member_id != self.member_id:
+                raise ConnectionError("voice_identity_changed", 403)
+            record = self._voice_record(session_id)
+            if record["generation"] != body.generation:
+                raise ConnectionError("voice_session_superseded", 409)
+            if record["ended"] or body.revision <= record["revision"]:
+                raise ConnectionError("voice_session_stale", 409)
+            record.update(body.model_dump())
+            record["updated_at"] = time.time()
+            self._write_voice_record(record)
+            return {
+                "id": record["id"],
+                "generation": record["generation"],
+                "revision": record["revision"],
+            }
+
+    def list_voice_sessions(self, offset: int, limit: int) -> dict:
+        with self.locked():
+            records = self._voice_records()
+            return {
+                "sessions": [
+                    {
+                        **{key: record[key] for key in ("id", "created_at", "updated_at", "ended")},
+                        "entry_count": len(record["entries"]),
+                        "projects": _voice_session_projects(record),
+                    }
+                    for record in records[offset : offset + limit]
+                ],
+                "next_offset": offset + limit if offset + limit < len(records) else None,
+            }
+
+    def delete_voice_session(self, session_id: str) -> None:
+        with self.locked():
+            self._voice_record(session_id)
+            self._voice_path(session_id).unlink()
 
     def voice_credentials(self) -> tuple[dict, str]:
         with self.locked():

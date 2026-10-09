@@ -57,6 +57,8 @@ import type {
   TeamDevicePairingStatus,
   TeamSession,
   VoiceSessionResponse,
+  VoiceSavedSession,
+  VoiceSessionPage,
   VoiceSettings,
 } from "./types";
 
@@ -502,10 +504,12 @@ export function loadEpisodes(
 export function startExperimentRun(
   path: string,
   request: AgentTaskRequest,
+  requestId?: string,
 ): Promise<ExperimentStartResponse> {
   return api<ExperimentStartResponse>(path, {
     method: "POST",
     body: JSON.stringify(request),
+    ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
   });
 }
 
@@ -523,9 +527,14 @@ export function loadSpaceRuns(): Promise<SpaceRunIndexEntry[]> {
   return api<SpaceRunIndexEntry[]>("/api/space/runs");
 }
 
-export function startEpisode(apiBase: string, request: StartEpisodeRequest): Promise<Episode> {
+export function startEpisode(
+  apiBase: string,
+  request: StartEpisodeRequest,
+  requestId?: string,
+): Promise<Episode> {
   return api<Episode>(`${apiBase}/episodes`, {
     method: "POST",
+    ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
     body: JSON.stringify(request),
   });
 }
@@ -817,19 +826,46 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
   return api("/api/voice/settings");
 }
 
-/** Only the confirm toggle; voice models change through the checked connection update. */
+/** The confirm toggle and idle limit; voice models change through the checked connection update. */
 export function saveVoiceSettings(
-  settings: Pick<VoiceSettings, "confirm">,
+  settings: Partial<Pick<VoiceSettings, "confirm" | "idle_minutes">>,
 ): Promise<VoiceSettings> {
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
-/** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
+/** Exchange the offer and allocate or claim a member-private transcript generation. */
 export function createVoiceSession(
-  body: { sdp_offer: string; tools: unknown[] },
+  body: { sdp_offer: string; tools: unknown[]; playbook: string; resume_id?: string },
   signal?: AbortSignal,
 ): Promise<VoiceSessionResponse> {
   return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
+}
+
+export function loadVoiceSessions(offset = 0): Promise<VoiceSessionPage> {
+  return api(`/api/voice/sessions?offset=${offset}&limit=5`);
+}
+
+export function loadVoiceGeneration(id: string): Promise<{ generation: string }> {
+  return api(`/api/voice/sessions/${encodeURIComponent(id)}/generation`);
+}
+
+export function saveVoiceSession(
+  record: VoiceSavedSession,
+): Promise<Pick<VoiceSavedSession, "id" | "generation" | "revision">> {
+  const { member_id, generation, revision, entries, receipts, ended } = record;
+  const projects = record.projects ?? [];
+  return api(
+    `/api/voice/sessions/${encodeURIComponent(record.id)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ member_id, generation, revision, entries, receipts, projects, ended }),
+    },
+    { retryIdentity: false },
+  );
+}
+
+export function deleteVoiceSession(id: string): Promise<void> {
+  return api(`/api/voice/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */
@@ -930,4 +966,45 @@ export function enableMachineLinger(machineId: string): Promise<MachineBrowserRe
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+/** A same-origin GET whose caller owns bounded body reading, including error bodies. */
+export async function apiReadResponse(path: string, signal: AbortSignal): Promise<Response> {
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin || url.username || url.password || url.hash) {
+    throw new Error("Read URL must stay on this origin.");
+  }
+  let response: Response;
+  try {
+    response = await fetch(url.href, {
+      method: "GET",
+      credentials: "same-origin",
+      redirect: "manual",
+      headers: { "Content-Type": "application/json" },
+      signal,
+    });
+  } catch (error) {
+    notifyTransportFailure(error);
+    throw error;
+  }
+  if (
+    response.status === 401 &&
+    !["/api/owner/exchange", "/api/owner/redeem"].includes(url.pathname)
+  ) {
+    window.dispatchEvent(new Event("rcp:session-required"));
+  }
+  if (response.status === 401 || response.status === 403) {
+    accessLossHandler?.();
+    window.dispatchEvent(new Event("rcp:read-access-lost"));
+  }
+  return response;
+}
+
+export function loadClientRequest(
+  projectId: string,
+  requestId: string,
+): Promise<{ route: string; operation_id?: string; episode_id?: string }> {
+  return api(
+    `/api/projects/${encodeURIComponent(projectId)}/client-requests/${encodeURIComponent(requestId)}`,
+  );
 }

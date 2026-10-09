@@ -92,6 +92,7 @@ import {
   setDesktopWebviewZoom,
   isDesktopRuntime,
   listenDesktopEvent,
+  openDesktopArtifactPdf,
   returnDesktopToPersonal,
   TEAM_TRANSPORT_RECOVERED,
   type BackendIdentityEventDetail,
@@ -216,6 +217,7 @@ import type {
   AgentUsageSnapshot,
   AppView,
   Episode,
+  ProjectArtifact,
   EpisodeIsolationChoice,
   MergeDiffPath,
   MergeEpisodeBody,
@@ -272,6 +274,8 @@ import {
   projectExperimentToolDefinitions,
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
+  playbookToolDefinitions,
+  useProjectBroadReadTools,
   providerLoginToolDefinitions,
   projectViewToolDefinitions,
   type WebMcpToolRegistry,
@@ -602,7 +606,17 @@ export default function App() {
   >(null);
   const showWebMcpArtifactViewer = useCallback(
     async (record: ProjectArtifactRecord, projectId: string) => {
-      if (record.view === "pdf" || record.view === "file") return false;
+      if (record.view === "pdf") {
+        // The panel's own path: the desktop's system PDF viewer; a browser offers Download.
+        if (!isDesktopRuntime() || !record.artifact_id) return false;
+        await openDesktopArtifactPdf({
+          projectId,
+          artifactId: record.artifact_id,
+          ...(record.task_id ? { taskId: record.task_id } : {}),
+        });
+        return true;
+      }
+      if (record.view === "file") return false;
       const response = await fetch(record.content_url, {
         method: "HEAD",
         cache: "no-store",
@@ -3003,7 +3017,11 @@ export default function App() {
   };
 
   const startAgentTask = useCallback(
-    async (kind: AgentTaskKind, request: AgentTaskRequest): Promise<AgentTask> => {
+    async (
+      kind: AgentTaskKind,
+      request: AgentTaskRequest,
+      requestId?: string,
+    ): Promise<AgentTask> => {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       try {
@@ -3014,6 +3032,7 @@ export default function App() {
           {
             method: "POST",
             body: JSON.stringify(request),
+            ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
           },
         );
         if (
@@ -3062,9 +3081,17 @@ export default function App() {
     },
     [apiBase],
   );
+  const loadWebMcpSavedArtifacts = useCallback(
+    () => api<ProjectArtifact[]>(`${apiBase}/artifacts`),
+    [apiBase],
+  );
   const webMcpArtifactSource = useMemo(
-    () => ({ loadEpisode: loadWebMcpEpisode, loadTask: loadWebMcpTask }),
-    [loadWebMcpEpisode, loadWebMcpTask],
+    () => ({
+      loadEpisode: loadWebMcpEpisode,
+      loadTask: loadWebMcpTask,
+      loadSavedArtifacts: loadWebMcpSavedArtifacts,
+    }),
+    [loadWebMcpEpisode, loadWebMcpTask, loadWebMcpSavedArtifacts],
   );
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
@@ -3074,7 +3101,11 @@ export default function App() {
     [project, startConversation],
   );
   const startWebMcpConversationTurn = useCallback(
-    (submission: ConversationTurnSubmission) => startConversationTurn(startAgentTask, submission),
+    (submission: ConversationTurnSubmission, requestId?: string) =>
+      startConversationTurn(
+        (kind, request) => startAgentTask(kind, request, requestId),
+        submission,
+      ),
     [startAgentTask],
   );
 
@@ -3158,6 +3189,7 @@ export default function App() {
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
+      requestId?: string,
     ): Promise<ExperimentStartResponse> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
@@ -3192,6 +3224,7 @@ export default function App() {
             ...isolation,
             browser_requested: browserRequested,
           },
+          requestId,
         );
         const expectedTarget = experimentStartTarget(
           graphTarget,
@@ -3267,12 +3300,16 @@ export default function App() {
     [startExperiment],
   );
   const startWebMcpExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number): Promise<ExperimentStartResponse> => {
+    async (
+      node: GraphNode,
+      invocationCeiling?: number,
+      requestId?: string,
+    ): Promise<ExperimentStartResponse> => {
       if (!project) throw new Error("No RCP project is open.");
       const pendingProjectId = project.id;
       setWebMcpExperimentStartProjectId(pendingProjectId);
       try {
-        return await startExperiment(node, invocationCeiling);
+        return await startExperiment(node, invocationCeiling, undefined, false, requestId);
       } finally {
         setWebMcpExperimentStartProjectId((current) =>
           current === pendingProjectId ? null : current,
@@ -3315,6 +3352,7 @@ export default function App() {
       startingInstruction: string | null,
       codeWorktree = true,
       browserRequested = false,
+      requestId?: string,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3325,14 +3363,18 @@ export default function App() {
         throw new Error("Wait for the current episode action to finish.");
       }
       try {
-        const started = await startEpisode(apiBase, {
-          mode: "auto_research",
-          browser_requested: browserRequested,
-          invocation_ceiling: invocationCeiling,
-          starting_instruction: startingInstruction,
-          // Omitted, the server turns code isolation on only where it is eligible.
-          ...(codeWorktree ? {} : { code_worktree: false }),
-        });
+        const started = await startEpisode(
+          apiBase,
+          {
+            mode: "auto_research",
+            browser_requested: browserRequested,
+            invocation_ceiling: invocationCeiling,
+            starting_instruction: startingInstruction,
+            // Omitted, the server turns code isolation on only where it is eligible.
+            ...(codeWorktree ? {} : { code_worktree: false }),
+          },
+          requestId,
+        );
         replaceEpisode(started);
         replaceExactAutoResearchSelection(started.project_id, started.episode_id);
         closeAutoResearchDialog();
@@ -3688,6 +3730,7 @@ export default function App() {
         selectCanonicalChat(transcript);
         openChatsRef.current(transcript.chat_id);
       },
+      openRunningConversation: (chatId) => openChatsRef.current(chatId),
       // Like the exact-selection owners, replace the address in place and apply its
       // selection; the route keeps the page's graph target and fires no hashchange.
       openRunRoute: (hash) => {
@@ -3713,11 +3756,18 @@ export default function App() {
       showWebMcpArtifactViewer,
     ],
   );
+  const broadReadTools = useProjectBroadReadTools(
+    webMcpProject,
+    backendSessionReady ? (actorIdentity?.user.user_id ?? null) : null,
+    verifiedHealth?.space_id ?? null,
+  );
   const webMcpTools = useMemo(() => {
     if (webMcpProject) {
       const project = webMcpProject;
       return [
+        ...playbookToolDefinitions(),
         ...projectReadToolDefinitions(project, episodes),
+        ...broadReadTools,
         ...providerLoginToolDefinitions(loadProviderLogins),
         ...projectArtifactToolDefinitions(
           project,
@@ -3752,7 +3802,12 @@ export default function App() {
           experimentStartRequiresSync,
           startWebMcpExperiment,
         ),
-        ...projectAutoResearchToolDefinitions(project, autoResearchRefusal, startAutoResearch),
+        ...projectAutoResearchToolDefinitions(
+          project,
+          autoResearchRefusal,
+          (ceiling, instruction, codeWorktree, requestId) =>
+            startAutoResearch(ceiling, instruction, codeWorktree, false, requestId),
+        ),
         ...projectEpisodeStopToolDefinitions(
           project,
           episodes,
@@ -3776,6 +3831,7 @@ export default function App() {
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
   }, [
     autoResearchRefusal,
+    broadReadTools,
     createWebMcpConversation,
     episodeAction,
     episodes,

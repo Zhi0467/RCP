@@ -278,6 +278,7 @@ def saved_artifacts(
                     path=f"artifacts/{artifact.kept_filename}" if artifact.kept_filename else None,
                     operation_id=task.operation_id,
                     artifact_id=artifact.artifact_id,
+                    episode_id=episode_id,
                     episode_mode=episode_mode,
                     source_chat_href=chat_origins.get(task.operation_id),
                     source_node_id=_source_node_id(store, project_id, task, episode_id),

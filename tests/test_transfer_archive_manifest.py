@@ -68,6 +68,7 @@ PROJECT_LINKED_TABLES = {
     "agent_usage",
     "artifact_imports",
     "artifact_revision_candidates",
+    "client_requests",
     "auto_research_apply_results",
     "auto_research_child_admissions",
     "auto_research_child_experiments",

@@ -3,6 +3,7 @@
 // The page owns the lifetime: every way the session ends goes through `end`.
 
 import { createVoiceSession } from "../core/api.ts";
+import { RCP_PLAYBOOK } from "../webmcp/playbook.ts";
 import { claimMicrophone, type MicrophoneClaim } from "./microphone.ts";
 import type { VoiceFunctionCall, VoiceIdentityGate } from "./voiceExecutor.ts";
 import type { VoiceLimits, VoiceSessionResponse } from "../core/types";
@@ -11,12 +12,14 @@ import type { VoiceLimits, VoiceSessionResponse } from "../core/types";
 const VOICE_CLOSE_WAIT_MS = 2_000;
 /** How long setup waits for ICE gathering, as in OpenAI's WebRTC sequence. */
 const VOICE_ICE_GATHER_WAIT_MS = 10_000;
+/** How often the session checks its idle and hard-cap deadlines. */
+const VOICE_DEADLINE_TICK_MS = 1_000;
 
 export type VoiceEndReason =
   "member" | "idle" | "hard_cap" | "hidden" | "identity" | "space" | "connection" | "upstream";
 
 export type VoiceSessionEvents = {
-  onTranscript: (role: "member" | "agent", delta: string) => void;
+  onTranscript: (role: "member" | "agent", delta: string, segment: string) => void;
   onFunctionCall: (call: VoiceFunctionCall) => void;
   onEnded: (reason: VoiceEndReason) => void;
 };
@@ -25,10 +28,11 @@ export type VoiceSessionDeps = {
   claim?: () => MicrophoneClaim;
   createPeer?: () => RTCPeerConnection;
   requestSession?: (
-    body: { sdp_offer: string; tools: unknown[] },
+    body: { sdp_offer: string; tools: unknown[]; playbook: string },
     signal?: AbortSignal,
   ) => Promise<VoiceSessionResponse>;
   playRemote?: (stream: MediaStream) => () => void;
+  now?: () => number;
 };
 
 export type VoiceSession = {
@@ -131,13 +135,21 @@ export async function openVoiceSession(
     const sdp = pc.localDescription?.sdp;
     if (!sdp) throw new Error("Voice has no local session description.");
     const answer = await (deps.requestSession ?? createVoiceSession)(
-      { sdp_offer: sdp, tools },
+      { sdp_offer: sdp, tools, playbook: RCP_PLAYBOOK },
       setup.signal,
     );
     checkSetup();
     await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp_answer });
     checkSetup();
-    session = startSession(answer.limits, pc, channel, claim, () => audio.stop?.(), events);
+    session = startSession(
+      answer.limits,
+      pc,
+      channel,
+      claim,
+      () => audio.stop?.(),
+      events,
+      deps.now ?? Date.now,
+    );
     return session;
   } catch (error) {
     audio.stop?.();
@@ -154,22 +166,48 @@ function startSession(
   claim: MicrophoneClaim,
   stopAudio: () => void,
   events: VoiceSessionEvents,
+  now: () => number,
 ): VoiceSession {
   let ending: Promise<void> | null = null;
   let markClosed: () => void = () => {};
   const closed = new Promise<void>((resolve) => {
     markClosed = resolve;
   });
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const hardCapTimer = setTimeout(() => void end("hard_cap"), limits.hard_cap_seconds * 1000);
+  // Absolute deadlines: a tick that runs late, after the Mac slept or the page was
+  // held back, ends the session then rather than granting the missed time.
+  const hardCapAt = now() + limits.hard_cap_seconds * 1000;
+  let idleAt = now() + limits.idle_seconds * 1000;
+  const endIfDue = (): boolean => {
+    if (ending) return true;
+    const time = now();
+    const reason = time >= hardCapAt ? "hard_cap" : time >= idleAt ? "idle" : null;
+    if (reason) void end(reason);
+    return reason !== null;
+  };
+  const deadlineTimer = setInterval(endIfDue, VOICE_DEADLINE_TICK_MS);
 
+  // Resume can finish its status reads before WebRTC opens the data channel.
+  const pendingCommentary: Record<string, unknown>[] = [];
+  channel.onopen = () => {
+    if (endIfDue()) return;
+    pendingCommentary.splice(0).forEach((event) => channel.send(JSON.stringify(event)));
+  };
   const send = (event: Record<string, unknown>) => {
     if (channel.readyState === "open") channel.send(JSON.stringify(event));
   };
+  // GPT-Live transcript deltas carry no item id or turn end, so the page marks
+  // its own boundaries: each tool result and each spoken announcement starts a
+  // new agent segment, which ends any quoted source and any pending offer.
+  let segment = 0;
+  let speaker: "member" | "agent" | null = null;
+  const transcript = (role: "member" | "agent", delta: string) => {
+    if (role !== speaker) segment += 1;
+    speaker = role;
+    events.onTranscript(role, delta, String(segment));
+  };
   const noteActivity = () => {
-    if (ending) return;
-    if (idleTimer !== null) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => void end("idle"), limits.idle_seconds * 1000);
+    if (endIfDue()) return;
+    idleAt = now() + limits.idle_seconds * 1000;
   };
 
   let finished = false;
@@ -178,6 +216,7 @@ function startSession(
   const finish = () => {
     if (finished) return;
     finished = true;
+    clearInterval(deadlineTimer);
     channel.close();
     pc.close();
     stopAudio();
@@ -191,8 +230,7 @@ function startSession(
       return ending;
     }
     endReason = reason;
-    clearTimeout(hardCapTimer);
-    if (idleTimer !== null) clearTimeout(idleTimer);
+    clearInterval(deadlineTimer);
     const waitForClose = channel.readyState === "open" && !options.immediate;
     send({ type: "session.close", event_id: eventId() });
     ending = waitForClose
@@ -214,16 +252,18 @@ function startSession(
     }
     // After End, only the close acknowledgement matters; a late call must not run.
     if (ending && event.type !== "session.closed") return;
+    // An event that arrives past a deadline ends the session instead of running.
+    if (!ending && endIfDue()) return;
     if (event.type === "session.input_transcript.delta" && typeof event.delta === "string") {
       noteActivity();
-      events.onTranscript("member", event.delta);
+      transcript("member", event.delta);
     } else if (
       event.type === "session.output_transcript.delta" &&
       typeof event.delta === "string"
     ) {
       // The assistant speaking is activity too; idle must not cut off a long answer.
       noteActivity();
-      events.onTranscript("agent", event.delta);
+      transcript("agent", event.delta);
     } else if (event.type === "session.closed") {
       markClosed();
       void end("upstream", { immediate: true });
@@ -246,11 +286,13 @@ function startSession(
       void end("connection", { immediate: true });
     }
   };
-  noteActivity();
 
   return {
     limits,
     sendFunctionOutput: (callId, output) => {
+      // A call that finished after a late deadline must not restart generation.
+      if (endIfDue()) return;
+      segment += 1;
       send({
         type: "response.item.create",
         event_id: eventId(),
@@ -258,22 +300,33 @@ function startSession(
       });
       send({ type: "response.create", event_id: eventId() });
     },
-    speak: (text) =>
-      send({
+    speak: (text) => {
+      if (endIfDue()) return;
+      segment += 1;
+      const event = {
         type: "session.commentary.append",
         event_id: eventId(),
         delegation_id: null,
         content: text.slice(0, limits.commentary_max_chars),
-      }),
+      };
+      if (channel.readyState === "connecting") pendingCommentary.push(event);
+      else send(event);
+    },
     noteActivity,
     end,
   };
 }
 
-/** A frozen page runs no timers, so the session ends as soon as the page hides or goes. */
-export function endOnPageSuspend(end: () => void): () => void {
+/**
+ * A frozen page runs no timers, so the session ends when the page freezes or goes.
+ * Hiding also ends it, unless the window keeps running scripts while hidden.
+ */
+export function endOnPageSuspend(
+  end: () => void,
+  { keepWhileHidden }: { keepWhileHidden: boolean },
+): () => void {
   const onVisibility = () => {
-    if (document.visibilityState === "hidden") end();
+    if (!keepWhileHidden && document.visibilityState === "hidden") end();
   };
   document.addEventListener("visibilitychange", onVisibility);
   document.addEventListener("freeze", end);

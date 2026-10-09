@@ -177,6 +177,7 @@ export function inspectProjectExperiment(
 type StartWebMcpExperiment = (
   node: GraphNode,
   invocationCeiling?: number,
+  requestId?: string,
 ) => Promise<ExperimentStartResponse>;
 
 /** A confirmed voice start passes `invocation_ceiling`; it must still be the node's own. */
@@ -184,13 +185,14 @@ export async function startProjectExperiment(
   project: ProjectSnapshot,
   input: Record<string, unknown>,
   startExperiment: StartWebMcpExperiment,
+  requestId?: string,
 ): Promise<Record<string, unknown>> {
   const node = exactExperiment(project, input);
   const ceiling = input.invocation_ceiling;
   if (ceiling !== undefined && ceiling !== node.invocation_ceiling) {
     throw new Error(`Experiment ${node.id}'s invocation ceiling changed; nothing started.`);
   }
-  const task = await startExperiment(node, ceiling as number | undefined);
+  const task = await startExperiment(node, ceiling as number | undefined, requestId);
   return {
     project_id: project.id,
     experiment_id: node.id,
@@ -264,8 +266,10 @@ export function projectExperimentToolDefinitions(
   if (!startIsDiscoverable) return [inspectTool];
   return [
     inspectTool,
-    withExecute(START_EXPERIMENT_TOOL, async (toolInput) =>
-      webMcpTextResult(await startProjectExperiment(project, toolInput, startExperiment)),
+    withExecute(START_EXPERIMENT_TOOL, async (toolInput, requestId) =>
+      webMcpTextResult(
+        await startProjectExperiment(project, toolInput, startExperiment, requestId),
+      ),
     ),
   ];
 }
@@ -382,12 +386,14 @@ type StartWebMcpAutoResearch = (
   invocationCeiling: number,
   startingInstruction: string | null,
   codeWorktree: boolean,
+  requestId?: string,
 ) => Promise<Episode>;
 
 export async function authorizeProjectAutoResearch(
   project: ProjectSnapshot,
   input: Record<string, unknown>,
   startAutoResearch: StartWebMcpAutoResearch,
+  requestId?: string,
 ): Promise<Record<string, unknown>> {
   const invocationCeiling = input.invocation_ceiling;
   if (
@@ -402,7 +408,12 @@ export async function authorizeProjectAutoResearch(
   if (typeof codeWorktree !== "boolean") {
     throw new Error("code_worktree must be a boolean when supplied.");
   }
-  const episode = await startAutoResearch(invocationCeiling, startingInstruction, codeWorktree);
+  const episode = await startAutoResearch(
+    invocationCeiling,
+    startingInstruction,
+    codeWorktree,
+    requestId,
+  );
   return {
     project_id: project.id,
     episode_id: episode.episode_id,
@@ -450,8 +461,10 @@ export function projectAutoResearchToolDefinitions(
 ): WebMcpToolDefinition[] {
   if (refusal) return [];
   return [
-    withExecute(AUTHORIZE_AUTO_RESEARCH_TOOL, async (toolInput) =>
-      webMcpTextResult(await authorizeProjectAutoResearch(project, toolInput, startAutoResearch)),
+    withExecute(AUTHORIZE_AUTO_RESEARCH_TOOL, async (toolInput, requestId) =>
+      webMcpTextResult(
+        await authorizeProjectAutoResearch(project, toolInput, startAutoResearch, requestId),
+      ),
     ),
   ];
 }

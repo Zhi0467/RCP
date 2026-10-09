@@ -19,7 +19,10 @@ export type WebMcpToolDefinition = {
     readOnlyHint?: boolean;
     untrustedContentHint?: boolean;
   };
-  execute: (input: Record<string, unknown>) => WebMcpToolResult | Promise<WebMcpToolResult>;
+  execute: (
+    input: Record<string, unknown>,
+    requestId?: string,
+  ) => WebMcpToolResult | Promise<WebMcpToolResult>;
 };
 
 /** A tool's fixed definition, independent of page state. `confirm` says whether one

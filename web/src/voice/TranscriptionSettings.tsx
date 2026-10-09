@@ -7,6 +7,7 @@ import {
   loadServiceConnections,
   loadServiceModels,
   loadVoiceSettings,
+  saveVoiceSettings,
   selectDictationService,
   updateServiceConnection,
 } from "../core/api";
@@ -79,6 +80,42 @@ function serviceChoice(connection: ServiceConnection): ServiceChoice {
 
 function failureText(failure: unknown): string {
   return serviceConnectionFailure(failure) ?? errorMessage(failure);
+}
+
+/** Minutes of silence before an open voice session ends; saved when the field is left. */
+function IdleMinutesField({
+  voice,
+  disabled,
+  run,
+}: {
+  voice: VoiceSettings;
+  disabled: boolean;
+  run: (kind: string, action: () => Promise<unknown>) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(String(voice.idle_minutes));
+  const save = () => {
+    const minutes = Number(draft);
+    if (minutes === voice.idle_minutes) return;
+    void run("voice-idle", () => saveVoiceSettings({ idle_minutes: minutes }));
+  };
+  return (
+    <label className="transcription-picker">
+      <span>Ends after silence (minutes)</span>
+      <input
+        type="number"
+        min={1}
+        max={60}
+        step={1}
+        value={draft}
+        disabled={disabled}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={save}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") save();
+        }}
+      />
+    </label>
+  );
 }
 
 /**
@@ -203,6 +240,14 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               Billed to that OpenAI account at OpenAI&apos;s rate for each minute of talk. Its
               models are on the connection below.
             </p>
+          ) : null}
+          {voice && voiceConnection ? (
+            <IdleMinutesField
+              key={voice.idle_minutes}
+              voice={voice}
+              disabled={disabled}
+              run={run}
+            />
           ) : null}
           <h3 className="transcription-group">Your services</h3>
           <div className="provider-login-list">

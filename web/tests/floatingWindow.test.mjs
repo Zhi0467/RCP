@@ -94,6 +94,11 @@ test("detail and chat use independent non-overlapping wide-screen defaults", () 
   const viewport = { width: 1440, height: 900 };
   assert.deepEqual(defaultFloatingPosition("chat", viewport), { x: 12, y: 118 });
   assert.deepEqual(defaultFloatingPosition("detail", viewport), { x: 838, y: 118 });
+  // Voice opens fully inside the bottom-right corner, then moves like any window.
+  const voice = defaultFloatingPosition("voice", viewport);
+  const voiceSize = floatingWindowSize("voice", viewport);
+  assert.equal(voice.x + voiceSize.width, viewport.width - 12);
+  assert.equal(voice.y + voiceSize.height, viewport.height - 12);
   assert.deepEqual(movedPosition({ x: 20, y: 30 }, { x: 100, y: 100 }, { x: 145, y: 80 }), {
     x: 65,
     y: 10,

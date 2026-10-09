@@ -1021,8 +1021,9 @@ The two terminal tools are voice-only. App publishes them for voice, but
 needs the member's tap, and a WebMCP host has no RCP card to show.
 
 Every call accepts exact ids returned by an RCP read tool and revalidates them
-against the current page snapshot before acting. Read results are bounded JSON,
-not generated summaries, and omit storage locators. Node inspection shortens
+against the current page snapshot before acting. Named read results are bounded
+JSON, not generated summaries, and omit storage locators. The broad reader
+below returns route responses as the backend sends them, paths included. Node inspection shortens
 oversized saved text, lists, object entry counts, and key names to fit its budget
 and names every shortened path, so exact content is never confused with
 truncated content. Conversation listing
@@ -1032,13 +1033,49 @@ holds, inspection and Send read the exact task behind its latest transcript
 message, so a conversation can continue only on its original graph target.
 An ordinary branch conversation can use Discuss and Work from that branch's
 workspace; a main workspace cannot resume its branch-bound session.
-Artifact and report listing and opening use the recent task and episode windows
-the page holds and report both window sizes; an exact `task_id`, task viewer id,
-or `episode_id` outside those windows is fetched from the existing task or
-episodes route rather than reported missing. Artifact opening uses the existing backend
-viewer inside the page after confirming current availability. A listed file with
-no viewer reports `can_open` false with its `view` and `can_download`; visual
-opening refuses it rather than navigating to a download.
+Artifact and report listing covers both places an artifact lives: the recent
+task and episode windows the page holds (it reports both window sizes) and the
+Artifacts panel inventory (`GET /api/projects/{id}/artifacts`). A panel entry
+the windows already show marks that record `in_artifacts_panel` instead of
+repeating it; a panel-only entry gets a `saved:` viewer id that resolves
+against the panel inventory, whatever the windows later hold. Node, task, chat,
+and episode filters match panel entries by their source fields, so a target
+whose tasks are older than the window still lists its kept outputs. An exact
+`task_id`, task viewer id, or `episode_id` outside the windows is fetched from
+the existing task or episodes route rather than reported missing. Artifact
+opening uses the existing backend viewer inside the page after confirming
+current availability. A PDF opens in the desktop's system viewer through the
+same command the panel uses. In a browser, a PDF or a download-only file is
+refused with where to tap Download; page agents never download.
+
+`rcp_get_playbook` returns RCP's plain-language playbook
+(`web/src/webmcp/playbook.ts`): what RCP is, how a request is routed, where
+artifacts live, and what only the member may do. It names no tools. Voice sends
+the same text with its session request.
+
+`rcp_list_read_routes` and `rcp_read` (`web/src/webmcp/reads.ts`) give voice and
+WebMCP one broad reader over the open project's GET routes. Reads are broad and
+writes stay named and card-gated. Voice gets no page-driving or browser tool:
+it could press Confirm itself and would send the screen to OpenAI. One code-owned
+policy drives both discovery and enforcement: discovery is the backend OpenAPI
+schema intersected with it. It admits every GET under
+`/api/projects/{open project}`, root included, except downloads, redirect-only
+routes, GETs with side effects (terminal reconciliation, Experiment stop
+settlement, digest marks, project reconciliation, merge-preview Git writes,
+the conversation worktree route's remote Git contact, the machine browser
+readiness probe, and live artifact snapshots, which read remote files over
+SSH), the `refresh`
+query flag, which reruns probes, and the chat `inventory` flag, which would list
+every graph's chats as the displayed one's. Repository file reads refuse any path whose
+component matches the credential denylist (for example `.env*`, `*.pem`, `.git`,
+`.ssh`, `id_rsa*`). Requests are built from admitted templates with validated
+parameters; the normalized URL must stay same-origin and in the open project.
+Redirects, SSE, and binary bodies are refused; bodies are read incrementally to
+a byte cap within one timeout, and identity or space loss cancels the read. A
+route with a `branch_id` parameter gets the displayed branch; `/history` needs
+a bounded revision window. Results are paged to the tool result cap and marked
+untrusted; voice receives them in an untrusted-data envelope that names the
+source tool and arguments.
 
 Newly discovered task artifacts read from RCP version storage. `kept_at` marks
 Keep even when `kept_filename` is null; that filename remains legacy metadata.
@@ -1074,7 +1111,9 @@ Auto-research episode, stopped through `POST .../episodes/{id}/stop`.
 `rcp_open_view({kind, id})` shows one exact node, conversation, run, or
 artifact viewer, or the Inbox, through the page's own owners. A run id is an
 episode id, opened through the same exact route as an episode notification: its
-Auto-research route or its Experiment's Runs entry. The view stays in the
+Auto-research route or its Experiment's Runs entry. A conversation whose
+first turn still runs has no saved transcript yet; it opens from its task, as
+the Agents board opens it. The view stays in the
 current project and graph target. It checks that the page still shows them
 before opening and never switches project or branch; only `rcp_open_project`
 changes project.
@@ -1092,29 +1131,80 @@ and human-authority paths can do so.
 The voice button opens one GPT-Live session for the member's page; a second
 click ends it. It works in the desktop app, the team browser app, and the team
 phone web app. Audio goes between the page and OpenAI over WebRTC; RCP never
-receives it and keeps no transcript.
+receives it. RCP keeps the session's text and action receipts as a
+member-private record ([decision](../decisions/2026-10-08-voice-keeps-member-private-text-transcripts.md)).
 
-`POST /api/voice/sessions` takes `{sdp_offer, tools}`, where `tools` is
-`catalogAsFunctionTools()` with a size cap. The backend reads the member's
-OpenAI preset connection that holds the `voice` purpose, and creates a
-Live session with Responses delegation, `parallel_tool_calls: false`, the
-member's delegation model, and RCP's fixed instructions. It returns
-`{sdp_answer, limits}` and keeps no session state. With no such connection it
+`POST /api/voice/sessions` takes `{sdp_offer, tools, playbook, resume_id?}`,
+where `tools` is `catalogAsFunctionTools()` with a size cap and `playbook` is
+the page's RCP playbook, bounded by `VOICE_PLAYBOOK_MAX_CHARS`. The backend
+reads the member's OpenAI preset connection that holds the `voice` purpose, and
+creates a Live session with Responses delegation, `parallel_tool_calls: false`,
+non-strict function tools (strict mode would make every optional field
+required), the member's delegation model, and RCP's fixed instructions followed
+by the playbook, for both the live and the delegated model. Only after OpenAI
+answers does it create the session record, or for `resume_id` claim a new
+generation of that record; an upstream failure changes no record. The claim
+lands when OpenAI answers, before the page applies that answer, so a Resume
+whose page then fails to connect has still taken the record and the older page
+ends as superseded; Resume again recovers it. It returns
+`{sdp_answer, session, input_truncated, limits}`. With no such connection it
 returns `voice_not_connected` (409); an OpenAI failure returns
 `voice_upstream_failed` (502) with a bounded message. `limits` carries
-`idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`, and
-`commentary_max_chars` from `limits.py`, and the page enforces them.
+`idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`,
+`commentary_max_chars`, and the transcript bounds from `limits.py`, and the
+page enforces them.
 
-`GET /api/voice/settings` returns `{live_model, delegation_model, confirm}`
-from the member's private settings file; a session uses the saved `live_model`
-(default `gpt-live-1`) and `delegation_model`. `PUT` takes only `{confirm}`:
-the voice models change only through the checked connection update below, and
-the card sends only the models the member changed.
+The session record lives with the member's service connections on the current
+space's backend and keeps the newest 20 sessions, each until 30 days after its
+last update; member removal deletes it. `GET /api/voice/sessions` lists record
+metadata with paging, `PUT /api/voice/sessions/{id}` saves entries and receipts
+under the record's generation and a rising revision, `GET
+/api/voice/sessions/{id}/generation` lets a page learn it was superseded, and
+`DELETE` removes one. A stale revision, a superseded generation, a deleted
+record, or another member's save is refused. Entries hold speaker (`member` or
+`agent`), text, provider order, and the source a quoted read came from;
+receipts hold the tool, its target, the accepted task or episode id, and the
+outcome. Resume passes the record's text as `session.input` (user and assistant
+messages only, at most 128 messages and a byte budget that guarantees OpenAI's
+8,192-token limit, newest kept), keeps the unknown-outcome fence of every
+unresolved receipt, reloads accepted task and episode ids into the watch loop,
+and speaks one fixed summary of what finished and what still runs. The newest
+Resume of a record wins; the older page ends with a notice. The voice panel
+lists recent sessions with Resume and Delete, each tagged with the projects
+its tools ran in (the page saves them with the record, at most 20). It is a floating window that opens
+in the bottom-right corner; the member drags it anywhere and resizes it from
+its corners, and the size is remembered.
+
+Each voice write (a conversation Send, an Experiment Start, an Auto-research
+authorization) carries a page-minted UUID4 request id. The page saves it in the
+receipt before dispatch and sends it as the `Idempotency-Key` header. The
+admission route records (project, member, key) with the admitted task or
+episode in the same transaction as the admission; a repeat by the same member
+returns the original result, and the key from another member or route is a
+409. Rows are never pruned, because Resume renews a transcript's retention and
+its receipts can resend a key at any later time; they go with their task or
+episode.
+`GET /api/projects/{id}/client-requests/{key}` returns the admitted ids (an
+Experiment start also names its episode, so Resume watches the loop), or 404
+when nothing was admitted or the row is not the caller's. Resume turns a found
+key into an accepted receipt with a watch; a 404, which may be an admission
+still in flight, or an unanswered lookup leaves the receipt unknown. A
+re-ask reuses the receipt's key, so a send still in flight is never admitted
+twice.
+
+`GET /api/voice/settings` returns `{live_model, delegation_model, confirm,
+idle_minutes}` from the member's private settings file; a session uses the
+saved `live_model` (default `gpt-live-1`) and `delegation_model`, and its
+`idle_seconds` limit comes from `idle_minutes` (default 5, range 1 to 60, in
+`limits.py`). `PUT` takes `confirm`, `idle_minutes`, or both, and keeps the
+other field: the voice models change only through the checked connection update
+below, and the card sends only the models the member changed.
 `confirm` is `tap` (the default) or `none`; the panel's toggle sets it. In the Dictation and voice card, the
 **Standby voice agent** section picks the connection it **Runs on** (Off, or an
 OpenAI connection). Choosing a connection gives it the `voice` purpose, which
 RCP checks against OpenAI before saving. The voice models are set on that
-connection's card (see Dictation below).
+connection's card (see Dictation below). With a connection chosen, **Ends
+after silence (minutes)** sets `idle_minutes`.
 
 The page runs each delegated function call through the shared catalog's
 `resolve`, as the member. It runs one call at a time, ignores a repeated
@@ -1150,12 +1240,22 @@ full terminal power.
 
 The page owns the session's lifetime. It ends the session on End, the idle
 limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,
-leaving the space, and the page going hidden, frozen, or away. It sends
+leaving the space, and the page freezing or going away. The idle and hard-cap
+deadlines are absolute times checked every second and on every event, so an
+event that arrives after a late tick ends the session instead of extending it.
+Hiding the page also ends it, except in a desktop window that keeps running
+while hidden: the main window disables WebKit background throttling, which
+macOS 14 and later honor, and `desktop_keeps_voice_while_hidden` reports
+whether this window does. Browsers, macOS 13, and an older shell end on hiding,
+and the panel says why. It sends
 `session.close`, waits a bounded time for `session.closed`, then closes the
 peer. After End, it runs no further calls. While open, the session speaks
 first only when a Work turn, Experiment, or Auto-research episode it started
 finishes or needs the member, polling that record through its own project's
-routes; the spoken text is a fixed template with no authored content.
+routes; the spoken text is a fixed template with no authored content. A finish
+offers its result; `rcp_open_finished_result` opens it only on the member's
+next reply, under the current project and graph guards, and the offer expires
+after that reply or the next agent response. Nothing opens on its own.
 
 ## Application surfaces
 

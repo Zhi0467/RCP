@@ -103,6 +103,7 @@ pub fn run() {
             commands::choose_repository_folder,
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
+            commands::desktop_keeps_voice_while_hidden,
             commands::desktop_notifications_enabled,
             commands::desktop_set_notifications,
             commands::desktop_test_notification,

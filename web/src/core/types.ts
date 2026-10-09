@@ -3473,6 +3473,8 @@ export interface VoiceSettings {
   confirm: "tap" | "none";
   /** The live voice model the member talks to. */
   live_model: string;
+  /** Minutes of silence after which an open session ends. */
+  idle_minutes: number;
 }
 
 /** The page enforces these; the backend owns their values. */
@@ -3485,7 +3487,45 @@ export interface VoiceLimits {
 
 export interface VoiceSessionResponse {
   sdp_answer: string;
-  limits: VoiceLimits;
+  limits: VoiceLimits & {
+    transcript_entry_max_bytes: number;
+    transcript_session_max_bytes: number;
+    transcript_max_receipts: number;
+    transcript_max_entries: number;
+  };
+  session: VoiceSavedSession;
+  input_truncated: boolean;
+}
+
+export interface VoiceSavedSession {
+  id: string;
+  member_id: string;
+  generation: string;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  ended: boolean;
+  entries: import("../voice/voiceExecutor").VoiceTranscriptEntry[];
+  receipts: import("../voice/voiceExecutor").VoiceReceipt[];
+  /** Projects this session's tools ran in; older records have none. */
+  projects?: VoiceSessionProject[];
+}
+
+export interface VoiceSessionProject {
+  project_id: string;
+  project_name: string;
+}
+
+export type VoiceSessionMetadata = Pick<
+  VoiceSavedSession,
+  "id" | "created_at" | "updated_at" | "ended" | "projects"
+> & {
+  entry_count: number;
+};
+
+export interface VoiceSessionPage {
+  sessions: VoiceSessionMetadata[];
+  next_offset: number | null;
 }
 
 export interface TerminalWorkTurn {

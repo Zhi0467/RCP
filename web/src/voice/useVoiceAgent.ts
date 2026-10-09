@@ -3,24 +3,47 @@ import {
   api,
   ApiError,
   loadEpisodes,
+  loadClientRequest,
   loadVoiceSettings,
+  createVoiceSession,
+  loadVoiceSessions,
+  loadVoiceGeneration,
+  saveVoiceSession,
+  deleteVoiceSession,
   registerAccessLossHandler,
   saveVoiceSettings,
 } from "../core/api";
+import { desktopKeepsVoiceWhileHidden } from "../core/desktopRuntime";
 import { serviceConnectionFailure } from "./dictation";
 import { errorMessage } from "../core/errors";
 import { MicrophoneBusyError } from "./microphone";
 import { isControlNode } from "../graph/researchType";
-import { catalog, catalogAsFunctionTools, resolve } from "./toolCatalog";
-import type { AgentProfile, AgentTask, ProjectSnapshot, VoiceSettings } from "../core/types";
+import { catalog, catalogAsFunctionTools, resolve, type CatalogTool } from "./toolCatalog";
+import type {
+  AgentProfile,
+  AgentTask,
+  ProjectSnapshot,
+  VoiceSettings,
+  VoiceSavedSession,
+  VoiceSessionMetadata,
+  VoiceSessionResponse,
+} from "../core/types";
 import {
   createIdentityGate,
+  createVoiceSaveQueue,
+  noteVoiceProject,
+  appendVoiceTranscript,
+  boundVoiceTranscript,
+  createVoiceSourceLabels,
+  createFinishedResultOffer,
+  voiceWatchFromReceipt,
+  reconcileVoiceReceipts,
+  type VoiceReceiptTarget,
   createVoiceExecutor,
   episodeWatchStatus,
   taskWatchStatus,
   voiceCallOutcome,
   voiceCommentary,
-  voiceWatchFromResult,
   type VoiceConfirmMode,
   type VoiceIdentityGate,
   type VoicePin,
@@ -37,6 +60,8 @@ import { assertVoiceMayType, terminalCommandInput, terminalRepository } from "./
 import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp/index";
 
 const VOICE_WATCH_POLL_MS = 10_000;
+// Speech deltas batch into one saved snapshot; receipts and End save at once.
+const VOICE_TRANSCRIPT_SAVE_MS = 2_000;
 const VOICE_TRANSCRIPT_LINES = 40;
 const VOICE_CARD_PROMPT = "This needs your tap: press Confirm on the card on screen, or Decline.";
 
@@ -195,6 +220,8 @@ function appendTranscript(
 
 const END_NOTICES: Partial<Record<VoiceEndReason, string>> = {
   idle: "Voice ended after a quiet stretch.",
+  hidden:
+    "Voice ended when the window was hidden or suspended. Only the desktop app on macOS 14 or later keeps it open while hidden.",
   hard_cap: "Voice ended at its time limit.",
   connection: "Voice ended: the connection dropped.",
   upstream: "Voice ended by OpenAI.",
@@ -226,6 +253,19 @@ export function useVoiceAgent({
   const [problem, setProblem] = useState<VoiceProblem | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [transcript, setTranscript] = useState<VoiceTranscriptLine[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [recentSessions, setRecentSessions] = useState<VoiceSessionMetadata[]>([]);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const scopeRef = useRef({ spaceId, ready, epoch: 0 });
+  if (scopeRef.current.spaceId !== spaceId || scopeRef.current.ready !== ready) {
+    scopeRef.current = { spaceId, ready, epoch: scopeRef.current.epoch + 1 };
+  }
+  const ownerRef = useRef<object | null>(null);
+  const checkGenerationRef = useRef<(() => Promise<void>) | null>(null);
+  const resumeSummaryRef = useRef(false);
+  const watchTargetsRef = useRef(new Map<string, VoiceReceiptTarget>());
+  const offerRef = useRef<ReturnType<typeof createFinishedResultOffer> | null>(null);
   const [card, setCard] = useState<VoicePin | null>(null);
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
@@ -237,6 +277,13 @@ export function useVoiceAgent({
   const cardRef = useRef<{ settle: (confirmed: boolean) => void } | null>(null);
   const readyRef = useRef(ready);
   readyRef.current = ready;
+  // Unknown counts as not kept: an older desktop shell or a browser ends on hiding.
+  const [keepWhileHidden, setKeepWhileHidden] = useState(false);
+  useEffect(() => {
+    void desktopKeepsVoiceWhileHidden()
+      .then(setKeepWhileHidden)
+      .catch(() => setKeepWhileHidden(false));
+  }, []);
   // Confirm-mode writes in click order; `latest` fences every older settings result.
   const confirmSaves = useRef<{ chain: Promise<unknown>; latest: number }>({
     chain: Promise.resolve(),
@@ -275,99 +322,335 @@ export function useVoiceAgent({
     });
   }, []);
 
-  const open = useCallback(async () => {
-    if (sessionRef.current || startingRef.current || !readyRef.current) return;
-    startingRef.current = true;
-    const gate = createIdentityGate();
-    gateRef.current = gate;
-    watchesRef.current = [];
-    setProblem(null);
-    setTranscript([]);
-    setPhase("starting");
-    // A previous session's choice, possibly another member's, never carries over.
-    settingsRef.current = null;
-    setSettings(null);
-    setSettingsError(null);
-    const loadSeq = confirmSaves.current.latest;
-    void loadVoiceSettings()
-      .then((loaded) => {
-        // A mode change made while this read was in flight is newer than its answer.
-        if (gateRef.current !== gate || !gate.ok() || confirmSaves.current.latest !== loadSeq)
-          return;
-        settingsRef.current = loaded;
-        setSettings(loaded);
-      })
-      .catch((failure) => {
-        if (gateRef.current === gate) setSettingsError(errorMessage(failure));
-      });
-    // Project names as seen when each call was made; the member may navigate mid-call.
-    const projectNames = new Map<string, string>();
-    const executor = createVoiceExecutor({
-      gate,
-      catalog,
-      resolve,
-      // Until the member's choice loads, every gated call waits for a tap.
-      confirmMode: (): VoiceConfirmMode => settingsRef.current?.confirm ?? "tap",
-      pin: (name, args) => buildVoicePin(name, args, page.current),
-      requestConfirmation,
-      onSucceeded: (name, args, output) => {
-        if (!gate.ok()) return;
-        const watch = voiceWatchFromResult(name, args, output, (id) => projectNames.get(id) ?? "");
-        if (watch) watchesRef.current.push(watch);
-      },
-    });
-    let session: VoiceSession;
+  const currentTarget = useCallback((): VoiceReceiptTarget | null => {
+    const project = page.current.project;
+    return project
+      ? {
+          project_id: project.id,
+          project_name: project.name,
+          graph_target: {
+            kind: project.graph_target?.kind ?? "main",
+            branch_id:
+              project.graph_target?.kind === "branch" ? project.graph_target.branch_id : null,
+          },
+        }
+      : null;
+  }, [page]);
+
+  const refreshHistory = useCallback(async (offset = 0) => {
+    const scope = scopeRef.current;
+    setHistoryError(null);
     try {
-      session = await openVoiceSession(
-        catalogAsFunctionTools(),
-        {
-          onTranscript: (role, delta) =>
-            setTranscript((lines) => appendTranscript(lines, role, delta)),
-          onFunctionCall: (call) => {
-            const origin = page.current.project;
-            if (origin) projectNames.set(origin.id, origin.name);
-            setTranscript((lines) =>
-              setToolLine(lines, call.call_id, toolActivity(call.name, null)),
-            );
-            void executor.run(call).then((output) => {
-              // A call that outlives its session never reaches the next one.
-              if (output === null || !gate.ok()) return;
-              const text = toolActivity(call.name, voiceCallOutcome(output));
-              setTranscript((lines) => setToolLine(lines, call.call_id, text));
-              sessionRef.current?.sendFunctionOutput(call.call_id, output);
-            });
-          },
-          onEnded: (reason) => {
-            if (gateRef.current === gate) gateRef.current = null;
-            gate.lose();
-            sessionRef.current = null;
-            cardRef.current?.settle(false);
-            watchesRef.current = [];
-            setPhase("idle");
-            setStartedAt(null);
-            setTranscript([]);
-            const notice = END_NOTICES[reason];
-            setProblem(notice ? { code: null, text: notice } : null);
-          },
-        },
-        gate,
+      const result = await loadVoiceSessions(offset);
+      if (!scopeRef.current.ready || scopeRef.current.epoch !== scope.epoch) return;
+      setRecentSessions((previous) =>
+        offset ? [...previous, ...result.sessions] : result.sessions,
       );
+      setNextOffset(result.next_offset);
     } catch (failure) {
-      if (gateRef.current === gate) gateRef.current = null;
-      setPhase("idle");
-      // End, sign-out, or leaving during setup aborted it; that is not a failure to show.
-      setProblem(gate.ok() ? openFailure(failure) : null);
-      return;
-    } finally {
-      startingRef.current = false;
+      if (scopeRef.current.epoch === scope.epoch) setHistoryError(errorMessage(failure));
     }
-    // Identity loss, or an End pressed while the offer was in flight, has ended it already.
-    if (!readyRef.current) gate.lose();
-    if (!gate.ok()) return;
-    sessionRef.current = session;
-    setStartedAt(Date.now());
-    setPhase("open");
-  }, [page, requestConfirmation]);
+  }, []);
+
+  const open = useCallback(
+    async (resumeId?: string) => {
+      if (sessionRef.current || startingRef.current || !readyRef.current) return;
+      startingRef.current = true;
+      const gate = createIdentityGate();
+      gateRef.current = gate;
+      const owner = {};
+      ownerRef.current = owner;
+      const capturedEpoch = scopeRef.current.epoch;
+      const sameOwner = () =>
+        ownerRef.current === owner &&
+        scopeRef.current.ready &&
+        scopeRef.current.epoch === capturedEpoch;
+      // A retired session still finishes its own saves (its End snapshot among
+      // them) while the member's identity scope holds; a new owner never blocks it.
+      const sameScope = () => scopeRef.current.ready && scopeRef.current.epoch === capturedEpoch;
+      let record: VoiceSavedSession | null = null;
+      let bounds: VoiceSessionResponse["limits"] | null = null;
+      let endedNotice: string | null = null;
+      const saves = createVoiceSaveQueue<VoiceSavedSession>(async (snapshot) => {
+        // Revision allocation is serialized with the request, not with incoming deltas.
+        snapshot.revision = (record?.revision ?? snapshot.revision) + 1;
+        if (record) record.revision = snapshot.revision;
+        await saveVoiceSession(snapshot);
+      }, sameScope);
+      const fenceFailure = async (failure: unknown) => {
+        if (!sameOwner()) return;
+        if (!(failure instanceof ApiError) || ![403, 404, 409].includes(failure.status)) return;
+        endedNotice =
+          failure.code === "voice_session_superseded"
+            ? "Voice ended because this conversation was resumed on another device."
+            : "Voice ended because this saved conversation is no longer available.";
+        if (sessionRef.current) await sessionRef.current.end("member", { immediate: true });
+        else gate.lose();
+      };
+      let transcriptTimer: number | null = null;
+      const save = async () => {
+        if (transcriptTimer !== null) window.clearTimeout(transcriptTimer);
+        transcriptTimer = null;
+        if (!record || !bounds) return;
+        try {
+          record = boundVoiceTranscript(record, {
+            entry_bytes: bounds.transcript_entry_max_bytes,
+            session_bytes: bounds.transcript_session_max_bytes,
+            max_entries: bounds.transcript_max_entries,
+          });
+          await saves.save(structuredClone(record));
+        } catch (failure) {
+          if (!sameOwner()) {
+            gate.lose();
+            throw failure;
+          }
+          await fenceFailure(failure);
+          setProblem({
+            code: failure instanceof ApiError ? (failure.code ?? null) : null,
+            text:
+              endedNotice ??
+              "Voice history could not be saved. Resume uses the last saved transcript.",
+          });
+          throw failure;
+        }
+      };
+      checkGenerationRef.current = async () => {
+        if (!record || !sameOwner() || !gate.ok()) return;
+        try {
+          const current = await loadVoiceGeneration(record.id);
+          if (current.generation !== record.generation)
+            throw new ApiError("Voice session superseded.", 409, {
+              code: "voice_session_superseded",
+            });
+        } catch (failure) {
+          if (gate.ok()) await fenceFailure(failure);
+        }
+      };
+      watchesRef.current = [];
+      watchTargetsRef.current.clear();
+      resumeSummaryRef.current = Boolean(resumeId);
+      offerRef.current = createFinishedResultOffer({
+        currentTarget: () => (gate.ok() ? currentTarget() : null),
+        list: async (watch) => {
+          const tool = resolve("rcp_list_artifacts");
+          if (!tool.ok) throw new Error(tool.refusal);
+          const result = await tool.definition.execute({
+            [watch.record === "task" ? "task_id" : "episode_id"]: watch.id,
+          });
+          const parsed = JSON.parse(result.content.map((item) => item.text).join("\n"));
+          if (!Array.isArray(parsed.artifacts)) throw new Error("The result could not be listed.");
+          return parsed.artifacts;
+        },
+        open: async (viewerId) => {
+          const tool = resolve("rcp_open_artifact");
+          if (!tool.ok) throw new Error(tool.refusal);
+          const result = await tool.definition.execute({ viewer_id: viewerId });
+          const outcome = voiceCallOutcome(result.content.map((item) => item.text).join("\n"));
+          if (!outcome.ok) throw new Error(outcome.error ?? "The artifact could not be opened.");
+        },
+      });
+      const finishedTool: CatalogTool = {
+        name: "rcp_open_finished_result",
+        description:
+          "Only after the member says yes to the most recent finished-work offer, resolve and open that result. A previous session or historical yes never authorizes opening.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        confirm: () => false,
+        alwaysConfirm: false,
+      };
+      const resolveVoice: typeof resolve = (name) =>
+        name === finishedTool.name
+          ? {
+              ok: true,
+              definition: {
+                ...finishedTool,
+                annotations: { readOnlyHint: true },
+                execute: async (args) => {
+                  if (Object.keys(args).length) throw new Error("This tool takes no arguments.");
+                  const opened = await offerRef.current?.open();
+                  return { content: [{ type: "text", text: JSON.stringify({ opened }) }] };
+                },
+              },
+            }
+          : resolve(name);
+      setHistoryOpen(false);
+      setProblem(null);
+      setTranscript([]);
+      setPhase("starting");
+      settingsRef.current = null;
+      setSettings(null);
+      setSettingsError(null);
+      const loadSeq = confirmSaves.current.latest;
+      void loadVoiceSettings()
+        .then((loaded) => {
+          if (gateRef.current !== gate || !gate.ok() || confirmSaves.current.latest !== loadSeq)
+            return;
+          settingsRef.current = loaded;
+          setSettings(loaded);
+        })
+        .catch((failure) => {
+          if (gateRef.current === gate) setSettingsError(errorMessage(failure));
+        });
+      const sourceLabels = createVoiceSourceLabels();
+      let executor: ReturnType<typeof createVoiceExecutor>;
+      let session: VoiceSession;
+      try {
+        session = await openVoiceSession(
+          [
+            ...catalogAsFunctionTools(),
+            {
+              type: "function",
+              name: finishedTool.name,
+              description: finishedTool.description,
+              parameters: finishedTool.inputSchema,
+            },
+          ],
+          {
+            onTranscript: (role, delta, order) => {
+              if (!delta) return;
+              offerRef.current?.speech(role, order);
+              const source = sourceLabels.speech(role, order);
+              setTranscript((lines) => appendTranscript(lines, role, delta));
+              if (record && bounds) {
+                record.entries = appendVoiceTranscript(record.entries, role, delta, order, source);
+                transcriptTimer ??= window.setTimeout(
+                  () => void save().catch(() => {}),
+                  VOICE_TRANSCRIPT_SAVE_MS,
+                );
+              }
+            },
+            onFunctionCall: (call) => {
+              sourceLabels.capture(call.call_id, call.name, call.arguments, currentTarget());
+              if (record)
+                record.projects = noteVoiceProject(record.projects ?? [], currentTarget());
+              setTranscript((lines) =>
+                setToolLine(lines, call.call_id, toolActivity(call.name, null)),
+              );
+              void executor.run(call).then((output) => {
+                if (output === null) return;
+                sourceLabels.discard(call.call_id);
+                if (!gate.ok()) return;
+                setTranscript((lines) =>
+                  setToolLine(
+                    lines,
+                    call.call_id,
+                    toolActivity(call.name, voiceCallOutcome(output)),
+                  ),
+                );
+                sessionRef.current?.sendFunctionOutput(call.call_id, output);
+              });
+            },
+            onEnded: (reason) => {
+              if (record && !endedNotice) {
+                record.ended = true;
+                void save().catch(() => {});
+              }
+              if (gateRef.current === gate) gateRef.current = null;
+              gate.lose();
+              sessionRef.current = null;
+              cardRef.current?.settle(false);
+              watchesRef.current = [];
+              offerRef.current = null;
+              setPhase("idle");
+              setStartedAt(null);
+              setTranscript([]);
+              const notice = endedNotice ?? END_NOTICES[reason];
+              setProblem(notice ? { code: null, text: notice } : null);
+            },
+          },
+          gate,
+          {
+            requestSession: async (body, signal) => {
+              const answer = await createVoiceSession(
+                { ...body, ...(resumeId ? { resume_id: resumeId } : {}) },
+                signal,
+              );
+              if (!sameOwner() || !gate.ok()) throw new Error("Voice identity changed.");
+              record = answer.session;
+              bounds = answer.limits;
+              if (answer.input_truncated)
+                setProblem({
+                  code: null,
+                  text: "Resume includes the newest part of this conversation; older text was truncated.",
+                });
+              setTranscript(
+                record.entries
+                  .slice(-VOICE_TRANSCRIPT_LINES)
+                  .map((entry) => ({ role: entry.speaker, text: entry.text })),
+              );
+              if (resumeId) {
+                record.receipts = await reconcileVoiceReceipts(record.receipts, loadClientRequest);
+                if (!sameOwner() || !gate.ok()) throw new Error("Voice identity changed.");
+                await save();
+              }
+              for (const receipt of record.receipts) {
+                const watch = voiceWatchFromReceipt(receipt);
+                if (
+                  watch &&
+                  !watchesRef.current.some(
+                    (item) => item.id === watch.id && item.project_id === watch.project_id,
+                  )
+                ) {
+                  watchesRef.current.push(watch);
+                  watchTargetsRef.current.set(watch.id, receipt.target);
+                }
+              }
+              executor = createVoiceExecutor({
+                gate,
+                catalog: () => [...catalog(), finishedTool],
+                resolve: resolveVoice,
+                confirmMode: (): VoiceConfirmMode => settingsRef.current?.confirm ?? "tap",
+                pin: (name, args) => buildVoicePin(name, args, page.current),
+                requestConfirmation,
+                initialReceipts: record.receipts,
+                target: currentTarget,
+                onSucceeded: (_name, _args, _output, callId) => sourceLabels.succeeded(callId),
+                saveReceipt: async (receipt) => {
+                  if (!record || !bounds) throw new Error("Voice history is unavailable.");
+                  const index = record.receipts.findIndex(
+                    (item) =>
+                      item.call_id === receipt.call_id ||
+                      (Boolean(receipt.request_id) && item.request_id === receipt.request_id),
+                  );
+                  if (index < 0) {
+                    if (record.receipts.length >= bounds.transcript_max_receipts)
+                      throw new Error(
+                        "This voice conversation has reached its action limit. Start a new conversation.",
+                      );
+                    record.receipts.push(receipt);
+                  } else record.receipts[index] = receipt;
+                  await save();
+                  const watch = voiceWatchFromReceipt(receipt);
+                  if (watch && gate.ok()) {
+                    if (
+                      !watchesRef.current.some(
+                        (item) => item.id === watch.id && item.project_id === watch.project_id,
+                      )
+                    )
+                      watchesRef.current.push(watch);
+                    watchTargetsRef.current.set(watch.id, receipt.target);
+                  }
+                },
+              });
+              return answer;
+            },
+          },
+        );
+      } catch (failure) {
+        if (gateRef.current === gate) gateRef.current = null;
+        setPhase("idle");
+        setProblem(gate.ok() ? openFailure(failure) : null);
+        return;
+      } finally {
+        startingRef.current = false;
+      }
+      if (!readyRef.current) gate.lose();
+      if (!gate.ok()) return;
+      sessionRef.current = session;
+      setStartedAt(Date.now());
+      setPhase("open");
+    },
+    [page, requestConfirmation, currentTarget],
+  );
 
   const setConfirmMode = useCallback(async (confirm: VoiceConfirmMode) => {
     // Saves run in click order, and only the newest click's result applies; a response
@@ -403,18 +686,35 @@ export function useVoiceAgent({
 
   const active = phase !== "idle";
   useEffect(() => {
-    if (!ready) gateRef.current?.lose();
+    if (!ready) {
+      setHistoryOpen(false);
+      setRecentSessions([]);
+      setNextOffset(null);
+      setHistoryError(null);
+      ownerRef.current = null;
+      gateRef.current?.lose();
+    }
   }, [ready]);
-  useEffect(() => () => end("space", true), [end, spaceId]);
+  useEffect(() => {
+    setHistoryOpen(false);
+    setRecentSessions([]);
+    return () => {
+      ownerRef.current = null;
+      end("space", true);
+    };
+  }, [end, spaceId]);
   useEffect(() => {
     if (!active) return;
-    registerAccessLossHandler(() => gateRef.current?.lose());
-    const stopSuspend = endOnPageSuspend(() => end("hidden", true));
+    registerAccessLossHandler(() => {
+      ownerRef.current = null;
+      gateRef.current?.lose();
+    });
+    const stopSuspend = endOnPageSuspend(() => end("hidden", true), { keepWhileHidden });
     return () => {
       registerAccessLossHandler(null);
       stopSuspend();
     };
-  }, [active, end]);
+  }, [active, end, keepWhileHidden]);
 
   // Speak first only about this session's own starts, wherever the member has gone.
   useEffect(() => {
@@ -425,6 +725,11 @@ export function useVoiceAgent({
       if (polling || !session) return;
       polling = true;
       try {
+        const summarizing = resumeSummaryRef.current;
+        let finished = 0,
+          running = 0,
+          needsYou = 0,
+          unavailable = 0;
         for (const watch of [...watchesRef.current]) {
           const drop = () => {
             watchesRef.current = watchesRef.current.filter((item) => item !== watch);
@@ -439,35 +744,55 @@ export function useVoiceAgent({
             } else {
               const episode = (await loadEpisodes(base, undefined, watch.id))[0];
               if (!episode) {
+                unavailable += 1;
                 drop();
                 continue;
               }
               status = episodeWatchStatus(episode);
             }
           } catch (failure) {
+            unavailable += 1;
             if (failure instanceof ApiError && [401, 403, 404].includes(failure.status)) drop();
             continue;
           }
+          if (sessionRef.current !== session) return;
+          if (status === "finished") finished += 1;
+          else if (status === "needs_you") needsYou += 1;
+          else running += 1;
           if (status !== watch.last) {
             // A return to running clears needs-you, so the next request is announced too.
             watch.last = status;
-            if (status && sessionRef.current === session) {
+            if (status && !summarizing) {
+              const offer = status === "finished" ? " Would you like me to open the result?" : "";
+              if (status === "finished") {
+                const target = watchTargetsRef.current.get(watch.id);
+                if (target) offerRef.current?.offer(watch, target);
+              }
               session.speak(
                 voiceCommentary(
                   watch.kind,
                   watch.project_name,
                   status,
-                  session.limits.commentary_max_chars,
-                ),
+                  session.limits.commentary_max_chars - offer.length,
+                ) + offer,
               );
             }
           }
           if (status === "finished") drop();
         }
+        if (summarizing && sessionRef.current === session) {
+          resumeSummaryRef.current = false;
+          session.speak(
+            `Earlier work: ${finished} finished, ${running} still running, ${needsYou} need you, ${unavailable} could not be checked.`,
+          );
+        }
+        // Check quiet sessions without rewriting their unchanged transcript.
+        if (sessionRef.current === session) await checkGenerationRef.current?.();
       } finally {
         polling = false;
       }
     };
+    void poll();
     const timer = window.setInterval(() => void poll(), VOICE_WATCH_POLL_MS);
     return () => window.clearInterval(timer);
   }, [phase]);
@@ -478,6 +803,25 @@ export function useVoiceAgent({
     startedAt,
     transcript,
     card,
+    historyOpen,
+    recentSessions,
+    nextOffset,
+    historyError,
+    toggleHistory: () => {
+      setHistoryOpen((shown) => !shown);
+      void refreshHistory();
+    },
+    closeHistory: () => setHistoryOpen(false),
+    moreHistory: () => nextOffset !== null && void refreshHistory(nextOffset),
+    deleteSession: async (id: string) => {
+      const epoch = scopeRef.current.epoch;
+      try {
+        await deleteVoiceSession(id);
+        if (scopeRef.current.epoch === epoch) await refreshHistory();
+      } catch (failure) {
+        if (scopeRef.current.epoch === epoch) setHistoryError(errorMessage(failure));
+      }
+    },
     confirmMode: settings?.confirm ?? "tap",
     settingsError,
     open,

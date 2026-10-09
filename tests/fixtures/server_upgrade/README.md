@@ -78,3 +78,8 @@ loops gained per-graph-target live identity (storage migration 44). It also
 carries the per-provider auto-compact and shell-timeout migrations, ending at
 migration 43. It is built by the exact boundary source from the preceding
 immutable fixture.
+
+`pre-client-requests-v19-92c9de7` retains the last shape before voice writes
+gained durable client request ids (storage migration 45). It also carries the
+per-graph-target Experiment loop migration, ending at migration 44. It is built
+by the exact boundary source from the preceding immutable fixture.

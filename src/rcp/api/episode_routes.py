@@ -5,9 +5,9 @@ from functools import partial
 from typing import Annotated, Literal, cast
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import UUID4, BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_background_tasks,
@@ -70,6 +70,7 @@ from rcp.runs.episodes.merge import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
+from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
 from rcp.transport import StateUnavailable
 
@@ -213,46 +214,67 @@ def start_episode(
     store: StoreDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> EpisodeResponse:
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_project_service(catalog, project_id)
+    if idempotency_key is not None:
+        project_id = catalog.resolve_project_id(project_id)
     try:
-        start_request = _resolved_auto_research_start_request(service, body)
-        if body.code_worktree is None:
-            start_request = start_request.model_copy(
-                update={
-                    "code_worktree": auto_research_code_worktree_eligible(
-                        store, project_id, start_request
+        with store.client_request_admission(
+            project_id,
+            authorized_by.user_id,
+            str(idempotency_key) if idempotency_key is not None else None,
+            "episodes",
+            result_kind="episode",
+        ) as existing:
+            if existing is not None:
+                episode = store.episode(existing.episode_id or "")
+                assert episode is not None
+                return serialize_episode(
+                    store, project_id, episode, branch_summary=_branch_summary(store, catalog)
+                )
+            service = get_project_service(catalog, project_id)
+            try:
+                start_request = _resolved_auto_research_start_request(service, body)
+                if body.code_worktree is None:
+                    start_request = start_request.model_copy(
+                        update={
+                            "code_worktree": auto_research_code_worktree_eligible(
+                                store, project_id, start_request
+                            )
+                        }
                     )
-                }
-            )
-        service.history.require_writable()
-        graph_base_head = service.history.head_ref()
-        episode, _ = start_auto_research(
-            background_tasks,
-            project_id,
-            start_request,
-            authorized_by=authorized_by,
-            graph_base_head=graph_base_head,
-            ensure_graph_target=partial(
-                ensure_episode_graph_target,
-                catalog=catalog,
-            ),
-        )
-        return serialize_episode(
-            store,
-            project_id,
-            episode,
-            branch_summary=_branch_summary(store, catalog),
-        )
-    except ValueError as exc:
-        live = any(
-            episode.mode == "auto_research"
-            and episode.status in {"queued", "running", "stopping", "wrapping_up"}
-            for episode in store.episodes(project_id)
-        )
-        status = 409 if live else 422
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+                service.history.require_writable()
+                graph_base_head = service.history.head_ref()
+                episode, _ = start_auto_research(
+                    background_tasks,
+                    project_id,
+                    start_request,
+                    authorized_by=authorized_by,
+                    graph_base_head=graph_base_head,
+                    ensure_graph_target=partial(
+                        ensure_episode_graph_target,
+                        catalog=catalog,
+                    ),
+                )
+                return serialize_episode(
+                    store,
+                    project_id,
+                    episode,
+                    branch_summary=_branch_summary(store, catalog),
+                )
+            except ClientRequestConflict:
+                raise
+            except ValueError as exc:
+                live = any(
+                    episode.mode == "auto_research"
+                    and episode.status in {"queued", "running", "stopping", "wrapping_up"}
+                    for episode in store.episodes(project_id)
+                )
+                status = 409 if live else 422
+                raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except ClientRequestConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(

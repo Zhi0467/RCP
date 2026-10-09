@@ -9,6 +9,7 @@ import {
   parseFloatingSize,
   resizedFloatingRect,
   type DetailWindowSlot,
+  type FloatingWindowKind,
   type Point,
   type ResizeCorner,
   type Size,
@@ -29,7 +30,7 @@ let topFloatingZIndex = 110;
 interface Props {
   children: React.ReactNode;
   className: string;
-  kind: "detail" | "chat";
+  kind: FloatingWindowKind;
   resizable?: boolean;
   sizeStorageKey?: string;
   detailSlot?: DetailWindowSlot;
@@ -47,6 +48,8 @@ const detailMinimumSize: Size = {
   width: NODE_DETAIL_RESIZE_MIN_WIDTH,
   height: NODE_DETAIL_RESIZE_MIN_HEIGHT,
 };
+// The voice panel holds a few controls and lines, so it may shrink well below a node window.
+const voiceMinimumSize: Size = { width: 260, height: 140 };
 
 export function DraggableWindow({
   children,
@@ -58,6 +61,7 @@ export function DraggableWindow({
   focusRequestToken,
   viewer,
 }: Props) {
+  const minimumSize = kind === "voice" ? voiceMinimumSize : detailMinimumSize;
   const root = useRef<HTMLDivElement>(null);
   const preferredSize = useRef<Size | null>(null);
   const [size, setSize] = useState<Size | null>(() => {
@@ -72,7 +76,7 @@ export function DraggableWindow({
       }
     }
     preferredSize.current = stored ?? floatingWindowSize(kind, viewport);
-    return clampFloatingSize(preferredSize.current, viewport, detailMinimumSize);
+    return clampFloatingSize(preferredSize.current, viewport, minimumSize);
   });
   const [position, setPosition] = useState<Point>(() => {
     const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -119,7 +123,7 @@ export function DraggableWindow({
       },
       resize.current.corner,
       { width: window.innerWidth, height: window.innerHeight },
-      detailMinimumSize,
+      minimumSize,
     );
     preferredSize.current = next.size;
     setSize(next.size);
@@ -139,7 +143,7 @@ export function DraggableWindow({
       setViewport(viewport);
       const nextSize =
         resizable && preferredSize.current
-          ? clampFloatingSize(preferredSize.current, viewport, detailMinimumSize)
+          ? clampFloatingSize(preferredSize.current, viewport, minimumSize)
           : null;
       if (nextSize) setSize(nextSize);
       if (kind === "detail" && detailSlot) {
@@ -157,7 +161,7 @@ export function DraggableWindow({
     window.addEventListener("resize", onResize);
     onResize();
     return () => window.removeEventListener("resize", onResize);
-  }, [detailSlot, kind, resizable]);
+  }, [detailSlot, kind, minimumSize, resizable]);
 
   useEffect(() => {
     if (focusRequestToken === undefined) return;

@@ -1260,20 +1260,21 @@
   margin-left: 8px;
 }
 .voice-panel {
+  align-content: start;
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 7px;
-  bottom: 18px;
   box-shadow: var(--shadow);
+  box-sizing: border-box;
+  cursor: grab;
   display: grid;
   gap: 10px;
-  max-height: min(560px, calc(100vh - 36px));
+  height: 100%;
   overflow-y: auto;
   padding: 12px 14px;
-  position: fixed;
-  right: 18px;
-  width: min(360px, calc(100vw - 32px));
-  z-index: 160;
+}
+.voice-panel [data-text-selectable] {
+  cursor: auto;
 }
 .voice-panel > header {
   align-items: center;
@@ -1394,14 +1395,6 @@
   color: var(--muted);
   font-size: var(--type-xs);
 }
-@media (max-width: 560px) {
-  .voice-panel {
-    bottom: 16px;
-    left: 16px;
-    right: 16px;
-    width: auto;
-  }
-}
 .transcription-group {
   border-top: 1px solid var(--line);
   font-family: var(--editorial);
@@ -1409,4 +1402,34 @@
   font-weight: 550;
   margin: 20px 0 0;
   padding: 16px 16px 0;
+}
+
+.voice-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+.voice-history li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+.voice-history-label {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.voice-history time {
+  font-size: 0.8rem;
+}
+.voice-history-projects {
+  color: var(--muted);
+  font-size: var(--type-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

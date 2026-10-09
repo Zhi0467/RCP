@@ -1,12 +1,6 @@
 # Active implementation handoffs
 
-- [Source chat for every artifact](handoff-2026-10-08-source-chat-for-every-artifact.md)
-  — design settled after astra review; nothing implemented. Session-rule
-  fixes, Agents across all graphs, one source link, folding and a filter.
-- [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
-  — implemented on its PR: chat wake sessions, event parsing, the validator
-  poller, state-transfer retry, and Apply again; live checks and the remaining
-  tool audit remain.
+None. Unfinished agent-link work is tracked in issue #280.
 
 ## Open live checks
 
@@ -84,6 +78,9 @@ stands in for it. Run one on disposable data, then delete its line here.
   connection saves (OpenAI and Gemini were checked live on 2026-10-04); in the
   desktop app, entering a team space right after a server update shows the new
   page without quitting.
+- Chat watcher wakes: with a real provider, a watcher wake continues the
+  chat's own native session, and the acceptance watcher tests pass where the
+  command broker's Unix socket is allowed.
 - Standby voice agent: with a real OpenAI key in a rebuilt desktop app (the
   microphone usage string changed), open a session, ask about a project and
   hear a correct answer, and have it open a node; by voice, send a Work
@@ -92,7 +89,17 @@ stands in for it. Run one on disposable data, then delete its line here.
   including after moving to another project; gracefully stop a running
   Experiment and Auto-research episode; run one terminal command; repeat from a
   team member's phone web app; a forgotten session ends at the idle limit, and
-  closing or suspending the page ends the paid session.
+  closing or suspending the page ends the paid session. On macOS 14 or later
+  (checked 2026-10-08: another Space and a minimized window), a fully occluded
+  or app-hidden window keeps talking, with page timers measured while hidden
+  (if they lag, the deadlines need a native backstop);
+  on macOS 13, hiding ends voice with a notice. Kill the network mid-session
+  and Resume: the topic returns and earlier work is summarized once; Resume
+  on a second device ends the first with a notice. Ask for last night's
+  consolidation report and open a PDF artifact. "Make me a live dashboard"
+  waits for the tap before saying it started, opens the running chat on
+  request, and opens the finished result on yes, also after Resume; the
+  session's history row names that project.
 - Agent browser: a Codex Work turn with Browser on, on a disposable team
   server, opens a localhost service the agent started there, and the session
   survives a service restart; a real OpenCode Work turn reuses a page and
