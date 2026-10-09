@@ -150,6 +150,7 @@ import {
   setKeptSpeech,
   useKeptSpeech,
   type KeptPiece,
+  type KeptSpeech,
 } from "../voice/networkDictation";
 import {
   graphConditionLabel,
@@ -1005,16 +1006,16 @@ export function NodeChat({
   };
 
   /** Insert dictated text at `at`, joined with one space; returns the new end. */
+  /** Insert kept text at `at`; returns where the rest of that speech continues. */
   const insertDictatedText = (at: number, text: string) => {
-    let end = at;
-    setMessage((current) => {
-      const addition = joinDictatedText(current.slice(0, at), text);
-      const next = replaceTextSpan(current, { start: at, end: at }, addition);
-      end = next.end;
-      skills.readMessage(next.value);
-      return next.value;
-    });
-    window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(end, end));
+    const current = messageRef.current;
+    const addition = joinDictatedText(current.slice(0, at), text);
+    const next = replaceTextSpan(current, { start: at, end: at }, addition);
+    messageRef.current = next.value;
+    setMessage(next.value);
+    skills.readMessage(next.value);
+    window.requestAnimationFrame(() => textareaRef.current?.setSelectionRange(next.end, next.end));
+    return { draft: next.value, at: next.end };
   };
 
   /** Append one piece's text to the live span; typing detached the span first. */
@@ -1170,17 +1171,19 @@ export function NodeChat({
       ? [{ text: result.text, order: kept.pieces[0]?.order ?? 0 }]
       : [];
     const span = liveDictationSpan(dictationSpanRef.current, sessionId);
+    let resume: KeptSpeech["resume"] = null;
     if (span) {
       dictationSpanRef.current = null;
       setDictationState("idle");
-      insertDictatedText(span.end, result.text);
+      resume = insertDictatedText(span.end, result.text);
     }
     const remaining = [...(span ? [] : resolved), ...(result.failure?.pending ?? [])];
     if (remaining.length)
       addKeptSpeech(draftKey, {
         pieces: remaining,
         error: result.failure?.error ?? null,
-        resume: null,
+        // A tail left by a partial Retry continues after the text it inserted.
+        resume,
       });
   };
 
