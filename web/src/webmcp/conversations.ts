@@ -594,7 +594,8 @@ export async function sendProjectConversationMessage(
   );
   return {
     project_id: project.id,
-    chat_id: chatId,
+    // A keyed retry replays the original turn, whose chat is the one to report.
+    chat_id: taskChatId(task) ?? chatId,
     task_id: task.operation_id,
     kind: surface,
     node_id: node?.id ?? null,

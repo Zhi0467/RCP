@@ -1561,6 +1561,23 @@ test("the conversation read tools are one bounded listing and one exact inspecti
   assert.match(result.content[0].text, /"chat_id":"chat-1"/);
 });
 
+test("a keyed fresh Send that replays its first turn reports that turn's chat", async () => {
+  const project = projectFixture();
+  const { transcript } = conversationFixtures();
+  const result = await sendProjectConversationMessage(
+    project,
+    [],
+    { message: "Draw the curve.", mode: "work" },
+    conversationSource(transcript),
+    false,
+    () => "chat-minted-on-retry",
+    async () => ({ operation_id: "task-first", request: { chat_id: "chat-first" } }),
+    "request-one",
+  );
+  assert.equal(result.chat_id, "chat-first");
+  assert.equal(result.task_id, "task-first");
+});
+
 test("conversation Send resumes the exact saved route and returns after durable task acceptance", async () => {
   const project = projectFixture();
   const { task, transcript } = conversationFixtures();
@@ -1588,6 +1605,7 @@ test("conversation Send resumes the exact saved route and returns after durable 
       submissions.push(submission);
       return {
         operation_id: "task-chat-2",
+        request: { chat_id: submission.chatId },
         status_label: "Queued",
         active: true,
         queued: true,
@@ -1646,6 +1664,7 @@ test("conversation Send creates only one fresh project or node conversation afte
         submissions.push(submission);
         return {
           operation_id: `task-${submissions.length}`,
+          request: { chat_id: submission.chatId },
           status_label: "Queued",
           active: true,
           queued: true,
@@ -2496,7 +2515,7 @@ test("ordinary branch conversations can send from their matching graph view", as
     },
     async (submission) => {
       started.push(submission);
-      return { operation_id: "task-next" };
+      return { operation_id: "task-next", request: { chat_id: submission.chatId } };
     },
   );
   assert.equal(started.length, 1);
