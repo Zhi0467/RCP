@@ -1578,7 +1578,13 @@ def _project_provisioning_response(
         readiness=readiness,
         diagnostic=record.retryable_diagnostic,
         operator_action=record.operator_action,
+        # Pasted from the operator's own login on the server, so it enters the
+        # service account itself rather than failing as the wrong account.
         operator_argv=(
+            "sudo",
+            "-u",
+            DEFAULT_SERVER_LAYOUT.service_account,
+            "-H",
             str(DEFAULT_SERVER_LAYOUT.cli_wrapper),
             "server",
             "project",

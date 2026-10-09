@@ -922,7 +922,8 @@ does not collect GitHub user authentication.
 A saved member connection and an operator route are distinct capabilities even
 when they use the same SSH host. The source-built desktop stores the latter as
 nonsecret native metadata: either an explicit direct `rcp@host` target or one
-named operator target using `sudo -n -u rcp -H`. **Run setup now** appears only
+named operator target using `sudo -n -u rcp -H`. The Web derives which from the
+target's login, so the human enters only the SSH target. **Run setup now** appears only
 after a native read-only probe proves that exact route can invoke the fixed `rcp
 server project provision <request-id> --machine-readable` command. The shell
 passes a validated request id as an argument and never executes arbitrary
@@ -932,7 +933,8 @@ server owns their step order and text. Success comes only from an authenticated
 durable request readback from the expected team space. If SSH or `sudo` needs interaction, the
 app shows or opens the same fixed command in Terminal; it never collects a
 private key or privilege password. The browser shows a copyable operator command
-instead.
+instead, written as `sudo -u rcp -H …` so it runs as pasted from the operator's
+own login on the server.
 
 CLI structured progress is presentation input only. The CLI reports each state
 change to the lock-owning backend through its private local control channel, and

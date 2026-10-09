@@ -154,7 +154,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   const [savedRequests, setSavedRequests] = useState<ProjectProvisioningResponse[]>([]);
   const [connection, setConnection] = useState<TeamConnectionMetadata | null>(null);
   const [operatorTarget, setOperatorTarget] = useState("");
-  const [operatorMode, setOperatorMode] = useState<ServerOperatorMode>("sudo_rcp");
   const [probe, setProbe] = useState<ServerOperatorProbe | null>(null);
   const [events, setEvents] = useState<ServerCommandEvent[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -250,7 +249,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         setConnection(current);
         if (current.operator_route) {
           setOperatorTarget(current.operator_route.ssh_target);
-          setOperatorMode(current.operator_route.mode);
           const checked = await probeDesktopServerOperator(current.connection_id);
           if (!stopped) setProbe(checked);
         }
@@ -466,7 +464,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     try {
       const updated = await configureDesktopServerOperatorRoute(connection.connection_id, {
         ssh_target: operatorTarget.trim(),
-        mode: operatorMode,
+        mode: serverOperatorModeFor(operatorTarget),
       });
       setConnection(updated);
       setProbe(await probeDesktopServerOperator(updated.connection_id));
@@ -878,15 +876,10 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
             desktop={desktop}
             connection={connection}
             operatorTarget={operatorTarget}
-            operatorMode={operatorMode}
             probe={probe}
             busy={busy}
             onOperatorTarget={(value) => {
               setOperatorTarget(value);
-              setProbe(null);
-            }}
-            onOperatorMode={(value) => {
-              setOperatorMode(value);
               setProbe(null);
             }}
             onSaveAndProbe={() => void saveAndProbeRoute()}
@@ -1153,16 +1146,45 @@ function TeamRepositoryEditor({
   );
 }
 
+/**
+ * How a target reaches the service account follows from who it signs in as:
+ * `rcp@host` already is it, and any other login enters it with sudo.
+ */
+export function serverOperatorModeFor(operatorTarget: string): ServerOperatorMode {
+  const target = operatorTarget.trim();
+  return target.includes("@") && target.split("@")[0] === "rcp" ? "direct_rcp" : "sudo_rcp";
+}
+
 export function serverOperatorProbeMatchesDraft(
   probe: ServerOperatorProbe | null,
   operatorTarget: string,
-  operatorMode: ServerOperatorMode,
 ): boolean {
   return (
     probe?.available === true &&
     probe.route.ssh_target === operatorTarget.trim() &&
-    probe.route.mode === operatorMode
+    probe.route.mode === serverOperatorModeFor(operatorTarget)
   );
+}
+
+/** One line naming who the project is for and what the ledger above proved. */
+export function finalReviewSummary(request: ProjectProvisioningResponse): string {
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const { machines_total, repositories_total, providers_total } = request.readiness;
+  const owner =
+    request.final_review?.authorized_by.display_name ?? request.authorized_by.display_name;
+  return (
+    `Prepared for ${owner}: ${count(machines_total, "machine", "machines")}, ` +
+    `${count(repositories_total, "repository", "repositories")}, and ` +
+    `${count(providers_total, "provider role", "provider roles")}, all checked above.`
+  );
+}
+
+export function providerChipTone(provider: {
+  ready: boolean;
+  diagnostic: string | null;
+}): "ready" | "failed" | "waiting" {
+  if (provider.ready) return "ready";
+  return provider.diagnostic ? "failed" : "waiting";
 }
 
 export function gitWriteFact(writeVerified: boolean): string {
@@ -1183,11 +1205,9 @@ export function ProvisioningStatus({
   desktop,
   connection,
   operatorTarget,
-  operatorMode,
   probe,
   busy,
   onOperatorTarget,
-  onOperatorMode,
   onSaveAndProbe,
   onCopy,
   onRefresh,
@@ -1201,11 +1221,9 @@ export function ProvisioningStatus({
   desktop: boolean;
   connection: TeamConnectionMetadata | null;
   operatorTarget: string;
-  operatorMode: ServerOperatorMode;
   probe: ServerOperatorProbe | null;
   busy: string | null;
   onOperatorTarget: (value: string) => void;
-  onOperatorMode: (value: ServerOperatorMode) => void;
   onSaveAndProbe: () => void;
   onCopy: () => void;
   onRefresh: () => void;
@@ -1214,7 +1232,7 @@ export function ProvisioningStatus({
   onCancel: () => void;
   onComplete: () => void;
 }) {
-  const operatorRouteReady = serverOperatorProbeMatchesDraft(probe, operatorTarget, operatorMode);
+  const operatorRouteReady = serverOperatorProbeMatchesDraft(probe, operatorTarget);
   return (
     <div className="setup-section provisioning-status">
       <SectionHeading
@@ -1304,6 +1322,10 @@ export function ProvisioningStatus({
           </button>
         )}
       </div>
+      <p className="provisioning-hint">
+        Paste the server command into a shell on the server under your own login. It runs as rcp
+        through sudo.
+      </p>
 
       {desktop && connection && request.can_run_setup && (
         <section className="operator-route-card">
@@ -1320,16 +1342,6 @@ export function ProvisioningStatus({
                 placeholder="operator@server"
               />
             </label>
-            <label>
-              Execution
-              <select
-                value={operatorMode}
-                onChange={(event) => onOperatorMode(event.target.value as ServerOperatorMode)}
-              >
-                <option value="sudo_rcp">Named operator → rcp</option>
-                <option value="direct_rcp">Direct rcp@server</option>
-              </select>
-            </label>
             <button
               className="button secondary"
               type="button"
@@ -1344,6 +1356,11 @@ export function ProvisioningStatus({
               Save and check
             </button>
           </div>
+          <p className="provisioning-hint">
+            {serverOperatorModeFor(operatorTarget) === "direct_rcp"
+              ? "Signs in as rcp and runs the setup command directly."
+              : "Signs in as this account, then runs the setup command as rcp with sudo. If sudo asks for a password, use Open in Terminal."}
+          </p>
           {probe?.diagnostic && <p role="alert">{probe.diagnostic}</p>}
         </section>
       )}
@@ -1417,84 +1434,37 @@ export function ProvisioningStatus({
           </article>
         ))}
         <h2>Provider roles</h2>
-        {request.provider_checks.map((provider) => (
-          <article key={provider.profile}>
-            <strong>
-              {provider.profile} · {provider.status_label}
-            </strong>
-            <span>
-              {provider.provider} · {provider.runtime_id} · {provider.machine_alias}
+        <div className="provider-role-chips">
+          {request.provider_checks.map((provider) => (
+            <span
+              key={provider.profile}
+              className={`provider-role-chip ${providerChipTone(provider)}`}
+              title={[
+                provider.status_label,
+                `${provider.provider} · ${provider.runtime_id} · ${provider.machine_alias}`,
+                provider.execution_account &&
+                  `${provider.execution_account} · ${provider.binary_path}`,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              {provider.profile}
             </span>
-            {provider.execution_account && (
-              <code>
-                {provider.execution_account} · {provider.binary_path}
-              </code>
-            )}
-            {provider.diagnostic && <p>{provider.diagnostic}</p>}
-          </article>
-        ))}
+          ))}
+        </div>
+        {request.provider_checks
+          .filter((provider) => provider.diagnostic)
+          .map((provider) => (
+            <p key={provider.profile} className="provider-role-diagnostic">
+              <strong>{provider.profile}</strong> {provider.diagnostic}
+            </p>
+          ))}
       </section>
 
       {request.final_review && (
         <section className="provisioning-final-review">
           <h2>Final review</h2>
-          <dl>
-            <div>
-              <dt>Project id</dt>
-              <dd>{request.final_review.proposed_project_id}</dd>
-            </div>
-            <div>
-              <dt>Review binding</dt>
-              <dd>
-                <code>{request.final_review.digest}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>Prepared for</dt>
-              <dd>{request.final_review.authorized_by.display_name}</dd>
-            </div>
-          </dl>
-          <h3>Machines</h3>
-          {request.machines.map((machine) => (
-            <article key={machine.alias}>
-              <strong>
-                {machine.alias} · {machine.status_label}
-              </strong>
-              <span>
-                {machine.location === "ssh"
-                  ? `${machine.os_account}@${machine.host}`
-                  : machine.os_account}
-              </span>
-              <code>
-                {machine.resolved_central_root ??
-                  machine.intended_central_root ??
-                  "Home-derived path pending"}
-              </code>
-            </article>
-          ))}
-          <h3>Repositories</h3>
-          {request.repositories.map((repository) => (
-            <article key={repository.alias}>
-              <strong>
-                {repository.alias} · {repository.status_label}
-              </strong>
-              <span>{repository.https_clone_url}</span>
-              <span>{gitWriteFact(repository.write_verified)}</span>
-              <code>{repository.resolved_path ?? repository.intended_path ?? "Path pending"}</code>
-            </article>
-          ))}
-          <h3>Provider roles</h3>
-          {request.provider_checks.map((provider) => (
-            <article key={provider.profile}>
-              <strong>
-                {provider.profile} · {provider.status_label}
-              </strong>
-              <span>
-                {provider.provider} · {provider.runtime_id} · {provider.machine_alias}
-              </span>
-              {provider.execution_account && <code>{provider.execution_account}</code>}
-            </article>
-          ))}
+          <p>{finalReviewSummary(request)}</p>
           {request.can_review && (
             <button
               className="button primary"

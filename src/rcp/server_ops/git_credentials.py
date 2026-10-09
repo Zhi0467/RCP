@@ -918,12 +918,21 @@ def deploy_key_operator_step(
     number: int,
     request_id: str,
     resume_argv: tuple[str, ...],
+    host_trust_needed: bool,
 ) -> ServerStep:
     _require_resume_request(resume_argv, request_id)
     instruction = (
-        f"Open {material.repository.settings_url}; add the displayed public key with title "
-        f"{material.label!r}."
+        f"Open {material.repository.settings_url} and add a deploy key titled "
+        f"{material.label} with the key below."
     )
+    grant = ExternalAction(
+        title="Add the key to GitHub",
+        instruction=instruction,
+        requirement="Enable Allow write access",
+    )
+    # Trusting github.com is a one-time, per-account step; only the write
+    # probe's own host-key failure asks for it.
+    trust = _github_host_trust_actions(manager, machine, material) if host_trust_needed else ()
     return ServerStep(
         number=number,
         title="Add a deploy key on GitHub",
@@ -942,31 +951,9 @@ def deploy_key_operator_step(
         ),
         message=(
             "GitHub has not yet proven read and write access for this repository-scoped deploy "
-            "key. Complete the displayed grant and host-trust steps, then resume."
+            "key. Complete the displayed steps, then resume."
         ),
-        actions=(
-            ExternalAction(
-                title="Add the key to GitHub",
-                instruction=instruction,
-                requirement="Enable Allow write access",
-            ),
-            # Before, not after: the command below stops at an unknown host
-            # key and waits, so an operator reading in order has to already
-            # know what to compare it against.
-            ExternalAction(
-                title="Know the host key before you are asked to accept it",
-                instruction=(
-                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
-                    "key; accept it only if the offered fingerprint is listed there. A "
-                    "successful no-shell authentication may then exit with status 1."
-                ),
-            ),
-            CommandAction(
-                title="Trust github.com from the server",
-                argv=manager.github_trust_argv(machine, material),
-                execution=OPERATOR_SHELL,
-            ),
-        ),
+        actions=(grant, *trust),
         fields=(
             NonsecretField(name="deploy_key_label", value=material.label, role="input"),
             NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
@@ -978,6 +965,31 @@ def deploy_key_operator_step(
         ),
         resume_argv=resume_argv,
         resume_execution=OPERATOR_SHELL,
+    )
+
+
+def _github_host_trust_actions(
+    manager: GitCredentialManager,
+    machine: ProjectProvisioningMachineIntent,
+    material: DeployKeyMaterial,
+) -> tuple[ExternalAction, CommandAction]:
+    return (
+        # Before, not after: the command below stops at an unknown host
+        # key and waits, so an operator reading in order has to already
+        # know what to compare it against.
+        ExternalAction(
+            title="Know the host key before you are asked to accept it",
+            instruction=(
+                f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
+                "key; accept it only if the offered fingerprint is listed there. A "
+                "successful no-shell authentication may then exit with status 1."
+            ),
+        ),
+        CommandAction(
+            title="Trust github.com from the server",
+            argv=manager.github_trust_argv(machine, material),
+            execution=OPERATOR_SHELL,
+        ),
     )
 
 
@@ -1024,22 +1036,7 @@ def restore_deploy_key_operator_step(
                 instruction=instruction,
                 requirement="Enable Allow write access",
             ),
-            # Before, not after: the command below stops at an unknown host
-            # key and waits, so an operator reading in order has to already
-            # know what to compare it against.
-            ExternalAction(
-                title="Know the host key before you are asked to accept it",
-                instruction=(
-                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
-                    "key; accept it only if the offered fingerprint is listed there. A "
-                    "successful no-shell authentication may then exit with status 1."
-                ),
-            ),
-            CommandAction(
-                title="Trust github.com from the server",
-                argv=manager.github_trust_argv(machine, material),
-                execution=OPERATOR_SHELL,
-            ),
+            *_github_host_trust_actions(manager, machine, material),
         ),
         fields=(
             NonsecretField(name="deploy_key_label", value=material.label, role="input"),

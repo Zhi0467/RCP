@@ -663,8 +663,9 @@ def test_missing_github_grant_persists_exact_project_resume_then_completes(
     # trip still naming the shell the human has to type it into.
     assert paused.operator_action.resume_execution is not None
     assert paused.operator_action.resume_execution.shell_account is None
-    commands = [action for action in paused.operator_action.actions if action.kind == "command"]
-    assert commands and all(action.execution is not None for action in commands)
+    # A fresh key has not met the write probe yet, so the stop asks only for
+    # the grant; host trust appears once the probe reports it is missing.
+    assert [action.kind for action in paused.operator_action.actions] == ["external"]
 
     credentials.probe_status = "ready"
     _advance_all(coordinator, request.request_id)

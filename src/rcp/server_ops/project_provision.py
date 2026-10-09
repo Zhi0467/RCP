@@ -655,6 +655,7 @@ class ProjectProvisionCoordinator:
                 number=pending.number,
                 request_id=request.request_id,
                 resume_argv=self._resume_argv(request.request_id),
+                host_trust_needed=False,
             )
             return self._persist_git_pause(
                 request,
@@ -919,6 +920,7 @@ class ProjectProvisionCoordinator:
                 number=pending.number,
                 request_id=request.request_id,
                 resume_argv=resume,
+                host_trust_needed=probe.status == "github_host_trust_needed",
             )
         if probe.status == "empty_repository":
             return empty_repository_operator_step(

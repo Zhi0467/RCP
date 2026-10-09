@@ -162,6 +162,10 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
         "all_ready": False,
     }
     assert created["operator_argv"] == [
+        "sudo",
+        "-u",
+        DEFAULT_SERVER_LAYOUT.service_account,
+        "-H",
         str(DEFAULT_SERVER_LAYOUT.cli_wrapper),
         "server",
         "project",

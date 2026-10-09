@@ -1111,6 +1111,7 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
         number=2,
         request_id=REQUEST_ID,
         resume_argv=resume,
+        host_trust_needed=True,
     )
     fields = {field.name: field.value for field in grant.fields}
     assert grant.target.destination_url == REPOSITORY.settings_url
@@ -1136,6 +1137,17 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
     serialized = grant.model_dump_json()
     assert "OPENSSH PRIVATE KEY" not in serialized
     assert material.private_key_path in serialized
+    # Once github.com is trusted, the stop asks only for the grant.
+    trusted = deploy_key_operator_step(
+        manager,
+        machine,
+        material,
+        number=2,
+        request_id=REQUEST_ID,
+        resume_argv=resume,
+        host_trust_needed=False,
+    )
+    assert [action.kind for action in trusted.actions] == ["external"]
 
     empty = empty_repository_operator_step(
         material,
@@ -1171,6 +1183,7 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
             number=2,
             request_id=REQUEST_ID,
             resume_argv=("rcp", "server", "project", "provision", SPACE_ID),
+            host_trust_needed=False,
         )
 
 

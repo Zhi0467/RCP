@@ -971,6 +971,13 @@ class _InteractiveServerRenderer:
         self._current_line(headline, finish=terminal or final_success or announce_success)
         if not terminal and not final_success and not announce_success:
             return
+        if step.state == "operator_action_needed":
+            # A human stop prints only what the human does: where to go, what to
+            # paste, and how to continue. The full record stays machine-readable.
+            self._render_destination(step)
+            self._render_fields(tuple(field for field in step.fields if field.role != "evidence"))
+            self._render_actions(step)
+            return
         _print_wrapped(step.message, self.stream, indent="  ")
         if terminal:
             self._render_stop(step)
@@ -998,6 +1005,15 @@ class _InteractiveServerRenderer:
             indent="  Continue when: ",
             subsequent_indent="                 ",
         )
+
+    def _render_destination(self, step: ServerStep) -> None:
+        if isinstance(step.target, MachineTarget):
+            print(f"  On: {step.target.host} (as {step.target.os_account})", file=self.stream)
+            return
+        url = step.target.destination_url
+        if any(action.kind == "external" and url in action.instruction for action in step.actions):
+            return
+        print(f"  Open: {url}", file=self.stream)
 
     def _render_fields(self, fields: tuple[NonsecretField, ...]) -> None:
         if not fields:

@@ -820,6 +820,36 @@ def test_interactive_and_machine_renderers_use_the_same_external_action() -> Non
     assert "user_account" not in machine.getvalue()
 
 
+def test_interactive_action_stop_prints_only_what_the_human_does() -> None:
+    execution = _operator_execution()
+    plan, paused_event = execution.events
+    assert isinstance(paused_event, ServerStepEvent)
+    url = "https://github.com/openai/rcp/settings/keys"
+    paused = paused_event.step.model_copy(
+        update={
+            "actions": (ExternalAction(instruction=f"Open {url} and add the key below."),),
+            "fields": (
+                *paused_event.step.fields,
+                NonsecretField(name="fingerprint", value="SHA256:compare", role="evidence"),
+            ),
+        }
+    )
+    stop = ServerCommandExecution(
+        events=(plan, paused_event.model_copy(update={"step": paused})),
+        exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+    )
+    interactive = StringIO()
+
+    render_server_execution(stop, machine_readable=False, stream=interactive)
+
+    text = interactive.getvalue()
+    assert text.count(url) == 1
+    assert "ssh-ed25519 AAAAC3 public@example" in text
+    assert f"rcp server project provision {REQUEST_ID}" in text
+    for omitted in (paused.message, paused.expected_success, "SHA256:compare"):
+        assert omitted not in text
+
+
 def test_renderer_selection_never_changes_the_command_handler_call() -> None:
     calls: list[tuple[ServerCommandRequest, CallerIdentity]] = []
     identity = CallerIdentity(uid=501, username="rcp", host="lab.example")
