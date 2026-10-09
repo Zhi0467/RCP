@@ -114,6 +114,7 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.providers.browser_grant import BrowserTurnStatus
+from rcp.provisioning_repositories import effective_repositories
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
@@ -130,6 +131,7 @@ from rcp.sources import (
     preflight_provider_roots,
     project_cache_roots,
 )
+from rcp.storage import AppStore
 from rcp.transport import repository_access as build_repository_access
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 
@@ -1101,6 +1103,43 @@ def _imported_source_store(
     if parsed.version != 4 or str(parsed) != project_id:
         return None
     return ImportedProviderSourceStore(data_dir, project_id)
+
+
+def project_repository_descriptors(
+    repositories: list[dict[str, Any]], *, store: AppStore, project_id: str
+) -> list[dict[str, Any]]:
+    """Overlay live provisioning provenance on the Settings repository inventory.
+
+    Personal checkouts have no team provisioning source or Connect action. Team
+    provenance must be complete; missing evidence cannot mean server-only.
+    """
+    team = store.space_kind == "team"
+    sources = {}
+    if team:
+        project = store.project(project_id)
+        if project is None:
+            raise ValueError("The Settings project is not registered.")
+        sources = {
+            item.alias: item
+            for item in effective_repositories(
+                project, store.completed_project_provisioning_requests(project_id)
+            )
+        }
+    result = []
+    for repository in repositories:
+        alias = repository["alias"]
+        if team and alias not in sources:
+            raise ValueError("The Settings repository has no completed provisioning proof.")
+        source = sources[alias].repository if team else None
+        result.append(
+            {
+                **repository,
+                "source": "github" if source is not None else "server_only",
+                "github_identity": source.identity if source is not None else None,
+                "can_connect": team and source is None,
+            }
+        )
+    return result
 
 
 class ProjectService:

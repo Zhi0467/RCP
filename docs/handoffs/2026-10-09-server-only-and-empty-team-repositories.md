@@ -1,7 +1,6 @@
 # Server-only and empty team repositories
 
-Status: slice A contracts and W1 (B1 setup/first push and B3 add/connect)
-implemented and locally checked. Other slice B owners and live served-app/remote
+Status: all slices implemented on PR #284; served-app and live SSH/GitHub
 journeys remain. Design confirmed and reviewed 2026-10-09.
 Ships in PR #284 with the setup-page and wizard trims already on that branch.
 
@@ -84,7 +83,9 @@ checkout proof from completed requests. API response fields and
 5. Runtime — `api/terminals.py`, `terminals/manager.py`,
    `transport/remote_terminal.py`, `agents/git_access.py`, `service.py`
    Settings projection: no deploy key for server-only repositories, member Git
-   identity kept.
+   identity kept. Implemented: terminal/provider admission and live Settings
+   descriptors consume the effective inventory. Local/remote transport tests
+   retain identity with no key for server-only sources; live SSH remains open.
 6. Web — setup wizard optional URL and backup note, Settings Add repository
    and Connect to GitHub with the truth checkbox, transfer blank target URL.
 
