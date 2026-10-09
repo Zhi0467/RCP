@@ -3507,11 +3507,18 @@ export interface VoiceSavedSession {
   ended: boolean;
   entries: import("../voice/voiceExecutor").VoiceTranscriptEntry[];
   receipts: import("../voice/voiceExecutor").VoiceReceipt[];
+  /** Projects this session's tools ran in; older records have none. */
+  projects?: VoiceSessionProject[];
+}
+
+export interface VoiceSessionProject {
+  project_id: string;
+  project_name: string;
 }
 
 export type VoiceSessionMetadata = Pick<
   VoiceSavedSession,
-  "id" | "created_at" | "updated_at" | "ended"
+  "id" | "created_at" | "updated_at" | "ended" | "projects"
 > & {
   entry_count: number;
 };

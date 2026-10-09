@@ -31,6 +31,7 @@ import type {
 import {
   createIdentityGate,
   createVoiceSaveQueue,
+  noteVoiceProject,
   appendVoiceTranscript,
   boundVoiceTranscript,
   createVoiceSourceLabels,
@@ -519,6 +520,8 @@ export function useVoiceAgent({
             },
             onFunctionCall: (call) => {
               sourceLabels.capture(call.call_id, call.name, call.arguments, currentTarget());
+              if (record)
+                record.projects = noteVoiceProject(record.projects ?? [], currentTarget());
               setTranscript((lines) =>
                 setToolLine(lines, call.call_id, toolActivity(call.name, null)),
               );

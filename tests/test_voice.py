@@ -485,6 +485,26 @@ def transcript_save(record, **changes):
     }
 
 
+def test_history_rows_name_the_projects_a_session_worked_in(voice_setup, monkeypatch):
+    _, private, client = voice_setup
+    enable(private)
+    mock_transport(monkeypatch, lambda _: reply({"transport": {"sdp": "answer"}}))
+    record = client.post("/api/voice/sessions", json=OFFER).json()["session"]
+    projects = [{"project_id": "p", "project_name": "Project"}]
+    saved = client.put(
+        f"/api/voice/sessions/{record['id']}", json=transcript_save(record, projects=projects)
+    )
+    assert saved.status_code == 200
+    (row,) = client.get("/api/voice/sessions").json()["sessions"]
+    assert row["projects"] == projects
+    too_many = [{"project_id": str(i), "project_name": "P"} for i in range(21)]
+    refused = client.put(
+        f"/api/voice/sessions/{record['id']}",
+        json=transcript_save({**record, "revision": 1}, projects=too_many),
+    )
+    assert refused.status_code == 422
+
+
 def test_transcript_generation_revision_delete_and_member_fences(voice_setup, monkeypatch):
     _, private, client = voice_setup
     enable(private)

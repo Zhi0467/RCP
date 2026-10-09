@@ -1417,7 +1417,19 @@
   gap: 0.5rem;
   padding: 0.5rem 0;
 }
-.voice-history time {
+.voice-history-label {
+  display: grid;
   flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.voice-history time {
   font-size: 0.8rem;
+}
+.voice-history-projects {
+  color: var(--muted);
+  font-size: var(--type-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

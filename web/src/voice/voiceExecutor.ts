@@ -513,6 +513,21 @@ export function boundVoiceTranscript<
   return snapshot;
 }
 
+/** The backend's bound on the projects one saved session names. */
+const VOICE_SESSION_MAX_PROJECTS = 20;
+
+/** Adds the project a tool ran in to the session's list, renamed if it changed. */
+export function noteVoiceProject(
+  projects: readonly { project_id: string; project_name: string }[],
+  target: VoiceReceiptTarget | null,
+): { project_id: string; project_name: string }[] {
+  if (!target) return [...projects];
+  const named = { project_id: target.project_id, project_name: target.project_name };
+  const index = projects.findIndex((project) => project.project_id === target.project_id);
+  if (index >= 0) return projects.map((project, at) => (at === index ? named : project));
+  return projects.length < VOICE_SESSION_MAX_PROJECTS ? [...projects, named] : [...projects];
+}
+
 /** The backend's bound on a saved entry's source label. */
 const VOICE_SOURCE_MAX_CHARS = 1_024;
 

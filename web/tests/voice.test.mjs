@@ -5,6 +5,7 @@ import {
   appendVoiceTranscript,
   boundVoiceTranscript,
   createVoiceSourceLabels,
+  noteVoiceProject,
   createVoiceSaveQueue,
   createFinishedResultOffer,
   voiceWatchFromReceipt,
@@ -631,6 +632,14 @@ test("source labels stay with their call and expire on the next response item", 
   assert.equal(labels.speech("agent", "item-3"), source);
   assert.equal(labels.speech("member", "member-1"), null);
   assert.equal(labels.speech("agent", "item-4"), null);
+});
+
+test("a session notes each project a tool ran in once, with its latest name", () => {
+  const first = noteVoiceProject([], receiptTarget);
+  assert.deepEqual(first, [{ project_id: "p", project_name: receiptTarget.project_name }]);
+  const renamed = noteVoiceProject(first, { ...receiptTarget, project_name: "Renamed" });
+  assert.deepEqual(renamed, [{ project_id: "p", project_name: "Renamed" }]);
+  assert.deepEqual(noteVoiceProject(renamed, null), renamed);
 });
 
 test("two reads through one tool and target keep distinct sources", () => {

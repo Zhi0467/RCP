@@ -91,6 +91,12 @@ class VoiceActionReceipt(BaseModel):
     outcome: Literal["accepted", "refused", "unknown"]
 
 
+class VoiceSessionProject(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    project_id: str = Field(max_length=200)
+    project_name: str = Field(max_length=500)
+
+
 class VoiceTranscriptSave(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     member_id: str = Field(max_length=200)
@@ -98,6 +104,10 @@ class VoiceTranscriptSave(BaseModel):
     revision: int = Field(ge=1)
     entries: list[VoiceTranscriptEntry] = Field(max_length=limits.VOICE_TRANSCRIPT_MAX_ENTRIES)
     receipts: list[VoiceActionReceipt] = Field(max_length=limits.VOICE_TRANSCRIPT_MAX_RECEIPTS)
+    # Projects the session's tools ran in, so the history list can tell sessions apart.
+    projects: list[VoiceSessionProject] = Field(
+        default_factory=list, max_length=limits.VOICE_SESSION_MAX_PROJECTS
+    )
     ended: bool = False
 
 
@@ -274,6 +284,7 @@ class ServiceConnections:
                     "revision": 0,
                     "entries": [],
                     "receipts": [],
+                    "projects": [],
                 }
             )
             record.update(generation=uuid.uuid4().hex, updated_at=now, ended=False)
@@ -311,6 +322,7 @@ class ServiceConnections:
                     {
                         **{key: record[key] for key in ("id", "created_at", "updated_at", "ended")},
                         "entry_count": len(record["entries"]),
+                        "projects": record.get("projects", []),
                     }
                     for record in records[offset : offset + limit]
                 ],

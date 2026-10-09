@@ -187,9 +187,16 @@ function VoicePanelContent({ voice, onOpenSettings }: VoicePanelProps) {
           <ol className="voice-history">
             {voice.recentSessions.map((session) => (
               <li key={session.id}>
-                <time dateTime={new Date(session.updated_at * 1000).toISOString()}>
-                  {new Date(session.updated_at * 1000).toLocaleString()}
-                </time>
+                <div className="voice-history-label">
+                  <time dateTime={new Date(session.updated_at * 1000).toISOString()}>
+                    {new Date(session.updated_at * 1000).toLocaleString()}
+                  </time>
+                  {session.projects?.length ? (
+                    <span className="voice-history-projects">
+                      {session.projects.map((project) => project.project_name).join(", ")}
+                    </span>
+                  ) : null}
+                </div>
                 <button
                   className="button secondary compact"
                   type="button"

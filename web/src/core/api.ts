@@ -853,11 +853,12 @@ export function saveVoiceSession(
   record: VoiceSavedSession,
 ): Promise<Pick<VoiceSavedSession, "id" | "generation" | "revision">> {
   const { member_id, generation, revision, entries, receipts, ended } = record;
+  const projects = record.projects ?? [];
   return api(
     `/api/voice/sessions/${encodeURIComponent(record.id)}`,
     {
       method: "PUT",
-      body: JSON.stringify({ member_id, generation, revision, entries, receipts, ended }),
+      body: JSON.stringify({ member_id, generation, revision, entries, receipts, projects, ended }),
     },
     { retryIdentity: false },
   );

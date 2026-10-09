@@ -1167,7 +1167,8 @@ messages only, at most 128 messages and a byte budget that guarantees OpenAI's
 unresolved receipt, reloads accepted task and episode ids into the watch loop,
 and speaks one fixed summary of what finished and what still runs. The newest
 Resume of a record wins; the older page ends with a notice. The voice panel
-lists recent sessions with Resume and Delete. It is a floating window that opens
+lists recent sessions with Resume and Delete, each tagged with the projects
+its tools ran in (the page saves them with the record, at most 20). It is a floating window that opens
 in the bottom-right corner; the member drags it anywhere and resizes it from
 its corners, and the size is remembered.
 
