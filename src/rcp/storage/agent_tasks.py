@@ -600,6 +600,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
             (project_id, chat_id, chat_id, project_id, chat_id),
         ).fetchone()
 
+    @staticmethod
+    def _continuation_chain_ids(connection: sqlite3.Connection, root_episode_id: str) -> set[str]:
+        """The episode and every Add N turns continuation that follows it."""
+
+        rows = connection.execute(
+            "WITH RECURSIVE chain(episode_id) AS (SELECT ? UNION "
+            "SELECT next.episode_id FROM episodes AS next "
+            "JOIN chain ON next.continues_episode_id = chain.episode_id) "
+            "SELECT episode_id FROM chain",
+            (root_episode_id,),
+        ).fetchall()
+        return {row["episode_id"] for row in rows}
+
     def _child_human_turn_refusal(
         self, connection: sqlite3.Connection, project_id: str, chat_id: str
     ) -> dict[str, str] | None:
@@ -621,16 +634,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "detail": "This child belongs to a running orchestrator lineage. Message orchestrator.",
             }
         if owner["child_episode_id"] is not None:
-            child = connection.execute(
-                "SELECT status FROM episodes WHERE episode_id = ?",
-                (owner["child_episode_id"],),
-            ).fetchone()
-            if child is None or child["status"] not in {
-                "completed",
-                "failed",
-                "needs_action",
-                "stopped",
-            }:
+            # A continuation of the child Experiment runs in the same chat.
+            chain = self._continuation_chain_ids(connection, owner["child_episode_id"])
+            statuses = [
+                row["status"]
+                for row in connection.execute(
+                    f"SELECT status FROM episodes WHERE episode_id IN ({','.join('?' for _ in chain)})",
+                    tuple(chain),
+                )
+            ]
+            if not statuses or any(
+                status not in {"completed", "failed", "needs_action", "stopped"}
+                for status in statuses
+            ):
                 return {
                     "code": "auto_research_child_read_only",
                     "detail": "This child Experiment is still running. Message orchestrator.",
@@ -668,9 +684,21 @@ class AgentTaskStoreMixin(StoreMixinBase):
             (record.parent_operation_id,),
         ).fetchone()
         if record.episode_id is not None:
-            if record.episode_id not in {owner["episode_id"], owner["child_episode_id"]}:
+            # A child Experiment's Add N turns continuation keeps its chat, so
+            # every member of that chain owns it; its first turn's parent is
+            # the previous member's.
+            child_chain = (
+                self._continuation_chain_ids(connection, owner["child_episode_id"])
+                if owner["child_episode_id"] is not None
+                else set()
+            )
+            if record.episode_id != owner["episode_id"] and record.episode_id not in child_chain:
                 raise ValueError("auto_research_child_episode_owned")
-            if parent is not None and parent["episode_id"] != record.episode_id:
+            if (
+                parent is not None
+                and parent["episode_id"] != record.episode_id
+                and not {parent["episode_id"], record.episode_id} <= child_chain
+            ):
                 raise ValueError("auto_research_child_episode_owned")
             return
         # Episode recovery retains its owner; generic retries and watchers cannot

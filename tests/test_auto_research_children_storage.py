@@ -2669,3 +2669,52 @@ def test_ended_child_stays_locked_when_isolation_is_unavailable(
         store.create_agent_task(refused)
     assert error.value.args == (refusal["code"],)
     assert store.agent_task(refused.operation_id) is None
+
+
+def test_a_child_experiment_continuation_owns_its_child_chat(tmp_path):
+    store, parent, root = _setup_parent(tmp_path)
+    chat_id = str(uuid.uuid4())
+    task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
+    task = task.model_copy(update={"request": {**task.request, "chat_id": chat_id}})
+    store.create_experiment_episode_with_invocation(
+        task, auto_research_route=_experiment_route(store, parent, root, task)
+    )
+    child = store.episode(task.episode_id)
+    continuation_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (child.episode_id,)
+        )
+    store.create_episode(
+        child.model_copy(
+            update={
+                "episode_id": continuation_id,
+                "continues_episode_id": child.episode_id,
+                "status": "queued",
+                "root_operation_id": None,
+                "invocations_used": 0,
+                "ending": None,
+                "wrapup_state": "not_started",
+                "report_attempts_used": 0,
+                "stop_requested_at": None,
+                "stop_settled_at": None,
+                "ended_at": None,
+            }
+        )
+    )
+    first_turn = task.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "episode_id": continuation_id,
+            "parent_operation_id": task.operation_id,
+        }
+    )
+    with store.connection() as connection:
+        store._require_child_turn_admission(connection, first_turn)
+        with pytest.raises(ValueError, match="auto_research_child_episode_owned"):
+            store._require_child_turn_admission(
+                connection, first_turn.model_copy(update={"episode_id": str(uuid.uuid4())})
+            )
+        # While the continuation runs, the child chat is locked to humans.
+        refusal = store._child_human_turn_refusal(connection, task.project_id, chat_id)
+    assert refusal is not None and refusal["code"] == "auto_research_child_read_only"
