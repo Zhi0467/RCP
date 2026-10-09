@@ -15,7 +15,7 @@ const { conversationHref } = await server.ssrLoadModule("/src/chat/chatWorkspace
 const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
   "/src/experiments/experimentBoardModel.ts",
 );
-const { graphPickerOptions, selectionAfterGraphSwitch, unlistedActiveBranch } =
+const { graphPickerOptions, graphRefLabel, selectionAfterGraphSwitch, unlistedActiveBranch } =
   await server.ssrLoadModule("/src/graph/graphPickerModel.ts");
 const main = { kind: "main" };
 const branch = { kind: "branch", branch_id: "branch /+" };
@@ -106,4 +106,11 @@ test("switch preserves view and only destination-owned selections", () => {
     chatId: null,
     episodeId: null,
   });
+});
+
+test("a branch is named by its owner's title, else a short id", () => {
+  const ref = { kind: "branch", branch_id: "0123456789abcdef", title: "  Find the cause\nmore" };
+  assert.equal(graphRefLabel(ref), "Find the cause");
+  assert.equal(graphRefLabel({ ...ref, title: null }), "01234567");
+  assert.ok(graphRefLabel({ ...ref, title: "x".repeat(500) }).length < 100);
 });

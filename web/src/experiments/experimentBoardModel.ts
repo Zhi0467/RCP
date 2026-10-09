@@ -97,9 +97,12 @@ export function experimentBoardHref(
     experimentSelection.startsWith(AUTO_RESEARCH_ROUTE_PREFIX)
   ) {
     const episodeId = experimentSelection.slice(AUTO_RESEARCH_ROUTE_PREFIX.length);
-    return episodeId
-      ? `#/projects/${encodeURIComponent(projectId)}?view=runs&mode=auto_research&episode=${encodeURIComponent(episodeId)}`
-      : `#/projects/${encodeURIComponent(projectId)}?view=runs`;
+    return projectViewHash(
+      projectId,
+      MAIN_GRAPH,
+      "execution",
+      episodeId ? { autoResearchEpisodeId: episodeId } : {},
+    );
   }
   const route =
     typeof experimentSelection === "string"
@@ -110,7 +113,7 @@ export function experimentBoardHref(
     experimentSelection.startsWith(INDEX_ROUTE_PREFIX) &&
     !route
   ) {
-    return `#/projects/${encodeURIComponent(projectId)}?view=runs`;
+    return projectViewHash(projectId, MAIN_GRAPH, "execution");
   }
   const experimentId =
     typeof experimentSelection === "string"

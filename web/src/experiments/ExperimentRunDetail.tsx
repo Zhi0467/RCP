@@ -5,6 +5,7 @@ import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { fetchEpisodeTimeline, loadEpisodes } from "../core/api";
+import { projectViewHash } from "../core/graphTarget";
 import { useRunArtifacts } from "./useRunArtifacts";
 import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
@@ -649,13 +650,9 @@ export function ExperimentRunDetail({
             <h4>Conversation</h4>
             {episode && operational.chat_id && (
               <a
-                href={`#/projects/${encodeURIComponent(episode.project_id)}?${new URLSearchParams({
-                  view: "chats",
-                  chat: operational.chat_id,
-                  ...(episode.graph_target.branch_id
-                    ? { branch_id: episode.graph_target.branch_id }
-                    : {}),
-                })}`}
+                href={projectViewHash(episode.project_id, episode.graph_target, "chats", {
+                  chatId: operational.chat_id,
+                })}
               >
                 Open in Agents
               </a>

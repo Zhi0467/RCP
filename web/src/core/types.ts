@@ -1792,7 +1792,13 @@ export interface GraphBranchSummary {
 
 /** Project-wide graph inventory; branch ownership remains the chain root. */
 export type GraphRef =
-  | (GraphBranchSummary & { kind: "branch"; archived: boolean })
+  | (GraphBranchSummary & {
+      kind: "branch";
+      archived: boolean;
+      /** The chain root's mode and display title, when the backend has one. */
+      mode: EpisodeMode;
+      title: string | null;
+    })
   | {
       kind: "main";
       branch_id: null;

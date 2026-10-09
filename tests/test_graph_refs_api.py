@@ -166,3 +166,16 @@ def test_graph_refs_requires_project_membership(tmp_path) -> None:
     assert client.get(f"/api/projects/{project_id}/graph-refs").status_code == 200
     acting[0] = outsider.user_id
     assert client.get(f"/api/projects/{project_id}/graph-refs").status_code == 404
+
+
+def test_graph_refs_titles_a_branch_by_its_owner(manifest, tmp_path) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    with harness.store.connection() as connection:
+        connection.execute(
+            "UPDATE auto_research_episodes SET starting_instruction = ? WHERE episode_id = ?",
+            ("Find the cause", harness.episode.episode_id),
+        )
+    response = harness.client.get(f"/api/projects/{harness.project_id}/graph-refs")
+    assert response.status_code == 200, response.text
+    _, branch = response.json()
+    assert (branch["mode"], branch["title"]) == ("auto_research", "Find the cause")
