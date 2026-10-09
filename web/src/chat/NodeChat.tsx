@@ -250,6 +250,8 @@ interface ComposerAttachment {
 interface NetworkDictation {
   sessionId: string;
   session: NetworkDictationSession | null;
+  /** Where a detached session's kept speech continues, while the draft is unchanged. */
+  resume?: { draft: string; at: number } | null;
 }
 
 interface SelectedChatAnnotationComposer {
@@ -970,7 +972,10 @@ export function NodeChat({
       microphoneRef.current.claim.holder === "native_dictation";
     if (network?.session) {
       if (detach) {
-        // Nothing may land in the draft any more; the session keeps it for Insert.
+        // Nothing may land in the draft any more; the session keeps it for Insert,
+        // which continues here if the draft is unchanged by then.
+        const span = dictationSpanRef.current;
+        network.resume = span ? { draft: messageRef.current, at: span.end } : null;
         dictationSpanRef.current = null;
         setDictationState("idle");
         network.session.detach();
@@ -1038,12 +1043,17 @@ export function NodeChat({
   };
 
   /** Keep speech that could not reach the draft; a live span is where it continues. */
-  const keepSpeech = (sessionId: string, pieces: KeptPiece[], error: unknown) => {
+  const keepSpeech = (
+    sessionId: string,
+    pieces: KeptPiece[],
+    error: unknown,
+    detachedResume: NetworkDictation["resume"] = null,
+  ) => {
     const span = liveDictationSpan(dictationSpanRef.current, sessionId);
     addKeptSpeech(draftKey, {
       pieces,
       error,
-      resume: span ? { draft: messageRef.current, at: span.end } : null,
+      resume: span ? { draft: messageRef.current, at: span.end } : (detachedResume ?? null),
     });
     if (!span) return;
     dictationSpanRef.current = null;
@@ -1103,7 +1113,7 @@ export function NodeChat({
       // Leaving the chat detached the session; its speech stays with this chat.
       onKept: (pieces, error) => {
         if (networkDictationRef.current === dictation) networkDictationRef.current = null;
-        keepSpeech(sessionId, pieces, error);
+        keepSpeech(sessionId, pieces, error, dictation.resume);
       },
     });
     dictation.session = session;
