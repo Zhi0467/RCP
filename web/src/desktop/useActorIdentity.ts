@@ -225,6 +225,17 @@ export function useActorIdentity() {
     return health && "active_agent_tasks" in health ? health.active_agent_tasks : 0;
   }, []);
 
+  // Every identity check desktopRuntime makes, plus the space: a reverification
+  // that ends on the same key is the same backend.
+  const backendKey = verifiedHealth
+    ? [
+        verifiedHealth.version,
+        verifiedHealth.instance_id,
+        verifiedHealth.data_dir_id,
+        verifiedHealth.space_id,
+      ].join("\n")
+    : null;
+
   const updateActorNameDraft = useCallback((value: string) => {
     setActorNameDraft(value);
     setActorNameError(null);
@@ -234,6 +245,7 @@ export function useActorIdentity() {
     identityReady,
     identityIssue,
     verifiedHealth,
+    backendKey,
     authenticatedHealth,
     actorIdentity,
     actorIdentityError,

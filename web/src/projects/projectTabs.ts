@@ -21,11 +21,13 @@ export interface ProjectViewportRef<T> {
   current: T | null;
 }
 
+/** A browser reload keeps the route; the desktop app reloads onto the index. */
 export function initialProjectHash(
   hash: string,
   navigationType: PerformanceNavigationTiming["type"] | null | undefined,
+  desktop: boolean,
 ): string {
-  return navigationType === "reload" ? "" : hash;
+  return desktop && navigationType === "reload" ? "" : hash;
 }
 
 export function projectViewportRef<T>(

@@ -41,12 +41,15 @@ test("opening appends once without reordering existing tabs", () => {
   ]);
 });
 
-test("only a real page reload discards the initial project route", () => {
+test("a browser reload keeps the project route and only a desktop reload drops it", () => {
   const deepLink = "#/projects/alpha?view=runs&experiment=experiment-1";
-  assert.equal(initialProjectHash(deepLink, "navigate"), deepLink);
-  assert.equal(initialProjectHash(deepLink, "back_forward"), deepLink);
-  assert.equal(initialProjectHash(deepLink, undefined), deepLink);
-  assert.equal(initialProjectHash(deepLink, "reload"), "");
+  for (const type of ["navigate", "back_forward", "reload", undefined]) {
+    assert.equal(initialProjectHash(deepLink, type, false), deepLink);
+  }
+  for (const type of ["navigate", "back_forward", undefined]) {
+    assert.equal(initialProjectHash(deepLink, type, true), deepLink);
+  }
+  assert.equal(initialProjectHash(deepLink, "reload", true), "");
 });
 
 test("leaving Runs and returning preserves the exact branch Experiment identity", () => {

@@ -801,6 +801,15 @@ never replaces, the accepted backend identity and reloads the active project or
 project index, so the page recovers in place and a changed backend still stops it. None of these operations signal or restart the
 remote RCP service.
 
+A failed backend check never unmounts what the page already shows for that
+backend. While the check fails, and while the identity read that follows
+recovery runs, a blocking reconnect overlay covers the rendered project or
+index, so scroll, open panels, and unsent text survive. Recovery that confirms
+the same backend (version, instance, data-directory identity, and space)
+reconciles the open project with an ordinary reload, never a fresh open. A
+check that observes a changed backend replaces the page with the reconnect
+screen, and the project opens from scratch after the human reconnects.
+
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
 tunnels would collide on the shared `__Host-` session-cookie name. The shell
@@ -973,7 +982,11 @@ left, and the last close returns to the index.
 
 Open tabs survive hiding/reopening the same desktop window but reset on full
 page reload or app quit. An inactive tab is not kept mounted merely because it
-is open.
+is open. A browser reload keeps the project route, so a phone browser that
+reloads a discarded tab returns to the same project; a desktop reload or
+relaunch starts on the index with an empty dock. A successful team sign-in
+keeps the route it interrupted. A restored route never skips identity
+admission: the project open still checks access.
 
 An explicit Runs route is authoritative over cached selection, including a route
 with an absent or malformed branch identifier. Invalid branch identity resolves
@@ -995,7 +1008,7 @@ configured agent for each role and the ids of stoppable Auto-research
 episodes, which have no Experiment node to inspect. Login, project setup,
 loading, and invalid project states expose no tools; the project surface waits for the same verified backend
 identity, actor, and team-session state as the index, so a reconnect screen
-retires it.
+or overlay retires it.
 
 The inventory follows current backend and browser state. Experiment Start,
 Auto-research authorization, and Stop are registered only while at least one
