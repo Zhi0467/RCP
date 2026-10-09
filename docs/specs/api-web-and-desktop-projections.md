@@ -560,9 +560,11 @@ Visible clients notice canonical main changes without browser reload or
 repurposing the Seed/Refresh action. Every open project tab sends a cache-only
 heartbeat on the bounded visible cadence; the active tab observes completed
 cached revision updates more frequently, and visibility resume sweeps all tabs.
-The heartbeat also names the project's newest visible task. A task the active
-tab has not loaded, such as one a teammate just started, makes it reload the
-task list, so it does not wait for a graph change.
+A teammate's action can change state without moving the graph revision, so the
+main heartbeat also carries signals for it. It names the newest visible task
+and the newest watcher; one the active tab has not loaded makes it reload that
+list. It also carries digests of the settings fields and of each Experiment's
+lifecycle fields (not its progress); a changed digest reloads the project.
 
 A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
 per project. A temporarily unavailable head does not replay or copy the graph.

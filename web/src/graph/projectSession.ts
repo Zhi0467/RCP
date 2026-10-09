@@ -528,7 +528,14 @@ export function reconcileInactiveProjectSession(
 }
 
 type HeartbeatMetadata = Partial<
-  Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at" | "compute_probes_probed_at">
+  Pick<
+    ProjectSnapshot,
+    | "snapshot_freshness"
+    | "last_remote_sync_at"
+    | "compute_probes_probed_at"
+    | "settings_signal"
+    | "experiment_signal"
+  >
 >;
 
 export function projectHeartbeatMetadataChanged(
@@ -545,17 +552,21 @@ export function projectHeartbeatMetadataChanged(
         observed.last_remote_sync_at !== rendered.last_remote_sync_at) ||
       // A background compute probe finished, so the rendered results are stale.
       (observed.compute_probes_probed_at !== undefined &&
-        observed.compute_probes_probed_at !== (rendered.compute_probes_probed_at ?? null))),
+        observed.compute_probes_probed_at !== (rendered.compute_probes_probed_at ?? null)) ||
+      // A teammate saved settings or started, paused, or stopped an Experiment.
+      (observed.settings_signal !== undefined &&
+        observed.settings_signal !== rendered.settings_signal) ||
+      (observed.experiment_signal !== undefined &&
+        observed.experiment_signal !== rendered.experiment_signal)),
   );
 }
 
-/** True when the heartbeat names a task the page has not loaded, such as a teammate's. */
-export function heartbeatNamesUnknownTask(
-  observed: { latest_task_id?: string | null },
-  tasks: readonly { operation_id: string }[],
+/** True when the heartbeat names a record the page has not loaded, such as a teammate's. */
+export function heartbeatNamesUnknownId(
+  latest: string | null | undefined,
+  loadedIds: readonly string[],
 ): boolean {
-  const latest = observed.latest_task_id;
-  return Boolean(latest) && !tasks.some((task) => task.operation_id === latest);
+  return Boolean(latest) && !loadedIds.includes(latest as string);
 }
 
 export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =

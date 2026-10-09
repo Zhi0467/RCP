@@ -1851,9 +1851,12 @@ export interface GraphRevisionSnapshot {
   snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
   last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
   compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
+  settings_signal?: ProjectSnapshot["settings_signal"];
+  experiment_signal?: ProjectSnapshot["experiment_signal"];
   graph_mutation?: GraphMutationAvailability;
-  /** The newest visible task, so a teammate's new task reaches an open page. */
+  /** The newest visible task and watcher, so a teammate's new ones reach an open page. */
   latest_task_id?: string | null;
+  latest_watcher_id?: string | null;
 }
 
 export interface RevisionedTransitionGraph {
@@ -2965,6 +2968,9 @@ export interface ProjectSnapshot {
   last_remote_sync_at: string | null;
   /** Latest stored compute probe; absent from snapshots cached by older versions. */
   compute_probes_probed_at?: string | null;
+  /** Digests of settings and Experiment lifecycle; a change means a teammate acted. */
+  settings_signal?: string;
+  experiment_signal?: string;
   state_repository: string;
   canonical_state: {
     remote: boolean;

@@ -11,7 +11,7 @@ const server = await createServer({
 });
 const {
   emptyProjectSessionState,
-  heartbeatNamesUnknownTask,
+  heartbeatNamesUnknownId,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   projectHeartbeatMetadataChanged,
@@ -989,10 +989,24 @@ test("unchanged branch heartbeat ignores main-cache freshness metadata", () => {
   );
 });
 
-test("a heartbeat naming an unloaded task asks for the task list", () => {
-  const loaded = [{ operation_id: "mine" }];
-  assert.equal(heartbeatNamesUnknownTask({ latest_task_id: "teammate" }, loaded), true);
-  assert.equal(heartbeatNamesUnknownTask({ latest_task_id: "mine" }, loaded), false);
-  assert.equal(heartbeatNamesUnknownTask({ latest_task_id: null }, loaded), false);
-  assert.equal(heartbeatNamesUnknownTask({}, loaded), false);
+test("a heartbeat naming an unloaded record asks for its list", () => {
+  assert.equal(heartbeatNamesUnknownId("teammate", ["mine"]), true);
+  assert.equal(heartbeatNamesUnknownId("mine", ["mine"]), false);
+  assert.equal(heartbeatNamesUnknownId(null, ["mine"]), false);
+  assert.equal(heartbeatNamesUnknownId(undefined, []), false);
+});
+
+test("a changed settings or Experiment signal reloads the main view", () => {
+  const rendered = { settings_signal: "s1", experiment_signal: "e1" };
+  assert.equal(projectHeartbeatMetadataChanged({ ...rendered }, rendered), false);
+  assert.equal(
+    projectHeartbeatMetadataChanged({ ...rendered, settings_signal: "s2" }, rendered),
+    true,
+  );
+  assert.equal(
+    projectHeartbeatMetadataChanged({ ...rendered, experiment_signal: "e2" }, rendered),
+    true,
+  );
+  // An older server sends no signal; that is not a change.
+  assert.equal(projectHeartbeatMetadataChanged({}, rendered), false);
 });

@@ -152,7 +152,7 @@ import {
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
-  heartbeatNamesUnknownTask,
+  heartbeatNamesUnknownId,
   projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
@@ -732,6 +732,8 @@ export default function App() {
     useState<ProjectReconciliation>("opening");
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
+  const watchersRef = useRef(watchers);
+  watchersRef.current = watchers;
   const [providerReadinessRequests, setProviderReadinessRequests] = useState<
     Record<string, ProviderReadinessRequestState>
   >({});
@@ -1304,9 +1306,17 @@ export default function App() {
         if (isActiveProject(requestedProjectId)) {
           if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
           window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
-          if (heartbeatNamesUnknownTask(observation, projectTasksRef.current)) {
+          const loadedTaskIds = projectTasksRef.current.map((task) => task.operation_id);
+          if (heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
             if (isActiveProject(requestedProjectId)) replaceTasks(nextTasks);
+          }
+          const loadedWatcherIds = watchersRef.current.map((watcher) => watcher.watcher_id);
+          if (heartbeatNamesUnknownId(observation.latest_watcher_id, loadedWatcherIds)) {
+            const nextWatchers = await api<WatcherRecord[]>(
+              projectWatchersPath(base, requestedTarget),
+            );
+            if (isActiveProject(requestedProjectId)) setWatchers(nextWatchers);
           }
           if (
             canonicalRevisionNeedsReload(
