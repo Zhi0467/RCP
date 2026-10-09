@@ -1433,10 +1433,24 @@ export function NodeChat({
       event.clear();
       return;
     }
+    // A prefill joins an unsent draft on this artifact below its text, keeping
+    // the draft's own selection, rather than replacing it.
+    const draft = annotationComposer?.step === "comment" ? annotationComment.trim() : "";
+    const prefill = event.initialText ?? "";
+    if (
+      draft &&
+      prefill &&
+      annotationComposer?.step === "comment" &&
+      annotationComposer.artifact?.context.artifact_id === artifact.artifact_id
+    ) {
+      if (!draft.includes(prefill)) setAnnotationComment(`${draft}\n\n${prefill}`);
+      window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+      return;
+    }
     inlineSelectionClearRef.current?.();
     inlineSelectionClearRef.current = event.clear;
     annotationOriginRef.current = null;
-    setAnnotationComment("");
+    setAnnotationComment(prefill);
     setSubmitError(null);
     setAnnotationComposer({
       step: "comment",
@@ -1452,7 +1466,7 @@ export function NodeChat({
           ...(event.version ? { base_version: event.version } : {}),
         },
         name: artifact.name,
-        selection: { ...event.selection, comment: "" },
+        selection: event.selection ? { ...event.selection, comment: "" } : null,
       },
     });
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());

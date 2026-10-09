@@ -82,6 +82,19 @@ artifact. Inline JavaScript remains useful and may navigate only its isolated
 child frame, which can still cause a navigation request; RCP does not claim
 literal zero network traffic.
 
+A turn with a browser grant can run `rcp-artifact-preview <dir> --port 0` on
+its execution host. The command prints a loopback URL. It serves the artifact
+directory through the viewer's sanitizer and opaque-sandbox CSP, which
+`artifact_preview.py` owns for both. It sets no palette, so a page shows the
+fallback colors Expand and a download use. Because removed loads cause no
+browser error, the preview logs each removed loading attribute to the page
+console. It serves only an artifact folder under the turn's workspace, which RCP
+names in the grant's environment, because it runs outside the browser's
+hidden-read wrapper. Paths outside that folder and symlinks are refused. The server exits after
+`ARTIFACT_PREVIEW_IDLE_SECONDS`, set by the launcher rather than the command line,
+without a request, since a Discuss shell may
+not be allowed to stop it. Turns without a browser keep direct logic checks.
+
 Every card offers Download and Keep. A reply can instead show an artifact in
 place ([Artifacts inside a reply](#artifacts-inside-a-reply)). The file's type
 decides how it is viewed:
@@ -262,6 +275,14 @@ script-free content route.
 An HTML document that declares a doctype keeps it first, ahead of RCP's policy
 and bootstrap, so the page renders in the standards mode it was written for; a
 page without one keeps the mode its own browser would give it.
+
+Uncaught script errors and unhandled promise rejections show a bounded, plain-text
+notice under HTML frames, in both the reply caption and the viewer. The frame
+stays visible. The first error appears at once; later summaries update at most
+once per second. Only the current frame's private-channel summaries are accepted.
+A new version or reload clears the notice. Live data keeps refreshing, and Keep
+and Download remain available. Where Comment applies, **Ask to fix** opens its
+box with the error prefilled. The human sends the comment.
 
 ### Artifacts inside a reply
 

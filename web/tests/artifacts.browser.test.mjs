@@ -653,3 +653,167 @@ test("desktop reports download and run PDFs open by stored identity without a pr
     await server.close();
   }
 });
+
+test("an inline page error opens a human comment draft and clears with its version", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const rendered = JSON.parse(
+    execFileSync(
+      "uv",
+      [
+        "run",
+        "python",
+        "-c",
+        `import json
+from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifact_views import artifact_content, artifact_viewer_document
+artifact = AgentArtifactDescriptor(artifact_id="a"*24, name="page.html", media_type="text/html", size_bytes=1)
+shell, _ = artifact_viewer_document(artifact, content_url="/error-content", state="temporary", presentation="inline", selectable=True)
+broken, _, _ = artifact_content("page.html", "text/html", b'<p id="drawn">1</p><script>throw new Error("inline-failure")</script>')
+fixed, _, _ = artifact_content("page.html", "text/html", b'<p id="drawn">2</p>')
+print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
+      ],
+      { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+    )
+      .trim()
+      .split("\n")
+      .pop(),
+  );
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+    let state = viewerState("plot");
+    const errors = [],
+      requests = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (request.method() === "POST") requests.push(request.url());
+    });
+    await page.route("**/api/projects/project/artifacts", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/projects/project/artifacts/plot/state", (route) =>
+      route.fulfill({ json: state }),
+    );
+    await page.route("**/viewer-shell/plot?*", (route) =>
+      route.fulfill({ contentType: "text/html", body: rendered.shell }),
+    );
+    await page.route("**/error-content*", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: state.version_number === 1 ? rendered.broken : rendered.fixed,
+      }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    await page.evaluate(async () => {
+      const { default: React } = await import("/node_modules/.vite/deps/react.js");
+      const {
+        default: { createRoot },
+      } = await import("/node_modules/.vite/deps/react-dom_client.js");
+      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const profile = {
+        provider: "codex",
+        model: "",
+        reasoning: "medium",
+        run_on: "local",
+        permissions: {},
+      };
+      const artifact = {
+        artifact_id: "plot",
+        name: "page.html",
+        media_type: "text/html",
+        view: "html",
+        available: true,
+        unavailable_reason: null,
+        can_open: true,
+        can_download: true,
+        can_keep: true,
+        can_discuss: true,
+      };
+      const container = document.createElement("main");
+      document.body.prepend(container);
+      createRoot(container).render(
+        React.createElement(NodeChat, {
+          project: {
+            id: "project",
+            name: "Project",
+            agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+            repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
+            project_truth_scope: ["repo"],
+            state_repository: "repo",
+            machines: [{ alias: "local", host: null }],
+            provider_readiness: {
+              local: {
+                codex: { provider: "codex", installed: true, authenticated: true, models: [] },
+              },
+            },
+          },
+          graphTarget: { kind: "main" },
+          node: null,
+          runScope: ["repo"],
+          tasks: [],
+          chatId: "error-chat",
+          presentation: "workspace",
+          historyMessages: [
+            {
+              message_id: "reply",
+              operation_id: "answer-task",
+              role: "assistant",
+              text: "![Page](/stage/chats/c/turns/answer-task/artifacts/page.html)",
+              timestamp: "2026-09-02T12:00:00Z",
+              mode: "discuss",
+              provider: "codex",
+              trigger: "human",
+            },
+          ],
+          onRefreshTask: async () => ({ result: { artifacts: [artifact] } }),
+          onStartTask: async () => {
+            window.errorTestSent = true;
+          },
+          onInspectTask() {},
+          onOpenInbox() {},
+          onRepairGraphUpdate: async () => {},
+          onNewSession() {},
+          onClose() {},
+          onResumeTask() {},
+          onRetryTask() {},
+        }),
+      );
+    });
+    const embed = page.locator('.chat-inline-artifact[data-artifact-id="plot"]');
+    const notice = embed.locator("[data-error-count]");
+    await notice.waitFor();
+    assert.equal(await notice.getAttribute("data-error-count"), "1");
+    assert.ok((await notice.textContent()).includes("inline-failure"));
+    assert.equal(await embed.locator("[data-artifact-action=keep]").count(), 1);
+    assert.ok(await embed.locator("[download]").count());
+    await embed.locator("[data-artifact-action=fix]").click();
+    assert.equal(
+      await page.locator(".chat-annotation-composer textarea").inputValue(),
+      "This page hit an error: inline-failure",
+    );
+    assert.equal(await page.evaluate(() => Boolean(window.errorTestSent)), false);
+    assert.deepEqual(requests, []);
+    state = viewerState("plot", 2);
+    await page.evaluate(async () =>
+      (await import("/src/artifacts/artifactViewerModel.ts")).announceArtifactVersionChange("plot"),
+    );
+    await notice.waitFor({ state: "detached" });
+    await page.locator(".chat-annotation-composer textarea").waitFor({ state: "detached" });
+    await embed.getByRole("button", { name: "Expand", exact: true }).click();
+    await page.locator(".artifact-viewer iframe").waitFor();
+    assert.ok(
+      errors.every((error) => error === "inline-failure"),
+      JSON.stringify(errors),
+    );
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

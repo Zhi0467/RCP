@@ -9,11 +9,15 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.limits import ARTIFACT_DISPLAY_TITLE_MAX_CHARS
+from rcp.artifact_preview import ARTIFACT_CSP, ArtifactHTMLSanitizer
+from rcp.limits import (
+    ARTIFACT_DISPLAY_TITLE_MAX_CHARS,
+    ARTIFACT_ERROR_INTERVAL_MS,
+    ARTIFACT_ERROR_MAX_CHARS,
+)
 from rcp.regular_file_reader import _open_local_directory
 from rcp.regular_file_reader import read_local_regular_file as read_local_regular_file
 
@@ -239,96 +243,6 @@ def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
         os.close(directory_fd)
 
 
-def _is_inline_image(value: str | None) -> bool:
-    """Match image sources the artifact CSP already allows (``img-src data: blob:``)."""
-    lowered = (value or "").strip().casefold()
-    return lowered.startswith(("data:image/", "blob:"))
-
-
-class _ArtifactHTMLSanitizer(HTMLParser):
-    """Neutralize browser capabilities while preserving inline presentation and scripts."""
-
-    _request_attributes = {
-        "src",
-        "srcset",
-        "poster",
-        "action",
-        "formaction",
-        "ping",
-        "data",
-        "codebase",
-        "background",
-        "manifest",
-    }
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self.parts: list[str] = []
-        # RCP's own policy and bootstrap precede the page, so a doctype left in
-        # place would follow content and drop the page into quirks mode.
-        self.doctype: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "meta" and any(
-            name.casefold() == "http-equiv" and (value or "").casefold() == "refresh"
-            for name, value in attrs
-        ):
-            return
-        rendered: list[tuple[str, str | None]] = []
-        for name, value in attrs:
-            lowered = name.casefold()
-            if tag == "img" and lowered == "src" and _is_inline_image(value):
-                rendered.append((name, value))
-                continue
-            if (
-                lowered in self._request_attributes
-                or lowered in {"download", "target"}
-                or lowered.endswith(":href")
-                or lowered.endswith(":src")
-            ):
-                continue
-            if lowered == "href":
-                if tag == "a" and value and _is_http_url(value):
-                    rendered.append(("data-rcp-href", value))
-                continue
-            if lowered == "http-equiv" and tag == "meta":
-                continue
-            rendered.append((name, value))
-        self.parts.append(f"<{tag}{_html_attributes(rendered)}>")
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        before = len(self.parts)
-        self.handle_starttag(tag, attrs)
-        if len(self.parts) > before:
-            self.parts[-1] = self.parts[-1][:-1] + "/>"
-
-    def handle_endtag(self, tag: str) -> None:
-        self.parts.append(f"</{tag}>")
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
-
-    def handle_entityref(self, name: str) -> None:
-        self.parts.append(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        self.parts.append(f"&#{name};")
-
-    def handle_comment(self, data: str) -> None:
-        self.parts.append(f"<!--{data}-->")
-
-    def handle_decl(self, decl: str) -> None:
-        # Whitespace and comments may legally precede a doctype.
-        leading = all(not part.strip() or part.startswith("<!--") for part in self.parts)
-        if self.doctype is None and leading and decl.casefold().startswith("doctype"):
-            self.doctype = f"<!{decl}>"
-            return
-        self.parts.append(f"<!{decl}>")
-
-    def handle_pi(self, data: str) -> None:
-        self.parts.append(f"<?{data}>")
-
-
 @dataclass(frozen=True)
 class FrameAddon:
     frame_script: str
@@ -338,12 +252,21 @@ class FrameAddon:
     wrapper_style: str = ""
 
 
+# Shared by the private-channel wrapper and both shell presentations.
+ARTIFACT_ERROR_VALIDATION_JS = """
+const validArtifactError=(value)=>value && typeof value==='object' &&
+  Object.keys(value).length===3 && value.kind==='rcp-artifact-error' &&
+  typeof value.message==='string' && value.message.length<=MAX_ERROR_CHARS &&
+  Number.isSafeInteger(value.count) && value.count>0;
+""".replace("MAX_ERROR_CHARS", str(ARTIFACT_ERROR_MAX_CHARS))
+
+
 def html_preview_document(
     data: bytes, *, frame_addon: FrameAddon | None = None, result_view_gestures: bool = False
 ) -> tuple[str, str]:
     """Build an RCP-owned wrapper and its CSP for an opaque sandboxed document."""
     source = data.decode("utf-8")
-    sanitizer = _ArtifactHTMLSanitizer()
+    sanitizer = ArtifactHTMLSanitizer()
     sanitizer.feed(source)
     sanitizer.close()
     bootstrap = (
@@ -358,6 +281,42 @@ const listen=Function.prototype.call.bind(EventTarget.prototype.addEventListener
 const parentPost=window.parent.postMessage.bind(window.parent);
 const closest=Function.prototype.call.bind(Element.prototype.closest);
 const send=(value)=>portPost(privatePort,value);
+const ErrorType=Error, primitiveString=String;
+const slice=Function.prototype.call.bind(String.prototype.slice);
+const errorMessageGetter=Object.getOwnPropertyDescriptor(ErrorEvent.prototype,'message').get;
+const eventMessage=Function.prototype.call.bind(errorMessageGetter);
+const eventError=Function.prototype.call.bind(
+  Object.getOwnPropertyDescriptor(ErrorEvent.prototype,'error').get);
+const reasonGetter=Function.prototype.call.bind(
+  Object.getOwnPropertyDescriptor(PromiseRejectionEvent.prototype,'reason').get);
+const later=window.setTimeout.bind(window), now=Date.now.bind(Date);
+let errorCount=0, errorText='', lastErrorSent=-Infinity, errorTimer=null;
+const flushError=()=>{
+  errorTimer=null; lastErrorSent=now();
+  send({kind:'rcp-artifact-error',message:errorText,count:errorCount});
+};
+const recordError=(reason)=>{
+  let text='Unknown error';
+  try {
+    if(reason instanceof ErrorType) {
+      const message=reason.message;
+      if(typeof message==='string') text=message;
+    } else if(reason===null || (typeof reason!=='object' && typeof reason!=='function')) {
+      text=primitiveString(reason);
+    }
+  } catch {}
+  errorText=slice(text,0,MAX_ERROR_CHARS);
+  if(errorCount<9007199254740991) errorCount++;
+  if(errorTimer!==null) return;
+  const remaining=ERROR_INTERVAL-(now()-lastErrorSent);
+  if(remaining<=0) flushError();
+  else errorTimer=later(flushError,remaining);
+};
+listen(window,'error',(event)=>{
+  // Resource load events carry no script error message.
+  try { recordError(eventError(event) || eventMessage(event)); } catch {}
+},true);
+listen(window,'unhandledrejection',(event)=>recordError(reasonGetter(event)),true);
 listen(window,'click',(event)=>{
   if(!event.isTrusted || !(event.target instanceof Element)) return;
   const anchor=closest(event.target,'a[data-rcp-href]');
@@ -365,7 +324,9 @@ listen(window,'click',(event)=>{
   event.preventDefault(); event.stopImmediatePropagation();
   send({kind:'rcp-reference',url:anchor.getAttribute('data-rcp-href')});
 },true);
-"""
+""".replace("MAX_ERROR_CHARS", str(ARTIFACT_ERROR_MAX_CHARS)).replace(
+            "ERROR_INTERVAL", str(ARTIFACT_ERROR_INTERVAL_MS)
+        )
         + (frame_addon.frame_script if frame_addon else "")
         + """
 portStart(privatePort);
@@ -373,20 +334,10 @@ parentPost({kind:'rcp-artifact-channel',version:1},'*',[outwardPort]);
 document.currentScript?.remove();
 })();</script>"""
     )
-    # Chromium does not currently enforce ``navigate-to``. The opaque sandbox is
-    # the boundary that prevents this document from navigating the RCP parent;
-    # inline scripts may still navigate their own isolated child frame. Keep the
-    # directive as defense in depth for engines that do implement it.
-    artifact_csp = (
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; "
-        "frame-src 'none'; child-src 'none'; media-src 'none'; worker-src 'none'; "
-        "form-action 'none'; base-uri 'none'; navigate-to 'none'"
-    )
     frame_style = frame_addon.frame_style if frame_addon else ""
     artifact = (
         (sanitizer.doctype or "")
-        + f'<meta http-equiv="Content-Security-Policy" content="{html.escape(artifact_csp)}">'
+        + f'<meta http-equiv="Content-Security-Policy" content="{html.escape(ARTIFACT_CSP)}">'
         + bootstrap
         + (f"<style>{frame_style}</style>" if frame_style else "")
         + "".join(sanitizer.parts)
@@ -403,6 +354,16 @@ const URLConstructor=URL;
 let artifactPort=null;
 const channelListeners=[];
 const channelReady=[];
+"""
+        + ARTIFACT_ERROR_VALIDATION_JS
+        + """
+const errorChannel=new URLConstructor(window.location.href).searchParams.get('error_channel');
+if(window.parent!==window && errorChannel)
+  parentPost({kind:'rcp-artifact-error-clear',channel:errorChannel},'*');
+channelListeners.push((value)=>{
+  if(!validArtifactError(value) || window.parent===window || !errorChannel) return;
+  parentPost({...value,channel:errorChannel},'*');
+});
 """
         + (frame_addon.wrapper_script if frame_addon else "")
         + """
@@ -465,26 +426,10 @@ window.addEventListener('message',(event)=>{
         "</iframe>" + result_view_script
     )
     # The srcdoc artifact inherits this policy too, so it must admit the inline images
-    # the artifact's own policy allows.
+    # and fonts the artifact's own policy allows.
     wrapper_csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "img-src data: blob:; frame-src 'self'; base-uri 'none'; form-action 'none'; "
+        "img-src data: blob:; font-src data:; frame-src 'self'; base-uri 'none'; form-action 'none'; "
         "object-src 'none'"
     )
     return document, wrapper_csp
-
-
-def _html_attributes(attrs: list[tuple[str, str | None]]) -> str:
-    return "".join(
-        f" {html.escape(name, quote=True)}"
-        if value is None
-        else f' {html.escape(name, quote=True)}="{html.escape(value, quote=True)}"'
-        for name, value in attrs
-    )
-
-
-def _is_http_url(value: str) -> bool:
-    try:
-        return urlsplit(value).scheme.casefold() in {"http", "https"}
-    except ValueError:
-        return False

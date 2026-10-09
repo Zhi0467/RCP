@@ -45,6 +45,7 @@ def _data_dir(data_dir: Path) -> Path:
 def _limits() -> dict[str, int]:
     return {
         "idle": limits.BROWSER_SESSION_IDLE_SECONDS,
+        "preview_idle": limits.ARTIFACT_PREVIEW_IDLE_SECONDS,
         "start": limits.BROWSER_SESSION_START_TIMEOUT_SECONDS,
         "close": limits.BROWSER_SESSION_CLOSE_TIMEOUT_SECONDS,
         "readiness": limits.BROWSER_READINESS_TIMEOUT_SECONDS,
@@ -57,6 +58,7 @@ def _invoke(request: dict, *, host: str, partition: str | None, data_dir: Path) 
     root = Path(__file__).parent
     request = {
         **request,
+        "artifact_preview_source": (root.parent / "artifact_preview.py").read_text(),
         "root": None if host else str(data_dir / "browser"),
         "limits": _limits(),
         "controller_id": hashlib.sha256(str(data_dir).encode()).hexdigest(),
@@ -89,6 +91,7 @@ def _invoke(request: dict, *, host: str, partition: str | None, data_dir: Path) 
             return {"reason_code": "runtime_failed", "detail": str(exc)[-2000:]}
     try:
         sources = {
+            "rcp.artifact_preview": request["artifact_preview_source"],
             "rcp.agents.staged_hidden_read": (
                 root.parent / "agents" / "staged_hidden_read.py"
             ).read_text(),

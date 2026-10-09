@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -421,6 +422,7 @@ def _permission(
         bash = {"*": "deny"}
         if browser_grant is not None and browser_grant.status == "granted":
             bash["playwright-cli *"] = "allow"
+            bash[f"{PREVIEW_COMMAND} *"] = "allow"
         if invocation_gate is not None and invocation_gate.client_path is not None:
             client = shlex.join(invocation_gate.client_executable_argv())
             bash[f"{client} *"] = "allow"

@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -544,7 +545,7 @@ class ClaudeProfile(ProviderProfile):
                 and browser_grant is not None
                 and browser_grant.status == "granted"
             ):
-                command.append("Bash(playwright-cli:*)")
+                command.extend(["Bash(playwright-cli:*)", f"Bash({PREVIEW_COMMAND}:*)"])
         command.extend(["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'])
         if session_id:
             command.extend(["--resume", session_id])

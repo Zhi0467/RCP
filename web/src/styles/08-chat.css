@@ -789,6 +789,20 @@
   font-weight: 600;
   order: 1;
 }
+.chat-inline-artifact-page-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-inline-artifact-page-error > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-inline-artifact-page-error > button {
+  flex-shrink: 0;
+}
 .chat-inline-artifact-hint {
   color: var(--cobalt-dark);
   flex-basis: 100%;
