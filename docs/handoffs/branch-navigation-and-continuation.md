@@ -55,6 +55,11 @@ Status: design, not started. One PR. Nothing is implemented yet.
     `branch_id == episode_id` and need a record migration.
 - (4) Child chats unlock once their episode has ended. While it runs, the
   child composer is replaced by a pointer to **Message orchestrator**.
+- (4b) The orchestrator is messageable at any time. While the episode runs,
+  a message is human mail, as today. After it ends, a message starts an
+  **Add N turns** continuation that carries the message as its opening human
+  mail; the sender authorizes it and sets its budget (small default). The
+  orchestrator keeps its branch authority; it does not become a plain chat.
 
 ## Proposed fence for (4)
 
