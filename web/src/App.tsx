@@ -1460,7 +1460,12 @@ function MemberApp({
           if (owed) {
             await refreshChatSummaries(requestedProjectId, base)
               .then(() => {
-                if (chatRefreshOwedRef.current.get(requestedProjectId) === owed)
+                // A refresh for a project no longer shown returns without
+                // applying, so the debt stands until it is shown again.
+                if (
+                  isActiveProject(requestedProjectId) &&
+                  chatRefreshOwedRef.current.get(requestedProjectId) === owed
+                )
                   chatRefreshOwedRef.current.delete(requestedProjectId);
               })
               .catch(() => {
