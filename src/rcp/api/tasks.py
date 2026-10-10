@@ -487,7 +487,11 @@ def agent_task(
 ) -> dict[str, object]:
     require_registered_project(catalog, project_id)
     record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
+    if (
+        record is None
+        or record.project_id != catalog.resolve_project_id(project_id)
+        or not record.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     detail = _agent_task_response(
         store,
@@ -522,7 +526,11 @@ def steer_agent_task(
 ) -> ChatMessage:
     identity_access.require_patch_capable_identity(http_request)
     record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
+    if (
+        record is None
+        or record.project_id != catalog.resolve_project_id(project_id)
+        or not record.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     service = get_graph_service(catalog, project_id, record.graph_target.branch_id)
     try:
@@ -794,7 +802,11 @@ def pause_agent_task(
 ) -> dict[str, object]:
     get_project_service(catalog, project_id)
     record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
+    if (
+        record is None
+        or record.project_id != catalog.resolve_project_id(project_id)
+        or not record.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     _reject_history_only_control(record)
     try:
@@ -820,7 +832,11 @@ def resume_agent_task(
     experiment_admission: ExperimentAdmissionDependency,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
+    if (
+        previous is None
+        or previous.project_id != catalog.resolve_project_id(project_id)
+        or not previous.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
@@ -862,7 +878,11 @@ def repair_agent_task_graph_update(
     experiment_admission: ExperimentAdmissionDependency,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
+    if (
+        previous is None
+        or previous.project_id != catalog.resolve_project_id(project_id)
+        or not previous.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
@@ -907,7 +927,11 @@ def apply_agent_task_graph_update_again(
     """Re-apply a Work turn's retained Patch after canonical state was unreachable."""
 
     previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
+    if (
+        previous is None
+        or previous.project_id != catalog.resolve_project_id(project_id)
+        or not previous.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     _reject_history_only_control(previous)
     if not task_graph_capable(previous.kind, previous.request):
@@ -956,7 +980,11 @@ def retry_agent_task(
     experiment_admission: ExperimentAdmissionDependency,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
+    if (
+        previous is None
+        or previous.project_id != catalog.resolve_project_id(project_id)
+        or not previous.visible
+    ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":

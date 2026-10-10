@@ -342,6 +342,38 @@ def test_heartbeat_signals_a_settings_save_the_page_has_not_rendered(manifest, t
     assert after["experiment_signal"] == rendered["experiment_signal"]
 
 
+def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="aliased-task",
+            project_id=project_id,
+            kind="node_chat",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
+            ("legacy-project-url", project_id),
+        )
+    # Reopen to load the durable alias into the catalog's request-path snapshot.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    base = "/api/projects/legacy-project-url"
+    assert client.get(base).status_code == 200  # warms the display cache, as a page does
+    assert client.get(f"{base}/cached/revision").json()["latest_task_id"] == "aliased-task"
+    assert [task["operation_id"] for task in client.get(f"{base}/tasks").json()] == ["aliased-task"]
+    assert client.get(f"{base}/tasks/aliased-task").status_code == 200
+
+
 @pytest.mark.parametrize("refresh_fails", [False, True])
 def test_unchanged_head_reconciles_cached_offline_state(
     manifest, tmp_path, monkeypatch, refresh_fails

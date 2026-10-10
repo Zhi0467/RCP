@@ -939,6 +939,8 @@ function MemberApp({
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
   const projectTasksRef = useRef(projectTasks);
   projectTasksRef.current = projectTasks;
+  // The project whose chat summaries a heartbeat still owes a refresh.
+  const chatRefreshOwedRef = useRef<string | null>(null);
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1436,9 +1438,18 @@ function MemberApp({
             const latest = nextTasks.find(
               (task) => task.operation_id === observation.latest_task_id,
             );
-            if (latest && chatIdForTask(latest))
-              void refreshChatSummaries(requestedProjectId, base).catch(() => {
-                // The next chat refresh retries; the task list already updated.
+            if (latest && chatIdForTask(latest)) chatRefreshOwedRef.current = requestedProjectId;
+          }
+          // Owed until it succeeds: the task is already listed, so no later
+          // heartbeat would notice it again.
+          if (chatRefreshOwedRef.current === requestedProjectId) {
+            await refreshChatSummaries(requestedProjectId, base)
+              .then(() => {
+                if (chatRefreshOwedRef.current === requestedProjectId)
+                  chatRefreshOwedRef.current = null;
+              })
+              .catch(() => {
+                // Stays owed; the next heartbeat retries.
               });
           }
           const loadedWatcherIds = watchersRef.current.map((watcher) => watcher.watcher_id);
