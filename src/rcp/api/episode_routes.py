@@ -890,7 +890,12 @@ def _resolved_auto_research_start_request(
     service: ProjectService,
     body: StartEpisodeBody,
 ) -> AutoResearchStartRequest:
-    profile = service.resolve_agent_profile("orchestrator")
+    profile = service.resolve_agent_profile(
+        "orchestrator",
+        provider=body.provider,
+        model=body.model,
+        reasoning=body.reasoning,
+    )
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
         browser_requested=body.browser_requested,

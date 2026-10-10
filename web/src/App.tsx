@@ -3372,6 +3372,7 @@ function MemberApp({
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
       requestId?: string,
+      launchConfig?: AgentRunConfig,
     ): Promise<ExperimentStartResponse> => {
       if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
@@ -3390,13 +3391,16 @@ function MemberApp({
         // A fresh Run is its own conversation. Reusing the node's newest chat
         // would file the episode inside a human's finished Work chat.
         const chatId = window.crypto.randomUUID();
+        // A human start may pick the agent; the graph agent still runs on the
+        // profile's machine.
         const profile = project.agent_profiles.node_chat;
+        const agent = launchConfig ?? profile;
         const task = await startExperimentRun(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
           {
-            provider: profile.provider,
-            model: profile.model || null,
-            reasoning: profile.reasoning,
+            provider: agent.provider,
+            model: agent.model || null,
+            reasoning: agent.reasoning,
             run_on: profile.run_on,
             run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
             chat_id: chatId,
@@ -3469,9 +3473,17 @@ function MemberApp({
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
       browserRequested = false,
+      launchConfig?: AgentRunConfig,
     ) => {
       try {
-        await startExperiment(node, invocationCeiling, isolation, browserRequested);
+        await startExperiment(
+          node,
+          invocationCeiling,
+          isolation,
+          browserRequested,
+          undefined,
+          launchConfig,
+        );
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -3535,6 +3547,7 @@ function MemberApp({
       codeWorktree = true,
       browserRequested = false,
       requestId?: string,
+      launchConfig?: AgentRunConfig,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3554,6 +3567,14 @@ function MemberApp({
             starting_instruction: startingInstruction,
             // Omitted, the server turns code isolation on only where it is eligible.
             ...(codeWorktree ? {} : { code_worktree: false }),
+            // Omitted, the server uses the Settings orchestrator profile.
+            ...(launchConfig
+              ? {
+                  provider: launchConfig.provider,
+                  model: launchConfig.model || null,
+                  reasoning: launchConfig.reasoning,
+                }
+              : {}),
           },
           requestId,
         );
@@ -3592,6 +3613,7 @@ function MemberApp({
     startingInstruction: string | null,
     codeWorktree = true,
     browserRequested = false,
+    launchConfig?: AgentRunConfig,
   ) => {
     reportAutoResearchStartError(null);
     try {
@@ -3600,6 +3622,8 @@ function MemberApp({
         startingInstruction,
         codeWorktree,
         browserRequested,
+        undefined,
+        launchConfig,
       );
     } catch (error) {
       reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
@@ -5359,8 +5383,15 @@ function MemberApp({
                 }
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
-                onRunExperiment={(node, invocationCeiling, browserRequested) =>
-                  void runExperiment(node, invocationCeiling, undefined, browserRequested)
+                project={project}
+                onRunExperiment={(node, invocationCeiling, browserRequested, launchConfig) =>
+                  void runExperiment(
+                    node,
+                    invocationCeiling,
+                    undefined,
+                    browserRequested,
+                    launchConfig,
+                  )
                 }
                 onStopExperiment={(nodeId, episodeId) => void stopExperimentLoop(nodeId, episodeId)}
                 onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
@@ -5602,8 +5633,9 @@ function MemberApp({
                 stageDecisionChoice(draft, graph, node.id, selectedOption),
               )
             }
-            onRunExperiment={(isolation, browserRequested) =>
-              void runExperiment(node, undefined, isolation, browserRequested)
+            project={project}
+            onRunExperiment={(isolation, browserRequested, launchConfig) =>
+              void runExperiment(node, undefined, isolation, browserRequested, launchConfig)
             }
             inheritedIsolation={
               activeBranchEpisode
@@ -5687,13 +5719,21 @@ function MemberApp({
         busy={episodeAction === "start"}
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
+        project={project}
         onClose={closeAutoResearchDialog}
-        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree, browserRequested) =>
+        onAuthorize={(
+          invocationCeiling,
+          startingInstruction,
+          codeWorktree,
+          browserRequested,
+          launchConfig,
+        ) =>
           void authorizeAutoResearch(
             invocationCeiling,
             startingInstruction,
             codeWorktree,
             browserRequested,
+            launchConfig,
           )
         }
       />

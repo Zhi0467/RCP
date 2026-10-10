@@ -1,4 +1,11 @@
 import { BrowserToggle } from "../core/BrowserControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  launchProviderReady,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
+import type { AgentRunConfig, ProjectSnapshot } from "../core/types";
 import { LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -79,6 +86,8 @@ interface Props {
   busy: boolean;
   error: string | null;
   initialInvocationCeiling: number;
+  /** Offers the orchestrator agent picker, defaulting from the Orchestrator profile. */
+  project?: ProjectSnapshot;
   onClose: () => void;
   /** `codeWorktree` false opts out; true leaves the choice to the server's eligibility check. */
   onAuthorize: (
@@ -86,6 +95,7 @@ interface Props {
     startingInstruction: string | null,
     codeWorktree: boolean,
     browserRequested: boolean,
+    launchConfig?: AgentRunConfig,
   ) => void;
 }
 
@@ -94,6 +104,7 @@ export function AutoResearchDialog({
   busy,
   error,
   initialInvocationCeiling,
+  project,
   onClose,
   onAuthorize,
 }: Props) {
@@ -104,6 +115,21 @@ export function AutoResearchDialog({
   const [instruction, setInstruction] = useState("");
   const [browserRequested, setBrowserRequested] = useState(false);
   const [codeWorktree, setCodeWorktree] = useState(true);
+  const launchProfile = project?.agent_profiles.orchestrator;
+  // Only an explicit pick is state; untouched, the picker follows the current profile.
+  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setLaunchConfig(null);
+    setLaunchOpen(false);
+  }, [open, project?.id]);
+  const launchConfig =
+    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchEffectiveModel =
+    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
+      ? launchProfile.effective_model
+      : "";
 
   useEffect(() => {
     if (!open) return;
@@ -162,6 +188,7 @@ export function AutoResearchDialog({
             instruction.trim() || null,
             codeWorktree,
             browserRequested,
+            launchConfig,
           );
         }}
       >
@@ -224,6 +251,22 @@ export function AutoResearchDialog({
               Code worktree
             </label>
           </div>
+          {launchOpen && project && launchProfile && launchConfig && (
+            <AgentConfigControls
+              project={project}
+              value={launchConfig}
+              onChange={setLaunchConfig}
+              effectiveModel={launchEffectiveModel}
+              workLikeCapable={launchProfile.work_like_capable}
+              locked={busy}
+              showRunOn={false}
+              compact
+            >
+              <p className="agent-config-note">
+                Experiments it spawns use the Settings Node chat profile.
+              </p>
+            </AgentConfigControls>
+          )}
         </div>
         {error && (
           <div className="campaign-dialog-error" role="alert">
@@ -231,10 +274,34 @@ export function AutoResearchDialog({
           </div>
         )}
         <footer>
+          {project && launchConfig && (
+            <AgentConfigChip
+              project={project}
+              value={launchConfig}
+              effectiveModel={launchEffectiveModel}
+              open={launchOpen}
+              disabled={busy}
+              label="Orchestrator agent"
+              workLike={launchProfile?.work_like_capable}
+              onToggle={() => setLaunchOpen((current) => !current)}
+            />
+          )}
           <button className="button secondary" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="button primary" type="submit" disabled={busy || !budgetIsValid}>
+          <button
+            className="button primary"
+            type="submit"
+            disabled={
+              busy ||
+              !budgetIsValid ||
+              Boolean(
+                project &&
+                launchConfig &&
+                !launchProviderReady(project, launchConfig, launchProfile?.work_like_capable),
+              )
+            }
+          >
             {busy ? <LoaderCircle className="spin" size={14} /> : <Telescope size={14} />}
             {busy ? "Starting…" : "Start auto-research"}
           </button>

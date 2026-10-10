@@ -202,6 +202,11 @@ def run_experiment(
                             "message": experiment_start_message(supplied.message, node_id),
                             "chat_id": supplied.chat_id,
                             "session_id": None,
+                            # A fresh session: the human's pick, else Settings,
+                            # never the delivered watcher's old binding.
+                            "provider": supplied.provider,
+                            "model": supplied.model,
+                            "reasoning": supplied.reasoning,
                         }
                     )
                     experiment_request = resolve_experiment_node_work_request(

@@ -1,7 +1,11 @@
 import { TriangleAlert, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../core/types";
-import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
+import {
+  AgentConfigControls,
+  launchProviderReady,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import { RepositoryScope } from "../chat/RepositoryScope";
 
 interface Props {
@@ -76,8 +80,7 @@ export function RunDialog({
     config.provider === project.agent_profiles[kind].provider
       ? project.agent_profiles[kind].runtime
       : readiness?.default_runtime;
-  const providerReady =
-    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
+  const providerReady = launchProviderReady(project, config);
   // Switching the orchestrator rebinds one turn. Children it spawns resolve
   // their own binding from the project's node_chat profile, so a human moving
   // off an exhausted provider or model has to move that profile too, in
