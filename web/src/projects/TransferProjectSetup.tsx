@@ -59,6 +59,7 @@ import type {
   Episode,
   ProjectSnapshot,
   ProviderReadiness,
+  ProjectTransferTargetProvisioningIntent,
   SetupAgentProfile,
 } from "../core/types";
 
@@ -86,7 +87,7 @@ const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
-  { id: "orchestrator", label: "Orchestrator" },
+  { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 
 /** Use only backend-published lifecycle answers. */
@@ -226,8 +227,10 @@ function initialProviderChecks(
 
 export function TransferRepositoryPolicy({
   includeLocalCommits,
+  serverOnlyAliases = [],
 }: {
   includeLocalCommits: boolean;
+  serverOnlyAliases?: string[];
 }) {
   return (
     <div className="transfer-archive-policy">
@@ -236,6 +239,12 @@ export function TransferRepositoryPolicy({
           ? "Committed files and history are copied as saved. Changed team checkouts have a detached HEAD at the saved source commit; a checkout already at that commit is left unchanged."
           : "Team checkouts are cloned from GitHub. Local unpushed commits stay behind."}
       </p>
+      {serverOnlyAliases.length > 0 && (
+        <p>
+          {serverOnlyAliases.join(", ")} {serverOnlyAliases.length === 1 ? "has" : "have"} no GitHub
+          origin, so committed files and history are copied as saved onto main.
+        </p>
+      )}
       <p>
         Uncommitted files and external data/output directories remain excluded. RCP does not push to
         GitHub.
@@ -505,6 +514,17 @@ export function TransferProjectSetup({
       "",
       `${window.location.pathname}${window.location.search}${hash}`,
     );
+    const targetProvisioning: ProjectTransferTargetProvisioningIntent = {
+      name: targetName.trim(),
+      default_auto_research_invocation_ceiling: targetCeiling,
+      machines: machines.map((machine) => ({
+        ...machine,
+        host: machine.location === "ssh" ? machine.host?.trim() : "",
+        os_account: machine.location === "local" ? "rcp" : machine.os_account.trim(),
+        central_root: machine.central_root?.trim() || null,
+      })),
+      provider_checks: providerChecks,
+    };
     setBusy("prepare");
     setError(null);
     try {
@@ -514,17 +534,7 @@ export function TransferProjectSetup({
         connectionId: selectedConnection.connection_id,
         sourceProjectId: route.sourceProjectId,
         ...(includeLocalCommits ? { includeLocalCommits: true } : {}),
-        targetProvisioning: {
-          name: targetName.trim(),
-          default_auto_research_invocation_ceiling: targetCeiling,
-          machines: machines.map((machine) => ({
-            ...machine,
-            host: machine.location === "ssh" ? machine.host?.trim() : "",
-            os_account: machine.location === "local" ? "rcp" : machine.os_account.trim(),
-            central_root: machine.central_root?.trim() || null,
-          })),
-          provider_checks: providerChecks,
-        },
+        targetProvisioning,
       });
       setBundle(prepared);
       setStep(2);
@@ -1124,7 +1134,8 @@ export function TransferProjectSetup({
                 {bundle.incoming_provisioning.repositories.map((repository) => (
                   <div className="transfer-path" key={repository.alias}>
                     <span>
-                      {repository.alias} · {repository.machine_alias}
+                      {repository.alias} · {repository.machine_alias} ·{" "}
+                      {repository.repository?.identity ?? "Server only"}
                     </span>
                     <code>
                       {repository.resolved_path ??
@@ -1168,15 +1179,22 @@ export function TransferProjectSetup({
               </header>
               <TransferRepositoryPolicy
                 includeLocalCommits={bundle.include_local_commits ?? false}
+                serverOnlyAliases={bundle.source.source_configuration.repositories
+                  .filter((repository) => repository.repository === null)
+                  .map((repository) => repository.alias)}
               />
-              {bundle.include_local_commits && (
+              {bundle.source.source_configuration.repositories.some(
+                (repository) => repository.source_commit,
+              ) && (
                 <div className="transfer-path-list">
-                  {bundle.source.source_configuration.repositories.map((repository) => (
-                    <div className="transfer-path" key={repository.alias}>
-                      <span>{repository.alias} · saved source commit</span>
-                      <code>{repository.source_commit}</code>
-                    </div>
-                  ))}
+                  {bundle.source.source_configuration.repositories
+                    .filter((repository) => repository.source_commit)
+                    .map((repository) => (
+                      <div className="transfer-path" key={repository.alias}>
+                        <span>{repository.alias} · saved source commit</span>
+                        <code>{repository.source_commit}</code>
+                      </div>
+                    ))}
                 </div>
               )}
             </section>

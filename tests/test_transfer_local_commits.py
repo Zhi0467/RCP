@@ -191,11 +191,12 @@ def test_source_create_binds_choice_and_preserves_legacy_wire(tmp_path, include)
     )
 
 
-@pytest.mark.parametrize("include", [False, True])
+@pytest.mark.parametrize("include,server_only", [(False, False), (True, False), (False, True)])
 def test_export_and_import_restore_opted_revision_without_publishing_git(
     tmp_path,
     monkeypatch,
     include,
+    server_only,
 ):
     app, source, actor, project, repository, base = _source(tmp_path)
     published = tmp_path / "published.git"
@@ -204,6 +205,9 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
     # Uncommitted work is neither discarded on the source nor copied to the target.
     (repository / "code.txt").write_text("dirty source")
     (repository / "untracked.txt").write_text("not a committed file")
+    if server_only:
+        _git(repository, "remote", "remove", "origin")
+    bundled = include or server_only
     service = app.state.catalog.open(project)
     config, graph_head = capture_project_transfer_source(service, include_local_commits=include)
     target_data = tmp_path / "team"
@@ -224,9 +228,10 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
         monkeypatch=monkeypatch,
     )
     destination = Path(provisioning.repositories[0].resolved_path)
-    _git(destination, "clone", "--no-hardlinks", str(published), ".")
-    _git(destination, "checkout", "--detach", base)
-    _git(destination, "remote", "set-url", "origin", "https://example.invalid/not-pushed.git")
+    if not server_only:
+        _git(destination, "clone", "--no-hardlinks", str(published), ".")
+        _git(destination, "checkout", "--detach", base)
+        _git(destination, "remote", "set-url", "origin", "https://example.invalid/not-pushed.git")
     target_request = target.create_target_project_transfer_request(
         provisioning_request_id=provisioning.request_id,
         source_request_id=request.request_id,
@@ -266,8 +271,8 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
         source_transfer_export_path(app.state.catalog.data_dir, request.request_id),
         archive_root,
     )
-    assert readback.manifest.schema_version == (2 if include else 1)
-    assert bool([e for e in readback.manifest.entries if e.group == "repository_git"]) == include
+    assert readback.manifest.schema_version == (2 if bundled else 1)
+    assert bool([e for e in readback.manifest.entries if e.group == "repository_git"]) == bundled
     target.bind_project_transfer_archive(
         target_request.request_id,
         archive_sha256=captured.archive_sha256,
@@ -291,12 +296,17 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
     receipt = import_project_transfer(catalog, **arguments)
     assert receipt.status == "complete"
     assert import_project_transfer(catalog, **arguments) == receipt
-    assert _git(destination, "rev-parse", "HEAD") == (head if include else base)
-    assert (destination / "code.txt").read_text() == ("unpublished" if include else "published")
+    assert _git(destination, "rev-parse", "HEAD") == (head if bundled else base)
+    assert (destination / "code.txt").read_text() == ("unpublished" if bundled else "published")
     assert not (destination / "untracked.txt").exists()
-    assert (
-        _git(destination, "remote", "get-url", "origin") == "https://example.invalid/not-pushed.git"
-    )
+    if server_only:
+        assert _git(destination, "symbolic-ref", "HEAD") == "refs/heads/main"
+        assert _git(destination, "remote") == ""
+    else:
+        assert (
+            _git(destination, "remote", "get-url", "origin")
+            == "https://example.invalid/not-pushed.git"
+        )
     assert _git(repository, "rev-parse", "HEAD") == head
     assert _git(published, "rev-parse", "HEAD") == base
     assert (repository / "code.txt").read_text() == "dirty source"
@@ -332,7 +342,7 @@ def test_git_head_drift_refuses_the_reviewed_source_boundary(tmp_path):
     assert service.history.head_ref() == graph_head
 
 
-def test_commit_choice_requires_every_repository_and_only_new_codec(tmp_path):
+def test_commit_choice_requires_new_codec(tmp_path):
     app, _store, _actor_value, project, _repository, _base = _source(tmp_path)
     configuration, _head = capture_project_transfer_source(
         app.state.catalog.open(project),
@@ -340,7 +350,7 @@ def test_commit_choice_requires_every_repository_and_only_new_codec(tmp_path):
     )
     payload = configuration.model_dump(mode="json")
     payload["supported_archive_codecs"] = ["rcp-transfer-v1", "rcp-transfer-v2"]
-    with pytest.raises(ValidationError, match="every reviewed HEAD and v2"):
+    with pytest.raises(ValidationError, match="requires v2"):
         ProjectTransferSourceConfiguration.model_validate_json(json.dumps(payload))
     payload["supported_archive_codecs"] = ["rcp-transfer-v2"]
     payload["repositories"][0].pop("source_commit")
@@ -367,3 +377,41 @@ def test_git_bundle_requires_new_codec_and_envelope():
     envelope.verify_manifest(manifest)
     with pytest.raises(ValueError, match="does not match"):
         envelope.model_copy(update={"archive_codec": "rcp-transfer-v1"}).verify_manifest(manifest)
+
+
+def test_mixed_sources_require_only_server_only_bundle(tmp_path):
+    app, store, _actor_value, project, repository, head = _source(tmp_path)
+    github, _ = capture_project_transfer_source(app.state.catalog.open(project))
+    _git(repository, "remote", "remove", "origin")
+    local, _ = capture_project_transfer_source(app.state.catalog.open(project))
+    body = dict(
+        request_id=str(uuid.uuid4()),
+        project_id=project,
+        target_space_id=str(uuid.uuid4()),
+        include_local_commits=False,
+    )
+    with signed_in_client(app) as client:
+        for _ in range(2):
+            response = client.post("/api/project-transfers/source-requests", json=body)
+            assert response.status_code == 201, response.text
+            assert response.json()["source_configuration"]["repositories"][0]["repository"] is None
+    payload = local.model_dump(mode="json")
+    payload["repositories"].append(
+        {**github.model_dump(mode="json")["repositories"][0], "alias": "github"}
+    )
+    mixed = ProjectTransferSourceConfiguration.model_validate_json(json.dumps(payload))
+    assert mixed.repositories[0].repository is None
+    assert mixed.repositories[0].source_commit == head
+    assert mixed.repositories[1].source_commit is None
+    assert mixed.has_repository_bundles and not mixed.includes_local_commits
+    _require_reviewed_source_unchanged(
+        store,
+        app.state.catalog.open(project),
+        SimpleNamespace(
+            source_configuration=local,
+            project_id=project,
+        ),
+    )
+    payload["repositories"][0].pop("source_commit")
+    with pytest.raises(ValidationError, match="server-only.*Git bundle"):
+        ProjectTransferSourceConfiguration.model_validate_json(json.dumps(payload))

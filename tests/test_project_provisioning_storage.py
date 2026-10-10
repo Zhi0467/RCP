@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import socket
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from rcp.api.project_provisioning import _project_provisioning_response
 from rcp.core.models import AuthorizedHuman
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
@@ -27,6 +29,7 @@ from rcp.storage import (
     ProjectProvisioningProviderCheckRecord,
     ProjectProvisioningProviderIntent,
     ProjectProvisioningRepositoryIntent,
+    ProjectRecord,
 )
 from rcp.storage.provisioning import project_provisioning_review_digest
 
@@ -535,7 +538,9 @@ def test_pre_configuration_review_digest_remains_readable_after_upgrade(
         "proposed_project_id": terminal.proposed_project_id,
         "machines": [machine.model_dump(mode="json") for machine in terminal.machines],
         "repositories": [
-            repository.model_dump(mode="json", exclude={"checkout_disposition"})
+            repository.model_dump(
+                mode="json", exclude={"checkout_disposition", "count_as_project_truth"}
+            )
             for repository in terminal.repositories
         ],
         "provider_checks": [
@@ -818,3 +823,84 @@ def test_project_configuration_json_cannot_shadow_request_columns(tmp_path: Path
 
     with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):
         store.project_provisioning_request(request.request_id)
+
+
+def test_repository_contract_migration_round_trip(tmp_path: Path) -> None:
+    fixture = Path(__file__).parent / "fixtures/server_upgrade/pre-repository-contracts-v20-d352cee"
+    database = tmp_path / "rcp.sqlite3"
+    database.write_bytes(gzip.decompress((fixture / "data/rcp.sqlite3.gz").read_bytes()))
+    with sqlite3.connect(database) as connection:
+        original = connection.execute("SELECT * FROM project_provisioning_requests").fetchone()
+        old_columns = [
+            row[1] for row in connection.execute("PRAGMA table_info(project_provisioning_requests)")
+        ]
+    store = AppStore(database)
+    with store.connection() as connection:
+        migrated = connection.execute("SELECT * FROM project_provisioning_requests").fetchone()
+        assert tuple(migrated[column] for column in old_columns) == original
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    retained = store.project_provisioning_request(migrated["request_id"])
+    assert retained is not None and retained.target_project_id is None
+    store.upsert_project(
+        ProjectRecord(
+            project_id=retained.proposed_project_id,
+            home_space_id=store.space_id,
+            locator="/srv/project/.research/manifest.toml",
+            name="Project",
+            state_location="/srv/project/.research",
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    store.seat_project_member(retained.proposed_project_id, retained.authorized_by.user_id)
+    created = []
+    for kind, source in [
+        ("add_repository", None),
+        ("connect_repository", _repository().repository),
+    ]:
+        created.append(
+            store.create_project_provisioning_request(
+                kind=kind,
+                authorized_by=retained.authorized_by,
+                target_project_id=retained.proposed_project_id,
+                machines=[_machine()],
+                repositories=[
+                    ProjectProvisioningRepositoryIntent(
+                        alias="code",
+                        repository=source,
+                        machine_alias="server",
+                        count_as_project_truth=kind != "add_repository",
+                    )
+                ],
+                provider_checks=[],
+            )
+        )
+    reopened = AppStore(database)
+    assert [reopened.project_provisioning_request(item.request_id) for item in created] == created
+    for record in created:
+        response = _project_provisioning_response(
+            record, viewer_user_id=retained.authorized_by.user_id
+        )
+        assert response.kind == record.kind
+        assert response.target_project_id == retained.proposed_project_id
+        assert response.repositories[0].repository == record.repositories[0].repository
+    assert created[0].repositories[0].repository is None
+    assert not created[0].repositories[0].count_as_project_truth
+    with store.connection() as connection, pytest.raises(sqlite3.IntegrityError):
+        store._insert_project_provisioning_request(
+            connection, retained.model_copy(update={"request_id": str(uuid.uuid4())})
+        )
+    outsider = store.preprovision_team_member("Other member")
+    with pytest.raises(ValueError, match="membership"):
+        store.create_project_provisioning_request(
+            kind="add_repository",
+            target_project_id=retained.proposed_project_id,
+            authorized_by=AuthorizedHuman(
+                space_id=store.space_id,
+                user_id=outsider.user_id,
+                display_name=outsider.display_name,
+            ),
+            machines=[_machine()],
+            repositories=[_repository()],
+            provider_checks=[],
+        )

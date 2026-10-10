@@ -73,6 +73,8 @@ class SavedArtifactResponse(BaseModel):
     episode_mode: EpisodeMode | None = None
     source_chat_href: str | None = None
     source_node_id: str | None = None
+    # The member whose agent task produced the artifact.
+    authorized_by: AuthorizedHuman | None = None
     viewer_url: str | None
     view: ArtifactView
     available: bool
@@ -282,6 +284,7 @@ def saved_artifacts(
                     episode_mode=episode_mode,
                     source_chat_href=chat_origins.get(task.operation_id),
                     source_node_id=_source_node_id(store, project_id, task, episode_id),
+                    authorized_by=task.authorized_by,
                     viewer_url=f"{artifact_url}/viewer" if projected.can_open else None,
                     view=projected.view,
                     available=projected.available,
@@ -315,6 +318,7 @@ def saved_artifacts(
                 episode_mode=report.mode,
                 source_chat_href=chat_origins.get(stored_report.artifact_id),
                 source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
+                authorized_by=origin.authorized_by if origin else None,
                 viewer_url=f"{artifact_url}/viewer",
             )
         )
@@ -329,6 +333,9 @@ def saved_artifacts(
             continue
         view = artifact_view(artifact.media_type)
         artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
+        origin = (
+            store.agent_task(artifact.origin_operation_id) if artifact.origin_operation_id else None
+        )
         entries.append(
             SavedArtifactResponse(
                 id=f"artifact:{artifact.artifact_id}",
@@ -339,14 +346,8 @@ def saved_artifacts(
                 operation_id=artifact.origin_operation_id,
                 episode_id=artifact.episode_id,
                 source_chat_href=chat_origins.get(artifact.artifact_id),
-                source_node_id=_source_node_id(
-                    store,
-                    project_id,
-                    store.agent_task(artifact.origin_operation_id)
-                    if artifact.origin_operation_id
-                    else None,
-                    artifact.episode_id,
-                ),
+                source_node_id=_source_node_id(store, project_id, origin, artifact.episode_id),
+                authorized_by=origin.authorized_by if origin else None,
                 viewer_url=f"{artifact_url}/viewer" if view not in {"file", "pdf"} else None,
                 view=view,
                 available=True,

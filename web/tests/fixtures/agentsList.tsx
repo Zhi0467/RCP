@@ -46,6 +46,7 @@ const turn = (chatId: string, provider: string, label: string) =>
     elapsed_seconds: 120,
     request: { chat_id: chatId, provider },
     provider_label: label,
+    authorized_by: { space_id: "space", user_id: "ada", display_name: "Ada" },
     created_at: "2026-10-01T00:00:00Z",
     updated_at: "2026-10-01T00:00:00Z",
   }) as unknown as AgentTask;

@@ -3715,6 +3715,10 @@ details[open] > .view-disclosure-summary > svg:last-child {
   justify-content: space-between;
   min-height: 22px;
 }
+.agent-card-foot .episode-author {
+  margin-left: auto;
+  min-width: 0;
+}
 .agent-card-state {
   color: var(--muted);
   font-size: var(--type-2xs);
@@ -3843,4 +3847,18 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-board-cards[hidden] {
   display: none;
+}
+
+.repository-requests {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.repository-requests fieldset {
+  display: grid;
+  gap: 12px;
+  border: 0;
+  padding: 0;
+  min-width: 0;
 }

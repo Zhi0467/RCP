@@ -689,7 +689,10 @@ test("Project Settings supports legacy profiles without an ontology authoring su
       }),
     );
 
-    assert.match(html.slice(html.indexOf("<strong>Orchestrator</strong>")), /legacy-refresh/);
+    assert.match(
+      html.slice(html.indexOf("<strong>Auto-research orchestrator</strong>")),
+      /legacy-refresh/,
+    );
   } finally {
     globalThis.localStorage = previousLocalStorage;
   }

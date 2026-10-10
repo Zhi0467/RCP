@@ -342,13 +342,15 @@ def _capture_and_seal_source_archive(
             )
         )
         entries.extend(canonical_entries)
-        if transfer.source_configuration.includes_local_commits:
+        if transfer.source_configuration.has_repository_bundles:
             from rcp.transfer.repository_git import capture_repository_bundle
 
             git_root = temporary_root / "git"
             git_root.mkdir(mode=0o700)
             source_manifest_model = service.history.manifest
             for repository in transfer.source_configuration.repositories:
+                if repository.source_commit is None:
+                    continue
                 declared = source_manifest_model.repository_map[repository.alias]
                 bundle = git_root / f"{repository.alias}.bundle"
                 capture_repository_bundle(
@@ -395,10 +397,10 @@ def _capture_and_seal_source_archive(
         if source_manifest.sha256 != configuration.source_manifest_sha256:
             raise ValueError("source manifest changed after the reviewed transfer boundary")
         manifest = TransferArchiveManifest(
-            schema_version=2 if configuration.includes_local_commits else 1,
+            schema_version=2 if configuration.has_repository_bundles else 1,
             archive_codec=(
                 TRANSFER_ARCHIVE_GIT_CODEC
-                if configuration.includes_local_commits
+                if configuration.has_repository_bundles
                 else TRANSFER_ARCHIVE_CODEC
             ),
             project_id=transfer.project_id,

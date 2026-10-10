@@ -35,35 +35,32 @@ def capture_project_transfer_source(
     head = service.history.head_ref(materialization)
     manifest = service.history.manifest
     manifest_bytes = (service.history.root / "manifest.toml").read_bytes()
-    repositories = tuple(
-        ProjectTransferRepositorySource(
-            alias=repository.alias,
-            repository=parse_github_repository_ref(
-                _repository_origin(
-                    host=manifest.machine_map[repository.machine].host,
-                    path=repository.path,
-                )
-            ),
-            machine_alias=repository.machine,
-            source_commit=(
-                _repository_revision(
-                    host=manifest.machine_map[repository.machine].host,
-                    path=repository.path,
-                )
-                if include_local_commits
-                else None
-            ),
+    repositories = []
+    for repository in sorted(manifest.repositories, key=lambda item: item.alias):
+        host = manifest.machine_map[repository.machine].host
+        origin = _repository_origin(host=host, path=repository.path)
+        repositories.append(
+            ProjectTransferRepositorySource(
+                alias=repository.alias,
+                repository=parse_github_repository_ref(origin) if origin is not None else None,
+                machine_alias=repository.machine,
+                source_commit=(
+                    _repository_revision(host=host, path=repository.path)
+                    if include_local_commits or origin is None
+                    else None
+                ),
+            )
         )
-        for repository in sorted(manifest.repositories, key=lambda item: item.alias)
-    )
     configuration = ProjectTransferSourceConfiguration(
         source_rcp_version=__version__,
         source_schema_generation=PROJECT_TRANSFER_SCHEMA_GENERATION,
         supported_archive_codecs=(
-            TRANSFER_ARCHIVE_GIT_CODEC if include_local_commits else PROJECT_TRANSFER_ARCHIVE_CODEC,
+            TRANSFER_ARCHIVE_GIT_CODEC
+            if any(item.source_commit for item in repositories)
+            else PROJECT_TRANSFER_ARCHIVE_CODEC,
         ),
         machine_aliases=tuple(sorted(manifest.machine_map)),
-        repositories=repositories,
+        repositories=tuple(repositories),
         state_repository=manifest.state.repository,
         project_truth_scope=tuple(manifest.project.truth_scope),
         default_run_truth_scope=tuple(manifest.agent.default_run_truth_scope),
@@ -79,23 +76,31 @@ def _repository_revision(*, host: str, path: str) -> str:
     return probe_repository_revision(host=host, path=path)
 
 
-def _repository_origin(*, host: str, path: str) -> str:
-    command = ["git", "-C", path, "remote", "get-url", "origin"]
-    arguments = ssh_arguments(host, shlex.join(command)) if host else command
-    try:
-        result = subprocess.run(
-            arguments,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError("source repository GitHub origin could not be read") from exc
-    lines = result.stdout.splitlines()
-    if result.returncode != 0 or len(lines) != 1:
-        raise ValueError("source repository must have one readable GitHub origin")
-    return lines[0]
+def _repository_origin(*, host: str, path: str) -> str | None:
+    # Listing remotes distinguishes an absent origin from a failed Git/SSH probe,
+    # while get-url preserves Git's existing URL rewrite and include behavior.
+    for tail in (["remote"], ["remote", "get-url", "origin"]):
+        command = ["git", "-C", path, *tail]
+        arguments = ssh_arguments(host, shlex.join(command)) if host else command
+        try:
+            result = subprocess.run(
+                arguments,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("source repository GitHub origin could not be read") from exc
+        if result.returncode != 0:
+            raise ValueError("source repository must have one readable GitHub origin")
+        lines = result.stdout.splitlines()
+        if tail == ["remote"]:
+            if "origin" not in lines:
+                return None
+        elif len(lines) == 1:
+            return lines[0]
+    raise ValueError("source repository must have one readable GitHub origin")
 
 
 __all__ = [

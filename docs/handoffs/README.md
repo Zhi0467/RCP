@@ -1,5 +1,6 @@
 # Active implementation handoffs
 
+- [Server-only and empty team repositories](2026-10-09-server-only-and-empty-team-repositories.md)
 - [Branch navigation and continuation](branch-navigation-and-continuation.md):
   unified graph refs with a branch picker, project reopen on
   reverification, phone reload route, and human turns on ended Auto-research
@@ -52,9 +53,7 @@ stands in for it. Run one on disposable data, then delete its line here.
 - Project terminals: a conflicted `git rebase -i` in the Terminals destination,
   including after navigating away and back.
 - Operator stops: the deploy-key stop panel driven from the desktop app against
-  a real saved operator route. Known gap: **Copy server command** copies the
-  bare `operator_argv` with no statement of where it runs; giving it an
-  execution context is a separate contract change.
+  a real saved operator route.
 - Pushes: the live team-space push run and real remote-machine SSH.
 - Phone UI: the real-iPhone journey and its screenshot review.
 - Artifacts inside a reply: on a real phone, open a reply that embeds a game

@@ -302,6 +302,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "machine_provider_shell_timeout_v1",
         "per_target_experiment_loops_v1",
         "client_requests_v1",
+        "repository_provisioning_contracts_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

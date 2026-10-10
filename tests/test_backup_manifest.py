@@ -69,6 +69,7 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
     assert {"project-sources", "artifacts"} == BACKUP_APP_DATA_CAPTURED
     assert {
         "bootstrap-manifests",
+        "checkout-recovery",
         "browser",
         "tools",
         "chat-attachments",

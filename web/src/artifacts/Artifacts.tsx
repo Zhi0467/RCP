@@ -14,6 +14,7 @@ import { openArtifact } from "./artifactViewerModel";
 import { api } from "../core/api";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
+import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { ProjectArtifact } from "../core/types";
 
 // The last list per project survives tab switches; a revisit refreshes it in place.
@@ -131,6 +132,7 @@ export function Artifacts({
                 <div>
                   <div className="artifact-entry-heading">
                     <h3>{entry.name}</h3>
+                    <EpisodeAuthor author={entry.authorized_by} />
                     {entry.episode_mode && (
                       <span className="artifact-episode-tag">
                         {entry.episode_mode === "experiment_loop" ? "Experiment" : "Auto-research"}

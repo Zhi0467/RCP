@@ -56,6 +56,7 @@ import type {
 } from "../core/types";
 import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
 import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
+import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
 import { NodeChat } from "./NodeChat";
 import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
@@ -817,6 +818,7 @@ export function ChatsWorkspace({
               sinceLabel(latest?.last_activity_at ?? conversation.updatedAt ?? null, now),
             )}
           </span>
+          <EpisodeAuthor author={latest?.authorized_by ?? null} />
           {action && (
             <button className="button compact" type="button" onClick={action.run}>
               {action.label}

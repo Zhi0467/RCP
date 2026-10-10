@@ -164,9 +164,20 @@ def project_provisioning_review_digest(record: ProjectProvisioningRequestRecord)
             record.default_auto_research_invocation_ceiling
         ),
         "machines": [machine.model_dump(mode="json") for machine in record.machines],
-        "repositories": [repository.model_dump(mode="json") for repository in record.repositories],
+        "repositories": [
+            repository.model_dump(
+                mode="json",
+                # Keep existing review bytes while binding every explicit truth choice.
+                exclude={"count_as_project_truth"}
+                if record.kind != "add_repository" and repository.count_as_project_truth
+                else set(),
+            )
+            for repository in record.repositories
+        ],
         "provider_checks": [check.model_dump(mode="json") for check in record.provider_checks],
     }
+    if record.target_project_id is not None:
+        payload["target_project_id"] = record.target_project_id
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -183,7 +194,9 @@ def _legacy_project_provisioning_review_digest(
         "proposed_project_id": record.proposed_project_id,
         "machines": [machine.model_dump(mode="json") for machine in record.machines],
         "repositories": [
-            repository.model_dump(mode="json", exclude={"checkout_disposition"})
+            repository.model_dump(
+                mode="json", exclude={"checkout_disposition", "count_as_project_truth"}
+            )
             for repository in record.repositories
         ],
         "provider_checks": [check.model_dump(mode="json") for check in record.provider_checks],
@@ -469,10 +482,9 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 for repository in sorted(provisioning.repositories, key=lambda item: item.alias)
             )
             source_repositories = {
-                repository.alias: repository.repository.identity
-                for repository in configuration.repositories
+                repository.alias: repository.repository for repository in configuration.repositories
             }
-            if {item.alias: item.repository.identity for item in target_repositories} != (
+            if {item.alias: item.repository for item in target_repositories} != (
                 source_repositories
             ):
                 raise ValueError(
@@ -2606,12 +2618,11 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             current.linked_request_id if current.side == "source" else current.request_id
         )
         source_repositories = {
-            repository.alias: repository.repository.identity
+            repository.alias: repository.repository
             for repository in current.source_configuration.repositories
         }
         target_repositories = {
-            repository.alias: repository.repository.identity
-            for repository in receipt.target_repositories
+            repository.alias: repository.repository for repository in receipt.target_repositories
         }
         if (
             expected_source_request_id is None
@@ -2943,6 +2954,8 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         repositories: list[ProjectProvisioningRepositoryIntent],
         provider_checks: list[ProjectProvisioningProviderIntent],
         source_project_id: str | None = None,
+        target_project_id: str | None = None,
+        reviewed_boundary_sha256: str | None = None,
         name: str | None = None,
         state_repository: str | None = None,
         project_truth_scope: list[str] | None = None,
@@ -2952,7 +2965,12 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
     ) -> ProjectProvisioningRequestRecord:
         """Reserve one project namespace without creating project authority."""
 
-        if kind not in {"create_team_project", "incoming_transfer"}:
+        if kind not in {
+            "create_team_project",
+            "incoming_transfer",
+            "add_repository",
+            "connect_repository",
+        }:
             raise ValueError("project provisioning kind is invalid")
         authorizer = AuthorizedHuman.model_validate(authorized_by.model_dump(mode="json"))
         machine_intents = [
@@ -2967,7 +2985,21 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             ProjectProvisioningProviderIntent.model_validate(check.model_dump(mode="json"))
             for check in provider_checks
         ]
-        if kind == "create_team_project":
+        existing_project = kind in {"add_repository", "connect_repository"}
+        if not existing_project and target_project_id is not None:
+            raise ValueError("create provisioning cannot target an existing project")
+        if not existing_project and reviewed_boundary_sha256 is not None:
+            raise ValueError("Only repository changes may carry a review boundary")
+        if existing_project:
+            if target_project_id is None or source_project_id is not None:
+                raise ValueError("repository provisioning requires an existing target project")
+            proposed_project_id = self._transfer_uuid(target_project_id, "target project identity")
+            target_project_id = proposed_project_id
+            if reviewed_boundary_sha256 is not None:
+                reviewed_boundary_sha256 = self._transfer_digest(
+                    reviewed_boundary_sha256, "repository review boundary"
+                )
+        elif kind == "create_team_project":
             if source_project_id is not None:
                 raise ValueError("new team-project provisioning cannot name a source project id")
             proposed_project_id = str(uuid.uuid4())
@@ -3033,6 +3065,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             target_space_id=target_space_id,
             authorized_by=authorizer,
             proposed_project_id=proposed_project_id,
+            target_project_id=target_project_id,
             name=name,
             state_repository=state_repository,
             project_truth_scope=list(project_truth_scope or []),
@@ -3066,6 +3099,18 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 is None
             ):
                 raise ValueError("project provisioning authorizer is not a current space member")
+            if existing_project:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM projects p JOIN project_members m USING(project_id) "
+                        "WHERE p.project_id = ? AND p.home_space_id = ? "
+                        "AND p.retired_at IS NULL AND m.user_id = ?",
+                        (target_project_id, target_space_id, authorizer.user_id),
+                    ).fetchone()
+                    is None
+                ):
+                    raise ValueError("repository provisioning requires current project membership")
+                self._require_project_accepts_new_work(connection, proposed_project_id)
             existing = connection.execute(
                 "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
                 (canonical_request_id,),
@@ -3079,7 +3124,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                         "provisioning request identity already names another project intent"
                     )
                 return current
-            if (
+            if not existing_project and (
                 connection.execute(
                     "SELECT 1 FROM projects WHERE project_id = ?",
                     (proposed_project_id,),
@@ -3089,9 +3134,31 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 raise ValueError("the proposed project identity already exists in this space")
             try:
                 self._insert_project_provisioning_request(connection, record)
+                if reviewed_boundary_sha256 is not None:
+                    connection.execute(
+                        "UPDATE project_provisioning_requests SET project_config_json = ? "
+                        "WHERE request_id = ?",
+                        (
+                            _canonical_json({"reviewed_boundary_sha256": reviewed_boundary_sha256}),
+                            canonical_request_id,
+                        ),
+                    )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("the proposed project identity is already reserved") from exc
         return record
+
+    def project_provisioning_review_boundary(self, request_id: str) -> str:
+        """Immutable manifest/head commitment captured with the member's request."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT project_config_json FROM project_provisioning_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        config = json.loads(row[0]) if row is not None and row[0] else {}
+        boundary = config.get("reviewed_boundary_sha256")
+        if not isinstance(boundary, str):
+            raise ValueError("Repository preparation has no reviewed manifest/head boundary.")
+        return self._transfer_digest(boundary, "repository review boundary")
 
     @staticmethod
     def _project_provisioning_creation_payload(
@@ -3103,6 +3170,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             "target_space_id": record.target_space_id,
             "authorized_by": record.authorized_by.model_dump(mode="json"),
             "proposed_project_id": record.proposed_project_id,
+            "target_project_id": record.target_project_id,
             "name": record.name,
             "state_repository": record.state_repository,
             "project_truth_scope": record.project_truth_scope,
@@ -3203,7 +3271,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 """
                 SELECT * FROM project_provisioning_requests
                 WHERE proposed_project_id = ? AND status = 'completed'
-                ORDER BY created_at, request_id
+                ORDER BY completed_at, created_at, request_id
                 """,
                 (canonical_project_id,),
             ).fetchall()
@@ -3272,7 +3340,13 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             "to_status": to_status,
             "machines": [machine.model_dump(mode="json") for machine in machine_records],
             "repositories": [
-                repository.model_dump(mode="json") for repository in repository_records
+                repository.model_dump(
+                    mode="json",
+                    exclude={"count_as_project_truth"}
+                    if repository.count_as_project_truth
+                    else set(),
+                )
+                for repository in repository_records
             ],
             "provider_checks": [check.model_dump(mode="json") for check in provider_records],
             "retryable_diagnostic": normalized_diagnostic,
@@ -3481,12 +3555,12 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             """
             INSERT INTO project_provisioning_requests (
                 request_id, kind, status, target_space_id, authorized_by_json,
-                proposed_project_id, project_config_json, machines_json, repositories_json,
+                proposed_project_id, target_project_id, project_config_json, machines_json, repositories_json,
                 provider_checks_json, retryable_diagnostic, operator_action_json,
                 final_review_digest, cancellation_disposition, revision,
                 created_at, updated_at, setup_started_at, ready_at,
                 completed_at, cancelled_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.request_id,
@@ -3495,6 +3569,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 record.target_space_id,
                 _canonical_json(record.authorized_by.model_dump(mode="json")),
                 record.proposed_project_id,
+                record.target_project_id,
                 (
                     _canonical_json(
                         {
@@ -3532,8 +3607,19 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         try:
             project_config_json = row["project_config_json"]
             project_config = {} if project_config_json is None else json.loads(project_config_json)
+            has_review_boundary = (
+                isinstance(project_config, dict) and "reviewed_boundary_sha256" in project_config
+            )
+            if has_review_boundary:
+                if row["kind"] not in {"add_repository", "connect_repository"}:
+                    raise ValueError("Only repository changes may carry a review boundary")
+                ProjectProvisioningStoreMixin._transfer_digest(
+                    project_config.pop("reviewed_boundary_sha256"), "repository review boundary"
+                )
             if not isinstance(project_config, dict) or (
-                project_config_json is not None and set(project_config) != _PROJECT_CONFIG_FIELDS
+                project_config_json is not None
+                and set(project_config) != _PROJECT_CONFIG_FIELDS
+                and not (has_review_boundary and not project_config)
             ):
                 raise ValueError("stored project provisioning configuration is invalid")
             return _verify_project_provisioning_review_digest(
@@ -3546,6 +3632,13 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                             "target_space_id": row["target_space_id"],
                             "authorized_by": json.loads(row["authorized_by_json"]),
                             "proposed_project_id": row["proposed_project_id"],
+                            # A pre-migration snapshot (backup before update)
+                            # has no column yet; only create requests existed.
+                            "target_project_id": (
+                                row["target_project_id"]
+                                if "target_project_id" in row.keys()  # noqa: SIM118 - Row iterates values
+                                else None
+                            ),
                             **project_config,
                             "machines": json.loads(row["machines_json"]),
                             "repositories": json.loads(row["repositories_json"]),

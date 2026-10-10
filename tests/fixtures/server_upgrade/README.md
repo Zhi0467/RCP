@@ -83,3 +83,7 @@ immutable fixture.
 gained durable client request ids (storage migration 45). It also carries the
 per-graph-target Experiment loop migration, ending at migration 44. It is built
 by the exact boundary source from the preceding immutable fixture.
+
+`pre-repository-contracts-v20-d352cee` retains the last shape before repository provisioning
+contracts (storage migration 46), ending at migration 45. It is built by the
+exact boundary source from the preceding immutable fixture.
