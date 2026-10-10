@@ -471,8 +471,8 @@ The strict request rejects additional fields.
 `POST .../questions/{question_id}/dismiss` accepts an empty object, resolves the
 card only, and never wakes an owner.
 
-Node and project chats show open question cards above the composer and resolved
-cards read-only in transcript order. The composer retains its steering behavior.
+Node and project chats show resolved cards read-only in transcript order and
+open question cards at the end of the transcript, scrolling with it. The composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format. A parked
 chat answer with no running turn names Discuss or Work continuation on its submit
