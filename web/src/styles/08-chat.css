@@ -1711,6 +1711,11 @@
   background: var(--surface);
   overflow-wrap: anywhere;
 }
+/* In a transcript the card sits in the same column as the turns around it. */
+.node-chat-lines > .question-card {
+  max-width: 820px;
+  margin: 0 auto 24px;
+}
 .question-card form {
   display: grid;
   gap: 10px;
