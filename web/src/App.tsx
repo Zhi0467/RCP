@@ -68,6 +68,7 @@ import {
   conversationHref,
   chatEntryConversationId,
   groupChatConversations,
+  chatIdForTask,
   startConversationTurn,
   unsentConversation,
   type ChatKind,
@@ -1428,7 +1429,17 @@ function MemberApp({
           const loadedTaskIds = projectTasksRef.current.map((task) => task.operation_id);
           if (heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
-            if (isActiveProject(requestedProjectId)) replaceTasks(nextTasks);
+            if (!isActiveProject(requestedProjectId)) return;
+            replaceTasks(nextTasks);
+            // A teammate's turn may have started and finished between heartbeats;
+            // its chat history then changed without any status change seen here.
+            const latest = nextTasks.find(
+              (task) => task.operation_id === observation.latest_task_id,
+            );
+            if (latest && chatIdForTask(latest))
+              void refreshChatSummaries(requestedProjectId, base).catch(() => {
+                // The next chat refresh retries; the task list already updated.
+              });
           }
           const loadedWatcherIds = watchersRef.current.map((watcher) => watcher.watcher_id);
           if (heartbeatNamesUnknownId(observation.latest_watcher_id, loadedWatcherIds)) {
@@ -1515,6 +1526,7 @@ function MemberApp({
       isActiveProject,
       isProjectTabOpen,
       reloadAuthoritativeProject,
+      refreshChatSummaries,
       removeProject,
       replaceTasks,
       runProjectHeartbeat,
