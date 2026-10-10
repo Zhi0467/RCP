@@ -2841,6 +2841,8 @@ function MemberApp({
     if (recordTaskUpdates(projectTasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
+          // The task change is already recorded, so the heartbeat owes the retry.
+          chatRefreshOwedRef.current = projectId;
           setNotice({
             kind: "error",
             text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
