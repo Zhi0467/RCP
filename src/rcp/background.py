@@ -440,9 +440,10 @@ class BackgroundAgentTasks:
         # each final receipt. Steers live only in the chat file, so the task list
         # carries this revision for other members' pages.
         self._steer_revisions: dict[str, int] = {}
-        # Moves with every steer write in this process, so a heartbeat can tell a
-        # page to reread tasks even after the steered task stopped running.
-        self._steer_epoch = 0
+        # Moves with every steer write in a project, so its heartbeat can tell a
+        # page to reread tasks even after the steered task stopped running. Kept
+        # per project: one project's steers must not show in another's heartbeat.
+        self._steer_epochs: dict[str, int] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
@@ -1251,14 +1252,14 @@ class BackgroundAgentTasks:
             return settled
         return record
 
-    def bump_steer_revision(self, operation_id: str) -> None:
+    def bump_steer_revision(self, operation_id: str, project_id: str) -> None:
         with self._controls_lock:
             self._steer_revisions[operation_id] = self._steer_revisions.get(operation_id, 0) + 1
-            self._steer_epoch += 1
+            self._steer_epochs[project_id] = self._steer_epochs.get(project_id, 0) + 1
 
-    def steer_epoch(self) -> int:
+    def steer_epoch(self, project_id: str) -> int:
         with self._controls_lock:
-            return self._steer_epoch
+            return self._steer_epochs.get(project_id, 0)
 
     def steer_revision(self, operation_id: str) -> int:
         with self._controls_lock:

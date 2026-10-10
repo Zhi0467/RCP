@@ -323,7 +323,7 @@ async def cached_project_revision(
         branch = await asyncio.to_thread(
             _branch_revision, project_id, branch_id, project_display_cache, catalog, store
         )
-        return {**branch, "steer_epoch": background_tasks.steer_epoch()}
+        return {**branch, "steer_epoch": background_tasks.steer_epoch(project_id)}
     snapshot = await asyncio.to_thread(
         project_display_cache.cached_project_snapshot,
         project_id,
@@ -344,7 +344,7 @@ async def cached_project_revision(
         "latest_task_id": await asyncio.to_thread(store.latest_agent_task_id, project_id),
         "latest_watcher_id": await asyncio.to_thread(store.latest_watcher_id, project_id),
         # A final steer receipt can land after its task stopped being polled.
-        "steer_epoch": background_tasks.steer_epoch(),
+        "steer_epoch": background_tasks.steer_epoch(project_id),
     }
 
 

@@ -209,6 +209,8 @@ def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
     assert run.client.get(f"/api/projects/{run.project_id}").status_code == 200
     heartbeat = run.client.get(f"/api/projects/{run.project_id}/cached/revision").json()
     assert heartbeat["steer_epoch"] == 2
+    # Another project's heartbeat never sees this project's steers.
+    assert run.background.steer_epoch("another-project") == 0
 
 
 @pytest.mark.parametrize(
