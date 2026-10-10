@@ -793,7 +793,7 @@ def create_app(
             project_id=project_id,
             run_on=profile.run_on,
             member=task.authorized_by,
-            team=store.space_kind == "team",
+            store=store,
             data_dir=app_data,
             layout=server_layout,
         )

@@ -2549,7 +2549,7 @@ export function NodeChat({
                     <span>
                       {artifact.name}
                       {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
-                      {(artifact.kept_at || artifact.kept_filename) && <em>Kept</em>}
+                      {(artifact.kept_at || artifact.kept_filename) && <em>Saved</em>}
                     </span>
                     {unavailableReason && <strong>{unavailableReason}</strong>}
                     <div className="chat-artifact-actions">
@@ -2590,7 +2590,7 @@ export function NodeChat({
                           disabled={keepingArtifacts.has(`${line.taskId}:${artifact.artifact_id}`)}
                           onClick={() => void keepArtifact(line.taskId, artifact)}
                         >
-                          Keep
+                          Save to Artifacts
                         </button>
                       )}
                     </div>

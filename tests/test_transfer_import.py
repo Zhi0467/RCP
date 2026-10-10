@@ -189,9 +189,15 @@ def _prepare_target_request(
                     "git_check": ProjectProvisioningGitCheckRecord(
                         status="ready",
                         commit="a" * 40,
-                        write_verified=True,
-                        deploy_key_label=(f"rcp:{target.space_id}:{project_id}:{item.alias}"),
-                        public_key_fingerprint="SHA256:" + ("A" * 43),
+                        write_verified=item.repository is not None,
+                        deploy_key_label=(
+                            f"rcp:{target.space_id}:{project_id}:{item.alias}"
+                            if item.repository is not None
+                            else None
+                        ),
+                        public_key_fingerprint=("SHA256:" + ("A" * 43))
+                        if item.repository is not None
+                        else None,
                         checked_at=checked_at,
                     ),
                 }

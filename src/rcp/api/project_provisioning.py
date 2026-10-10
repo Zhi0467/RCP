@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Annotated, Literal
 
@@ -15,6 +16,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_setup,
     get_store,
+    require_project_membership,
 )
 from rcp.api.identity import IdentityAccess
 from rcp.config import (
@@ -23,16 +25,19 @@ from rcp.config import (
     GRAPH_AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
 )
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import AuthorizedHuman, GraphState, Patch
+from rcp.core.operations import SetProjectTruthScopeOperation
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.project_transfer import capture_project_transfer_source
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
+from rcp.provisioning_repositories import effective_repositories
 from rcp.server_ops.github import GitHubRepositoryRef, parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import ServerStep
+from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
 from rcp.storage import (
     AppStore,
@@ -149,20 +154,24 @@ class ProjectProvisioningMachineRequest(_StrictModel):
 
 class ProjectProvisioningRepositoryRequest(_StrictModel):
     alias: str
-    source: str
+    source: str | None = None
     machine_alias: str
+    count_as_project_truth: bool = True
 
     @field_validator("source")
     @classmethod
-    def validate_source(cls, value: str) -> str:
+    def validate_source(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
         parse_github_repository_ref(value)
         return value
 
     def intent(self) -> ProjectProvisioningRepositoryIntent:
         return ProjectProvisioningRepositoryIntent(
             alias=self.alias,
-            repository=parse_github_repository_ref(self.source),
+            repository=parse_github_repository_ref(self.source) if self.source else None,
             machine_alias=self.machine_alias,
+            count_as_project_truth=self.count_as_project_truth,
         )
 
 
@@ -211,13 +220,24 @@ class ProjectProvisioningCreateRequest(_StrictModel):
         return self
 
 
+class ProjectRepositoryAddRequest(_StrictModel):
+    kind: Literal["add_repository"]
+    repository: ProjectProvisioningRepositoryRequest
+
+
+class ProjectRepositoryConnectRequest(_StrictModel):
+    kind: Literal["connect_repository"]
+    alias: str
+    source: str
+
+
 class ProjectProvisioningCompleteRequest(_StrictModel):
     final_review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProjectTransferRepositorySourceRequest(_StrictModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
     machine_alias: str
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
@@ -329,10 +349,12 @@ class ProjectProvisioningMachineProjection(_StrictModel):
 
 class ProjectProvisioningRepositoryProjection(_StrictModel):
     alias: str
-    repository: GitHubRepositoryRef
-    https_clone_url: str
-    ssh_clone_url: str
-    settings_url: str
+    repository: GitHubRepositoryRef | None
+    source_kind: Literal["github", "server_only"]
+    count_as_project_truth: bool
+    https_clone_url: str | None
+    ssh_clone_url: str | None
+    settings_url: str | None
     machine_alias: str
     intended_path: str | None
     resolved_path: str | None
@@ -385,7 +407,9 @@ class ProjectProvisioningFinalReview(_StrictModel):
 
 class ProjectProvisioningResponse(_StrictModel):
     request_id: str
-    kind: Literal["create_team_project", "incoming_transfer"]
+    kind: Literal[
+        "create_team_project", "incoming_transfer", "add_repository", "connect_repository"
+    ]
     status: ProjectProvisioningStatus
     status_label: str
     next_action: str | None
@@ -393,6 +417,7 @@ class ProjectProvisioningResponse(_StrictModel):
     can_review: bool
     can_cancel: bool
     target_space_id: str
+    target_project_id: str | None
     proposed_project_id: str
     name: str | None
     state_repository: str | None
@@ -594,7 +619,11 @@ def create_source_project_transfer_request(
             )
         else:
             configuration = existing.source_configuration
-            if configuration.includes_local_commits != body.include_local_commits:
+            if any(
+                (item.source_commit is not None) != body.include_local_commits
+                for item in configuration.repositories
+                if item.repository is not None
+            ):
                 raise ValueError("transfer already binds a different local-commit choice")
         actual_digest = project_transfer_source_configuration_sha256(configuration)
         if body.expected_source_configuration_sha256 not in {None, actual_digest}:
@@ -1171,6 +1200,128 @@ def create_project_provisioning_request(
     return _project_provisioning_response(record, viewer_user_id=authorized_by.user_id)
 
 
+def _repository_review_boundary(service: ProjectService) -> str:
+    payload = {
+        "manifest": (service.history.root / "manifest.toml").read_text(encoding="utf-8"),
+        "head": service.history.head_ref().model_dump(mode="json"),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+@router.post(
+    "/api/projects/{project_id}/repository-requests",
+    response_model=ProjectProvisioningResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_project_membership)],
+)
+def create_project_repository_request(
+    project_id: str,
+    body: Annotated[
+        ProjectRepositoryAddRequest | ProjectRepositoryConnectRequest,
+        Field(discriminator="kind"),
+    ],
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    operation_lock: OperationLockDependency,
+) -> ProjectProvisioningResponse:
+    identity_access.require_team_space()
+    actor = identity_access.require_patch_capable_identity(request)
+    if not store.is_project_member(project_id, actor.user_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    created: list[ProjectProvisioningRequestRecord] = []
+    try:
+        with operation_lock(project_id):
+            service = catalog.open(project_id)
+
+            def capture(_state: GraphState) -> list[Patch]:
+                project = store.project(project_id)
+                if project is None:
+                    raise ValueError("Project not found")
+                completed = store.completed_project_provisioning_requests(project_id)
+                inventory = effective_repositories(project, completed)
+                if body.kind == "add_repository":
+                    intent = body.repository.intent()
+                    if intent.alias in service.history.manifest.repository_map:
+                        raise ValueError("The repository alias already belongs to this project.")
+                else:
+                    previous = next((repo for repo in inventory if repo.alias == body.alias), None)
+                    if previous is None or previous.repository is not None:
+                        raise ValueError("Connect requires an existing server-only repository.")
+                    descriptor = service.history.manifest.repository_map.get(previous.alias)
+                    if descriptor is None or (
+                        descriptor.machine != previous.machine_alias
+                        or descriptor.path != previous.resolved_path
+                    ):
+                        raise ValueError(
+                            "The repository placement differs from its checkout proof."
+                        )
+                    intent = ProjectProvisioningRepositoryIntent(
+                        alias=previous.alias,
+                        repository=parse_github_repository_ref(body.source),
+                        machine_alias=previous.machine_alias,
+                        count_as_project_truth=previous.count_as_project_truth,
+                    )
+                if intent.repository is not None and any(
+                    repo.repository == intent.repository for repo in inventory
+                ):
+                    raise ValueError("This GitHub repository already belongs to the project.")
+                configured = service.history.manifest.machine_map.get(intent.machine_alias)
+                if configured is None:
+                    raise ValueError(
+                        "Repository provisioning requires an existing project machine."
+                    )
+                machine = next(
+                    (
+                        machine
+                        for record in reversed(completed)
+                        for machine in record.machines
+                        if machine.alias == intent.machine_alias
+                    ),
+                    None,
+                )
+                if machine is not None and (
+                    (configured.host or "") != (machine.host or "")
+                    or (configured.os_account != machine.os_account)
+                ):
+                    raise ValueError("The project machine changed since its checkout was prepared.")
+                created.append(
+                    store.create_project_provisioning_request(
+                        kind=body.kind,
+                        authorized_by=actor,
+                        target_project_id=project_id,
+                        reviewed_boundary_sha256=_repository_review_boundary(service),
+                        machines=[
+                            ProjectProvisioningMachineIntent(
+                                alias=configured.alias,
+                                location="ssh" if configured.host else "local",
+                                host=configured.host or "",
+                                os_account=configured.os_account,
+                                central_root=(
+                                    (machine.resolved_central_root or machine.central_root)
+                                    if machine is not None
+                                    else None
+                                    if configured.host
+                                    else str(DEFAULT_SERVER_LAYOUT.projects_root)
+                                ),
+                            )
+                        ],
+                        repositories=[intent],
+                        provider_checks=[],
+                    )
+                )
+                return []
+
+            service.history.append_batch_from_state(capture, authorized_by=actor)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _project_provisioning_response(created[0], viewer_user_id=actor.user_id)
+
+
 @router.get(
     "/api/project-provisioning/requests",
     response_model=list[ProjectProvisioningResponse],
@@ -1186,7 +1337,11 @@ def project_provisioning_requests(
     return [
         _project_provisioning_response(record, viewer_user_id=viewer.user_id)
         for record in store.project_provisioning_requests()
-        if record.kind == "create_team_project"
+        if record.kind != "incoming_transfer"
+        and (
+            record.target_project_id is None
+            or store.is_project_member(record.target_project_id, viewer.user_id)
+        )
     ]
 
 
@@ -1204,7 +1359,10 @@ def project_provisioning_request(
     identity_access.require_team_space()
     viewer = identity_access.acting_user(request)
     record = _request_or_404(store, request_id)
-    if record.kind != "create_team_project":
+    if record.kind == "incoming_transfer" or (
+        record.target_project_id is not None
+        and not store.is_project_member(record.target_project_id, viewer.user_id)
+    ):
         raise HTTPException(status_code=404, detail="Provisioning request not found")
     return _project_provisioning_response(record, viewer_user_id=viewer.user_id)
 
@@ -1223,7 +1381,10 @@ def cancel_project_provisioning_request(
     identity_access.require_team_space()
     viewer = identity_access.acting_user(request)
     record = _request_or_404(store, request_id)
-    if record.kind != "create_team_project":
+    if record.kind == "incoming_transfer" or (
+        record.target_project_id is not None
+        and not store.is_project_member(record.target_project_id, viewer.user_id)
+    ):
         raise HTTPException(status_code=404, detail="Provisioning request not found")
     if record.authorized_by.user_id != viewer.user_id:
         raise HTTPException(
@@ -1273,12 +1434,19 @@ def complete_project_provisioning_request(
     identity_access: IdentityDependency,
     setup: SetupDependency,
     store: StoreDependency,
+    catalog: CatalogDependency,
+    operation_lock: OperationLockDependency,
 ) -> ProjectProvisioningResponse:
     """Create exactly the project reviewed by one current named team member."""
 
     identity_access.require_team_space()
     reviewer = identity_access.require_patch_capable_identity(request)
     record = _request_or_404(store, request_id)
+    if record.kind in {"add_repository", "connect_repository"}:
+        with operation_lock(record.proposed_project_id):
+            return _complete_repository_request(
+                _request_or_404(store, request_id), body, reviewer, store, catalog
+            )
     if record.kind != "create_team_project":
         raise HTTPException(status_code=404, detail="Provisioning request not found")
     if body.final_review_digest != record.final_review_digest:
@@ -1357,6 +1525,128 @@ def complete_project_provisioning_request(
             detail="The provisioning request changed; reload it before creating the project.",
         ) from exc
     _require_completed_project(store, completed)
+    return _project_provisioning_response(completed, viewer_user_id=reviewer.user_id)
+
+
+def _complete_repository_request(
+    record: ProjectProvisioningRequestRecord,
+    body: ProjectProvisioningCompleteRequest,
+    reviewer: AuthorizedHuman,
+    store: AppStore,
+    catalog: ProjectCatalog,
+) -> ProjectProvisioningResponse:
+    if not store.is_project_member(record.proposed_project_id, reviewer.user_id):
+        raise HTTPException(status_code=404, detail="Provisioning request not found")
+    if reviewer.user_id != record.authorized_by.user_id:
+        raise HTTPException(
+            status_code=403, detail="Only the requesting member may confirm this change."
+        )
+    if body.final_review_digest != record.final_review_digest or record.status not in {
+        "ready_for_review",
+        "completed",
+    }:
+        raise HTTPException(status_code=409, detail="Reload the repository preparation review.")
+    if record.status == "completed":
+        _require_completed_project(store, record)
+        return _project_provisioning_response(record, viewer_user_id=reviewer.user_id)
+    try:
+        store.require_project_accepts_new_work(record.proposed_project_id)
+        service = catalog.open(record.proposed_project_id)
+        boundary = store.project_provisioning_review_boundary(record.request_id)
+        repository = record.repositories[0]
+        for prepared in ProjectSetupManager._prepared_repositories(record).values():
+            ProjectSetupManager._require_prepared_checkout_path(prepared)
+
+        def approve(state: GraphState) -> list[Patch]:
+            project = store.project(record.proposed_project_id)
+            if project is None:
+                raise ValueError("The target project is no longer registered.")
+            effective_repositories(
+                project,
+                [
+                    *store.completed_project_provisioning_requests(record.proposed_project_id),
+                    record.model_copy(update={"status": "completed", "completed_at": store.now()}),
+                ],
+            )
+            materialized = service.history.materialize(write_outputs=False)
+            prior = [
+                patch
+                for patch in materialized.patches
+                if patch.source_operation_id == record.request_id and patch.admission == "accepted"
+            ]
+            if prior:
+                if (
+                    len(prior) != 1
+                    or prior[0].authorized_by is None
+                    or (
+                        prior[0].authorized_by.user_id != reviewer.user_id
+                        or prior[0].authorized_by.space_id != reviewer.space_id
+                    )
+                ):
+                    raise ValueError("Repository approval attribution is inconsistent.")
+                operation = prior[0].ops[0] if len(prior[0].ops) == 1 else None
+                if (
+                    prior[0].kind != "approval"
+                    or not isinstance(operation, SetProjectTruthScopeOperation)
+                    or operation.repository is None
+                    or operation.repository.alias != repository.alias
+                    or operation.repository.machine != repository.machine_alias
+                    or operation.repository.path != repository.resolved_path
+                    or (repository.alias in operation.truth_scope)
+                    != repository.count_as_project_truth
+                ):
+                    raise ValueError("The prior approval differs from this repository request.")
+                return []
+            if _repository_review_boundary(service) != boundary:
+                raise ValueError(
+                    "The reviewed manifest or graph head changed; create a new request."
+                )
+            if record.kind == "connect_repository":
+                return []
+            if repository.alias in service.history.manifest.repository_map:
+                raise ValueError("The repository alias already belongs to this project.")
+            truth_scope = list(state.project_truth_scope)
+            if repository.count_as_project_truth:
+                truth_scope.append(repository.alias)
+            return [
+                Patch(
+                    kind="approval",
+                    author="human",
+                    producer="human",
+                    source_operation_id=record.request_id,
+                    summary=f"Add repository {repository.alias}.",
+                    ops=[
+                        SetProjectTruthScopeOperation.model_validate(
+                            {
+                                "op": "set_project_truth_scope",
+                                "truth_scope": truth_scope,
+                                "repository": {
+                                    "alias": repository.alias,
+                                    "machine": repository.machine_alias,
+                                    "path": repository.resolved_path,
+                                },
+                            }
+                        )
+                    ],
+                )
+            ]
+
+        service.history.append_batch_from_state(approve, authorized_by=reviewer)
+        completed = store.transition_project_provisioning_request(
+            record.request_id,
+            receipt_id=f"member-finalize:{reviewer.user_id}",
+            phase="member_finalize",
+            expected_revision=record.revision,
+            expected_status="ready_for_review",
+            to_status="completed",
+            machines=record.machines,
+            repositories=record.repositories,
+            provider_checks=record.provider_checks,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _project_provisioning_response(completed, viewer_user_id=reviewer.user_id)
 
 
@@ -1558,13 +1848,18 @@ def _project_provisioning_response(
         next_action=_next_action(record),
         can_run_setup=record.status
         in {"waiting_for_server_setup", "setup_in_progress", "operator_action_needed"},
-        can_review=record.status == "ready_for_review",
+        can_review=record.status == "ready_for_review"
+        and (
+            record.kind not in {"add_repository", "connect_repository"}
+            or record.authorized_by.user_id == viewer_user_id
+        ),
         can_cancel=(
-            record.kind == "create_team_project"
+            record.kind != "incoming_transfer"
             and record.status == "waiting_for_server_setup"
             and record.authorized_by.user_id == viewer_user_id
         ),
         target_space_id=record.target_space_id,
+        target_project_id=record.target_project_id,
         proposed_project_id=record.proposed_project_id,
         name=record.name,
         state_repository=record.state_repository,
@@ -1578,7 +1873,13 @@ def _project_provisioning_response(
         readiness=readiness,
         diagnostic=record.retryable_diagnostic,
         operator_action=record.operator_action,
+        # Pasted from the operator's own login on the server, so it enters the
+        # service account itself rather than failing as the wrong account.
         operator_argv=(
+            "sudo",
+            "-u",
+            DEFAULT_SERVER_LAYOUT.service_account,
+            "-H",
             str(DEFAULT_SERVER_LAYOUT.cli_wrapper),
             "server",
             "project",
@@ -1641,9 +1942,11 @@ def _repository_projection(
     return ProjectProvisioningRepositoryProjection(
         alias=repository.alias,
         repository=repository.repository,
-        https_clone_url=repository.repository.https_clone_url,
-        ssh_clone_url=repository.repository.ssh_clone_url,
-        settings_url=repository.repository.settings_url,
+        source_kind=repository.source_kind,
+        count_as_project_truth=repository.count_as_project_truth,
+        https_clone_url=repository.repository.https_clone_url if repository.repository else None,
+        ssh_clone_url=repository.repository.ssh_clone_url if repository.repository else None,
+        settings_url=repository.repository.settings_url if repository.repository else None,
         machine_alias=repository.machine_alias,
         intended_path=repository.intended_path,
         resolved_path=repository.resolved_path,

@@ -85,6 +85,8 @@ jobs:
 
   old-data-upgrade-tests:
     name: old-data migration tests
+    # A fork has none of this repository's releases; PRs from it run here.
+    if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -123,6 +125,8 @@ jobs:
 
   installed-upgrade-candidate:
     name: package installed upgrade candidate
+    # A fork has none of this repository's releases; PRs from it run here.
+    if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     outputs:
       releases: ${{ steps.catalog.outputs.releases }}
@@ -243,7 +247,7 @@ jobs:
     # bypassed merely because branch protection has not learned a new job name.
     name: old-data upgrade
     needs: [old-data-upgrade-tests, installed-upgrade-candidate, installed-upgrade-release]
-    if: always()
+    if: ${{ always() && !github.event.repository.fork }}
     runs-on: ubuntu-latest
     steps:
       - name: Require every installed release journey

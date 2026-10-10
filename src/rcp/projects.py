@@ -66,7 +66,12 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryMachine,
     BackupRecoveryRepository,
 )
-from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
+from rcp.service import (
+    ProjectService,
+    ProjectSettingsRequest,
+    _ProjectSnapshotDraft,
+    project_repository_descriptors,
+)
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.sources import (
     ImportedProviderSourceInventory,
@@ -197,17 +202,18 @@ def inspect_backup_project_registration(
         and request.proposed_project_id == record.project_id
         and request.target_space_id == record.home_space_id
     ]
-    if len(matches) != 1:
-        raise BackupProjectUnavailable(
-            "The project does not have exactly one completed provisioning record."
-        )
-    request = matches[0]
-    if request.completed_at is None or request.final_review_digest is None:
-        raise BackupProjectUnavailable("The completed provisioning proof is incomplete.")
-    from rcp.storage.provisioning import project_provisioning_review_digest
+    from rcp.provisioning_repositories import effective_repositories
 
-    if project_provisioning_review_digest(request) != request.final_review_digest:
-        raise BackupProjectUnavailable("The completed provisioning review digest is stale.")
+    try:
+        repositories = effective_repositories(record, matches)
+    except ValueError as exc:
+        raise BackupProjectUnavailable(str(exc)) from exc
+    request = next(
+        request
+        for request in matches
+        if request.kind in {"create_team_project", "incoming_transfer"}
+    )
+    assert request.completed_at is not None and request.final_review_digest is not None
 
     try:
         manifest = load_manifest(record.locator)
@@ -231,7 +237,12 @@ def inspect_backup_project_registration(
     configuration = BackupManifestConfiguration.from_manifest(manifest)
     # Machines come from the current manifest, so one added after setup is kept.
     # A provisioned root is reused only while the machine keeps its route.
-    provisioned = {machine.alias: machine for machine in request.machines}
+    provisioned = {
+        machine.alias: machine
+        for completed in sorted(matches, key=lambda item: item.completed_at or "")
+        for machine in completed.machines
+        if machine.resolved_central_root is not None
+    }
     try:
         completed_at = datetime.fromisoformat(request.completed_at)
         recovery = BackupCheckoutRecoveryDescriptor(
@@ -255,21 +266,24 @@ def inspect_backup_project_registration(
                     deploy_key_label=repository.git_check.deploy_key_label,
                     public_key_fingerprint=repository.git_check.public_key_fingerprint,
                 )
-                for repository in request.repositories
-                if repository.resolved_path is not None
-                and repository.git_check.commit is not None
-                and repository.git_check.deploy_key_label is not None
-                and repository.git_check.public_key_fingerprint is not None
+                for repository in repositories
+                if repository.resolved_path is not None and repository.git_check.commit is not None
             ),
         )
     except (TypeError, ValueError) as exc:
         raise BackupProjectUnavailable(
             "The completed provisioning record cannot reconstruct every checkout."
         ) from exc
-    if len(recovery.repositories) != len(request.repositories):
+    if len(recovery.repositories) != len(repositories):
         raise BackupProjectUnavailable(
             "The completed provisioning record is missing a checkout recovery field."
         )
+    from rcp.server_ops.backup_recovery import apply_replacement_proofs
+
+    try:
+        recovery = apply_replacement_proofs(data_dir, recovery)
+    except (OSError, ValueError) as exc:
+        raise BackupProjectUnavailable("The replacement checkout proof is invalid.") from exc
     return BackupProjectRegistration(
         record=record,
         manifest=manifest,
@@ -2611,6 +2625,11 @@ class ProjectDisplayCache:
         payload["skill_catalog"] = official_registry().catalog()
         _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
+        repositories = payload["repositories"]
+        assert isinstance(repositories, list)
+        payload["repositories"] = project_repository_descriptors(
+            repositories, store=self._store, project_id=str(payload["id"])
+        )
         payload["machines"] = [
             {
                 **machine,

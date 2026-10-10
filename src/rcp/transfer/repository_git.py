@@ -45,14 +45,24 @@ def capture_repository_bundle(host: str, path: str, expected_head: str, destinat
     _run(host, path, "capture", expected_head=expected_head, destination=destination)
 
 
-def install_repository_bundle(host: str, path: str, bundle: Path, expected_head: str) -> None:
-    """Detach a clean target at the exact HEAD, or verify an unchanged retry.
+def install_repository_bundle(
+    host: str, path: str, bundle: Path, expected_head: str, *, server_only: bool = False
+) -> None:
+    """Install the reviewed HEAD, attaching server-only history to main.
 
-    An already matching HEAD only validates the bundle and tracked/index state;
-    it preserves branch attachment and all untracked files without Git writes.
+    GitHub targets retain the detached checkout behavior. An already matching
+    GitHub HEAD preserves branch attachment and untracked files without writes.
     """
 
-    _run(host, path, "install", expected_head=expected_head, bundle=bundle)
+    if not bundle.exists():
+        raise ValueError("repository transfer requires the reviewed Git bundle")
+    _run(
+        host,
+        path,
+        "install-main" if server_only else "install",
+        expected_head=expected_head,
+        bundle=bundle,
+    )
 
 
 def _run(
@@ -142,7 +152,7 @@ def _run(
             if re.fullmatch(rb"[0-9a-f]{40}\n", receipt) is None:
                 raise ValueError("repository Git transfer returned an invalid revision")
             head = receipt[:-1].decode("ascii")
-            if operation == "install" and head != expected_head:
+            if operation in {"install", "install-main"} and head != expected_head:
                 raise ValueError("repository Git transfer did not install the reviewed revision")
             return head
     except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:

@@ -564,6 +564,7 @@ def isolate_host(
     )
     # Keep RCP's own `~/.rcp` temporary files out of the human's home.
     monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: root / "rcp-home")
+    monkeypatch.setattr("rcp.transport.remote_transfer_git._rcp_temp_dir", lambda: root)
     # The SSH control directory is keyed by user account, not by data
     # directory, so the developer's own RCP keeps its live masters in the same
     # place a test would sweep. Starting an app runs that sweep, which means the

@@ -398,10 +398,8 @@ def _validate_protocol_bindings(
     actual = {key: getattr(archive, key) for key in expected}
     if actual != expected:
         raise ValueError("transfer archive does not match the reviewed source/target link")
-    source_repositories = {item.alias: item.repository.identity for item in source.repositories}
-    linked_repositories = {
-        item.alias: item.repository.identity for item in link.target_repositories
-    }
+    source_repositories = {item.alias: item.repository for item in source.repositories}
+    linked_repositories = {item.alias: item.repository for item in link.target_repositories}
     if linked_repositories != source_repositories:
         raise ValueError("transfer link names different GitHub repositories")
 
@@ -442,10 +440,8 @@ def _validate_target_manifest(
         or tuple(manifest.agent.default_run_truth_scope) != source.default_run_truth_scope
     ):
         raise ValueError("target manifest changes transferred scope provenance")
-    source_repositories = {item.alias: item.repository.identity for item in source.repositories}
-    target_repositories = {
-        alias: item.repository.identity for alias, item in expected_repositories.items()
-    }
+    source_repositories = {item.alias: item.repository for item in source.repositories}
+    target_repositories = {alias: item.repository for alias, item in expected_repositories.items()}
     if target_repositories != source_repositories:
         raise ValueError("target manifest review names different GitHub repositories")
     source_repository_machines = {item.alias: item.machine_alias for item in source.repositories}

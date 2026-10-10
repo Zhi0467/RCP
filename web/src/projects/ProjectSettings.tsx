@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, clearProjectCaches } from "../core/api";
 import { computeProbePresentation } from "../experiments/compute";
+import { RepositoryRequests } from "./RepositoryRequests";
 import { ProjectMembers } from "./ProjectMembers";
 import { MachineCard } from "./MachineCard";
 import { ProjectNotifications } from "../desktop/ProjectNotifications";
@@ -104,7 +105,7 @@ const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
-  { id: "orchestrator", label: "Orchestrator" },
+  { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 
 function profilesFrom(
@@ -192,6 +193,7 @@ export function ProjectSettings({
   const actorId = identity?.user.user_id ?? null;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once per project; a snapshot refresh must not reset the form
   const restoredSettings = useMemo(() => stagedOrSaved(project, actorId), [project.id]);
+  const [connectAlias, setConnectAlias] = useState<string | null>(null);
   const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
     () => restoredSettings.autoResearchInvocationCeiling,
@@ -642,7 +644,7 @@ export function ProjectSettings({
           <span>
             <GitBranch size={16} />
           </span>
-          <h2>Project boundary</h2>
+          <h2>Repos</h2>
         </header>
         <div className="settings-repositories">
           {project.repositories.map((repository) => {
@@ -670,11 +672,34 @@ export function ProjectSettings({
                 <span className="settings-repository-meta">
                   <Server size={12} /> {machine?.host ? repository.machine : "local"}
                   {canonical && <em>canonical state</em>}
+                  {repository.source === "server_only" && <em>server only, not backed up</em>}
+                  {repository.can_connect && spaceKind === "team" && (
+                    <button
+                      type="button"
+                      className="button ghost tiny"
+                      disabled={writesDisabled}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setConnectAlias(repository.alias);
+                      }}
+                    >
+                      Connect to GitHub
+                    </button>
+                  )}
                 </span>
               </label>
             );
           })}
         </div>
+        {spaceKind === "team" && (
+          <RepositoryRequests
+            key={project.id}
+            project={project}
+            disabled={writesDisabled}
+            connectAlias={connectAlias}
+            onCloseConnect={() => setConnectAlias(null)}
+          />
+        )}
       </article>
 
       <section className="settings-section provider-path-settings">

@@ -44,6 +44,8 @@ const {
   ProvisioningStatus,
   gitWriteFact,
   projectProvisioningCreateModeAvailable,
+  providerChipTone,
+  serverOperatorModeFor,
   serverOperatorProbeMatchesDraft,
   TeamProjectSetup,
 } = await server.ssrLoadModule("/src/projects/TeamProjectSetup.tsx");
@@ -533,6 +535,12 @@ test("copyable server argv preserves exact token boundaries", () => {
   );
 });
 
+test("a provider chip is ready, failed with a diagnostic, or still waiting", () => {
+  assert.equal(providerChipTone({ ready: true, diagnostic: null }), "ready");
+  assert.equal(providerChipTone({ ready: false, diagnostic: "missing login" }), "failed");
+  assert.equal(providerChipTone({ ready: false, diagnostic: null }), "waiting");
+});
+
 test("an operator probe is valid only for the exact displayed route", () => {
   const probe = {
     connection_id: "team-1",
@@ -540,9 +548,18 @@ test("an operator probe is valid only for the exact displayed route", () => {
     route: { ssh_target: "operator@server", mode: "sudo_rcp" },
     diagnostic: null,
   };
-  assert.equal(serverOperatorProbeMatchesDraft(probe, " operator@server ", "sudo_rcp"), true);
-  assert.equal(serverOperatorProbeMatchesDraft(probe, "rcp@server", "sudo_rcp"), false);
-  assert.equal(serverOperatorProbeMatchesDraft(probe, "operator@server", "direct_rcp"), false);
+  assert.equal(serverOperatorProbeMatchesDraft(probe, " operator@server "), true);
+  assert.equal(serverOperatorProbeMatchesDraft(probe, "rcp@server"), false);
+  // A route saved before the mode followed the target is no longer proved.
+  const stale = { ...probe, route: { ssh_target: "rcp@server", mode: "sudo_rcp" } };
+  assert.equal(serverOperatorProbeMatchesDraft(stale, "rcp@server"), false);
+});
+
+test("the operator route mode follows the account the target signs in as", () => {
+  assert.equal(serverOperatorModeFor(" rcp@server "), "direct_rcp");
+  assert.equal(serverOperatorModeFor("operator@server"), "sudo_rcp");
+  assert.equal(serverOperatorModeFor("rcpadmin@server"), "sudo_rcp");
+  assert.equal(serverOperatorModeFor("server"), "sudo_rcp");
 });
 
 test("a deep-linked request blocks the blank create form before its durable read", () => {
@@ -731,14 +748,11 @@ test("the provisioning view renders backend answers and hides native actions in 
       desktop: false,
       connection: null,
       operatorTarget: "",
-      operatorMode: "sudo_rcp",
       probe: null,
       busy: null,
       onOperatorTarget: noop,
-      onOperatorMode: noop,
       onSaveAndProbe: noop,
       onCopy: noop,
-      onRefresh: noop,
       onRun: noop,
       onTerminal: noop,
       onCancel: noop,
@@ -787,14 +801,11 @@ test("the provisioning view renders backend answers and hides native actions in 
       desktop: false,
       connection: null,
       operatorTarget: "",
-      operatorMode: "sudo_rcp",
       probe: null,
       busy: null,
       onOperatorTarget: noop,
-      onOperatorMode: noop,
       onSaveAndProbe: noop,
       onCopy: noop,
-      onRefresh: noop,
       onRun: noop,
       onTerminal: noop,
       onCancel: noop,
@@ -803,10 +814,12 @@ test("the provisioning view renders backend answers and hides native actions in 
   );
 
   const finalReviewHtml = readyHtml.slice(readyHtml.indexOf('class="provisioning-final-review"'));
-  assert.match(finalReviewHtml, /https:\/\/github\.com\/openai\/rcp\.git/);
-  assert.match(finalReviewHtml, /\/var\/lib\/rcp\/projects\/project-1\/paper/);
+  // The ledger above the review keeps the resolved paths; the review itself
+  // does not repeat them.
+  assert.match(readyHtml, /\/var\/lib\/rcp\/projects\/project-1\/paper/);
+  assert.doesNotMatch(finalReviewHtml, /\/var\/lib\/rcp\/projects\/project-1\/paper/);
 
-  assert.match(finalReviewHtml, />Alice</);
+  assert.match(finalReviewHtml, /Alice/);
 
   const source = await readFile(
     new URL("../src/projects/TeamProjectSetup.tsx", import.meta.url),

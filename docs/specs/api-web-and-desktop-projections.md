@@ -924,9 +924,29 @@ detection.
 
 The modes retain their separate authority owners behind that shared surface.
 Personal setup calls the ordinary path-based preflight/finalizer. Team creation
-creates a backend-owned durable provisioning request from GitHub repository
-sources and derived central paths. Personal-to-team transfer creates linked
-requests in the two authenticated backends and is available only in the
+creates a backend-owned durable provisioning request with derived central paths.
+Each repository accepts an optional GitHub `source`; omitted, null, or blank
+means server only. The repository truth choice `count_as_project_truth` defaults
+to true. The response exposes `source_kind` (`github` or `server_only`), a
+nullable repository identity and GitHub URLs, and the truth choice. Request kinds
+also include `add_repository` and `connect_repository`, whose
+`target_project_id` identifies the existing project. Reading those requests
+requires current membership in that project.
+`POST /api/projects/{project_id}/repository-requests` accepts either
+`{"kind":"add_repository","repository":{"alias","source"?,"machine_alias","count_as_project_truth"}}`
+or `{"kind":"connect_repository","alias","source"}` and returns the ordinary
+provisioning response. Placement uses an existing project machine. Setup runs
+through `rcp server project provision <request-id>`. The ordinary completion
+endpoint accepts the review digest; for repository requests only the requesting
+current project member may confirm. Add applies manifest membership and the truth
+choice through a human approval transition, bound to the captured manifest/head.
+Connect preserves the manifest. Server-only setup and both repository request
+kinds expose the same setup and review controls as team creation.
+Native provisioning and transfer parsing preserve nullable sources. The native
+relay sends no GitHub URL for a server-only repository and requires its reviewed
+commit and Git bundle; GitHub repositories keep their optional bundle choice.
+Personal-to-team transfer creates linked requests
+in the two authenticated backends and is available only in the
 source-built desktop because its native shell owns the archive relay. A direct
 team request to `/api/projects`, `/api/project-setup/preflight`,
 `/api/project-setup/ssh-paths`, or `/api/project-setup/create` is refused before
@@ -967,15 +987,30 @@ model, runtime, authentication, or OS-account decisions.
 
 The UI renders the backend's status, diagnostic, exact next action, resolved
 paths, and final review. It cannot claim success from a desktop subprocess exit
-code. A local-only codebase is not uploaded through the wizard: the new-team
-intent tells the human to push it to a GitHub repository with a real commit
-through their ordinary Git workflow, then records that repository source. RCP
-does not collect GitHub user authentication.
+code. The new-team wizard leaves the GitHub URL optional: blank means server only.
+The draft ledger and repository review identify server-only repositories, with
+one plain notice that their code is not backed up. Setup announces the empty
+RCP first commit on main, including its push for an empty GitHub repository.
+RCP does not collect GitHub user authentication.
+
+Team Project Settings offers one-repository add and connect requests through
+`POST /api/projects/{project_id}/repository-requests`. Add takes an alias,
+optional GitHub source, machine, and a checked-by-default project-truth choice.
+Connect appears only on a server-only repository with `can_connect` from the
+Settings projection. Both open the existing request-id provisioning view, with
+its server command, polling, and explicit final review; submitting Settings
+never confirms the request. Backend execution and authority remain with their
+provisioning owners.
+
+Transfer setup does not choose target URLs. A repository with a GitHub origin
+keeps that identity on the team server; one without an origin transfers as
+server only, which the review shows, and its Git bundle is required.
 
 A saved member connection and an operator route are distinct capabilities even
 when they use the same SSH host. The source-built desktop stores the latter as
 nonsecret native metadata: either an explicit direct `rcp@host` target or one
-named operator target using `sudo -n -u rcp -H`. **Run setup now** appears only
+named operator target using `sudo -n -u rcp -H`. The Web derives which from the
+target's login, so the human enters only the SSH target. **Run setup now** appears only
 after a native read-only probe proves that exact route can invoke the fixed `rcp
 server project provision <request-id> --machine-readable` command. The shell
 passes a validated request id as an argument and never executes arbitrary
@@ -985,7 +1020,8 @@ server owns their step order and text. Success comes only from an authenticated
 durable request readback from the expected team space. If SSH or `sudo` needs interaction, the
 app shows or opens the same fixed command in Terminal; it never collects a
 private key or privilege password. The browser shows a copyable operator command
-instead.
+instead, written as `sudo -u rcp -H …` so it runs as pasted from the operator's
+own login on the server.
 
 CLI structured progress is presentation input only. The CLI reports each state
 change to the lock-owning backend through its private local control channel, and
@@ -1706,6 +1742,16 @@ project's machine cards (provider paths, compute, and the same writable-path
 record), execution profiles, compute connections, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
+
+Team repository descriptors include `source` (`github` or `server_only`),
+nullable `github_identity`, and `can_connect`, from `effective_repositories`;
+only a server-only team repository has `can_connect` set. The display
+completion path reads this operational provenance afresh even for cached graph
+snapshots, so a completed Connect is immediately reflected. Personal
+repositories, and team repositories whose provisioning evidence cannot be
+resolved, omit all three fields: nothing claims a server-only state or offers
+Connect without proof. These fields describe RCP-managed provisioning, not
+discovery of a personal checkout's Git remotes.
 
 `/api/space/machines` lists, creates, renames, and deletes machine cards; a card
 in use by any project, or whose use cannot be established, cannot be deleted,

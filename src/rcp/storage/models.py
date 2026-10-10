@@ -313,7 +313,9 @@ class ProjectStageRecord(BaseModel):
     root: str
 
 
-ProjectProvisioningKind = Literal["create_team_project", "incoming_transfer"]
+ProjectProvisioningKind = Literal[
+    "create_team_project", "incoming_transfer", "add_repository", "connect_repository"
+]
 ProjectProvisioningStatus = Literal[
     "waiting_for_server_setup",
     "setup_in_progress",
@@ -518,18 +520,9 @@ class ProjectProvisioningGitCheckRecord(_StrictProvisioningModel):
         return value
 
     @model_validator(mode="after")
-    def ready_means_read_write_proven(self) -> ProjectProvisioningGitCheckRecord:
-        if self.status == "ready" and (
-            self.commit is None
-            or not self.write_verified
-            or self.deploy_key_label is None
-            or self.public_key_fingerprint is None
-            or self.checked_at is None
-        ):
-            raise ValueError(
-                "a ready Git check requires a commit, write proof, deploy-key label, "
-                "fingerprint, and check time"
-            )
+    def ready_means_checkout_proven(self) -> ProjectProvisioningGitCheckRecord:
+        if self.status == "ready" and (self.commit is None or self.checked_at is None):
+            raise ValueError("a ready Git check requires a commit and check time")
         if self.write_verified and self.commit is None:
             raise ValueError("a Git write proof must name the commit it proved")
         return self
@@ -537,8 +530,13 @@ class ProjectProvisioningGitCheckRecord(_StrictProvisioningModel):
 
 class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None = None
     machine_alias: str
+    count_as_project_truth: bool = True
+
+    @property
+    def source_kind(self) -> Literal["github", "server_only"]:
+        return "github" if self.repository is not None else "server_only"
 
     @field_validator("alias", "machine_alias")
     @classmethod
@@ -555,6 +553,22 @@ class ProjectProvisioningRepositoryRecord(ProjectProvisioningRepositoryIntent):
     git_check: ProjectProvisioningGitCheckRecord = Field(
         default_factory=ProjectProvisioningGitCheckRecord
     )
+
+    @model_validator(mode="after")
+    def validate_source_proof(self) -> ProjectProvisioningRepositoryRecord:
+        check = self.git_check
+        if self.repository is None:
+            if check.write_verified or check.deploy_key_label or check.public_key_fingerprint:
+                raise ValueError("server-only repositories cannot carry GitHub write evidence")
+        elif check.status == "ready" and (
+            not check.write_verified
+            or not check.deploy_key_label
+            or not check.public_key_fingerprint
+        ):
+            raise ValueError(
+                "a ready GitHub repository requires write proof and deploy-key evidence"
+            )
+        return self
 
     @field_validator("intended_path", "resolved_path")
     @classmethod
@@ -672,6 +686,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
     target_space_id: str
     authorized_by: AuthorizedHuman
     proposed_project_id: str
+    target_project_id: str | None = None
     name: str | None = Field(default=None, max_length=120)
     state_repository: str | None = None
     project_truth_scope: list[str] = Field(default_factory=list, max_length=64)
@@ -683,7 +698,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
     machines: list[ProjectProvisioningMachineRecord] = Field(min_length=1, max_length=32)
     repositories: list[ProjectProvisioningRepositoryRecord] = Field(min_length=1, max_length=64)
     provider_checks: list[ProjectProvisioningProviderCheckRecord] = Field(
-        min_length=1, max_length=32
+        default_factory=list, max_length=32
     )
     retryable_diagnostic: MessageText | None = None
     operator_action: ServerStep | None = None
@@ -702,6 +717,16 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
     def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
         try:
             return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("target_project_id")
+    @classmethod
+    def validate_target_project_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return _canonical_uuid4(value, label="target project identity")
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
 
@@ -755,13 +780,29 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
     def validate_request(self) -> ProjectProvisioningRequestRecord:
         if self.target_space_id != self.authorized_by.space_id:
             raise ValueError("provisioning authorizer must belong to the target space")
+        existing_project = self.kind in {"add_repository", "connect_repository"}
+        if existing_project:
+            if self.target_project_id != self.proposed_project_id:
+                raise ValueError("existing-project provisioning requires its exact target project")
+            if len(self.repositories) != 1:
+                raise ValueError("existing-project provisioning requires one repository")
+            if self.kind == "connect_repository" and self.repositories[0].repository is None:
+                raise ValueError("connecting a repository requires a GitHub source")
+        elif self.target_project_id is not None:
+            raise ValueError("create provisioning cannot target an existing project")
+        elif not self.provider_checks:
+            raise ValueError("create provisioning requires provider checks")
         machine_map = {machine.alias: machine for machine in self.machines}
         if len(machine_map) != len(self.machines):
             raise ValueError("provisioning machine aliases must be unique")
         repository_aliases = [repository.alias for repository in self.repositories]
         if len(set(repository_aliases)) != len(repository_aliases):
             raise ValueError("provisioning repository aliases must be unique")
-        repository_identities = [repository.repository.identity for repository in self.repositories]
+        repository_identities = [
+            repository.repository.identity
+            for repository in self.repositories
+            if repository.repository is not None
+        ]
         if len(set(repository_identities)) != len(repository_identities):
             raise ValueError("one GitHub repository cannot appear twice in a provisioning request")
         has_any_configuration = bool(
@@ -850,6 +891,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                         repository
                         for repository in self.repositories
                         if target.service == "github.com"
+                        and repository.repository is not None
                         and target.resource == repository.repository.identity
                         and (
                             (
@@ -963,7 +1005,7 @@ class ProjectProvisioningStepReceiptRecord(_StrictProvisioningModel):
 
 class ProjectTransferRepositorySource(_StrictProvisioningModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
     machine_alias: str
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
@@ -1059,14 +1101,27 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
 
     @model_validator(mode="after")
     def validate_repository_provenance(self) -> ProjectTransferSourceConfiguration:
+        if any(
+            item.repository is None and item.source_commit is None for item in self.repositories
+        ):
+            raise ValueError("server-only transfer requires a reviewed commit and Git bundle")
+        github_commits = [
+            item.source_commit for item in self.repositories if item.repository is not None
+        ]
+        if any(github_commits) and not all(github_commits):
+            raise ValueError("local-commit choice must cover every GitHub repository")
         commits = [repository.source_commit for repository in self.repositories]
         if any(commits):
-            if not all(commits) or self.supported_archive_codecs != ("rcp-transfer-v2",):
-                raise ValueError("local-commit transfer requires every reviewed HEAD and v2")
+            if self.supported_archive_codecs != ("rcp-transfer-v2",):
+                raise ValueError("local-commit transfer requires v2")
         elif "rcp-transfer-v2" in self.supported_archive_codecs:
             raise ValueError("v2 transfer requires reviewed repository commits")
         aliases = [repository.alias for repository in self.repositories]
-        identities = [repository.repository.identity for repository in self.repositories]
+        identities = [
+            repository.repository.identity
+            for repository in self.repositories
+            if repository.repository is not None
+        ]
         if len(aliases) != len(set(aliases)):
             raise ValueError("transfer repository aliases must be unique")
         if len(identities) != len(set(identities)):
@@ -1088,6 +1143,15 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
 
     @property
     def includes_local_commits(self) -> bool:
+        """The optional GitHub commit choice, excluding mandatory server-only bundles."""
+        return any(
+            repository.source_commit
+            for repository in self.repositories
+            if repository.repository is not None
+        )
+
+    @property
+    def has_repository_bundles(self) -> bool:
         return any(repository.source_commit for repository in self.repositories)
 
 
@@ -1111,7 +1175,7 @@ class ProjectTransferResolvedPath(_StrictProvisioningModel):
 
 class ProjectTransferRepositoryBinding(_StrictProvisioningModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
 
     @field_validator("alias")
     @classmethod
@@ -1175,7 +1239,11 @@ class ProjectTransferLinkReceipt(_StrictProvisioningModel):
         if self.source_space_id == self.target_space_id:
             raise ValueError("a transfer link must cross spaces")
         aliases = [item.alias for item in self.target_repositories]
-        identities = [item.repository.identity for item in self.target_repositories]
+        identities = [
+            item.repository.identity
+            for item in self.target_repositories
+            if item.repository is not None
+        ]
         if len(aliases) != len(set(aliases)):
             raise ValueError("linked target repository aliases must be unique")
         if aliases != sorted(aliases):

@@ -1,4 +1,4 @@
-"""Read-only checkout identity proof used by local and SSH backup capture."""
+"""Checkout identity proof and empty server-only restore on local or SSH accounts."""
 
 from __future__ import annotations
 
@@ -49,6 +49,7 @@ def _git_result(repository: Path, *arguments: str) -> subprocess.CompletedProces
             timeout=30.0,
             check=False,
             env=environment,
+            umask=0o077,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CheckoutInspectionError("The central checkout Git metadata is unavailable.") from exc
@@ -106,18 +107,23 @@ def inspect_checkout(
     if top_level != str(repository):
         raise CheckoutInspectionError("The configured path is not the exact Git checkout root.")
     remotes = _git(repository, "remote").splitlines()
-    if remotes != ["origin"]:
-        raise CheckoutInspectionError("The central checkout does not have one exact origin.")
-    origin = _git(repository, "config", "--local", "--get-all", "remote.origin.url")
-    push_origin = _optional_git(
-        repository,
-        "config",
-        "--local",
-        "--get-all",
-        "remote.origin.pushurl",
-    )
-    if origin != expected_origin or push_origin not in {None, expected_origin}:
-        raise CheckoutInspectionError("The central checkout origin identity changed.")
+    origin = ""
+    if not expected_origin:
+        if remotes:
+            raise CheckoutInspectionError("A server-only checkout acquired a remote.")
+    else:
+        if remotes != ["origin"]:
+            raise CheckoutInspectionError("The central checkout does not have one exact origin.")
+        origin = _git(repository, "config", "--local", "--get-all", "remote.origin.url")
+        push_origin = _optional_git(
+            repository,
+            "config",
+            "--local",
+            "--get-all",
+            "remote.origin.pushurl",
+        )
+        if origin != expected_origin or push_origin not in {None, expected_origin}:
+            raise CheckoutInspectionError("The central checkout origin identity changed.")
     head = _git(repository, "rev-parse", "--verify", "HEAD^{commit}")
     if _FULL_COMMIT.fullmatch(head) is None:
         raise CheckoutInspectionError("The central checkout HEAD is invalid.")
@@ -133,7 +139,103 @@ def inspect_checkout(
     }
 
 
+def restore_server_only(
+    *, os_account: str, central_root: str, repository_path: str, recorded_commit: str = ""
+) -> dict[str, str]:
+    """Create an empty replacement; retry only our empty, remote-free history."""
+    if pwd.getpwuid(os.geteuid()).pw_name != os_account:
+        raise CheckoutInspectionError("Restore account differs from its configured owner.")
+    root, repository = Path(central_root), Path(repository_path)
+    if (
+        not root.is_absolute()
+        or root == Path("/")
+        or ".." in repository.parts
+        or not repository.is_relative_to(root)
+        or len(repository.relative_to(root).parts) != 3
+        or repository.parent.name != "repositories"
+    ):
+        raise CheckoutInspectionError("Invalid replacement checkout path.")
+    current = Path("/")
+    for part in repository.parts[1:]:
+        current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if not current.is_relative_to(root):
+                raise CheckoutInspectionError("Central root ancestry is absent.") from None
+            current.mkdir(mode=0o700)
+            info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode) or (
+            current.is_relative_to(root)
+            and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077)
+        ):
+            raise CheckoutInspectionError("Unsafe replacement checkout ancestry.")
+    if recorded_commit:
+        return inspect_checkout(
+            os_account=os_account,
+            repository_path=repository_path,
+            expected_origin="",
+            recorded_commit=recorded_commit,
+        )
+    if set(p.name for p in repository.iterdir()) - {".git"}:
+        raise CheckoutInspectionError("Replacement checkout contains existing work.")
+    git_dir = repository / ".git"
+    if git_dir.exists() or git_dir.is_symlink():
+        if not stat.S_ISDIR(git_dir.lstat().st_mode):
+            raise CheckoutInspectionError("Replacement Git directory is unsafe.")
+    else:
+        _git(repository, "init", "-b", "main", "--template=")
+    if _git(repository, "remote"):
+        raise CheckoutInspectionError("Replacement checkout has a remote.")
+    if _git(repository, "ls-files", "--stage"):
+        raise CheckoutInspectionError("Replacement index is not empty.")
+    head = _git_result(repository, "rev-parse", "--verify", "HEAD^{commit}")
+    if head.returncode != 0:
+        _git(
+            repository,
+            "-c",
+            "user.name=RCP",
+            "-c",
+            "user.email=rcp@rcp.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Start RCP project",
+        )
+    commit = _git(repository, "rev-parse", "--verify", "HEAD^{commit}")
+    if (
+        _git(repository, "symbolic-ref", "HEAD") != "refs/heads/main"
+        or _git(repository, "rev-list", "--count", "HEAD") != "1"
+        or _git(repository, "ls-tree", "HEAD")
+        or _git(repository, "show", "-s", "--format=%an <%ae>%n%B", "HEAD")
+        != "RCP <rcp@rcp.invalid>\nStart RCP project"
+    ):
+        raise CheckoutInspectionError("Existing replacement history is not the RCP first commit.")
+    _git(repository, "config", "--local", "core.hooksPath", "/dev/null")
+    return inspect_checkout(
+        os_account=os_account,
+        repository_path=repository_path,
+        expected_origin="",
+        recorded_commit=commit,
+    )
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) == 6 and argv[1] == "restore-server-only":
+        try:
+            payload = restore_server_only(
+                os_account=argv[2],
+                central_root=argv[3],
+                repository_path=argv[4],
+                recorded_commit=argv[5],
+            )
+        except (CheckoutInspectionError, OSError, ValueError):
+            return 3
+        payload["account_home"] = pwd.getpwuid(os.geteuid()).pw_dir
+        sys.stdout.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+        return 0
     if len(argv) != 5:
         return 2
     try:

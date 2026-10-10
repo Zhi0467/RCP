@@ -170,6 +170,11 @@ def test_team_delete_removes_invitation_transfer_and_provisioning_history(
     now = store.now()
     digest = "a" * 64
     with store.connection() as connection:
+        # This project arrived by transfer, not by the fixture's create request.
+        connection.execute(
+            "DELETE FROM project_provisioning_requests WHERE proposed_project_id = ?",
+            (project_id,),
+        )
         connection.execute(
             """
             INSERT INTO project_provisioning_requests (

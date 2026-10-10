@@ -25,6 +25,7 @@ from rcp.limits import (
     TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
+from rcp.provisioning_repositories import is_server_only, team_repository_sources
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
 from rcp.terminals.models import DETACHED, TerminalAlreadyOpen
@@ -165,9 +166,12 @@ async def open_session(
             raise HTTPException(
                 503, "Cannot establish repository ownership; a registered project is unavailable."
             ) from exc
+        github = services.store.space_kind == "team" and not is_server_only(
+            team_repository_sources(services.store, project_id), body.repository_id
+        )
         key = (
             request.app.state.server_layout.project_deploy_key_path(project_id, body.repository_id)
-            if services.store.space_kind == "team"
+            if github
             else None
         )
         paths, environment = ((), {}) if machine.host else terminal_git_access(key)
@@ -176,7 +180,7 @@ async def open_session(
         # home, so send the path relative to it.
         remote_key_relative = (
             str(remote_project_deploy_key_relative_path(project_id, body.repository_id))
-            if machine.host and services.store.space_kind == "team"
+            if machine.host and github
             else None
         )
         session = await services.terminals.open(

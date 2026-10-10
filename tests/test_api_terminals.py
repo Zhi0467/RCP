@@ -714,12 +714,29 @@ def test_projection_reports_machine_capability_independent_of_space(
     assert remote["reason"] == remote["unavailable_reason"]
 
 
-def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatch):
+@pytest.mark.parametrize("github", [True, False])
+def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatch, github):
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
     app, client, _store, _people, _acting = _team_app(tmp_path)
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", github=github)
+    from rcp.agents.git_access import provider_git_access
     from rcp.terminals import manager, profile
     from rcp.terminals.backends import TerminalBackend
+
+    key = app.state.server_layout.project_deploy_key_path(project_id, "paper-repo")
+    if not github:
+        key.unlink()
+    access = provider_git_access(
+        app.state.catalog.open(project_id).manifest,
+        project_id=project_id,
+        run_on="laptop",
+        member=_store.completed_project_provisioning_requests(project_id)[0].authorized_by,
+        store=_store,
+        data_dir=tmp_path,
+        layout=app.state.server_layout,
+    )
+    assert bool(access.checkouts) is github
+    assert access.identity.user_id == _people[0].user_id
 
     start = TerminalBackend.start
     captured = {}
@@ -738,11 +755,18 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
     monkeypatch.setattr(TerminalBackend, "start", capture_start)
     path = f"/api/projects/{project_id}/terminals"
     with client:
+        descriptor = client.get(f"/api/projects/{project_id}").json()["repositories"][0]
+        assert descriptor["source"] == ("github" if github else "server_only")
+        assert (descriptor["github_identity"] is not None) is github
+        assert descriptor["can_connect"] is not github
         response = client.post(path, json={"repository_id": "paper-repo"})
         assert response.status_code == 200, response.text
         session = response.json()
         identity_path = captured["git_environment"]["GIT_CONFIG_SYSTEM"]
         assert identity_path in captured["git_read_paths"]
+        assert (str(key) in captured["git_read_paths"]) is github
+        config = tmp_path / "repo" / ".git" / "config"
+        assert (config.exists() and "sshCommand" in config.read_text()) is github
         assert "GIT_SSH_COMMAND" not in captured["git_environment"]
         assert _people[0].display_name in Path(identity_path).read_text()
         assert f"{_people[0].user_id}@members.rcp.invalid" in Path(identity_path).read_text()
@@ -764,6 +788,17 @@ def _register_remote(app, project_id, *, repositories=1):
             {"alias": f"remote-{index}", "machine": machine.alias, "path": f"/srv/repo-{index}"},
         )
     service.history.manifest = manifest
+    from .test_project_membership import _record_repository_provenance
+
+    store = app.state.services.store
+    record = store.completed_project_provisioning_requests(project_id)[0]
+    _record_repository_provenance(
+        store,
+        project_id,
+        record.authorized_by.user_id,
+        github=record.repositories[0].repository is not None,
+        aliases=[repository.alias for repository in manifest.repositories],
+    )
     return machine
 
 
@@ -868,15 +903,16 @@ def remote_pty(monkeypatch, remote_probe):
         os.close(slave)
 
 
+@pytest.mark.parametrize("github", [True, False])
 @pytest.mark.parametrize("completion", [False, True], ids=["link-drop", "shell-exit-255"])
 def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
-    tmp_path, remote_pty, completion, monkeypatch
+    tmp_path, remote_pty, completion, monkeypatch, github
 ):
     from rcp.agents.write_scope import registered_repository_roots
     from rcp.transport.remote_terminal import EXIT_PREFIX, EXIT_SUFFIX
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", github=github)
     monkeypatch.setattr(
         app.state.catalog,
         "repository_ownership_inventory",
@@ -892,6 +928,8 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
         assert opened["containment"] == "mirrored"
         process, slave, host, settings = remote_pty[0]
         assert host == machine.host
+        assert (settings["git_key_relative"] is not None) is github
+        assert settings["git_identity"].user_id == _people[0].user_id
         assert settings["repository"] == Path("/srv/repo-0")
         assert "/srv/repo-0/.research" in settings["protected_paths"]
         socket_path = f"{path}/{session_id}/ws"

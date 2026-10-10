@@ -59,7 +59,7 @@ unique host. Project manifests stay the source of truth for a project's
 machines: setup and **Add machine** copy a card's host and account, so the
 wrong-account check still runs when the route does not name the user, and a
 project machine finds its
-card by host. Nothing on the space page writes a manifest. The list fills from
+card by host. The space page can add a card but never writes a manifest. The list fills from
 registered projects' accepted manifests at startup, on registration, and when a
 machine is added; when two manifests name different accounts for one host, its
 card names none (and a warning is logged) rather than keeping one at random; raw manifest loads, preflight, history reload, backup, and
@@ -397,6 +397,33 @@ same thing.
 Routes never write a manifest, Patch, branch, or materialized output directly.
 State workspaces own locks, atomic temp-file replacement, and explicit local or
 remote publication.
+
+Provisioning storage represents a repository source as a GitHub reference or
+null (server only). Requests can create a team project, receive a transfer, add
+one repository, or connect one existing repository to GitHub. Add and connect
+name `target_project_id`; they share its checkout namespace without consuming
+the unique project reservation held by create/transfer requests. An add retains
+the human's per-repository `count_as_project_truth` choice, defaulting to true;
+persisting this choice does not itself change canonical truth membership. Creation
+captures an immutable hash of the current canonical manifest and graph head,
+keyed by the request identity bound into the final review digest. The requesting
+member's final confirmation checks this boundary under the canonical workspace
+and history locks. Add publishes one human approval transition containing the
+repository descriptor and the chosen truth scope, including descriptor-only
+additions outside truth. Its request identity reconciles a committed approval
+if the operational completion receipt was lost. Connect changes only completed
+checkout provenance, never manifest or graph membership. Both require current
+project membership; a changed review boundary requires a new request.
+
+`effective_repositories(project, provisioning_requests)` owns the effective
+repository inventory. It uses only completed requests for the exact project
+and home space, validates their review digests, and folds one create/transfer
+request followed by add/connect requests in completion order. Adds append an
+alias; connects replace its source, deploy-key evidence, and checkout proof
+while preserving its truth choice and checkout location. Incomplete proofs or
+conflicting provenance are refused. GitHub entries retain deploy-key and write
+evidence; server-only entries have checkout commit/time evidence without a key
+or push proof.
 
 ## Durable agent task lifecycle
 

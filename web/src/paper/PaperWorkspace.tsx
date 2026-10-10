@@ -643,10 +643,43 @@ export function PaperWorkspace({
       />
 
       <aside className="coach-column">
-        <header className="coach-header">
-          <h2>Writing coach</h2>
+        <div className="coach-history-bar">
+          <details className="session-history">
+            <summary>
+              <History size={14} />
+              <strong>Chat history</strong>
+              {sessions.length > 0 && <small>{sessions.length}</small>}
+            </summary>
+            <div className="session-strip">
+              {sessions.length === 0 ? (
+                <span className="muted">No prior writing sessions</span>
+              ) : (
+                sessions.map((session) => (
+                  <button
+                    className={
+                      activeSession?.native_session_id === session.native_session_id ? "active" : ""
+                    }
+                    key={session.native_session_id}
+                    onClick={() => {
+                      attachSession(session);
+                    }}
+                  >
+                    <span>{session.title || "Untitled coach session"}</span>
+                    <span className="session-meta">
+                      {session.provider_label || session.provider} · rev{" "}
+                      {session.graph_revision_examined}
+                    </span>
+                    <ChevronRight size={14} />
+                  </button>
+                ))
+              )}
+            </div>
+          </details>
           <button
-            className="button ghost compact"
+            className="icon-button compact coach-new-chat"
+            type="button"
+            title="New chat"
+            aria-label="New chat"
             onClick={() => {
               setActiveSession(null);
               setFreshSession(true);
@@ -656,40 +689,9 @@ export function PaperWorkspace({
               setSubmitError(null);
             }}
           >
-            <MessageCirclePlus size={14} /> New chat
+            <MessageCirclePlus size={14} />
           </button>
-        </header>
-        <details className="session-history">
-          <summary>
-            <History size={14} />
-            <strong>Chat history</strong>
-            {sessions.length > 0 && <small>{sessions.length}</small>}
-          </summary>
-          <div className="session-strip">
-            {sessions.length === 0 ? (
-              <span className="muted">No prior writing sessions</span>
-            ) : (
-              sessions.map((session) => (
-                <button
-                  className={
-                    activeSession?.native_session_id === session.native_session_id ? "active" : ""
-                  }
-                  key={session.native_session_id}
-                  onClick={() => {
-                    attachSession(session);
-                  }}
-                >
-                  <span>{session.title || "Untitled coach session"}</span>
-                  <span className="session-meta">
-                    {session.provider_label || session.provider} · rev{" "}
-                    {session.graph_revision_examined}
-                  </span>
-                  <ChevronRight size={14} />
-                </button>
-              ))
-            )}
-          </div>
-        </details>
+        </div>
 
         <div
           className="agent-provider-label"

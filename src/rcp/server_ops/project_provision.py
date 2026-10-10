@@ -25,7 +25,6 @@ from rcp.server_ops.git_credentials import (
     GitWriteProbe,
     cleanup_ref_operator_step,
     deploy_key_operator_step,
-    empty_repository_operator_step,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
@@ -34,6 +33,7 @@ from rcp.server_ops.models import (
     ExternalServiceTarget,
     MachineTarget,
     NonsecretField,
+    OperatorAction,
     ServerCommandRequest,
     ServerPlanEvent,
     ServerStep,
@@ -41,6 +41,7 @@ from rcp.server_ops.models import (
 from rcp.server_ops.project_checkout import (
     ProjectCheckoutManager,
     ProjectCheckoutRefused,
+    ProjectCheckoutResult,
     retained_research_operator_step,
 )
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
@@ -296,7 +297,19 @@ class ProjectProvisionCoordinator:
                 "The provisioning request is in explicit cancellation handling; preparation "
                 "cannot clear or reinterpret that disposition."
             )
-        if self.store.project(request.proposed_project_id) is not None:
+        project = self.store.project(request.proposed_project_id)
+        if request.kind in {"add_repository", "connect_repository"}:
+            if (
+                project is None
+                or request.target_project_id != project.project_id
+                or project.home_space_id != request.target_space_id
+                or len(request.repositories) != 1
+                or not self.store.is_project_member(
+                    project.project_id, request.authorized_by.user_id
+                )
+            ):
+                raise ProjectProvisionRefused("The existing project target is no longer available.")
+        elif project is not None:
             raise ProjectProvisionRefused(
                 "The proposed project already exists; server preparation cannot alter it."
             )
@@ -317,7 +330,10 @@ class ProjectProvisionCoordinator:
         self,
         request: ProjectProvisioningRequestRecord,
     ) -> tuple[_ProvisionTarget, ...]:
-        if not request.configuration_complete:
+        if not request.configuration_complete and request.kind not in {
+            "add_repository",
+            "connect_repository",
+        }:
             return (self._configuration_target(request),)
         machine_map = {machine.alias: machine for machine in request.machines}
         targets: list[_ProvisionTarget] = []
@@ -363,46 +379,52 @@ class ProjectProvisionCoordinator:
         for index, repository in enumerate(request.repositories):
             machine = machine_map[repository.machine_alias]
             machine_target = self._machine_target(machine)
-            repository_target = ExternalServiceTarget(
-                service="github.com",
-                resource=repository.repository.identity,
-                destination_url=repository.repository.settings_url,
-                required_authority_role="repository administrator",
-            )
-            add(
-                "repository_key",
-                ServerStep(
-                    number=1,
-                    title=f"Prepare deploy key for {repository.alias}",
-                    purpose="Prepare one repository-scoped key on the exact checkout account.",
-                    performed_by="system",
-                    target=machine_target,
-                    phase="repository_key",
-                    state="pending",
-                    expected_success="The exact key label and public fingerprint are durable.",
-                    message=f"RCP will prepare the deploy key for {repository.alias}.",
-                ),
-                repository_index=index,
-                identity={"repository": repository.alias, "phase": "key"},
-            )
-            add(
-                "repository_write",
-                ServerStep(
-                    number=1,
-                    title=f"Verify Git write access for {repository.alias}",
-                    purpose="Prove repository-scoped read and write access without changing code.",
-                    performed_by="system",
-                    target=repository_target,
-                    phase="repository_write",
-                    state="pending",
-                    expected_success=(
-                        "A request-scoped ref is written, read back exactly, and removed."
+            if repository.repository is not None:
+                repository_target = ExternalServiceTarget(
+                    service="github.com",
+                    resource=repository.repository.identity,
+                    destination_url=repository.repository.settings_url,
+                    required_authority_role="repository administrator",
+                )
+                add(
+                    "repository_key",
+                    ServerStep(
+                        number=1,
+                        title=f"Prepare deploy key for {repository.alias}",
+                        purpose="Prepare one repository-scoped key on the exact checkout account.",
+                        performed_by="system",
+                        target=machine_target,
+                        phase="repository_key",
+                        state="pending",
+                        expected_success="The exact key label and public fingerprint are durable.",
+                        message=f"RCP will prepare the deploy key for {repository.alias}.",
                     ),
-                    message=f"RCP will verify Git write access for {repository.alias}.",
-                ),
-                repository_index=index,
-                identity={"repository": repository.alias, "phase": "write"},
-            )
+                    repository_index=index,
+                    identity={"repository": repository.alias, "phase": "key"},
+                )
+                add(
+                    "repository_write",
+                    ServerStep(
+                        number=1,
+                        title=f"Verify Git write access for {repository.alias}",
+                        purpose="Prove repository-scoped Git write access.",
+                        performed_by="system",
+                        target=repository_target,
+                        phase="repository_write",
+                        state="pending",
+                        expected_success=(
+                            "GitHub confirms the recorded main push or temporary-ref write proof."
+                        ),
+                        message=(
+                            f"RCP will verify Git write access for {repository.alias}. "
+                            "For an empty GitHub repository, RCP creates the empty commit "
+                            "Start RCP project as RCP <rcp@rcp.invalid> and pushes main. "
+                            "Connecting an existing checkout pushes its main only as a fast-forward."
+                        ),
+                    ),
+                    repository_index=index,
+                    identity={"repository": repository.alias, "phase": "write"},
+                )
             add(
                 "repository_checkout",
                 ServerStep(
@@ -416,14 +438,24 @@ class ProjectProvisionCoordinator:
                     expected_success=(
                         "The exact checkout path, origin, commit, and ownership are durable."
                     ),
-                    message=f"RCP will prepare the central checkout for {repository.alias}.",
+                    message=(
+                        f"RCP will prepare the central checkout for {repository.alias}."
+                        if repository.repository is not None
+                        else "RCP will initialize main and create the empty commit "
+                        "Start RCP project as RCP <rcp@rcp.invalid>. "
+                        "Server-only code is not included in backups."
+                    ),
                 ),
                 repository_index=index,
                 identity={"repository": repository.alias, "phase": "checkout"},
             )
-        provider_plan = self.provider_coordinator.plan("request", request.request_id)
+        provider_targets = (
+            self.provider_coordinator.plan("request", request.request_id).targets
+            if request.provider_checks
+            else ()
+        )
         for provider_index, (provider_target, profile) in enumerate(
-            zip(provider_plan.targets, request.provider_checks, strict=True)
+            zip(provider_targets, request.provider_checks, strict=True)
         ):
             machine = machine_map[profile.machine_alias]
             add(
@@ -485,7 +517,10 @@ class ProjectProvisionCoordinator:
         request: ProjectProvisioningRequestRecord,
         target: _ProvisionTarget,
     ) -> ServerStep:
-        if not request.configuration_complete:
+        if not request.configuration_complete and request.kind not in {
+            "add_repository",
+            "connect_repository",
+        }:
             return self._pause(
                 request,
                 target.step,
@@ -568,6 +603,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
+        assert repository.repository is not None  # Checked at the plan boundary.
         machine = self._machine(request, repository.machine_alias)
         try:
             material = self.credential_manager.prepare_key(
@@ -601,7 +637,9 @@ class ProjectProvisionCoordinator:
                     "fields": self._key_fields(material),
                 }
             )
-        updated_check = self._pending_git_check(material)
+        updated_check = self._pending_git_check(material).model_copy(
+            update={"commit": check.commit}
+        )
         repositories = list(request.repositories)
         repositories[repository_index] = repository.model_copy(update={"git_check": updated_check})
         self._transition(
@@ -625,6 +663,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
+        assert repository.repository is not None  # Checked at the plan boundary.
         machine = self._machine(request, repository.machine_alias)
         try:
             material = self.credential_manager.prepare_key(
@@ -655,6 +694,7 @@ class ProjectProvisionCoordinator:
                 number=pending.number,
                 request_id=request.request_id,
                 resume_argv=self._resume_argv(request.request_id),
+                host_trust_needed=False,
             )
             return self._persist_git_pause(
                 request,
@@ -672,6 +712,10 @@ class ProjectProvisionCoordinator:
                     "fields": self._git_fields(repository, check),
                 }
             )
+        if request.kind == "connect_repository" or (
+            check.commit is not None and repository.resolved_path is not None
+        ):
+            return self._publish_initial(request, repository_index, pending, material)
         try:
             probe = self.credential_manager.probe_write(
                 machine,
@@ -688,6 +732,8 @@ class ProjectProvisionCoordinator:
                 phase="repository_write",
                 material=material,
             )
+        if probe.status == "empty_repository":
+            return self._publish_initial(request, repository_index, pending, material)
         if probe.ready:
             assert probe.commit is not None
             ready = ProjectProvisioningGitCheckRecord(
@@ -728,6 +774,170 @@ class ProjectProvisionCoordinator:
             material,
         )
 
+    def _record_checkout(
+        self,
+        request: ProjectProvisioningRequestRecord,
+        repository_index: int,
+        result: ProjectCheckoutResult,
+        check: ProjectProvisioningGitCheckRecord,
+    ) -> ProjectProvisioningRequestRecord:
+        repository = request.repositories[repository_index]
+        machines = [
+            machine.model_copy(update={"resolved_central_root": result.central_root})
+            if machine.alias == repository.machine_alias
+            else machine
+            for machine in request.machines
+        ]
+        repositories = list(request.repositories)
+        repositories[repository_index] = repository.model_copy(
+            update={
+                "resolved_path": result.repository_path,
+                "checkout_disposition": result.checkout_disposition,
+                "git_check": check,
+            }
+        )
+        return self._transition(
+            request,
+            phase="repository_checkout",
+            to_status="setup_in_progress",
+            machines=machines,
+            repositories=repositories,
+        )
+
+    def _prepare_server_only(
+        self,
+        request: ProjectProvisioningRequestRecord,
+        repository_index: int,
+        pending: ServerStep,
+    ) -> ServerStep:
+        repository = request.repositories[repository_index]
+        machine = self._machine(request, repository.machine_alias)
+        try:
+            result = self.checkout_manager.prepare_server_only(
+                machine,
+                request_kind=request.kind,
+                project_id=request.proposed_project_id,
+                repository_alias=repository.alias,
+                state_repository=request.state_repository == repository.alias,
+                expected_commit=repository.git_check.commit,
+            )
+        except ProjectCheckoutRefused as exc:
+            source = self._checkout_operator_step(request, machine, exc, pending)
+            return self._pause(
+                request,
+                source,
+                message=source.message,
+                actions=source.actions,
+                fields=source.fields,
+                phase="repository_checkout",
+            )
+        updated = self._record_checkout(
+            request,
+            repository_index,
+            result,
+            ProjectProvisioningGitCheckRecord(
+                status="ready",
+                commit=result.commit,
+                checked_at=self.store.now(),
+            ),
+        )
+        return pending.model_copy(
+            update={
+                "state": "succeeded",
+                "message": f"The server-only checkout for {repository.alias} is ready.",
+                "fields": self._checkout_fields(updated.repositories[repository_index]),
+            }
+        )
+
+    def _publish_initial(
+        self,
+        request: ProjectProvisioningRequestRecord,
+        repository_index: int,
+        pending: ServerStep,
+        material: DeployKeyMaterial,
+    ) -> ServerStep:
+        repository = request.repositories[repository_index]
+        machine = self._machine(request, repository.machine_alias)
+        try:
+            result = self.checkout_manager.prepare_initial(
+                machine,
+                material,
+                request_kind=request.kind,
+                project_id=request.proposed_project_id,
+                repository_alias=repository.alias,
+                state_repository=request.state_repository == repository.alias,
+                expected_commit=repository.git_check.commit,
+            )
+            # Persist intent before contacting GitHub. A failed/lost push receipt must
+            # resume with this commit, never manufacture another first commit.
+            request = self._record_checkout(
+                request,
+                repository_index,
+                result,
+                ProjectProvisioningGitCheckRecord(
+                    status="pending",
+                    commit=result.commit,
+                    deploy_key_label=material.label,
+                    public_key_fingerprint=material.public_key_fingerprint,
+                    checked_at=self.store.now(),
+                ),
+            )
+            probe = self.checkout_manager.publish_initial(
+                machine,
+                material,
+                repository_path=result.repository_path,
+                expected_commit=result.commit,
+                request_kind=request.kind,
+            )
+        except (ProjectCheckoutRefused, GitCredentialRefused) as exc:
+            return self._repository_failure(
+                request,
+                repository_index,
+                pending,
+                message=str(exc),
+                instruction="Inspect the exact checkout and GitHub history, then resume.",
+                phase="repository_write",
+                material=material,
+            )
+        if not probe.ready:
+            source = self._probe_operator_step(request, machine, material, probe, pending)
+            if probe.status == "failed":
+                source = source.model_copy(
+                    update={
+                        "actions": (ExternalAction(instruction=probe.diagnostic),),
+                    }
+                )
+            return self._persist_git_pause(
+                request,
+                repository_index,
+                pending,
+                source,
+                material,
+            )
+        repository = request.repositories[repository_index]
+        ready = repository.git_check.model_copy(
+            update={
+                "status": "ready",
+                "write_verified": True,
+                "checked_at": self.store.now(),
+            }
+        )
+        repositories = list(request.repositories)
+        repositories[repository_index] = repository.model_copy(update={"git_check": ready})
+        self._transition(
+            request,
+            phase="repository_write",
+            to_status="setup_in_progress",
+            repositories=repositories,
+        )
+        return pending.model_copy(
+            update={
+                "state": "succeeded",
+                "message": probe.diagnostic,
+                "fields": self._git_fields(repository, ready),
+            }
+        )
+
     def _prepare_checkout(
         self,
         request: ProjectProvisioningRequestRecord,
@@ -748,6 +958,8 @@ class ProjectProvisionCoordinator:
                     "fields": self._checkout_fields(repository),
                 }
             )
+        if repository.repository is None:
+            return self._prepare_server_only(request, repository_index, pending)
         if check.status != "ready" or check.commit is None:
             raise ProjectProvisionRefused(
                 "A repository checkout cannot run before its exact Git write proof."
@@ -809,28 +1021,8 @@ class ProjectProvisionCoordinator:
                 fields=source.fields,
                 phase="repository_checkout",
             )
-        machines = list(request.machines)
-        machine_index = next(
-            index for index, candidate in enumerate(machines) if candidate.alias == machine.alias
-        )
-        machines[machine_index] = machine.model_copy(
-            update={"resolved_central_root": result.central_root}
-        )
-        repositories = list(request.repositories)
-        repositories[repository_index] = repository.model_copy(
-            update={
-                "resolved_path": result.repository_path,
-                "checkout_disposition": result.checkout_disposition,
-            }
-        )
-        self._transition(
-            request,
-            phase="repository_checkout",
-            to_status="setup_in_progress",
-            machines=machines,
-            repositories=repositories,
-        )
-        updated_repository = repositories[repository_index]
+        updated = self._record_checkout(request, repository_index, result, check)
+        updated_repository = updated.repositories[repository_index]
         return pending.model_copy(
             update={
                 "state": "succeeded",
@@ -919,13 +1111,7 @@ class ProjectProvisionCoordinator:
                 number=pending.number,
                 request_id=request.request_id,
                 resume_argv=resume,
-            )
-        if probe.status == "empty_repository":
-            return empty_repository_operator_step(
-                material,
-                number=pending.number,
-                request_id=request.request_id,
-                resume_argv=resume,
+                host_trust_needed=probe.status == "github_host_trust_needed",
             )
         if probe.status == "cleanup_failed":
             return cleanup_ref_operator_step(
@@ -1035,6 +1221,7 @@ class ProjectProvisionCoordinator:
         repository = request.repositories[repository_index]
         paused = ProjectProvisioningGitCheckRecord(
             status="operator_action_needed",
+            commit=repository.git_check.commit,
             deploy_key_label=material.label,
             public_key_fingerprint=material.public_key_fingerprint,
             checked_at=self.store.now(),
@@ -1078,6 +1265,7 @@ class ProjectProvisionCoordinator:
         check = repository.git_check
         paused = ProjectProvisioningGitCheckRecord(
             status="operator_action_needed",
+            commit=check.commit,
             deploy_key_label=(material.label if material is not None else check.deploy_key_label),
             public_key_fingerprint=(
                 material.public_key_fingerprint
@@ -1105,7 +1293,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
         *,
         message: str,
-        actions: tuple[ExternalAction, ...] = (),
+        actions: tuple[OperatorAction, ...] = (),
         fields: tuple[NonsecretField, ...] = (),
         phase: str,
     ) -> ServerStep:
@@ -1198,7 +1386,6 @@ class ProjectProvisionCoordinator:
     def _resume_argv(self, request_id: str) -> tuple[str, ...]:
         return (
             "sudo",
-            "-n",
             "-u",
             self.layout.service_account,
             "-H",
@@ -1266,6 +1453,7 @@ class ProjectProvisionCoordinator:
         check: ProjectProvisioningGitCheckRecord,
     ) -> tuple[NonsecretField, ...]:
         assert check.commit is not None and check.public_key_fingerprint is not None
+        assert repository.repository is not None
         return (
             NonsecretField(name="repository", value=repository.repository.identity),
             NonsecretField(name="git_commit", value=check.commit),

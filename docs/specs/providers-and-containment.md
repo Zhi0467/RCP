@@ -1253,13 +1253,22 @@ those nonsecret proof fields for final review; no provider home or credential is
 added. `server doctor` separately reports whether the running private control
 protocol offers provider readiness.
 
-The central Git checkout and its repository-scoped deploy key are independent of
-the provider login. A Git key grants repository transport; a provider login
-grants provider execution; an RCP member token grants product authority. None is
+Terminal and provider admission resolve team repository sources through
+`effective_repositories`, including completed Add and Connect requests. Missing
+or invalid provenance refuses admission rather than treating a repository as
+server-only. Server-only repositories receive no deploy-key path and require no
+`core.sshCommand`; both local and SSH launches still carry the member Git identity.
+GitHub-backed repositories retain their existing key checks: a missing key
+refuses a terminal and produces the existing provider transport notice.
+
+The central Git checkout and its repository-scoped deploy key, when GitHub-backed,
+are independent of the provider login. A Git key grants repository transport;
+a provider login grants provider execution; an RCP member token grants product
+authority. None is
 accepted in place of another.
 
-Every team checkout's local Git config pins `core.sshCommand` to its own deploy
-key, so any process in that repository, whether terminal, Discuss, Work, or
+Every GitHub-backed team checkout's local Git config pins `core.sshCommand` to
+its own deploy key, so any process in that repository, whether terminal, Discuss, Work, or
 episode, fetches and pushes with it. Provisioning writes it and checkout
 verification backfills it. This grants transport only: a launch's write roots
 still decide where it may commit, though any launch, Discuss included, can push
@@ -1268,8 +1277,8 @@ refs that already exist or delete a remote branch. Every terminal and provider l
 their display name and `<member-id>@members.rcp.invalid`. It sits at Git's
 lowest precedence, so any repository or global `git config` overrides it; on a
 team server those layers belong to the shared service account and apply to
-every member. RCP stores no per-member Git setting. Pushes authenticate as the
-deploy key, so project membership is repository write access and removal is its
+every member. RCP stores no per-member Git setting. GitHub pushes authenticate
+as the deploy key, so project membership is repository write access and removal is its
 revocation ([decision](../decisions/2026-09-24-team-launches-carry-git-transport.md)).
 
 Remote execution adds one more transport boundary: the server's `rcp` account

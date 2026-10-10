@@ -3,6 +3,7 @@ import {
   Check,
   HardDrive,
   LoaderCircle,
+  Plus,
   Server,
   Trash2,
   TriangleAlert,
@@ -17,7 +18,7 @@ import {
 } from "../core/api";
 import { useMachinePower } from "./useMachinePower";
 import { showMachinePowerCard } from "./machinePower";
-import { MachineCard } from "./MachineCard";
+import { MachineCard, NewMachineForm } from "./MachineCard";
 import { ProviderLogins } from "./ProviderLogins";
 import { ServerSettings } from "./ServerSettings";
 import { TranscriptionSettings } from "../voice/TranscriptionSettings";
@@ -101,6 +102,7 @@ function SpaceMachineList({
   writesDisabled: boolean;
 }) {
   const { machines, error, replace, remove } = useSpaceMachines();
+  const [adding, setAdding] = useState(false);
   return (
     <section className="settings-section provider-path-settings space-machine-settings">
       <header>
@@ -140,6 +142,26 @@ function SpaceMachineList({
           </MachineCard>
         ))}
       </div>
+      {adding ? (
+        <NewMachineForm
+          writesDisabled={writesDisabled}
+          accountRequired={spaceKind === "team"}
+          onCancel={() => setAdding(false)}
+          onCreated={(machine) => {
+            replace(machine);
+            setAdding(false);
+          }}
+        />
+      ) : (
+        <button
+          className="button secondary compact"
+          type="button"
+          disabled={writesDisabled}
+          onClick={() => setAdding(true)}
+        >
+          <Plus size={14} /> Add machine
+        </button>
+      )}
     </section>
   );
 }
