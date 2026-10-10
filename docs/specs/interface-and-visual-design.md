@@ -500,8 +500,9 @@ repository-file links, and WebMCP all open it. Its default is
 right-docked and full height. Dragging its left edge resizes it; dragging the
 title bar floats it. Double-clicking the title bar enters full screen and
 repeats to restore the prior placement. Enter or Space on the focused title bar
-does the same. The dock control collapses it to a slim tab on the right edge,
-just below the project header; the tab restores it in docked mode. There is no mode button row.
+does the same. The dock control moves it into the project's dock row, beside
+docked node windows; that item restores it in docked mode. Space Settings and
+project setup hide the viewer, open or docked, until the project shows again. There is no mode button row.
 Size and placement persist on this browser origin and remain reachable after
 viewport changes.
 

@@ -303,9 +303,12 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "python3",
-        "Run RCP's shipped helpers on a remote machine.",
+        "Run RCP's shipped helpers on a remote machine, and an agent's artifact preview.",
         required_on=frozenset({"remote"}),
-        platforms=LINUX,
+        optional_on=frozenset({"local"}),
+        feature="An agent's sandboxed artifact preview in a browser-granted turn on this machine.",
+        fallback="The preview command fails with python3 missing, and the agent says what it could not render.",
+        note="On macOS, python3 comes with Apple's Command Line Tools (xcode-select --install), which Git also needs.",
         apt="python3",
     ),
     Dependency(

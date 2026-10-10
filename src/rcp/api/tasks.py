@@ -192,7 +192,10 @@ def _agent_task_response(
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
-    if consolidation:
+    if consolidation or (
+        (record.can_resume or record.can_retry)
+        and store.episode_child_recovery_refusal(record) is not None
+    ):
         response.update(can_resume=False, can_retry=False)
     if record.kind in {"node_chat", "project_chat"}:
         chat_id = record.request.get("chat_id")

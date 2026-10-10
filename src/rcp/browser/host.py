@@ -24,6 +24,7 @@ from rcp.agents.staged_hidden_read import (
     bwrap_argv,
     probe_hidden_read_wrapper,
 )
+from rcp.artifact_preview import IDLE_ENV, PREVIEW_COMMAND, WORKSPACE_ENV
 from rcp.browser.libraries import apt_install_command, missing_library_packages
 from rcp.transport.compute_process_owner import (
     owner_alive,
@@ -683,6 +684,7 @@ class HostRuntime:
             "env": {
                 "PLAYWRIGHT_CLI_SESSION": record["session_name"],
                 "PLAYWRIGHT_BROWSERS_PATH": str(self.tools / "browsers"),
+                WORKSPACE_ENV: self.request["workspace_dir"],
             },
         }
 
@@ -701,6 +703,13 @@ class HostRuntime:
             f'#!/bin/sh\n{export}exec {shlex.join([self.node, str(self.cli)])} "$@"\n',
         )
         launcher.chmod(0o700)
+        preview_source = self.tools / "artifact_preview.py"
+        atomic_write(preview_source, self.request["artifact_preview_source"])
+        preview_launcher = launcher.parent / PREVIEW_COMMAND
+        idle = f"{IDLE_ENV}={self.request['limits']['preview_idle']}"
+        command = shlex.join(["python3", str(preview_source)])
+        atomic_write(preview_launcher, f'#!/bin/sh\n{idle} exec {command} "$@"\n')
+        preview_launcher.chmod(0o700)
         return str(launcher.parent)
 
     def release(self) -> dict:

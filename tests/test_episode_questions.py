@@ -99,6 +99,13 @@ def test_only_undelivered_question_mail_moves_to_latest_continuation(tmp_path, d
     from .test_auto_research_commands import _auto_research_authority, _setup_auto_research
 
     store, original_episode, root = _setup_auto_research(tmp_path)
+    # Continuation admission requires the orchestrator's saved session and stage.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET native_session_id = 'session', stage_root = '/stage' "
+            "WHERE operation_id = ?",
+            (root.operation_id,),
+        )
     question = _question(store, original_episode, state="answered")
     message = store.record_auto_research_message(
         AutoResearchMessageRecord(

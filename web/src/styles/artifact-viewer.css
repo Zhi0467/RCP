@@ -57,28 +57,6 @@
 .artifact-viewer-resize:focus-visible {
   outline: 2px solid var(--cobalt);
 }
-.artifact-viewer-tab {
-  position: fixed;
-  /* Below the project header, so the tab never covers its controls. */
-  top: 72px;
-  right: 0;
-  z-index: 200;
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 5px 12px;
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--line-strong);
-  box-shadow: var(--shadow);
-}
-/* A phone header wraps its project dock onto a second row, 99px in all. */
-@media (max-width: 560px) {
-  body:has(.project-header .project-dock) .artifact-viewer-tab {
-    top: 109px;
-  }
-}
 .artifact-viewer-error {
   padding: 12px;
   color: var(--red);

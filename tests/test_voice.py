@@ -367,6 +367,12 @@ def test_model_list_failure_is_reported_without_the_key(voice_setup, monkeypatch
         json={"kind": "openai_compatible", "preset": "openai", "key": KEY},
     )
     assert response.status_code == 502 and KEY not in response.text
+    assert response.json()["detail"]["code"] == "service_access_denied"
+    mock_transport(monkeypatch, lambda _: reply({}, 500))
+    response = client.post(
+        "/api/service-connections/models",
+        json={"kind": "openai_compatible", "preset": "openai", "key": KEY},
+    )
     assert response.json()["detail"]["code"] == "model_list_failed"
 
 

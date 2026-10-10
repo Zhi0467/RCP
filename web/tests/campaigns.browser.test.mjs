@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
@@ -496,5 +499,81 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
   } finally {
     await browser?.close();
     await server.close();
+  }
+});
+
+test("ended orchestrator message sends the edited budget and retains its id after a lost response", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "rcp-message-test-"));
+  const liveServer = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    cacheDir,
+    configLoader: "runner",
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await liveServer.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const ended = {
+      ...episode,
+      live: false,
+      status: "completed",
+      can_message: true,
+      can_stop: false,
+      can_continue: true,
+      message_requires_continuation: true,
+    };
+    await mockEpisodeArtifacts(page);
+    await page.route("**/api/projects/*/episodes/*/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await page.route("**/api/projects/**/timeline", (route) =>
+      route.fulfill({ json: timelineFixture(episode.episode_id, episode.mode) }),
+    );
+    await page.route("**/fixture/episode", (route) => route.fulfill({ json: ended }));
+    const requests = [];
+    await page.route("**/api/projects/**/messages", async (route) => {
+      requests.push(route.request().postDataJSON());
+      await route.fulfill(
+        requests.length === 1
+          ? { status: 503, json: { detail: "lost" } }
+          : { json: { message_id: "message", episode_id: "continued" } },
+      );
+    });
+    await page.goto(
+      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
+    );
+    const composer = page.locator(".campaign-message-composer");
+    const turns = composer.locator('input[type="number"]');
+    assert.equal(await turns.inputValue(), "3");
+    await turns.fill("1");
+    assert.equal(
+      await composer.locator("[data-child-experiments]").getAttribute("data-child-experiments"),
+      "5",
+    );
+    await composer.locator("textarea").fill("Investigate");
+    await composer.locator('button[type="submit"]').click();
+    await page.locator(".campaign-run-error").waitFor();
+    ended.message_requires_continuation = false;
+    await page.evaluate(() => window.refreshMergeEpisode());
+    await composer.locator("[data-continuation-turns]").waitFor({ state: "detached" });
+    await composer.locator('button[type="submit"]').click();
+    await page.waitForFunction(
+      () => document.querySelector(".campaign-message-composer textarea").value === "",
+    );
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].invocation_ceiling, 1);
+    assert.equal(requests[0].body, "Investigate");
+    assert.ok(requests[0].request_id);
+    assert.deepEqual(requests[1], requests[0]);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await liveServer.close();
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });

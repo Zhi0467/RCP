@@ -26,6 +26,7 @@ const items = document.getElementById("items"),
   general = document.getElementById("general"),
   notice = document.getElementById("notice");
 const message = document.getElementById("message");
+const askFix = document.getElementById("askFix");
 // Every comment is one object: its text, and the selection it is anchored to (or
 // none, for the whole artifact). Edit now and Send post the same list.
 const comments = [];
@@ -160,7 +161,13 @@ const offerComposer = installSelectionConfirmation(
   addComment,
   clearSelection,
 );
-function offerSelection(selection) {
+// A prefill joins an unsent draft below it rather than replacing it.
+function withPrefill(draft, text) {
+  if (!draft.trim()) return text;
+  return draft.includes(text) ? draft : `${draft.trimEnd()}\n\n${text}`;
+}
+function offerSelection(selection, initialText) {
+  if (initialText !== undefined) message.value = withPrefill(message.value, initialText);
   current = selection;
   offerComposer(selection);
   if (selection) message.focus();
@@ -169,6 +176,12 @@ function offerSelection(selection) {
 }
 if (restoredSelection && message.value.trim()) offerSelection(restoredSelection);
 general.addEventListener("click", () => offerSelection({ kind: "whole" }));
+askFix?.addEventListener("click", () => {
+  if (!viewerState?.can_comment) return;
+  // A draft already anchored to a selection keeps it.
+  const selection = current && message.value.trim() ? current : { kind: "whole" };
+  offerSelection(selection, document.getElementById("pageErrorMessage").textContent);
+});
 // Cancel drops the comment being written, so its text never lands on the next selection.
 const dropCurrent = () => {
   current = null;
@@ -259,6 +272,7 @@ if (boxLayer)
 function updateSend() {
   const fresh = freshSessionRequired || viewerState?.fresh_session_required;
   const blocked = sending || !viewerState?.can_comment;
+  if (askFix) askFix.disabled = blocked;
   const writing = Boolean(current && message.value.trim());
   queue.disabled = !writing;
   editNow.disabled = blocked || !writing;

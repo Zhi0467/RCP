@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp import artifact_preview
 from rcp.browser.host import HostRuntime, UnavailableError, dispatch, pinned_config
 
 
@@ -16,6 +17,7 @@ def request(tmp_path: Path, owner: str = "first", **extra) -> dict:
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     return {
+        "artifact_preview_source": Path(artifact_preview.__file__).read_text(),
         "root": str(tmp_path / "browser"),
         "action": "ensure",
         "owner_token": owner,
@@ -29,6 +31,7 @@ def request(tmp_path: Path, owner: str = "first", **extra) -> dict:
             "readiness": 10,
             "install": 10,
             "idle": 1800,
+            "preview_idle": 120,
             "cap": 1,
         },
         **extra,
@@ -549,3 +552,14 @@ def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, mon
     assert runtime.install()["status"] == "ready"
     assert stopped == [("smoke", True)]
     assert not marker.exists()
+
+
+def test_artifact_preview_launcher_runs_shipped_source(tmp_path):
+    runtime = HostRuntime(request(tmp_path))
+    runtime.node = "/usr/bin/node"
+    launcher = Path(runtime.cli_launcher()) / artifact_preview.PREVIEW_COMMAND
+    result = subprocess.run([str(launcher), "--help"], capture_output=True, check=False)
+    assert result.returncode == 0
+    assert (runtime.tools / "artifact_preview.py").read_text() == runtime.request[
+        "artifact_preview_source"
+    ]

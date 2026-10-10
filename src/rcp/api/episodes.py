@@ -127,6 +127,10 @@ class ContinueEpisodeBody(BaseModel):
 class EpisodeMessageBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    # Null or omitted is ordinary-mail-only consent; an ended orchestrator needs an explicit N.
+    invocation_ceiling: int | None = Field(default=None, ge=1)
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=120)
+
     body: str = Field(min_length=1, max_length=_EPISODE_TEXT_MAX_LENGTH)
 
     @field_validator("body", mode="before")
@@ -274,6 +278,8 @@ class EpisodeResponse(EpisodeLoopMetadata):
     can_continue: bool
     chain: list[EpisodeChainMember]
     can_message: bool
+    message_refusal: dict[str, str] | None = None
+    message_requires_continuation: bool = False
     # The lifecycle state this parent is in, what a human should do next, and the
     # recovery control that is actually available. All three are decided from
     # backend lifecycle alone, so the surfaces consume them rather than each
@@ -412,6 +418,9 @@ def serialize_episode(
             )
         ]
     )[episode.episode_id]
+    message_refusal = (
+        auto_research_message_refusal(store, episode) if episode.mode == "auto_research" else None
+    )
     return EpisodeResponse(
         **episode_loop_metadata(store, episode, tasks=task_records).model_dump(),
         episode_id=episode.episode_id,
@@ -487,8 +496,18 @@ def serialize_episode(
             and not any(task.status in {"queued", "running", "pausing"} for task in tasks)
             and _continuable_session(store, episode)
             and store.continuation_slot_open(episode)
+            and (episode.mode != "auto_research" or message_refusal is None)
         ),
-        can_message=episode.status == "running",
+        can_message=(
+            message_refusal is None
+            if episode.mode == "auto_research"
+            else episode.status == "running"
+        ),
+        message_refusal=message_refusal,
+        message_requires_continuation=(
+            episode.mode == "auto_research"
+            and episode_chain_records(store, episode)[-1].status in _TERMINAL_EPISODE_STATUSES
+        ),
         live=episode.status in _LIVE_EPISODE_STATUSES,
         health=health,
         blocked_reason=blocked_reason,
@@ -646,6 +665,31 @@ def episode_on_branch(store: AppStore, episode_id: str | None, branch_id: str) -
         and member.graph_target.kind == "branch"
         and member.graph_target.branch_id == branch_id
     )
+
+
+def auto_research_message_refusal(store: AppStore, episode: EpisodeRecord) -> dict[str, str] | None:
+    """Project the newest orchestrator's durable mail or continuation admission."""
+
+    episode = episode_chain_records(store, episode)[-1]
+    if episode.status == "running" and episode.ending is None and episode.root_operation_id:
+        return None
+    try:
+        with store.connection() as connection:
+            store.require_auto_research_continuation_available(connection, episode)
+    except ValueError as exc:
+        code, _, chat_id = str(exc).partition(":")
+        detail = {
+            "auto_research_not_ended": "The orchestrator is still ending; wait for it to settle.",
+            "auto_research_already_continued": "Open the newest continuation to message its orchestrator.",
+            "auto_research_session_unavailable": "The orchestrator session or stage is unavailable. Start a new Auto-research episode.",
+            "auto_research_turn_active": "An episode turn is still active; wait for it to settle.",
+            "auto_research_project_occupied": "Another Auto-research episode is live on this project.",
+            "episode_merge_reserved": "The branch is being merged; wait for the merge to finish.",
+            "episode_isolation_unavailable": "The branch's isolation has been removed or is being removed.",
+            "auto_research_child_turn_active": f"Wait for the human turn in child chat {chat_id} to settle.",
+        }.get(code, str(exc))
+        return {"code": code, "detail": detail}
+    return None
 
 
 def _continuable_session(store: AppStore, episode: EpisodeRecord) -> bool:

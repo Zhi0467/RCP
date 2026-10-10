@@ -7,6 +7,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from markdown_it import MarkdownIt
 
@@ -17,6 +18,7 @@ from rcp.artifact_theme import (
     shell_theme_css,
 )
 from rcp.artifacts import (
+    ARTIFACT_ERROR_VALIDATION_JS,
     AgentArtifactDescriptor,
     ArtifactMediaType,
     FrameAddon,
@@ -105,8 +107,7 @@ _INLINE_HEIGHT_CSS = "html,body{height:auto!important;min-height:0!important}"
 def inline_frame_addon(appearance: InlineAppearance) -> FrameAddon:
     """Report the page's content height and paint it with the reply's theme.
 
-    The height is the only value that leaves the page, a bounded number relayed by
-    RCP's wrapper over the existing private channel.
+    The bounded height is relayed by RCP's wrapper over the private channel.
     """
 
     return FrameAddon(
@@ -146,6 +147,56 @@ def _combined_addon(*addons: FrameAddon | None) -> FrameAddon:
     )
 
 
+def _error_content_url(content_url: str, channel: str) -> str:
+    url = urlsplit(content_url)
+    query = dict(parse_qsl(url.query))
+    query["error_channel"] = channel
+    return urlunsplit(url._replace(query=urlencode(query)))
+
+
+def _error_shell_script(channel: str, *, inline: bool) -> str:
+    # A fresh channel on each content load rejects queued events from old bytes,
+    # even when the browser reuses the iframe's WindowProxy.
+    return (
+        ARTIFACT_ERROR_VALIDATION_JS
+        + "let errorChannel="
+        + json.dumps(channel)
+        + ";\n"
+        + """
+const errorFrame=document.getElementById('preview');
+const errorNotice=document.getElementById('pageError');
+const errorMessage=document.getElementById('pageErrorMessage');
+const clearPageError=()=>{
+  if(errorNotice) errorNotice.hidden=true;
+  if(errorMessage) errorMessage.textContent='';
+  CLEAR_INLINE
+};
+window.addEventListener('message',(event)=>{
+  const value=event.data;
+  if(!errorFrame || event.source!==errorFrame.contentWindow ||
+     !value || typeof value!=='object' || value.channel!==errorChannel) return;
+  if(value.kind==='rcp-artifact-error-clear' && Object.keys(value).length===2) {
+    clearPageError(); return;
+  }
+  if(Object.keys(value).length!==4) return;
+  const summary={kind:value.kind,message:value.message,count:value.count};
+  if(!validArtifactError(summary)) return;
+  if(errorMessage) errorMessage.textContent='This page hit an error: '+summary.message;
+  if(errorNotice) {errorNotice.hidden=false;errorNotice.dataset.count=String(summary.count);}
+  FORWARD_INLINE
+});
+""".replace(
+            "CLEAR_INLINE",
+            "window.parent.postMessage({kind:'rcp-artifact-error-clear'},location.origin);"
+            if inline
+            else "",
+        ).replace(
+            "FORWARD_INLINE",
+            "window.parent.postMessage(summary,location.origin);" if inline else "",
+        )
+    )
+
+
 def artifact_viewer_document(
     descriptor: AgentArtifactDescriptor,
     *,
@@ -164,6 +215,9 @@ def artifact_viewer_document(
         return _inline_viewer_document(
             descriptor, kind, content_url=content_url, live_url=live_url, selectable=selectable
         )
+    error_channel = secrets.token_hex(16)
+    if kind == "html":
+        content_url = _error_content_url(content_url, error_channel)
     title = html.escape(descriptor.name, quote=True)
     url = html.escape(content_url, quote=True)
     preview = (
@@ -177,7 +231,7 @@ def artifact_viewer_document(
         if keep_url and not descriptor.is_kept()
         else ""
     )
-    scripts = []
+    scripts: list[str] = []
     if keep:
         config = json.dumps({"keepUrl": keep_url}).replace("<", "\\u003c")
         scripts.append(
@@ -199,7 +253,18 @@ def artifact_viewer_document(
     header = (
         f'<header><span class="spacer"></span>{keep}{notice}</header>\n' if keep or notice else ""
     )
+    page_error = (
+        '<div id="pageError" hidden role="status"><span id="pageErrorMessage"></span>'
+        + (' <button id="askFix" type="button">Ask to fix</button>' if panel else "")
+        + "</div>"
+        if kind == "html"
+        else ""
+    )
     rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
+    # Only the Keep and comment scripts call RCP; the error notice needs no connection.
+    connects = bool(scripts)
+    if kind == "html":
+        scripts.insert(0, _error_shell_script(error_channel, inline=False))
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><script>(()=>{{{_THEME_SYNC_JS}}})();</script><style>
@@ -208,12 +273,14 @@ def artifact_viewer_document(
 body{{display:grid;grid-template-rows:{rows}}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
 .spacer{{flex:1}}
 button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:var(--radius);font:inherit;cursor:pointer;box-shadow:var(--raised)}}button:disabled{{opacity:.45;cursor:default}}
-main{{display:grid;min-height:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
+main{{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0}}
+#pageError{{padding:6px 72px 6px 12px;min-width:0}}#pageError:not([hidden]){{display:flex;align-items:center;gap:8px}}
+#pageErrorMessage{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}#askFix{{flex-shrink:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
 {panel.style if panel else ""}</style></head><body>
-{header}<main><div class="canvas">{preview}</div>{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
+{header}<main><div class="canvas">{preview}</div>{page_error}{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
     csp = "default-src 'none'; script-src 'unsafe-inline'; "
-    if scripts:
+    if connects:
         csp += "connect-src 'self'; "
     csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
     return document, csp
@@ -233,6 +300,9 @@ def _inline_viewer_document(
     opaque sandbox one frame further in; this shell adds no capability to it.
     """
 
+    error_channel = secrets.token_hex(16)
+    if kind == "html":
+        content_url = _error_content_url(content_url, error_channel)
     title = html.escape(descriptor.name, quote=True)
     url = html.escape(content_url, quote=True)
     preview = (
@@ -250,7 +320,8 @@ def _inline_viewer_document(
     ).replace("<", "\\u003c")
     resources = importlib.resources.files("rcp")
     scripts = [
-        f"const inlineConfig={config};\n"
+        _error_shell_script(error_channel, inline=True)
+        + f"const inlineConfig={config};\n"
         + resources.joinpath("artifact_selection.js").read_text("utf-8")
         + "\n"
         + resources.joinpath("artifact_inline.js").read_text("utf-8")

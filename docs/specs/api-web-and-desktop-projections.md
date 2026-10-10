@@ -5,6 +5,50 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Project graph-ref inventory
+
+`GET /api/projects/{project_id}/graph-refs` returns a list of graph refs,
+with main first and one row per unique episode-owned branch, ordered by newest
+chain-member creation time (descending). It reads all project episodes without the recent-50 window or the episode list's archive
+filter; a client needs no separate episode read to discover refs or ownership.
+Existing project membership admission applies.
+
+Each row contains `kind`, `branch_id`, `head`, `base_head`, `episode_id`,
+`current_episode_id`, `archived`, and the existing branch-summary merge fields:
+`merge_state`, `merge_eligible`, `merge_blocked_reason`,
+`latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
+For a branch, `episode_id` is the chain-root owner and `current_episode_id`
+is the newest chain member. `archived` is the owner's graph-isolation archive
+state, independent of episode-history archiving. Merge fields reuse the episode
+branch summary, including its reservation and live-writer checks.
+A branch row also carries the chain root's `mode` and a display `title`: an
+Auto-research starting instruction, or the Experiment's title from the main
+display cache; `title` is null when neither is known.
+Main has its exact current head, `archived: false`, `merge_eligible: false`,
+and null branch, episode, base, and merge-detail fields. Branch ownership and
+persisted records are unchanged: `branch_id == episode_id` names the root.
+
+The project shell shows a graph picker whenever the project has a branch, on
+main too, and on any branch route. It puts main first, preserves inventory
+branch order, and hides archived refs unless requested or active; an active
+branch missing from the list still has its own option. A branch is named by its
+`title`, else a short id; the active branch shows its revision and merge state.
+When the list cannot be read the picker is disabled, says so, and still names
+the current ref. **Episode & tasks** is a link to the ref's current chain
+member, shown only when it has one.
+
+Choosing a ref keeps the view and carries a chat or Auto-research episode
+selection only when it belongs to the destination; a node stays selected only
+when the destination's snapshot has it. A ref switch is not a project open: no
+opening screen, the header and view stay mounted, and the previous ref's
+snapshot stays on screen with the panel inert until the new ref's snapshot
+arrives. A ref visited before restores from its `(project, ref)` tab state. The
+session's target fences still drop responses for a ref already left, and each
+ref keeps its own staged draft. Heartbeat single-flight is keyed by project and
+ref. All project view URLs come from one helper over (project, ref, view) plus
+an optional chat or episode; an exact Experiment run route keeps its own
+`experiment`/`target`/`branch` fields.
+
 ## Personal owner admission
 
 Personal API requests and terminal upgrades require an owner session. Public
@@ -801,6 +845,15 @@ never replaces, the accepted backend identity and reloads the active project or
 project index, so the page recovers in place and a changed backend still stops it. None of these operations signal or restart the
 remote RCP service.
 
+A failed backend check never unmounts what the page already shows for that
+backend. While the check fails, and while the identity read that follows
+recovery runs, a blocking reconnect overlay covers the rendered project or
+index, so scroll, open panels, and unsent text survive. Recovery that confirms
+the same backend (version, instance, data-directory identity, and space)
+reconciles the open project with an ordinary reload, never a fresh open. A
+check that observes a changed backend replaces the page with the reconnect
+screen, and the project opens from scratch after the human reconnects.
+
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
 tunnels would collide on the shared `__Host-` session-cookie name. The shell
@@ -973,7 +1026,14 @@ left, and the last close returns to the index.
 
 Open tabs survive hiding/reopening the same desktop window but reset on full
 page reload or app quit. An inactive tab is not kept mounted merely because it
-is open.
+is open. A browser reload keeps the project route, so a phone browser that
+reloads a discarded tab returns to the same project; a desktop reload or
+relaunch starts on the index with an empty dock. A successful team sign-in
+keeps the route it interrupted. A restored route never skips identity
+admission: the project open still checks access. Retained project state and all
+project tab snapshots belong to the backend and member that loaded them. A
+change of backend or actor identity discards them before restoring the route,
+including when another member signs in on the same backend.
 
 An explicit Runs route is authoritative over cached selection, including a route
 with an absent or malformed branch identifier. Invalid branch identity resolves
@@ -995,7 +1055,7 @@ configured agent for each role and the ids of stoppable Auto-research
 episodes, which have no Experiment node to inspect. Login, project setup,
 loading, and invalid project states expose no tools; the project surface waits for the same verified backend
 identity, actor, and team-session state as the index, so a reconnect screen
-retires it.
+or overlay retires it.
 
 The inventory follows current backend and browser state. Experiment Start,
 Auto-research authorization, and Stop are registered only while at least one
@@ -1824,7 +1884,7 @@ newest first, without dated snapshots or transcription, speech, realtime, live,
 image, search, or instruct models; live ids start with `gpt-live` and are not
 transcription models. Ids with a `shutdown_date` are hidden. Gemini lists only
 its `generateContent` transcribe models, because RCP sends audio without an
-instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502) and the card falls
+instruction; a custom server lists every id, named ones first. A failed listing returns `model_list_failed` (502), or `service_access_denied` when the provider refuses the key, and the card falls
 back to a text box with that reason. The save check stays the authority.
 Connect takes `live_model` and `delegation_model` for an OpenAI key, with or
 without `voice`, and checks each changed one with `GET models/{id}` using the
@@ -1855,9 +1915,34 @@ middleware admits the two audio types on this route only. On the personal
 loopback server another site's `audio/*` request needs a CORS preflight, which
 the server refuses, and a no-cors request loses its type and gets 415.
 
-The client records with the first accepted format `MediaRecorder` supports,
-pins the connection id when recording starts, and replaces the dictation span
-with the returned text in one step; typing drops a late result. Native
+The client records with the first accepted format `MediaRecorder` supports and
+pins the connection id when recording starts. Network dictation has no length
+limit. One stream records back-to-back pieces, each one upload: the first ends
+at the first 0.4 s pause after 5 s, so a failing service shows within seconds;
+later pieces end at the first pause after 40 s, and every piece ends by 55 s.
+Pieces transcribe strictly in order and append to the dictation span while the
+composer shows the elapsed time and whether a piece is transcribing. While the
+microphone opens, the client also lists the connection's models and waits for
+the answer before recording, so the check never holds a transcription slot an
+upload needs; a 401 or 403 returns `service_access_denied` (502, with the
+provider's sanitized message) and dictation fails before anything is recorded,
+while any other listing failure is ignored. A piece that reaches 55 s ends even
+when the next one cannot start.
+Transcription failures carry `service_access_denied` (401 or 403),
+`transcription_rejected` (another 4xx), or `transcription_upstream_failed`
+(5xx, redirect, or transport); only the last, or a lost connection, is retried
+once after 2 s. A second failure stops recording.
+
+Speech that cannot reach the draft is kept in memory per chat while the app
+runs, never on disk: the failed piece and every later one, or, when typing,
+sending, or leaving the chat detaches dictation, every piece still to come.
+**Retry** (or **Insert**, when every kept piece is already text) continues where
+dictation stopped if the draft is unchanged, else at the cursor, and transcribes
+with the current dictation choice. Starting a dictation or sending asks before
+kept speech is discarded. A page hidden while recording or while dictation
+starts (a phone locking or switching apps) stops like Stop and says why. macOS dictation stops at 55 s: a
+ring on the microphone drains over that time and turns amber, with the seconds
+shown, for the last 10. Native
 dictation reports `preparing` while macOS downloads the on-device model and an
 `engine` (`speech_analyzer` or `apple_server`) on `recording`; every result
 carries the whole session text. `desktop_stop_dictation` takes `finish`: Stop
@@ -1909,6 +1994,13 @@ state and recovery. Client-generated ids,
 cached target selection, URL fragments, artifact messages, and provider output
 cannot select a different project, conversation, branch, authorizer, or graph
 target.
+
+Unsent drafts kept in browser storage (graph drafts, chat messages, chat
+references and staged comments, and project Settings edits) are keyed by the
+signed-in member's user id, so another member on the same browser never sees
+or submits them. Until a member is verified, no draft is restored or saved.
+Drafts stored before this scoping have no known owner; the web client deletes
+them on load instead of restoring them.
 
 ## Provider sign-in resume response
 

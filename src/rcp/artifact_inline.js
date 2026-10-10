@@ -13,12 +13,17 @@ const clampHeight = (value) =>
 
 // The content renders with the reply's appearance, so a theme switch reloads it.
 let inlineAppearance = "";
+const inlineErrorChannel = errorChannel;
+let inlineLoadGeneration = 0;
 function loadInlineContent() {
   if (!inlineFrame) return;
   const next = `${inlineRoot.dataset.theme}/${inlineRoot.dataset.colorMode}`;
   if (next === inlineAppearance) return;
   inlineAppearance = next;
+  errorChannel = `${inlineErrorChannel}:${++inlineLoadGeneration}`;
+  clearPageError();
   const url = new URL(inlineConfig.contentUrl, window.location.href);
+  url.searchParams.set("error_channel", errorChannel);
   url.searchParams.set("presentation", "inline");
   url.searchParams.set("theme", inlineRoot.dataset.theme || "aqua");
   url.searchParams.set("color_mode", inlineRoot.dataset.colorMode || "light");

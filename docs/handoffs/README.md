@@ -1,6 +1,11 @@
 # Active implementation handoffs
 
-None. Unfinished agent-link work is tracked in issue #280.
+- [Branch navigation and continuation](branch-navigation-and-continuation.md):
+  unified graph refs with a branch picker, project reopen on
+  reverification, phone reload route, and human turns on ended Auto-research
+  children, and messaging an ended orchestrator; implementing, decisions settled.
+
+Unfinished agent-link work is tracked in issue #280.
 
 ## Open live checks
 
@@ -144,3 +149,8 @@ stands in for it. Run one on disposable data, then delete its line here.
   the settings card; a Work turn's `lesson add` shows in the Lessons card and
   the next launch's `lessons.md`, and a human-edited lesson refuses an agent
   update.
+- Artifact page checks: a real Work turn with Browser on runs
+  `rcp-artifact-preview` on a disposable remote Linux host and sees the
+  console name a removed CDN script; in the desktop app, a reply embedding a
+  page that throws shows the error line, and Ask to fix sends a comment that
+  returns a fixed version.

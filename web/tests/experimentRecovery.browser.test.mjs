@@ -327,6 +327,8 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             // An open session keeps the tab even where none can be launched.
             "/api/projects/demo/terminals/repositories",
             "/api/projects/demo/terminals",
+            // The graph picker lists the project's refs with the project.
+            "/api/projects/demo/graph-refs",
           ].includes(path)
         )
           unexpectedRequests.push(path);

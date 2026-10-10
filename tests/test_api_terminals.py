@@ -10,11 +10,18 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import tomlkit
 from starlette.websockets import WebSocketDisconnect
 
 from rcp.api.app import create_app
 from rcp.api.dependencies import get_project_service
-from rcp.config import MachineConfig, RepositoryConfig, write_added_machine, write_project_scope
+from rcp.config import (
+    MachineConfig,
+    RepositoryConfig,
+    load_manifest,
+    write_added_machine,
+    write_project_scope,
+)
 from rcp.storage import AppStore
 from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
@@ -29,14 +36,31 @@ from .test_team_project_provisioning import _test_server_layout
 def _create_project(client, repository_path, **kwargs):
     project_id = _create_membership_project(client, repository_path, **kwargs)
     client.app.state.server_layout = _test_server_layout(repository_path.parent / "installation")
-    key = client.app.state.server_layout.project_deploy_key_path(project_id, "paper-repo")
+    _prepare_checkout(client.app, project_id, "paper-repo", repository_path)
+    return project_id
+
+
+def _prepare_checkout(app, project_id, alias, repository_path):
+    key = app.state.server_layout.project_deploy_key_path(project_id, alias)
     key.parent.mkdir(parents=True, exist_ok=True)
     key.write_text("terminal-fixture-key")
     git = repository_path / ".git"
     (git / "objects").mkdir(parents=True, exist_ok=True)
     (git / "refs").mkdir(exist_ok=True)
     (git / "HEAD").write_text("ref: refs/heads/main\n")
-    return project_id
+
+
+def _register_local_repository(app, project_id, alias, repository_path):
+    """Register a repository beside the state repository, which no valid
+    manifest can drop, so a test can unregister this one."""
+    _prepare_checkout(app, project_id, alias, repository_path)
+    service = get_project_service(app.state.services.catalog, project_id)
+    machine = service.manifest.repository_map["paper-repo"].machine
+    service.history.manifest = write_project_scope(
+        service.manifest,
+        service.manifest.project.truth_scope,
+        {"alias": alias, "machine": machine, "path": str(repository_path)},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -99,12 +123,33 @@ def _open_terminal(client, path, repository_id="paper-repo"):
     return opened.json()
 
 
+def _change_registration(app, project_id, alias="paper-repo", *, path=None):
+    """Repoint `alias` to `path`, or unregister it when `path` is None.
+
+    The change is persisted, as an edited manifest is. Background replays
+    reload the manifest from disk at any time, so a change made only to the
+    loaded object can be undone before the request that should see it.
+    """
+    service = get_project_service(app.state.services.catalog, project_id)
+    file = service.manifest.path
+    document = tomlkit.parse(file.read_text(encoding="utf-8"))
+    repositories = document["repositories"]
+    index = next(i for i, item in enumerate(repositories) if item["alias"] == alias)
+    if path is None:
+        del repositories[index]
+    else:
+        repositories[index]["path"] = str(path)
+    staged = file.with_name(f"{file.name}.staged")
+    staged.write_text(tomlkit.dumps(document), encoding="utf-8")
+    os.replace(staged, file)
+    service.history.manifest = load_manifest(file)
+
+
 def _repoint(app, project_id, tmp_path):
     """Register the alias on another checkout, so its running shell is stale."""
     moved = tmp_path / "moved-checkout"
     (moved / ".research").mkdir(parents=True)
-    manifest = get_project_service(app.state.services.catalog, project_id).manifest
-    manifest.repository_map["paper-repo"].path = str(moved)
+    _change_registration(app, project_id, path=moved)
     return moved
 
 
@@ -430,21 +475,18 @@ def test_a_stale_alias_stops_listing_and_attaching_without_an_open_request(
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
+    repository_id = "paper-repo"
+    if change == "unregistered":
+        repository_id = "notes-repo"
+        _register_local_repository(app, project_id, repository_id, tmp_path / "notes")
     with client:
-        session_id = _open_terminal(client, path)["session_id"]
+        session_id = _open_terminal(client, path, repository_id)["session_id"]
         assert [item["session_id"] for item in client.get(path).json()] == [session_id]
 
-        manifest = get_project_service(app.state.services.catalog, project_id).manifest
         if change == "repointed":
-            moved = tmp_path / "moved-checkout"
-            (moved / ".research").mkdir(parents=True)
-            manifest.repository_map["paper-repo"].path = str(moved)
+            _repoint(app, project_id, tmp_path)
         else:
-            # repository_map is computed from repositories, so the alias has
-            # to leave the list it is computed from.
-            manifest.repositories = [
-                item for item in manifest.repositories if item.alias != "paper-repo"
-            ]
+            _change_registration(app, project_id, repository_id)
 
         # No POST is issued: the UI could not offer one.
         assert client.get(path).json() == []
