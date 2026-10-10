@@ -13,6 +13,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
 
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 
 def _rcp_temp_dir() -> Path:
     """This account's `~/.rcp/tmp`; stdlib-only because this module ships over SSH."""
@@ -306,6 +308,8 @@ def run_repository_transfer(
             output.write(f"{expected_head}\n".encode("ascii"))
         else:
             repository.require_clean()
+            if server_only and initial_head and not _is_rcp_first_commit(repository, initial_head):
+                raise ValueError("server-only transfer target main changed after provisioning")
             repository.git("bundle", "unbundle", str(bundle))
             if repository.require_checkout(allow_unborn=server_only) != initial_head:
                 raise ValueError("target repository HEAD changed during transfer")
@@ -318,6 +322,14 @@ def run_repository_transfer(
                 raise ValueError("target repository did not reach the reviewed HEAD")
             repository.require_clean()
             output.write(f"{expected_head}\n".encode("ascii"))
+
+
+def _is_rcp_first_commit(repository: RepositoryGit, head: str) -> bool:
+    """True when `head` is setup's lone empty `Start RCP project` commit, safe to replace."""
+    count = repository.git("rev-list", "--count", head).decode("ascii").strip()
+    tree = repository.git("rev-parse", f"{head}^{{tree}}").decode("ascii").strip()
+    subject = repository.git("log", "-1", "--format=%s", head).decode("utf-8").strip()
+    return count == "1" and tree == _EMPTY_TREE and subject == "Start RCP project"
 
 
 def _attach_main(repository: RepositoryGit, expected_head: str) -> None:

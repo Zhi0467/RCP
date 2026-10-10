@@ -489,3 +489,17 @@ def test_server_only_bundle_installs_main_and_refuses_missing_bundle(
     assert _git(target, "rev-parse", "main") == head
     assert _git(target, "remote") == ""
     assert (target / "artifact.txt").read_text() == "retained"
+
+
+def test_server_only_install_refuses_history_added_after_provisioning(repositories, tmp_path):
+    source, _target, _origin = repositories
+    target = tmp_path / "server-only"
+    target.mkdir()
+    _git(target, "init", "-b", "main")
+    _git(target, "commit", "--allow-empty", "-m", "Start RCP project")
+    _git(target, "commit", "--allow-empty", "-m", "Work added on the server")
+    drifted = _git(target, "rev-parse", "HEAD")
+    bundle, head = _capture(source, tmp_path)
+    with pytest.raises(ValueError, match="changed after provisioning"):
+        install_repository_bundle("", str(target), bundle, head, server_only=True)
+    assert _git(target, "rev-parse", "main") == drifted

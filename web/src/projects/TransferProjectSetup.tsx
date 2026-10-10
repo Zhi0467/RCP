@@ -236,10 +236,10 @@ export function TransferRepositoryPolicy({
     <div className="transfer-archive-policy">
       <p>
         {includeLocalCommits
-          ? "Committed files and history are copied as saved onto main."
+          ? "Committed files and history are copied as saved. Changed team checkouts have a detached HEAD at the saved source commit; a checkout already at that commit is left unchanged."
           : "Team checkouts are cloned from GitHub. Local unpushed commits stay behind."}
       </p>
-      {!includeLocalCommits && serverOnlyAliases.length > 0 && (
+      {serverOnlyAliases.length > 0 && (
         <p>
           {serverOnlyAliases.join(", ")} {serverOnlyAliases.length === 1 ? "has" : "have"} no GitHub
           origin, so committed files and history are copied as saved onto main.
