@@ -2,6 +2,7 @@ import { BrowserToggle } from "../core/BrowserControls";
 import {
   AgentConfigChip,
   AgentConfigControls,
+  launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import type { AgentRunConfig, ProjectSnapshot } from "../core/types";
@@ -287,7 +288,15 @@ export function AutoResearchDialog({
           <button className="button secondary" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="button primary" type="submit" disabled={busy || !budgetIsValid}>
+          <button
+            className="button primary"
+            type="submit"
+            disabled={
+              busy ||
+              !budgetIsValid ||
+              Boolean(project && launchConfig && !launchProviderReady(project, launchConfig))
+            }
+          >
             {busy ? <LoaderCircle className="spin" size={14} /> : <Telescope size={14} />}
             {busy ? "Starting…" : "Start auto-research"}
           </button>

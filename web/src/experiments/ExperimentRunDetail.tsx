@@ -2,6 +2,7 @@ import { BrowserToggle } from "../core/BrowserControls";
 import {
   AgentConfigChip,
   AgentConfigControls,
+  launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import { EpisodeQuestions } from "./EpisodeQuestions";
@@ -142,6 +143,7 @@ export function ExperimentRunDetail({
   }, [run.node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchReady = !project || !launchConfig || launchProviderReady(project, launchConfig);
   const launchEffectiveModel =
     launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
       ? launchProfile.effective_model
@@ -371,6 +373,7 @@ export function ExperimentRunDetail({
                 runBusy ||
                 stopUnsettled ||
                 !control.can_start ||
+                !launchReady ||
                 (reauthorizing && authorizedCeiling === null)
               }
               onClick={() =>

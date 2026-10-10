@@ -104,11 +104,20 @@ export function AgentConfigChip({
       {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
       {readiness === undefined ? (
         <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
+      ) : !launchProviderReady(project, value) ? (
+        <TriangleAlert size={12} aria-label={readiness.reason || `${providerName} is not ready`} />
       ) : (
         <ChevronDown size={12} aria-hidden="true" />
       )}
     </button>
   );
+}
+
+/** Whether a launch may go to this provider: unknown readiness is still being
+ *  probed and does not block, a probe that found it missing or signed out does. */
+export function launchProviderReady(project: ProjectSnapshot, value: AgentRunConfig): boolean {
+  const readiness = project.provider_readiness[value.run_on]?.[value.provider];
+  return readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
 }
 
 export async function settleReadinessRefresh(refresh: () => Promise<void>): Promise<void> {

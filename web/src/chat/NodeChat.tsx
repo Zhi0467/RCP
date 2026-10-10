@@ -180,6 +180,7 @@ import {
 import {
   AgentConfigChip,
   AgentConfigControls,
+  launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
@@ -612,8 +613,7 @@ export function NodeChat({
     return new Set(latest.values());
   }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
-  const providerReady =
-    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
+  const providerReady = launchProviderReady(project, config);
   const sessionId = resolvedChatSessionId(relatedTasks);
   const freshProviderSession = providerSwitchStartsFreshSession(
     relatedTasks,

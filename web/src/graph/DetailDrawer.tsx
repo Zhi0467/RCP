@@ -8,6 +8,7 @@ import { BrowserToggle } from "../core/BrowserControls";
 import {
   AgentConfigChip,
   AgentConfigControls,
+  launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
@@ -203,6 +204,7 @@ export function DetailDrawer({
   }, [node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchReady = !project || !launchConfig || launchProviderReady(project, launchConfig);
   const launchEffectiveModel =
     launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
       ? launchProfile.effective_model
@@ -706,6 +708,7 @@ export function DetailDrawer({
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
+                        !launchReady ||
                         // Overlap never blocks Run; Run waits only while it is being checked.
                         experimentEntriesStatus === "loading" ||
                         !canStartExperiment(
