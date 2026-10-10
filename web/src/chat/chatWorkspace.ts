@@ -491,6 +491,18 @@ export function newlyFinishedChatTaskIds(
   });
 }
 
+/** Chat tasks whose steer count moved since last seen, such as a teammate's queued steer. */
+export function newlySteeredChatTaskIds(
+  tasks: AgentTask[],
+  previousCounts: ReadonlyMap<string, number>,
+): string[] {
+  return tasks.flatMap((task) => {
+    const previous = previousCounts.get(task.operation_id);
+    const moved = previous !== undefined && previous !== (task.steer_count ?? 0);
+    return chatIdForTask(task) && moved ? [task.operation_id] : [];
+  });
+}
+
 function laterTime(left: string | null | undefined, right: string | null | undefined) {
   if (!left) return right ?? null;
   if (!right) return left;

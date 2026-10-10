@@ -186,6 +186,26 @@ def test_delivered_steer_is_one_durable_human_message_without_changing_mode(runn
     assert transferred[2]["operationId"] == target_operation
 
 
+def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
+    run = running_chat
+    inventory = f"/api/projects/{run.project_id}/chats?inventory=true"
+
+    def chat_version():
+        summary = next(
+            item
+            for item in run.client.get(inventory).json()["items"]
+            if item["chat_id"] == run.chat_id
+        )
+        return summary["updated_at"], summary["message_count"]
+
+    before = chat_version()
+    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_count"] == 0
+    assert run.client.post(run.url + "/steer", json=_body()).status_code == 200
+    # The task list moves first; the summary it prompts the page to fetch moves too.
+    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_count"] == 1
+    assert chat_version() != before
+
+
 @pytest.mark.parametrize(
     "changes,reason",
     [

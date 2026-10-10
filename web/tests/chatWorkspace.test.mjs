@@ -21,6 +21,7 @@ import {
   latestPersistedChatConfig,
   latestPersistedConversationMode,
   newlyFinishedChatTaskIds,
+  newlySteeredChatTaskIds,
   parseConversationMode,
   startConversationTurn,
   toggleConversationMode,
@@ -604,4 +605,18 @@ test("inventory retains every target while latest selection cannot reuse another
       conversation.graphTarget,
     );
   }
+});
+
+test("a moved steer count marks a running chat task for refresh", () => {
+  const running = {
+    operation_id: "turn",
+    kind: "node_chat",
+    request: { chat_id: "chat-a" },
+    status: "running",
+    steer_count: 1,
+  };
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map([["turn", 0]])), ["turn"]);
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map([["turn", 1]])), []);
+  // First sight is not a change: the page loaded that history already.
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map()), []);
 });

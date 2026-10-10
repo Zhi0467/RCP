@@ -212,6 +212,8 @@ def begin_chat_steer(
                 reserve_prompt=True,
             )
         _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
+    # Recorded before delivery, so other members see a queued steer too.
+    background.record_steer(record.operation_id)
     if refusal:
         return stored, None
 

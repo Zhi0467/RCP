@@ -2401,6 +2401,8 @@ export interface AgentTask {
   can_steer: boolean;
   steer_unavailable_reason: string | null;
   steer_turn_id: string | null;
+  /** Steers recorded on this task, queued ones included; a change means new chat history. */
+  steer_count?: number;
   //: What sending into this running attempt does, worded by the runtime that
   //: owns the behaviour: Codex app-server injects into the turn, Claude
   //: stream-json queues a follow-up turn. The composer renders this verbatim.
