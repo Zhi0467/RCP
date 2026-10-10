@@ -1435,18 +1435,21 @@ function MemberApp({
           // A final steer receipt can land after its task stopped being polled.
           // Recorded only once the tasks are read, so a failed read retries.
           const seenSteerEpoch = steerEpochsRef.current.get(requestedProjectId);
+          // A first observation counts as moved: a receipt may have landed between
+          // this page's task load and its first heartbeat.
           const steerMoved =
-            seenSteerEpoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
+            observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
           if (steerMoved || heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
             if (!isActiveProject(requestedProjectId)) return;
             replaceTasks(nextTasks);
             // A teammate's turn may have started and finished between heartbeats;
             // its chat history then changed without any status change seen here.
-            const latest = nextTasks.find(
-              (task) => task.operation_id === observation.latest_task_id,
-            );
-            if (latest && chatIdForTask(latest))
+            if (
+              nextTasks.some(
+                (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
+              )
+            )
               chatRefreshOwedRef.current = { projectId: requestedProjectId };
           }
           if (observation.steer_epoch !== undefined)
