@@ -939,8 +939,9 @@ function MemberApp({
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
   const projectTasksRef = useRef(projectTasks);
   projectTasksRef.current = projectTasks;
-  // The project whose chat summaries a heartbeat still owes a refresh.
-  const chatRefreshOwedRef = useRef<string | null>(null);
+  // A chat-summary refresh the heartbeat still owes. Each debt is a fresh
+  // object, so a retry clears only the debt it was started for.
+  const chatRefreshOwedRef = useRef<{ projectId: string } | null>(null);
   // The last steer epoch each project's heartbeat reported.
   const steerEpochsRef = useRef(new Map<string, number>());
   const tasks = useMemo(
@@ -1445,17 +1446,18 @@ function MemberApp({
             const latest = nextTasks.find(
               (task) => task.operation_id === observation.latest_task_id,
             );
-            if (latest && chatIdForTask(latest)) chatRefreshOwedRef.current = requestedProjectId;
+            if (latest && chatIdForTask(latest))
+              chatRefreshOwedRef.current = { projectId: requestedProjectId };
           }
           if (observation.steer_epoch !== undefined)
             steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
           // Owed until it succeeds: the task is already listed, so no later
           // heartbeat would notice it again.
-          if (chatRefreshOwedRef.current === requestedProjectId) {
+          const owed = chatRefreshOwedRef.current;
+          if (owed?.projectId === requestedProjectId) {
             await refreshChatSummaries(requestedProjectId, base)
               .then(() => {
-                if (chatRefreshOwedRef.current === requestedProjectId)
-                  chatRefreshOwedRef.current = null;
+                if (chatRefreshOwedRef.current === owed) chatRefreshOwedRef.current = null;
               })
               .catch(() => {
                 // Stays owed; the next heartbeat retries.
@@ -2842,7 +2844,7 @@ function MemberApp({
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
           // The task change is already recorded, so the heartbeat owes the retry.
-          chatRefreshOwedRef.current = projectId;
+          chatRefreshOwedRef.current = { projectId };
           setNotice({
             kind: "error",
             text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
