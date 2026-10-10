@@ -215,7 +215,7 @@ def _agent_task_response(
         steer_action_label=chat_steer_action_label(record),
         steer_unavailable_reason=steering.reason,
         steer_turn_id=steering.turn_id,
-        steer_count=background_tasks.steer_count(record.operation_id),
+        steer_revision=background_tasks.steer_revision(record.operation_id),
         # The provider ran without part of what the launch asked for. Exported
         # here so no surface has to read exit receipts to learn it.
         degradation=(degradations or {}).get(record.operation_id),
@@ -536,7 +536,7 @@ def steer_agent_task(
                 expected_turn_id=body.expected_turn_id,
                 text=body.message,
             )
-        return finish_chat_steer(service, record, delivery)
+        return finish_chat_steer(service, background_tasks, record, delivery)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (OSError, StateUnavailable) as exc:

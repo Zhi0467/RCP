@@ -609,9 +609,10 @@ main heartbeat also carries signals for it. It names the newest visible task
 and the newest watcher; one the active tab has not loaded makes it reload that
 list. It also carries digests of the settings fields and of each Experiment's
 lifecycle fields (not its progress); a changed digest reloads the project.
-A steer lives only in the chat history, so each chat task also reports how
-many steers it has recorded, queued ones included. A changed count makes other
-members' pages refresh chat summaries, which reloads an open transcript. A
+A steer lives only in the chat history, so each chat task also reports a steer
+revision, bumped when a steer is queued and again when its final receipt is
+written. A changed revision makes other members' pages refresh chat summaries,
+which reloads an open transcript. A
 composer draft never leaves its page.
 
 A heartbeat may schedule one bounded lock-free, single-flight remote-head probe

@@ -199,10 +199,11 @@ def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
         return summary["updated_at"], summary["message_count"]
 
     before = chat_version()
-    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_count"] == 0
+    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 0
     assert run.client.post(run.url + "/steer", json=_body()).status_code == 200
-    # The task list moves first; the summary it prompts the page to fetch moves too.
-    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_count"] == 1
+    # The queued record and the final receipt each move the task list's revision;
+    # the summary it prompts the page to fetch moves too.
+    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 2
     assert chat_version() != before
 
 
@@ -286,7 +287,7 @@ def test_unknown_reservation_survives_restart_and_overlapping_retry_without_rese
             expected_turn_id="owned-turn",
             text=body["message"],
         )
-        stored = finish_chat_steer(run.app.state.service, record, delivery)
+        stored = finish_chat_steer(run.app.state.service, restarted, record, delivery)
         assert stored.steering.status == "unknown"
         assert len(run.receipts) == 1
         pending.set_result(ProviderSteerReceipt("unknown", "Connection lost."))

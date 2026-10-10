@@ -213,7 +213,7 @@ def begin_chat_steer(
             )
         _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
     # Recorded before delivery, so other members see a queued steer too.
-    background.record_steer(record.operation_id)
+    background.bump_steer_revision(record.operation_id)
     if refusal:
         return stored, None
 
@@ -233,6 +233,7 @@ def begin_chat_steer(
 
 def finish_chat_steer(
     service: ProjectService,
+    background: BackgroundAgentTasks,
     record: AgentTaskRecord,
     delivery: tuple[_StoredChatRecord, Future[ProviderSteerReceipt] | None],
 ) -> ChatMessage:
@@ -263,4 +264,6 @@ def finish_chat_steer(
             stored.session_id, chat_scope=stored.chat_scope, node_id=stored.node_id
         )
         _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
+    # The final receipt replaces the queued one other members may already show.
+    background.bump_steer_revision(record.operation_id)
     return _message(stored)

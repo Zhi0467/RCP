@@ -436,9 +436,10 @@ class BackgroundAgentTasks:
         # Checkpoints of turns the restart sweep ended, awaiting remote cleanup.
         self._orphan_mailboxes: list[dict[str, object]] = []
         self._controls: dict[str, AgentProcessControl] = {}
-        # Steers recorded per task in this process. Steers live only in the chat
-        # file, so the task list carries this count for other members' pages.
-        self._steer_counts: dict[str, int] = {}
+        # Steer history writes per task in this process: each queued steer and
+        # each final receipt. Steers live only in the chat file, so the task list
+        # carries this revision for other members' pages.
+        self._steer_revisions: dict[str, int] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
@@ -1247,13 +1248,13 @@ class BackgroundAgentTasks:
             return settled
         return record
 
-    def record_steer(self, operation_id: str) -> None:
+    def bump_steer_revision(self, operation_id: str) -> None:
         with self._controls_lock:
-            self._steer_counts[operation_id] = self._steer_counts.get(operation_id, 0) + 1
+            self._steer_revisions[operation_id] = self._steer_revisions.get(operation_id, 0) + 1
 
-    def steer_count(self, operation_id: str) -> int:
+    def steer_revision(self, operation_id: str) -> int:
         with self._controls_lock:
-            return self._steer_counts.get(operation_id, 0)
+            return self._steer_revisions.get(operation_id, 0)
 
     def live_control(self, operation_id: str) -> AgentProcessControl | None:
         """Return only the process control owned by this exact in-process attempt."""

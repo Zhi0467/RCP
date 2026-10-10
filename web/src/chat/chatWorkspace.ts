@@ -503,14 +503,14 @@ export function newlyFinishedChatTaskIds(
   });
 }
 
-/** Chat tasks whose steer count moved since last seen, such as a teammate's queued steer. */
+/** Chat tasks whose steer revision moved since last seen, such as a teammate's queued steer. */
 export function newlySteeredChatTaskIds(
   tasks: AgentTask[],
-  previousCounts: ReadonlyMap<string, number>,
+  previousRevisions: ReadonlyMap<string, number>,
 ): string[] {
   return tasks.flatMap((task) => {
     // A turn first seen with steers already queued counts from zero.
-    const moved = (previousCounts.get(task.operation_id) ?? 0) !== (task.steer_count ?? 0);
+    const moved = (previousRevisions.get(task.operation_id) ?? 0) !== (task.steer_revision ?? 0);
     return chatIdForTask(task) && moved ? [task.operation_id] : [];
   });
 }
