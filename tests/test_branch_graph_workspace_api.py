@@ -314,6 +314,8 @@ def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
     assert first["graph_mutation"] == {"available": True, "reason": None}
     assert len(replays) == 1
     snapshot = client.get(base, params=params).json()
+    # The branch page and its heartbeat agree, so an idle branch view never reloads.
+    assert first["experiment_signal"] == snapshot["experiment_signal"]
     synced = client.post(
         f"{base}/sync",
         params=params,

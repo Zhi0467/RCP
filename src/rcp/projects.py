@@ -774,8 +774,13 @@ def _stamp_display_signals(payload: dict[str, object]) -> None:
     payload["settings_signal"] = _signal_digest(
         {key: payload.get(key) for key in _SETTINGS_SIGNAL_KEYS}
     )
-    controls = payload.get("experiment_control")
-    payload["experiment_signal"] = _signal_digest(
+    payload["experiment_signal"] = experiment_signal(payload.get("experiment_control"))
+
+
+def experiment_signal(controls: object) -> str:
+    """Digest of each Experiment's lifecycle fields, shared by snapshots and heartbeats."""
+
+    return _signal_digest(
         {
             experiment_id: {key: control.get(key) for key in _EXPERIMENT_SIGNAL_KEYS}
             for experiment_id, control in controls.items()

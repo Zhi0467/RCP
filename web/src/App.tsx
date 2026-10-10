@@ -941,6 +941,8 @@ function MemberApp({
   projectTasksRef.current = projectTasks;
   // The project whose chat summaries a heartbeat still owes a refresh.
   const chatRefreshOwedRef = useRef<string | null>(null);
+  // The last steer epoch each project's heartbeat reported.
+  const steerEpochsRef = useRef(new Map<string, number>());
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1429,7 +1431,12 @@ function MemberApp({
           if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
           window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
           const loadedTaskIds = projectTasksRef.current.map((task) => task.operation_id);
-          if (heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
+          // A final steer receipt can land after its task stopped being polled.
+          // Recorded only once the tasks are read, so a failed read retries.
+          const seenSteerEpoch = steerEpochsRef.current.get(requestedProjectId);
+          const steerMoved =
+            seenSteerEpoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
+          if (steerMoved || heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
             if (!isActiveProject(requestedProjectId)) return;
             replaceTasks(nextTasks);
@@ -1440,6 +1447,8 @@ function MemberApp({
             );
             if (latest && chatIdForTask(latest)) chatRefreshOwedRef.current = requestedProjectId;
           }
+          if (observation.steer_epoch !== undefined)
+            steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
           // Owed until it succeeds: the task is already listed, so no later
           // heartbeat would notice it again.
           if (chatRefreshOwedRef.current === requestedProjectId) {

@@ -1886,6 +1886,8 @@ export interface GraphRevisionSnapshot {
   /** The newest visible task and watcher, so a teammate's new ones reach an open page. */
   latest_task_id?: string | null;
   latest_watcher_id?: string | null;
+  /** Moves with every steer write on the server; a change rereads tasks. */
+  steer_epoch?: number;
 }
 
 export interface RevisionedTransitionGraph {

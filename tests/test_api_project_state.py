@@ -310,6 +310,7 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "experiment_signal": initial["experiment_signal"],
         "latest_task_id": "teammate-task",
         "latest_watcher_id": "teammate-watcher",
+        "steer_epoch": 0,
     }
     assert probes == 1
 

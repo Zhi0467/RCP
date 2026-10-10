@@ -205,6 +205,10 @@ def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
     # the summary it prompts the page to fetch moves too.
     assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 2
     assert chat_version() != before
+    # The heartbeat moves too, for a page that no longer polls this finished task.
+    assert run.client.get(f"/api/projects/{run.project_id}").status_code == 200
+    heartbeat = run.client.get(f"/api/projects/{run.project_id}/cached/revision").json()
+    assert heartbeat["steer_epoch"] == 2
 
 
 @pytest.mark.parametrize(

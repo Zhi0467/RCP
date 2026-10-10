@@ -36,7 +36,7 @@ from rcp.core.attention import project_graph_mutation_availability
 from rcp.core.transition_models import GraphMutationAvailability
 from rcp.history.branches import BranchHistoryManager
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
-from rcp.projects import ProjectCatalog, ProjectDisplayCache
+from rcp.projects import ProjectCatalog, ProjectDisplayCache, experiment_signal
 from rcp.providers import profile_for
 from rcp.repository_preview import (
     REPOSITORY_PREVIEW_CSP,
@@ -138,12 +138,17 @@ def _branch_snapshot(
 # replay result is remembered per branch until its exact inputs change. One
 # process owns one data directory, so (project, branch) identifies the branch.
 _BRANCH_HEARTBEATS: dict[
-    tuple[str, str], tuple[tuple[object, ...], int, GraphMutationAvailability]
+    tuple[str, str],
+    tuple[tuple[object, ...], int, GraphMutationAvailability, dict[str, object]],
 ] = {}
 
 
 def _branch_revision(
-    project_id: str, branch_id: str, catalog: ProjectCatalog, store: AppStore
+    project_id: str,
+    branch_id: str,
+    project_display_cache: ProjectDisplayCache,
+    catalog: ProjectCatalog,
+    store: AppStore,
 ) -> dict[str, object]:
     service = get_graph_service(
         catalog,
@@ -162,16 +167,28 @@ def _branch_revision(
         remembered = _BRANCH_HEARTBEATS.get((canonical_project_id, branch_id))
         if remembered is None or remembered[0] != signature:
             state = history.materialize(write_outputs=False).state
-            remembered = (signature, state.revision, project_graph_mutation_availability(state))
+            remembered = (
+                signature,
+                state.revision,
+                project_graph_mutation_availability(state),
+                state.model_dump(mode="json"),
+            )
             _BRANCH_HEARTBEATS[(canonical_project_id, branch_id)] = remembered
-        _signature, revision, availability = remembered
+        _signature, revision, availability, graph = remembered
         if active_merge(store, canonical_project_id, history.graph_target):
             availability = merge_fenced_mutation_availability()
+        # Experiment controls are operational, so a teammate's start or stop on
+        # this branch moves no revision; the branch snapshot carries the same digest.
+        controls = project_display_cache.complete_transition_control(
+            canonical_project_id,
+            {"graph": graph, "graph_target": history.graph_target.model_dump(mode="json")},
+        )["experiment_control"]
         return {
             "revision": revision,
             "snapshot_freshness": "fresh",
             "last_remote_sync_at": None,
             "graph_mutation": availability.model_dump(mode="json"),
+            "experiment_signal": experiment_signal(controls),
             "latest_task_id": store.latest_agent_task_id(canonical_project_id),
             "latest_watcher_id": store.latest_watcher_id(canonical_project_id),
         }
@@ -300,9 +317,13 @@ async def cached_project_revision(
     project_display_cache: DisplayCacheDependency,
     catalog: CatalogDependency,
     store: StoreDependency,
+    background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
     if branch_id is not None:
-        return await asyncio.to_thread(_branch_revision, project_id, branch_id, catalog, store)
+        branch = await asyncio.to_thread(
+            _branch_revision, project_id, branch_id, project_display_cache, catalog, store
+        )
+        return {**branch, "steer_epoch": background_tasks.steer_epoch()}
     snapshot = await asyncio.to_thread(
         project_display_cache.cached_project_snapshot,
         project_id,
@@ -322,6 +343,8 @@ async def cached_project_revision(
         # A teammate's new task or watcher changes no graph revision; these tell the page.
         "latest_task_id": await asyncio.to_thread(store.latest_agent_task_id, project_id),
         "latest_watcher_id": await asyncio.to_thread(store.latest_watcher_id, project_id),
+        # A final steer receipt can land after its task stopped being polled.
+        "steer_epoch": background_tasks.steer_epoch(),
     }
 
 
