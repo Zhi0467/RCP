@@ -653,7 +653,6 @@ export function NodeChat({
     return new Set(latest.values());
   }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
-  const providerReady = launchProviderReady(project, config);
   const sessionId = resolvedChatSessionId(relatedTasks);
   const freshProviderSession = providerSwitchStartsFreshSession(
     relatedTasks,
@@ -662,6 +661,8 @@ export function NodeChat({
   );
   const mode = artifactContext ? "discuss" : modeState.value;
   modeRef.current = mode;
+  // A Work turn also needs the provider's Work probe; Discuss does not.
+  const providerReady = launchProviderReady(project, config, mode === "work");
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
@@ -2219,6 +2220,7 @@ export function NodeChat({
       open={configOpen}
       disabled={readOnly}
       label="Chat agent"
+      workLike={mode === "work"}
       onToggle={() => setConfigOpen((open) => !open)}
     />
   );
