@@ -1866,7 +1866,9 @@ export function NodeChat({
       pausedAttempt ||
       submitting ||
       repairingTaskId ||
-      reviewPending
+      reviewPending ||
+      // Enter reaches here without the button, so a new turn checks readiness itself.
+      !providerReady
     )
       return;
     if (!confirmDiscardKeptSpeech("send")) return;
