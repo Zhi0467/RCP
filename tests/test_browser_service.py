@@ -104,6 +104,9 @@ def test_remote_transport_ships_source_and_uses_login_environment(tmp_path, monk
         payload["sources"]["rcp.browser.host"]
         == (Path(service.__file__).parent / "host.py").read_text()
     )
+    assert (
+        payload["sources"]["rcp.artifact_preview"] == payload["request"]["artifact_preview_source"]
+    )
     assert kwargs["timeout"] == 60
     root = Path(service.__file__).parent
     assert (

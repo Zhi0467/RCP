@@ -56,6 +56,8 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
+    chat_master_label,
+    chat_master_owner,
     chat_prompt_values,
     finalize_artifact_edit,
     prepare_artifact_edit_directory,
@@ -194,7 +196,9 @@ def _prepare_discuss_chat_prompt(
             local_stage=local_stage,
             remote_stage=remote_stage,
             master_context=master_context,
-            contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
+            contract_key=chat_master_contract_key(
+                ontology_extensions=ontology_extensions, owner=chat_master_owner(execution)
+            ),
             values={**stable_values, "browser": browser_prompt_line(browser_grant)},
         )
     prompt = PromptFactory.discuss_turn_prompt(
@@ -1008,7 +1012,7 @@ async def stream_discuss_run(
                             execution.operation_id,
                             contract,
                             master_key(
-                                DISCUSS_POLICY_VERSION,
+                                chat_master_label(DISCUSS_POLICY_VERSION, execution),
                                 ontology_extensions=context.ontology_extensions,
                             ),
                             discuss_values,

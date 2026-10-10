@@ -37,7 +37,7 @@ from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
 from rcp.storage.artifact_models import ArtifactFile
-from rcp.storage.models import ProjectProvisioningGitCheckRecord, normalize_space_name
+from rcp.storage.models import normalize_space_name
 
 BACKUP_MANIFEST_SCHEMA_VERSION = 1
 
@@ -50,6 +50,7 @@ BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
+        "checkout-recovery",
         "browser",
         "tools",
         # Member terminal scratch is per-session and must never be restored;
@@ -805,12 +806,12 @@ class BackupRecoveryMachine(_StrictBackupModel):
 
 class BackupRecoveryRepository(_StrictBackupModel):
     alias: str
-    repository: GitHubRepositoryRef
+    repository: GitHubRepositoryRef | None
     machine_alias: str
     resolved_path: str
     git_commit: str
-    deploy_key_label: str
-    public_key_fingerprint: str
+    deploy_key_label: str | None
+    public_key_fingerprint: str | None
 
     @field_validator("resolved_path")
     @classmethod
@@ -826,14 +827,13 @@ class BackupRecoveryRepository(_StrictBackupModel):
 
     @field_validator("deploy_key_label")
     @classmethod
-    def validate_key_label(cls, value: str) -> str:
-        ProjectProvisioningGitCheckRecord.validate_deploy_key_label(value)
-        return value
+    def validate_key_label(cls, value: str | None) -> str | None:
+        return None if value is None else _stored_text(value, label="deploy-key label")
 
     @field_validator("public_key_fingerprint")
     @classmethod
-    def validate_fingerprint(cls, value: str) -> str:
-        if _OPENSSH_FINGERPRINT.fullmatch(value) is None:
+    def validate_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None and _OPENSSH_FINGERPRINT.fullmatch(value) is None:
             raise ValueError("backup recovery public-key fingerprint is invalid")
         return value
 
@@ -908,7 +908,16 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
             if repository.resolved_path != str(expected):
                 raise ValueError("backup recovery checkout is not derived from its central root")
             expected_label = f"rcp:{self.home_space_id}:{self.project_id}:{alias}"
-            if repository.deploy_key_label != expected_label:
+            if repository.repository is None:
+                if (
+                    repository.deploy_key_label is not None
+                    or repository.public_key_fingerprint is not None
+                ):
+                    raise ValueError("server-only recovery cannot carry deploy-key authority")
+            elif (
+                repository.deploy_key_label != expected_label
+                or repository.public_key_fingerprint is None
+            ):
                 raise ValueError("backup recovery deploy-key label is not derived")
         return self
 

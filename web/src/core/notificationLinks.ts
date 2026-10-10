@@ -7,6 +7,7 @@ import {
   experimentBoardHref,
   experimentBoardRouteToken,
 } from "../experiments/experimentBoardModel";
+import { MAIN_GRAPH, projectViewHash } from "./graphTarget";
 import type { Episode, ExperimentLoopIndexEntry } from "./types";
 
 export type NotificationItemKind =
@@ -51,7 +52,7 @@ export function parseNotificationLink(hash: string): NotificationLink | null {
  * node itself, resolved or not.
  */
 export function graphNotificationHash(link: NotificationLink): string {
-  return `#/projects/${encodeURIComponent(link.projectId)}?view=attention`;
+  return projectViewHash(link.projectId, MAIN_GRAPH, "attention");
 }
 
 /** An episode opens its exact run when it is still listed, else the Runs view. */
@@ -76,7 +77,7 @@ export function episodeRunHash(
   const entry = experimentEntries.find((item) => item.episode?.episode_id === episodeId);
   return entry
     ? experimentBoardHref(projectId, experimentBoardRouteToken(entry))
-    : `#/projects/${encodeURIComponent(projectId)}?view=runs`;
+    : projectViewHash(projectId, MAIN_GRAPH, "execution");
 }
 
 // Read once at load, like a pairing code, so a sign-in in between keeps it.

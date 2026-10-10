@@ -171,9 +171,38 @@ delivery and graph delivery through the isolation owner.
 
 Agent mail is star topology: the orchestrator may address workers it spawned,
 and those workers may reply. The orchestrator addresses a spawned worker by its
-stable child worker id. The human messages the orchestrator, not a child: a
-child's chat is listed in Agents read-only, and task admission refuses a human
-turn on it (`auto_research_child_read_only`).
+stable child worker id. While any member of the episode's continuation chain
+runs, a child's composer points to **Message orchestrator** and explains the
+ownership fence (`auto_research_child_read_only`). Sleeping and wrapping-up
+episodes still hold that fence. After the lineage ends (`completed`, `failed`,
+`needs_action`, or `stopped`), the child chat admits ordinary human turns; a
+child Experiment must also have ended, and the episode's isolation must remain
+available. Isolation cleanup in `removing` or `removed` keeps the composer locked
+with `episode_isolation_unavailable`, matching task admission. The sender
+authorizes that turn outside the episode, and Discuss or Work determines its
+authority. Its watcher wakes,
+question follow-ups, Resume, Retry, and Repair pass the same lineage fence.
+The native-session master key of an episode-owned turn names its episode; a
+human-owned turn keeps the ordinary chat key, so existing chats keep their
+masters. The first human turn replaces the child's master with an ordinary chat
+master; a later episode turn on that session reopens its episode-owned master. Retained Patch
+values and recovery masters use the same owner check.
+
+An orchestrator-started child turn retains its episode ownership. Recovery uses
+the child Work or child Experiment episode route and its ending fence; generic
+Retry or Resume never converts it to human-owned work. One store rule
+(`episode_child_recovery_refusal`) refuses generic Retry and Resume of child
+Work turns, and of child Experiment turns once their orchestrator has ended
+unless the child Experiment's own Stop is still pending; that recovery settles
+an already-paid turn behind the ending fence. Task projections clear Retry and
+Resume by the same rule, the chat points to **Message orchestrator** instead,
+and transport auto-retry skips such turns. The locked composer offers
+**Message orchestrator** only while a running lineage holds the lock, not for
+isolation or merge refusals. A new Send is
+the ordinary human path. Add N turns refuses while a human-owned turn is active
+on any child of the lineage and names the chat; an admitted continuation locks
+those composers again. The native-session and stage exclusion still prevents
+overlapping launches. Artifact-comment edits remain allowed.
 Mail is Markdown hearsay and carries no graph authority; `patch.json` remains the
 only graph channel.
 
@@ -345,6 +374,30 @@ same `request_id` replays the same continuation. A continuation records the
 member who made it; the source keeps its own authorizer. Stopped watchers stay
 stopped. See
 [reauthorization continues on the same branch](../decisions/2026-09-14-reauthorization-continues-on-the-same-branch.md).
+
+**Message orchestrator** addresses the newest member of the chain. A running
+member receives ordinary human mail. Messaging an ended member authorizes an
+Add N turns continuation carrying that message. The composer defaults N to 3,
+editable before sending, and always sends it; the API has no default N, and a
+send without N is ordinary mail only; the composer shows N operational turns (budget B) and the derived
+E = 5N child-Experiment invocations. This remains an orchestrator with branch
+authority, not an ordinary chat.
+An ordinary-mail-only send that races with the episode ending refuses and asks
+for a continuation budget; it cannot silently authorize the default turns.
+
+One storage transaction creates the continuation and sender-attributed mail
+addressed to its new root, then claims both that message and the `reauthorized`
+notice for the opening turn. Replaying the same request id returns the same
+continuation and message only when the message, N, and the authorizing member
+(space and user id, not display name) all match; changing any of them under that
+id is refused.
+Concurrent sends cannot create two continuations of the same source: a sender
+that loses the race delivers its message as ordinary mail to the winning
+continuation while it runs, and its N is unused. Every refusal carries a code. Messaging
+does not bypass continuation admission: a missing session or stage, another live
+Auto-research episode, an active merge, removed isolation, or an active
+human-owned child turn refuses continuation. The composer shows the refusal
+reason and remains disabled until admission is available.
 
 Parent settlement and report launch, including restart of an allocated report,
 wait for unfinished child Experiment turns and their exact recovery. A parent

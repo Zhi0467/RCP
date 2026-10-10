@@ -234,3 +234,23 @@ def test_exhausted_ending_retains_child_completion_and_late_arming(tmp_path, sta
         ].status
         == "stopped"
     )
+
+
+def test_orchestrator_watcher_without_task_parent_cannot_become_human_owned(tmp_path):
+    store, parent, route, watcher, wake = _waiting_child(tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (parent.episode_id,)
+        )
+    human_wake = wake.model_copy(
+        update={
+            "episode_id": None,
+            "parent_operation_id": None,
+            "request": {**wake.request, "trigger": "watcher"},
+        }
+    )
+    with pytest.raises(ValueError) as error:
+        store.create_agent_task(human_wake, continuation_cause="watcher_wake")
+    assert str(error.value) == "auto_research_child_episode_owned"
+    assert store.agent_task(human_wake.operation_id) is None
+    assert store.watcher(watcher.watcher_id).notified is False

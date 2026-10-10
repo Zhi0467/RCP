@@ -224,7 +224,6 @@ test("transfer option stays off by default, binds retries, and survives review r
       await page.getByText(/RCP does not push to GitHub/).waitFor();
       if (includeLocalCommits) {
         await page.getByText(/Committed files and history are copied as saved/).waitFor();
-        await page.getByText(/detached HEAD at the saved source commit/).waitFor();
         await page.getByText("a".repeat(40), { exact: true }).waitFor();
       } else {
         await page.getByText(/Local unpushed commits stay behind/).waitFor();

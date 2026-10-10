@@ -186,7 +186,8 @@ export interface ProjectProvisioningMachineRequest {
 
 export interface ProjectProvisioningRepositoryRequest {
   alias: string;
-  source: string;
+  source?: string | null;
+  count_as_project_truth?: boolean;
   machine_alias: string;
 }
 
@@ -311,10 +312,12 @@ export interface GitHubRepositoryRef {
 
 export interface ProjectProvisioningRepositoryProjection {
   alias: string;
-  repository: GitHubRepositoryRef;
-  https_clone_url: string;
-  ssh_clone_url: string;
-  settings_url: string;
+  repository: GitHubRepositoryRef | null;
+  source_kind: "github" | "server_only";
+  count_as_project_truth: boolean;
+  https_clone_url: string | null;
+  ssh_clone_url: string | null;
+  settings_url: string | null;
   machine_alias: string;
   intended_path: string | null;
   resolved_path: string | null;
@@ -373,7 +376,7 @@ export type ProjectProvisioningCancellationDisposition =
 
 export interface ProjectProvisioningResponse {
   request_id: string;
-  kind: "create_team_project" | "incoming_transfer";
+  kind: "create_team_project" | "incoming_transfer" | "add_repository" | "connect_repository";
   status: ProjectProvisioningStatus;
   status_label: string;
   next_action: string | null;
@@ -381,6 +384,7 @@ export interface ProjectProvisioningResponse {
   can_review: boolean;
   can_cancel: boolean;
   target_space_id: string;
+  target_project_id: string | null;
   proposed_project_id: string;
   name: string | null;
   state_repository: string | null;
@@ -421,7 +425,7 @@ export type ProjectTransferProofState = {
 
 export interface ProjectTransferRepositorySource {
   alias: string;
-  repository: GitHubRepositoryRef;
+  repository: GitHubRepositoryRef | null;
   machine_alias: string;
   source_commit?: string;
 }
@@ -1790,6 +1794,31 @@ export interface GraphBranchSummary {
   merge_diagnostic: string | null;
 }
 
+/** Project-wide graph inventory; branch ownership remains the chain root. */
+export type GraphRef =
+  | (GraphBranchSummary & {
+      kind: "branch";
+      archived: boolean;
+      /** The chain root's mode and display title, when the backend has one. */
+      mode: EpisodeMode;
+      title: string | null;
+    })
+  | {
+      kind: "main";
+      branch_id: null;
+      episode_id: null;
+      current_episode_id: null;
+      base_head: null;
+      head: GraphHeadRef;
+      merge_eligible: false;
+      merge_blocked_reason: null;
+      merge_state: null;
+      latest_successful_merge: null;
+      active_merge_task_id: null;
+      merge_diagnostic: null;
+      archived: false;
+    };
+
 export type TransitionCauseRef =
   | { kind: "action"; action_index: number; event_id?: null }
   | { kind: "event"; action_index?: null; event_id: string };
@@ -1901,6 +1930,10 @@ export interface Repository {
   alias: string;
   machine: string;
   path: string;
+  /** Team projects only, from the effective repository inventory. */
+  source?: "github" | "server_only";
+  github_identity?: string | null;
+  can_connect?: boolean;
 }
 
 export interface Machine {
@@ -2584,6 +2617,8 @@ export interface Episode extends EpisodeLoopMetadata {
   /** Every chain member oldest first, ending with this episode; a lone episode is its own chain. */
   chain: EpisodeChainMember[];
   can_message: boolean;
+  message_requires_continuation: boolean;
+  message_refusal?: { code: string; detail: string } | null;
   live: boolean;
   health: EpisodeHealth;
   blocked_reason: EpisodeBlockedReason | null;
@@ -2786,6 +2821,7 @@ export interface ChatSummary {
   conversation_kind: "chat" | "episode" | "auto_research_child";
   graph_title: string;
   orchestrator_episode_id: string | null;
+  human_turn_refusal?: { code: string; detail: string } | null;
   chat_id: string;
   graph_target: GraphTargetRef;
   kind: "node_chat" | "project_chat";
@@ -3351,6 +3387,7 @@ export interface ProjectArtifact {
   episode_mode: EpisodeMode | null;
   source_chat_href: string | null;
   source_node_id: string | null;
+  authorized_by: AuthorizedHuman | null;
   viewer_url: string | null;
   view: ArtifactView;
   available: boolean;

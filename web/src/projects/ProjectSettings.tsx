@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, clearProjectCaches } from "../core/api";
 import { computeProbePresentation } from "../experiments/compute";
+import { RepositoryRequests } from "./RepositoryRequests";
 import { ProjectMembers } from "./ProjectMembers";
 import { MachineCard } from "./MachineCard";
 import { ProjectNotifications } from "../desktop/ProjectNotifications";
@@ -104,7 +105,7 @@ const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
-  { id: "orchestrator", label: "Orchestrator" },
+  { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 
 function profilesFrom(
@@ -136,7 +137,7 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
 }
 
 /** The staged edits for this project, or the manifest's values when none exist. */
-function stagedOrSaved(project: ProjectSnapshot) {
+function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
   const saved = {
     scope: project.default_run_truth_scope,
     autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
@@ -147,8 +148,9 @@ function stagedOrSaved(project: ProjectSnapshot) {
     computeConnections: project.compute_connections ?? [],
   };
   let staged: ReturnType<typeof deserializeSettingsDraft> = null;
+  const key = settingsDraftStorageKey(actorId, project.id);
   try {
-    staged = deserializeSettingsDraft(localStorage.getItem(settingsDraftStorageKey(project.id)));
+    if (key) staged = deserializeSettingsDraft(localStorage.getItem(key));
   } catch {
     // A staged draft is a convenience; storage failures fall back to the manifest.
   }
@@ -188,8 +190,10 @@ export function ProjectSettings({
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
+  const actorId = identity?.user.user_id ?? null;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once per project; a snapshot refresh must not reset the form
-  const restoredSettings = useMemo(() => stagedOrSaved(project), [project.id]);
+  const restoredSettings = useMemo(() => stagedOrSaved(project, actorId), [project.id]);
+  const [connectAlias, setConnectAlias] = useState<string | null>(null);
   const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
     () => restoredSettings.autoResearchInvocationCeiling,
@@ -294,7 +298,8 @@ export function ProjectSettings({
   // Stage machine settings alongside provider paths. Compute connection metadata
   // stays in memory until Save; clearing a clean form drops the staged copy.
   useEffect(() => {
-    const key = settingsDraftStorageKey(project.id);
+    const key = settingsDraftStorageKey(actorId, project.id);
+    if (!key) return;
     try {
       if (dirty) {
         localStorage.setItem(
@@ -319,7 +324,7 @@ export function ProjectSettings({
       // Staging edits is a convenience; storage failures must not affect Settings.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- current fingerprints every staged field
-  }, [dirty, current, project.id]);
+  }, [dirty, current, project.id, actorId]);
   const machineByAlias = Object.fromEntries(
     project.machines.map((machine) => [machine.alias, machine]),
   );
@@ -639,7 +644,7 @@ export function ProjectSettings({
           <span>
             <GitBranch size={16} />
           </span>
-          <h2>Project boundary</h2>
+          <h2>Repos</h2>
         </header>
         <div className="settings-repositories">
           {project.repositories.map((repository) => {
@@ -667,11 +672,34 @@ export function ProjectSettings({
                 <span className="settings-repository-meta">
                   <Server size={12} /> {machine?.host ? repository.machine : "local"}
                   {canonical && <em>canonical state</em>}
+                  {repository.source === "server_only" && <em>server only, not backed up</em>}
+                  {repository.can_connect && spaceKind === "team" && (
+                    <button
+                      type="button"
+                      className="button ghost tiny"
+                      disabled={writesDisabled}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setConnectAlias(repository.alias);
+                      }}
+                    >
+                      Connect to GitHub
+                    </button>
+                  )}
                 </span>
               </label>
             );
           })}
         </div>
+        {spaceKind === "team" && (
+          <RepositoryRequests
+            key={project.id}
+            project={project}
+            disabled={writesDisabled}
+            connectAlias={connectAlias}
+            onCloseConnect={() => setConnectAlias(null)}
+          />
+        )}
       </article>
 
       <section className="settings-section provider-path-settings">

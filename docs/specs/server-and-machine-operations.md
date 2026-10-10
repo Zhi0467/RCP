@@ -366,7 +366,11 @@ lines; `--machine-readable` remains the complete append-only JSON event record.
 
 A human stop names the typed machine or external-service target, responsible
 authority, nonsecret values, ordered safe actions, plain success signal, and
-exact continue command. It is titled for the human's own task rather than for
+exact continue command. The interactive terminal shows only what the human
+does: the target machine or the place to open, the ordered actions, the values
+to paste, and the resume command. Authority, compare-only evidence, and the
+success signal stay in the machine-readable record and the desktop panel. A
+stop is titled for the human's own task rather than for
 the machine check it interrupted, so a pause may replace its planned title and
 purpose; everything else that identifies the step stays pinned to the plan. A
 displayed command may also name the shell it belongs to, which is not the
@@ -964,10 +968,20 @@ retained in the provisioning receipt. This is recovery metadata, not a secret:
 it lets a replacement server tell the operator exactly which old GitHub grant
 to revoke while private key bytes remain outside SQLite and backup.
 
-The write proof points a temporary request-scoped ref at an existing commit,
-reads it back, and removes it. An empty repository therefore stays **operator
-action needed** until the operator creates and pushes its first real commit; RCP
-does not manufacture a hidden initialization commit.
+For a GitHub repository with history, the write proof points a temporary
+request-scoped ref at an existing commit, reads it back, and removes it. RCP
+lists real branch refs as well as HEAD. If there is no branch history, the
+announced setup step initializes `main` in the exact central checkout and
+creates the empty `Start RCP project` commit as `RCP <rcp@rcp.invalid>`.
+The checkout path and commit are durably recorded before the deploy-key push;
+that push and its remote readback are the write proof. Retries reuse the recorded
+commit. Pushes use a non-forced refspec, and a lost receipt is reconciled by
+reading remote `main`. A competing human push stops preparation for human repair.
+
+An omitted GitHub source creates a server-only repository in the same exact
+central path, with the same empty commit and a ready checkout proof. It has no
+remote, deploy key, or write-probe target. Local and SSH execution use the same
+account and path checks. Server-only code is not included in backups.
 
 Cancellation removes only request-owned local/remote private-key material after
 an explicit disposition. If its public key was already added to GitHub, the
@@ -1033,9 +1047,8 @@ member cancellation returns the same durable result.
 The command is resumable and exhaustive. If a deploy key is not yet installed,
 it prints the exact GitHub repository settings destination, label, public key,
 **Allow write access** requirement, and the same command to rerun. If the source
-repository has no commit, it explains that the member must push their local code
-through their normal GitHub workflow and names the repository plus the recheck
-command; it never reaches into the member checkout. Missing SSH or provider
+repository has no branch history, the plan announces the RCP first commit
+before creating and publishing it; it never reaches into the member checkout. Missing SSH or provider
 authentication similarly names the execution account and provider-native or
 OpenSSH action, then resumes the same request after the operator performs it.
 
@@ -1091,6 +1104,19 @@ paths, truth scopes, provider runtimes, and fixed permission contracts into the
 manifest, then appends one system-owned `created` identity with the already
 reserved id. The reviewer becomes the first project member and is retained as
 the seating actor.
+
+Members may also request one added repository or connect a server-only repository
+to GitHub from an existing project's Settings. These requests use the same
+operator command and final-review confirmation, without provider setup. Add
+prepares one new central checkout; connect keeps the existing checkout, adds the
+reviewed GitHub remote, and requires the repository deploy-key grant. Connect
+pushes its recorded local `main` only when GitHub's `main` is absent or an
+ancestor. Otherwise preparation stops with the instruction to merge GitHub's
+`main` into the server repository and resume; RCP never merges or force-pushes.
+Final confirmation requires current project membership. Add applies manifest
+membership and the reviewed truth choice through the human approval transition
+and `StateWorkspace`, bound to the reviewed manifest and canonical head. Connect
+changes provisioning provenance without changing the manifest.
 
 The recoverable product boundaries are manifest publication, exact identity
 Patch, catalog registration, first-member seating, and request completion.
@@ -1265,8 +1291,8 @@ project-source corruption and blocks Seed/Refresh rather than being silently
 omitted.
 
 The transfer wizard offers **Include local unpushed commits**, off by default.
-Without it, target provisioning uses the GitHub checkout and review explicitly
-warns that unpublished source commits stay behind. With it, source preparation
+For GitHub repositories, without it target provisioning uses the GitHub checkout
+and review explicitly warns that unpublished source commits stay behind. With it, source preparation
 records the exact HEAD of every declared repository and binds those commits to
 the source configuration and both human confirmations. Export rechecks those
 HEADs and includes one self-contained Git bundle per repository; no push to
@@ -1274,17 +1300,25 @@ GitHub occurs. Only the saved commit and its reachable history travel, not other
 local branches, uncommitted changes, ignored files, or external output/data
 directories. Native credentials, Git configuration, and hooks are not copied.
 
-Opt-in uses archive schema/codec `2` / `rcp-transfer-v2`; default transfers retain
-the byte-compatible v1 format and omit the new commit fields entirely. A target
+A source repository without an origin transfers as server only: its target URL
+is blank, its reviewed commit and Git bundle are required regardless of the
+optional GitHub commit choice, and the relay never manufactures a GitHub URL.
+Mixed projects bundle only the repositories whose commits were captured.
+
+Any transfer carrying bundles uses archive schema/codec `2` / `rcp-transfer-v2`;
+GitHub-only transfers without bundles retain the byte-compatible v1 format and omit the new commit fields entirely. A target
 that cannot accept the commit-bearing configuration refuses before source
 release. A changed HEAD or changed choice requires fresh review, never silent
 substitution. Existing v1 request commitments and saved archives remain valid.
 
 Before publishing research history, the target importer validates each bound
 bundle in isolation, imports its objects without remote access, and checks out
-the exact saved commit in **detached HEAD** state when the revision changes.
-An already-matching checkout is verified without changing its branch attachment;
-untracked/ignored files are preserved because no checkout is needed. This also
+the exact saved commit in **detached HEAD** state when a GitHub revision changes.
+A server-only destination is initialized from the verified bundle and attaches
+the imported commit to `main`, with no remote; later Connect can push that
+imported history. A missing required bundle refuses import.
+An already-matching GitHub checkout is verified without changing its branch
+attachment; untracked/ignored files are preserved because no checkout is needed. This also
 allows retries after RCP has published kept artifacts. Tracked changes still
 refuse. The target's origin and existing branch refs stay intact; create a branch
 before making new Git commits from detached HEAD.
@@ -1541,6 +1575,24 @@ checkout's resolved central path and deploy key. A resolved central root is
 required only for a machine that owns a repository and keeps its provisioned
 host and account. A missing, credential-bearing, or inconsistent descriptor
 makes that project uncaptured.
+
+The descriptor uses `effective_repositories` across completed creation, add, and
+connect requests. Server-only checkouts must have no remote; GitHub checkouts
+retain their exact origin and retained-commit checks. Server-only code and Git
+history are never archived. Each such repository is durably named as "code not
+backed up" in the operation-bound backup diagnostics, surfaced by the backup
+report and doctor even when research capture is complete.
+
+Restore recreates a missing server-only checkout with `git init -b main` and
+one empty `Start RCP project` commit authored by `RCP <rcp@rcp.invalid>`, without
+credentials or a remote, before publishing archived research. A private
+`checkout-recovery/<project-id>.json` receipt records replacement commit and
+public deploy-key evidence separately from historical provisioning requests.
+It is bound to each effective provisioned repository and execution machine;
+a later connect supersedes that repository's replacement proof. Backup embeds
+the resolved proof in its recovery descriptor, and restore reconstructs the
+local receipt from that descriptor. Raw receipt files are excluded from the
+archive. Provisioning reviews and step receipts remain unchanged.
 
 Skill configuration comparisons use the fields declared in the manifest, not
 release-resolved defaults. New recovery descriptors retain that declaration,

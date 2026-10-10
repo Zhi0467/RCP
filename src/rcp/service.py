@@ -114,6 +114,7 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.providers.browser_grant import BrowserTurnStatus
+from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
@@ -130,6 +131,7 @@ from rcp.sources import (
     preflight_provider_roots,
     project_cache_roots,
 )
+from rcp.storage import AppStore
 from rcp.transport import repository_access as build_repository_access
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 
@@ -362,6 +364,7 @@ class ChatSummary(BaseModel):
     last_message_preview: str
     conversation_kind: Literal["chat", "episode", "auto_research_child"] = "chat"
     orchestrator_episode_id: str | None = None
+    human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"
 
 
@@ -1103,6 +1106,35 @@ def _imported_source_store(
     return ImportedProviderSourceStore(data_dir, project_id)
 
 
+def project_repository_descriptors(
+    repositories: list[dict[str, Any]], *, store: AppStore, project_id: str
+) -> list[dict[str, Any]]:
+    """Overlay team provisioning provenance on the Settings repository inventory.
+
+    Personal projects and team repositories without resolvable evidence get no
+    source fields, so nothing claims or offers a server-only state it cannot prove.
+    """
+    sources = team_repository_sources(store, project_id)
+    if sources is None:
+        return repositories
+    result = []
+    for repository in repositories:
+        record = sources.get(repository["alias"])
+        if record is None:
+            result.append(repository)
+            continue
+        source = record.repository
+        result.append(
+            {
+                **repository,
+                "source": "github" if source is not None else "server_only",
+                "github_identity": source.identity if source is not None else None,
+                "can_connect": source is None,
+            }
+        )
+    return result
+
+
 class ProjectService:
     def __init__(
         self,
@@ -1291,6 +1323,7 @@ class ProjectService:
                     update={
                         "conversation_kind": task.conversation_kind,
                         "orchestrator_episode_id": task.orchestrator_episode_id,
+                        "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
                     }
                 )

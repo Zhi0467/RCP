@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 
+from rcp.runs.auto_research_admission import resume_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
     record_auto_research_message,
@@ -16,7 +17,7 @@ from .test_auto_research_child_work_watchers import _deliver, _waiting_child
 from .test_experiment_episode_storage import _bind, _task
 
 
-@pytest.mark.parametrize("path", ["watcher", "queued_message", "retry"])
+@pytest.mark.parametrize("path", ["watcher", "queued_message", "episode_resume"])
 @pytest.mark.parametrize("requested", [False, True])
 def test_child_continuation_browser_matrix(tmp_path, path, requested):
     tasks, episode, child, watchers, _ = _waiting_child(tmp_path, browser_requested=requested)
@@ -47,9 +48,11 @@ def test_child_continuation_browser_matrix(tmp_path, path, requested):
                 "UPDATE graph_runs SET status = 'failed', error = 'interrupted' WHERE operation_id = ?",
                 (child.operation_id,),
             )
-        operation_id = tasks.retry(
-            child.operation_id, authorized_by=episode.authorized_by
-        ).operation_id
+        # A child turn the orchestrator started recovers through its episode
+        # route; generic Retry would make it human-owned and is refused.
+        resumed = resume_auto_research_child_work(tasks, episode.episode_id, watchers[0].worker_id)
+        assert resumed.task is not None, resumed.reason
+        operation_id = resumed.task.operation_id
     continued = wait_for_task(tasks.store, operation_id, expect="succeeded")
     assert continued.request["browser_requested"] is requested
     assert continued.stage_root == child.stage_root

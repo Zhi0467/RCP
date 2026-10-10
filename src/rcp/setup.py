@@ -621,7 +621,11 @@ class ProjectSetupManager:
             agent_readiness[surface] = readiness
             checks.append(
                 SetupCheck(
-                    label=f"{surface.replace('_', ' ').title()} agent",
+                    label=(
+                        "Auto-research orchestrator"
+                        if surface == "orchestrator"
+                        else f"{surface.replace('_', ' ').title()} agent"
+                    ),
                     status="pass" if readiness.authenticated else "warn",
                     detail=(
                         f"{readiness.version or profile.provider.title()} is installed and "

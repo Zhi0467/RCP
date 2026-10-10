@@ -524,6 +524,12 @@
   grid-template-columns: 1fr 1fr;
   height: 35px;
 }
+.repository-editor > p {
+  color: var(--muted);
+  font-size: var(--type-3xs);
+  margin: 0;
+  padding: 0 14px 12px;
+}
 .repository-editor > footer {
   align-items: center;
   background: var(--surface);
@@ -673,7 +679,6 @@
   font-size: var(--type-2xs);
 }
 .provisioning-summary,
-.provisioning-final-review dl,
 .provisioning-operator-action dl {
   display: grid;
   gap: 8px;
@@ -681,14 +686,12 @@
   margin: 0 0 18px;
 }
 .provisioning-summary div,
-.provisioning-final-review dl div,
 .provisioning-operator-action dl div {
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 10px;
 }
 .provisioning-summary dt,
-.provisioning-final-review dt,
 .provisioning-operator-action dt {
   color: var(--muted);
   font-size: var(--type-4xs);
@@ -697,7 +700,6 @@
   text-transform: uppercase;
 }
 .provisioning-summary dd,
-.provisioning-final-review dd,
 .provisioning-operator-action dd {
   font-size: var(--type-3xs);
   line-height: 1.4;
@@ -708,7 +710,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-  margin-bottom: 18px;
+  margin: 12px 0 18px;
 }
 .operator-route-card,
 .provisioning-events,
@@ -731,12 +733,46 @@
   align-items: end;
   display: grid;
   gap: 8px;
-  grid-template-columns: 1.2fr 1fr auto;
+  grid-template-columns: 1fr auto;
 }
-.operator-route-card > p {
+.provisioning-hint {
+  color: var(--muted);
+  font-size: var(--type-3xs);
+  margin: 8px 0 0;
+}
+.operator-route-card > p[role="alert"] {
   color: var(--red);
   font-size: var(--type-3xs);
   margin: 10px 0 0;
+}
+.provider-role-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.provider-role-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: var(--type-3xs);
+  padding: 4px 10px;
+}
+.provider-role-chip.ready {
+  background: color-mix(in srgb, var(--sheet) 80%, var(--green));
+  border-color: var(--green);
+}
+.provider-role-chip.waiting {
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+.provider-role-chip.failed {
+  background: var(--red-soft);
+  border-color: var(--red);
+}
+.provider-role-diagnostic {
+  color: var(--red);
+  font-size: var(--type-3xs);
+  margin: 8px 0 0;
 }
 .provisioning-events {
   display: grid;
@@ -768,8 +804,7 @@
   font-weight: 700;
   margin-bottom: 10px;
 }
-.provisioning-ledger code,
-.provisioning-final-review code {
+.provisioning-ledger code {
   overflow-wrap: anywhere;
   white-space: normal;
 }

@@ -1157,7 +1157,12 @@ interface ExecutionProps {
   onArchiveEpisode: ArchiveEpisodeAction;
   onMergeEpisode: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
-  onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
+  onSendEpisodeMessage: (
+    episodeId: string,
+    body: string,
+    invocationCeiling?: number,
+    requestId?: string,
+  ) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSwitchEpisodeProvider: (task: AgentTask) => void;
   onSelectExperiment: (nodeId: string | null, route?: ExperimentRouteIdentity) => void;

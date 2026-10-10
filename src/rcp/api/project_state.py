@@ -172,7 +172,7 @@ def _branch_revision(
             "snapshot_freshness": "fresh",
             "last_remote_sync_at": None,
             "graph_mutation": availability.model_dump(mode="json"),
-            "latest_task_id": store.latest_agent_task_id(project_id),
+            "latest_task_id": store.latest_agent_task_id(canonical_project_id),
             "latest_watcher_id": store.latest_watcher_id(canonical_project_id),
         }
 
@@ -320,7 +320,9 @@ async def cached_project_revision(
         "settings_signal": snapshot["settings_signal"],
         "experiment_signal": snapshot["experiment_signal"],
         # A teammate's new task or watcher changes no graph revision; these tell the page.
-        "latest_task_id": await asyncio.to_thread(store.latest_agent_task_id, project_id),
+        "latest_task_id": await asyncio.to_thread(
+            store.latest_agent_task_id, catalog.resolve_project_id(project_id)
+        ),
         "latest_watcher_id": await asyncio.to_thread(
             store.latest_watcher_id, catalog.resolve_project_id(project_id)
         ),

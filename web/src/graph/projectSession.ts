@@ -601,14 +601,17 @@ export function projectHeartbeatSnapshotDisposition<T extends ProjectSessionTabS
 
 export function persistProjectHumanDraft(
   storage: Pick<Storage, "setItem" | "removeItem">,
+  actorId: string | null,
   projectId: string,
   draft: HumanDraft | null,
   graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): void {
+  const key = humanDraftStorageKey(actorId, projectId, graphTarget);
+  if (!key) return;
   if (draft && humanDraftChangeCount(draft) > 0) {
-    storage.setItem(humanDraftStorageKey(projectId, graphTarget), serializeHumanDraft(draft));
+    storage.setItem(key, serializeHumanDraft(draft));
   } else {
-    storage.removeItem(humanDraftStorageKey(projectId, graphTarget));
+    storage.removeItem(key);
   }
 }
 

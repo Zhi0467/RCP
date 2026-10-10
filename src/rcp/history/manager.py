@@ -1270,7 +1270,10 @@ class HistoryManager:
                     revision,
                 )
                 return patch, aggregate, None
-            if candidate.project_truth_scope != validation_state.project_truth_scope:
+            if candidate.project_truth_scope != validation_state.project_truth_scope or any(
+                isinstance(op, SetProjectTruthScopeOperation) and op.repository is not None
+                for op in patch.ops
+            ):
                 descriptor = next(
                     (
                         op.repository.model_dump(mode="python")
@@ -1987,8 +1990,6 @@ class HistoryManager:
         return sorted([*flat, *batched], key=lambda path: int(path.stem))
 
     def _synchronize_manifest_scope(self, result: MaterializationResult, patch: Patch) -> bool:
-        if result.state.project_truth_scope == self.manifest.project.truth_scope:
-            return False
         descriptor = next(
             (
                 op.repository.model_dump(mode="python")
@@ -1997,6 +1998,10 @@ class HistoryManager:
             ),
             None,
         )
+        if result.state.project_truth_scope == self.manifest.project.truth_scope and (
+            descriptor is None or descriptor["alias"] in self.manifest.repository_map
+        ):
+            return False
         self.manifest = write_project_scope(
             self.manifest,
             result.state.project_truth_scope,
@@ -2005,29 +2010,27 @@ class HistoryManager:
         return True
 
     def _synchronize_manifest_from_history(self, result: MaterializationResult) -> bool:
-        """Repair a manifest that lagged a committed truth-scope patch."""
+        """Repair manifest membership and truth scope from accepted approvals."""
 
-        if result.state.project_truth_scope == self.manifest.project.truth_scope:
-            return False
-        descriptor = None
-        for patch in reversed(result.patches):
-            operation = next(
-                (op for op in reversed(patch.ops) if isinstance(op, SetProjectTruthScopeOperation)),
-                None,
+        descriptors = [
+            operation.repository.model_dump(mode="python")
+            for patch in result.patches
+            if patch.admission == "accepted"
+            for operation in patch.ops
+            if isinstance(operation, SetProjectTruthScopeOperation)
+            and operation.repository is not None
+            and operation.repository.alias not in self.manifest.repository_map
+        ]
+        changed = False
+        for descriptor in descriptors:
+            self.manifest = write_project_scope(
+                self.manifest, self.manifest.project.truth_scope, repository_descriptor=descriptor
             )
-            if operation is not None:
-                descriptor = (
-                    operation.repository.model_dump(mode="python")
-                    if operation.repository is not None
-                    else None
-                )
-                break
-        self.manifest = write_project_scope(
-            self.manifest,
-            result.state.project_truth_scope,
-            repository_descriptor=descriptor,
-        )
-        return True
+            changed = True
+        if result.state.project_truth_scope != self.manifest.project.truth_scope:
+            self.manifest = write_project_scope(self.manifest, result.state.project_truth_scope)
+            changed = True
+        return changed
 
     def _repair_materializations_if_needed(self) -> None:
         if not self.workspace.materialization_repair_required:

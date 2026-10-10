@@ -111,6 +111,7 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
     // Only the working agent's logo carries the spinner ring.
     assert.equal(await column("working").locator(".agent-card-avatar[data-working]").count(), 1);
     assert.equal(await column("done").locator(".agent-card-avatar[data-working]").count(), 0);
+    assert.equal(await column("working").locator(".episode-author").count(), 1);
 
     const drag = async (from, to) => {
       const start = await from.boundingBox();

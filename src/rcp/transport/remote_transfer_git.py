@@ -13,6 +13,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
 
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 
 def _rcp_temp_dir() -> Path:
     """This account's `~/.rcp/tmp`; stdlib-only because this module ships over SSH."""
@@ -94,7 +96,7 @@ class RepositoryGit:
             raise ValueError(f"repository Git transfer could not {arguments[0]}")
         return content
 
-    def require_checkout(self) -> str:
+    def require_checkout(self, *, allow_unborn: bool = False) -> str:
         path = self.path
         if (
             not path.is_absolute()
@@ -145,6 +147,14 @@ class RepositoryGit:
             raise ValueError("repository transfer refuses filters or indirect Git configuration")
         if self.git("rev-parse", "--show-toplevel").rstrip(b"\n") != os.fsencode(path):
             raise ValueError("repository transfer requires the exact Git checkout root")
+        if allow_unborn and not self.git(
+            "rev-parse", "--verify", "--quiet", "HEAD", allow_missing=True
+        ):
+            if self.git("show-ref", allow_missing=True):
+                raise ValueError(
+                    "server-only transfer refuses an unresolved HEAD with existing refs"
+                )
+            return ""
         head = self.revision()
         self.require_tree(head)
         return head
@@ -235,18 +245,32 @@ def run_repository_transfer(
 ) -> None:
     """Use the same implementation in-process locally and as shipped SSH source."""
 
-    if operation not in {"probe", "capture", "install"}:
+    if operation not in {"probe", "capture", "install", "install-main"}:
         raise ValueError("invalid repository Git transfer operation")
     if operation != "probe" and re.fullmatch(r"[0-9a-f]{40}", expected_head) is None:
         raise ValueError("repository transfer requires one full Git commit")
     repository = RepositoryGit(Path(path), time.monotonic() + timeout, output_limit)
-    initial_head = repository.require_checkout()
+    server_only = operation == "install-main"
+    initialize = server_only and not (repository.path / ".git").exists()
+    if initialize:
+        if (
+            not repository.path.is_absolute()
+            or repository.path.resolve() != repository.path
+            or not repository.path.is_dir()
+            or any(repository.path.iterdir())
+        ):
+            raise ValueError("server-only transfer requires an empty nonsymlink target directory")
+        initial_head = ""
+    else:
+        initial_head = repository.require_checkout(allow_unborn=server_only)
+        if server_only and repository.git("remote"):
+            raise ValueError("server-only transfer target must have no Git remotes")
     if operation == "probe":
         output.write(f"{initial_head}\n".encode("ascii"))
         return
     if operation == "capture" and initial_head != expected_head:
         raise ValueError("source repository HEAD changed after transfer review")
-    if operation == "install":
+    if operation in {"install", "install-main"} and not initialize:
         repository.require_clean(allow_untracked=initial_head == expected_head)
     with tempfile.TemporaryDirectory(
         prefix="rcp-transfer-git-", dir=_rcp_temp_dir()
@@ -261,7 +285,11 @@ def run_repository_transfer(
         inspection = temporary / "inspection"
         inspection.mkdir()
         _validated_bundle(repository, bundle, expected_head, inspection)
-        if repository.require_checkout() != initial_head:
+        if initialize:
+            if any(repository.path.iterdir()):
+                raise ValueError("server-only transfer target changed during validation")
+            repository.git("init", "--initial-branch=main", "--template=")
+        if repository.require_checkout(allow_unborn=server_only) != initial_head:
             raise ValueError("repository HEAD changed during transfer")
         if operation == "capture":
             with bundle.open("rb") as captured:
@@ -275,22 +303,49 @@ def run_repository_transfer(
             repository.require_clean(allow_untracked=True)
             if repository.revision() != expected_head:
                 raise ValueError("target repository HEAD changed during transfer")
+            if server_only:
+                _attach_main(repository, expected_head)
             output.write(f"{expected_head}\n".encode("ascii"))
         else:
             repository.require_clean()
+            if server_only and initial_head and not _is_rcp_first_commit(repository, initial_head):
+                raise ValueError("server-only transfer target main changed after provisioning")
             repository.git("bundle", "unbundle", str(bundle))
-            if repository.revision() != initial_head:
+            if repository.require_checkout(allow_unborn=server_only) != initial_head:
                 raise ValueError("target repository HEAD changed during transfer")
             repository.require_clean()
-            repository.git("checkout", "--detach", "--no-overwrite-ignore", expected_head)
+            if server_only:
+                repository.git("checkout", "--no-overwrite-ignore", "-B", "main", expected_head)
+            else:
+                repository.git("checkout", "--detach", "--no-overwrite-ignore", expected_head)
             if repository.revision() != expected_head:
                 raise ValueError("target repository did not reach the reviewed HEAD")
             repository.require_clean()
             output.write(f"{expected_head}\n".encode("ascii"))
 
 
+def _is_rcp_first_commit(repository: RepositoryGit, head: str) -> bool:
+    """True when `head` is setup's lone empty `Start RCP project` commit, safe to replace."""
+    count = repository.git("rev-list", "--count", head).decode("ascii").strip()
+    tree = repository.git("rev-parse", f"{head}^{{tree}}").decode("ascii").strip()
+    subject = repository.git("log", "-1", "--format=%s", head).decode("utf-8").strip()
+    return count == "1" and tree == _EMPTY_TREE and subject == "Start RCP project"
+
+
+def _attach_main(repository: RepositoryGit, expected_head: str) -> None:
+    main = (
+        repository.git("rev-parse", "--verify", "--quiet", "refs/heads/main", allow_missing=True)
+        .decode("ascii")
+        .strip()
+    )
+    if main and main != expected_head:
+        raise ValueError("server-only transfer main changed after import")
+    repository.git("update-ref", "refs/heads/main", expected_head, main or "0" * 40)
+    repository.git("symbolic-ref", "HEAD", "refs/heads/main")
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 7 or argv[1] not in {"probe", "capture", "install"}:
+    if len(argv) != 7 or argv[1] not in {"probe", "capture", "install", "install-main"}:
         return 2
     try:
         run_repository_transfer(

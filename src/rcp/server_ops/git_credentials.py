@@ -408,10 +408,9 @@ class GitCredentialManager:
             "git@github.com",
         )
         if machine.location == "local":
-            return ("sudo", "-n", "-u", self.layout.service_account, "-H", *inner)
+            return ("sudo", "-u", self.layout.service_account, "-H", *inner)
         return (
             "sudo",
-            "-n",
             "-u",
             self.layout.service_account,
             "-H",
@@ -430,7 +429,7 @@ class GitCredentialManager:
         advertised = self._git(
             machine,
             material,
-            ("git", "ls-remote", origin, "HEAD"),
+            ("git", "ls-remote", origin, "HEAD", "refs/heads/*"),
         )
         if advertised.returncode != 0:
             return _probe_failure(
@@ -445,8 +444,8 @@ class GitCredentialManager:
                 commit=None,
                 temporary_ref=None,
                 diagnostic=(
-                    "The GitHub repository has no commit. Push the local code through the "
-                    "ordinary human Git workflow, then resume the same provisioning request."
+                    "The GitHub repository has no branch history. RCP will create the empty "
+                    "Start RCP project commit as RCP and push main with the deploy key."
                 ),
             )
         source_ref, advertised_commit = _preferred_source_ref(refs)
@@ -918,12 +917,21 @@ def deploy_key_operator_step(
     number: int,
     request_id: str,
     resume_argv: tuple[str, ...],
+    host_trust_needed: bool,
 ) -> ServerStep:
     _require_resume_request(resume_argv, request_id)
     instruction = (
-        f"Open {material.repository.settings_url}; add the displayed public key with title "
-        f"{material.label!r}."
+        "Open the repository's deploy keys and choose Add deploy key: "
+        f"{material.repository.settings_url} Paste the title and key shown below."
     )
+    grant = ExternalAction(
+        title="Add the key to GitHub",
+        instruction=instruction,
+        requirement="Enable Allow write access",
+    )
+    # Trusting github.com is a one-time, per-account step; only the write
+    # probe's own host-key failure asks for it.
+    trust = _github_host_trust_actions(manager, machine, material) if host_trust_needed else ()
     return ServerStep(
         number=number,
         title="Add a deploy key on GitHub",
@@ -942,34 +950,12 @@ def deploy_key_operator_step(
         ),
         message=(
             "GitHub has not yet proven read and write access for this repository-scoped deploy "
-            "key. Complete the displayed grant and host-trust steps, then resume."
+            "key. Complete the displayed steps, then resume."
         ),
-        actions=(
-            ExternalAction(
-                title="Add the key to GitHub",
-                instruction=instruction,
-                requirement="Enable Allow write access",
-            ),
-            # Before, not after: the command below stops at an unknown host
-            # key and waits, so an operator reading in order has to already
-            # know what to compare it against.
-            ExternalAction(
-                title="Know the host key before you are asked to accept it",
-                instruction=(
-                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
-                    "key; accept it only if the offered fingerprint is listed there. A "
-                    "successful no-shell authentication may then exit with status 1."
-                ),
-            ),
-            CommandAction(
-                title="Trust github.com from the server",
-                argv=manager.github_trust_argv(machine, material),
-                execution=OPERATOR_SHELL,
-            ),
-        ),
+        actions=(grant, *trust),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
-            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
+            NonsecretField(name="title", value=material.label, role="input"),
+            NonsecretField(name="key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
@@ -978,6 +964,31 @@ def deploy_key_operator_step(
         ),
         resume_argv=resume_argv,
         resume_execution=OPERATOR_SHELL,
+    )
+
+
+def _github_host_trust_actions(
+    manager: GitCredentialManager,
+    machine: ProjectProvisioningMachineIntent,
+    material: DeployKeyMaterial,
+) -> tuple[ExternalAction, CommandAction]:
+    return (
+        # Before, not after: the command below stops at an unknown host
+        # key and waits, so an operator reading in order has to already
+        # know what to compare it against.
+        ExternalAction(
+            title="Know the host key before you are asked to accept it",
+            instruction=(
+                f"GitHub publishes its host key fingerprints here: {_GITHUB_FINGERPRINTS_URL} "
+                "The next command shows one and asks to accept it; accept only if it is "
+                "listed there. It may then end with exit status 1, which is expected."
+            ),
+        ),
+        CommandAction(
+            title="Trust github.com from the server",
+            argv=manager.github_trust_argv(machine, material),
+            execution=OPERATOR_SHELL,
+        ),
     )
 
 
@@ -1024,73 +1035,17 @@ def restore_deploy_key_operator_step(
                 instruction=instruction,
                 requirement="Enable Allow write access",
             ),
-            # Before, not after: the command below stops at an unknown host
-            # key and waits, so an operator reading in order has to already
-            # know what to compare it against.
-            ExternalAction(
-                title="Know the host key before you are asked to accept it",
-                instruction=(
-                    f"Open {_GITHUB_FINGERPRINTS_URL}. The next command stops at GitHub's host "
-                    "key; accept it only if the offered fingerprint is listed there. A "
-                    "successful no-shell authentication may then exit with status 1."
-                ),
-            ),
-            CommandAction(
-                title="Trust github.com from the server",
-                argv=manager.github_trust_argv(machine, material),
-                execution=OPERATOR_SHELL,
-            ),
+            *_github_host_trust_actions(manager, machine, material),
         ),
         fields=(
-            NonsecretField(name="deploy_key_label", value=material.label, role="input"),
-            NonsecretField(name="deploy_public_key", value=material.public_key, role="input"),
+            NonsecretField(name="title", value=material.label, role="input"),
+            NonsecretField(name="key", value=material.public_key, role="input"),
             NonsecretField(
                 name="public_key_fingerprint",
                 value=material.public_key_fingerprint,
                 role="evidence",
             ),
         ),
-        resume_argv=resume_argv,
-        resume_execution=OPERATOR_SHELL,
-    )
-
-
-def empty_repository_operator_step(
-    material: DeployKeyMaterial,
-    *,
-    number: int,
-    request_id: str,
-    resume_argv: tuple[str, ...],
-) -> ServerStep:
-    _require_resume_request(resume_argv, request_id)
-    repository_url = f"https://github.com/{material.repository.identity}"
-    return ServerStep(
-        number=number,
-        title="Push the repository's first commit",
-        purpose="Give the central checkout one real human-authored Git commit to clone.",
-        performed_by="human",
-        target=ExternalServiceTarget(
-            service="github.com",
-            resource=material.repository.identity,
-            destination_url=material.repository.settings_url,
-            required_authority_role="repository administrator",
-        ),
-        phase="github_initial_commit",
-        state="operator_action_needed",
-        expected_success="GitHub advertises one existing commit for the provisioning write probe.",
-        message=(
-            "This repository is empty. Push the local code through the ordinary human Git "
-            "workflow, then resume the same provisioning request."
-        ),
-        actions=(
-            ExternalAction(
-                instruction=(
-                    f"Push the intended codebase to {repository_url} with its first real commit. "
-                    "RCP will not create a repository or invent an initialization commit."
-                )
-            ),
-        ),
-        fields=(NonsecretField(name="repository", value=material.repository.identity),),
         resume_argv=resume_argv,
         resume_execution=OPERATOR_SHELL,
     )
@@ -1249,9 +1204,12 @@ def _parse_remote_refs(output: str) -> dict[str, str]:
 
 
 def _preferred_source_ref(refs: dict[str, str]) -> tuple[str, str]:
-    if set(refs) != {"HEAD"}:
-        raise GitCredentialRefused("GitHub did not advertise exactly one HEAD commit.")
-    return "HEAD", refs["HEAD"]
+    if "HEAD" in refs:
+        return "HEAD", refs["HEAD"]
+    if "refs/heads/main" in refs:
+        return "refs/heads/main", refs["refs/heads/main"]
+    ref = sorted(refs)[0]
+    return ref, refs[ref]
 
 
 def _probe_failure(
@@ -1409,7 +1367,6 @@ __all__ = [
     "cleanup_ref_operator_step",
     "deploy_key_ssh_command",
     "deploy_key_operator_step",
-    "empty_repository_operator_step",
     "restore_deploy_key_operator_step",
     "run_bounded_process",
     "target_account_argv",

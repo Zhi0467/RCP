@@ -432,6 +432,12 @@ def prepare_backup_run_command(
 def project_capture_problems(projects: tuple[BackupProjectCapture, ...]) -> tuple[str, ...]:
     problems = []
     for project in projects:
+        if project.recovery is not None:
+            problems.extend(
+                f"{project.project_id}/{repository.alias}: code not backed up"
+                for repository in project.recovery.repositories
+                if repository.repository is None
+            )
         if project.status != "uncaptured":
             continue
         reason = project.unavailable_reason or project.unavailable_kind

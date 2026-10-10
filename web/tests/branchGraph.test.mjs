@@ -197,12 +197,14 @@ test("switching graph targets isolates snapshots, local drafts, and an in-flight
   const stored = new Map();
   persistProjectHumanDraft(
     { setItem: (key, value) => stored.set(key, value), removeItem: (key) => stored.delete(key) },
+    "member",
     "project",
     mainDraft,
     main,
   );
   persistProjectHumanDraft(
     { setItem: (key, value) => stored.set(key, value), removeItem: (key) => stored.delete(key) },
+    "member",
     "project",
     branchDraft,
     branch,

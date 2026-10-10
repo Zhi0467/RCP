@@ -388,7 +388,7 @@ fn secure_coordinator_permissions(_file: &File) -> Result<(), String> {
 #[serde(deny_unknown_fields)]
 pub struct ProjectTransferRepositorySource {
     pub alias: String,
-    pub repository: ProjectTransferRepositoryIdentity,
+    pub repository: Option<ProjectTransferRepositoryIdentity>,
     pub machine_alias: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_commit: Option<String>,
@@ -420,7 +420,7 @@ pub struct ProjectTransferSourceConfiguration {
 #[serde(deny_unknown_fields)]
 pub struct ProjectTransferRepositoryBinding {
     pub alias: String,
-    pub repository: ProjectTransferRepositoryIdentity,
+    pub repository: Option<ProjectTransferRepositoryIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -564,6 +564,7 @@ pub struct ProjectProvisioningProjection {
     pub can_review: bool,
     pub can_cancel: bool,
     pub target_space_id: String,
+    pub target_project_id: Option<String>,
     pub proposed_project_id: String,
     pub name: Option<String>,
     pub state_repository: Option<String>,
@@ -621,10 +622,12 @@ pub struct ProjectProvisioningMachineProjection {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ProjectProvisioningRepositoryProjection {
     pub alias: String,
-    pub repository: ProjectTransferRepositoryIdentity,
-    pub https_clone_url: String,
-    pub ssh_clone_url: String,
-    pub settings_url: String,
+    pub repository: Option<ProjectTransferRepositoryIdentity>,
+    pub source_kind: String,
+    pub count_as_project_truth: bool,
+    pub https_clone_url: Option<String>,
+    pub ssh_clone_url: Option<String>,
+    pub settings_url: Option<String>,
     pub machine_alias: String,
     pub intended_path: Option<String>,
     pub resolved_path: Option<String>,
@@ -916,7 +919,7 @@ struct IncomingProvisioningCreateBody<'a> {
 #[derive(Debug, Serialize)]
 struct DerivedRepositoryIntent {
     alias: String,
-    source: String,
+    source: Option<String>,
     machine_alias: String,
 }
 
@@ -1670,12 +1673,10 @@ fn validate_source_for_prepare(
         .as_ref()
         .ok_or_else(|| "the source transfer omitted its public configuration".to_string())?;
     validate_source_configuration(configuration)?;
-    if configuration
-        .repositories
-        .iter()
-        .all(|repository| repository.source_commit.is_some())
-        != request.include_local_commits
-    {
+    if configuration.repositories.iter().any(|repository| {
+        repository.repository.is_some()
+            && repository.source_commit.is_some() != request.include_local_commits
+    }) {
         return Err("the source transfer changed the local-commit inclusion choice".into());
     }
     let configuration_digest = source
@@ -1968,7 +1969,7 @@ fn assemble_bundle(
         .source_configuration
         .repositories
         .iter()
-        .all(|repository| repository.source_commit.is_some());
+        .any(|repository| repository.repository.is_some() && repository.source_commit.is_some());
     Ok(ProjectTransferBundle {
         source: source_projection,
         target: target.to_projection()?,
@@ -2385,7 +2386,9 @@ fn validate_source_configuration(
         if aliases.contains(&repository.alias) {
             return Err("source repository aliases must be unique".into());
         }
-        validate_repository_identity(&repository.repository.identity)?;
+        if let Some(identity) = &repository.repository {
+            validate_repository_identity(&identity.identity)?;
+        }
         if let Some(commit) = &repository.source_commit {
             if commit.len() != 40
                 || !commit
@@ -2395,19 +2398,40 @@ fn validate_source_configuration(
                 return Err("the source repository commit must be a lowercase SHA-1".into());
             }
         }
-        if identities.contains(&repository.repository.identity) {
-            return Err("source repository identities must be unique".into());
+        if let Some(identity) = &repository.repository {
+            if identities.contains(&identity.identity) {
+                return Err("source repository identities must be unique".into());
+            }
+            identities.push(identity.identity.clone());
+        } else if repository.source_commit.is_none() {
+            return Err("server-only transfer requires a reviewed commit and Git bundle".into());
         }
         aliases.push(repository.alias.clone());
-        identities.push(repository.repository.identity.clone());
+    }
+    let github_commits = configuration
+        .repositories
+        .iter()
+        .filter(|repository| repository.repository.is_some())
+        .map(|repository| repository.source_commit.is_some())
+        .collect::<Vec<_>>();
+    if github_commits.iter().any(|included| *included)
+        && !github_commits.iter().all(|included| *included)
+    {
+        return Err("the local-commit choice must cover every GitHub repository".into());
     }
     let commit_count = configuration
         .repositories
         .iter()
         .filter(|repository| repository.source_commit.is_some())
         .count();
-    if commit_count != 0 && commit_count != configuration.repositories.len() {
-        return Err("the source transfer must include a saved commit for every repository".into());
+    if (commit_count != 0 && configuration.supported_archive_codecs != ["rcp-transfer-v2"])
+        || (commit_count == 0
+            && configuration
+                .supported_archive_codecs
+                .iter()
+                .any(|codec| codec == "rcp-transfer-v2"))
+    {
+        return Err("commit-bearing transfers require the v2 archive codec".into());
     }
     validate_scopes(
         &configuration.state_repository,
@@ -2554,7 +2578,10 @@ fn derive_repository_intents(
         .iter()
         .map(|repository| DerivedRepositoryIntent {
             alias: repository.alias.clone(),
-            source: format!("https://github.com/{}.git", repository.repository.identity),
+            source: repository
+                .repository
+                .as_ref()
+                .map(|identity| format!("https://github.com/{}.git", identity.identity)),
             machine_alias: repository.machine_alias.clone(),
         })
         .collect()
@@ -2595,7 +2622,9 @@ fn parse_link_receipt(value: &Value) -> Result<ProjectTransferLinkReceipt, Strin
     let mut aliases = Vec::with_capacity(receipt.target_repositories.len());
     for repository in &receipt.target_repositories {
         validate_alias(&repository.alias, "linked target repository alias")?;
-        validate_repository_identity(&repository.repository.identity)?;
+        if let Some(identity) = &repository.repository {
+            validate_repository_identity(&identity.identity)?;
+        }
         if aliases
             .last()
             .is_some_and(|previous| previous >= &repository.alias)
@@ -2868,12 +2897,12 @@ fn validate_link_receipt(
     let expected = configuration
         .repositories
         .iter()
-        .map(|repository| (&repository.alias, &repository.repository.identity))
+        .map(|repository| (&repository.alias, &repository.repository))
         .collect::<Vec<_>>();
     if receipt.target_repositories.len() != expected.len()
         || receipt.target_repositories.iter().any(|repository| {
             !expected.iter().any(|(alias, identity)| {
-                &repository.alias == *alias && &repository.repository.identity == *identity
+                &repository.alias == *alias && &repository.repository == *identity
             })
         })
     {
@@ -2927,8 +2956,7 @@ fn validate_bundle(bundle: &ProjectTransferBundle) -> Result<(), String> {
                     .iter()
                     .any(|source_repository| {
                         source_repository.alias == repository.alias
-                            && source_repository.repository.identity
-                                == repository.repository.identity
+                            && source_repository.repository == repository.repository
                             && source_repository.machine_alias == repository.machine_alias
                     })
             })
@@ -3008,6 +3036,7 @@ fn parse_project_provisioning_projection(
         can_review: required_bool(object, "can_review")?,
         can_cancel: required_bool(object, "can_cancel")?,
         target_space_id,
+        target_project_id: optional_text(object, "target_project_id")?,
         proposed_project_id,
         name: optional_text(object, "name")?,
         state_repository: optional_text(object, "state_repository")?,
@@ -3104,18 +3133,49 @@ fn parse_repository_projection(
     let object = value
         .as_object()
         .ok_or_else(|| "the target repository projection is invalid".to_string())?;
-    let repository_object = object
-        .get("repository")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "the target repository projection has no repository identity".to_string())?;
-    let identity = required_text(repository_object, "identity")?.to_string();
-    validate_repository_identity(&identity)?;
+    let repository = match object.get("repository") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let repository_object = value.as_object().ok_or_else(|| {
+                "the target repository projection has an invalid repository identity".to_string()
+            })?;
+            let identity = required_text(repository_object, "identity")?.to_string();
+            validate_repository_identity(&identity)?;
+            Some(ProjectTransferRepositoryIdentity { identity })
+        }
+    };
+    let expected_kind = if repository.is_some() {
+        "github"
+    } else {
+        "server_only"
+    };
+    let source_kind =
+        optional_text(object, "source_kind")?.unwrap_or_else(|| expected_kind.to_string());
+    if source_kind != expected_kind {
+        return Err("the target repository source kind does not match its identity".into());
+    }
+    let count_as_project_truth = match object.get("count_as_project_truth") {
+        None => true,
+        Some(_) => required_bool(object, "count_as_project_truth")?,
+    };
+    let source_url = |field| {
+        if repository.is_some() {
+            required_text(object, field).map(|value| Some(value.to_string()))
+        } else {
+            optional_text(object, field)
+        }
+    };
+    let https_clone_url = source_url("https_clone_url")?;
+    let ssh_clone_url = source_url("ssh_clone_url")?;
+    let settings_url = source_url("settings_url")?;
     Ok(ProjectProvisioningRepositoryProjection {
         alias: required_text(object, "alias")?.to_string(),
-        repository: ProjectTransferRepositoryIdentity { identity },
-        https_clone_url: required_text(object, "https_clone_url")?.to_string(),
-        ssh_clone_url: required_text(object, "ssh_clone_url")?.to_string(),
-        settings_url: required_text(object, "settings_url")?.to_string(),
+        repository,
+        source_kind,
+        count_as_project_truth,
+        https_clone_url,
+        ssh_clone_url,
+        settings_url,
         machine_alias: required_text(object, "machine_alias")?.to_string(),
         intended_path: optional_text(object, "intended_path")?,
         resolved_path: optional_text(object, "resolved_path")?,
@@ -4237,10 +4297,30 @@ mod tests {
         let configuration = source.source_configuration.as_mut().unwrap();
         let mut second = configuration.repositories[0].clone();
         second.alias = "analysis".into();
-        second.repository.identity = "example/analysis".into();
+        second.repository.as_mut().unwrap().identity = "example/analysis".into();
         second.source_commit = None;
         configuration.repositories.push(second);
         assert!(validate_source_configuration(configuration).is_err());
+    }
+
+    #[test]
+    fn server_only_transfer_requires_bundle_and_relays_no_url() {
+        let mut source = decision_record("source", REQUEST_ID);
+        let configuration = source.source_configuration.as_mut().unwrap();
+        let mut local = configuration.repositories[0].clone();
+        local.alias = "local".into();
+        local.repository = None;
+        local.source_commit = Some("a".repeat(40));
+        configuration.repositories.push(local);
+        configuration.supported_archive_codecs = vec!["rcp-transfer-v2".into()];
+        validate_source_configuration(configuration).unwrap();
+        let intents = serde_json::to_value(derive_repository_intents(configuration)).unwrap();
+        assert!(intents[1]["source"].is_null());
+        validate_source_for_prepare(&source, &prepare_request(), TARGET_SPACE_ID).unwrap();
+        source.source_configuration.as_mut().unwrap().repositories[1].source_commit = None;
+        assert!(
+            validate_source_configuration(source.source_configuration.as_ref().unwrap()).is_err()
+        );
     }
 
     #[test]
@@ -4280,9 +4360,9 @@ mod tests {
             machine_aliases: vec!["server".into()],
             repositories: vec![ProjectTransferRepositorySource {
                 alias: "state".into(),
-                repository: ProjectTransferRepositoryIdentity {
+                repository: Some(ProjectTransferRepositoryIdentity {
                     identity: "example/state".into(),
-                },
+                }),
                 machine_alias: "server".into(),
                 source_commit: None,
             }],
@@ -4395,9 +4475,9 @@ mod tests {
             machine_aliases: vec!["server".into()],
             repositories: vec![ProjectTransferRepositorySource {
                 alias: "state".into(),
-                repository: ProjectTransferRepositoryIdentity {
+                repository: Some(ProjectTransferRepositoryIdentity {
                     identity: "example/state".into(),
-                },
+                }),
                 machine_alias: "server".into(),
                 source_commit: None,
             }],
@@ -4702,6 +4782,41 @@ mod tests {
                 request
             );
         }
+    }
+
+    #[test]
+    fn provisioning_decodes_optional_repository_source() {
+        let mut payload =
+            incoming_projection_payload("waiting_for_server_setup", Value::Null, Value::Null);
+        let mut missing_github_url = payload.clone();
+        missing_github_url["repositories"][0]["https_clone_url"] = Value::Null;
+        assert!(parse_project_provisioning_projection(
+            &missing_github_url,
+            TARGET_ID,
+            TARGET_SPACE_ID
+        )
+        .is_err());
+        for field in [
+            "repository",
+            "https_clone_url",
+            "ssh_clone_url",
+            "settings_url",
+        ] {
+            payload["repositories"][0][field] = Value::Null;
+        }
+        payload["repositories"][0]["source_kind"] = serde_json::json!("server_only");
+        let projection =
+            parse_project_provisioning_projection(&payload, TARGET_ID, TARGET_SPACE_ID).unwrap();
+        let repository = &projection.repositories[0];
+        assert!(repository.repository.is_none());
+        assert_eq!(repository.source_kind, "server_only");
+        assert!(repository.https_clone_url.is_none());
+        assert!(repository.ssh_clone_url.is_none());
+        assert!(repository.settings_url.is_none());
+        payload["repositories"][0]["source_kind"] = serde_json::json!("github");
+        assert!(
+            parse_project_provisioning_projection(&payload, TARGET_ID, TARGET_SPACE_ID).is_err()
+        );
     }
 
     fn incoming_projection_payload(

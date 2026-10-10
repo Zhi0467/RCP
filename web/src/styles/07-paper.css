@@ -163,20 +163,17 @@
   flex-direction: column;
   min-height: 0;
 }
-.coach-header {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  display: flex;
+.coach-history-bar {
   flex: none;
-  justify-content: space-between;
-  min-height: 61px;
-  padding: 10px 14px;
+  position: relative;
 }
-.coach-header h2 {
-  font-family: var(--editorial);
-  font-size: var(--type-xl);
-  font-weight: 550;
-  margin: 1px 0;
+.coach-history-bar > .session-history > summary {
+  padding-right: 48px;
+}
+.coach-new-chat {
+  position: absolute;
+  right: 8px;
+  top: 7px;
 }
 .session-history {
   border-bottom: 1px solid var(--line);

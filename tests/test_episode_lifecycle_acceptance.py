@@ -537,16 +537,19 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
             old_episode_id,
             continuation_id,
         ]
-        unchanged = {
-            key: value
-            for key, value in old_after.items()
-            if key not in {"continued_by_episode_id", "can_continue", "graph_branch", "chain"}
+        # Messages follow the chain to its newest member, so the message
+        # projection moves with the continuation.
+        moved = {
+            "continued_by_episode_id",
+            "can_continue",
+            "graph_branch",
+            "chain",
+            "can_message",
+            "message_refusal",
+            "message_requires_continuation",
         }
-        assert unchanged == {
-            key: value
-            for key, value in old_episode.items()
-            if key not in {"continued_by_episode_id", "can_continue", "graph_branch", "chain"}
-        }
+        unchanged = {key: value for key, value in old_after.items() if key not in moved}
+        assert unchanged == {key: value for key, value in old_episode.items() if key not in moved}
         timeline = client.get(
             f"/api/projects/{project_id}/episodes/{continuation_id}/timeline"
         ).json()

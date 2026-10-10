@@ -506,8 +506,8 @@ def run_server_command(
     else:
         try:
             prepared = (handler or _dispatch_server_command)(request, resolved_identity)
-        except Exception:
-            prepared = _preparation_failed_command(request, resolved_identity)
+        except Exception as exc:
+            prepared = _preparation_failed_command(request, resolved_identity, exc)
     try:
         plan = ServerPlanEvent.model_validate(prepared.plan)
         if plan.command != request.command:
@@ -565,12 +565,12 @@ def _continue_interactive_wizard(
             file=output_stream,
         )
         return execution.exit_code
-    output_stream.write("\nComplete the step above, then press Enter to continue (q quits): ")
+    output_stream.write("\nPress Enter when you have done this (q stops here): ")
     output_stream.flush()
     answer = input_stream.readline()
     if not answer or answer.strip().lower() == "q":
         print(
-            "Setup paused safely. Run the shown continue command when you are ready.",
+            "Setup paused safely. Run the resume command above when you are ready.",
             file=output_stream,
         )
         return execution.exit_code
@@ -589,7 +589,7 @@ def _continue_interactive_wizard(
         answer = input_stream.readline()
         if not answer or answer.strip().lower() == "q":
             print(
-                "Setup paused safely. Run the shown continue command after saving the code.",
+                "Setup paused safely. Run the resume command above after saving the code.",
                 file=output_stream,
             )
             return execution.exit_code
@@ -602,9 +602,14 @@ def _wizard_command_for_identity(
     argv: tuple[str, ...],
     identity: CallerIdentity,
 ) -> tuple[str, ...]:
-    own_account_prefix = ("sudo", "-n", "-u", identity.username, "-H")
-    if identity.uid != 0 and argv[: len(own_account_prefix)] == own_account_prefix:
-        return argv[len(own_account_prefix) :]
+    if identity.uid == 0:
+        return argv
+    for own_account_prefix in (
+        ("sudo", "-n", "-u", identity.username, "-H"),
+        ("sudo", "-u", identity.username, "-H"),
+    ):
+        if argv[: len(own_account_prefix)] == own_account_prefix:
+            return argv[len(own_account_prefix) :]
     return argv
 
 
@@ -718,6 +723,7 @@ def _wrong_identity_command(
 def _preparation_failed_command(
     request: ServerCommandRequest,
     identity: CallerIdentity,
+    cause: Exception | None = None,
 ) -> PreparedServerCommand:
     target = MachineTarget(host=identity.host, os_account=identity.username)
     pending = ServerStep(
@@ -735,12 +741,28 @@ def _preparation_failed_command(
         update={
             "state": "failed",
             "message": (
-                "RCP could not prepare a valid operation plan. No server work was started; "
-                "check the server log and rerun this command."
+                "RCP could not prepare a valid operation plan. No server work was started. "
+                f"{_preparation_reason(cause)}"
             ),
         }
     )
     return _single_step_command(request.command, pending, failed)
+
+
+def _preparation_reason(cause: Exception | None) -> str:
+    """Say why preparation stopped without echoing arbitrary exception text.
+
+    A control refusal is written by the running server for the operator, so it
+    is shown as is; any other failure names only its type.
+    """
+
+    from rcp.server_ops.control import ServerControlError
+
+    if isinstance(cause, ServerControlError):
+        return f"Reason: {cause}"
+    if cause is None:
+        return "Rerun this command."
+    return f"Unexpected {type(cause).__name__}; rerun this command."
 
 
 def _single_step_command(
@@ -971,12 +993,21 @@ class _InteractiveServerRenderer:
         self._current_line(headline, finish=terminal or final_success or announce_success)
         if not terminal and not final_success and not announce_success:
             return
+        if step.state == "operator_action_needed":
+            # A human stop prints only what the human does: where to go, what to
+            # paste, and how to resume. The full record stays machine-readable.
+            self._render_destination(step)
+            self._render_actions(step, heading=False)
+            self._render_fields(step.fields, paste_only=True)
+            self._render_resume(step)
+            return
         _print_wrapped(step.message, self.stream, indent="  ")
         if terminal:
             self._render_stop(step)
         self._render_fields(step.fields)
         if terminal:
-            self._render_actions(step)
+            self._render_actions(step, heading=True)
+            self._render_resume(step)
 
     def _current_line(self, text: str, *, finish: bool) -> None:
         if self.live_updates:
@@ -999,24 +1030,48 @@ class _InteractiveServerRenderer:
             subsequent_indent="                 ",
         )
 
-    def _render_fields(self, fields: tuple[NonsecretField, ...]) -> None:
-        if not fields:
+    def _render_destination(self, step: ServerStep) -> None:
+        if isinstance(step.target, MachineTarget):
+            print(f"  On: {step.target.host} (as {step.target.os_account})", file=self.stream)
+            return
+        # An action that already links somewhere is the place to go; the
+        # target's own page would only compete with it.
+        if any(
+            action.kind == "external" and _URL_PATTERN.search(action.instruction)
+            for action in step.actions
+        ):
+            return
+        url = step.target.destination_url
+        print("  Open:", file=self.stream)
+        print(f"  {_link(url, color=self.color)}", file=self.stream)
+
+    def _render_fields(
+        self,
+        fields: tuple[NonsecretField, ...],
+        *,
+        paste_only: bool = False,
+    ) -> None:
+        # A value the operator pastes somewhere and one they only compare read
+        # alike in a terminal; the panel separates them visually. A human stop
+        # shows only what to paste, and the record keeps the rest.
+        labelled = [(field, field.role == "evidence") for field in fields]
+        if paste_only:
+            labelled = [(field, compare) for field, compare in labelled if not compare]
+        if not labelled:
             return
         print(file=self.stream)
-        shown = fields[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
-        for field in shown:
-            # A value the operator pastes somewhere and one they only compare
-            # read alike in a terminal; the panel separates them visually.
-            compare = " (compare only)" if field.role == "evidence" else ""
+        shown = labelled[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
+        for field, compare_only in shown:
+            compare = " (compare only)" if compare_only else ""
             print(f"  {field.name.replace('_', ' ')}: {field.value}{compare}", file=self.stream)
-        hidden = len(fields) - len(shown)
+        hidden = len(labelled) - len(shown)
         if hidden:
             print(
                 f"  … {hidden} more field(s); use --machine-readable for the complete record.",
                 file=self.stream,
             )
 
-    def _render_actions(self, step: ServerStep) -> None:
+    def _render_actions(self, step: ServerStep, *, heading: bool) -> None:
         # A stop may list its resume command among its actions; it is one step,
         # not two. Drop it before numbering so the wizard and the panel number
         # the same list, and so a stop left with nothing prints no heading.
@@ -1028,7 +1083,8 @@ class _InteractiveServerRenderer:
         )
         if actions:
             print(file=self.stream)
-            print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
+            if heading:
+                print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
             for index, action in enumerate(actions, start=1):
                 if action.title:
                     print(f"  {index}. {action.title}", file=self.stream)
@@ -1037,19 +1093,43 @@ class _InteractiveServerRenderer:
                     shell = _execution_prefix(action.execution)
                     print(f"{lead}{shell}$ {shlex.join(action.argv)}", file=self.stream)
                 else:
-                    _print_wrapped(
-                        action.instruction,
-                        self.stream,
-                        indent=lead,
-                        subsequent_indent="     ",
-                    )
+                    self._render_instruction(action.instruction, lead=lead)
                     if action.requirement:
                         print(f"     Required: {action.requirement}", file=self.stream)
-        if step.resume_argv:
-            print(file=self.stream)
-            print("Continue:", file=self.stream)
-            shell = _execution_prefix(step.resume_execution)
-            print(f"  {shell}$ {shlex.join(step.resume_argv)}", file=self.stream)
+
+    def _render_instruction(self, text: str, *, lead: str) -> None:
+        # A link sits on its own line so a terminal can open it and wrapping
+        # never splits it; the prose around it wraps as usual.
+        indent = lead
+        for part in _URL_PATTERN.split(text):
+            part = part.strip()
+            if not part:
+                continue
+            if _URL_PATTERN.fullmatch(part):
+                print(f"     {_link(part, color=self.color)}", file=self.stream)
+            else:
+                _print_wrapped(part, self.stream, indent=indent, subsequent_indent="     ")
+            indent = "     "
+
+    def _render_resume(self, step: ServerStep) -> None:
+        if not step.resume_argv:
+            return
+        print(file=self.stream)
+        print("To resume setup later:", file=self.stream)
+        shell = _execution_prefix(step.resume_execution)
+        print(f"  {shell}$ {shlex.join(step.resume_argv)}", file=self.stream)
+
+
+# A URL ends before whitespace or the sentence punctuation that follows it.
+_URL_PATTERN = re.compile(r"(https?://[^\s]*[^\s.,;:)])")
+
+
+def _link(url: str, *, color: bool) -> str:
+    """Make a URL clickable in terminals that support OSC 8 hyperlinks."""
+
+    if not color:
+        return url
+    return f"\x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\"
 
 
 def _execution_prefix(execution: ExecutionContext | None) -> str:

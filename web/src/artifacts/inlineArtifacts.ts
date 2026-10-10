@@ -10,6 +10,8 @@ import { turnArtifactName } from "../core/repositoryFileLinks";
 export const INLINE_ARTIFACT_MAX_HEIGHT = 1200;
 export const INLINE_ARTIFACT_INITIAL_HEIGHT = 320;
 export const INLINE_ARTIFACT_LIVE_STATE_REFRESH_MS = 10_000;
+// Mirror ARTIFACT_ERROR_MAX_CHARS in src/rcp/limits.py.
+export const ARTIFACT_ERROR_MAX_CHARS = 1024;
 
 /** The artifact names a reply embeds in place with Markdown image syntax.
  *
@@ -72,6 +74,8 @@ export function inlineViewerUrl(viewerUrl: string): string {
 }
 
 export type InlineShellMessage =
+  | { kind: "error"; message: string; count: number }
+  | { kind: "error-clear" }
   | { kind: "size"; height: number }
   | { kind: "selection"; selection: InlineSelection | null; description: string };
 
@@ -87,7 +91,22 @@ export function readInlineShellMessage(
 ): InlineShellMessage | null {
   if (!frame || event.source !== frame || event.origin !== origin) return null;
   const data = event.data as Record<string, unknown> | null;
-  if (!data || typeof data !== "object" || data.version !== 1) return null;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  if (data.kind === "rcp-artifact-error-clear")
+    return Object.keys(data).length === 1 ? { kind: "error-clear" } : null;
+  if (data.kind === "rcp-artifact-error") {
+    if (
+      Object.keys(data).length !== 3 ||
+      typeof data.message !== "string" ||
+      data.message.length > ARTIFACT_ERROR_MAX_CHARS ||
+      typeof data.count !== "number" ||
+      !Number.isSafeInteger(data.count) ||
+      data.count < 1
+    )
+      return null;
+    return { kind: "error", message: data.message, count: data.count };
+  }
+  if (data.version !== 1) return null;
   if (data.type === "rcp-artifact-size") {
     if (typeof data.height !== "number" || !Number.isFinite(data.height)) return null;
     return {

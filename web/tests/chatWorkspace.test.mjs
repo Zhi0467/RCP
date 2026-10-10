@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
-  chatDraftStorageKey,
   conversationHref,
   chatIdForTask,
   chatIndicator,
@@ -28,6 +27,7 @@ import {
   mergeChatReads,
   unreadChatIdsFromReads,
   unsentConversation,
+  orchestratorCanUnlock,
 } from "../src/chat/chatWorkspace.ts";
 import { graphTargetFromHash } from "../src/core/graphTarget.ts";
 import { parseProjectHash } from "../src/experiments/experimentBoardModel.ts";
@@ -274,7 +274,6 @@ test("a turn is unread when it ended after the viewer's marker for its chat", ()
 });
 
 test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
-  assert.equal(chatDraftStorageKey("project", "chat"), "rcp:chat-draft:project:chat");
   assert.equal(chatModeStorageKey("project", "chat"), "rcp:chat-mode:project:chat");
   assert.equal(toggleConversationMode("discuss"), "work");
   assert.equal(toggleConversationMode("work"), "discuss");
@@ -617,6 +616,41 @@ test("a moved steer count marks a running chat task for refresh", () => {
   };
   assert.deepEqual(newlySteeredChatTaskIds([running], new Map([["turn", 0]])), ["turn"]);
   assert.deepEqual(newlySteeredChatTaskIds([running], new Map([["turn", 1]])), []);
-  // First sight is not a change: the page loaded that history already.
-  assert.deepEqual(newlySteeredChatTaskIds([running], new Map()), []);
+  // A turn first seen with steers already queued has history this page lacks.
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map()), ["turn"]);
+  assert.deepEqual(newlySteeredChatTaskIds([{ ...running, steer_count: 0 }], new Map()), []);
+});
+
+test("child conversation inventory preserves admission refusal and later unlock", () => {
+  const summary = {
+    chat_id: "child",
+    kind: "node_chat",
+    node_id: "node/a",
+    title: "Child",
+    updated_at: "",
+    message_count: 1,
+    last_message_preview: "",
+    conversation_kind: "auto_research_child",
+    orchestrator_episode_id: "parent",
+    human_turn_refusal: { code: "auto_research_child_read_only", detail: "running" },
+  };
+  const locked = groupChatConversations([summary], [], {}, "Project")[0];
+  assert.deepEqual(locked.humanTurnRefusal, summary.human_turn_refusal);
+  assert.equal(locked.orchestratorEpisodeId, "parent");
+  const unlocked = groupChatConversations(
+    [{ ...summary, human_turn_refusal: null }],
+    [],
+    {},
+    "Project",
+  )[0];
+  assert.equal(unlocked.humanTurnRefusal, null);
+  assert.equal(unlocked.conversationKind, "auto_research_child");
+});
+
+test("only a running-lineage lock offers messaging the orchestrator", () => {
+  assert.equal(orchestratorCanUnlock({ code: "auto_research_child_read_only", detail: "" }), true);
+  for (const code of ["episode_isolation_unavailable", "episode_merge_reserved"]) {
+    assert.equal(orchestratorCanUnlock({ code, detail: "" }), false);
+  }
+  assert.equal(orchestratorCanUnlock(null), false);
 });

@@ -192,7 +192,10 @@ def _agent_task_response(
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
-    if consolidation:
+    if consolidation or (
+        (record.can_resume or record.can_retry)
+        and store.episode_child_recovery_refusal(record) is not None
+    ):
         response.update(can_resume=False, can_retry=False)
     if record.kind in {"node_chat", "project_chat"}:
         chat_id = record.request.get("chat_id")
@@ -460,7 +463,8 @@ def agent_tasks(
         if branch_id is not None
         else None
     )
-    records = store.agent_tasks(project_id, graph_target=target)
+    # Rows are stored under the canonical id; a legacy alias URL reads the same list.
+    records = store.agent_tasks(catalog.resolve_project_id(project_id), graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
     chat_sessions: dict[tuple[str, str], str | None] = {}

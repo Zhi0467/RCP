@@ -6,14 +6,14 @@ import {
   FolderGit2,
   LoaderCircle,
   Plus,
-  RefreshCw,
   Server,
   ShieldCheck,
   SquareTerminal,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { EXPERIMENT_BOARD_POLL_DELAY_MS } from "./useProjectTabs";
 import {
   api,
   cancelProjectProvisioningRequest,
@@ -97,7 +97,7 @@ const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
-  { id: "orchestrator", label: "Orchestrator" },
+  { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 
 let machineSequence = 1;
@@ -154,7 +154,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   const [savedRequests, setSavedRequests] = useState<ProjectProvisioningResponse[]>([]);
   const [connection, setConnection] = useState<TeamConnectionMetadata | null>(null);
   const [operatorTarget, setOperatorTarget] = useState("");
-  const [operatorMode, setOperatorMode] = useState<ServerOperatorMode>("sudo_rcp");
   const [probe, setProbe] = useState<ServerOperatorProbe | null>(null);
   const [events, setEvents] = useState<ServerCommandEvent[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
@@ -248,9 +247,10 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         });
         if (!current || stopped) return;
         setConnection(current);
+        // An operator route is a separate capability the human grants, so the
+        // connection's own login is only offered as the draft until they check it.
+        setOperatorTarget(current.operator_route?.ssh_target ?? current.ssh_target);
         if (current.operator_route) {
-          setOperatorTarget(current.operator_route.ssh_target);
-          setOperatorMode(current.operator_route.mode);
           const checked = await probeDesktopServerOperator(current.connection_id);
           if (!stopped) setProbe(checked);
         }
@@ -262,6 +262,44 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       stopped = true;
     };
   }, [desktop]);
+
+  // While the request waits on the server, follow it here instead of asking
+  // the human to refresh after each terminal step.
+  const watchedRequestId = request?.can_run_setup ? request.request_id : null;
+  const watchedRevision = useRef(request?.revision);
+  watchedRevision.current = request?.revision;
+  useEffect(() => {
+    if (watchedRequestId === null) return;
+    let active = true;
+    let timer = 0;
+    let failures = 0;
+    const poll = async () => {
+      try {
+        const next = await loadProjectProvisioningRequest(watchedRequestId);
+        if (failures >= 3 && active) setError(null);
+        failures = 0;
+        // Only a newer revision replaces the view, so a poll that overlapped
+        // Run setup cannot put an older answer back.
+        if (active && next.revision > (watchedRevision.current ?? -1)) setCurrentRequest(next);
+      } catch (caught) {
+        // Keep polling, but say so once a few checks in a row have failed,
+        // since the page has no other way to notice progress.
+        failures += 1;
+        if (failures === 3 && active) {
+          setError(
+            `Cannot reach the server to check setup (${caught instanceof Error ? caught.message : String(caught)}). Still retrying.`,
+          );
+        }
+      } finally {
+        if (active) timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+      }
+    };
+    timer = window.setTimeout(() => void poll(), EXPERIMENT_BOARD_POLL_DELAY_MS);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [watchedRequestId]);
 
   const canonicalMachine = useMemo(() => {
     const repository = repositories.find((item) => item.alias === stateRepository);
@@ -275,7 +313,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
 
   const validate = (targetStep: number): string | null => {
     if (!name.trim()) return "Give this shared project a name.";
-    if (!repositories[0]?.source.trim()) return "Enter the first GitHub repository.";
     if (targetStep < 1) return null;
     const machineAliases = machines.map((machine) => machine.alias.trim());
     const repositoryAliases = repositories.map((repository) => repository.alias.trim());
@@ -306,9 +343,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       )
     ) {
       return "An explicit SSH central root must be a specific absolute path.";
-    }
-    if (repositories.some((repository) => !repository.source.trim())) {
-      return "Every repository needs its GitHub source.";
     }
     if (repositories.some((repository) => !machineAliases.includes(repository.machine_alias))) {
       return "Every repository must name one configured machine.";
@@ -351,7 +385,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       repositories: repositories.map(({ id: _id, ...repository }) => ({
         ...repository,
         alias: repository.alias.trim(),
-        source: repository.source.trim(),
+        source: repository.source.trim() || null,
       })),
       providerChecks: agentProfiles.map(({ id }) => ({
         profile: id,
@@ -394,19 +428,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     setError(null);
     try {
       setCurrentRequest(await createTeamProjectProvisioning(provisioningBody()));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const refreshRequest = async () => {
-    if (!request) return;
-    setBusy("refresh");
-    setError(null);
-    try {
-      setCurrentRequest(await loadProjectProvisioningRequest(request.request_id));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -466,7 +487,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     try {
       const updated = await configureDesktopServerOperatorRoute(connection.connection_id, {
         ssh_target: operatorTarget.trim(),
-        mode: operatorMode,
+        mode: serverOperatorModeFor(operatorTarget),
       });
       setConnection(updated);
       setProbe(await probeDesktopServerOperator(updated.connection_id));
@@ -574,7 +595,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
             {intentChooser}
             <SectionHeading
               eyebrow="Shared project"
-              title="Name the project and its first GitHub repository."
+              title="Name the project and its first repository."
             />
             <label className="setup-field">
               <span>Project name</span>
@@ -589,7 +610,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               />
             </label>
             <label className="setup-field">
-              <span>GitHub repository</span>
+              <span>GitHub URL (optional)</span>
               <input
                 value={repositories[0].source}
                 onChange={(event) => {
@@ -603,6 +624,11 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                 placeholder="https://github.com/lab/research.git"
               />
             </label>
+            {!repositories[0].source.trim() && <p>Server only · Its code is not backed up.</p>}
+            <p>
+              New repositories start on main with an empty “Start RCP project” commit by RCP. For an
+              empty GitHub repository, setup pushes it after you add the deploy key.
+            </p>
             {savedRequests.length > 0 && (
               <div className="provisioning-resume-list">
                 <strong>Existing setup requests</strong>
@@ -878,20 +904,14 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
             desktop={desktop}
             connection={connection}
             operatorTarget={operatorTarget}
-            operatorMode={operatorMode}
             probe={probe}
             busy={busy}
             onOperatorTarget={(value) => {
               setOperatorTarget(value);
               setProbe(null);
             }}
-            onOperatorMode={(value) => {
-              setOperatorMode(value);
-              setProbe(null);
-            }}
             onSaveAndProbe={() => void saveAndProbeRoute()}
             onCopy={() => void copyCommand()}
-            onRefresh={() => void refreshRequest()}
             onRun={() => void runSetup()}
             onTerminal={() => void openTerminal()}
             onCancel={() => void cancelRequest()}
@@ -956,7 +976,11 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
           <LedgerItem
             number="C"
             label="Repository identity"
-            value="GitHub deploy key per repository"
+            value={repositories
+              .map(
+                (repository) => `${repository.alias}: ${repository.source.trim() || "Server only"}`,
+              )
+              .join(" · ")}
           />
           <LedgerItem
             number="D"
@@ -1109,7 +1133,7 @@ function TeamRepositoryEditor({
           />
         </label>
         <label>
-          GitHub repository
+          GitHub URL (optional)
           <input
             value={repository.source}
             onChange={(event) => onChange({ source: event.target.value })}
@@ -1130,6 +1154,7 @@ function TeamRepositoryEditor({
           </select>
         </label>
       </div>
+      {!repository.source.trim() && <p>Server only · Its code is not backed up.</p>}
       <footer>
         <label className="check-control">
           <input
@@ -1153,16 +1178,45 @@ function TeamRepositoryEditor({
   );
 }
 
+/**
+ * How a target reaches the service account follows from who it signs in as:
+ * `rcp@host` already is it, and any other login enters it with sudo.
+ */
+export function serverOperatorModeFor(operatorTarget: string): ServerOperatorMode {
+  const target = operatorTarget.trim();
+  return target.includes("@") && target.split("@")[0] === "rcp" ? "direct_rcp" : "sudo_rcp";
+}
+
 export function serverOperatorProbeMatchesDraft(
   probe: ServerOperatorProbe | null,
   operatorTarget: string,
-  operatorMode: ServerOperatorMode,
 ): boolean {
   return (
     probe?.available === true &&
     probe.route.ssh_target === operatorTarget.trim() &&
-    probe.route.mode === operatorMode
+    probe.route.mode === serverOperatorModeFor(operatorTarget)
   );
+}
+
+/** One line naming who the project is for and what the ledger above proved. */
+export function finalReviewSummary(request: ProjectProvisioningResponse): string {
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const { machines_total, repositories_total, providers_total } = request.readiness;
+  const owner =
+    request.final_review?.authorized_by.display_name ?? request.authorized_by.display_name;
+  return (
+    `Prepared for ${owner}: ${count(machines_total, "machine", "machines")}, ` +
+    `${count(repositories_total, "repository", "repositories")}, and ` +
+    `${count(providers_total, "provider role", "provider roles")}, all checked above.`
+  );
+}
+
+export function providerChipTone(provider: {
+  ready: boolean;
+  diagnostic: string | null;
+}): "ready" | "failed" | "waiting" {
+  if (provider.ready) return "ready";
+  return provider.diagnostic ? "failed" : "waiting";
 }
 
 export function gitWriteFact(writeVerified: boolean): string {
@@ -1183,14 +1237,11 @@ export function ProvisioningStatus({
   desktop,
   connection,
   operatorTarget,
-  operatorMode,
   probe,
   busy,
   onOperatorTarget,
-  onOperatorMode,
   onSaveAndProbe,
   onCopy,
-  onRefresh,
   onRun,
   onTerminal,
   onCancel,
@@ -1201,24 +1252,22 @@ export function ProvisioningStatus({
   desktop: boolean;
   connection: TeamConnectionMetadata | null;
   operatorTarget: string;
-  operatorMode: ServerOperatorMode;
   probe: ServerOperatorProbe | null;
   busy: string | null;
   onOperatorTarget: (value: string) => void;
-  onOperatorMode: (value: ServerOperatorMode) => void;
   onSaveAndProbe: () => void;
   onCopy: () => void;
-  onRefresh: () => void;
   onRun: () => void;
   onTerminal: () => void;
   onCancel: () => void;
   onComplete: () => void;
 }) {
-  const operatorRouteReady = serverOperatorProbeMatchesDraft(probe, operatorTarget, operatorMode);
+  const operatorRouteReady = serverOperatorProbeMatchesDraft(probe, operatorTarget);
+  const [overrideOpen, setOverrideOpen] = useState(false);
   return (
     <div className="setup-section provisioning-status">
       <SectionHeading
-        eyebrow="Durable server setup"
+        eyebrow={request.target_project_id ? "Repository setup" : "Adding your RCP project"}
         title={request.name ?? "Shared project setup"}
       />
       <div className="provisioning-status-banner">
@@ -1251,28 +1300,92 @@ export function ProvisioningStatus({
         </div>
       </dl>
 
+      {request.can_run_setup &&
+        request.kind !== "connect_repository" &&
+        request.kind !== "incoming_transfer" && (
+          <p>
+            Empty repositories start on main with an empty “Start RCP project” commit by RCP.
+            {request.repositories.some((repository) => repository.source_kind !== "server_only") &&
+              " Setup pushes it to GitHub after you add the deploy key."}
+          </p>
+        )}
+      {request.can_run_setup && (
+        <p className="provisioning-hint">
+          Copy the server command and run it in a shell on the server, logged in as yourself. It
+          runs as rcp through sudo.
+        </p>
+      )}
+      {desktop && connection && request.can_run_setup && !overrideOpen && (
+        <p className="provisioning-hint">
+          {connection.operator_route
+            ? `The app runs setup over ${connection.operator_route.ssh_target}.`
+            : `The app can run setup for you over your SSH login, ${connection.ssh_target}, if it can use sudo there without a password.`}{" "}
+          Use a different login only if this one cannot use sudo on the server, such as when an
+          admin account does setup.{" "}
+          {!connection.operator_route && (
+            <button
+              className="button ghost tiny"
+              type="button"
+              disabled={busy !== null}
+              onClick={onSaveAndProbe}
+            >
+              Check this login
+            </button>
+          )}
+          <button className="button ghost tiny" type="button" onClick={() => setOverrideOpen(true)}>
+            Use a different SSH login
+          </button>
+        </p>
+      )}
+      {desktop && connection && request.can_run_setup && overrideOpen && (
+        <section className="operator-route-card">
+          <header>
+            <strong>SSH login for server setup</strong>
+            <span>{operatorRouteReady ? "Ready" : "Not checked"}</span>
+          </header>
+          <div>
+            <label>
+              SSH target
+              <input
+                value={operatorTarget}
+                onChange={(event) => onOperatorTarget(event.target.value)}
+                placeholder="operator@server"
+              />
+            </label>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={busy !== null}
+              onClick={onSaveAndProbe}
+            >
+              {busy === "probe" ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <ShieldCheck size={14} />
+              )}{" "}
+              Use this login
+            </button>
+          </div>
+          <p className="provisioning-hint">
+            {serverOperatorModeFor(operatorTarget) === "direct_rcp"
+              ? "Signs in as rcp and runs the setup command directly."
+              : "Signs in as this account, then runs the setup command as rcp with sudo. If sudo asks for a password, use Open in Terminal."}
+          </p>
+          {probe?.diagnostic && <p role="alert">{probe.diagnostic}</p>}
+        </section>
+      )}
+
       <div className="provisioning-controls">
-        <button
-          className="button secondary"
-          type="button"
-          disabled={busy !== null}
-          onClick={onCopy}
-        >
-          <Clipboard size={14} /> Copy server command
-        </button>
-        <button
-          className="button secondary"
-          type="button"
-          disabled={busy !== null}
-          onClick={onRefresh}
-        >
-          {busy === "refresh" ? (
-            <LoaderCircle className="spin" size={14} />
-          ) : (
-            <RefreshCw size={14} />
-          )}{" "}
-          Refresh
-        </button>
+        {request.can_run_setup && (
+          <button
+            className="button secondary"
+            type="button"
+            disabled={busy !== null}
+            onClick={onCopy}
+          >
+            <Clipboard size={14} /> Copy server command
+          </button>
+        )}
         {desktop && connection && request.can_run_setup && operatorRouteReady && (
           <button className="button primary" type="button" disabled={busy !== null} onClick={onRun}>
             {busy === "run" ? <LoaderCircle className="spin" size={14} /> : <Server size={14} />}{" "}
@@ -1304,49 +1417,6 @@ export function ProvisioningStatus({
           </button>
         )}
       </div>
-
-      {desktop && connection && request.can_run_setup && (
-        <section className="operator-route-card">
-          <header>
-            <strong>Desktop server operator route</strong>
-            <span>{operatorRouteReady ? "Ready" : "Not proved"}</span>
-          </header>
-          <div>
-            <label>
-              SSH target
-              <input
-                value={operatorTarget}
-                onChange={(event) => onOperatorTarget(event.target.value)}
-                placeholder="operator@server"
-              />
-            </label>
-            <label>
-              Execution
-              <select
-                value={operatorMode}
-                onChange={(event) => onOperatorMode(event.target.value as ServerOperatorMode)}
-              >
-                <option value="sudo_rcp">Named operator → rcp</option>
-                <option value="direct_rcp">Direct rcp@server</option>
-              </select>
-            </label>
-            <button
-              className="button secondary"
-              type="button"
-              disabled={busy !== null}
-              onClick={onSaveAndProbe}
-            >
-              {busy === "probe" ? (
-                <LoaderCircle className="spin" size={14} />
-              ) : (
-                <ShieldCheck size={14} />
-              )}{" "}
-              Save and check
-            </button>
-          </div>
-          {probe?.diagnostic && <p role="alert">{probe.diagnostic}</p>}
-        </section>
-      )}
 
       {events.length > 0 && (
         <section
@@ -1381,7 +1451,6 @@ export function ProvisioningStatus({
           step={request.operator_action}
           route={connection?.operator_route ?? null}
           routeProved={routeProvedBy(probe, connection?.connection_id, connection?.operator_route)}
-          onRefresh={onRefresh}
         />
       )}
 
@@ -1410,91 +1479,55 @@ export function ProvisioningStatus({
             <strong>
               {repository.alias} · {repository.status_label}
             </strong>
-            <span>{repository.repository.identity}</span>
-            <span>{gitWriteFact(repository.write_verified)}</span>
+            <span>{repository.repository?.identity ?? "Server only"}</span>
+            {request.kind === "add_repository" && (
+              <span>
+                {repository.count_as_project_truth
+                  ? "Counts as project truth"
+                  : "Outside project truth"}
+              </span>
+            )}
+            {repository.source_kind === "server_only" ? (
+              <p>Its code is not backed up.</p>
+            ) : (
+              <span>{gitWriteFact(repository.write_verified)}</span>
+            )}
             <code>{repository.resolved_path ?? repository.intended_path ?? "Path pending"}</code>
             {repository.diagnostic && <p>{repository.diagnostic}</p>}
           </article>
         ))}
         <h2>Provider roles</h2>
-        {request.provider_checks.map((provider) => (
-          <article key={provider.profile}>
-            <strong>
-              {provider.profile} · {provider.status_label}
-            </strong>
-            <span>
-              {provider.provider} · {provider.runtime_id} · {provider.machine_alias}
+        <div className="provider-role-chips">
+          {request.provider_checks.map((provider) => (
+            <span
+              key={provider.profile}
+              className={`provider-role-chip ${providerChipTone(provider)}`}
+              title={[
+                provider.status_label,
+                `${provider.provider} · ${provider.runtime_id} · ${provider.machine_alias}`,
+                provider.execution_account &&
+                  `${provider.execution_account} · ${provider.binary_path}`,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              {provider.profile}
             </span>
-            {provider.execution_account && (
-              <code>
-                {provider.execution_account} · {provider.binary_path}
-              </code>
-            )}
-            {provider.diagnostic && <p>{provider.diagnostic}</p>}
-          </article>
-        ))}
+          ))}
+        </div>
+        {request.provider_checks
+          .filter((provider) => provider.diagnostic)
+          .map((provider) => (
+            <p key={provider.profile} className="provider-role-diagnostic">
+              <strong>{provider.profile}</strong> {provider.diagnostic}
+            </p>
+          ))}
       </section>
 
       {request.final_review && (
         <section className="provisioning-final-review">
           <h2>Final review</h2>
-          <dl>
-            <div>
-              <dt>Project id</dt>
-              <dd>{request.final_review.proposed_project_id}</dd>
-            </div>
-            <div>
-              <dt>Review binding</dt>
-              <dd>
-                <code>{request.final_review.digest}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>Prepared for</dt>
-              <dd>{request.final_review.authorized_by.display_name}</dd>
-            </div>
-          </dl>
-          <h3>Machines</h3>
-          {request.machines.map((machine) => (
-            <article key={machine.alias}>
-              <strong>
-                {machine.alias} · {machine.status_label}
-              </strong>
-              <span>
-                {machine.location === "ssh"
-                  ? `${machine.os_account}@${machine.host}`
-                  : machine.os_account}
-              </span>
-              <code>
-                {machine.resolved_central_root ??
-                  machine.intended_central_root ??
-                  "Home-derived path pending"}
-              </code>
-            </article>
-          ))}
-          <h3>Repositories</h3>
-          {request.repositories.map((repository) => (
-            <article key={repository.alias}>
-              <strong>
-                {repository.alias} · {repository.status_label}
-              </strong>
-              <span>{repository.https_clone_url}</span>
-              <span>{gitWriteFact(repository.write_verified)}</span>
-              <code>{repository.resolved_path ?? repository.intended_path ?? "Path pending"}</code>
-            </article>
-          ))}
-          <h3>Provider roles</h3>
-          {request.provider_checks.map((provider) => (
-            <article key={provider.profile}>
-              <strong>
-                {provider.profile} · {provider.status_label}
-              </strong>
-              <span>
-                {provider.provider} · {provider.runtime_id} · {provider.machine_alias}
-              </span>
-              {provider.execution_account && <code>{provider.execution_account}</code>}
-            </article>
-          ))}
+          <p>{finalReviewSummary(request)}</p>
           {request.can_review && (
             <button
               className="button primary"
@@ -1507,7 +1540,9 @@ export function ProvisioningStatus({
               ) : (
                 <Check size={14} />
               )}{" "}
-              Confirm and create project
+              {request.kind === "add_repository" || request.kind === "connect_repository"
+                ? "Confirm repository"
+                : "Confirm and create project"}
             </button>
           )}
         </section>

@@ -92,6 +92,7 @@ class AppStoreBase:
         (43, "machine_provider_shell_timeout_v1"),
         (44, "per_target_experiment_loops_v1"),
         (45, "client_requests_v1"),
+        (46, "repository_provisioning_contracts_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -812,6 +813,12 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=45, name="client_requests_v1", migration=migrate_client_requests
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=46,
+            name="repository_provisioning_contracts_v1",
+            migration=self._migrate_repository_provisioning_contracts,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3152,6 +3159,70 @@ class AppStoreBase:
                 "RCP storage migration found an unowned table shape: " + ", ".join(unexpected)
             )
         return expected, changed_tables
+
+    def _migrate_repository_provisioning_contracts(self, connection: sqlite3.Connection) -> None:
+        """Retain create reservations while allowing requests for an existing project."""
+
+        self._rebuild_storage_table(
+            connection,
+            "project_provisioning_requests",
+            """
+            CREATE TABLE project_provisioning_requests (
+                request_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL
+                    CHECK(kind IN ('create_team_project', 'incoming_transfer',
+                        'add_repository', 'connect_repository')),
+                status TEXT NOT NULL CHECK(status IN (
+                    'waiting_for_server_setup',
+                    'setup_in_progress',
+                    'operator_action_needed',
+                    'ready_for_review',
+                    'completed',
+                    'cancelled'
+                )),
+                target_space_id TEXT NOT NULL,
+                authorized_by_json TEXT NOT NULL,
+                proposed_project_id TEXT NOT NULL,
+                target_project_id TEXT,
+                project_config_json TEXT,
+                machines_json TEXT NOT NULL,
+                repositories_json TEXT NOT NULL,
+                provider_checks_json TEXT NOT NULL,
+                retryable_diagnostic TEXT,
+                operator_action_json TEXT,
+                final_review_digest TEXT,
+                cancellation_disposition TEXT CHECK(
+                    cancellation_disposition IS NULL OR cancellation_disposition IN (
+                        'nothing_to_remove',
+                        'request_owned_state_removed',
+                        'prepared_state_preserved',
+                        'operator_cleanup_confirmed'
+                    )
+                ),
+                revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                setup_started_at TEXT,
+                ready_at TEXT,
+                completed_at TEXT,
+                cancelled_at TEXT,
+                CHECK (
+                    (kind IN ('create_team_project', 'incoming_transfer') AND target_project_id IS NULL)
+                    OR (kind IN ('add_repository', 'connect_repository')
+                        AND target_project_id IS NOT NULL AND target_project_id = proposed_project_id)
+                )
+            );
+            """,
+        )
+        connection.execute(
+            "CREATE INDEX project_provisioning_status "
+            "ON project_provisioning_requests(status, updated_at DESC, request_id)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX project_provisioning_create_identity "
+            "ON project_provisioning_requests(proposed_project_id) "
+            "WHERE kind IN ('create_team_project', 'incoming_transfer')"
+        )
 
     @staticmethod
     def _rebuild_storage_table(
