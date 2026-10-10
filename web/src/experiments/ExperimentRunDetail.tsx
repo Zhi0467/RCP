@@ -144,7 +144,10 @@ export function ExperimentRunDetail({
   }, [run.node.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
-  const launchReady = !project || !launchConfig || launchProviderReady(project, launchConfig);
+  const launchReady =
+    !project ||
+    !launchConfig ||
+    launchProviderReady(project, launchConfig, launchProfile?.work_like_capable);
   const launchEffectiveModel =
     launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
       ? launchProfile.effective_model
@@ -361,6 +364,7 @@ export function ExperimentRunDetail({
               open={launchOpen}
               disabled={runDisabled || startDisabled || runBusy}
               label="Experiment agent"
+              workLike={launchProfile?.work_like_capable}
               onToggle={() => setLaunchOpen((open) => !open)}
             />
           )}

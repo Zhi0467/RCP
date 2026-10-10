@@ -282,6 +282,7 @@ export function AutoResearchDialog({
               open={launchOpen}
               disabled={busy}
               label="Orchestrator agent"
+              workLike={launchProfile?.work_like_capable}
               onToggle={() => setLaunchOpen((current) => !current)}
             />
           )}
@@ -294,7 +295,11 @@ export function AutoResearchDialog({
             disabled={
               busy ||
               !budgetIsValid ||
-              Boolean(project && launchConfig && !launchProviderReady(project, launchConfig))
+              Boolean(
+                project &&
+                launchConfig &&
+                !launchProviderReady(project, launchConfig, launchProfile?.work_like_capable),
+              )
             }
           >
             {busy ? <LoaderCircle className="spin" size={14} /> : <Telescope size={14} />}

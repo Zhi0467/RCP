@@ -79,6 +79,7 @@ export function AgentConfigChip({
   open,
   disabled = false,
   label,
+  workLike = false,
   onToggle,
 }: {
   project: ProjectSnapshot;
@@ -87,6 +88,8 @@ export function AgentConfigChip({
   open: boolean;
   disabled?: boolean;
   label: string;
+  /** The launch needs a Work-like capability, so its probe counts too. */
+  workLike?: boolean;
   onToggle: () => void;
 }) {
   const readiness = project.provider_readiness[value.run_on]?.[value.provider];
@@ -104,8 +107,15 @@ export function AgentConfigChip({
       {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
       {readiness === undefined ? (
         <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
-      ) : !launchProviderReady(project, value) ? (
-        <TriangleAlert size={12} aria-label={readiness.reason || `${providerName} is not ready`} />
+      ) : !launchProviderReady(project, value, workLike) ? (
+        <TriangleAlert
+          size={12}
+          aria-label={
+            readiness.reason ||
+            (workLike && readiness.work_like_reason) ||
+            `${providerName} is not ready`
+          }
+        />
       ) : (
         <ChevronDown size={12} aria-hidden="true" />
       )}
@@ -114,10 +124,17 @@ export function AgentConfigChip({
 }
 
 /** Whether a launch may go to this provider: unknown readiness is still being
- *  probed and does not block, a probe that found it missing or signed out does. */
-export function launchProviderReady(project: ProjectSnapshot, value: AgentRunConfig): boolean {
+ *  probed and does not block, a probe that found it missing or signed out does.
+ *  A Work-like launch also needs the Work probe, read as the full picker reads it. */
+export function launchProviderReady(
+  project: ProjectSnapshot,
+  value: AgentRunConfig,
+  workLike = false,
+): boolean {
   const readiness = project.provider_readiness[value.run_on]?.[value.provider];
-  return readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
+  if (readiness === undefined) return true;
+  if (!readiness.installed || !readiness.authenticated) return false;
+  return !workLike || (readiness.work_like_available !== false && !readiness.work_like_reason);
 }
 
 export async function settleReadinessRefresh(refresh: () => Promise<void>): Promise<void> {
