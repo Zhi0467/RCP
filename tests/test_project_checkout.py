@@ -1641,6 +1641,28 @@ def test_server_only_first_commit_is_private_and_reused(tmp_path: Path, location
         == result.commit
     )
     assert stat.S_IMODE((path / ".git").stat().st_mode) == 0o700
+    # An interrupted attempt left only the RCP commit unrecorded: reuse it.
+    first = dict(
+        request_kind="create_team_project",
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+        state_repository=True,
+    )
+    assert manager.prepare_server_only(machine, **first).commit == result.commit
+    # Any other history is refused instead of adopted.
+    _git_command(
+        "-c",
+        "user.name=Human",
+        "-c",
+        "user.email=h@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "Existing work",
+        cwd=path,
+    )
+    with pytest.raises(ProjectCheckoutRefused):
+        manager.prepare_server_only(machine, **first)
 
 
 @pytest.mark.parametrize("request_kind", ["create_team_project", "connect_repository"])

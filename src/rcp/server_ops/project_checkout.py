@@ -48,6 +48,7 @@ from rcp.storage import (
 )
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _MAX_OUTPUT_BYTES = 256 * 1024
 _MAX_HELPER_OUTPUT_BYTES = 64 * 1024
 _SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -357,6 +358,20 @@ class ProjectCheckoutManager:
             )
             if committed.returncode != 0:
                 raise self._checkout_conflict(material, path, "Cannot create the RCP first commit.")
+        elif expected_commit is None and request_kind in {"create_team_project", "add_repository"}:
+            # Only an unrecorded RCP first commit from an interrupted attempt may be reused;
+            # adopting other history would publish or activate code nobody reviewed.
+            count = run("rev-list", "--count", "HEAD")
+            tree = run("rev-parse", "HEAD^{tree}")
+            subject = run("log", "-1", "--format=%s", "HEAD")
+            if (
+                count.stdout.strip() != "1"
+                or tree.stdout.strip() != _EMPTY_TREE
+                or subject.stdout.strip() != "Start RCP project"
+            ):
+                raise self._checkout_conflict(
+                    material, path, "The central checkout already has history."
+                )
         retained = (
             self._retained_research(machine, material, path)
             if state_repository
