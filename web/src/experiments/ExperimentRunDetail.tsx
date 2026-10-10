@@ -1,4 +1,10 @@
 import { BrowserToggle } from "../core/BrowserControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  launchProviderReady,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
@@ -22,9 +28,11 @@ import {
 } from "./runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../core/experimentGuidance";
 import type {
+  AgentRunConfig,
   EpisodeTask,
   EpisodeTimelineResponse,
   ExperimentLoopHealth,
+  ProjectSnapshot,
   WatcherRecord,
 } from "../core/types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
@@ -81,8 +89,14 @@ interface Props {
   watchedByParentAutoResearch?: boolean;
   allowStart?: boolean;
   startDisabled?: boolean;
+  /** Offers the Experiment agent picker, defaulting from the Node chat profile. */
+  project?: ProjectSnapshot;
   onInspectTask?: (operationId: string) => void;
-  onRun: (invocationCeiling?: number, browserRequested?: boolean) => void;
+  onRun: (
+    invocationCeiling?: number,
+    browserRequested?: boolean,
+    launchConfig?: AgentRunConfig,
+  ) => void;
   /** Add turns to the ended episode in its own session; absent where no episode can continue. */
   onContinue?: (episodeId: string, invocationCeiling: number) => void;
   onStopLoop: () => void;
@@ -107,6 +121,7 @@ export function ExperimentRunDetail({
   watchedByParentAutoResearch = false,
   allowStart = true,
   startDisabled = false,
+  project,
   onInspectTask,
   onRun,
   onContinue,
@@ -119,6 +134,24 @@ export function ExperimentRunDetail({
 }: Props) {
   const [browserRequested, setBrowserRequested] = useState(false);
   useEffect(() => setBrowserRequested(false), [run.node.id]);
+  const launchProfile = project?.agent_profiles.node_chat;
+  // Only an explicit pick is state; untouched, the picker follows the current profile.
+  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  useEffect(() => {
+    setLaunchConfig(null);
+    setLaunchOpen(false);
+  }, [run.node.id]);
+  const launchConfig =
+    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  const launchReady =
+    !project ||
+    !launchConfig ||
+    launchProviderReady(project, launchConfig, launchProfile?.work_like_capable);
+  const launchEffectiveModel =
+    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
+      ? launchProfile.effective_model
+      : "";
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
   // Untouched, the field follows the node's own limit, which the human sees as
@@ -323,6 +356,18 @@ export function ExperimentRunDetail({
               {authorizedCeiling === null ? "Add turns" : `Add ${authorizedCeiling} turns`}
             </button>
           )}
+          {allowStart && !control.node_closed && project && launchConfig && (
+            <AgentConfigChip
+              project={project}
+              value={launchConfig}
+              effectiveModel={launchEffectiveModel}
+              open={launchOpen}
+              disabled={runDisabled || startDisabled || runBusy}
+              label="Experiment agent"
+              workLike={launchProfile?.work_like_capable}
+              onToggle={() => setLaunchOpen((open) => !open)}
+            />
+          )}
           {allowStart && !control.node_closed && (
             <button
               type="button"
@@ -333,12 +378,14 @@ export function ExperimentRunDetail({
                 runBusy ||
                 stopUnsettled ||
                 !control.can_start ||
+                !launchReady ||
                 (reauthorizing && authorizedCeiling === null)
               }
               onClick={() =>
                 onRun(
                   reauthorizing ? (authorizedCeiling ?? undefined) : undefined,
                   browserRequested,
+                  launchConfig,
                 )
               }
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
@@ -358,6 +405,23 @@ export function ExperimentRunDetail({
           onChange={setBrowserRequested}
         />
       )}
+      {launchOpen &&
+        allowStart &&
+        !control.node_closed &&
+        project &&
+        launchProfile &&
+        launchConfig && (
+          <AgentConfigControls
+            project={project}
+            value={launchConfig}
+            onChange={setLaunchConfig}
+            effectiveModel={launchEffectiveModel}
+            workLikeCapable={launchProfile.work_like_capable}
+            locked={runDisabled || startDisabled || runBusy}
+            showRunOn={false}
+            compact
+          />
+        )}
 
       {episode && (
         <EpisodeQuestions

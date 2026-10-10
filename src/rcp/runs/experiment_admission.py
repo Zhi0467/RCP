@@ -24,9 +24,18 @@ def resolve_experiment_node_work_request(
     service: ProjectService,
     request: RunRequest,
 ) -> RunRequest:
-    """Resolve one Experiment turn from the current human node-Work profile."""
+    """Resolve one Experiment turn from the node-Work profile and the human's pick.
 
-    profile = service.resolve_agent_profile("node_chat")
+    A human start may name provider, model, and reasoning; the machine stays the
+    profile's. An orchestrator child names none, so it keeps the Settings profile.
+    """
+
+    profile = service.resolve_agent_profile(
+        "node_chat",
+        provider=request.provider,
+        model=request.model,
+        reasoning=request.reasoning,
+    )
     resolved = request.model_copy(
         update={
             "provider": profile.provider,

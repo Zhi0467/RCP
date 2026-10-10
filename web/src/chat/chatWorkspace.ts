@@ -99,6 +99,21 @@ function persistedModel(value: string | null | undefined): string {
   return !value || value === "provider-default" ? "" : value;
 }
 
+/** A provider other than the one holding this chat's current session cannot
+ *  resume it, so the backend starts the next turn in a fresh provider session.
+ *  The holder is the task that produced that session, not the latest request,
+ *  which may have failed before it got one. Model and effort changes keep it. */
+export function providerSwitchStartsFreshSession(
+  tasks: AgentTask[],
+  sessionId: string | null | undefined,
+  nextProvider: string,
+): boolean {
+  if (!sessionId) return false;
+  const holder = tasks.find((task) => task.native_session_id === sessionId);
+  const provider = holder?.request.provider;
+  return typeof provider === "string" && provider !== nextProvider;
+}
+
 export function latestPersistedChatConfig(
   messages: ChatMessage[],
   tasks: AgentTask[],

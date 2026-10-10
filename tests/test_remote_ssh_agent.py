@@ -146,7 +146,10 @@ def test_remote_failure_returns_readable_inventory(home, monkeypatch, failure, p
         # Nonzero submission means the subsequent evidence still gets checked.
 
     monkeypatch.setattr(backend, "start_account_service", start)
-    monkeypatch.setattr(ssh_agent, "AGENT_COMMAND_TIMEOUT_SECONDS", 0.2)
+    if failure != "started":
+        # These paths wait out the whole limit; a started owner must get the real
+        # one, since its agent can take longer than a short limit to come up.
+        monkeypatch.setattr(ssh_agent, "AGENT_COMMAND_TIMEOUT_SECONDS", 0.2)
     try:
         stage = Stage(dict(os.environ))
         (evidence,) = ssh_agent.confirm_remote_key_evidence(remote_stage=stage, home=str(home))

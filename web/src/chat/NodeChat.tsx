@@ -87,6 +87,7 @@ import {
   latestPersistedChatConfig,
   latestPersistedConversationMode,
   parseConversationMode,
+  providerSwitchStartsFreshSession,
   startConversationTurn,
   toggleConversationMode,
 } from "./chatWorkspace";
@@ -172,6 +173,7 @@ import {
 import { resolveRepositoryFileHref, turnArtifactName } from "../core/repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
+  AgentRunConfig,
   AgentTask,
   ChatMessage,
   ChatAttachmentDescriptor,
@@ -191,7 +193,12 @@ import {
   CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../core/uiConstants";
-import { profileRunConfig } from "../core/AgentConfigControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  launchProviderReady,
+  profileRunConfig,
+} from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
@@ -390,7 +397,7 @@ export function NodeChat({
       ]),
     [displayedMessages, pendingTurn, relatedTasks],
   );
-  const config = useMemo(
+  const derivedConfig = useMemo(
     () =>
       latestPersistedChatConfig(
         historyMessages,
@@ -398,6 +405,20 @@ export function NodeChat({
         profileRunConfig(project.agent_profiles[surface]),
       ),
     [historyMessages, project.agent_profiles, relatedTasks, surface],
+  );
+  // The human's pick for this chat's next turns. It is keyed by chat, so another
+  // chat starts from its own default; the machine always stays the derived one.
+  const [configOverride, setConfigOverride] = useState<{
+    chatId: string;
+    config: AgentRunConfig;
+  } | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const config = useMemo(
+    () =>
+      configOverride?.chatId === chatId
+        ? { ...configOverride.config, run_on: derivedConfig.run_on }
+        : derivedConfig,
+    [chatId, configOverride, derivedConfig],
   );
   const [scope, setScope] = useState(() =>
     reconcileChatRunScope([], runScope, project.project_truth_scope, true),
@@ -632,11 +653,16 @@ export function NodeChat({
     return new Set(latest.values());
   }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
-  const providerReady =
-    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   const sessionId = resolvedChatSessionId(relatedTasks);
+  const freshProviderSession = providerSwitchStartsFreshSession(
+    relatedTasks,
+    sessionId,
+    config.provider,
+  );
   const mode = artifactContext ? "discuss" : modeState.value;
   modeRef.current = mode;
+  // A Work turn also needs the provider's Work probe; Discuss does not.
+  const providerReady = launchProviderReady(project, config, mode === "work");
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
   const readyAttachments = attachments.flatMap((item) =>
@@ -1841,7 +1867,9 @@ export function NodeChat({
       pausedAttempt ||
       submitting ||
       repairingTaskId ||
-      reviewPending
+      reviewPending ||
+      // Enter reaches here without the button, so a new turn checks readiness itself.
+      !providerReady
     )
       return;
     if (!confirmDiscardKeptSpeech("send")) return;
@@ -1858,6 +1886,7 @@ export function NodeChat({
     setMessage("");
     setSubmitError(null);
     setSubmitting(true);
+    const submittedOverride = configOverride;
     try {
       await startConversationTurn(onStartTask, {
         kind: surface,
@@ -1877,6 +1906,9 @@ export function NodeChat({
         providerSkillNames: skills.providerSkillNames,
         worktree: mode === "work" && worktree.chosen,
       });
+      // The admitted turn now carries the pick, so the chat follows its history
+      // again; a newer pick made while submitting stays.
+      setConfigOverride((current) => (current === submittedOverride ? null : current));
       worktree.refresh();
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
@@ -2181,20 +2213,24 @@ export function NodeChat({
     </button>
   );
 
+  const profile = project.agent_profiles[surface];
+  const effectiveModel = config.provider === profile.provider ? profile.effective_model : "";
+  const agentSummary = (
+    <AgentConfigChip
+      project={project}
+      value={config}
+      effectiveModel={effectiveModel}
+      open={configOpen}
+      disabled={readOnly}
+      label="Chat agent"
+      workLike={mode === "work"}
+      onToggle={() => setConfigOpen((open) => !open)}
+    />
+  );
+
   const contextControls = (showProvider: boolean) => (
     <div className="chat-context-controls">
-      {showProvider && (
-        <div
-          className="agent-provider-label"
-          aria-busy={readiness === undefined}
-          aria-label={`Chat provider: ${readiness?.label || config.provider}`}
-        >
-          {readiness?.label || config.provider}
-          {readiness === undefined && (
-            <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
-          )}
-        </div>
-      )}
+      {(showProvider || !readOnly) && agentSummary}
       {!fixedConversation && !readOnly && (
         <button className="chat-new-session" type="button" onClick={onNewSession}>
           <MessageCirclePlus size={14} /> New session
@@ -2245,6 +2281,17 @@ export function NodeChat({
         </header>
       ) : (
         contextControls(true)
+      )}
+      {configOpen && !readOnly && (
+        <AgentConfigControls
+          project={project}
+          value={config}
+          onChange={(next) => setConfigOverride({ chatId, config: next })}
+          effectiveModel={effectiveModel}
+          workLikeCapable={profile.work_like_capable}
+          showRunOn={false}
+          compact
+        />
       )}
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
@@ -2668,6 +2715,11 @@ export function NodeChat({
           {composerHint && (
             <div className="chat-composer-hint" role="status">
               {composerHint}
+            </div>
+          )}
+          {freshProviderSession && (
+            <div className="chat-composer-hint" role="status">
+              The next turn starts a fresh {readiness?.label || config.provider} session.
             </div>
           )}
           {annotations.length > 0 && (

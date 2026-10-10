@@ -22,6 +22,7 @@ import {
   newlyFinishedChatTaskIds,
   newlySteeredChatTaskIds,
   parseConversationMode,
+  providerSwitchStartsFreshSession,
   startConversationTurn,
   toggleConversationMode,
   mergeChatReads,
@@ -304,6 +305,15 @@ test("chat provider configuration follows the persisted conversation over the pr
     ),
     claude,
   );
+});
+
+test("only a provider switch away from the session's holder starts a fresh session", () => {
+  const holder = { native_session_id: "session-1", request: { provider: "codex" } };
+  const failedAttempt = { native_session_id: null, request: { provider: "claude" } };
+  const tasks = [holder, failedAttempt];
+  assert.equal(providerSwitchStartsFreshSession(tasks, "session-1", "claude"), true);
+  assert.equal(providerSwitchStartsFreshSession(tasks, "session-1", "codex"), false);
+  assert.equal(providerSwitchStartsFreshSession(tasks, null, "claude"), false);
 });
 
 test("continuing a chat translates the stored provider-default sentinel back to a real default", () => {

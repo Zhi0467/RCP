@@ -115,6 +115,7 @@ import {
 import type {
   ProviderLoginState,
   Machine,
+  AgentRunConfig,
   AgentTask,
   Edge,
   Episode,
@@ -124,6 +125,7 @@ import type {
   UnavailableExperimentLoop,
   GraphNode,
   GraphState,
+  ProjectSnapshot,
   Proposal,
   TrustView,
   WatcherRecord,
@@ -1145,6 +1147,8 @@ interface ExecutionProps {
   taskActionId: string | null;
   selectedExperimentConversation?: ReactNode;
   providerLabels?: Record<string, string>;
+  /** Offers the Experiment agent picker on each Run row. */
+  project?: ProjectSnapshot;
   providerLogins?: ProviderLoginState[];
   onProviderLoginVerified?: () => void;
   machines?: Machine[];
@@ -1173,6 +1177,7 @@ interface ExecutionProps {
     node: GraphNode,
     invocationCeiling?: number,
     browserRequested?: boolean,
+    launchConfig?: AgentRunConfig,
   ) => void;
   onStopExperiment: (nodeId: string, episodeId: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
@@ -1204,6 +1209,7 @@ export function ExecutionView({
   taskActionId,
   selectedExperimentConversation,
   providerLabels = {},
+  project,
   providerLogins = [],
   onProviderLoginVerified,
   machines = [],
@@ -1672,6 +1678,7 @@ export function ExecutionView({
         onInspectTask={onInspectTask}
         onContinueEpisode={onContinueEpisode}
         onSelectExperiment={onSelectExperiment}
+        project={project}
         onRunExperiment={onRunExperiment}
         onStopExperiment={onStopExperiment}
         onCheckExperimentWatcher={onCheckExperimentWatcher}
@@ -1717,6 +1724,7 @@ function ExperimentEpisodeCard({
   providerLabels,
   experimentStartsDisabled,
   mutationsDisabled,
+  project,
   onSelectExperiment,
   onInspectTask,
   onRunExperiment,
@@ -1748,12 +1756,14 @@ function ExperimentEpisodeCard({
   providerLabels: Record<string, string>;
   experimentStartsDisabled: boolean;
   mutationsDisabled: boolean;
+  project?: ProjectSnapshot;
   onSelectExperiment: (nodeId: string | null, route?: ExperimentRouteIdentity) => void;
   onInspectTask: (operationId: string) => void;
   onRunExperiment: (
     node: GraphNode,
     invocationCeiling?: number,
     browserRequested?: boolean,
+    launchConfig?: AgentRunConfig,
   ) => void;
   onStopExperiment: (nodeId: string, episodeId: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
@@ -1848,8 +1858,9 @@ function ExperimentEpisodeCard({
             ownedByAutoResearch={Boolean(indexedEntry?.parent_episode_id)}
             watchedByParentAutoResearch={watchedByParentAutoResearch}
             allowStart={!isExactBranchEpisode}
-            onRun={(invocationCeiling, browserRequested) =>
-              onRunExperiment(run.node, invocationCeiling, browserRequested)
+            project={project}
+            onRun={(invocationCeiling, browserRequested, launchConfig) =>
+              onRunExperiment(run.node, invocationCeiling, browserRequested, launchConfig)
             }
             onContinue={(episodeId, invocationCeiling) =>
               void onContinueEpisode(episodeId, invocationCeiling)

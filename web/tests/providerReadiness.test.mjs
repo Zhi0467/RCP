@@ -20,9 +20,8 @@ const {
   projectReadinessUpdate,
   shouldRequestProviderReadiness,
 } = await server.ssrLoadModule("/src/App.tsx");
-const { AgentConfigControls, settleReadinessRefresh } = await server.ssrLoadModule(
-  "/src/core/AgentConfigControls.tsx",
-);
+const { AgentConfigControls, launchProviderReady, settleReadinessRefresh } =
+  await server.ssrLoadModule("/src/core/AgentConfigControls.tsx");
 
 after(() => server.close());
 
@@ -127,6 +126,21 @@ test("a benign readiness note does not make a working provider read as broken", 
   });
 
   assert.match(markup, /agent-readiness ready/);
+});
+
+test("a launch is refused for a missing login, and a Work-like one for a failed Work probe", () => {
+  const withReadiness = (readiness) => ({
+    ...project,
+    provider_readiness: { local: { codex: { provider: "codex", ...readiness } } },
+  });
+  const ready = { installed: true, authenticated: true };
+  const workFailed = { ...ready, work_like_available: false };
+
+  assert.equal(launchProviderReady(project, value, true), true);
+  assert.equal(launchProviderReady(withReadiness({ installed: true }), value), false);
+  assert.equal(launchProviderReady(withReadiness(workFailed), value), true);
+  assert.equal(launchProviderReady(withReadiness(workFailed), value, true), false);
+  assert.equal(launchProviderReady(withReadiness(ready), value, true), true);
 });
 
 /** Consume one deferred readiness response the way the App-owned request does. */

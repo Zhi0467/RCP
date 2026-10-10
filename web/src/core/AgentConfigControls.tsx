@@ -23,6 +23,8 @@ interface Props {
   onChange: (value: AgentRunConfig) => void;
   locked?: boolean;
   runOnLocked?: boolean;
+  /** A launch that must run on the profile's machine hides Run on rather than locking it. */
+  showRunOn?: boolean;
   compact?: boolean;
   collapsible?: boolean;
   defaultCollapsed?: boolean;
@@ -65,6 +67,76 @@ export function profileRunConfig(profile: AgentProfile): AgentRunConfig {
   };
 }
 
+/**
+ * The folded form of a launch picker: `provider · model · effort` as one chip
+ * that opens the fields. Every launch surface shows the same chip, so what the
+ * next run will use reads the same in chat, Experiment, and Auto-research.
+ */
+export function AgentConfigChip({
+  project,
+  value,
+  effectiveModel = "",
+  open,
+  disabled = false,
+  label,
+  workLike = false,
+  onToggle,
+}: {
+  project: ProjectSnapshot;
+  value: AgentRunConfig;
+  effectiveModel?: string;
+  open: boolean;
+  disabled?: boolean;
+  label: string;
+  /** The launch needs a Work-like capability, so its probe counts too. */
+  workLike?: boolean;
+  onToggle: () => void;
+}) {
+  const readiness = project.provider_readiness[value.run_on]?.[value.provider];
+  const providerName = readiness?.label || value.provider;
+  return (
+    <button
+      className="agent-provider-label agent-config-chip"
+      type="button"
+      aria-busy={readiness === undefined}
+      aria-expanded={open}
+      aria-label={`${label}: ${providerName}`}
+      disabled={disabled}
+      onClick={onToggle}
+    >
+      {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
+      {readiness === undefined ? (
+        <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
+      ) : !launchProviderReady(project, value, workLike) ? (
+        <TriangleAlert
+          size={12}
+          aria-label={
+            readiness.reason ||
+            (workLike && readiness.work_like_reason) ||
+            `${providerName} is not ready`
+          }
+        />
+      ) : (
+        <ChevronDown size={12} aria-hidden="true" />
+      )}
+    </button>
+  );
+}
+
+/** Whether a launch may go to this provider: unknown readiness is still being
+ *  probed and does not block, a probe that found it missing or signed out does.
+ *  A Work-like launch also needs the Work probe, read as the full picker reads it. */
+export function launchProviderReady(
+  project: ProjectSnapshot,
+  value: AgentRunConfig,
+  workLike = false,
+): boolean {
+  const readiness = project.provider_readiness[value.run_on]?.[value.provider];
+  if (readiness === undefined) return true;
+  if (!readiness.installed || !readiness.authenticated) return false;
+  return !workLike || (readiness.work_like_available !== false && !readiness.work_like_reason);
+}
+
 export async function settleReadinessRefresh(refresh: () => Promise<void>): Promise<void> {
   try {
     await refresh();
@@ -79,6 +151,7 @@ export function AgentConfigControls({
   onChange,
   locked = false,
   runOnLocked = false,
+  showRunOn = true,
   compact = false,
   collapsible = false,
   defaultCollapsed = false,
@@ -194,21 +267,23 @@ export function AgentConfigControls({
             </select>
           </label>
         )}
-        <label className={runOnLocked ? "agent-machine-fixed" : undefined}>
-          <span>Run on {runOnLocked ? <LockKeyhole size={12} aria-hidden="true" /> : null}</span>
-          <select
-            value={value.run_on}
-            disabled={locked || runOnLocked}
-            onChange={(event) => update({ run_on: event.target.value })}
-          >
-            {project.machines.map((item) => (
-              <option value={item.alias} key={item.alias}>
-                {item.alias}
-                {item.host ? ` · ${item.host}` : " · local"}
-              </option>
-            ))}
-          </select>
-        </label>
+        {showRunOn && (
+          <label className={runOnLocked ? "agent-machine-fixed" : undefined}>
+            <span>Run on {runOnLocked ? <LockKeyhole size={12} aria-hidden="true" /> : null}</span>
+            <select
+              value={value.run_on}
+              disabled={locked || runOnLocked}
+              onChange={(event) => update({ run_on: event.target.value })}
+            >
+              {project.machines.map((item) => (
+                <option value={item.alias} key={item.alias}>
+                  {item.alias}
+                  {item.host ? ` · ${item.host}` : " · local"}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
       {!compact && (
         <>
