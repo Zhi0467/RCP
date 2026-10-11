@@ -356,15 +356,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "WHERE artifact_id = ?",
                     (edit.get("artifact_id"),),
                 ).fetchone()
-                if row is not None and isinstance(row[0], str):
-                    version = row[0]
-                    artifact_context = {**context, "selections": [], "base_version": version}
-                    artifact_edit = {
-                        **edit,
-                        "operation_id": operation_id,
-                        "staged_scope_id": operation_id,
-                        "base_version": version,
-                    }
+                if row is None or not isinstance(row[0], str):
+                    # Never continue without the edit the question belonged to.
+                    raise ValueError("question_origin_artifact_unavailable")
+                version = row[0]
+                artifact_context = {**context, "selections": [], "base_version": version}
+                artifact_edit = {
+                    **edit,
+                    "operation_id": operation_id,
+                    "staged_scope_id": operation_id,
+                    "base_version": version,
+                }
             request = RunRequest.model_validate(
                 {
                     **task.request,

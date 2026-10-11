@@ -116,7 +116,8 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
     assert binding["continuation"] == "message_wake"
 
 
-def test_answer_continues_a_composer_artifact_edit_on_the_current_version(tmp_path):
+@pytest.mark.parametrize("artifact_kept", [True, False])
+def test_answer_continues_a_composer_artifact_edit_on_the_current_version(tmp_path, artifact_kept):
     from rcp.service import ArtifactContextRequest, ArtifactEditAdmission
     from rcp.storage import Artifact
 
@@ -156,6 +157,13 @@ def test_answer_continues_a_composer_artifact_edit_on_the_current_version(tmp_pa
             "WHERE operation_id = 'origin'",
             (context.model_dump_json(), edit.model_dump_json()),
         )
+    if not artifact_kept:
+        # Without its artifact the answer must not continue as an ordinary turn.
+        with store.connection() as connection:
+            connection.execute("DELETE FROM artifacts WHERE artifact_id = ?", ("a" * 24,))
+        with pytest.raises(ValueError, match="question_origin_artifact_unavailable"):
+            store.admit_chat_question_followup(question.question_id)
+        return
     task = store.admit_chat_question_followup(question.question_id)
     carried = RunRequest.model_validate(task.request)
     assert carried.artifact_edit is not None and carried.artifact_context is not None
