@@ -33,7 +33,6 @@ const SERVICES: Record<
     kind: ServiceConnectionKind;
     preset: ServiceConnectionPreset | null;
     model: string;
-    keyPage: string | null;
   }
 > = {
   openai: {
@@ -41,28 +40,24 @@ const SERVICES: Record<
     kind: "openai_compatible",
     preset: "openai",
     model: "gpt-transcribe",
-    keyPage: "https://platform.openai.com/api-keys",
   },
   groq: {
     label: "Groq",
     kind: "openai_compatible",
     preset: "groq",
     model: "whisper-large-v3-turbo",
-    keyPage: "https://console.groq.com/keys",
   },
   gemini: {
     label: "Gemini",
     kind: "gemini",
     preset: null,
     model: "gemini-3.5-transcribe",
-    keyPage: "https://aistudio.google.com/apikey",
   },
   custom: {
     label: "Custom server",
     kind: "openai_compatible",
     preset: "custom",
     model: "",
-    keyPage: null,
   },
 };
 
@@ -401,13 +396,13 @@ function ModelField({
     ? "Loading the provider's models…"
     : listError
       ? `${listError} Type a model id.`
-      : listed === null
-        ? "Models appear once the key is entered."
-        : "";
+      : "";
   return (
     <div className="service-model-field">
       <label>
-        {label}
+        <span className="service-model-title">
+          {label} <span>{hint}</span>
+        </span>
         {listed === null ? (
           <input
             type="text"
@@ -449,7 +444,7 @@ function ModelField({
           onChange={(event) => onChange(event.target.value)}
         />
       ) : null}
-      <p>{[hint, note].filter(Boolean).join(" ")}</p>
+      {note ? <p>{note}</p> : null}
     </div>
   );
 }
@@ -658,13 +653,6 @@ function ServiceCard({
                   onChange={(event) => setKey(event.target.value)}
                 />
               </label>
-              {service.keyPage ? (
-                <p>
-                  <a href={service.keyPage} target="_blank" rel="noreferrer">
-                    Get an API key from {service.label}
-                  </a>
-                </p>
-              ) : null}
             </>
           )}
           {dictation ? (

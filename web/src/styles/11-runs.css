@@ -350,6 +350,11 @@
   display: grid;
   gap: 6px;
 }
+.service-model-title span {
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
 .transcription-note {
   padding: 8px 16px 0;
 }
