@@ -32,6 +32,8 @@ async function openFixture(t, { query = "", configure = async () => undefined } 
   await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
   await configure(page);
   await page.goto(`${origin}/tests/fixtures/settingsRequestRaces.html${query}`);
+  // Machine cards start closed.
+  await page.locator('[data-machine-tile="local"]').click();
   await page.getByLabel("Codex executable on local").waitFor();
   return page;
 }

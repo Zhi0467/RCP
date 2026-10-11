@@ -6,9 +6,7 @@ export const BRANCH_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$/;
 export function branchNameProblem(name: string): string | null {
   if (name === "") return null;
   if (name === "main") return "main is reserved.";
-  return BRANCH_NAME_PATTERN.test(name)
-    ? null
-    : "Use 2–32 lowercase letters, digits, and hyphens.";
+  return BRANCH_NAME_PATTERN.test(name) ? null : "Use 2–32 lowercase letters, digits, and hyphens.";
 }
 
 /** The one display name for a graph target; every surface reads it from here. */
