@@ -160,16 +160,22 @@ class RenameBranchBody(BaseModel):
 def _branch_ref_for_http(
     project_id: str, branch_id: str, *, store: AppStore, catalog: ProjectCatalog
 ) -> GraphRefResponse:
-    return next(
-        ref
-        for ref in project_graph_refs(
-            project_id,
-            store=store,
-            catalog=catalog,
-            refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
-        )
-        if ref.branch_id == branch_id
+    ref = next(
+        (
+            ref
+            for ref in project_graph_refs(
+                project_id,
+                store=store,
+                catalog=catalog,
+                refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+            )
+            if ref.branch_id == branch_id
+        ),
+        None,
     )
+    if ref is None:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    return ref
 
 
 @router.put(
@@ -188,15 +194,17 @@ def rename_graph_branch(
     require_registered_project(catalog, project_id)
     if branch_id == "main":
         raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"})
+    # Read the ref before committing, so no remote read can fail after the label changed.
+    before = _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
     try:
-        store.rename_branch(project_id, branch_id, body.name)
+        name = store.rename_branch(project_id, branch_id, body.name)
     except BranchNameInvalid as exc:
         raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
     except BranchNameTaken as exc:
         raise HTTPException(status_code=409, detail={"code": "branch_name_taken"}) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Branch not found") from exc
-    return _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
+    return before.model_copy(update={"name": name})
 
 
 @router.put(
@@ -215,11 +223,12 @@ def archive_graph_branch(
     require_registered_project(catalog, project_id)
     if branch_id == "main":
         raise HTTPException(status_code=422, detail={"code": "branch_archive_invalid"})
+    before = _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
     try:
-        store.set_branch_archived(project_id, branch_id, archived=body.archived)
+        state = store.set_branch_archived(project_id, branch_id, archived=body.archived)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Branch not found") from exc
-    return _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
+    return before.model_copy(update={"archived": state.graph_archived})
 
 
 @router.get(
