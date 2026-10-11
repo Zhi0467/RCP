@@ -38,8 +38,11 @@ The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
 truth. Every artifact, reports and Experiment or Auto-research outputs included,
 may be viewed, commented on, versioned, and kept through one viewer. A comment
-edits its staged file under Discuss authority or a revoking scratch-only launch. RCP publishes an immutable version, and Undo moves the
-current pointer back; these interactions grant no graph authority. The backend
+sent from the viewer edits its staged file under Discuss authority or a revoking
+scratch-only launch; one sent from a chat composer is that chat's ordinary
+Discuss or Work turn, with exactly that turn's authority. RCP publishes an
+immutable version, and Undo moves the current pointer back; the comment and its
+versions grant no graph authority of their own. The backend
 owns the viewer entrance, so ordinary server-served UI changes do not require a
 matching native rebuild. The thinner native team entrance is a separate
 boundary: before enrollment, token exchange, project-card read, or browser-cookie

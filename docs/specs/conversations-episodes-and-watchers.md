@@ -140,8 +140,9 @@ of the current session: `session_stale` (the provider no longer has it) or
 requires a retry), the classification Retry uses to refuse resuming a dropped
 session. A `session_limit` failure continues the session: its classification
 also matches account quota, after which the session can still resume. An
-artifact edit runs on the artifact's saved session and never becomes the
-chat's current session. The exact provider, machine, chat, graph target,
+artifact edit from the viewer runs on the artifact's saved session and never
+becomes the chat's current session; a comment sent from the chat composer is an
+ordinary turn on the chat's current session. The exact provider, machine, chat, graph target,
 stage, and launch write scope remain enforced. **New session** creates a new
 chat id.
 
