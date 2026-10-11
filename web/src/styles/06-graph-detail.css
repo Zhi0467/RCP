@@ -108,7 +108,7 @@
   z-index: 100;
 }
 .floating-window {
-  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
   position: fixed;
   touch-action: none;
   z-index: 100;
@@ -144,11 +144,11 @@
   right: -5px;
 }
 .node-detail-window {
-  height: min(720px, calc(100vh - 130px));
+  height: min(720px, calc(100dvh - 130px));
   width: min(590px, calc((100vw - 36px) / 2));
 }
 .node-chat-window {
-  height: min(720px, calc(100vh - 130px));
+  height: min(720px, calc(100dvh - 130px));
   width: min(620px, calc((100vw - 36px) / 2));
 }
 .detail-drawer {

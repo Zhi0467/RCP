@@ -315,8 +315,9 @@ decides itself whether it joins that turn or runs as the next one in the same
 session.
 There is no separate steering control. The backend supplies whether the
 exact attempt can receive input, its action label, and its disabled reason, using
-the actual runtime, including a fallback to exec. The composer renders the action
-label as a hint and send-button label, or the unavailable reason while running.
+the actual runtime, including a fallback to exec. The composer shows no hint
+line: the action label names the send button, and the button's enabled or
+disabled state alone shows whether the running attempt can be steered.
 The mode toggle is disabled exactly while the composer addresses the running
 attempt, because a follow-up uses that attempt's captured mode. A turn that
 cannot receive input leaves the toggle available for the next ordinary turn.
@@ -325,9 +326,8 @@ through the episode's ordinary mail path.
 
 Each steer is stored as the human's chat message with its addressed task attempt
 and a **delivered**, **refused**, or **unknown** receipt. A delivered receipt is
-labelled **Delivered** for every runtime; Claude's carries a reason saying the
-provider decides whether it joins the running turn or runs next. A refused
-receipt retains the reason. Reload reads that stored record; it does not infer delivery from
+labelled **Delivered** for every runtime and carries no explanatory reason. A
+refused receipt retains the reason. Reload reads that stored record; it does not infer delivery from
 answer text or replay the input. Provider acknowledgment means delivery, not a
 promise that the model followed the instruction. The message remains human input,
 never an assistant answer, provider trace, or graph-change channel. It cannot
@@ -339,7 +339,11 @@ acknowledgment, completion races, and disconnect handling.
 The composer may turn dictated speech into editable text, through
 macOS dictation in the desktop app or through the member's own transcription
 service (see [dictation](api-web-and-desktop-projections.md#dictation)). It never
-sends automatically, and RCP never stores the audio. SpeechAnalyzer recognizes
+sends on its own; Send pressed while dictating finishes the dictation and sends
+the final transcript once it is in the draft, to the target and launch
+settings (mode, agent, repositories, compute, attachments) Send had when pressed;
+if any changed, nothing is sent and the
+draft stays. RCP never stores the audio. SpeechAnalyzer recognizes
 speech on the Mac; the older Apple recognizer, used before macOS 26, for
 unsupported languages, and in builds without SpeechAnalyzer, may send audio to
 Apple. A network service receives the audio under its own retention policy.
