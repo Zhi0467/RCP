@@ -18,7 +18,8 @@ import { graphPickerOptions, graphRefTarget } from "./graphPickerModel";
 import "./GraphPicker.css";
 
 interface GraphPickerProps {
-  refs: readonly GraphRef[] | null;
+  /** Undefined while loading; null when the list could not be read. */
+  refs: readonly GraphRef[] | null | undefined;
   activeRef: GraphTargetRef;
   projectId: string;
   onSelect: (target: GraphTargetRef) => void;
@@ -157,7 +158,9 @@ export function GraphPicker({
     }
   }
 
-  if (activeRef.kind === "main" && !options.some((ref) => ref.kind === "branch")) return null;
+  // A failed read keeps the button, disabled and naming the current ref.
+  if (activeRef.kind === "main" && refs !== null && !options.some((ref) => ref.kind === "branch"))
+    return null;
 
   return (
     <div className={`branch-picker${compact ? " branch-picker-compact" : ""}`}>
@@ -168,7 +171,7 @@ export function GraphPicker({
         aria-expanded={open}
         aria-controls={listId}
         aria-haspopup="dialog"
-        disabled={refs === null}
+        disabled={!refs}
         onClick={() => {
           const placement = popoverPlacement(button.current);
           if (placement) setPosition(placement);

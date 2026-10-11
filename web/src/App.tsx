@@ -5109,7 +5109,7 @@ function MemberApp({
     );
   const branchPicker = (
     <GraphPicker
-      refs={projectGraphRefs ?? null}
+      refs={projectGraphRefs}
       activeRef={graphTarget}
       projectId={project.id}
       compact={phone}
@@ -5928,12 +5928,9 @@ function MemberApp({
       />
       <AutoResearchDialog
         open={autoResearchDialogOpen}
-        busy={
-          episodeAction === "start" ||
-          (continueBranch !== null &&
-            (episodeAction === `message:${continueBranch.episode.episode_id}` ||
-              episodeAction === `continue:${continueBranch.episode.episode_id}`))
-        }
+        // Continue's handlers skip silently while any episode action runs, so the
+        // dialog waits rather than closing over a message that was never sent.
+        busy={continueBranch !== null ? episodeAction !== null : episodeAction === "start"}
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
         project={project}

@@ -60,7 +60,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     reconnectLoads: 0,
     reconnectObservations: 0,
     reconnectRequested: Promise.withResolvers(),
-    graphRefs: options.graphRefs ?? [],
+    graphRefs: options.graphRefs === undefined ? [] : options.graphRefs,
     branchGate: options.branchGate ?? null,
     chats: options.chats ?? [],
     mutations: [],
@@ -167,8 +167,11 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         });
       Object.assign(branch, body);
       json = branch;
-    } else if (path.endsWith("/graph-refs")) json = state.graphRefs;
-    else if (path === "/api/projects")
+    } else if (path.endsWith("/graph-refs")) {
+      if (state.graphRefs === null)
+        return route.fulfill({ status: 503, json: { detail: "unavailable" } });
+      json = state.graphRefs;
+    } else if (path === "/api/projects")
       json = ["demo", "second"].map((id) => ({ id, name: project(id).name, revision: 1 }));
     else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
       if (state.connected) {
@@ -834,6 +837,12 @@ test(
     );
   },
 );
+
+test("a failed branch list keeps a disabled picker naming main", { timeout: 20000 }, async (t) => {
+  const { page } = await openedShell(t, { graphRefs: null });
+  await branchShown(page, "main");
+  assert.equal(await picker(page).isDisabled(), true);
+});
 
 test(
   "phone chip opens the shared picker and stays within the viewport",
