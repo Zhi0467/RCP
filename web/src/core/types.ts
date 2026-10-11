@@ -1680,6 +1680,8 @@ export interface BranchMergeReceipt {
 export interface EpisodeIsolationChoice {
   graph_isolation: boolean;
   code_worktree: boolean;
+  /** A new branch's name; blank or omitted takes the date fallback. */
+  branch_name?: string | null;
 }
 
 export interface MergeEpisodeBody {
@@ -2774,6 +2776,8 @@ export interface StartEpisodeRequest {
   graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;
+  /** The new branch's name; blank or omitted takes the date fallback. */
+  branch_name?: string | null;
   /** The orchestrator's agent; omitted, the Settings orchestrator profile. */
   provider?: ProviderId;
   model?: string | null;

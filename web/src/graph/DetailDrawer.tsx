@@ -104,7 +104,7 @@ interface Props {
   project?: ProjectSnapshot;
   /** `branch_name` names a new branch; null lets the server assign the date fallback. */
   onRunExperiment?: (
-    isolation: EpisodeIsolationChoice & { branch_name?: string | null },
+    isolation: EpisodeIsolationChoice,
     browserRequested: boolean,
     launchConfig?: AgentRunConfig,
   ) => void;
