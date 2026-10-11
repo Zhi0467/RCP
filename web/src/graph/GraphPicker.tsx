@@ -24,6 +24,8 @@ interface GraphPickerProps {
   projectId: string;
   onSelect: (target: GraphTargetRef) => void;
   onOpen?: () => void;
+  /** The last read failed: names stay, choices are disabled until a read succeeds. */
+  unavailable?: boolean;
   onRefUpdated: (ref: GraphRef) => void;
   compact?: boolean;
 }
@@ -53,6 +55,7 @@ export function GraphPicker({
   onSelect,
   onOpen,
   onRefUpdated,
+  unavailable = false,
   compact = false,
 }: GraphPickerProps) {
   const [open, setOpen] = useState(false);
@@ -173,7 +176,7 @@ export function GraphPicker({
         aria-expanded={open}
         aria-controls={listId}
         aria-haspopup="dialog"
-        disabled={!refs}
+        disabled={!refs || unavailable}
         onClick={() => {
           const placement = popoverPlacement(button.current);
           if (placement) setPosition(placement);
@@ -191,6 +194,7 @@ export function GraphPicker({
         {!compact && <ChevronDown size={13} />}
       </button>
       {open &&
+        !unavailable &&
         createPortal(
           <div
             ref={list}

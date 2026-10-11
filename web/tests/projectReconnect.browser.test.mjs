@@ -848,6 +848,24 @@ test("a failed branch list keeps a disabled picker naming main", { timeout: 2000
 });
 
 test(
+  "a failed refresh keeps the branch name and disables the picker",
+  { timeout: 20000 },
+  async (t) => {
+    const { page, state } = await openedShell(t, {
+      graphRefs: [mainRef(), branchRef("kept")],
+    });
+    await switchBranch(page, "kept");
+    await branchShown(page, "kept");
+    state.graphRefs = null;
+    // Opening rereads the list; the failed read closes it and keeps the name.
+    await picker(page).click();
+    await page.locator(".branch-picker-trigger:visible[disabled]").waitFor();
+    await branchShown(page, "kept");
+    assert.equal(await page.locator(".branch-picker-popover").count(), 0);
+  },
+);
+
+test(
   "phone chip opens the shared picker and stays within the viewport",
   { timeout: 20000 },
   async (t) => {

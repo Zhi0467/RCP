@@ -1046,6 +1046,8 @@ function MemberApp({
   const [graphRefs, setGraphRefs] = useState<{
     projectId: string;
     refs: GraphRef[] | null;
+    /** The last read failed; refs still hold the last good names for display. */
+    stale?: boolean;
   } | null>(null);
   const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
   const graphTargetKey = graphSessionKey("", graphTarget);
@@ -1075,11 +1077,11 @@ function MemberApp({
         if (current) setGraphRefs({ projectId, refs });
       })
       .catch(() => {
-        // A failed refresh keeps the last good list; only a first read shows unavailable.
+        // A failed refresh keeps the last good names on screen but disables the picker.
         if (current)
           setGraphRefs((previous) =>
             previous?.projectId === projectId && previous.refs !== null
-              ? previous
+              ? { ...previous, stale: true }
               : { projectId, refs: null },
           );
       });
@@ -5123,6 +5125,7 @@ function MemberApp({
   const branchPicker = (
     <GraphPicker
       refs={projectGraphRefs}
+      unavailable={graphRefs?.projectId === project.id && graphRefs.stale === true}
       activeRef={graphTarget}
       projectId={project.id}
       compact={phone}
