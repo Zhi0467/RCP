@@ -14,10 +14,11 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import RELATION_SPEC, GraphState, Patch, ProjectNode
 from rcp.core.operations import graph_operations_from_proposal, operation_dict
-from rcp.core.validation import NODE_PREFIXES, validate_patch
+from rcp.core.validation import NODE_PREFIXES, ValidationContext, validate_patch
 from rcp.core.validation.proposals import proposal_is_stale
 from tests.helpers import seed_patch
 
@@ -252,7 +253,10 @@ def test_random_accepted_patches_keep_the_graph_well_formed(seed: int) -> None:
             patch = generator.patch(state)
         except ValidationError:
             continue
-        if validate_patch(state, patch, SCOPE).rejected:
+        # Both gates, without the live membership and task lookups.
+        if WriteAuthority().validate_permissions(state, patch).rejected:
+            continue
+        if validate_patch(state, patch, ValidationContext(SCOPE)).rejected:
             continue
         before = _violations(state)
         state = apply_valid_patch(state, patch)

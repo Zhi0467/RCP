@@ -1,7 +1,6 @@
 # Active implementation handoffs
 
-- [Graph write gates](2026-10-11-graph-write-gates.md): design draft,
-  waiting for a start.
+None.
 
 Unfinished agent-link work is tracked in issue #280.
 
