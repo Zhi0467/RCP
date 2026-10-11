@@ -1,10 +1,6 @@
 # Active implementation handoffs
 
-- [Server-only and empty team repositories](2026-10-09-server-only-and-empty-team-repositories.md)
-- [Branch navigation and continuation](branch-navigation-and-continuation.md):
-  unified graph refs with a branch picker, project reopen on
-  reverification, phone reload route, and human turns on ended Auto-research
-  children, and messaging an ended orchestrator; implementing, decisions settled.
+None.
 
 Unfinished agent-link work is tracked in issue #280.
 
@@ -153,3 +149,17 @@ stands in for it. Run one on disposable data, then delete its line here.
   console name a removed CDN script; in the desktop app, a reply embedding a
   page that throws shows the error line, and Ask to fix sends a comment that
   returns a fixed version.
+- Server-only team repositories: on a throwaway team server, create a team
+  project with one server-only repository and one empty GitHub repository,
+  then connect the server-only one to an empty GitHub repository; back up and
+  restore a project with a server-only repository on a copy; a member's
+  terminal and agent over SSH on it keep the member's Git identity with no
+  deploy key.
+- Branch continuation: with a real provider session, message an ended
+  Auto-research orchestrator and confirm one continuation whose first turn
+  reads the message. On a real phone in a team space, return to a discarded
+  tab and record the navigation type the browser reports; the route fix
+  covers `reload` only.
+- Teammate heartbeat: with a real provider turn running, a teammate's steer
+  shows on another member's open chat within a heartbeat; a teammate's
+  Experiment start and stop reloads another member's page once.

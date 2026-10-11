@@ -472,7 +472,8 @@ The strict request rejects additional fields.
 card only, and never wakes an owner.
 
 Node and project chats show resolved cards read-only in transcript order and
-open question cards at the end of the transcript, scrolling with it. The composer retains its steering behavior.
+open question cards at the end of the transcript, scrolling with it. The
+composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format. A parked
 chat answer with no running turn names Discuss or Work continuation on its submit
@@ -612,8 +613,7 @@ lifecycle fields (not its progress); a changed digest reloads the project.
 A steer lives only in the chat history, so each chat task also reports a steer
 revision, bumped when a steer is queued and again when its final receipt is
 written. A changed revision makes other members' pages refresh chat summaries,
-which reloads an open transcript. A
-composer draft never leaves its page.
+which reloads an open transcript. A composer draft never leaves its page.
 
 A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
 per project. A temporarily unavailable head does not replay or copy the graph.
