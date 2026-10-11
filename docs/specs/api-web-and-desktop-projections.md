@@ -41,21 +41,28 @@ Main cannot be renamed or archived. Archive and unarchive update the isolation
 state, creating that state for a legacy branch when needed, without changing
 Patch history or episode-history archiving.
 
-The project shell shows a graph picker whenever the project has a branch, on
-main too, and on any branch route. It puts main first, preserves inventory
-branch order, and hides archived refs unless requested or active; an active
-branch missing from the list still has its own option. A branch is named by its
-`name`; the active branch shows its revision and merge state.
-When the list cannot be read the picker is disabled, says so, and still names
-the current ref. **Episode & tasks** is a link to the ref's current chain
-member, shown only when it has one.
+The branch picker is a `⑂ <name>` button at the right end of the view tabs; on
+a phone it is a chip beside the project name. It is hidden on main when the
+project has no live branch. The button shows an amber dot when another branch
+`needs_you`, and no spinner. Its list puts main first, then running branches,
+then newest first, and hides archived branches except the active one, which
+offers unarchive. Each branch row shows a spinner when `running`, an amber dot
+when `needs_you`, and always-visible rename and archive icons; the current row
+has a check. Rename edits the name inline and shows one warning for an invalid
+or taken name. Archiving an unmerged branch asks first. When the list cannot be
+read the button is disabled and still names the current ref.
 
 Choosing a ref keeps the view and carries a chat or Auto-research episode
 selection only when it belongs to the destination; a node stays selected only
 when the destination's snapshot has it. A ref switch is not a project open: no
 opening screen, the header and view stay mounted, and the previous ref's
 snapshot stays on screen with the panel inert until the new ref's snapshot
-arrives. A ref visited before restores from its `(project, ref)` tab state. The
+arrives, under a thin progress line. The loading screen appears only for the
+first open of a project that is not on screen; identity re-checks and backend
+changes keep the displayed project inert instead. When a project opens, live
+branch snapshots load one at a time in the background into the per-ref cache,
+which never displaces a visited ref's state or draft, so a first switch usually
+paints at once. A ref visited before restores from its `(project, ref)` tab state. The
 session's target fences still drop responses for a ref already left, and each
 ref keeps its own staged draft. Heartbeat single-flight is keyed by project and
 ref. All project view URLs come from one helper over (project, ref, view) plus
@@ -1668,10 +1675,14 @@ branch or code worktree show the same panel. A deliberate click checks
 current server eligibility and either starts the merge or displays the blocker
 beside the control, following the
 [branch merge projection](auto-research-and-branch-merge.md#runs-projection).
-The Experiment Run control offers "Work on a graph branch" and "Code worktree"
-toggles, off by default. The Auto-research dialog shows the graph branch as
-always on; its Code worktree choice is left to the server's eligibility check
-unless the human opts out. On a branch, each DAG node shows its title and one
+The Experiment Run control offers "On a new branch" and "Code worktree"
+toggles, off by default; on a branch it hides "On a new branch" and the
+Experiment runs on that branch. Both launches use one shared Branch name field;
+blank takes the server's date name. The Auto-research dialog on main shows that
+field beside Code worktree, whose choice is left to the server's eligibility
+check unless the human opts out. On an Auto-research branch the Auto-research
+button opens **Continue <name>** instead: a message to the running orchestrator,
+or added turns with a message once it has ended. On a branch, each DAG node shows its title and one
 word: how Merge will treat it (Conflict, Needs agent, Proposal, Already merged),
 else how the branch changed it (Added, Changed, Removed). Standing, status, and
 the connect handle appear on hover. Node detail lists each changed field as
