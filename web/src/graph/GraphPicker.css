@@ -120,6 +120,11 @@
   font-size: var(--type-sm);
 }
 .branch-picker-confirm {
+  /* Centered in the viewport; the base styles zero dialog margins. */
+  position: fixed;
+  inset: 0;
+  height: fit-content;
+  margin: auto;
   width: min(390px, calc(100vw - 32px));
   padding: 20px;
   border: 1px solid var(--line-strong);

@@ -110,7 +110,28 @@
   align-items: center;
   display: flex;
   gap: 8px;
+  min-width: 0;
   white-space: nowrap;
+}
+.auto-research-continue-title svg {
+  flex: none;
+}
+/* A long name truncates on a phone instead of running under the close button. */
+.auto-research-continue-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 560px) {
+  .campaign-dialog h2.auto-research-continue-title {
+    flex-wrap: wrap;
+    font-size: var(--type-xl);
+    row-gap: 2px;
+  }
+  .auto-research-continue-name {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
 }
 .campaign-dialog-fields {
   display: grid;

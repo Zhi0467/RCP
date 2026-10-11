@@ -264,7 +264,8 @@ export function AutoResearchDialog({
           <h2 id={titleId} className={continueBranch ? "auto-research-continue-title" : undefined}>
             {continueBranch ? (
               <>
-                Continue <GitBranch size={16} aria-hidden="true" /> {continueBranch.name}
+                Continue <GitBranch size={16} aria-hidden="true" />
+                <span className="auto-research-continue-name">{continueBranch.name}</span>
               </>
             ) : (
               "Authorize auto-research"
