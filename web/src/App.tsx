@@ -5771,7 +5771,7 @@ function MemberApp({
           <DetailDrawer
             key={`${slot}:${node.id}`}
             experimentBranchNameRefusal={experimentBranchRefusal}
-            branchNamesInUse={branchNamesInUse}
+            graphRefs={projectGraphRefs ?? null}
             node={node}
             projectId={project.id}
             graphTarget={graphTarget}

@@ -14,7 +14,7 @@ import {
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import { BranchNameField, branchNameRequest, branchNameValid } from "./BranchNameField";
-import type { AgentRunConfig, GraphTargetRef, ProjectSnapshot } from "../core/types";
+import type { AgentRunConfig, GraphRef, GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
 import { Check, FlaskConical, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
@@ -110,7 +110,8 @@ interface Props {
   ) => void;
   /** The server's branch-name refusal code from the last Experiment start, if any. */
   experimentBranchNameRefusal?: string | null;
-  branchNamesInUse?: readonly string[];
+  /** The project's branches, for the branch field's placeholder and overlap tags. */
+  graphRefs?: GraphRef[] | null;
   /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
   inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
@@ -189,7 +190,7 @@ export function DetailDrawer({
   project,
   onRunExperiment,
   experimentBranchNameRefusal = null,
-  branchNamesInUse = [],
+  graphRefs = null,
   inheritedIsolation,
   onOpenChat,
   onOpenRelatedNode,
@@ -675,6 +676,7 @@ export function DetailDrawer({
                   {projectId && experimentEntriesStatus === "loaded" && (
                     <ExperimentStartOverlap
                       projectId={projectId}
+                      graphRefs={graphRefs}
                       loops={experimentStartOverlap(
                         experimentEntries,
                         projectId,
@@ -782,7 +784,7 @@ export function DetailDrawer({
                         value={experimentBranch}
                         disabled={nodeMutationDisabled || experimentRunBusy}
                         refusal={experimentBranchNameRefusal}
-                        namesInUse={branchNamesInUse}
+                        namesInUse={graphRefs?.map((ref) => ref.name)}
                         onChange={setExperimentBranch}
                       >
                         {codeWorktreeToggle}

@@ -3418,6 +3418,8 @@ export interface ProjectArtifact {
   download_url: string | null;
   can_open: boolean;
   unavailable_reason: string | null;
+  /** The owning branch's name, resolved by the server. */
+  graph_branch_name: string;
 }
 
 export interface ProviderLoginState {

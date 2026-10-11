@@ -4,6 +4,7 @@ import { DraggableWindow } from "../ui/DraggableWindow";
 import { VOICE_PANEL_SIZE_STORAGE_KEY } from "../ui/floatingWindow";
 import type { VoiceAgent } from "./useVoiceAgent";
 import type { VoicePin } from "./voiceExecutor";
+import { loadGraphRefs } from "../core/api";
 import { branchName } from "../core/branchNames";
 import type { GraphRef } from "../core/types";
 
@@ -67,13 +68,26 @@ function ConfirmationCard({
   voice: VoiceAgent;
   graphRefs: VoicePanelProps["graphRefs"];
 }) {
-  const target =
-    pin.graph_target.kind === "branch" && pin.graph_target.branch_id
-      ? branchName(graphRefs?.projectId === pin.project_id ? graphRefs.refs : null, {
-          kind: "branch",
-          branch_id: pin.graph_target.branch_id,
-        })
-      : "main";
+  const branchId = pin.graph_target.kind === "branch" ? pin.graph_target.branch_id : null;
+  const openProjectRefs = graphRefs?.projectId === pin.project_id ? graphRefs.refs : null;
+  // A card for another project reads that project's own branch names.
+  const [pinnedRefs, setPinnedRefs] = useState<{ projectId: string; refs: GraphRef[] } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!branchId || openProjectRefs) return;
+    let current = true;
+    loadGraphRefs(pin.project_id).then(
+      (refs) => current && setPinnedRefs({ projectId: pin.project_id, refs }),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [branchId, openProjectRefs, pin.project_id]);
+  const refs =
+    openProjectRefs ?? (pinnedRefs?.projectId === pin.project_id ? pinnedRefs.refs : null);
+  const target = branchId ? branchName(refs, { kind: "branch", branch_id: branchId }) : "main";
   const profile = pin.provider_profile;
   const terminal = pin.terminal;
   const rows: Array<[string, string]> = [

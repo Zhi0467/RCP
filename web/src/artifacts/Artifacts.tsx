@@ -137,7 +137,7 @@ export function Artifacts({
                   <div className="artifact-entry-heading">
                     <h3>{entry.name}</h3>
                     <EpisodeAuthor author={entry.authorized_by} />
-                    <BranchTag refs={graphRefs} target={target} />
+                    <BranchTag refs={graphRefs} target={target} name={entry.graph_branch_name} />
                   </div>
                   {entry.source_chat_href && (
                     <a
