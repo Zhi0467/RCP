@@ -1526,7 +1526,7 @@ test("every target view keeps all same-node cards and scopes selection and busy 
           new RegExp(`data-checkout-kind="${id === "main-episode" ? "shared" : "worktree"}"`),
         );
 
-        assert.equal(card.includes("experiment-branch-badge"), true);
+        assert.equal(card.includes("branch-tag"), true);
         assert.equal(card.includes("data-selected-episode="), isSelected);
         if (isSelected) {
           assert.match(card, /class="[^"]*experiment-stop-loop[^"]*" disabled=""/);
@@ -1649,10 +1649,11 @@ test("Runs retains healthy cards and names each unavailable branch once", () => 
         { ...unavailable, episode_id: "episode-other", control_node_id: "experiment/other" },
       ],
       stopBusyIds: new Set(),
+      graphRefs: [{ kind: "branch", branch_id: "unavailable-branch", name: "gone-branch" }],
     }),
   );
   assert.match(html, /class="experiment-board-unavailable" role="status"/);
-  assert.equal((html.match(/title="unavailable-branch"/g) ?? []).length, 1);
+  assert.equal((html.match(/title="gone-branch"/g) ?? []).length, 1);
   assert.match(html, /data-episode-id="episode-1"/);
 });
 

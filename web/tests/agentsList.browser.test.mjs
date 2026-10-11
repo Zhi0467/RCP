@@ -169,7 +169,7 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
   }
 });
 
-test("Agents graph filter includes branch inventory and keeps graph and kind tags", async () => {
+test("Agents lists only the viewed branch's chats, without a graph filter or tags", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
@@ -188,25 +188,11 @@ test("Agents graph filter includes branch inventory and keeps graph and kind tag
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentsList.html?board&inventory`,
     );
-    const filter = page.locator(".agent-graph-filter");
-    const card = page.locator('[data-card-id="branch-chat"]');
-    await card.waitFor();
-    assert.deepEqual(
-      await filter
-        .locator("option")
-        .evaluateAll((options) => options.map((option) => option.value)),
-      ["all", "main", "branch-one"],
-    );
-    assert.equal(await card.locator('[data-graph-target="branch-one"]').count(), 1);
-    assert.equal(await card.locator('[data-conversation-kind="auto_research_child"]').count(), 1);
-    await filter.selectOption("main");
-    await card.waitFor({ state: "detached" });
+    await page.locator("[data-card-id]").first().waitFor();
     assert.equal(await page.locator("[data-card-id]").count(), 4);
-    await filter.selectOption("branch-one");
-    await card.waitFor();
-    assert.equal(await page.locator("[data-card-id]").count(), 1);
-    await filter.selectOption("all");
-    assert.equal(await page.locator("[data-card-id]").count(), 5);
+    assert.equal(await page.locator('[data-card-id="branch-chat"]').count(), 0);
+    assert.equal(await page.locator("select").count(), 0);
+    assert.equal(await page.locator("[data-conversation-kind], [data-graph-target]").count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

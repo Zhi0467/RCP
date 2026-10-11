@@ -4,6 +4,8 @@ import { DraggableWindow } from "../ui/DraggableWindow";
 import { VOICE_PANEL_SIZE_STORAGE_KEY } from "../ui/floatingWindow";
 import type { VoiceAgent } from "./useVoiceAgent";
 import type { VoicePin } from "./voiceExecutor";
+import { branchName } from "../core/branchNames";
+import type { GraphRef } from "../core/types";
 
 /** Opens a voice session, or ends the open one. */
 export function VoiceButton({ voice, className }: { voice: VoiceAgent; className: string }) {
@@ -56,9 +58,22 @@ function valueText(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) {
+function ConfirmationCard({
+  pin,
+  voice,
+  graphRefs,
+}: {
+  pin: VoicePin;
+  voice: VoiceAgent;
+  graphRefs: VoicePanelProps["graphRefs"];
+}) {
   const target =
-    pin.graph_target.kind === "branch" ? `Branch ${pin.graph_target.branch_id}` : "Main graph";
+    pin.graph_target.kind === "branch" && pin.graph_target.branch_id
+      ? branchName(graphRefs?.projectId === pin.project_id ? graphRefs.refs : null, {
+          kind: "branch",
+          branch_id: pin.graph_target.branch_id,
+        })
+      : "main";
   const profile = pin.provider_profile;
   const terminal = pin.terminal;
   const rows: Array<[string, string]> = [
@@ -137,7 +152,12 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
   );
 }
 
-type VoicePanelProps = { voice: VoiceAgent; onOpenSettings: () => void };
+type VoicePanelProps = {
+  voice: VoiceAgent;
+  onOpenSettings: () => void;
+  /** The open project's refs, so a confirmation names its branch. */
+  graphRefs?: { projectId: string; refs: GraphRef[] | null } | null;
+};
 
 /** The floating voice panel; it shows while a session runs or after one failed.
  * It is a window the member can drag and resize so it never pins over the page. */
@@ -156,7 +176,7 @@ export function VoicePanel(props: VoicePanelProps) {
   );
 }
 
-function VoicePanelContent({ voice, onOpenSettings }: VoicePanelProps) {
+function VoicePanelContent({ voice, onOpenSettings, graphRefs = null }: VoicePanelProps) {
   if (voice.phase === "idle") {
     if (voice.historyOpen)
       return (
@@ -293,7 +313,9 @@ function VoicePanelContent({ voice, onOpenSettings }: VoicePanelProps) {
           {voice.settingsError}
         </p>
       ) : null}
-      {voice.card ? <ConfirmationCard pin={voice.card} voice={voice} /> : null}
+      {voice.card ? (
+        <ConfirmationCard pin={voice.card} voice={voice} graphRefs={graphRefs} />
+      ) : null}
       <ol className="voice-transcript" aria-live="polite" data-text-selectable>
         {voice.transcript.map((line, index) => (
           <li key={index} data-role={line.role}>

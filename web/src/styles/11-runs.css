@@ -1011,10 +1011,36 @@
 .campaign-dialog-fields .campaign-isolation label {
   display: inline-flex;
 }
-.campaign-isolation input,
-.experiment-isolation input,
+.campaign-isolation input[type="checkbox"],
+.experiment-isolation input[type="checkbox"],
 .merge-check input {
   width: auto;
+}
+.branch-name-field {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 100%;
+}
+.branch-name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.campaign-isolation .branch-name-label,
+.experiment-isolation .branch-name-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.branch-name-label input {
+  width: 13rem;
+  max-width: 100%;
+}
+.branch-name-warning {
+  margin: 0;
+  color: var(--red);
+  font-size: var(--type-xs);
 }
 .merge-summary-row {
   display: flex;

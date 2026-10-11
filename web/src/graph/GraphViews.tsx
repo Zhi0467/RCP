@@ -5,11 +5,12 @@ import { ProviderLoginNotice } from "../projects/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "./branchGraph";
 import { graphSessionKey } from "../core/graphTarget";
 import { ChangedFields, ChangeHistory } from "./BranchChangeDetail";
-import { ExperimentBranchBadge } from "../experiments/ExperimentBranchBadge";
+import { BranchTag } from "../core/BranchTag";
 import { EpisodeMergePanel } from "../experiments/EpisodeMergePanel";
 import { type BranchDiffWord, branchDiffWord, mergeDiffMarks } from "./mergePanel";
 import type {
   GraphBranchChanges,
+  GraphRef,
   GraphTargetRef,
   MergeDiffPath,
   MergeEpisodeBody,
@@ -1127,6 +1128,8 @@ export function DagView({
 
 interface ExecutionProps {
   graphTarget?: GraphTargetRef;
+  /** The project's refs, so every Run row names its branch. */
+  graphRefs?: GraphRef[] | null;
   graph: GraphState;
   episodes: Episode[];
   episodeAction: string | null;
@@ -1189,6 +1192,7 @@ interface ExecutionProps {
 
 export function ExecutionView({
   graphTarget = MAIN_GRAPH,
+  graphRefs = null,
   graph,
   episodes,
   episodeAction,
@@ -1429,8 +1433,9 @@ export function ExecutionView({
         <div className="experiment-board-unavailable" role="status">
           <span>Some live loops couldn't be read:</span>
           {unavailableExperimentTargets(experimentUnavailableLoops).map((target) => (
-            <ExperimentBranchBadge
+            <BranchTag
               key={target.kind === "main" ? "main" : target.branch_id}
+              refs={graphRefs}
               target={target}
             />
           ))}
@@ -1540,6 +1545,7 @@ export function ExecutionView({
       return (
         <AutoResearchEpisodeCard
           episode={episode}
+          graphRefs={graphRefs}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
           detailRef={
@@ -1603,10 +1609,7 @@ export function ExecutionView({
                 <time dateTime={episode.created_at}>
                   {formatEpisodeTimestamp(episode.created_at)}
                 </time>
-                <ExperimentBranchBadge
-                  target={episode.graph_target}
-                  autoResearchEpisodeId={episode.auto_research_parent_episode_id}
-                />
+                <BranchTag refs={graphRefs} target={episode.graph_target} />
                 <ExperimentLoopMetadata
                   projectId={episode.project_id}
                   metadata={episode}
@@ -1639,6 +1642,7 @@ export function ExecutionView({
     return (
       <ExperimentEpisodeCard
         episode={episode}
+        graphRefs={graphRefs}
         run={run}
         initiallyExpanded={
           !staleMainRoute &&
@@ -1705,6 +1709,7 @@ export function ExecutionView({
 
 function ExperimentEpisodeCard({
   episode,
+  graphRefs,
   run,
   initiallyExpanded,
   selected,
@@ -1737,6 +1742,7 @@ function ExperimentEpisodeCard({
   episodeReportHref,
 }: {
   episode: Episode;
+  graphRefs: GraphRef[] | null;
   run: ExperimentRun;
   initiallyExpanded: boolean;
   selected: boolean;
@@ -1820,10 +1826,7 @@ function ExperimentEpisodeCard({
           <span className="campaign-run-meta">
             <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
-            <ExperimentBranchBadge
-              target={episode.graph_target}
-              autoResearchEpisodeId={episode.auto_research_parent_episode_id}
-            />
+            <BranchTag refs={graphRefs} target={episode.graph_target} />
             <ExperimentLoopMetadata
               projectId={episode.project_id}
               metadata={episode}

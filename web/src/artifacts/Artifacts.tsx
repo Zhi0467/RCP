@@ -15,17 +15,21 @@ import { api } from "../core/api";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
-import type { ProjectArtifact } from "../core/types";
+import type { GraphRef, ProjectArtifact } from "../core/types";
+import { BranchTag } from "../core/BranchTag";
 
 // The last list per project survives tab switches; a revisit refreshes it in place.
 const cachedEntries = new Map<string, ProjectArtifact[]>();
 
 export function Artifacts({
   projectId,
+  graphRefs = null,
   nodeTitle,
   onOpenNode,
 }: {
   projectId: string;
+  /** The project's refs, so each artifact names the branch it came from. */
+  graphRefs?: GraphRef[] | null;
   nodeTitle: (nodeId: string) => string | null;
   onOpenNode: (nodeId: string) => void;
 }) {
@@ -110,6 +114,9 @@ export function Artifacts({
         <ul className="artifacts-list">
           {entries.map((entry) => {
             const sourceNodeTitle = entry.source_node_id ? nodeTitle(entry.source_node_id) : null;
+            const target =
+              parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
+              graphTargetFromHash(entry.source_chat_href ?? "");
             return (
               <li
                 key={entry.id}
@@ -120,24 +127,17 @@ export function Artifacts({
                     event.preventDefault();
                     return;
                   }
-                  setReferenceDrag(
-                    event.dataTransfer,
-                    projectId,
-                    parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
-                      graphTargetFromHash(entry.source_chat_href ?? ""),
-                    { kind: "artifact", artifact_id: entry.artifact_id },
-                  );
+                  setReferenceDrag(event.dataTransfer, projectId, target, {
+                    kind: "artifact",
+                    artifact_id: entry.artifact_id,
+                  });
                 }}
               >
                 <div>
                   <div className="artifact-entry-heading">
                     <h3>{entry.name}</h3>
                     <EpisodeAuthor author={entry.authorized_by} />
-                    {entry.episode_mode && (
-                      <span className="artifact-episode-tag">
-                        {entry.episode_mode === "experiment_loop" ? "Experiment" : "Auto-research"}
-                      </span>
-                    )}
+                    <BranchTag refs={graphRefs} target={target} />
                   </div>
                   {entry.source_chat_href && (
                     <a
