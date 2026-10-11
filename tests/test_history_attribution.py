@@ -662,7 +662,7 @@ def test_nonmember_human_is_refused_without_revision(manifest) -> None:
         write_authority=WriteAuthority(project_membership_check=is_member),
     )
     with pytest.raises(PatchRejected) as refused:
-        history.append(_approval(), authorized_by=authorizer, discard_on_reject=True)
+        history.append(_approval(), authorized_by=authorizer)
 
     assert "human-authorizer-not-member" in {
         message.code for message in refused.value.report.messages

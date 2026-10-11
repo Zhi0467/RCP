@@ -861,6 +861,11 @@ def _authorship_rejected(patch: Patch) -> bool:
     return report.rejected
 
 
+#: A refused authorizer never enters canonical history, like a departed agent
+#: authorizer, whatever the caller's discard choice.
+HUMAN_AUTHORIZER_NOT_MEMBER = "human-authorizer-not-member"
+
+
 class WriteAuthority:
     """Live admission authority. Without resolvers, only system/history use is allowed."""
 
@@ -913,7 +918,7 @@ class WriteAuthority:
             or not self.project_membership_check(project_id, patch.authorized_by.user_id)
         ):
             report.reject(
-                "human-authorizer-not-member",
+                HUMAN_AUTHORIZER_NOT_MEMBER,
                 "The authorizing human is not a current project member.",
                 patch.revision or None,
             )
