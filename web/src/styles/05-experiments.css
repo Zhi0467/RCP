@@ -1236,15 +1236,15 @@
   margin: 5px 11px 10px;
 }
 
-.experiment-branch-badge {
+.branch-tag {
   border: 1px solid var(--line);
   max-width: 16rem;
   text-transform: none;
 }
-.experiment-branch-badge > span {
+.branch-tag > span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.experiment-branch-badge > svg {
+.branch-tag > svg {
   flex-shrink: 0;
 }

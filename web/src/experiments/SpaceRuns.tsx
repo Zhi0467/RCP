@@ -1,5 +1,5 @@
 import { ExperimentLoopMetadata } from "./ExperimentLoopMetadata";
-import { ExperimentBranchBadge } from "./ExperimentBranchBadge";
+import { BranchTag } from "../core/BranchTag";
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 import { spaceRunRouteToken } from "./experimentBoardModel";
@@ -292,12 +292,8 @@ export function SpaceRunRow({
               <WifiOff size={12} aria-hidden="true" /> Unavailable
             </span>
           )}
-          {entry.mode === "experiment_loop" && (
-            <ExperimentBranchBadge
-              target={entry.graph_target}
-              autoResearchEpisodeId={entry.auto_research_parent_episode_id}
-            />
-          )}
+          {/* Space rows span projects; names arrive once the index carries them. */}
+          <BranchTag refs={null} target={entry.graph_target} />
           <time dateTime={entry.started_at}>{formatActivity(entry.started_at)}</time>
         </span>
         <ChevronRight className="space-run-arrow" size={16} aria-hidden="true" />

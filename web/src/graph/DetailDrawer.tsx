@@ -13,6 +13,7 @@ import {
 } from "../core/AgentConfigControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
+import { BranchNameField, branchNameRequest, branchNameValid } from "./BranchNameField";
 import type { AgentRunConfig, GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
@@ -101,11 +102,14 @@ interface Props {
   onDecisionChoice?: (selectedOption: string) => void;
   /** Offers the Experiment agent picker, defaulting from the Node chat profile. */
   project?: ProjectSnapshot;
+  /** `branch_name` names a new branch; null lets the server assign the date fallback. */
   onRunExperiment?: (
-    isolation: EpisodeIsolationChoice,
+    isolation: EpisodeIsolationChoice & { branch_name?: string | null },
     browserRequested: boolean,
     launchConfig?: AgentRunConfig,
   ) => void;
+  /** The server's branch-name refusal code from the last Experiment start, if any. */
+  experimentBranchNameRefusal?: string | null;
   /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
   inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
@@ -183,6 +187,7 @@ export function DetailDrawer({
   onDecisionChoice,
   project,
   onRunExperiment,
+  experimentBranchNameRefusal = null,
   inheritedIsolation,
   onOpenChat,
   onOpenRelatedNode,
@@ -218,6 +223,20 @@ export function DetailDrawer({
     graph_isolation: false,
     code_worktree: false,
   });
+  const [experimentBranch, setExperimentBranch] = useState("");
+  const codeWorktreeToggle = (
+    <label>
+      <input
+        type="checkbox"
+        checked={(inheritedIsolation ?? isolation).code_worktree}
+        disabled={Boolean(inheritedIsolation)}
+        onChange={(event) => setIsolation({ ...isolation, code_worktree: event.target.checked })}
+      />
+      Code worktree
+    </label>
+  );
+  const newBranchNameValid =
+    inheritedIsolation || !isolation.graph_isolation || branchNameValid(experimentBranch);
   const startReasons = experimentStartReasons(
     experimentControl,
     graphTarget,
@@ -713,6 +732,7 @@ export function DetailDrawer({
                         experimentRunDisabled ||
                         experimentRunBusy ||
                         !launchReady ||
+                        !newBranchNameValid ||
                         // Overlap never blocks Run; Run waits only while it is being checked.
                         experimentEntriesStatus === "loading" ||
                         !canStartExperiment(
@@ -723,7 +743,10 @@ export function DetailDrawer({
                       }
                       onClick={() =>
                         onRunExperiment(
-                          inheritedIsolation ?? isolation,
+                          inheritedIsolation ??
+                            (isolation.graph_isolation
+                              ? { ...isolation, branch_name: branchNameRequest(experimentBranch) }
+                              : isolation),
                           browserRequested,
                           launchConfig,
                         )
@@ -738,28 +761,32 @@ export function DetailDrawer({
                     </button>
                   </div>
                   <div className="experiment-isolation" role="group" aria-label="Isolation">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={(inheritedIsolation ?? isolation).graph_isolation}
-                        disabled={Boolean(inheritedIsolation)}
-                        onChange={(event) =>
-                          setIsolation({ ...isolation, graph_isolation: event.target.checked })
-                        }
-                      />
-                      Work on a graph branch
-                    </label>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={(inheritedIsolation ?? isolation).code_worktree}
-                        disabled={Boolean(inheritedIsolation)}
-                        onChange={(event) =>
-                          setIsolation({ ...isolation, code_worktree: event.target.checked })
-                        }
-                      />
-                      Code worktree
-                    </label>
+                    {/* On a branch the Experiment runs there; there is no branch from a branch. */}
+                    {graphTarget.kind === "main" && (
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={isolation.graph_isolation}
+                          onChange={(event) =>
+                            setIsolation({ ...isolation, graph_isolation: event.target.checked })
+                          }
+                        />
+                        On a new branch
+                      </label>
+                    )}
+                    {graphTarget.kind === "main" && isolation.graph_isolation ? (
+                      <BranchNameField
+                        mode="experiment_loop"
+                        value={experimentBranch}
+                        disabled={nodeMutationDisabled || experimentRunBusy}
+                        refusal={experimentBranchNameRefusal}
+                        onChange={setExperimentBranch}
+                      >
+                        {codeWorktreeToggle}
+                      </BranchNameField>
+                    ) : (
+                      codeWorktreeToggle
+                    )}
                   </div>
                   <BrowserToggle
                     subject="run"

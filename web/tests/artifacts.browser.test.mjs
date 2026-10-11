@@ -104,15 +104,19 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       0,
     );
     await page.getByRole("link", { name: "Open Report", exact: true }).waitFor();
-    assert.equal(await page.locator(".artifact-episode-tag").count(), 3);
+    // Every row names its branch, main included.
     assert.equal(
-      await page
-        .locator(".artifact-entry")
-        .filter({ hasText: "Unavailable plot" })
-        .locator(".artifact-episode-tag")
-        .count(),
-      0,
+      await page.locator(".artifact-entry .branch-tag").count(),
+      await page.locator(".artifact-entry").count(),
     );
+    const tag = (name) =>
+      page
+        .locator(".artifact-entry")
+        .filter({ has: page.getByRole("heading", { name, exact: true }) })
+        .locator(".branch-tag")
+        .getAttribute("title");
+    assert.equal(await tag("Validation report"), "transfer-sweep");
+    assert.equal(await tag("Report"), "main");
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");

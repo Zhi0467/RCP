@@ -1,16 +1,19 @@
-import { ExperimentBranchBadge } from "./ExperimentBranchBadge";
+import { BranchTag } from "../core/BranchTag";
 import { ExperimentCheckout } from "./ExperimentCheckout";
-import type { LoopOverlap } from "../core/types";
+import type { GraphRef, LoopOverlap } from "../core/types";
 import { experimentBoardHref } from "./experimentBoardModel";
 
 /** Both the preflight inventory and successful start receipt are informational. */
 export function ExperimentStartOverlap({
   projectId,
   loops,
+  graphRefs = null,
   onDismiss,
 }: {
   projectId: string;
   loops: LoopOverlap;
+  /** The project's refs, so each loop's branch shows its name. */
+  graphRefs?: GraphRef[] | null;
   onDismiss?: () => void;
 }) {
   if (!loops.rows.length && !loops.omitted) return null;
@@ -37,12 +40,7 @@ export function ExperimentStartOverlap({
                   loop.started_by.kind === "auto_research" ? (loop.started_by.id ?? null) : null,
               })}
             >
-              <ExperimentBranchBadge
-                target={loop.graph_target}
-                autoResearchEpisodeId={
-                  loop.started_by.kind === "auto_research" ? loop.started_by.id : null
-                }
-              />
+              <BranchTag refs={graphRefs} target={loop.graph_target} />
             </a>
             {" · "}
             <span data-starter-kind={loop.started_by.kind}>

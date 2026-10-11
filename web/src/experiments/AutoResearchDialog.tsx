@@ -5,8 +5,9 @@ import {
   launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
-import type { AgentRunConfig, ProjectSnapshot } from "../core/types";
-import { LoaderCircle, Telescope, X } from "lucide-react";
+import type { AgentRunConfig, Episode, ProjectSnapshot } from "../core/types";
+import { BranchNameField, branchNameRequest, branchNameValid } from "../graph/BranchNameField";
+import { GitBranch, LoaderCircle, Telescope, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 const MODAL_FOCUSABLE_SELECTOR =
@@ -89,14 +90,29 @@ interface Props {
   /** Offers the orchestrator agent picker, defaulting from the Orchestrator profile. */
   project?: ProjectSnapshot;
   onClose: () => void;
-  /** `codeWorktree` false opts out; true leaves the choice to the server's eligibility check. */
+  /** `codeWorktree` false opts out; true leaves the choice to the server's eligibility check.
+   * A null `branchName` lets the server assign the date fallback. */
   onAuthorize: (
     invocationCeiling: number,
     startingInstruction: string | null,
     codeWorktree: boolean,
     browserRequested: boolean,
-    launchConfig?: AgentRunConfig,
+    launchConfig: AgentRunConfig | undefined,
+    branchName: string | null,
   ) => void;
+  /** The server's branch-name refusal code from the last start, if any. */
+  branchNameRefusal?: string | null;
+  /** On an Auto-research branch the dialog continues it instead of starting another. */
+  continueBranch?: { name: string; episode: Episode } | null;
+  /** Adds turns to an ended orchestrator without a message. */
+  onContinue?: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  /** Mails the orchestrator; a ceiling also continues an ended one. */
+  onSendMessage?: (
+    episodeId: string,
+    body: string,
+    invocationCeiling?: number,
+    requestId?: string,
+  ) => Promise<void>;
 }
 
 export function AutoResearchDialog({
@@ -107,6 +123,10 @@ export function AutoResearchDialog({
   project,
   onClose,
   onAuthorize,
+  branchNameRefusal = null,
+  continueBranch = null,
+  onContinue,
+  onSendMessage,
 }: Props) {
   const titleId = useId();
   const dialog = useRef<HTMLFormElement>(null);
@@ -115,6 +135,11 @@ export function AutoResearchDialog({
   const [instruction, setInstruction] = useState("");
   const [browserRequested, setBrowserRequested] = useState(false);
   const [codeWorktree, setCodeWorktree] = useState(true);
+  const [branch, setBranch] = useState("");
+  const [addTurns, setAddTurns] = useState("3");
+  const [continueError, setContinueError] = useState<string | null>(null);
+  // A retried send of the same message reuses its request id.
+  const messageRequest = useRef<{ key: string; id: string } | null>(null);
   const launchProfile = project?.agent_profiles.orchestrator;
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
@@ -137,6 +162,9 @@ export function AutoResearchDialog({
     setInstruction("");
     setCodeWorktree(true);
     setBrowserRequested(false);
+    setBranch("");
+    setAddTurns("3");
+    setContinueError(null);
     const returnFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const restoreBackground = dialog.current
@@ -164,6 +192,36 @@ export function AutoResearchDialog({
   const invocationCeiling = Number(budget);
   const budgetIsValid =
     budget.trim().length > 0 && Number.isSafeInteger(invocationCeiling) && invocationCeiling >= 1;
+  const continued = continueBranch?.episode ?? null;
+  // An ended orchestrator takes a message only with new turns.
+  const orchestratorEnded = Boolean(continued?.message_requires_continuation);
+  const turns = Number(addTurns);
+  const turnsValid = addTurns.trim().length > 0 && Number.isSafeInteger(turns) && turns >= 1;
+  const message = instruction.trim();
+  const canSubmit = continued
+    ? orchestratorEnded
+      ? turnsValid && (message ? continued.can_message : continued.can_continue)
+      : Boolean(message) && continued.can_message
+    : budgetIsValid && branchNameValid(branch);
+  const submitContinuation = async (episode: Episode) => {
+    setContinueError(null);
+    try {
+      if (!message) {
+        await onContinue?.(episode.episode_id, turns);
+      } else {
+        const ceiling = orchestratorEnded ? turns : undefined;
+        const key = `${episode.episode_id}:${message}:${ceiling ?? ""}`;
+        if (messageRequest.current?.key !== key)
+          messageRequest.current = { key, id: crypto.randomUUID() };
+        await onSendMessage?.(episode.episode_id, message, ceiling, messageRequest.current.id);
+        messageRequest.current = null;
+      }
+      onClose();
+    } catch (cause) {
+      setContinueError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  const shownError = continued ? continueError : error;
 
   return (
     <div
@@ -182,13 +240,18 @@ export function AutoResearchDialog({
         tabIndex={-1}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!budgetIsValid || busy) return;
+          if (!canSubmit || busy) return;
+          if (continued) {
+            void submitContinuation(continued);
+            return;
+          }
           onAuthorize(
             invocationCeiling,
-            instruction.trim() || null,
+            message || null,
             codeWorktree,
             browserRequested,
             launchConfig,
+            branchNameRequest(branch),
           );
         }}
       >
@@ -196,7 +259,15 @@ export function AutoResearchDialog({
           <span className="campaign-dialog-mark" aria-hidden="true">
             <Telescope size={20} />
           </span>
-          <h2 id={titleId}>Authorize auto-research</h2>
+          <h2 id={titleId}>
+            {continueBranch ? (
+              <>
+                Continue <GitBranch size={16} aria-hidden="true" /> {continueBranch.name}
+              </>
+            ) : (
+              "Authorize auto-research"
+            )}
+          </h2>
           <button
             className="icon-button"
             type="button"
@@ -208,49 +279,84 @@ export function AutoResearchDialog({
           </button>
         </header>
         <div className="campaign-dialog-fields">
-          <label className="campaign-budget-field">
-            <span>Operational invocation ceiling</span>
-            <input
-              ref={budgetInput}
-              type="number"
-              min={1}
-              step={1}
-              inputMode="numeric"
-              value={budget}
-              disabled={busy}
-              onChange={(event) => setBudget(event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Starting instruction (optional)</span>
-            <textarea
-              rows={5}
-              value={instruction}
-              disabled={busy}
-              onChange={(event) => setInstruction(event.target.value)}
-            />
-          </label>
-          <BrowserToggle
-            subject="run"
-            checked={browserRequested}
-            disabled={busy}
-            onChange={setBrowserRequested}
-          />
-          <div className="campaign-isolation" role="group" aria-label="Isolation">
-            <label>
-              <input type="checkbox" checked disabled />
-              Work on a graph branch
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={codeWorktree}
+          {continued ? (
+            <>
+              {orchestratorEnded && (
+                <label className="campaign-budget-field">
+                  <span>Add turns</span>
+                  <input
+                    ref={budgetInput}
+                    type="number"
+                    min={1}
+                    step={1}
+                    inputMode="numeric"
+                    value={addTurns}
+                    disabled={busy}
+                    onChange={(event) => setAddTurns(event.target.value)}
+                  />
+                </label>
+              )}
+              <label>
+                <span>Message to the orchestrator</span>
+                <textarea
+                  rows={5}
+                  value={instruction}
+                  disabled={busy}
+                  onChange={(event) => setInstruction(event.target.value)}
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="campaign-budget-field">
+                <span>Operational invocation ceiling</span>
+                <input
+                  ref={budgetInput}
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  value={budget}
+                  disabled={busy}
+                  onChange={(event) => setBudget(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Starting instruction (optional)</span>
+                <textarea
+                  rows={5}
+                  value={instruction}
+                  disabled={busy}
+                  onChange={(event) => setInstruction(event.target.value)}
+                />
+              </label>
+              <BrowserToggle
+                subject="run"
+                checked={browserRequested}
                 disabled={busy}
-                onChange={(event) => setCodeWorktree(event.target.checked)}
+                onChange={setBrowserRequested}
               />
-              Code worktree
-            </label>
-          </div>
+              <div className="campaign-isolation" role="group" aria-label="Isolation">
+                <BranchNameField
+                  mode="auto_research"
+                  value={branch}
+                  disabled={busy}
+                  refusal={branchNameRefusal}
+                  onChange={setBranch}
+                >
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={codeWorktree}
+                      disabled={busy}
+                      onChange={(event) => setCodeWorktree(event.target.checked)}
+                    />
+                    Code worktree
+                  </label>
+                </BranchNameField>
+              </div>
+            </>
+          )}
           {launchOpen && project && launchProfile && launchConfig && (
             <AgentConfigControls
               project={project}
@@ -268,9 +374,9 @@ export function AutoResearchDialog({
             </AgentConfigControls>
           )}
         </div>
-        {error && (
+        {shownError && (
           <div className="campaign-dialog-error" role="alert">
-            {error}
+            {shownError}
           </div>
         )}
         <footer>
@@ -294,7 +400,7 @@ export function AutoResearchDialog({
             type="submit"
             disabled={
               busy ||
-              !budgetIsValid ||
+              !canSubmit ||
               Boolean(
                 project &&
                 launchConfig &&
@@ -303,7 +409,13 @@ export function AutoResearchDialog({
             }
           >
             {busy ? <LoaderCircle className="spin" size={14} /> : <Telescope size={14} />}
-            {busy ? "Starting…" : "Start auto-research"}
+            {continued
+              ? orchestratorEnded
+                ? "Continue branch"
+                : "Send to orchestrator"
+              : busy
+                ? "Starting…"
+                : "Start auto-research"}
           </button>
         </footer>
       </form>
