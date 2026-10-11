@@ -414,15 +414,39 @@ def start_agent_task(
                                 "references": [],
                             }
                         )
+                composer_edit = (
+                    request.artifact_edit
+                    if isinstance(request, RunRequest)
+                    and request.artifact_edit is not None
+                    and not request.artifact_edit.origin_bound
+                    else None
+                )
                 try:
-                    record = background_tasks.start(
-                        project_id,
-                        kind,
-                        request,
-                        operation_id=operation_id,
-                        authorized_by=authorized_by,
-                        graph_target=service.history.graph_target,
-                    )
+                    # Expiry checks admitted edits under this lock, so the base must
+                    # stay readable until the task that protects it is recorded.
+                    with (
+                        store.artifact_lock(composer_edit.artifact_id)
+                        if composer_edit is not None
+                        else nullcontext()
+                    ):
+                        if composer_edit is not None:
+                            try:
+                                store.read_artifact_bytes(
+                                    composer_edit.artifact_id, composer_edit.base_version
+                                )
+                            except (KeyError, OSError, ValueError) as exc:
+                                raise AgentTaskAdmissionConflict(
+                                    "The selected artifact version is no longer available. "
+                                    "Send the comment again."
+                                ) from exc
+                        record = background_tasks.start(
+                            project_id,
+                            kind,
+                            request,
+                            operation_id=operation_id,
+                            authorized_by=authorized_by,
+                            graph_target=service.history.graph_target,
+                        )
                 except BaseException:
                     if claimed_set is not None and store.agent_task(operation_id) is None:
                         attachment_store.release(*claimed_set)

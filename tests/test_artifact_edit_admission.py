@@ -13,7 +13,7 @@ from PIL import Image
 from rcp.runs.artifact_edit_admission import admit_artifact_edit, artifact_edit_availability
 from rcp.runs.session_master import record_session_master
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskAdmissionConflict, EpisodeRecord
+from rcp.storage import AgentTaskAdmissionConflict, AppStore, EpisodeRecord
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -495,6 +495,38 @@ def test_composer_refuses_another_chat_artifact(edit_origin):
     )
     assert response.status_code == 422
     assert "another chat" in response.json()["detail"]
+
+
+def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_origin, monkeypatch):
+    app, _store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    monkeypatch.setattr(
+        AppStore,
+        "child_human_turn_refusal",
+        lambda *_args: {"code": "auto_research_child_read_only", "detail": "read only"},
+    )
+    started = []
+
+    def capture(project_id, kind, request, **kwargs):
+        started.append(request)
+        return task.model_copy(
+            update={
+                "operation_id": kwargs["operation_id"],
+                "request": request.model_dump(mode="json"),
+            }
+        )
+
+    monkeypatch.setattr(app.state.background_tasks, "start", capture)
+    client = signed_in_client(app)
+    body = {**_request(task, artifact).model_dump(mode="json"), "chat_id": task.request["chat_id"]}
+    url = f"/api/projects/{task.project_id}/tasks/project_chat"
+    assert client.post(url, json={**body, "mode": "work"}).status_code == 422
+    response = client.post(url, json={**body, "mode": "discuss"})
+    assert response.status_code == 202, response.text
+    (admitted,) = started
+    assert admitted.mode == "discuss"
+    assert admitted.artifact_edit.origin_bound
+    assert admitted.session_id == task.native_session_id
 
 
 def test_composer_work_edit_runs_graph_admission(edit_origin, monkeypatch):

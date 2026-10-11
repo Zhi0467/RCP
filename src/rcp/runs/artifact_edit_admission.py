@@ -228,11 +228,11 @@ def admit_chat_artifact_edit(
     revoking = owner is not None and (
         owner.kind == "auto_research" or owner.request.get("patch_kind") == "experiment_loop"
     )
-    if revoking:
+    # A read-only Auto-research child chat composes only comments, which keep
+    # the origin-bound Discuss edit the viewer uses.
+    if revoking or store.child_human_turn_refusal(project_id, request.chat_id) is not None:
         if request.mode == "work":
-            raise ValueError(
-                "Artifacts from Experiment or orchestrator sessions can only be edited in Discuss."
-            )
+            raise ValueError("This artifact can only be edited in Discuss here.")
         return admit_artifact_edit(store, service, project_id, request)
     operation_id = str(uuid.uuid4())
     edit = ArtifactEditAdmission(

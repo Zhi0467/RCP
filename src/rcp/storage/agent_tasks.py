@@ -655,6 +655,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).fetchall()
         return {row["episode_id"] for row in rows}
 
+    def child_human_turn_refusal(self, project_id: str, chat_id: str) -> dict[str, str] | None:
+        """Why a read-only Auto-research child chat refuses an ordinary human turn."""
+        with self.connection() as connection:
+            return self._child_human_turn_refusal(connection, project_id, chat_id)
+
     def _child_human_turn_refusal(
         self, connection: sqlite3.Connection, project_id: str, chat_id: str
     ) -> dict[str, str] | None:
