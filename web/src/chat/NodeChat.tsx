@@ -548,6 +548,8 @@ export function NodeChat({
   const [discardPrompt, setDiscardPrompt] = useState<"dictate" | "send" | null>(null);
   const [dictationDeadline, setDictationDeadline] = useState<number | null>(null);
   const [dictationClock, setDictationClock] = useState(() => Date.now());
+  // Send pressed while dictating: send once the final transcript is in the draft.
+  const [sendAfterDictation, setSendAfterDictation] = useState(false);
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
     () => new Set(),
@@ -626,9 +628,6 @@ export function NodeChat({
   const steeringTask = [...relatedTasks]
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
-  const composerHint = steeringTask
-    ? steeringTask.steer_action_label
-    : [...relatedTasks].reverse().find((task) => task.active)?.steer_unavailable_reason;
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherRows = useMemo(
@@ -963,6 +962,14 @@ export function NodeChat({
     if (steeringTask || artifactContext) return;
     selectMode(toggleConversationMode(modeRef.current));
   }, [steeringTask, artifactContext, selectMode]);
+
+  useEffect(() => {
+    if (!sendAfterDictation || dictating) return;
+    setSendAfterDictation(false);
+    // A failed or kept transcription stays in the composer for the human to review.
+    if (dictationState === "idle" && !keptSpeech(draftKey)) void send();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on dictation end only
+  }, [sendAfterDictation, dictating]);
 
   useEffect(() => {
     if (presentation !== "workspace" || readOnly || artifactContext) return;
@@ -1843,6 +1850,11 @@ export function NodeChat({
 
   const send = async () => {
     if (!canCompose) return;
+    if (dictating) {
+      setSendAfterDictation(true);
+      if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
+      return;
+    }
     if (steeringTask) return steer(steeringTask);
     if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
@@ -2712,11 +2724,6 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
-          {composerHint && (
-            <div className="chat-composer-hint" role="status">
-              {composerHint}
-            </div>
-          )}
           {freshProviderSession && (
             <div className="chat-composer-hint" role="status">
               The next turn starts a fresh {readiness?.label || config.provider} session.
@@ -2846,6 +2853,7 @@ export function NodeChat({
             disabled={awaitingSteerReceipt}
             value={message}
             onChange={(event) => {
+              setSendAfterDictation(false);
               if (dictating) stopDictation(true);
               updateMessage(event.target.value);
             }}
@@ -3116,7 +3124,8 @@ export function NodeChat({
               <button
                 className="icon-button primary chat-send-button"
                 disabled={
-                  !(assembleChatTurn(message, annotations) || artifactContext) ||
+                  // While dictating, Send finishes the dictation and sends its transcript.
+                  !(assembleChatTurn(message, annotations) || artifactContext || dictating) ||
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask

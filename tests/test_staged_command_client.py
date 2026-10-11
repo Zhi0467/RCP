@@ -2169,11 +2169,10 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
 
 
 @pytest.mark.parametrize(
-    ("status", "delivery", "exit_code"),
-    [("unavailable", "unknown", 2), ("invalid", "not_sent", 1)],
+    ("status", "delivery"), [("unavailable", "unknown"), ("invalid", "not_sent")]
 )
-def test_ask_later_round_failure_keeps_earlier_delivery(
-    tmp_path, monkeypatch, capsys, status, delivery, exit_code
+def test_ask_later_round_failure_reports_the_pending_card(
+    tmp_path, monkeypatch, capsys, status, delivery
 ) -> None:
     from rcp.agents import staged_command_client as client
 
@@ -2222,9 +2221,12 @@ def test_ask_later_round_failure_keeps_earlier_delivery(
                 "Proceed?",
             ]
         )
-        == exit_code
+        == 0
     )
-    assert json.loads(capsys.readouterr().out)["result"] == {"delivery": "unknown"}
+    assert json.loads(capsys.readouterr().out)["result"] == {
+        "state": "pending",
+        "question_id": "question",
+    }
 
 
 @pytest.mark.asyncio

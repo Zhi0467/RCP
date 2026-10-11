@@ -5,6 +5,18 @@
    content-driven and sit beside the layout that needs them. */
 
 @media (max-width: 560px) {
+  /* A phone page never pans sideways. Long words wrap, and the page and its
+     main scroller clip anything still wider; wide content such as code or
+     the graph canvas scrolls inside its own box. */
+  html,
+  body,
+  .project-panel {
+    overflow-x: clip;
+  }
+  body {
+    overflow-wrap: anywhere;
+  }
+
   /* iOS Safari zooms the page when a focused field's text is under 16px.
      Component rules set smaller sizes with varying specificity, hence
      !important. */

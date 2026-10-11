@@ -545,12 +545,12 @@ def _run(namespace):
     namespace.timeout = wait
     deadline = time.monotonic() + wait
     call_id = uuid.uuid4().hex if verb == "ask" else None
-    delivered = False
+    pending = None
     while True:
         captured = io.StringIO()
-        # Once a round has delivered the question, a later round's failure
-        # cannot honestly say it was never sent.
-        with redirect_stdout(captured if delivered else sys.stdout):
+        # Once a round returned pending, the card exists: a later round's
+        # failure only means this check for an answer did not get through.
+        with redirect_stdout(captured if pending is not None else sys.stdout):
             response = _run_round(
                 namespace,
                 workspace,
@@ -564,10 +564,20 @@ def _run(namespace):
                 call_id=call_id,
             )
         if not isinstance(response, dict):
-            if delivered:
-                _print_json(_already_delivered(json.loads(captured.getvalue())))
-            return response
-        delivered = True
+            if pending is None:
+                return response
+            if response == OK:  # a final state such as dismissed
+                sys.stdout.write(captured.getvalue())
+                return OK
+            failure = json.loads(captured.getvalue()).get("message")
+            pending["message"] = (
+                "The question is on the human's card. This check for an answer failed: "
+                f"{failure} Repeat the exact same command, with the same key, in the "
+                "foreground to keep waiting; never ask it again under a new key."
+            )
+            _print_json(_display_response(pending, verb))
+            return OK
+        pending = response
         if response["result"].get("state") == "answered":
             receipt_token = response["result"].get("receipt_token")
             # A second authenticated request proves consumption on either
@@ -609,18 +619,6 @@ def _run(namespace):
             response["message"] = _pending_guidance(response["result"])
             _print_json(_display_response(response, verb))
             return OK
-
-
-def _already_delivered(printed):
-    result = printed.get("result")
-    if isinstance(result, dict) and result.get("delivery") == "not_sent":
-        result["delivery"] = "unknown"
-        printed["message"] = (
-            "RCP already has this question from an earlier round of this call. "
-            "Repeat the exact same command, with the same key, to keep waiting; "
-            f"never ask it again under a new key. This round failed: {printed.get('message')}"
-        )
-    return printed
 
 
 def _pending_guidance(result):

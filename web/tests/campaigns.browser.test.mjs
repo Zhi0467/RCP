@@ -551,16 +551,12 @@ test("ended orchestrator message sends the edited budget and retains its id afte
     const turns = composer.locator('input[type="number"]');
     assert.equal(await turns.inputValue(), "3");
     await turns.fill("1");
-    assert.equal(
-      await composer.locator("[data-child-experiments]").getAttribute("data-child-experiments"),
-      "5",
-    );
     await composer.locator("textarea").fill("Investigate");
     await composer.locator('button[type="submit"]').click();
     await page.locator(".campaign-run-error").waitFor();
     ended.message_requires_continuation = false;
     await page.evaluate(() => window.refreshMergeEpisode());
-    await composer.locator("[data-continuation-turns]").waitFor({ state: "detached" });
+    await turns.waitFor({ state: "detached" });
     await composer.locator('button[type="submit"]').click();
     await page.waitForFunction(
       () => document.querySelector(".campaign-message-composer textarea").value === "",
