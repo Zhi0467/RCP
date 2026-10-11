@@ -1,6 +1,7 @@
 # Active implementation handoffs
 
-None.
+- [One named branch](branch-model.md): branch names, one picker on the view
+  tabs, per-branch Agents, no reload on a switch; design confirmed.
 
 Unfinished agent-link work is tracked in issue #280.
 
