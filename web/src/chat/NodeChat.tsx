@@ -1874,8 +1874,8 @@ export function NodeChat({
       computeState.ids,
       artifactContext,
       references.map((item) => item.selector),
-      attachments.length,
-      readyAttachments.length,
+      attachments.map((item) => `${item.localId}:${item.status}`),
+      attachmentSetId,
       skills.selection,
       mode === "work" && worktree.chosen,
     ]);
