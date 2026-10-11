@@ -2621,11 +2621,11 @@ export function NodeChat({
                         .join("; ")}`}
                 </p>
               )}
-              {line.artifactEditOutcome && (
-                <p className="chat-artifact-omissions" role="status">
-                  {artifactEditOutcomeText(line.artifactEditOutcome, line.artifacts ?? [])}
+              {line.artifactEditOutcomes?.map((outcome) => (
+                <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
+                  {artifactEditOutcomeText(outcome, line.artifacts ?? [])}
                 </p>
-              )}
+              ))}
               {line.role === "agent" && line.graphUpdate && (
                 <GraphUpdateReceipt
                   update={line.graphUpdate}
@@ -3511,7 +3511,7 @@ const ARTIFACT_EDIT_FAILURES: Record<NonNullable<ArtifactEditOutcome["reason"]>,
   unverified: "the edited file could not be verified",
 };
 
-/** Say why a commented artifact has no new version under this reply. */
+/** Say why an artifact of this session has no new version under this reply. */
 function artifactEditOutcomeText(
   outcome: ArtifactEditOutcome,
   artifacts: AgentArtifactDescriptor[],

@@ -34,6 +34,9 @@ class Artifact(BaseModel):
     episode_id: str | None = None
     chat_id: str | None = None
     display_title: str | None = None
+    # The sha256 RCP last knows is at a turn artifact's tracked file. None on
+    # records from before tracking: their first version's digest.
+    synced_sha256: str | None = Field(default=None, exclude_if=lambda value: value is None)
     live_data_allowed: bool = Field(default=True, exclude_if=lambda value: value is True)
 
     @field_validator("created_at", "expires_at", "kept_at")

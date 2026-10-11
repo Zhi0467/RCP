@@ -341,38 +341,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             if unavailable is not None:
                 raise ValueError("question_origin_session_unavailable")
             self._require_project_accepts_new_work(connection, origin.project_id)
-            # A composer comment's answer continues that edit on the artifact's
-            # current version, so a change made after the answer still publishes.
-            artifact_context, artifact_edit = None, None
-            edit = task.request.get("artifact_edit")
-            context = task.request.get("artifact_context")
-            if (
-                isinstance(edit, dict)
-                and isinstance(context, dict)
-                and not _origin_bound_edit(task.request)
-            ):
-                row = connection.execute(
-                    "SELECT json_extract(metadata, '$.current_version') FROM artifacts "
-                    "WHERE artifact_id = ?",
-                    (edit.get("artifact_id"),),
-                ).fetchone()
-                if row is None or not isinstance(row[0], str):
-                    # Never continue without the edit the question belonged to.
-                    raise ValueError("question_origin_artifact_unavailable")
-                version = row[0]
-                artifact_context = {**context, "selections": [], "base_version": version}
-                artifact_edit = {
-                    **edit,
-                    "operation_id": operation_id,
-                    "staged_scope_id": operation_id,
-                    "base_version": version,
-                }
+            # The answer is an ordinary turn: any artifact it changes in place
+            # becomes that artifact's next version without a comment binding.
             request = RunRequest.model_validate(
-                {
-                    **task.request,
-                    "artifact_context": artifact_context,
-                    "artifact_edit": artifact_edit,
-                }
+                {**task.request, "artifact_context": None, "artifact_edit": None}
             ).model_copy(
                 update={
                     "browser_requested": self._chat_browser_requested(
@@ -3233,31 +3205,29 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def agent_task_artifact_edit_outcomes(
         self, operation_ids: Sequence[str]
-    ) -> dict[str, AgentTaskReceiptRecord]:
-        """Read each edit operation's latest outcome in one query."""
+    ) -> dict[str, list[AgentTaskReceiptRecord]]:
+        """Read each operation's artifact outcome receipts, oldest first, in one query."""
         if not operation_ids:
             return {}
         placeholders = ",".join("?" for _ in operation_ids)
         with self.connection() as connection:
             rows = connection.execute(
                 f"""
-                SELECT * FROM graph_run_receipts WHERE receipt_id IN (
-                    SELECT MAX(receipt_id) FROM graph_run_receipts
-                    WHERE operation_id IN ({placeholders}) AND category IN (
-                        'artifact_edit_published', 'artifact_edit_publish_failed',
-                        'artifact_edit_unchanged'
-                    )
-                    GROUP BY operation_id
+                SELECT * FROM graph_run_receipts
+                WHERE operation_id IN ({placeholders}) AND category IN (
+                    'artifact_edit_published', 'artifact_edit_publish_failed',
+                    'artifact_edit_unchanged'
                 )
+                ORDER BY receipt_id
                 """,  # noqa: S608 - placeholders are generated, never caller text
                 tuple(operation_ids),
             ).fetchall()
-        receipts = {}
+        receipts: dict[str, list[AgentTaskReceiptRecord]] = {}
         for row in rows:
             data = dict(row)
             data["payload"] = json.loads(data.pop("payload_json"))
             receipt = AgentTaskReceiptRecord.model_validate(data)
-            receipts[receipt.operation_id] = receipt
+            receipts.setdefault(receipt.operation_id, []).append(receipt)
         return receipts
 
     def agent_task_degradations(self, operation_ids: Sequence[str]) -> dict[str, str]:

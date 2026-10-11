@@ -83,7 +83,6 @@ from rcp.runs.chat import (
     chat_master_label,
     chat_master_owner,
     chat_prompt_values,
-    finalize_artifact_edit,
     stage_artifact_context,
 )
 from rcp.runs.consolidation import (
@@ -124,6 +123,7 @@ from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
     decode_recorded_turn,
 )
+from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     _parent_task_contract_path,
@@ -646,13 +646,18 @@ async def _stage_work_turn(
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
     ) -> StagedArtifactAccess:
+        edit_path = (
+            sync_session_artifacts(execution, request, artifact_directory, layout.remote_stage)
+            if execution is not None
+            else None
+        )
         artifact_context = stage_artifact_context(
             service,
             request,
             execution,
             local_stage=layout.local_stage,
             remote_stage=layout.remote_stage,
-            artifact_path=str(artifact_directory),
+            edit_path=edit_path,
         )
         has_references = any(item.reference is not None for item in request.attachments)
         local_references = has_references and layout.remote_stage is None
@@ -2258,12 +2263,11 @@ def _finalize_work_artifacts(
                 detail=str(exc),
             )
         artifacts = []
-    return finalize_artifact_edit(
-        turn.request,
+    return publish_session_artifacts(
         turn.execution,
-        artifact_scope_id=turn.artifact_scope_id,
-        artifact_directory=Path(str(turn.artifact_directory)),
-        remote_stage=turn.remote_stage,
+        turn.request,
+        Path(str(turn.artifact_directory)),
+        turn.remote_stage,
         artifacts=artifacts,
         service=turn.service,
     )

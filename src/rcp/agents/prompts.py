@@ -673,22 +673,20 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
         if not isinstance(item.get("source_artifact_id"), str):
             lines.append(f"- {described}: `{item['path']}`")
             continue
-        lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
-        lines.append(
-            "  The human's message holds their comments on it, numbered as anchored below. "
-            "Edit this file in place, keeping its name, when a comment needs a change."
-        )
-        if item.get("editable"):
+        if not item.get("editable"):
+            lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
             lines.append(
-                "  Whether to change this file or make a new artifact is your judgement from the "
-                "comments. When they correct or enrich this file, as most do, change it in place. "
-                "When they ask for something different alongside it, write a new file under "
-                "another name; that becomes a separate artifact and this one stays as it is."
+                "  The human's message holds their comments on it, numbered as anchored below."
             )
+        else:
+            lines.append(f"- Artifact {described}, the file the human viewed: `{item['path']}`")
             lines.append(
-                "  The bytes at this exact staged path when the turn ends become the artifact's "
-                "next version. If you regenerate it, for example by running a script, write or "
-                "copy the final result to this exact path."
+                "  The human's message holds their comments on it, numbered as anchored below. "
+                "Whether to change this file or make a new artifact is your judgement from the "
+                "comments. When they correct or enrich it, as most do, change this file in place, "
+                "keeping its name; its bytes when the turn ends become the next version. When "
+                "they ask for something different alongside it, write a new file in this turn's "
+                "directory; that becomes a separate artifact and this one stays as it is."
             )
         if item.get("edit_now"):
             lines.append("  The human asked for that in-place edit now, in this turn.")

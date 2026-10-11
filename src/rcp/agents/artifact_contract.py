@@ -118,7 +118,7 @@ def artifact_contract(artifact_path: str, *, allow_episode: bool = False) -> str
 - Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line` suffix only for a repository file. Only an authorized repository file or a file in the turn's artifact directory resolves in RCP.
 - Artifacts are optional; an empty directory is normal. RCP discovers direct regular files in `{artifact_path}`, at most {CHAT_ARTIFACT_MAX_COUNT} files, {CHAT_ARTIFACT_MAX_FILE_BYTES} bytes per file and {CHAT_ARTIFACT_MAX_TOTAL_BYTES} bytes total. Do not use nested directories or symlinks.
 - Viewable media types: {viewable}. PDFs open separately; other types are download-only. Artifact cards offer Download and Keep.
-- When a turn names a commented artifact's writable path, edit that file in place. Its turn names the destination; do not choose a new output path for that edit.
+- Artifacts from earlier turns of this session stay in their own turn folders under the workspace's `turns` directory. Changing one in place, under the same name, makes its next version; whether to change one in place or write a new file is your judgement: in place when the request corrects or enriches it, a new file in this turn's directory when asked for something different alongside it.
 - HTML must be self-contained. Ordinary HTTP(S) reference links are allowed; external scripts, images, fonts, fetches, and other resource loads are blocked in the preview.
 
 {inline_contract(artifact_path)}

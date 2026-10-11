@@ -59,8 +59,6 @@ from rcp.runs.chat import (
     chat_master_label,
     chat_master_owner,
     chat_prompt_values,
-    finalize_artifact_edit,
-    prepare_artifact_edit_directory,
     retained_work_values,
     stage_artifact_context,
 )
@@ -90,6 +88,7 @@ from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
     record_inline_prompt,
     record_session_master,
@@ -493,12 +492,11 @@ def _settle_discuss_outcome(
                 detail=str(exc),
             )
         artifacts = []
-    artifacts = finalize_artifact_edit(
-        request,
+    artifacts = publish_session_artifacts(
         execution,
-        artifact_scope_id=context.artifact_scope_id,
-        artifact_directory=Path(str(context.artifact_directory)),
-        remote_stage=context.remote_stage,
+        request,
+        context.artifact_directory,
+        context.remote_stage,
         artifacts=artifacts,
         service=context.service,
     )
@@ -721,23 +719,13 @@ async def stream_discuss_run(
                 # A reused folder must not hand this turn any previous turn output.
                 _clear_stale_turn_handoffs(workspace, remote_stage)
             artifact_scope_id = (
-                request.artifact_edit.staged_scope_id
-                if request.artifact_edit is not None
-                else _logical_chat_turn_operation_id(execution.store, execution.operation_id)
+                _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
                 else execution.operation_id
                 if execution is not None
                 else str(uuid.uuid4())
             )
-            if request.artifact_edit is not None:
-                assert execution is not None
-                artifact_directory = prepare_artifact_edit_directory(
-                    request,
-                    execution,
-                    workspace,
-                    remote_stage,
-                )
-            elif remote_stage is not None:
+            if remote_stage is not None:
                 artifact_directory = remote_stage.prepare_artifact_directory(
                     artifact_scope_id,
                     reuse=resuming,
@@ -796,13 +784,18 @@ async def stream_discuss_run(
                 if request.attachment_batch_id
                 else []
             )
+            edit_path = (
+                sync_session_artifacts(execution, request, artifact_directory, remote_stage)
+                if execution is not None
+                else None
+            )
             artifact_context_pointer = stage_artifact_context(
                 service,
                 request,
                 execution,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                artifact_path=str(artifact_directory),
+                edit_path=edit_path,
             )
             if artifact_context_pointer is not None:
                 attachment_pointers.append(artifact_context_pointer.pointer)

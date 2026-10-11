@@ -2257,7 +2257,7 @@ export interface AgentTaskResult {
   messages?: string[];
   artifacts?: AgentArtifactDescriptor[];
   artifact_omissions?: ArtifactOmissions;
-  artifact_edit_outcome?: ArtifactEditOutcome;
+  artifact_edit_outcomes?: ArtifactEditOutcome[];
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
   [key: string]: unknown;
@@ -2265,7 +2265,7 @@ export interface AgentTaskResult {
 
 export type ArtifactView = "html" | "image" | "markdown" | "text" | "pdf" | "file";
 
-/** What a turn that carried artifact comments did to that artifact. */
+/** What a turn did to one artifact of its session: a new version, or why not. */
 export interface ArtifactEditOutcome {
   status: "published" | "unchanged" | "failed" | "forked";
   artifact_id: string;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shlex
@@ -2522,6 +2523,31 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(
     )
     with pytest.raises(StateUnavailable, match="EIO"):
         stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
+
+
+def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage) -> None:
+    def sha(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    stage = local_remote_stage
+    workspace = Path(str(stage.root)) / "workspace"
+    workspace.mkdir()
+    # Absent: a restore writes it, creating the turn folder.
+    assert stage.sync_artifact("earlier", "page.html", "", b"v1")
+    tracked = workspace / "turns" / "earlier" / "artifacts" / "page.html"
+    assert tracked.read_bytes() == b"v1"
+    # A file that no longer holds the expected digest is the agent's; it is kept.
+    tracked.write_bytes(b"agent")
+    assert not stage.sync_artifact("earlier", "page.html", sha(b"v1"), b"v2")
+    assert stage.sync_artifact("earlier", "page.html", sha(b"agent"), b"v2")
+    assert tracked.read_bytes() == b"v2"
+    (tracked.parent / "linked.html").symlink_to(tracked)
+    assert stage.artifact_digests(
+        [("earlier", "page.html"), ("earlier", "linked.html"), ("gone", "page.html")]
+    ) == {("earlier", "page.html"): (sha(b"v2"), 2), ("earlier", "linked.html"): ("", -1)}
+    with pytest.raises(StateUnavailable):
+        stage.sync_artifact("earlier", "linked.html", "", b"never")
+    assert tracked.read_bytes() == b"v2"
 
 
 def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage) -> None:

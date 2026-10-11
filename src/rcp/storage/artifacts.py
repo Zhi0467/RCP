@@ -288,6 +288,46 @@ class ArtifactStoreMixin(StoreMixinBase):
                 )
             return artifact
 
+    def session_artifacts(
+        self, project_id: str, stage_host: str, stage_root: str
+    ) -> list[Artifact]:
+        """Live turn artifacts whose origin task ran on this exact stage."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT a.metadata FROM artifacts a JOIN graph_runs g "
+                "ON g.operation_id = json_extract(a.metadata, '$.origin_operation_id') "
+                "WHERE a.project_id = ? AND json_extract(a.metadata, '$.supplier') = 'turn' "
+                "AND COALESCE(g.stage_host, '') = ? AND g.stage_root = ? ORDER BY a.artifact_id",
+                (project_id, stage_host, stage_root),
+            ).fetchall()
+        now = datetime.fromisoformat(self.now())
+        artifacts = [Artifact.model_validate_json(row[0]) for row in rows]
+        return [
+            artifact
+            for artifact in artifacts
+            if artifact.kept_at
+            or not artifact.expires_at
+            or datetime.fromisoformat(artifact.expires_at) > now
+        ]
+
+    def synced_artifact_digest(self, artifact: Artifact) -> str:
+        """What RCP last knows is at the tracked file; old records: the first version."""
+        return artifact.synced_sha256 or self.artifact_versions(artifact.artifact_id)[0].sha256
+
+    def record_artifact_sync(self, artifact_id: str, sha256: str) -> None:
+        with self.artifact_lock(artifact_id):
+            artifact = self.artifact(artifact_id)
+            if artifact is None or artifact.synced_sha256 == sha256:
+                return
+            with self.connection() as connection:
+                connection.execute(
+                    "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
+                    (
+                        artifact.model_copy(update={"synced_sha256": sha256}).model_dump_json(),
+                        artifact_id,
+                    ),
+                )
+
     def artifact_edit_operation_id(self, project_id: str, artifact_id: str) -> str | None:
         """The latest admitted, nonterminal edit, without loading task history."""
         statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
@@ -399,14 +439,9 @@ class ArtifactStoreMixin(StoreMixinBase):
             statuses = _EDIT_RETENTION_STATUSES
             with self.connection() as connection:
                 pending = connection.execute(
-                    "SELECT json_extract(request_json, '$.artifact_edit.base_version') FROM graph_runs g "
+                    "SELECT json_extract(request_json, '$.artifact_edit.base_version') FROM graph_runs "
                     "WHERE json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
-                    f"AND g.status IN ({','.join('?' for _ in statuses)}) "
-                    "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
-                    "JOIN graph_runs attempt ON attempt.operation_id = r.operation_id WHERE "
-                    "json_extract(attempt.request_json, '$.artifact_edit.operation_id') = "
-                    "json_extract(g.request_json, '$.artifact_edit.operation_id') "
-                    "AND r.category = 'artifact_edit_staged')",
+                    f"AND status IN ({','.join('?' for _ in statuses)})",
                     (artifact_id, *statuses),
                 ).fetchall()
             pinned = {row[0] for row in pending}

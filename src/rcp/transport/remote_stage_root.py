@@ -212,48 +212,89 @@ def prepare_artifacts(workspace: str, scope: str, reuse: bool) -> None:
         os.makedirs(target, mode=0o700, exist_ok=False)
 
 
-def prepare_edit_artifacts(workspace: str, scope: str, staged: bool) -> None:
-    """Preserve an existing edit directory, including a pre-receipt interrupted attempt."""
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", scope) or scope in {".", ".."}:
-        raise ValueError("artifact scope is unsafe")
-    scope_path = os.path.join(workspace, "turns", scope)
-    prepare_artifacts(workspace, scope, reuse=staged or os.path.lexists(scope_path))
+_SCOPE = re.compile(r"[A-Za-z0-9._-]+")
 
 
-def stage_artifact(workspace: str, scope: str, name: str, data: bytes) -> None:
-    """Create a writable edit once; retries preserve the agent's exact existing file."""
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", scope) or scope in {".", ".."}:
+def _turn_artifact_folder(workspace: str, scope: str, name: str, *, create: bool) -> list[int]:
+    """Open `turns/<scope>/artifacts` without following links; the last descriptor is it."""
+    if not _SCOPE.fullmatch(scope) or scope in {".", ".."}:
         raise ValueError("artifact scope is unsafe")
     if os.path.basename(name) != name or name in {"", ".", ".."}:
         raise ValueError("artifact name is unsafe")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    descriptors = []
+    descriptors = [os.open(workspace, flags)]
+    try:
+        for part in ("turns", scope, "artifacts"):
+            if create:
+                with suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=descriptors[-1])
+            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
+    except BaseException:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+    return descriptors
+
+
+def _artifact_digest(folder: int, name: str) -> tuple[str, int] | None:
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=folder)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("turn artifact is not a regular file")
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+        return digest.hexdigest(), info.st_size
+
+
+def artifact_digests(workspace: str, entries: list[list[str]]) -> list[tuple[str, str, str, int]]:
+    """Each named turn artifact's sha256 and size. A missing file is left out; one
+    that is not a regular file (a symlink, say) has an empty digest and size -1."""
+    found: list[tuple[str, str, str, int]] = []
+    for scope, name in entries:
+        try:
+            descriptors = _turn_artifact_folder(workspace, scope, name, create=False)
+        except (OSError, ValueError):
+            continue
+        try:
+            digest = _artifact_digest(descriptors[-1], name)
+        except (OSError, ValueError):
+            digest = ("", -1)
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+        if digest is not None:
+            found.append((scope, name, digest[0], digest[1]))
+    return found
+
+
+def sync_artifact(workspace: str, scope: str, name: str, expected: str, data: bytes) -> bool:
+    """Replace a turn artifact with `data` only while it holds `expected` (empty: absent)."""
+    descriptors = _turn_artifact_folder(workspace, scope, name, create=True)
+    folder = descriptors[-1]
     temporary = ""
     try:
-        folder = os.open(workspace, flags)
-        descriptors.append(folder)
-        for part in ("turns", scope, "artifacts"):
-            folder = os.open(part, flags, dir_fd=folder)
-            descriptors.append(folder)
-        try:
-            info = os.stat(name, dir_fd=folder, follow_symlinks=False)
-        except FileNotFoundError:
-            info = None
-        if info is not None:
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("staged edit is not a regular file")
-            return
-        temporary = ".edit-" + os.urandom(16).hex()
+        current = _artifact_digest(folder, name)
+        if (current[0] if current else "") != expected:
+            return False
+        temporary = ".sync-" + os.urandom(16).hex()
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=folder)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+        temporary = ""
         os.fsync(folder)
+        return True
     finally:
         if temporary:
-            os.unlink(temporary, dir_fd=folder)
+            with suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=folder)
         for descriptor in reversed(descriptors):
             os.close(descriptor)
 
@@ -361,10 +402,11 @@ def main(argv: list[str]) -> int:
             remove_stage(argv[2])
         elif len(argv) == 5 and argv[1] == "prepare-artifacts":
             prepare_artifacts(argv[2], argv[3], argv[4] == "1")
-        elif len(argv) == 5 and argv[1] == "prepare-edit-artifacts":
-            prepare_edit_artifacts(argv[2], argv[3], argv[4] == "1")
-        elif len(argv) == 5 and argv[1] == "stage-artifact":
-            stage_artifact(argv[2], argv[3], argv[4], sys.stdin.buffer.read())
+        elif len(argv) == 4 and argv[1] == "artifact-digests":
+            print(json.dumps(artifact_digests(argv[2], json.loads(argv[3]))))
+        elif len(argv) == 6 and argv[1] == "sync-artifact":
+            if not sync_artifact(argv[2], argv[3], argv[4], argv[5], sys.stdin.buffer.read()):
+                return 43
         elif len(argv) == 7 and argv[1] == "commit-inputs":
             commit_inputs(
                 argv[2], argv[3], json.loads(argv[4]), argv[5] == "1", set(json.loads(argv[6]))

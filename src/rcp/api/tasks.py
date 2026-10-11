@@ -53,10 +53,10 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
     _logical_chat_turn_operation_id,
-    artifact_edit_outcome,
     artifact_omissions,
 )
 from rcp.runs.chat_admission import admit_fresh_chat_turn
+from rcp.runs.session_artifacts import artifact_edit_outcomes
 from rcp.runs.steering import (
     begin_chat_steer,
     chat_steer_action_label,
@@ -190,7 +190,7 @@ def _agent_task_response(
     degradations: Mapping[str, str] | None = None,
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
-    edit_outcomes: Mapping[str, AgentTaskReceiptRecord] | None = None,
+    edit_outcomes: Mapping[str, list[AgentTaskReceiptRecord]] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
@@ -231,12 +231,18 @@ def _agent_task_response(
     if receipt is not None:
         result["artifact_omissions"] = artifact_omissions(receipt)
     edit = record.request.get("artifact_edit")
-    if isinstance(edit, dict) and isinstance(edit.get("operation_id"), str):
-        receipt = (edit_outcomes or {}).get(edit["operation_id"]) or (edit_outcomes or {}).get(
-            record.operation_id
-        )
-        if receipt is not None and isinstance(edit.get("artifact_id"), str):
-            result["artifact_edit_outcome"] = artifact_edit_outcome(receipt, edit["artifact_id"])
+    edit = edit if isinstance(edit, dict) else {}
+    receipts = [
+        receipt
+        for operation_id in _artifact_outcome_operation_ids([record])
+        for receipt in (edit_outcomes or {}).get(operation_id, [])
+    ]
+    outcomes = artifact_edit_outcomes(
+        receipts,
+        edit["artifact_id"] if isinstance(edit.get("artifact_id"), str) else None,
+    )
+    if outcomes:
+        result["artifact_edit_outcomes"] = outcomes
     if record.history_only or consolidation:
         graph_update = result.get("graph_update")
         if isinstance(graph_update, dict):
@@ -262,16 +268,15 @@ def _agent_task_response(
     return response
 
 
-def _artifact_edit_operation_ids(records: list[AgentTaskRecord]) -> list[str]:
-    return list(
-        dict.fromkeys(
-            operation_id
-            for record in records
-            if isinstance(edit := record.request.get("artifact_edit"), dict)
-            and isinstance(edit.get("operation_id"), str)
-            for operation_id in (edit["operation_id"], record.operation_id)
-        )
-    )
+def _artifact_outcome_operation_ids(records: list[AgentTaskRecord]) -> list[str]:
+    """Each turn's own receipts; an edit retry also shows its admitted edit's."""
+    operation_ids: list[str] = []
+    for record in records:
+        edit = record.request.get("artifact_edit")
+        if isinstance(edit, dict) and isinstance(edit.get("operation_id"), str):
+            operation_ids.append(edit["operation_id"])
+        operation_ids.append(record.operation_id)
+    return list(dict.fromkeys(operation_ids))
 
 
 def _current_chat_session_id(
@@ -439,6 +444,17 @@ def start_agent_task(
                                     "The selected artifact version is no longer available. "
                                     "Send the comment again."
                                 ) from exc
+                            # An Undo or another edit since admission makes the
+                            # comment's base stale; the human must select again.
+                            current = store.artifact(composer_edit.artifact_id)
+                            if (
+                                current is None
+                                or current.current_version != composer_edit.base_version
+                            ):
+                                raise AgentTaskAdmissionConflict(
+                                    "This artifact changed to a new version after the parts "
+                                    "were selected. Select them again."
+                                )
                         record = background_tasks.start(
                             project_id,
                             kind,
@@ -509,7 +525,9 @@ def agent_tasks(
     records = store.agent_tasks(project_id, graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
-    edit_outcomes = store.agent_task_artifact_edit_outcomes(_artifact_edit_operation_ids(records))
+    edit_outcomes = store.agent_task_artifact_edit_outcomes(
+        _artifact_outcome_operation_ids(records)
+    )
     chat_sessions: dict[tuple[str, str], str | None] = {}
     return [
         _agent_task_response(
@@ -539,7 +557,7 @@ def agent_task(
         store.agent_task_degradations([operation_id]),
         store.agent_task_artifact_discoveries([operation_id]),
         edit_outcomes=store.agent_task_artifact_edit_outcomes(
-            _artifact_edit_operation_ids([record])
+            _artifact_outcome_operation_ids([record])
         ),
     )
     detail["events"] = [
@@ -1044,15 +1062,6 @@ def retry_agent_task(
                         "run_on": candidate.run_on,
                     }
                 )
-        edit = candidate.artifact_edit if isinstance(candidate, RunRequest) else None
-        if (
-            edit is not None
-            and not edit.origin_bound
-            and candidate.run_on != previous.request.get("run_on")
-            and store.agent_task_has_receipt(edit.operation_id, "artifact_edit_staged")
-        ):
-            # The staged copy lives on the original machine; another one cannot publish it.
-            raise ValueError("An artifact edit retries on the machine that staged it.")
         candidate_payload = candidate.model_dump(mode="json")
         experiment_admission.require_current(service, candidate_payload)
         skills = _validate_stored_task_request(
@@ -1140,11 +1149,20 @@ def _read_agent_artifact_bytes(
 ) -> tuple[AgentArtifactResponse, bytes]:
     """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
-    # An in-place edit lists the artifact it published, which its origin turn's scope owns.
-    # A revoking edit runs as its own `artifact_edit` task whose other outputs share the
-    # server-recorded staging scope.
+    # A turn lists the earlier artifacts it published a version of, which their origin
+    # turns' scopes own. Its other outputs, and a separate artifact, share its own scope.
     edit = record.request.get("artifact_edit") if record is not None else None
-    edited = isinstance(edit, dict) and edit.get("artifact_id") == artifact_id
+    edited = (isinstance(edit, dict) and edit.get("artifact_id") == artifact_id) or (
+        record is not None
+        and any(
+            receipt.payload.get("artifact_id") == artifact_id
+            and receipt.payload.get("status") == "published"
+            for receipts in store.agent_task_artifact_edit_outcomes(
+                _artifact_outcome_operation_ids([record])
+            ).values()
+            for receipt in receipts
+        )
+    )
     if (
         record is None
         or record.project_id != project_id
@@ -1168,10 +1186,10 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    # Mirrors the turn's staging: an edit binding fixes the scope, even across a Retry.
+    # Mirrors the turn's staging; an older edit binding fixed the scope, even across a Retry.
     scope_id = (
         edit["staged_scope_id"]
-        if isinstance(edit, dict)
+        if isinstance(edit, dict) and isinstance(edit.get("staged_scope_id"), str)
         else _logical_chat_turn_operation_id(store, record.operation_id)
     )
     if not edited and scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:

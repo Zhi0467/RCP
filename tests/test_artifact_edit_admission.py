@@ -549,6 +549,36 @@ def test_composer_work_edit_runs_graph_admission(edit_origin, monkeypatch):
     assert response.json()["detail"] == "Graph merge in progress"
 
 
+def test_composer_edit_refuses_a_version_moved_after_admission(edit_origin, monkeypatch):
+    import rcp.runs.artifact_edit_admission as admission
+
+    from .test_unified_artifacts import _publish_artifact
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    admit = admission.admit_chat_artifact_edit
+
+    def admit_then_move(*args, **kwargs):
+        admitted = admit(*args, **kwargs)
+        _publish_artifact(store, artifact.artifact_id, b"Moved by another edit")
+        return admitted
+
+    monkeypatch.setattr(admission, "admit_chat_artifact_edit", admit_then_move)
+    monkeypatch.setattr(
+        app.state.background_tasks,
+        "start",
+        lambda *_args, **_kwargs: pytest.fail("a stale-base comment must not start"),
+    )
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/tasks/project_chat",
+        json={
+            **_request(task, artifact).model_dump(mode="json"),
+            "chat_id": task.request["chat_id"],
+        },
+    )
+    assert response.status_code == 409
+
+
 def test_composer_experiment_edit_rejects_work_and_keeps_discuss_origin(edit_origin, monkeypatch):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")

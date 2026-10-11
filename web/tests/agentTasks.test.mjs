@@ -14,7 +14,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   versionedArtifactContentUrl,
-  taskArtifactEditOutcome,
+  taskArtifactEditOutcomes,
   taskArtifactOmissions,
   taskArtifacts,
 } from "../src/agents/agentTasks.ts";
@@ -751,22 +751,31 @@ test("omissions retain only known nonnegative integer counts and a boolean failu
   }
 });
 
-test("an artifact edit outcome reaches the reply only when no new version shows it", () => {
-  const outcome = (status) => ({ status, artifact_id: "a1" });
-  for (const status of ["unchanged", "failed", "forked"]) {
-    const lines = reconstructTaskTranscript([
-      task({
-        operation_id: status,
-        request: {},
-        result: { messages: ["Done"], artifact_edit_outcome: outcome(status) },
-      }),
-    ]);
-    assert.equal(lines.at(-1).artifactEditOutcome.status, status);
-  }
-  for (const value of [outcome("published"), outcome("other"), null]) {
-    assert.equal(
-      taskArtifactEditOutcome(task({ result: { artifact_edit_outcome: value } })),
-      undefined,
+test("artifact outcomes reach the reply only when no new version shows them", () => {
+  const outcome = (status, artifact_id = "a1") => ({ status, artifact_id });
+  const lines = reconstructTaskTranscript([
+    task({
+      operation_id: "outcomes",
+      request: {},
+      result: {
+        messages: ["Done"],
+        artifact_edit_outcomes: [
+          outcome("published", "a0"),
+          outcome("unchanged", "a1"),
+          outcome("failed", "a2"),
+          outcome("forked", "a3"),
+        ],
+      },
+    }),
+  ]);
+  assert.deepEqual(
+    lines.at(-1).artifactEditOutcomes.map((item) => item.artifact_id),
+    ["a1", "a2", "a3"],
+  );
+  for (const value of [[outcome("published")], [outcome("other")], null, outcome("failed")]) {
+    assert.deepEqual(
+      taskArtifactEditOutcomes(task({ result: { artifact_edit_outcomes: value } })),
+      [],
     );
   }
 });

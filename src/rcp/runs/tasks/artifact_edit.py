@@ -16,12 +16,12 @@ from rcp.runs.chat import (
     _clear_stale_turn_handoffs,
     _discover_chat_artifacts,
     _local_chat_workspace_for_task,
-    finalize_artifact_edit,
-    prepare_artifact_edit_directory,
+    _prepare_local_artifact_directory,
     stage_artifact_context,
 )
 from rcp.runs.recorded_settlement import absorb_recorded_events, provider_turn_request
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
     _ProviderOutcome,
@@ -126,16 +126,10 @@ def _settle(service, request, execution, workspace, remote, directory, outcome) 
     edit = request.artifact_edit
     assert edit is not None
     artifacts = _discover_chat_artifacts(
-        execution, edit.staged_scope_id, directory, remote, service=service
+        execution, directory.parent.name, directory, remote, service=service
     )
-    artifacts = finalize_artifact_edit(
-        request,
-        execution,
-        artifact_scope_id=edit.staged_scope_id,
-        artifact_directory=directory,
-        remote_stage=remote,
-        artifacts=artifacts,
-        service=service,
+    artifacts = publish_session_artifacts(
+        execution, request, directory, remote, artifacts=artifacts, service=service
     )
     if edit.reply_episode_id is None:
         _append_chat_exchange(
@@ -160,14 +154,18 @@ async def stream_artifact_edit_run(
         raise ValueError("A revoking edit requires its admitted file-only request.")
     local, remote, workspace, machine = _open_stage(service, request, data_dir, execution)
     _clear_stale_turn_handoffs(workspace, remote)
-    directory = prepare_artifact_edit_directory(request, execution, workspace, remote)
+    directory = (
+        remote.prepare_artifact_directory(execution.operation_id, reuse=False)
+        if remote is not None
+        else _prepare_local_artifact_directory(workspace, execution.operation_id, reuse=False)
+    )
     attachment = stage_artifact_context(
         service,
         request,
         execution,
         local_stage=local,
         remote_stage=remote,
-        artifact_path=str(directory),
+        edit_path=sync_session_artifacts(execution, request, directory, remote),
     )
     assert attachment is not None
     prompt = compose(
@@ -258,8 +256,7 @@ async def finalize_recorded_artifact_edit_result(
     if admitted != request:
         raise ValueError("The edit's finalization binding changed.")
     _, remote, workspace, _ = _open_stage(service, request, data_dir, execution)
-    assert request.artifact_edit is not None
-    directory = workspace / "turns" / request.artifact_edit.staged_scope_id / "artifacts"
+    directory = workspace / "turns" / execution.operation_id / "artifacts"
     outcome = _ProviderOutcome(session_id=request.session_id)
     verdict = decode_recorded_turn(recorded, provider_turn_request(workspace, recorded))
     for frame in absorb_recorded_events(outcome, verdict):

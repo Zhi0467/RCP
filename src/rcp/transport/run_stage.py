@@ -940,7 +940,10 @@ finally:
             raise _ssh_failure(result, "could not prepare remote artifact directory")
         return target
 
-    def prepare_artifact_edit_directory(self, scope_id: str, *, staged: bool) -> PurePosixPath:
+    def artifact_digests(
+        self, entries: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], tuple[str, int]]:
+        """Digest named turn artifacts across turn folders in one SSH call."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         result = self._ssh(
@@ -948,18 +951,23 @@ finally:
                 "python3",
                 "-c",
                 _remote_script("remote_stage_root.py"),
-                "prepare-edit-artifacts",
+                "artifact-digests",
                 str(self.workspace),
-                scope_id,
-                "1" if staged else "0",
+                json.dumps([list(entry) for entry in entries]),
             ]
         )
         if result.returncode:
-            raise _ssh_failure(result, "could not prepare the retained artifact edit directory")
-        return self.workspace / "turns" / scope_id / "artifacts"
+            raise _ssh_failure(result, "could not digest remote turn artifacts")
+        try:
+            return {
+                (str(scope), str(name)): (str(digest), int(size))
+                for scope, name, digest, size in json.loads(result.stdout)
+            }
+        except (TypeError, ValueError) as exc:
+            raise StateUnavailable("remote artifact digests were invalid") from exc
 
-    def stage_artifact_bytes(self, scope_id: str, name: str, data: bytes) -> None:
-        """Stage editable bytes once; a recovered edit keeps its retained file."""
+    def sync_artifact(self, scope_id: str, name: str, expected_sha256: str, data: bytes) -> bool:
+        """Replace a turn artifact only while it holds `expected_sha256` (empty: absent)."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         result = self._ssh_bytes(
@@ -967,15 +975,19 @@ finally:
                 "python3",
                 "-c",
                 _remote_script("remote_stage_root.py"),
-                "stage-artifact",
+                "sync-artifact",
                 str(self.workspace),
                 scope_id,
                 name,
+                expected_sha256,
             ],
             input_data=data,
         )
+        if result.returncode == 43:
+            return False
         if result.returncode:
-            raise _ssh_failure(result, "could not stage remote artifact edit")
+            raise _ssh_failure(result, "could not sync remote turn artifact")
+        return True
 
     def list_artifact_files(self, scope_id: str) -> list[tuple[str, int]]:
         """List direct, non-symlink regular artifact candidates and their sizes."""

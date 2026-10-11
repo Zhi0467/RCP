@@ -879,7 +879,8 @@ class ArtifactEditAdmission(BaseModel):
     source_name: str
     media_type: str
     operation_id: str
-    staged_scope_id: str
+    # Recorded by edits that staged a separate copy; the tracked file replaced it.
+    staged_scope_id: str | None = None
     origin_operation_id: str
     launch_kind: Literal["discuss", "revoking"]
     master_operation_id: str | None = None

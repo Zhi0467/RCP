@@ -241,7 +241,6 @@ def admit_chat_artifact_edit(
         source_name=artifact.source_name,
         media_type=artifact.media_type,
         operation_id=operation_id,
-        staged_scope_id=operation_id,
         origin_operation_id=origin.operation_id,
         launch_kind="discuss",
         episode_id=artifact.episode_id or origin.episode_id,
@@ -282,7 +281,6 @@ def admit_artifact_edit(
         source_name=artifact.source_name,
         media_type=artifact.media_type,
         operation_id=operation_id,
-        staged_scope_id=operation_id,
         origin_operation_id=origin.operation_id,
         launch_kind=launch_kind,
         master_operation_id=found[0] if found else None,
@@ -374,13 +372,12 @@ def start_artifact_edit(
         last_activity_at=now,
     )
     with tasks.store.artifact_lock(edit.artifact_id):
-        if not tasks.store.agent_task_has_receipt(edit.operation_id, "artifact_edit_staged"):
-            try:
-                tasks.store.read_artifact_bytes(edit.artifact_id, edit.base_version)
-            except (KeyError, OSError, ValueError) as exc:
-                raise AgentTaskAdmissionConflict(
-                    "The selected artifact version is no longer available. Send the comment again."
-                ) from exc
+        try:
+            tasks.store.read_artifact_bytes(edit.artifact_id, edit.base_version)
+        except (KeyError, OSError, ValueError) as exc:
+            raise AgentTaskAdmissionConflict(
+                "The selected artifact version is no longer available. Send the comment again."
+            ) from exc
         tasks.store.create_artifact_edit_task(record, continuation_cause=continuation)
     return tasks.launch_admitted(record.operation_id)
 

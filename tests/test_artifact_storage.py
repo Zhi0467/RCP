@@ -219,7 +219,9 @@ def test_undo_keeps_original_and_new_edit_has_no_redo_ancestry(store, tmp_path):
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "pausing", "paused", "interrupted"])
-def test_admitted_edit_base_survives_pruning_until_staged(store, tmp_path, monkeypatch, status):
+def test_admitted_edit_base_survives_pruning_while_the_edit_is_active(
+    store, tmp_path, monkeypatch, status
+):
     import rcp.storage.artifacts as module
 
     monkeypatch.setattr(module, "ARTIFACT_RECENT_VERSIONS", 1)
@@ -230,7 +232,8 @@ def test_admitted_edit_base_survives_pruning_until_staged(store, tmp_path, monke
     next_version = _publish(store, "next", base=original.current_version)
     assert store.read_artifact_bytes("one", base.version_id) == b"base"
     assert store.undo_artifact("one").current_version == original.current_version
-    store.record_agent_task_receipt("edit", "artifact_edit_staged", {})
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status = 'succeeded' WHERE operation_id = 'edit'")
     last = _publish(store, "last", base=original.current_version)
     assert {v.version_id for v in store.artifact_versions("one")} == {
         original.current_version,
@@ -290,23 +293,14 @@ def test_live_policy_migration_covers_report_creation_before_lifecycle_commit(st
     assert reopened.artifact(ordinary.artifact_id).live_data_allowed is True
 
 
-@pytest.mark.parametrize(
-    "status,staged_retry", [("failed", False), ("succeeded", False), ("queued", True)]
-)
-def test_inactive_or_staged_retry_edits_do_not_pin_base(store, monkeypatch, status, staged_retry):
+@pytest.mark.parametrize("status", ["failed", "succeeded"])
+def test_inactive_edits_do_not_pin_base(store, monkeypatch, status):
     import rcp.storage.artifacts as module
 
     monkeypatch.setattr(module, "ARTIFACT_MAX_VERSION_BYTES", 16)
     artifact = _artifact(store)
     base = _publish(store, "base", base=artifact.current_version)
-    task = _edit(store, status=status, base=base.version_id)
-    if staged_retry:
-        store.create_agent_task(
-            task.model_copy(
-                update={"operation_id": "retry", "parent_operation_id": "edit", "attempt": 2}
-            )
-        )
-        store.record_agent_task_receipt("retry", "artifact_edit_staged", {})
+    _edit(store, status=status, base=base.version_id)
     _publish(store, "next", base=base.version_id, data=b"next-one")
     assert base.version_id not in {v.version_id for v in store.artifact_versions("one")}
 

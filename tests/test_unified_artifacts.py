@@ -170,7 +170,7 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
         execution,
         local_stage=None,
         remote_stage=FakeRemoteRunStage(),
-        artifact_path=f"/remote/revision-stage/workspace/turns/{revision_id}/artifacts",
+        edit_path=None,
     )
 
     assert staged is not None
@@ -471,7 +471,7 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
         execution,
         local_stage=tmp_path / "stage-9e3c1a7b-2f4d-4b8e-8c6a-1d2e3f4a5b6c",
         remote_stage=None,
-        artifact_path=str(tmp_path / "artifacts"),
+        edit_path=None,
     )
 
     assert staged is not None
@@ -512,110 +512,11 @@ def test_report_context_stages_its_current_version(manifest, tmp_path):
         execution,
         local_stage=tmp_path / "comment-stage",
         remote_stage=None,
-        artifact_path="unused",
+        edit_path=None,
     )
     assert staged is not None
     assert Path(staged.pointer["path"]).read_bytes() == b"<h1>Later version</h1>"
     assert staged.pointer["source_artifact_id"] == report.artifact_id
-
-
-@pytest.mark.parametrize("workspace_layout", ["root", "split"])
-@pytest.mark.parametrize("undo_during_edit", [False, True])
-def test_edit_staging_preserves_retries_and_refuses_missing_or_symlink_sources(
-    manifest, tmp_path, undo_during_edit, workspace_layout
-):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    origin_id, operation_id = "artifact-origin", "artifact-edit"
-    source = _stored_artifact(app, origin_id, "page.html", b"<p>original</p>")
-    base = _publish_artifact(store, source.artifact_id, b"<p>base</p>")
-    stage = tmp_path / "edit-stage"
-    workspace = stage / "workspace" if workspace_layout == "split" else stage
-    directory = workspace / "turns" / operation_id / "artifacts"
-    workspace.mkdir(parents=True)
-    request = RunRequest(
-        mode="discuss",
-        artifact_context={
-            "operation_id": origin_id,
-            "artifact_id": source.artifact_id,
-            "selections": [],
-        },
-        artifact_edit={
-            "artifact_id": source.artifact_id,
-            "base_version": base.version_id,
-            "source_name": source.name,
-            "media_type": source.media_type,
-            "operation_id": operation_id,
-            "staged_scope_id": operation_id,
-            "origin_operation_id": origin_id,
-            "launch_kind": "discuss",
-        },
-    )
-    for task_id in (origin_id, operation_id):
-        store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=task_id,
-                project_id=app.state.default_project_id,
-                kind="project_chat",
-                status="running" if task_id == operation_id else "succeeded",
-                request=request.model_dump(mode="json"),
-                created_at=store.now(),
-                updated_at=store.now(),
-                status_message="Editing",
-                stage_root=str(stage),
-            )
-        )
-    execution = AgentTaskExecution(
-        operation_id=operation_id, store=store, control=AgentProcessControl()
-    )
-    from rcp.runs.chat import _chat_stage_name, prepare_artifact_edit_directory
-
-    assert prepare_artifact_edit_directory(request, execution, workspace, None) == directory
-
-    fresh_request = request.model_copy(
-        update={
-            "chat_id": "existing-chat",
-            "artifact_edit": request.artifact_edit.model_copy(update={"fresh_session": True}),
-        }
-    )
-    assert (
-        _chat_stage_name(app.state.service, fresh_request, execution)
-        == "artifact-edit-artifact-edit"
-    )
-
-    def stage_context():
-        return stage_artifact_context(
-            app.state.service,
-            request,
-            execution,
-            local_stage=stage,
-            remote_stage=None,
-            artifact_path=str(directory),
-        )
-
-    staged = stage_context()
-    target = Path(staged.pointer["path"])
-    assert target == directory / source.name
-    assert target.read_bytes() == b"<p>base</p>"
-    assert target.stat().st_mode & 0o200
-    target.write_bytes(b"<p>edited</p>")
-    assert prepare_artifact_edit_directory(request, execution, workspace, None) == directory
-    assert target.read_bytes() == b"<p>edited</p>"
-    if undo_during_edit:
-        store.undo_artifact(source.artifact_id)
-    resumed = stage_context()
-    assert resumed.pointer == staged.pointer
-    assert target.read_bytes() == b"<p>edited</p>"
-    target.unlink()
-    with pytest.raises(FileNotFoundError):
-        stage_context()
-    assert not target.exists()
-    outside = tmp_path / "protected.html"
-    outside.write_bytes(b"<p>protected</p>")
-    target.symlink_to(outside)
-    with pytest.raises(ValueError):
-        stage_context()
-    assert outside.read_bytes() == b"<p>protected</p>"
 
 
 def test_comment_eligibility_matches_viewer_types():
@@ -624,38 +525,3 @@ def test_comment_eligibility_matches_viewer_types():
 
     for media_type in set(ARTIFACT_MEDIA_TYPES.values()) | {"application/octet-stream"}:
         assert supports_comments(media_type) == (artifact_view(media_type) not in {"pdf", "file"})
-
-
-def test_remote_edit_staging_reuses_existing_file_and_refuses_symlinks(tmp_path):
-    from rcp.transport.remote_stage_root import stage_artifact
-
-    directory = tmp_path / "turns" / "edit" / "artifacts"
-    directory.mkdir(parents=True)
-    target = directory / "page.html"
-    stage_artifact(str(tmp_path), "edit", target.name, b"base")
-    assert target.read_bytes() == b"base"
-    target.write_bytes(b"agent edit")
-    stage_artifact(str(tmp_path), "edit", target.name, b"base")
-    assert target.read_bytes() == b"agent edit"
-    target.unlink()
-    outside = tmp_path / "outside"
-    outside.write_bytes(b"protected")
-    target.symlink_to(outside)
-    with pytest.raises(ValueError):
-        stage_artifact(str(tmp_path), "edit", target.name, b"base")
-    assert outside.read_bytes() == b"protected"
-
-
-def test_remote_edit_directory_can_retry_before_staging_but_never_reset_after(tmp_path):
-    from rcp.transport.remote_stage_root import prepare_edit_artifacts
-
-    prepare_edit_artifacts(str(tmp_path), "edit", False)
-    directory = tmp_path / "turns" / "edit" / "artifacts"
-    (directory / "retained.txt").write_text("partial edit")
-    prepare_edit_artifacts(str(tmp_path), "edit", False)
-    assert (directory / "retained.txt").read_text() == "partial edit"
-    (directory / "retained.txt").unlink()
-    directory.rmdir()
-    with pytest.raises(SystemExit):
-        prepare_edit_artifacts(str(tmp_path), "edit", True)
-    assert not directory.exists()

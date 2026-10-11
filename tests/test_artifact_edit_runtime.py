@@ -119,52 +119,57 @@ def _edit_execution(execution, request, operation_id, **changes):
 
 
 def _stage(app, request, execution, workspace):
-    from rcp.runs.chat import prepare_artifact_edit_directory, stage_artifact_context
+    from rcp.runs.chat import _prepare_local_artifact_directory, stage_artifact_context
+    from rcp.runs.session_artifacts import sync_session_artifacts
 
-    directory = prepare_artifact_edit_directory(request, execution, workspace, None)
+    directory = _prepare_local_artifact_directory(workspace, execution.operation_id, reuse=False)
     staged = stage_artifact_context(
         app.state.service,
         request,
         execution,
         local_stage=workspace.parent,
         remote_stage=None,
-        artifact_path=str(directory),
+        edit_path=sync_session_artifacts(execution, request, directory, None),
     )
     return directory, staged
 
 
 def _finalize(app, request, execution, directory):
-    from rcp.runs.chat import finalize_artifact_edit
+    from rcp.runs.session_artifacts import publish_session_artifacts
 
-    return finalize_artifact_edit(
-        request,
-        execution,
-        artifact_scope_id="edit",
-        artifact_directory=directory,
-        remote_stage=None,
-        artifacts=[],
-        service=app.state.service,
+    return publish_session_artifacts(
+        execution, request, directory, None, artifacts=[], service=app.state.service
     )
 
 
 class _EditLauncher:
-    def __init__(self, *, before_edit=None, fail=False, session="native-session", late_event=None):
+    def __init__(
+        self,
+        *,
+        before_edit=None,
+        fail=False,
+        session="native-session",
+        late_event=None,
+        scope="edit",
+    ):
         self.before_edit = before_edit
         self.fail = fail
         self.session = session
         self.late_event = late_event
+        self.scope = scope
         self.calls = []
         self.before = []
 
     async def stream(self, provider, prompt, **kwargs):
         self.calls.append((provider, kwargs))
-        folder = Path(kwargs["cwd"]) / "turns" / "edit" / "artifacts"
-        target = folder / "chart.html"
+        turns = Path(kwargs["cwd"]) / "turns"
+        # The commented artifact's tracked file, in its origin turn's folder.
+        target = turns / "origin" / "artifacts" / "chart.html"
         self.before.append(target.read_bytes())
         if self.before_edit:
             self.before_edit()
         target.write_bytes(b"<p>edited</p>")
-        (folder / "extra.txt").write_text("additional artifact")
+        (turns / self.scope / "artifacts" / "extra.txt").write_text("additional artifact")
         yield AgentEvent(event="session", session_id=self.session)
         if self.fail == "no_result":
             return
@@ -238,7 +243,9 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
 
 @pytest.mark.parametrize("failure", ["error", "session", "no_result"])
 @pytest.mark.asyncio
-async def test_failed_edit_keeps_staged_bytes_and_retry_reuses_them(manifest, tmp_path, failure):
+async def test_failed_edit_keeps_the_tracked_file_and_retry_continues_it(
+    manifest, tmp_path, failure
+):
     app, request, execution, source, workspace = _setup(manifest, tmp_path)
     failed = _EditLauncher(
         fail=failure if failure != "session" else False,
@@ -249,7 +256,7 @@ async def test_failed_edit_keeps_staged_bytes_and_retry_reuses_them(manifest, tm
     assert not any(event.event == "done" for event in events)
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
     assert (
-        workspace / "turns" / "edit" / "artifacts" / source.name
+        workspace / "turns" / "origin" / "artifacts" / source.name
     ).read_bytes() == b"<p>edited</p>"
     store = execution.store
     store.fail_agent_task(execution.operation_id, "Provider failed")
@@ -265,7 +272,7 @@ async def test_failed_edit_keeps_staged_bytes_and_retry_reuses_them(manifest, tm
         stage_root=record.stage_root,
         continuation="retry",
     )
-    retry = _EditLauncher()
+    retry = _EditLauncher(scope=record.operation_id)
     events = await _run(app, request, execution, retry, tmp_path)
     assert retry.before == [b"<p>edited</p>"]
     assert events[-1].event == "done"
@@ -328,7 +335,7 @@ async def test_ordinary_discuss_edit_preserves_frozen_master(
         return render(**kwargs)
 
     monkeypatch.setattr(discuss.PromptFactory, "discuss_turn_prompt", capture)
-    launcher = _EditLauncher(late_event=late_event)
+    launcher = _EditLauncher(late_event=late_event, scope="discuss-edit")
     events = [
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in discuss.stream_discuss_run(
@@ -418,11 +425,13 @@ async def test_finalize_failure_preserves_answer(manifest, tmp_path, monkeypatch
         async def stream(self, *args, **kwargs):
             async for event in super().stream(*args, **kwargs):
                 if event.event == "done":
-                    target = workspace / "turns" / "edit" / "artifacts" / "chart.html"
+                    target = workspace / "turns" / "origin" / "artifacts" / "chart.html"
                     if damage == "deleted":
                         target.unlink()
                     elif damage == "read_cap":
-                        monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_FILE_BYTES", 1)
+                        monkeypatch.setattr(
+                            "rcp.runs.session_artifacts.CHAT_ARTIFACT_MAX_FILE_BYTES", 1
+                        )
                     elif damage == "unverified":
                         target.unlink()
                         target.symlink_to(workspace / "absent")
@@ -438,7 +447,7 @@ async def test_finalize_failure_preserves_answer(manifest, tmp_path, monkeypatch
     events = await _run(app, request, execution, DamagedEdit(), tmp_path)
     assert any(event.event == "answer" for event in events)
     assert events[-1].event == "done"
-    receipt = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    [receipt] = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
     assert (
         receipt.payload["reason"]
         == {
@@ -452,7 +461,7 @@ async def test_finalize_failure_preserves_answer(manifest, tmp_path, monkeypatch
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
     assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
     if damage == "byte_cap":
-        assert (workspace / "turns/edit/artifacts/chart.html").read_bytes() == b"<p>edited</p>"
+        assert (workspace / "turns/origin/artifacts/chart.html").read_bytes() == b"<p>edited</p>"
 
 
 def test_additional_edit_artifact_retains_episode_provenance(manifest, tmp_path):
@@ -484,16 +493,20 @@ def _staged_edit(manifest, tmp_path):
     return app, request, execution, source, workspace, directory, staged
 
 
+def _tracked_file(staged):
+    return Path(staged.pointer["path"])
+
+
 @pytest.mark.parametrize("failure", [OSError("disk full"), StateUnavailable("offline")])
 @pytest.mark.parametrize("phase", ["read", "publish"])
-def test_transient_publish_failure_propagates_and_retry_keeps_edit(
+def test_transient_publish_failure_keeps_the_change_for_a_later_turn_end(
     manifest, tmp_path, monkeypatch, failure, phase
 ):
-    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
-    (directory / source.name).write_bytes(b"<p>edited</p>")
-    import rcp.runs.chat as chat
+    import rcp.runs.session_artifacts as module
 
-    owner = chat if phase == "read" else execution.store
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    _tracked_file(staged).write_bytes(b"<p>edited</p>")
+    owner = module if phase == "read" else execution.store
     method = "read_local_regular_file" if phase == "read" else "publish_artifact_version"
     original = getattr(owner, method)
 
@@ -501,44 +514,30 @@ def test_transient_publish_failure_propagates_and_retry_keeps_edit(
         raise failure
 
     monkeypatch.setattr(owner, method, fail)
-    with pytest.raises(type(failure)):
-        _finalize(app, request, execution, directory)
-    assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_publish_failed")
+    assert _finalize(app, request, execution, directory) == []
+    assert not execution.store.agent_task_artifact_edit_outcomes(["edit"])
     monkeypatch.setattr(owner, method, original)
     _finalize(app, request, execution, directory)
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
 
 
-@pytest.mark.parametrize("missing_receipt", [False, True])
-def test_large_selection_pointer_and_bytes_survive_retry(manifest, tmp_path, missing_receipt):
+@pytest.mark.parametrize("changed", [False, True])
+def test_turn_start_resyncs_only_an_untouched_tracked_file(manifest, tmp_path, changed):
+    from rcp.runs.session_artifacts import sync_session_artifacts
+
     app, request, execution, source, workspace = _setup(manifest, tmp_path)
-    context = request.artifact_context.model_dump(mode="json")
-    context["selections"] = [{"kind": "text", "text": "x" * 4000, "comment": "change"}] * 10
-    request = RunRequest.model_validate(
-        {**request.model_dump(mode="json"), "artifact_context": context}
-    )
-    directory, staged = _stage(app, request, execution, workspace)
-    if missing_receipt:
-        with execution.store.connection() as connection:
-            connection.execute(
-                "DELETE FROM graph_run_receipts WHERE operation_id = ? AND category = ?",
-                ("edit", "artifact_edit_staged"),
-            )
-    (directory / source.name).write_bytes(b"<p>preserved</p>")
-    execution.store.fail_agent_task("edit", "retry")
-    retry = _edit_execution(execution, request, "retry", status="running")
-    _, recovered = _stage(app, request, retry, workspace)
-    assert recovered.pointer == staged.pointer
-    assert (directory / source.name).read_bytes() == b"<p>preserved</p>"
-    receipt = next(
-        r
-        for r in execution.store.agent_task_receipts("edit")
-        if r.category == "artifact_edit_staged"
-    )
-    assert receipt.payload["path"] == staged.pointer["path"]
-    assert "pointer" not in receipt.payload
-    _finalize(app, request, retry, directory)
-    assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>preserved</p>"
+    store = execution.store
+    tracked = workspace / "turns" / "origin" / "artifacts" / source.name
+    tracked.parent.mkdir(parents=True)
+    # The origin turn's file still holds its first version; the human now sees "base".
+    tracked.write_bytes(b"<p>agent</p>" if changed else b"<p>original</p>")
+    plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
+    directory = workspace / "turns" / "next" / "artifacts"
+    assert sync_session_artifacts(execution, plain, directory, None) is None
+    assert tracked.read_bytes() == (b"<p>agent</p>" if changed else b"<p>base</p>")
+    store.undo_artifact(source.artifact_id)
+    sync_session_artifacts(execution, plain, directory, None)
+    assert tracked.read_bytes() == (b"<p>agent</p>" if changed else b"<p>original</p>")
 
 
 @pytest.mark.parametrize("fork", [False, True])
@@ -547,8 +546,8 @@ def test_live_resolution_failure_does_not_record_publish_completion(
 ):
     import rcp.live_artifact_runtime as live
 
-    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
-    (directory / source.name).write_bytes(b"<p>edited</p>")
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    _tracked_file(staged).write_bytes(b"<p>edited</p>")
     if fork:
         execution.store.undo_artifact(source.artifact_id)
     calls = []
@@ -559,15 +558,14 @@ def test_live_resolution_failure_does_not_record_publish_completion(
             raise OSError("interrupted")
 
     monkeypatch.setattr(live, "resolve_artifact_live_version", resolve)
-    with pytest.raises(OSError):
-        _finalize(app, request, execution, directory)
+    assert _finalize(app, request, execution, directory) == []
     assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
     _finalize(app, request, execution, directory)
     assert calls[0] == calls[1]
     assert execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
     published_id, published_version = calls[0]
     versions = execution.store.artifact_versions(published_id)
-    (directory / source.name).write_bytes(b"<p>changed retry bytes</p>")
+    _tracked_file(staged).write_bytes(b"<p>changed retry bytes</p>")
     _finalize(app, request, execution, directory)
     assert execution.store.read_artifact_bytes(published_id) == b"<p>edited</p>"
     assert execution.store.artifact(published_id).current_version == published_version
@@ -576,8 +574,8 @@ def test_live_resolution_failure_does_not_record_publish_completion(
 
 def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp_path):
     # Serving is pinned by test_revoking_edit_uses_recorded_workspace_and_publishes_cas.
-    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
-    (directory / source.name).write_bytes(b"<p>edited</p>")
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    _tracked_file(staged).write_bytes(b"<p>edited</p>")
     artifacts = _finalize(app, request, execution, directory)
     assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
     assert _finalize(app, request, execution, directory) == artifacts
@@ -585,8 +583,8 @@ def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp
 
 def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
     # Descriptor sizes are positive or unknown; an emptied artifact must not fail the turn.
-    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
-    (directory / source.name).write_bytes(b"")
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    _tracked_file(staged).write_bytes(b"")
     artifacts = _finalize(app, request, execution, directory)
     assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
     assert execution.store.read_artifact_bytes(source.artifact_id) == b""
@@ -617,39 +615,6 @@ def test_revoking_edit_without_provider_result_emits_error(manifest, tmp_path):
     assert outcome.failed
 
 
-def test_pointer_contract_without_receipt_recovers_on_new_execution(manifest, tmp_path):
-    from rcp.runs.chat import stage_artifact_context
-
-    app, request, execution, source, workspace, directory, staged = _staged_edit(manifest, tmp_path)
-    with execution.store.connection() as connection:
-        connection.execute(
-            "DELETE FROM graph_run_receipts WHERE operation_id = ? AND category = ?",
-            ("edit", "artifact_edit_staged"),
-        )
-    (directory / source.name).write_bytes(b"<p>preserved</p>")
-    record = execution.store.agent_task("edit")
-    with execution.store.connection() as connection:
-        connection.execute("UPDATE graph_runs SET status = 'failed' WHERE operation_id = 'edit'")
-    execution.store.create_agent_task(record.model_copy(update={"operation_id": "retry"}))
-    retry = AgentTaskExecution(
-        operation_id="retry",
-        store=execution.store,
-        control=AgentProcessControl(),
-        stage_root=execution.stage_root,
-    )
-    recovered = stage_artifact_context(
-        app.state.service,
-        request,
-        retry,
-        local_stage=workspace.parent,
-        remote_stage=None,
-        artifact_path=str(directory),
-    )
-    assert recovered.pointer == staged.pointer
-    assert (directory / source.name).read_bytes() == b"<p>preserved</p>"
-    assert execution.store.agent_task_has_receipt("edit", "artifact_edit_staged")
-
-
 @pytest.mark.parametrize(
     "outcome,legacy",
     [
@@ -663,9 +628,9 @@ def test_pointer_contract_without_receipt_recovers_on_new_execution(manifest, tm
     ],
 )
 def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outcome, legacy):
-    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
     store = execution.store
-    path = directory / source.name
+    path = _tracked_file(staged)
     if outcome == "failed":
         path.unlink()
     elif outcome != "unchanged":
@@ -673,7 +638,7 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
     if outcome == "forked":
         store.undo_artifact(source.artifact_id)
     artifacts = _finalize(app, request, execution, directory)
-    receipt = store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    [receipt] = store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
     assert receipt.payload["status"] == outcome
     expected = {
         "status": outcome,
@@ -690,7 +655,7 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
     }
     path.write_bytes(b"<p>changed after settlement</p>")
     assert _finalize(app, request, execution, directory) == artifacts
-    assert store.agent_task_artifact_edit_outcomes(["edit"])["edit"] == receipt
+    assert store.agent_task_artifact_edit_outcomes(["edit"])["edit"] == [receipt]
     if legacy:
         payload = dict(receipt.payload)
         payload.pop("status")
@@ -715,6 +680,6 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
         for operation_id in ("retry",) if legacy and outcome == "failed" else ("edit", "retry"):
             detail = client.get(f"{base}/{operation_id}")
             assert detail.status_code == 200
-            assert detail.json()["result"]["artifact_edit_outcome"] == expected
+            assert detail.json()["result"]["artifact_edit_outcomes"] == [expected]
             listed = next(record for record in records if record["operation_id"] == operation_id)
-            assert listed["result"]["artifact_edit_outcome"] == expected
+            assert listed["result"]["artifact_edit_outcomes"] == [expected]

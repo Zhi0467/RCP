@@ -38,7 +38,7 @@ The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
 truth. Every artifact, reports and Experiment or Auto-research outputs included,
 may be viewed, commented on, versioned, and kept through one viewer. A comment
-sent from the viewer edits its staged file under Discuss authority or a revoking
+sent from the viewer edits its tracked file under Discuss authority or a revoking
 scratch-only launch; one sent from a chat composer is that chat's ordinary
 Discuss or Work turn, with exactly that turn's authority. RCP publishes an
 immutable version, and Undo moves the current pointer back; the comment and its
