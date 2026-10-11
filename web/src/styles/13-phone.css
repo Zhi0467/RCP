@@ -16,13 +16,22 @@
   body {
     overflow-wrap: anywhere;
   }
-  /* A button label never breaks inside a word; a crowded button row wraps. */
+  /* A button label never breaks inside a word. */
   button,
   .button {
     overflow-wrap: normal;
   }
+  /* The agent picker takes its own full row; Cancel and the action share the
+     row below, the action filling what Cancel leaves. */
   .campaign-dialog > footer {
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: auto 1fr;
+  }
+  .campaign-dialog > footer > .agent-config-chip {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+    margin: 0;
+    min-height: 44px;
   }
   /* An open artifact fills the screen; its placement (inline styles) is a
      desktop window and does not apply here. */

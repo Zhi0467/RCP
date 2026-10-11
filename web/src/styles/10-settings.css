@@ -3868,6 +3868,7 @@ button.agent-provider-label {
 }
 /* A launch chip sits before its start button and takes the row's free space. */
 .campaign-dialog > footer > .agent-config-chip {
+  align-self: stretch;
   margin-right: auto;
 }
 .experiment-control-heading > .agent-config-chip,
