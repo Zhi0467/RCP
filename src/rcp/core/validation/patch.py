@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import replace
 
-from rcp.core.authority import Writer, validate_authorship
+from rcp.core.authority import Writer, validate_authorship, validate_writer_actions
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import (
     CreateEdgesOperation,
@@ -153,7 +153,9 @@ def _validate_patch(
             f"Patch revision {patch.revision} must follow graph revision {state.revision}.",
             ctx.revision,
         )
+    # Persisted role checks run in replay too, so corrupted history degrades.
     validate_authorship(patch, report)
+    validate_writer_actions(state, patch, report, replay=context.mode == "replay")
     _validate_identity_shape(ctx)
     _validate_attribution_shape(ctx)
     _validate_declared_agent_action(ctx)
@@ -356,10 +358,6 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
     )
     for node_id in sorted(touched_ids):
         reject_incomplete_decision_ballot(ctx.state.nodes.get(node_id), ctx.report, ctx.revision)
-
-
-def _validate_authorship(ctx: OpContext) -> None:
-    validate_authorship(ctx.patch, ctx.report)
 
 
 def _validate_identity_shape(ctx: OpContext) -> None:

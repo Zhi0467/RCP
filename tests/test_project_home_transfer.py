@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.config import load_manifest
-from rcp.core.authority import WriteAuthority
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectHomeTransfer
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, ProjectIdentityConflict
@@ -374,10 +373,10 @@ def test_agents_cannot_author_or_attach_a_home_transfer(mode: str) -> None:
     authored = _transfer_patch(transfer).model_copy(update={"author": "agent", "producer": "agent"})
     ordinary = _ordinary_patch(["repo"]).model_copy(update={"project_home_transfer": transfer})
 
-    authored_report = (
-        WriteAuthority().validate_permissions(GraphState(), authored)
-        if mode == "admission"
-        else validate_patch(GraphState(), authored, ValidationContext([], mode="replay"))
+    authored_report = validate_patch(
+        GraphState(),
+        authored,
+        ValidationContext([], mode=mode),  # type: ignore[arg-type]
     )
     ordinary_report = validate_patch(
         GraphState(project_truth_scope=["repo"]),

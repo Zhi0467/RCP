@@ -781,8 +781,14 @@ def validate_operation_authority(state: GraphState, patch: Patch, report: Valida
                 )
 
 
-def validate_writer_actions(state: GraphState, patch: Patch, report: ValidationReport) -> None:
-    """Check action declarations that depend only on the writer's role."""
+def validate_writer_actions(
+    state: GraphState, patch: Patch, report: ValidationReport, *, replay: bool = False
+) -> None:
+    """Check action declarations that depend only on the writer's role.
+
+    Replay skips the two checks that were always admission-only, so older
+    history that predates them still materializes.
+    """
 
     revision = patch.revision or None
     if patch.human_action is not None and (patch.kind != "approval" or patch.author != "human"):
@@ -802,7 +808,7 @@ def validate_writer_actions(state: GraphState, patch: Patch, report: ValidationR
 
     # These checks depend on the writer, never on written-order staging.
     for operation in patch.ops:
-        if operation.op == "resolve_proposals" and patch.kind != "approval":
+        if operation.op == "resolve_proposals" and patch.kind != "approval" and not replay:
             report.reject(
                 "agent-resolved-proposal",
                 "Only a human approval patch may resolve or withdraw a Proposal.",
@@ -816,7 +822,7 @@ def validate_writer_actions(state: GraphState, patch: Patch, report: ValidationR
                 "Only an agent patch may withdraw a Proposal.",
                 revision,
             )
-        elif operation.op == "set_standing" and not permits(patch, "set_standing"):
+        elif operation.op == "set_standing" and not replay and not permits(patch, "set_standing"):
             report.reject(
                 "agent-set-standing", "This Patch producer may not set standing.", revision
             )
@@ -833,29 +839,13 @@ def validate_writer_actions(state: GraphState, patch: Patch, report: ValidationR
                 revision,
             )
 
-    if patch.kind != "approval" or permits(patch, DECIDE_DECISION):
-        return
-    from rcp.core.operations import ResolveProposalsOperation
-    from rcp.core.validation.approval import _writes_decision_outcome
 
-    approved_resolution = any(
-        resolution.status == "approved"
-        for operation in patch.ops
-        if isinstance(operation, ResolveProposalsOperation)
-        for resolution in operation.resolutions
-    )
-    if patch.human_action == "decision_choice" and not approved_resolution:
-        report.reject(
-            "invalid-direct-decision-choice",
-            f"Only an actor permitted to {DECIDE_DECISION} may choose a Decision option.",
-            revision,
-        )
-    elif patch.human_action == "decision_choice" and _writes_decision_outcome(state, patch.ops):
-        report.reject(
-            "decision-action-refused",
-            f"This actor is not permitted to {DECIDE_DECISION} through a legacy Decision Proposal approval.",
-            revision,
-        )
+def _authorship_rejected(patch: Patch) -> bool:
+    from rcp.core.validation.report import ValidationReport
+
+    report = ValidationReport()
+    validate_authorship(patch, report)
+    return report.rejected
 
 
 class WriteAuthority:
@@ -874,9 +864,7 @@ class WriteAuthority:
         from rcp.core.validation.report import ValidationReport
 
         report = ValidationReport()
-        validate_authorship(patch, report)
         try:
-            validate_writer_actions(state, patch, report)
             validate_operation_authority(state, patch, report)
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             report.reject(
@@ -898,8 +886,9 @@ class WriteAuthority:
         from rcp.core.validation.report import ValidationReport
 
         report = ValidationReport()
-        validate_authorship(patch, report)
-        if report.rejected:
+        # A Patch whose author does not match its kind is never stamped; Gate 2
+        # reports the persisted-shape rejection.
+        if _authorship_rejected(patch):
             return patch, Writer.from_patch(patch), report
         patch = self.stamp_attribution(
             patch, project_id=project_id, authorized_by=authorized_by, apply_target=apply_target

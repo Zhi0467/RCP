@@ -648,7 +648,7 @@ def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> 
     assert stored[1].authorized_by.display_name == "After rename"
 
 
-def test_nonmember_human_is_refused_before_rules_without_revision(manifest) -> None:
+def test_nonmember_human_is_refused_without_revision(manifest) -> None:
     authorizer = fabricated_authorizer("Former member")
     checked = []
 
@@ -664,9 +664,9 @@ def test_nonmember_human_is_refused_before_rules_without_revision(manifest) -> N
     with pytest.raises(PatchRejected) as refused:
         history.append(_approval(), authorized_by=authorizer, discard_on_reject=True)
 
-    assert [message.code for message in refused.value.report.messages] == [
-        "human-authorizer-not-member"
-    ]
+    assert "human-authorizer-not-member" in {
+        message.code for message in refused.value.report.messages
+    }
     assert checked == [(PROJECT_ID, authorizer.user_id)]
     assert history.load_patches() == []
     assert history.state().revision == 0

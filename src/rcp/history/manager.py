@@ -1200,13 +1200,13 @@ class HistoryManager:
                 authorized_by=authorized_by,
                 apply_target=self.graph_target,
             )
-            if report.rejected:
-                return identity_patch, report, None
-            report = validate_patch(
-                current.state,
-                identity_patch,
-                build_validation_context(self.manifest, current.state),
-                writer=writer,
+            report.messages.extend(
+                validate_patch(
+                    current.state,
+                    identity_patch,
+                    build_validation_context(self.manifest, current.state),
+                    writer=writer,
+                ).messages
             )
             candidate = (
                 apply_valid_patch(current.state, identity_patch) if not report.rejected else None
@@ -1248,17 +1248,17 @@ class HistoryManager:
                 apply_target=target,
             )
             aggregate.messages.extend(report.messages)
-            if report.rejected:
-                return patch, aggregate, None
+            # Gate 2 runs even after a permission refusal, so a writer sees every
+            # broken rule at once. Nothing is applied unless both gates pass.
             patch = prepare_patch_bookkeeping(validation_state, patch)
-            report = validate_patch(
+            rules = validate_patch(
                 validation_state,
                 patch,
                 build_validation_context(self.manifest, validation_state),
                 writer=writer,
             )
-            aggregate.messages.extend(report.messages)
-            if report.rejected:
+            aggregate.messages.extend(rules.messages)
+            if report.rejected or rules.rejected:
                 return patch, aggregate, None
             try:
                 candidate = apply_valid_patch(validation_state, patch)

@@ -424,7 +424,7 @@ def test_orchestrator_schema_is_elevated_without_widening_ordinary_schema() -> N
     assert prepared.profile is None
 
 
-def test_rules_validation_does_not_refuse_writer_graph_permissions() -> None:
+def test_ordinary_agent_cannot_set_standing() -> None:
     state = GraphState(
         project_truth_scope=["repo-a"],
         nodes={
@@ -442,7 +442,5 @@ def test_rules_validation_does_not_refuse_writer_graph_permissions() -> None:
     ).model_copy(update={"profile": "ordinary"})
 
     permission_report = WriteAuthority().validate_permissions(state, patch)
-    rules_report = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert "graph-action-refused" in {message.code for message in permission_report.messages}
-    assert not rules_report.rejected

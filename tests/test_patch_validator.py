@@ -358,7 +358,8 @@ def test_graph_live_self_check_validates_current_state_without_appending(
     assert rechecked.status == "invalid"
     assert rechecked.live_revision == 1
     assert rechecked.candidate_revision == 2
-    assert len(rechecked.messages) > 0
+    # The permission refusal arrives with the rule rejections, not instead of them.
+    assert len(rechecked.messages) > 1
     assert history.state().revision == 1
 
 
