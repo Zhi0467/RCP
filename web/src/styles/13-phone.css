@@ -16,6 +16,14 @@
   body {
     overflow-wrap: anywhere;
   }
+  /* A button label never breaks inside a word; a crowded button row wraps. */
+  button,
+  .button {
+    overflow-wrap: normal;
+  }
+  .campaign-dialog > footer {
+    flex-wrap: wrap;
+  }
   /* An open artifact fills the screen; its placement (inline styles) is a
      desktop window and does not apply here. */
   .floating-window.artifact-viewer {

@@ -116,7 +116,12 @@ test("a phone page never pans sideways and a tall dialog reaches its last contro
           <div class="recommended-action"><strong>${"unbroken_identifier_".repeat(8)}</strong></div>
         </main></div>
         <div class="modal-backdrop"><section class="campaign-dialog">
-          <div style="height: 900px"></div><button id="last">Start</button>
+          <div style="height: 900px"></div>
+          <footer>
+            <button class="button">A long agent picker label</button>
+            <button class="button" id="cancel">Cancel</button>
+            <button class="button primary" id="last">Start auto-research</button>
+          </footer>
         </section></div>`;
     });
     const panel = page.locator(".project-panel");
@@ -128,6 +133,13 @@ test("a phone page never pans sideways and a tall dialog reaches its last contro
     await page.locator("#last").scrollIntoViewIfNeeded();
     const last = await page.locator("#last").boundingBox();
     assert.ok(last.y >= 0 && last.y + last.height <= viewport.height);
+    // Button labels wrap between words, never inside one.
+    const cancelLines = await page.locator("#cancel").evaluate((button) => {
+      const range = document.createRange();
+      range.selectNodeContents(button);
+      return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+    });
+    assert.equal(cancelLines, 1);
   } finally {
     await browser?.close();
     await server.close();
