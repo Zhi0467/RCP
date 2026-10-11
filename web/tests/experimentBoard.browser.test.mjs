@@ -141,14 +141,8 @@ test("same-node loops keep exact selection, detail focus, and independent Stop r
     await branch.locator('[data-selected-episode="child-experiment-episode"]').waitFor();
     assert.equal(await main.count(), 1);
     assert.equal(await branch.count(), 1);
-    assert.equal(
-      await main.locator('.experiment-branch-badge[data-graph-target-kind="main"]').count(),
-      1,
-    );
-    assert.equal(
-      await branch.locator('.experiment-branch-badge[title="auto-research-parent"]').count(),
-      1,
-    );
+    assert.equal(await main.locator('.branch-tag[data-graph-target-kind="main"]').count(), 1);
+    assert.equal(await branch.locator('.branch-tag[data-graph-target-kind="branch"]').count(), 1);
 
     await main.locator(".campaign-run-toggle").click();
     await main.locator('[data-selected-episode="main-episode"]').waitFor();

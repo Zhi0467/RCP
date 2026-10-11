@@ -1,22 +1,19 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { loadChatBrowser, loadProjectMachineBrowser, setChatBrowser } from "./api";
 import { browserReason } from "./browserStatus";
 import { errorMessage } from "./errors";
 import type { BrowserTurnStatus, MachineBrowserReadiness } from "./types";
 
+/** The one Browser use switch for chats and launches; its name carries no caption. */
 export function BrowserToggle({
   checked,
   disabled = false,
-  subject = "chat",
   onChange,
 }: {
   checked: boolean;
   disabled?: boolean;
-  /** A chat's toggle changes between turns; a run's is chosen at launch. */
-  subject?: "chat" | "run";
   onChange: (checked: boolean) => void;
 }) {
-  const consentId = useId();
   return (
     <div className="browser-consent">
       <label className="browser-consent-switch">
@@ -25,22 +22,10 @@ export function BrowserToggle({
           role="switch"
           checked={checked}
           disabled={disabled}
-          aria-describedby={consentId}
           onChange={(event) => onChange(event.target.checked)}
         />{" "}
-        Browser
+        Browser use
       </label>
-      {subject === "chat" ? (
-        <p id={consentId}>
-          Runs agent-written code outside this chat's folders, from the next turn. Off deletes its
-          logins.
-        </p>
-      ) : (
-        <p id={consentId}>
-          The agents in this run can use a headless browser on the machine the run uses. Browser
-          actions can run agent-written code and write files outside the run's folders.
-        </p>
-      )}
     </div>
   );
 }

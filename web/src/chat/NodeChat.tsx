@@ -21,6 +21,7 @@ import { questionIsOpen, questionTranscript } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
   TriangleAlert,
+  ChevronDown,
   ChevronUp,
   Cpu,
   Download,
@@ -683,6 +684,12 @@ export function NodeChat({
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
   );
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
+  // Compute stays choosable in the + menu while files cannot be added.
+  const attachDisabled =
+    attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
+    attachmentsPreparing ||
+    submitting ||
+    awaitingSteerReceipt;
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
   const annotationComposerOpen = annotationComposer !== null;
   const annotationComposerOpenRef = useRef(annotationComposerOpen);
@@ -2945,26 +2952,25 @@ export function NodeChat({
                 <button
                   className="icon-button chat-add-file"
                   type="button"
-                  aria-label="Add files"
+                  aria-label="Add"
                   aria-expanded={addMenuOpen}
-                  disabled={
-                    attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
-                    attachmentsPreparing ||
-                    submitting ||
-                    awaitingSteerReceipt
-                  }
+                  disabled={attachDisabled && computeConnections.length === 0}
                   onClick={() => {
                     setReferencePickerOpen(false);
                     setAddMenuOpen((open) => !open);
                   }}
                 >
                   <Plus size={16} />
+                  {computeState.ids.length ? (
+                    <strong className="chat-add-count">{computeState.ids.length}</strong>
+                  ) : null}
                 </button>
                 {addMenuOpen && (
                   <div className="chat-add-menu" role="menu">
                     <button
                       type="button"
                       role="menuitem"
+                      disabled={attachDisabled}
                       onClick={() => {
                         setAddMenuOpen(false);
                         attachmentInputRef.current?.click();
@@ -2976,7 +2982,7 @@ export function NodeChat({
                     <button
                       type="button"
                       role="menuitem"
-                      disabled={Boolean(artifactContext)}
+                      disabled={attachDisabled || Boolean(artifactContext)}
                       onClick={() => {
                         setAddMenuOpen(false);
                         setReferencePickerOpen(true);
@@ -2985,6 +2991,58 @@ export function NodeChat({
                       <FolderOpen size={14} />
                       From RCP…
                     </button>
+                    {computeConnections.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          aria-expanded={computeMenuOpen}
+                          onClick={() => setComputeMenuOpen((open) => !open)}
+                        >
+                          <Cpu size={14} />
+                          Compute
+                          {computeState.ids.length ? (
+                            <strong>{computeState.ids.length}</strong>
+                          ) : null}
+                          {computeMenuOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                        {computeMenuOpen ? (
+                          <fieldset className="chat-compute-menu" aria-label="Compute connections">
+                            {computeConnections.map((connection) => {
+                              const selected = computeState.ids.includes(connection.id);
+                              const probe =
+                                project.compute_status?.[config.run_on]?.[connection.id];
+                              const presentation = computeProbePresentation(probe);
+                              return (
+                                <label
+                                  aria-label={`${connection.name}, ${presentation.label}`}
+                                  key={connection.id}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selected}
+                                    onChange={() => {
+                                      setComputeState((current) => ({
+                                        ids: selected
+                                          ? current.ids.filter((id) => id !== connection.id)
+                                          : [...current.ids, connection.id],
+                                        pinned: true,
+                                      }));
+                                      setSubmitError(null);
+                                    }}
+                                  />
+                                  <span
+                                    className={`chat-compute-dot ${presentation.tone}`}
+                                    aria-hidden="true"
+                                  />
+                                  <strong>{connection.name}</strong>
+                                </label>
+                              );
+                            })}
+                          </fieldset>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 )}
                 {referencePickerOpen && (
@@ -3080,55 +3138,6 @@ export function NodeChat({
                   )}
                 </fieldset>
               </div>
-              {computeConnections.length > 0 && (
-                <div className="chat-compute-picker">
-                  <button
-                    className="chat-compute-trigger"
-                    type="button"
-                    aria-expanded={computeMenuOpen}
-                    onClick={() => setComputeMenuOpen((open) => !open)}
-                  >
-                    <Cpu size={14} />
-                    Compute
-                    {computeState.ids.length ? <strong>{computeState.ids.length}</strong> : null}
-                    <ChevronUp size={12} />
-                  </button>
-                  {computeMenuOpen ? (
-                    <fieldset className="chat-compute-menu" aria-label="Compute connections">
-                      {computeConnections.map((connection) => {
-                        const selected = computeState.ids.includes(connection.id);
-                        const probe = project.compute_status?.[config.run_on]?.[connection.id];
-                        const presentation = computeProbePresentation(probe);
-                        return (
-                          <label
-                            aria-label={`${connection.name}, ${presentation.label}`}
-                            key={connection.id}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              onChange={() => {
-                                setComputeState((current) => ({
-                                  ids: selected
-                                    ? current.ids.filter((id) => id !== connection.id)
-                                    : [...current.ids, connection.id],
-                                  pinned: true,
-                                }));
-                                setSubmitError(null);
-                              }}
-                            />
-                            <span
-                              className={`chat-compute-dot ${presentation.tone}`}
-                              aria-hidden="true"
-                            />
-                            <strong>{connection.name}</strong>
-                          </label>
-                        );
-                      })}
-                    </fieldset>
-                  ) : null}
-                </div>
-              )}
             </div>
             <div className="chat-send-actions">
               <button

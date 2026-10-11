@@ -404,6 +404,7 @@ def test_saved_origins_use_exact_main_and_branch_chats_in_one_scan_per_target(
     assert response.status_code == 200, response.text
     assert sorted(scans) == sorted(["main", branch.graph_target.key])
     entries = {entry["operation_id"]: entry for entry in response.json()}
+    assert entries[main_task.operation_id]["graph_branch_name"] == "main"
     for task in [main_task, branch_task]:
         url, params = _source_chat_url(project_id, entries[task.operation_id]["source_chat_href"])
         transcript = client.get(url, params=params)
@@ -491,6 +492,8 @@ def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest,
     entry = next(item for item in entries if item["operation_id"] == task.operation_id)
     assert entry["episode_mode"] == "auto_research"
     assert client.get(entry["viewer_url"]).status_code == 200
+    # The tag names the branch even when no source link survives.
+    assert entry["graph_branch_name"] == store.branch_names(project_id)[parent.episode_id]
     if not routed:
         assert entry["source_chat_href"] is None
         return

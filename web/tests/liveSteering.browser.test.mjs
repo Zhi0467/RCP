@@ -130,7 +130,7 @@ for (const [actionLabel, receiptLabel] of [
       await sendSteer.click();
       while (requests.length < 3) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.equal(await composer.isDisabled(), true);
-      assert.equal(await page.getByRole("button", { name: "Add files" }).isDisabled(), true);
+      assert.equal(await page.getByRole("button", { name: "Add", exact: true }).isDisabled(), true);
       gate = null;
       open();
       await page.getByText("A slow steer", { exact: true }).waitFor();

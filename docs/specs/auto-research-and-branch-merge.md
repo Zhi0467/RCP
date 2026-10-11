@@ -96,6 +96,27 @@ Child task/episode admission, budget spend, parent registration, graph target,
 and lifecycle routing commit atomically. Recovery dispatches an accepted queued
 child without creating another id or spending again.
 
+## Branch names
+
+Each root branch has one project-unique name: 2–32 lowercase letters, digits,
+and hyphens, beginning and ending with a letter or digit, never `main`.
+Archived and retired names remain reserved and cannot name another branch.
+Both Auto-research and isolated Experiment starts accept `branch_name`; an
+Experiment may supply it only when creating an isolated branch. Invalid and
+taken names return `branch_name_invalid` (422) and `branch_name_taken` (409).
+Name reservation and episode reservation share one SQLite transaction.
+
+Blank or omitted names are stored at creation as `research-<mon>-<day>` or
+`experiment-<mon>-<day>`, using the root's UTC creation date, lowercase English
+three-letter month, and two-digit day. Clashes use `-2`, `-3`, in creation
+order. Legacy branches resolve these names on read without migration; stored
+and previously reserved names cannot be reassigned as fallbacks. Renaming
+preserves other branches' resolved fallbacks. One storage owner resolves all
+names, and transfer records carry current and retired reservations.
+
+Any project member may rename, archive, or unarchive a branch through the
+graph-ref routes. These update operational labels, never Patch history.
+
 ## Persistent graph branch
 
 An Auto-research root or a main-target Experiment with graph isolation on owns

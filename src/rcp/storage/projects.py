@@ -455,6 +455,12 @@ class ProjectStoreMixin(StoreMixinBase):
                     "conversation_worktrees": connection.execute(
                         "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "branch_names": connection.execute(
+                        "DELETE FROM branch_names WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "branch_name_reservations": connection.execute(
+                        "DELETE FROM branch_name_reservations WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "artifact_imports": connection.execute(
                         "DELETE FROM artifact_imports WHERE project_id = ?", (project_id,)
                     ).rowcount,

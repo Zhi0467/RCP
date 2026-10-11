@@ -517,6 +517,28 @@ export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
   return api<GraphRef[]>(`/api/projects/${encodeURIComponent(projectId)}/graph-refs`);
 }
 
+export function renameGraphBranch(
+  projectId: string,
+  branchId: string,
+  name: string,
+): Promise<GraphRef> {
+  return api<GraphRef>(
+    `/api/projects/${encodeURIComponent(projectId)}/graph-refs/${encodeURIComponent(branchId)}/name`,
+    { method: "PUT", body: JSON.stringify({ name }) },
+  );
+}
+
+export function setGraphBranchArchived(
+  projectId: string,
+  branchId: string,
+  archived: boolean,
+): Promise<GraphRef> {
+  return api<GraphRef>(
+    `/api/projects/${encodeURIComponent(projectId)}/graph-refs/${encodeURIComponent(branchId)}/archived`,
+    { method: "PUT", body: JSON.stringify({ archived }) },
+  );
+}
+
 export function loadEpisodes(
   apiBase: string,
   mode?: EpisodeMode,

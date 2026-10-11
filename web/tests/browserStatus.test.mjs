@@ -70,7 +70,8 @@ test("browser notices render only degraded turns and preserve their structured s
       React.createElement(BrowserToggle, { checked: false, disabled: true, onChange() {} }),
     );
     assert.match(toggle, /role="switch"/);
-    assert.match(toggle, /aria-describedby="[^"]+"/);
+    // The switch is its own label: no caption line beside it.
+    assert.doesNotMatch(toggle, /<p\b/);
     assert.match(toggle, /disabled=""/);
     assert.doesNotMatch(toggle, /checked=""/);
   } finally {

@@ -218,6 +218,7 @@ test("project Settings keeps the global appearance and no longer owns a Display 
   await panel.getByRole("button", { name: "Dark", exact: true }).click();
   await assertAppearance(page, "aqua", "dark");
   await page.goto(`${origin}/tests/fixtures/settingsRequestRaces.html`);
+  await page.locator('[data-machine-tile="local"]').click();
   const recessed = page.getByLabel("Codex executable on local");
   await recessed.waitFor();
   await assertAppearance(page, "aqua", "dark");

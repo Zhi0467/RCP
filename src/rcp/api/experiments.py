@@ -49,6 +49,7 @@ from rcp.storage import (
     EpisodeNotRunning,
     EpisodeRecord,
 )
+from rcp.storage.branch_names import BranchNameInvalid, BranchNameTaken, normalize_branch_name
 from rcp.storage.client_requests import ClientRequestConflict
 from rcp.transport import StateUnavailable
 
@@ -147,6 +148,11 @@ def run_experiment(
                     node.invocation_ceiling if requested_ceiling is None else requested_ceiling
                 )
                 supplied = RunRequest.model_validate(client_request)
+                if supplied.branch_name is not None and (
+                    not supplied.graph_isolation or target.kind != "main"
+                ):
+                    raise BranchNameInvalid("A branch name requires a new isolated graph branch.")
+                supplied.branch_name = normalize_branch_name(supplied.branch_name)
                 if not supplied.chat_id:
                     raise ValueError("Run requires a chat_id")
                 uuid.UUID(supplied.chat_id)
@@ -253,6 +259,14 @@ def run_experiment(
                 )
             except AgentTaskAdmissionConflict as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except BranchNameInvalid as exc:
+                raise HTTPException(
+                    status_code=422, detail={"code": "branch_name_invalid", "message": str(exc)}
+                ) from exc
+            except BranchNameTaken as exc:
+                raise HTTPException(
+                    status_code=409, detail={"code": "branch_name_taken", "message": str(exc)}
+                ) from exc
             except ClientRequestConflict:
                 raise
             except ValueError as exc:

@@ -381,40 +381,28 @@ test("checkout identity exposes the host and every repository on cards and overl
   }
 });
 
-test("branch badges abbreviate ids, preserve full titles, and share overlap rendering", async () => {
-  const { ExperimentBranchBadge } = await server.ssrLoadModule(
-    "/src/experiments/ExperimentBranchBadge.tsx",
-  );
+test("branch tags name each branch by its ref and share overlap rendering", async () => {
+  const { BranchTag } = await server.ssrLoadModule("/src/core/BranchTag.tsx");
   const id = "12345678-1234-1234-1234-123456789abc";
   const target = { kind: "branch", branch_id: id };
-  const render = (autoResearchEpisodeId) =>
-    renderToStaticMarkup(
-      React.createElement(ExperimentBranchBadge, { target, autoResearchEpisodeId }),
-    );
-  const ordinary = render(null);
-  const auto = render(id);
-  assert.ok(ordinary.includes(`title="${id}"`));
-  assert.ok(auto.includes(`title="${id}"`));
+  const refs = [{ kind: "branch", branch_id: id, name: "loss-sweep" }];
   const label = (html) => html.match(/<span>([^<]+)<\/span>/)[1];
-  assert.equal(label(ordinary), id.slice(0, 8));
-  assert.ok(label(auto).endsWith(id.slice(0, 8)));
-  assert.ok(!label(auto).includes(id));
-  assert.notEqual(label(auto), label(ordinary));
-  assert.equal(render("different-parent"), ordinary);
+  const render = (props) => renderToStaticMarkup(React.createElement(BranchTag, props));
+  assert.equal(label(render({ refs, target })), "loss-sweep");
+  assert.equal(label(render({ refs: null, target })), id.slice(0, 8));
+  assert.match(render({ refs, target: main }), /data-graph-target-kind="main"/);
+  assert.equal(label(render({ refs, target: main })), "main");
   const html = renderToStaticMarkup(
     React.createElement(ExperimentStartOverlap, {
       projectId: "project-one",
+      graphRefs: refs,
       loops: {
         rows: [{ ...loop, graph_target: target, started_by: { kind: "auto_research", id } }],
         omitted: 0,
       },
     }),
   );
-  assert.ok(html.includes(auto));
-  assert.match(
-    renderToStaticMarkup(React.createElement(ExperimentBranchBadge, { target: main })),
-    /class="status-pill experiment-branch-badge"[^>]*data-graph-target-kind="main"/,
-  );
+  assert.ok(html.includes(render({ refs, target })));
 });
 
 test("a continued Auto-research child's link keeps its exact route", async () => {

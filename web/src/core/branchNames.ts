@@ -1,0 +1,20 @@
+import type { GraphRef, GraphTargetRef } from "./types";
+
+/** Lowercase letters, digits, and hyphens; 2–32 characters; never `main`. */
+export const BRANCH_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$/;
+
+export function branchNameProblem(name: string): string | null {
+  if (name === "") return null;
+  if (name === "main") return "main is reserved.";
+  return BRANCH_NAME_PATTERN.test(name) ? null : "Use 2–32 lowercase letters, digits, and hyphens.";
+}
+
+/** The one display name for a graph target; every surface reads it from here. */
+export function branchName(
+  refs: readonly GraphRef[] | null | undefined,
+  target: GraphTargetRef | null | undefined,
+): string {
+  if (!target || target.kind === "main") return "main";
+  const ref = refs?.find((item) => item.kind === "branch" && item.branch_id === target.branch_id);
+  return ref?.name ?? target.branch_id.slice(0, 8);
+}

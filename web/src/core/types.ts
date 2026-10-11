@@ -945,6 +945,8 @@ export interface SpaceRunIndexEntry extends Pick<
   mode: SpaceRunMode;
   title: string;
   graph_target: GraphTargetRef;
+  /** The target's display name, resolved by the server across projects. */
+  graph_branch_name: string;
   parent_episode_id: string | null;
   experiment_id: string | null;
   started_at: string;
@@ -1680,6 +1682,8 @@ export interface BranchMergeReceipt {
 export interface EpisodeIsolationChoice {
   graph_isolation: boolean;
   code_worktree: boolean;
+  /** A new branch's name; blank or omitted takes the date fallback. */
+  branch_name?: string | null;
 }
 
 export interface MergeEpisodeBody {
@@ -1799,12 +1803,23 @@ export type GraphRef =
   | (GraphBranchSummary & {
       kind: "branch";
       archived: boolean;
-      /** The chain root's mode and display title, when the backend has one. */
+      /** The chain root's mode: who made the branch. */
       mode: EpisodeMode;
-      title: string | null;
+      /** The one display name: stored, or the date fallback the backend computed. */
+      name: string;
+      /** An agent task on this branch is active. */
+      running: boolean;
+      /** Open Decisions or blockers on the branch, or an unanswered agent question. */
+      needs_you: boolean;
+      /** Root episode creation time, for newest-first ordering. */
+      created_at: string;
     })
   | {
       kind: "main";
+      name: "main";
+      running: false;
+      needs_you: false;
+      created_at: null;
       branch_id: null;
       episode_id: null;
       current_episode_id: null;
@@ -2773,6 +2788,8 @@ export interface StartEpisodeRequest {
   graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;
+  /** The new branch's name; blank or omitted takes the date fallback. */
+  branch_name?: string | null;
   /** The orchestrator's agent; omitted, the Settings orchestrator profile. */
   provider?: ProviderId;
   model?: string | null;
@@ -3411,6 +3428,8 @@ export interface ProjectArtifact {
   download_url: string | null;
   can_open: boolean;
   unavailable_reason: string | null;
+  /** The owning branch's name, resolved by the server. */
+  graph_branch_name: string;
 }
 
 export interface ProviderLoginState {
