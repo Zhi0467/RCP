@@ -71,8 +71,9 @@ const MODEL_ROLES = {
 /** ChatGPT's desktop dictation types into other apps only on macOS and Windows computers. */
 function chatgptDictationTypesHere(): boolean {
   if (typeof navigator === "undefined") return false;
+  if (navigator.platform.startsWith("Win")) return true;
   // iPadOS reports a Mac platform; touch points tell them apart.
-  return /^(Mac|Win)/.test(navigator.platform) && navigator.maxTouchPoints <= 1;
+  return navigator.platform.startsWith("Mac") && navigator.maxTouchPoints <= 1;
 }
 
 function serviceChoice(connection: ServiceConnection): ServiceChoice {
