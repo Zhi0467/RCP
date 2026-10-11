@@ -62,19 +62,7 @@ def chat_steering_state(
     return control.steering_state()
 
 
-def _receipt(
-    record: AgentTaskRecord, attempt: int, turn_id: str, status: str, reason: str | None
-) -> SteeringReceipt:
-    runtime = _recorded_runtime(record)
-    if status == "delivered" and runtime is not None and runtime.steering_behavior == "queue":
-        # Delivery is certain; placement is the provider's. Claude joins the
-        # running turn when a tool call is in progress and otherwise runs the
-        # message as the next turn, so the receipt must not promise either.
-        reason = (
-            "Claude decides where it lands: inside the running turn when a tool call is in "
-            "progress, otherwise as the next turn in this session. Either way it keeps the "
-            "running turn's capability and write scope."
-        )
+def _receipt(attempt: int, turn_id: str, status: str, reason: str | None) -> SteeringReceipt:
     return SteeringReceipt(
         attempt=attempt,
         turn_id=turn_id,
@@ -158,7 +146,6 @@ def begin_chat_steer(
             else None
         )
         receipt = _receipt(
-            current,
             attempt,
             expected_turn_id,
             "refused" if refusal else "unknown",
@@ -256,7 +243,7 @@ def finish_chat_steer(
             "unknown", "Provider acknowledgment was lost; this message will not be resent."
         )
     receipt = _receipt(
-        record, stored.steering.attempt, stored.steering.turn_id, result.status, result.reason
+        stored.steering.attempt, stored.steering.turn_id, result.status, result.reason
     )
     stored = stored.model_copy(update={"steering": receipt})
     with service.history.workspace.transaction():

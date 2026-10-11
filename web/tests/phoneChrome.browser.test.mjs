@@ -93,3 +93,55 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
     await server.close();
   }
 });
+
+test("a phone page never pans sideways and a tall dialog reaches its last control", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const viewport = { width: 390, height: 560 };
+    const page = await browser.newPage({ viewport, reducedMotion: "reduce" });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/stylesOnly.html`,
+    );
+    await page.waitForFunction(() => document.documentElement.dataset.stylesReady === "true");
+    await page.evaluate(() => {
+      document.body.innerHTML = `
+        <div class="app-shell"><main class="project-panel">
+          <div class="recommended-action"><strong>${"unbroken_identifier_".repeat(8)}</strong></div>
+        </main></div>
+        <div class="modal-backdrop"><section class="campaign-dialog">
+          <div style="height: 900px"></div>
+          <footer>
+            <button class="button">A long agent picker label</button>
+            <button class="button" id="cancel">Cancel</button>
+            <button class="button primary" id="last">Start auto-research</button>
+          </footer>
+        </section></div>`;
+    });
+    const panel = page.locator(".project-panel");
+    assert.equal(await panel.evaluate((element) => element.scrollWidth), viewport.width);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), viewport.width);
+    const word = await page.locator(".recommended-action strong").boundingBox();
+    assert.ok(word.x + word.width <= viewport.width);
+
+    await page.locator("#last").scrollIntoViewIfNeeded();
+    const last = await page.locator("#last").boundingBox();
+    assert.ok(last.y >= 0 && last.y + last.height <= viewport.height);
+    // Button labels wrap between words, never inside one.
+    const cancelLines = await page.locator("#cancel").evaluate((button) => {
+      const range = document.createRange();
+      range.selectNodeContents(button);
+      return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+    });
+    assert.equal(cancelLines, 1);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

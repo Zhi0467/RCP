@@ -25,6 +25,14 @@ import {
   type ViewerPlacement,
 } from "../artifacts/artifactViewerLayout";
 
+/** The layout viewport; iOS pinch zoom changes `innerWidth`/`innerHeight` but not this. */
+function layoutViewport(): Size {
+  const root = globalThis.document?.documentElement;
+  // Server rendering has a window shim and no document.
+  if (!root) return { width: window.innerWidth, height: window.innerHeight };
+  return { width: root.clientWidth, height: root.clientHeight };
+}
+
 let topFloatingZIndex = 110;
 
 interface Props {
@@ -66,7 +74,7 @@ export function DraggableWindow({
   const preferredSize = useRef<Size | null>(null);
   const [size, setSize] = useState<Size | null>(() => {
     if (!resizable) return null;
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const viewport = layoutViewport();
     let stored: Size | null = null;
     if (sizeStorageKey) {
       try {
@@ -79,7 +87,7 @@ export function DraggableWindow({
     return clampFloatingSize(preferredSize.current, viewport, minimumSize);
   });
   const [position, setPosition] = useState<Point>(() => {
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const viewport = layoutViewport();
     const initialSize = size ?? floatingWindowSize(kind, viewport);
     if (kind === "detail" && detailSlot) {
       return detailWindowSlotPosition(detailSlot, initialSize, viewport);
@@ -87,10 +95,7 @@ export function DraggableWindow({
     return clampFloatingPosition(defaultFloatingPosition(kind, viewport), initialSize, viewport);
   });
   const [zIndex, setZIndex] = useState(() => ++topFloatingZIndex);
-  const [viewport, setViewport] = useState(() => ({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  }));
+  const [viewport, setViewport] = useState(layoutViewport);
   const viewerDrag = useRef<{ placement: ViewerPlacement; pointer: Point } | null>(null);
   const viewerResize = useRef<{ placement: ViewerPlacement; x: number } | null>(null);
   // Pointer capture retargets the following dblclick to this root, so the handle
@@ -109,7 +114,7 @@ export function DraggableWindow({
     return clampFloatingPosition(
       next,
       nextSize ?? { width: bounds?.width ?? 0, height: bounds?.height ?? 0 },
-      { width: window.innerWidth, height: window.innerHeight },
+      layoutViewport(),
     );
   };
 
@@ -122,7 +127,7 @@ export function DraggableWindow({
         y: pointer.y - resize.current.pointer.y,
       },
       resize.current.corner,
-      { width: window.innerWidth, height: window.innerHeight },
+      layoutViewport(),
       minimumSize,
     );
     preferredSize.current = next.size;
@@ -139,7 +144,7 @@ export function DraggableWindow({
 
   useEffect(() => {
     const onResize = () => {
-      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      const viewport = layoutViewport();
       setViewport(viewport);
       const nextSize =
         resizable && preferredSize.current
@@ -185,7 +190,7 @@ export function DraggableWindow({
               top: panelRect.y,
               width: panelRect.width,
               height: panelRect.height,
-              maxHeight: "100vh",
+              maxHeight: "100dvh",
             }
           : {}),
       }}

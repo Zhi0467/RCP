@@ -776,9 +776,8 @@ test("ended orchestrator messages expose an editable continuation budget and ref
   };
   const html = renderEpisodes([ended]);
   assert.match(html, /type="number"[^>]*value="3"/);
-  assert.match(html, /data-continuation-turns="3" data-child-experiments="15"/);
   const forwarded = renderEpisodes([{ ...ended, message_requires_continuation: false }]);
-  assert.doesNotMatch(forwarded, /data-continuation-turns=/);
+  assert.doesNotMatch(forwarded, /aria-label="Message continuation turns"/);
   const refused = renderEpisodes([
     {
       ...ended,

@@ -33,7 +33,6 @@ const SERVICES: Record<
     kind: ServiceConnectionKind;
     preset: ServiceConnectionPreset | null;
     model: string;
-    keyPage: string | null;
   }
 > = {
   openai: {
@@ -41,28 +40,24 @@ const SERVICES: Record<
     kind: "openai_compatible",
     preset: "openai",
     model: "gpt-transcribe",
-    keyPage: "https://platform.openai.com/api-keys",
   },
   groq: {
     label: "Groq",
     kind: "openai_compatible",
     preset: "groq",
     model: "whisper-large-v3-turbo",
-    keyPage: "https://console.groq.com/keys",
   },
   gemini: {
     label: "Gemini",
     kind: "gemini",
     preset: null,
     model: "gemini-3.5-transcribe",
-    keyPage: "https://aistudio.google.com/apikey",
   },
   custom: {
     label: "Custom server",
     kind: "openai_compatible",
     preset: "custom",
     model: "",
-    keyPage: null,
   },
 };
 
@@ -72,6 +67,14 @@ const MODEL_ROLES = {
   thinking: { label: "Thinking model", hint: "Does the work you ask the voice agent for." },
   live: { label: "Live voice", hint: "The voice you talk to." },
 };
+
+/** ChatGPT's desktop dictation types into other apps only on macOS and Windows computers. */
+function chatgptDictationTypesHere(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (navigator.platform.startsWith("Win")) return true;
+  // iPadOS reports a Mac platform; touch points tell them apart.
+  return navigator.platform.startsWith("Mac") && navigator.maxTouchPoints <= 1;
+}
 
 function serviceChoice(connection: ServiceConnection): ServiceChoice {
   if (connection.kind === "gemini") return "gemini";
@@ -401,13 +404,13 @@ function ModelField({
     ? "Loading the provider's models…"
     : listError
       ? `${listError} Type a model id.`
-      : listed === null
-        ? "Models appear once the key is entered."
-        : "";
+      : "";
   return (
     <div className="service-model-field">
       <label>
-        {label}
+        <span className="service-model-title">
+          {label} <span>{hint}</span>
+        </span>
         {listed === null ? (
           <input
             type="text"
@@ -449,7 +452,7 @@ function ModelField({
           onChange={(event) => onChange(event.target.value)}
         />
       ) : null}
-      <p>{[hint, note].filter(Boolean).join(" ")}</p>
+      {note ? <p>{note}</p> : null}
     </div>
   );
 }
@@ -490,7 +493,6 @@ function ServiceCard({
     Boolean(address) &&
     (!dictation || Boolean(model.trim())) &&
     (!openai || (Boolean(delegation.trim()) && Boolean(live.trim())));
-  const destination = custom ? "the server at this address" : service.label;
   const close = () => {
     if (!busy) onClose();
   };
@@ -596,6 +598,13 @@ function ServiceCard({
           <h2 id={titleId}>{editing ? `Edit ${editing.label}` : "Connect a service"}</h2>
         </header>
         <div className="transcription-dialog-body">
+          {editing || !chatgptDictationTypesHere() ? null : (
+            <p className="transcription-dialog-tip">
+              No key needed if you have the ChatGPT desktop app: set a dictation shortcut in its
+              Settings, under Keyboard shortcuts, and dictate straight into RCP on your ChatGPT
+              plan.
+            </p>
+          )}
           {editing ? null : (
             <label>
               Service
@@ -652,13 +661,6 @@ function ServiceCard({
                   onChange={(event) => setKey(event.target.value)}
                 />
               </label>
-              {service.keyPage ? (
-                <p>
-                  <a href={service.keyPage} target="_blank" rel="noreferrer">
-                    Get an API key from {service.label}
-                  </a>
-                </p>
-              ) : null}
             </>
           )}
           {dictation ? (
@@ -688,14 +690,6 @@ function ServiceCard({
               />
             </>
           ) : null}
-          <p>
-            RCP keeps the key on its server and never shows it again.
-            {dictation
-              ? ` Dictation audio passes through RCP to ${destination} and is not stored.`
-              : ""}
-            {openai ? " Voice audio goes straight between this page and OpenAI." : ""} Saving checks
-            dictation with two short test clips{openai ? " and the voice models with OpenAI" : ""}.
-          </p>
         </div>
         {error ? (
           <div className="transcription-dialog-error" role="alert">

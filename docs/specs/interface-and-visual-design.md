@@ -57,6 +57,16 @@ Chat and coaching surfaces contain no sample prompts, slogans, instructional
 empty-state copy, or textarea placeholder text. An empty conversation is simply
 empty.
 
+## Phone layout
+
+At phone width every surface sticks to the screen edges like a native app. Text
+wraps, so no page or panel pans sideways; wide content such as code, tables, or
+the graph canvas scrolls inside its own box. Screen-height surfaces use the
+visible viewport (`dvh`), so nothing sits behind the browser toolbar. A dialog
+taller than the screen scrolls to its last control, and scrolling it never moves
+the page underneath. An open artifact fills the screen. Pinch zoom magnifies the
+page without resizing RCP's windows.
+
 ## Project shell
 
 The shell is intentionally bare: no RCP wordmark, product logo, or revision label
@@ -215,11 +225,11 @@ and is not addressing a running attempt, and every sent turn keeps an immutable
 visible mode label. A resumed task keeps its original mode regardless of the
 current composer setting.
 
-In the Agents workspace, a conversation has one header band: title and meta on
-the left, New session and repository scope on the right. The meta names the
-umbrella provider (`provider_label`, such as Claude or Codex), never its
-runtime; the task inspector keeps the runtime. It shows the latest turn's
-model and effort, and the chat kind. Neither the header nor an agent card
+In the Agents workspace, a conversation header has two rows: the title, then
+the agent picker beside New session and repository scope. There is no metadata
+row; the picker already names the umbrella provider (`provider_label`, such as
+Claude or Codex), model, and effort, and the task inspector keeps the runtime.
+Neither the header nor an agent card
 names Discuss or Work; each turn's own label already carries it. The agent list has no title
 band: a sidebar icon beside its search folds it, a folded list leaves that
 icon at the chat band's top left, and a hairline separates list from chat.
@@ -272,8 +282,8 @@ group: a tinted card, an accent border, a bold title, and a New pill. A failed
 or stopped turn that is unread stays in its own group. Search runs in the browser over what each card
 already holds: its name, node, chat kind, latest message, and every loaded
 turn's prompt, provider, model, effort, and repositories; every word must match.
-Chips filter to All or Working. Above the conversation, a header
-names the title, provider, model, effort, repository, and chat scope; a failed or stopped turn adds a banner
+Chips filter to All or Working. Above the conversation, the two-row header
+described above names the title and holds the agent picker; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
 The Agents tab opens on a **board**; a link that names a chat (Ask, a source-chat

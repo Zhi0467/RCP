@@ -68,8 +68,3 @@
 .artifact-viewer-file {
   padding: 20px;
 }
-
-.artifact-viewer-comment-guidance {
-  padding: 6px 10px;
-  font-size: var(--type-sm);
-}

@@ -7,7 +7,7 @@
   --landing-accent: var(--oxblood);
   background: var(--paper);
   color: var(--walnut);
-  min-height: 100vh;
+  min-height: 100dvh;
   overflow: auto;
 }
 .landing-header {

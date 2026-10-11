@@ -104,7 +104,9 @@ export function AgentConfigChip({
       disabled={disabled}
       onClick={onToggle}
     >
-      {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
+      <span className="agent-config-chip-text">
+        {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
+      </span>
       {readiness === undefined ? (
         <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
       ) : !launchProviderReady(project, value, workLike) ? (

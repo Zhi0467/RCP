@@ -563,6 +563,9 @@ test("viewer persists placement and follows an edit through publication and Undo
     await panel.getByRole("button", { name: "Undo" }).click();
     await page.frameLocator(".artifact-viewer iframe").getByText("1", { exact: true }).waitFor();
     await panel.getByRole("button", { name: "Undo" }).waitFor({ state: "detached" });
+    // A phone shows the viewer full screen, whatever its desktop placement.
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.deepEqual(await panel.boundingBox(), { x: 0, y: 0, width: 390, height: 844 });
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

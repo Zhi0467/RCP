@@ -514,7 +514,7 @@ export function AutoResearchEpisodeCard({
             >
               {messageContinues && (
                 <label className="campaign-reauthorize" style={{ gridColumn: "1 / -1" }}>
-                  Turns
+                  Add turns
                   <input
                     type="number"
                     min={1}
@@ -524,14 +524,6 @@ export function AutoResearchEpisodeCard({
                     disabled={anotherActionBusy || messageRefused || !episode.can_message}
                     onChange={(event) => setMessageTurns(event.target.value)}
                   />
-                  {messageTurnsValid && (
-                    <span
-                      data-continuation-turns={parsedMessageTurns}
-                      data-child-experiments={5 * parsedMessageTurns}
-                    >
-                      {parsedMessageTurns} turns · {5 * parsedMessageTurns} child Experiments
-                    </span>
-                  )}
                 </label>
               )}
               {episode.message_refusal && (
