@@ -27,7 +27,9 @@ import {
 
 /** The layout viewport; iOS pinch zoom changes `innerWidth`/`innerHeight` but not this. */
 function layoutViewport(): Size {
-  const root = document.documentElement;
+  const root = globalThis.document?.documentElement;
+  // Server rendering has a window shim and no document.
+  if (!root) return { width: window.innerWidth, height: window.innerHeight };
   return { width: root.clientWidth, height: root.clientHeight };
 }
 

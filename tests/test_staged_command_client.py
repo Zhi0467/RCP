@@ -2169,10 +2169,17 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
 
 
 @pytest.mark.parametrize(
-    ("status", "delivery"), [("unavailable", "unknown"), ("invalid", "not_sent")]
+    ("later", "exit_code", "printed"),
+    [
+        # Transport or admission failures: the earlier round's card stands.
+        ({"status": "unavailable", "result": {"delivery": "unknown"}}, 0, "pending"),
+        ({"status": "invalid", "result": {"delivery": "not_sent"}}, 0, "pending"),
+        # RCP's own refusal, such as an ended episode, is the outcome.
+        ({"status": "invalid", "message": "question_episode_ended"}, 1, "invalid"),
+    ],
 )
-def test_ask_later_round_failure_reports_the_pending_card(
-    tmp_path, monkeypatch, capsys, status, delivery
+def test_ask_later_round_failure_keeps_rcp_outcomes(
+    tmp_path, monkeypatch, capsys, later, exit_code, printed
 ) -> None:
     from rcp.agents import staged_command_client as client
 
@@ -2194,13 +2201,7 @@ def test_ask_later_round_failure_reports_the_pending_card(
                 "ask",
                 request_id,
             )
-        # A later round can fail (e.g. a backgrounded client lost its parent),
-        # but the first round already delivered the question.
-        return client._handle_response(
-            {"request_id": request_id, "status": status, "result": {"delivery": delivery}},
-            "ask",
-            request_id,
-        )
+        return client._handle_response({"request_id": request_id, **later}, "ask", request_id)
 
     monkeypatch.setattr(client, "_run_brokered", failed)
     assert (
@@ -2221,12 +2222,13 @@ def test_ask_later_round_failure_reports_the_pending_card(
                 "Proceed?",
             ]
         )
-        == 0
+        == exit_code
     )
-    assert json.loads(capsys.readouterr().out)["result"] == {
-        "state": "pending",
-        "question_id": "question",
-    }
+    output = json.loads(capsys.readouterr().out)
+    if printed == "pending":
+        assert output["result"] == {"state": "pending", "question_id": "question"}
+    else:
+        assert output["status"] == "invalid" and "state" not in output["result"]
 
 
 @pytest.mark.asyncio

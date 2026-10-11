@@ -566,10 +566,14 @@ def _run(namespace):
         if not isinstance(response, dict):
             if pending is None:
                 return response
-            if response == OK:  # a final state such as dismissed
+            printed = json.loads(captured.getvalue())
+            result = printed.get("result")
+            if not isinstance(result, dict) or "delivery" not in result:
+                # RCP's own outcome, such as dismissed or an ended episode.
                 sys.stdout.write(captured.getvalue())
-                return OK
-            failure = json.loads(captured.getvalue()).get("message")
+                return response
+            # This round never reached RCP's handler; the card is still there.
+            failure = printed.get("message")
             pending["message"] = (
                 "The question is on the human's card. This check for an answer failed: "
                 f"{failure} Repeat the exact same command, with the same key, in the "
