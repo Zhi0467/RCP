@@ -2058,9 +2058,6 @@
   margin: 0;
   padding: 0;
 }
-.browser-consent > p {
-  margin: 0;
-}
 .chat-options-menu {
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -2098,7 +2095,6 @@
   font-size: var(--type-xs);
   gap: 3px;
 }
-.chat-options-menu .browser-consent > p,
 .chat-option > p,
 .chat-browser-control > p {
   color: var(--muted);
