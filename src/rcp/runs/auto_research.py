@@ -83,6 +83,7 @@ class AutoResearchStartRequest(BaseModel):
     browser_requested: bool = False
     code_worktree: bool = False
     graph_isolation: Literal[True] = True
+    branch_name: str | None = None
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(default=None, max_length=16_000)
     provider: ProviderId | None = None
@@ -125,6 +126,7 @@ class AutoResearchRunRequest(BaseModel):
     browser_requested: bool = False
     code_worktree: bool = False
     graph_isolation: Literal[True] = True
+    branch_name: str | None = None
     role: AutoResearchActorRole
     provider: ProviderId | None = None
     run_truth_scope: list[str] | None = None

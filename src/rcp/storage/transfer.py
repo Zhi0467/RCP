@@ -259,6 +259,12 @@ class ProjectTransferStoreMixin(StoreMixinBase):
     def _project_transfer_record_schema_version_in_connection(
         connection: sqlite3.Connection, project_id: str
     ) -> int:
+        named = connection.execute(
+            "SELECT 1 FROM branch_name_reservations WHERE project_id = ? LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if named is not None:
+            return TRANSFER_RECORD_SCHEMA_VERSION
         archived = connection.execute(
             """
             SELECT 1 FROM episode_archives AS archive
@@ -273,7 +279,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             (project_id,),
         ).fetchone()
         if graph_archived is not None:
-            return TRANSFER_RECORD_SCHEMA_VERSION
+            return 3
         return 2 if archived is not None else 1
 
     def export_project_transfer_records(
@@ -301,6 +307,8 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         return TransferRecordBundle(
             schema_version=(
                 TRANSFER_RECORD_SCHEMA_VERSION
+                if any(episode.reserved_branch_names for episode in episodes)
+                else 3
                 if any(episode.graph_archived for episode in episodes)
                 else 2
                 if any(episode.archive is not None for episode in episodes)
@@ -780,8 +788,19 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             "WHERE project_id = ? AND owner_episode_id = ?",
             (row["project_id"], episode_id),
         ).fetchone()
+        branch_name = connection.execute(
+            "SELECT name FROM branch_names WHERE project_id = ? AND branch_id = ?",
+            (row["project_id"], episode_id),
+        ).fetchone()
+        reserved_branch_names = connection.execute(
+            "SELECT name FROM branch_name_reservations WHERE project_id = ? AND branch_id = ? "
+            "ORDER BY name",
+            (row["project_id"], episode_id),
+        ).fetchall()
         return TransferEpisodeRecord(
             episode_id=episode_id,
+            branch_name=branch_name[0] if branch_name else None,
+            reserved_branch_names=tuple(item[0] for item in reserved_branch_names),
             mode=row["mode"],
             control_node_id=row["control_node_id"],
             graph_target=TransferGraphTarget.model_validate_json(row["graph_target_json"]),
@@ -2288,6 +2307,18 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     ),
                 )
         for episode in records.episodes:
+            connection.executemany(
+                "INSERT INTO branch_name_reservations (project_id, branch_id, name) VALUES (?, ?, ?)",
+                (
+                    (records.project_id, episode.episode_id, name)
+                    for name in episode.reserved_branch_names
+                ),
+            )
+            if episode.branch_name is not None:
+                connection.execute(
+                    "INSERT INTO branch_names (project_id, branch_id, name) VALUES (?, ?, ?)",
+                    (records.project_id, episode.episode_id, episode.branch_name),
+                )
             if not episode.graph_archived:
                 continue
             # A graph-only binding: the source machine's worktree never transfers.

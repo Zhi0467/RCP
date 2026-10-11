@@ -10,6 +10,7 @@ from rcp.core.models import (
     EpisodeMergeAttempt,
     EpisodeUnfinishedJob,
 )
+from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.mixin_base import StoreMixinBase
 
 
@@ -76,7 +77,8 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
             )
             state = EpisodeIsolationState(owner_episode_id=binding.owner_episode_id)
             connection.execute(
-                "INSERT INTO episode_isolation_states VALUES (?, ?, ?)",
+                "INSERT INTO episode_isolation_states VALUES (?, ?, ?) "
+                "ON CONFLICT(project_id, owner_episode_id) DO NOTHING",
                 (project_id, binding.owner_episode_id, state.model_dump_json()),
             )
         return binding
@@ -99,6 +101,40 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
                 (project_id,),
             ).fetchall()
         return {str(row[0]): EpisodeIsolationState.model_validate_json(row[1]) for row in rows}
+
+    def set_branch_archived(
+        self, project_id: str, branch_id: str, *, archived: bool
+    ) -> EpisodeIsolationState:
+        """Change a branch label without touching its canonical history or merge state."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            root = connection.execute(
+                "SELECT graph_target_json, isolation_owner_episode_id FROM episodes "
+                "WHERE project_id = ? AND episode_id = ?",
+                (project_id, branch_id),
+            ).fetchone()
+            if root is None:
+                raise KeyError(branch_id)
+            target = GraphTargetRef.model_validate_json(root[0])
+            if target.kind != "branch" or target.branch_id != branch_id:
+                raise KeyError(branch_id)
+            owner_id = root[1] or branch_id
+            row = connection.execute(
+                "SELECT state_json FROM episode_isolation_states "
+                "WHERE project_id = ? AND owner_episode_id = ?",
+                (project_id, owner_id),
+            ).fetchone()
+            state = (
+                EpisodeIsolationState.model_validate_json(row[0])
+                if row
+                else EpisodeIsolationState(owner_episode_id=owner_id)
+            ).model_copy(update={"graph_archived": archived})
+            connection.execute(
+                "INSERT INTO episode_isolation_states VALUES (?, ?, ?) "
+                "ON CONFLICT(project_id, owner_episode_id) DO UPDATE SET state_json = excluded.state_json",
+                (project_id, owner_id, state.model_dump_json()),
+            )
+        return state
 
     def set_episode_isolation_status(
         self, project_id: str, owner_episode_id: str, *, expected_status: str, status: str
