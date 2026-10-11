@@ -318,8 +318,9 @@ exact attempt can receive input, its action label, and its disabled reason, usin
 the actual runtime, including a fallback to exec. The composer renders the action
 label as a hint and send-button label, or the unavailable reason while running.
 The mode toggle is disabled exactly while the composer addresses the running
-attempt, because a follow-up uses that attempt's captured mode; the toggle and
-send button show that mode, not the human's pick for the next turn. A turn that
+attempt, because a follow-up uses that attempt's captured mode. While steering,
+the toggle and send button show the running turn's mode; the mode the human
+picked for their next turn returns when the turn stops taking input. A turn that
 cannot receive input leaves the toggle available for the next ordinary turn.
 Episode workers cannot be steered; the human continues to message their orchestrator
 through the episode's ordinary mail path.

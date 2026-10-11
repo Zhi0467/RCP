@@ -455,9 +455,11 @@ retain that result; publication failures retain the answer. Every settled edit
 records its outcome, and the task projects `result.artifact_edit_outcome` as
 published, unchanged, failed with a reason code, or forked. The reply states
 each outcome except published, which shows itself as the new version. The
-prompt tells the agent, in every mode, that the staged path's final bytes become
-the next version, that a regenerated artifact must be written to that path, and
-that another file name is a separate artifact.
+prompt tells the agent, in every mode, that changing the file or making a new
+artifact is its judgement from the comments, in place when they correct or
+enrich the file; that the staged path's final bytes become the next version,
+including a regenerated artifact written there; and that a file under another
+name is a separate artifact.
 RCP reads it after settlement and publishes under the artifact lock only if the
 base is still current. If Undo moved the pointer, the edited bytes become an
 ordinary new artifact on that turn. Other files in the artifact directory are

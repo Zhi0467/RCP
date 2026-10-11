@@ -680,10 +680,15 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
         )
         if item.get("editable"):
             lines.append(
+                "  Whether to change this file or make a new artifact is your judgement from the "
+                "comments. When they correct or enrich this file, as most do, change it in place. "
+                "When they ask for something different alongside it, write a new file under "
+                "another name; that becomes a separate artifact and this one stays as it is."
+            )
+            lines.append(
                 "  The bytes at this exact staged path when the turn ends become the artifact's "
                 "next version. If you regenerate it, for example by running a script, write or "
-                "copy the final result to this exact path. A file under another name becomes "
-                "a separate artifact, not a new version."
+                "copy the final result to this exact path."
             )
         if item.get("edit_now"):
             lines.append("  The human asked for that in-place edit now, in this turn.")
