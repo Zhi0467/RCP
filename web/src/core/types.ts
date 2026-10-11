@@ -2257,12 +2257,22 @@ export interface AgentTaskResult {
   messages?: string[];
   artifacts?: AgentArtifactDescriptor[];
   artifact_omissions?: ArtifactOmissions;
+  artifact_edit_outcome?: ArtifactEditOutcome;
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
   [key: string]: unknown;
 }
 
 export type ArtifactView = "html" | "image" | "markdown" | "text" | "pdf" | "file";
+
+/** What a turn that carried artifact comments did to that artifact. */
+export interface ArtifactEditOutcome {
+  status: "published" | "unchanged" | "failed" | "forked";
+  artifact_id: string;
+  version_id?: string | null;
+  separate_artifact_id?: string | null;
+  reason?: "missing" | "type_changed" | "too_large" | "unverified" | null;
+}
 
 export interface ArtifactOmissions {
   count_limit?: number;

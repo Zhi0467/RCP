@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
 from rcp.runs.artifact_edit_admission import admit_artifact_edit, artifact_edit_availability
@@ -67,8 +68,14 @@ def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
             (kind, json.dumps(request), task.operation_id),
         )
     admitted = admit_artifact_edit(
-        store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
+        store,
+        app.state.service,
+        task.project_id,
+        _request(task, artifact, fresh=True).model_copy(
+            update={"mode": "work", "reasoning": "high"}
+        ),
     )
+    assert admitted.reasoning == task.request["reasoning"]
     assert admitted.artifact_edit.launch_kind == shape
     assert admitted.mode == "discuss"
     assert not admitted.artifact_edit.fresh_session
@@ -408,3 +415,178 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
     pointer |= {"source_artifact_id": artifact.artifact_id, "selections": [box]}
     queued, now = (_attachment_items([{**pointer, "edit_now": flag}]) for flag in (False, True))
     assert len(now.splitlines()) == len(queued.splitlines()) + 1
+
+
+@pytest.mark.parametrize("mode", ["discuss", "work"])
+def test_composer_edit_uses_current_chat_settings(edit_origin, monkeypatch, mode):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.html", b"<p>Original</p>")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ?, runtime_id = 'claude.stream-json.v1' "
+            "WHERE operation_id = ?",
+            (
+                json.dumps(
+                    {
+                        **task.request,
+                        "provider": "claude",
+                        "model": "origin-model",
+                        "reasoning": "low",
+                        "run_on": "unavailable-origin",
+                    }
+                ),
+                task.operation_id,
+            ),
+        )
+    started = []
+
+    def capture(project_id, kind, request, **kwargs):
+        started.append(request)
+        assert kwargs.get("stage_root") is None
+        assert kwargs.get("stage_host") is None
+        return task.model_copy(
+            update={
+                "operation_id": kwargs["operation_id"],
+                "request": request.model_dump(mode="json"),
+            }
+        )
+
+    monkeypatch.setattr(app.state.background_tasks, "start", capture)
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/tasks/project_chat",
+        json={
+            "chat_id": task.request["chat_id"],
+            "mode": mode,
+            "provider": "codex",
+            "model": "gpt-5.6-codex",
+            "reasoning": "high",
+            "run_on": "laptop",
+            "artifact_context": {
+                "operation_id": task.operation_id,
+                "artifact_id": artifact.artifact_id,
+                "selections": [{"kind": "text", "text": "Original", "comment": "Rewrite"}],
+            },
+        },
+    )
+    assert response.status_code == 202, response.text
+    (admitted,) = started
+    assert admitted.mode == mode
+    assert (admitted.provider, admitted.model, admitted.reasoning, admitted.run_on) == (
+        "codex",
+        "gpt-5.6-codex",
+        "high",
+        "laptop",
+    )
+    assert admitted.session_id is None  # Leave session resolution to the ordinary chat launcher.
+    assert not admitted.artifact_edit.origin_bound
+    assert admitted.artifact_edit.master_operation_id is None
+    assert (
+        admitted.artifact_edit.base_version == store.artifact(artifact.artifact_id).current_version
+    )
+    assert admitted.message == "Comment 1: Rewrite"
+
+
+def test_composer_refuses_another_chat_artifact(edit_origin):
+    app, _store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/tasks/project_chat",
+        json={**_request(task, artifact).model_dump(mode="json"), "chat_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 422
+    assert "another chat" in response.json()["detail"]
+
+
+def test_composer_work_edit_runs_graph_admission(edit_origin, monkeypatch):
+    app, _store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+
+    def reject(*_args):
+        raise HTTPException(status_code=409, detail="Graph merge in progress")
+
+    monkeypatch.setattr("rcp.api.tasks.require_graph_edit_admission", reject)
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/tasks/project_chat",
+        json={
+            **_request(task, artifact).model_dump(mode="json"),
+            "chat_id": task.request["chat_id"],
+            "mode": "work",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Graph merge in progress"
+
+
+def test_composer_experiment_edit_rejects_work_and_keeps_discuss_origin(edit_origin, monkeypatch):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
+            (json.dumps({**task.request, "patch_kind": "experiment_loop"}), task.operation_id),
+        )
+    started = []
+
+    def capture(project_id, kind, request, **kwargs):
+        assert kind == "artifact_edit"
+        started.append(request)
+        return task.model_copy(
+            update={
+                "operation_id": kwargs["operation_id"],
+                "request": request.model_dump(mode="json"),
+            }
+        )
+
+    monkeypatch.setattr(app.state.background_tasks, "start", capture)
+    client = signed_in_client(app)
+    body = {**_request(task, artifact).model_dump(mode="json"), "chat_id": task.request["chat_id"]}
+    url = f"/api/projects/{task.project_id}/tasks/project_chat"
+    response = client.post(url, json={**body, "mode": "work"})
+    assert response.status_code == 422
+    assert "Discuss" in response.json()["detail"]
+    response = client.post(url, json={**body, "mode": "discuss", "reasoning": "high"})
+    assert response.status_code == 202, response.text
+    (admitted,) = started
+    assert admitted.artifact_edit.launch_kind == "revoking"
+    assert admitted.session_id == task.native_session_id
+    assert admitted.reasoning == task.request["reasoning"]
+
+
+@pytest.mark.parametrize("previous_provider", ["codex", "claude"])
+def test_composer_edit_advances_current_chat_session(edit_origin, monkeypatch, previous_provider):
+    app, store, origin = edit_origin
+    artifact = _stored_artifact(app, origin.operation_id, "report.md", b"Original")
+    latest = _task(
+        store,
+        origin.project_id,
+        request={**origin.request, "provider": previous_provider},
+        native_session_id="latest-chat-session",
+        stage_root=origin.stage_root,
+    )
+    # Exercise real task admission/session binding without launching a provider.
+    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    client = signed_in_client(app)
+    url = f"/api/projects/{origin.project_id}/tasks/project_chat"
+    body = {
+        **_request(origin, artifact).model_dump(mode="json"),
+        "chat_id": origin.request["chat_id"],
+        "provider": "codex",
+        "run_on": "laptop",
+    }
+    response = client.post(url, json=body)
+    assert response.status_code == 202, response.text
+    edit = store.agent_task(response.json()["operation_id"])
+    expected = latest.native_session_id if previous_provider == "codex" else None
+    assert edit.request["session_id"] == expected
+    assert edit.native_session_id == expected
+    assert edit.dispatch_authority is not None
+    settled_session = expected or "edited-chat-session"
+    store.checkpoint_agent_task(
+        edit.operation_id, native_session_id=settled_session, stage_root=origin.stage_root
+    )
+    store.complete_agent_task(edit.operation_id, applied_revision=None, result={})
+    response = client.post(url, json={**body, "artifact_context": None, "message": "Continue"})
+    assert response.status_code == 202, response.text
+    following = store.agent_task(response.json()["operation_id"])
+    assert following.request["session_id"] == settled_session
+    assert following.request.get("artifact_edit") is None

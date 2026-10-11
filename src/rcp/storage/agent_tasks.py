@@ -107,6 +107,9 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "chat_session_resolution",
     # The latest discovery outcome is projected as the turn's omission notice.
     "artifact_discovery",
+    "artifact_edit_published",
+    "artifact_edit_publish_failed",
+    "artifact_edit_unchanged",
     "compute_command_started",
     "compute_command_result",
     "remote_provider_started",
@@ -298,7 +301,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or task.write_scope_fingerprint != origin.write_scope_fingerprint
                 or task.dispatch_authority is None
                 or task.dispatch_authority.task_contract != origin.capability
-                or task.request.get("artifact_edit") is not None
                 or task.request.get("mode")
                 != ("discuss" if origin.capability == "discuss" else "work")
                 or (
@@ -342,6 +344,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "attachment_batch_id": None,
                     "attachment_set_id": None,
                     "attachment_client_id": None,
+                    "artifact_context": None,
+                    "artifact_edit": None,
                     "watcher_ids": [],
                 }
             )
@@ -669,8 +673,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_child_turn_admission(
         self, connection: sqlite3.Connection, record: AgentTaskRecord
     ) -> None:
-        if record.kind not in {"node_chat", "project_chat"} or isinstance(
-            record.request.get("artifact_edit"), dict
+        if record.kind not in {"node_chat", "project_chat"} or (
+            isinstance(record.request.get("artifact_edit"), dict)
+            and record.dispatch_authority is None
         ):
             return
         chat_id = record.request.get("chat_id")
@@ -747,8 +752,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         the parent's Stop or ending fence.
         """
 
-        if previous.kind not in {"node_chat", "project_chat"} or isinstance(
-            previous.request.get("artifact_edit"), dict
+        if previous.kind not in {"node_chat", "project_chat"} or (
+            isinstance(previous.request.get("artifact_edit"), dict)
+            and previous.dispatch_authority is None
         ):
             return None
         chat_id = previous.request.get("chat_id")
@@ -798,7 +804,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self, connection: sqlite3.Connection, episode: EpisodeRecord
     ) -> None:
         rows = connection.execute(
-            "SELECT request_json FROM graph_runs WHERE project_id = ? "
+            "SELECT request_json, dispatch_authority_json FROM graph_runs WHERE project_id = ? "
             "AND graph_target_json = ? AND episode_id IS NULL "
             "AND kind IN ('node_chat', 'project_chat') "
             "AND status IN ('queued', 'running', 'pausing')",
@@ -807,7 +813,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
         for row in rows:
             request = json.loads(row["request_json"])
             chat_id = request.get("chat_id")
-            if isinstance(request.get("artifact_edit"), dict) or not isinstance(chat_id, str):
+            if (
+                isinstance(request.get("artifact_edit"), dict)
+                and row["dispatch_authority_json"] is None
+            ) or not isinstance(chat_id, str):
                 continue
             if self._child_chat_owner(connection, episode.project_id, chat_id) is not None:
                 raise ValueError(f"auto_research_child_turn_active:{chat_id}")
@@ -842,7 +851,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
-        elif not isinstance(record.request.get("artifact_edit"), dict):
+        elif record.dispatch_authority is not None or not isinstance(
+            record.request.get("artifact_edit"), dict
+        ):
             self.require_episode_binding_admission_open(
                 connection,
                 record.project_id,
@@ -1250,8 +1261,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
               AND native_session_id IS NOT NULL AND native_session_id != ''
-              -- An artifact edit runs on the artifact's own origin session.
-              AND json_extract(request_json, '$.artifact_edit') IS NULL
+              -- Origin-bound viewer edits do not advance the current chat session.
+              AND (json_extract(request_json, '$.artifact_edit') IS NULL
+                   OR dispatch_authority_json IS NOT NULL)
             ORDER BY created_at DESC, run.rowid DESC LIMIT 1
             """,
             (project_id, kind, chat_id),
@@ -3170,6 +3182,35 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 SELECT * FROM graph_run_receipts WHERE receipt_id IN (
                     SELECT MAX(receipt_id) FROM graph_run_receipts
                     WHERE operation_id IN ({placeholders}) AND category = 'artifact_discovery'
+                    GROUP BY operation_id
+                )
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                tuple(operation_ids),
+            ).fetchall()
+        receipts = {}
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipt = AgentTaskReceiptRecord.model_validate(data)
+            receipts[receipt.operation_id] = receipt
+        return receipts
+
+    def agent_task_artifact_edit_outcomes(
+        self, operation_ids: Sequence[str]
+    ) -> dict[str, AgentTaskReceiptRecord]:
+        """Read each edit operation's latest outcome in one query."""
+        if not operation_ids:
+            return {}
+        placeholders = ",".join("?" for _ in operation_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM graph_run_receipts WHERE receipt_id IN (
+                    SELECT MAX(receipt_id) FROM graph_run_receipts
+                    WHERE operation_id IN ({placeholders}) AND category IN (
+                        'artifact_edit_published', 'artifact_edit_publish_failed',
+                        'artifact_edit_unchanged'
+                    )
                     GROUP BY operation_id
                 )
                 """,  # noqa: S608 - placeholders are generated, never caller text

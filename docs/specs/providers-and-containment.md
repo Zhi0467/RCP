@@ -36,7 +36,9 @@ Capabilities are fixed in code:
 - **Artifact edit** revokes the retained operational contract and uses Discuss
   capability with writable scratch only. Its admitted request fixes the exact
   session, stage, version base, and reply destination; it carries no master or
-  operational commands. A chat-master artifact instead uses ordinary Discuss.
+  operational commands. A chat-master artifact commented from the viewer instead
+  uses ordinary Discuss; one commented from a chat composer is that chat's
+  ordinary Discuss or Work turn with the same capability as any other.
 - **Paper coach** is read-only and has no graph, draft-write, or Apply channel.
 
 The manifest and selected skills may choose execution details or add guidance;

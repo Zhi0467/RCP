@@ -53,6 +53,7 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
     _logical_chat_turn_operation_id,
+    artifact_edit_outcome,
     artifact_omissions,
 )
 from rcp.runs.chat_admission import admit_fresh_chat_turn
@@ -189,6 +190,7 @@ def _agent_task_response(
     degradations: Mapping[str, str] | None = None,
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
+    edit_outcomes: Mapping[str, AgentTaskReceiptRecord] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
@@ -228,6 +230,13 @@ def _agent_task_response(
     receipt = (discoveries or {}).get(record.operation_id)
     if receipt is not None:
         result["artifact_omissions"] = artifact_omissions(receipt)
+    edit = record.request.get("artifact_edit")
+    if isinstance(edit, dict) and isinstance(edit.get("operation_id"), str):
+        receipt = (edit_outcomes or {}).get(edit["operation_id"]) or (edit_outcomes or {}).get(
+            record.operation_id
+        )
+        if receipt is not None and isinstance(edit.get("artifact_id"), str):
+            result["artifact_edit_outcome"] = artifact_edit_outcome(receipt, edit["artifact_id"])
     if record.history_only or consolidation:
         graph_update = result.get("graph_update")
         if isinstance(graph_update, dict):
@@ -251,6 +260,18 @@ def _agent_task_response(
         )
     result["artifacts"] = projected
     return response
+
+
+def _artifact_edit_operation_ids(records: list[AgentTaskRecord]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            operation_id
+            for record in records
+            if isinstance(edit := record.request.get("artifact_edit"), dict)
+            and isinstance(edit.get("operation_id"), str)
+            for operation_id in (edit["operation_id"], record.operation_id)
+        )
+    )
 
 
 def _current_chat_session_id(
@@ -329,12 +350,6 @@ def start_agent_task(
             chat_admission_lock = None
             try:
                 request = _validated_task_request(service, kind, body)
-                if task_graph_capable(kind, request) and not (
-                    isinstance(request, RunRequest) and request.artifact_context is not None
-                ):
-                    require_graph_edit_admission(
-                        store, catalog.resolve_project_id(project_id), service.history.graph_target
-                    )
                 if isinstance(request, RunRequest):
                     request = _admit_artifact_context_request(
                         store,
@@ -342,6 +357,10 @@ def start_agent_task(
                         project_id,
                         kind,
                         request,
+                    )
+                if task_graph_capable(kind, request):
+                    require_graph_edit_admission(
+                        store, catalog.resolve_project_id(project_id), service.history.graph_target
                     )
 
                 if isinstance(request, RunRequest) and request.artifact_edit is not None:
@@ -355,7 +374,7 @@ def start_agent_task(
                 if (
                     kind in {"node_chat", "project_chat"}
                     and isinstance(request, RunRequest)
-                    and request.artifact_edit is None
+                    and (request.artifact_edit is None or not request.artifact_edit.origin_bound)
                 ):
                     assert request.chat_id is not None
                     chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
@@ -466,10 +485,11 @@ def agent_tasks(
     records = store.agent_tasks(project_id, graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
+    edit_outcomes = store.agent_task_artifact_edit_outcomes(_artifact_edit_operation_ids(records))
     chat_sessions: dict[tuple[str, str], str | None] = {}
     return [
         _agent_task_response(
-            store, record, background_tasks, degradations, discoveries, chat_sessions
+            store, record, background_tasks, degradations, discoveries, chat_sessions, edit_outcomes
         )
         for record in records
     ]
@@ -494,6 +514,9 @@ def agent_task(
         background_tasks,
         store.agent_task_degradations([operation_id]),
         store.agent_task_artifact_discoveries([operation_id]),
+        edit_outcomes=store.agent_task_artifact_edit_outcomes(
+            _artifact_edit_operation_ids([record])
+        ),
     )
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
@@ -1036,7 +1059,7 @@ def _chat_recovery_admission(
         RunRequest, previous.request, operation_id=previous.operation_id
     )
     assert isinstance(request, RunRequest)
-    if request.artifact_edit is not None:
+    if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         return nullcontext()
     return conversation_worktree_recovery_admission(service, store, previous.project_id, request)
 
@@ -1154,9 +1177,9 @@ def _admit_artifact_context_request(
         return request
     if kind not in {"node_chat", "project_chat"}:
         raise ValueError("Artifact comments require a conversation or artifact comment route.")
-    from rcp.runs.artifact_edit_admission import admit_artifact_edit
+    from rcp.runs.artifact_edit_admission import admit_chat_artifact_edit
 
-    return admit_artifact_edit(store, service, project_id, request)
+    return admit_chat_artifact_edit(store, service, project_id, request)
 
 
 def _validated_task_request(
@@ -1232,10 +1255,6 @@ def _validated_task_request(
         uuid.UUID(request.chat_id)
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
-    # Artifact-context admission resolves the chat's current execution profile.
-    # Do not first resolve stale settings from the currently open client.
-    if request.artifact_context is not None:
-        return request
     return _resolved_graph_request(service, kind, request)
 
 
@@ -1257,7 +1276,7 @@ def _validate_stored_task_request(
         resolved_coach = _resolved_coach_request(service, CoachRequest.model_validate(body))
         return service.resolve_skill_selection(resolved_coach)
     request = RunRequest.model_validate(body)
-    if request.artifact_edit is not None:
+    if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         return None
     if kind in {"seed", "refresh"}:
         service.history.require_writable()

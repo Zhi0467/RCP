@@ -721,7 +721,11 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "Use start_episode_report so the existing hidden allocation is preserved."
             )
-        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+        if (
+            isinstance(request, RunRequest)
+            and request.artifact_edit is not None
+            and request.artifact_edit.origin_bound
+        ):
             from rcp.runs.artifact_edit_admission import start_artifact_edit
 
             return start_artifact_edit(self, project_id, request, authorized_by=authorized_by)
@@ -788,7 +792,11 @@ class BackgroundAgentTasks:
                 "Retry it instead."
             )
         original = self._request_from_record(previous)
-        if isinstance(original, RunRequest) and original.artifact_edit is not None:
+        if (
+            isinstance(original, RunRequest)
+            and original.artifact_edit is not None
+            and original.artifact_edit.origin_bound
+        ):
             from rcp.runs.artifact_edit_admission import start_artifact_edit
 
             return start_artifact_edit(
@@ -843,7 +851,11 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
-        if isinstance(original, RunRequest) and original.artifact_edit is not None:
+        if (
+            isinstance(original, RunRequest)
+            and original.artifact_edit is not None
+            and original.artifact_edit.origin_bound
+        ):
             from rcp.runs.artifact_edit_admission import start_artifact_edit
 
             if any(
@@ -1777,7 +1789,11 @@ class BackgroundAgentTasks:
         if record.write_scope_fingerprint is not None:
             raise ValueError("A queued admitted task cannot already carry a write-scope binding.")
 
-        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+        if (
+            isinstance(request, RunRequest)
+            and request.artifact_edit is not None
+            and request.artifact_edit.origin_bound
+        ):
             from rcp.runs.artifact_edit_admission import validate_artifact_edit_launch
 
             validate_artifact_edit_launch(record, request, parent=parent)

@@ -58,6 +58,7 @@ from rcp.limits import (
 )
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
+from rcp.regular_file_reader import RegularFileTooLargeError
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
@@ -1129,6 +1130,7 @@ def stage_artifact_context(
                             edit.source_name,
                             max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
                         )
+                    pointer["editable"] = True
                     return StagedArtifactContext(
                         pointer=pointer, protected_write_paths=protected_write_paths
                     )
@@ -1218,6 +1220,7 @@ def stage_artifact_context(
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
         "edit_now": context.edit_now,
+        "editable": edit is not None,
         "selections": [
             {
                 **item.model_dump(mode="json"),
@@ -1314,8 +1317,13 @@ def finalize_artifact_edit(
     published = next(
         (
             receipt
-            for receipt in execution.store.agent_task_receipts(edit.operation_id)
-            if receipt.category == "artifact_edit_published"
+            for receipt in reversed(execution.store.agent_task_receipts(edit.operation_id))
+            if receipt.category
+            in {
+                "artifact_edit_published",
+                "artifact_edit_unchanged",
+                "artifact_edit_publish_failed",
+            }
         ),
         None,
     )
@@ -1326,6 +1334,7 @@ def finalize_artifact_edit(
             if descriptor
             else artifacts
         )
+    failure_reason = "unverified"
     try:
         if artifact_scope_id != edit.staged_scope_id:
             raise ValueError("The artifact edit staging scope changed.")
@@ -1353,18 +1362,33 @@ def finalize_artifact_edit(
         )
         media_type = classify_artifact_bytes(edit.source_name, data)
         if media_type != edit.media_type:
+            failure_reason = "type_changed"
             raise ValueError("The artifact edit changed its file type.")
     except (FileNotFoundError, ValueError) as exc:
         execution.store.record_agent_task_receipt(
-            execution.operation_id,
+            edit.operation_id,
             "artifact_edit_publish_failed",
-            {"error": str(exc)},
+            {
+                "artifact_id": edit.artifact_id,
+                "status": "failed",
+                "reason": "missing"
+                if isinstance(exc, FileNotFoundError)
+                else "too_large"
+                if isinstance(exc, RegularFileTooLargeError)
+                else failure_reason,
+            },
             tier="summary",
         )
         return artifacts
 
     base_sha256 = staged.payload.get("sha256") or staged.payload.get("pointer", {}).get("sha256")
     if hashlib.sha256(data).hexdigest() == base_sha256:
+        execution.store.record_agent_task_receipt(
+            edit.operation_id,
+            "artifact_edit_unchanged",
+            {"artifact_id": edit.artifact_id, "status": "unchanged"},
+            tier="summary",
+        )
         return artifacts
     try:
         version = execution.store.publish_artifact_version(
@@ -1373,11 +1397,11 @@ def finalize_artifact_edit(
             operation_id=edit.operation_id,
             data=data,
         )
-    except ArtifactByteLimitError as exc:
+    except ArtifactByteLimitError:
         execution.store.record_agent_task_receipt(
-            execution.operation_id,
+            edit.operation_id,
             "artifact_edit_publish_failed",
-            {"error": str(exc)},
+            {"artifact_id": edit.artifact_id, "status": "failed", "reason": "too_large"},
             tier="summary",
         )
         return artifacts
@@ -1410,6 +1434,7 @@ def finalize_artifact_edit(
             data=data,
         )
         forked = execution.store.artifact(descriptor.artifact_id)
+        assert forked is not None
         resolve_artifact_live_version(
             execution.store, service, forked.artifact_id, forked.current_version
         )
@@ -1417,7 +1442,9 @@ def finalize_artifact_edit(
             edit.operation_id,
             "artifact_edit_published",
             {
-                "artifact_id": forked.artifact_id,
+                "status": "forked",
+                "artifact_id": edit.artifact_id,
+                "separate_artifact_id": forked.artifact_id,
                 "descriptor": descriptor.model_dump(mode="json"),
             },
             tier="summary",
@@ -1435,6 +1462,7 @@ def finalize_artifact_edit(
         edit.operation_id,
         "artifact_edit_published",
         {
+            "status": "published",
             "artifact_id": edit.artifact_id,
             "version_id": version.version_id,
             "descriptor": descriptor.model_dump(mode="json"),
@@ -1442,6 +1470,39 @@ def finalize_artifact_edit(
         tier="summary",
     )
     return [*artifacts, descriptor]
+
+
+def artifact_edit_outcome(receipt: AgentTaskReceiptRecord, artifact_id: str) -> dict[str, object]:
+    """Project stable outcome codes, including receipts written before explicit statuses."""
+    payload = receipt.payload
+    status = payload.get("status")
+    separate_id = payload.get("separate_artifact_id")
+    if status not in {"published", "unchanged", "failed", "forked"}:
+        status = (
+            "unchanged"
+            if receipt.category == "artifact_edit_unchanged"
+            else "failed"
+            if receipt.category == "artifact_edit_publish_failed"
+            else "forked"
+            if payload.get("artifact_id") != artifact_id
+            else "published"
+        )
+        if status == "forked":
+            separate_id = payload.get("artifact_id")
+    reason = payload.get("reason")
+    return {
+        "status": status,
+        "artifact_id": artifact_id,
+        "version_id": payload.get("version_id") if status == "published" else None,
+        "separate_artifact_id": separate_id if status == "forked" else None,
+        "reason": (
+            reason
+            if reason in {"missing", "type_changed", "too_large", "unverified"}
+            else "unverified"
+        )
+        if status == "failed"
+        else None,
+    }
 
 
 def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]:

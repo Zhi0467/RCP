@@ -397,8 +397,10 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
             },
         },
     )
-    assert context_response.status_code == 409
-    assert context_response.json()["detail"]
+    # Composer admission uses the current chat, so origin history-only status
+    # does not mask ordinary comment validation.
+    assert context_response.status_code == 422
+    assert "comment needs text" in context_response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count
 
 

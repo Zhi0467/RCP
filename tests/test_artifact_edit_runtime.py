@@ -407,7 +407,9 @@ def test_unchanged_edit_does_not_publish_or_fork(manifest, tmp_path, undo):
     assert store.artifact_versions(source.artifact_id) == versions
 
 
-@pytest.mark.parametrize("damage", ["deleted", "type_changed", "byte_cap"])
+@pytest.mark.parametrize(
+    "damage", ["deleted", "type_changed", "byte_cap", "read_cap", "unverified"]
+)
 @pytest.mark.asyncio
 async def test_finalize_failure_preserves_answer(manifest, tmp_path, monkeypatch, damage):
     app, request, execution, source, workspace = _setup(manifest, tmp_path)
@@ -419,6 +421,11 @@ async def test_finalize_failure_preserves_answer(manifest, tmp_path, monkeypatch
                     target = workspace / "turns" / "edit" / "artifacts" / "chart.html"
                     if damage == "deleted":
                         target.unlink()
+                    elif damage == "read_cap":
+                        monkeypatch.setattr("rcp.runs.chat.CHAT_ARTIFACT_MAX_FILE_BYTES", 1)
+                    elif damage == "unverified":
+                        target.unlink()
+                        target.symlink_to(workspace / "absent")
                     elif damage == "byte_cap":
                         monkeypatch.setattr(
                             "rcp.storage.artifacts.ARTIFACT_MAX_VERSION_BYTES",
@@ -431,7 +438,17 @@ async def test_finalize_failure_preserves_answer(manifest, tmp_path, monkeypatch
     events = await _run(app, request, execution, DamagedEdit(), tmp_path)
     assert any(event.event == "answer" for event in events)
     assert events[-1].event == "done"
-    assert execution.store.agent_task_has_receipt("edit", "artifact_edit_publish_failed")
+    receipt = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    assert (
+        receipt.payload["reason"]
+        == {
+            "deleted": "missing",
+            "type_changed": "type_changed",
+            "byte_cap": "too_large",
+            "read_cap": "too_large",
+            "unverified": "unverified",
+        }[damage]
+    )
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
     assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
     if damage == "byte_cap":
@@ -631,3 +648,73 @@ def test_pointer_contract_without_receipt_recovers_on_new_execution(manifest, tm
     assert recovered.pointer == staged.pointer
     assert (directory / source.name).read_bytes() == b"<p>preserved</p>"
     assert execution.store.agent_task_has_receipt("edit", "artifact_edit_staged")
+
+
+@pytest.mark.parametrize(
+    "outcome,legacy",
+    [
+        ("published", False),
+        ("unchanged", False),
+        ("failed", False),
+        ("forked", False),
+        ("published", True),
+        ("failed", True),
+        ("forked", True),
+    ],
+)
+def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outcome, legacy):
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    store = execution.store
+    path = directory / source.name
+    if outcome == "failed":
+        path.unlink()
+    elif outcome != "unchanged":
+        path.write_bytes(b"<p>edited</p>")
+    if outcome == "forked":
+        store.undo_artifact(source.artifact_id)
+    artifacts = _finalize(app, request, execution, directory)
+    receipt = store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    assert receipt.payload["status"] == outcome
+    expected = {
+        "status": outcome,
+        "artifact_id": source.artifact_id,
+        "version_id": store.artifact(source.artifact_id).current_version
+        if outcome == "published"
+        else None,
+        "separate_artifact_id": artifacts[0].artifact_id if outcome == "forked" else None,
+        "reason": "unverified"
+        if legacy and outcome == "failed"
+        else "missing"
+        if outcome == "failed"
+        else None,
+    }
+    path.write_bytes(b"<p>changed after settlement</p>")
+    assert _finalize(app, request, execution, directory) == artifacts
+    assert store.agent_task_artifact_edit_outcomes(["edit"])["edit"] == receipt
+    if legacy:
+        payload = dict(receipt.payload)
+        payload.pop("status")
+        payload.pop("reason", None)
+        if outcome == "forked":
+            payload["artifact_id"] = payload.pop("separate_artifact_id")
+        store.record_agent_task_receipt("edit", receipt.category, payload, tier="summary")
+    store.complete_agent_task("edit", applied_revision=None, result={"artifacts": []})
+    # Retry tasks project the durable outcome of the original admitted edit too.
+    _edit_execution(execution, request, "retry", status="succeeded", result={"artifacts": []})
+    if legacy and outcome == "failed":
+        # Older failed retries wrote the outcome on the attempt, not the admitted edit.
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts WHERE operation_id = ? AND category = ?",
+                ("edit", receipt.category),
+            )
+        store.record_agent_task_receipt("retry", receipt.category, payload, tier="summary")
+    with signed_in_client(app) as client:
+        base = f"/api/projects/{app.state.default_project_id}/tasks"
+        records = client.get(base).json()
+        for operation_id in ("retry",) if legacy and outcome == "failed" else ("edit", "retry"):
+            detail = client.get(f"{base}/{operation_id}")
+            assert detail.status_code == 200
+            assert detail.json()["result"]["artifact_edit_outcome"] == expected
+            listed = next(record for record in records if record["operation_id"] == operation_id)
+            assert listed["result"]["artifact_edit_outcome"] == expected

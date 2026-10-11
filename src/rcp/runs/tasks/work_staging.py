@@ -32,6 +32,7 @@ from rcp.runs.chat import (
     _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    prepare_artifact_edit_directory,
 )
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import PatchValidationBudget
@@ -211,14 +212,22 @@ async def stage_work_turn(
         )
         handoff = prepare_handoffs(layout)
         artifact_scope_id = (
-            _logical_chat_turn_operation_id(execution.store, execution.operation_id)
+            request.artifact_edit.staged_scope_id
+            if request.artifact_edit is not None
+            else _logical_chat_turn_operation_id(execution.store, execution.operation_id)
             if execution is not None and resuming
             else execution.operation_id
             if execution is not None
             else str(uuid.uuid4())
         )
-        if remote_stage is not None:
-            artifact_directory: Path | PurePosixPath = remote_stage.prepare_artifact_directory(
+        artifact_directory: Path | PurePosixPath
+        if request.artifact_edit is not None:
+            assert execution is not None
+            artifact_directory = prepare_artifact_edit_directory(
+                request, execution, workspace, remote_stage
+            )
+        elif remote_stage is not None:
+            artifact_directory = remote_stage.prepare_artifact_directory(
                 artifact_scope_id,
                 reuse=resuming,
             )

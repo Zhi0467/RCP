@@ -140,7 +140,6 @@ def discuss_ask_authorized(execution: AgentTaskExecution | None) -> bool:
         and authority.scope.patch_kind is None
         and authority.scope.chat_id
         and task.request.get("mode") == "discuss"
-        and task.request.get("artifact_edit") is None
         and task.authorized_by is not None
         and task.episode_id is None
         and task.write_scope_fingerprint is None

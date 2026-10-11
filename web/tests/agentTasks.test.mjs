@@ -14,6 +14,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   versionedArtifactContentUrl,
+  taskArtifactEditOutcome,
   taskArtifactOmissions,
   taskArtifacts,
 } from "../src/agents/agentTasks.ts";
@@ -747,6 +748,26 @@ test("omissions retain only known nonnegative integer counts and a boolean failu
     { discovery_failed: false, empty: 0 },
   ]) {
     assert.equal(taskArtifactOmissions(task({ result: { artifact_omissions: value } })), undefined);
+  }
+});
+
+test("an artifact edit outcome reaches the reply only when no new version shows it", () => {
+  const outcome = (status) => ({ status, artifact_id: "a1" });
+  for (const status of ["unchanged", "failed", "forked"]) {
+    const lines = reconstructTaskTranscript([
+      task({
+        operation_id: status,
+        request: {},
+        result: { messages: ["Done"], artifact_edit_outcome: outcome(status) },
+      }),
+    ]);
+    assert.equal(lines.at(-1).artifactEditOutcome.status, status);
+  }
+  for (const value of [outcome("published"), outcome("other"), null]) {
+    assert.equal(
+      taskArtifactEditOutcome(task({ result: { artifact_edit_outcome: value } })),
+      undefined,
+    );
   }
 });
 

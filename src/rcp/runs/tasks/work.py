@@ -83,6 +83,7 @@ from rcp.runs.chat import (
     chat_master_label,
     chat_master_owner,
     chat_prompt_values,
+    finalize_artifact_edit,
     stage_artifact_context,
 )
 from rcp.runs.consolidation import (
@@ -2190,6 +2191,8 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     caller knows the rest of the finalization is not owed.
     """
 
+    if turn.request.artifact_edit is not None and (turn.outcome.failed or turn.outcome.paused):
+        return []
     retained_answer = _retained_primary_answer(turn)
     answer = (
         retained_answer
@@ -2255,7 +2258,15 @@ def _finalize_work_artifacts(
                 detail=str(exc),
             )
         artifacts = []
-    return artifacts
+    return finalize_artifact_edit(
+        turn.request,
+        turn.execution,
+        artifact_scope_id=turn.artifact_scope_id,
+        artifact_directory=Path(str(turn.artifact_directory)),
+        remote_stage=turn.remote_stage,
+        artifacts=artifacts,
+        service=turn.service,
+    )
 
 
 async def finalize_work_result(

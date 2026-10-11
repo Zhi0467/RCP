@@ -51,6 +51,10 @@ for (const [actionLabel, receiptLabel] of [
         };
         await route.fulfill({ json: receipt });
       });
+      // The human last picked Work; the running turn is Discuss.
+      await page.addInitScript(() =>
+        localStorage.setItem("rcp:chat-mode:project:steering-chat", "work"),
+      );
       await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/liveSteering.html`);
       await page.evaluate(
         (label) => window.setSteeringFixture({ steer_action_label: label }),
@@ -58,7 +62,8 @@ for (const [actionLabel, receiptLabel] of [
       );
       const composer = page.getByRole("textbox", { name: "Message", exact: true });
       const sendSteer = page.getByRole("button", { name: actionLabel, exact: true });
-      const startTurn = page.getByRole("button", { name: "Start Discuss turn", exact: true });
+      // Once the turn stops taking input, the next turn returns to the human's pick.
+      const startTurn = page.getByRole("button", { name: "Start Work turn", exact: true });
       await sendSteer.waitFor();
       // The running turn owns the ordinary composer: no separate steering control.
       assert.equal(await page.getByRole("form", { name: "Steer running turn" }).count(), 0);
@@ -71,6 +76,13 @@ for (const [actionLabel, receiptLabel] of [
       assert.equal(
         await page.getByRole("button", { name: "Work", exact: true }).isDisabled(),
         true,
+      );
+      // A follow-up joins the running turn, so the composer shows that turn's mode.
+      assert.equal(
+        await page
+          .getByRole("button", { name: "Discuss", exact: true })
+          .getAttribute("aria-pressed"),
+        "true",
       );
       await composer.press("Shift+Tab");
       assert.equal(

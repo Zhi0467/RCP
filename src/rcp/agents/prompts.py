@@ -678,6 +678,13 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             "  The human's message holds their comments on it, numbered as anchored below. "
             "Edit this file in place, keeping its name, when a comment needs a change."
         )
+        if item.get("editable"):
+            lines.append(
+                "  The bytes at this exact staged path when the turn ends become the artifact's "
+                "next version. If you regenerate it, for example by running a script, write or "
+                "copy the final result to this exact path. A file under another name becomes "
+                "a separate artifact, not a new version."
+            )
         if item.get("edit_now"):
             lines.append("  The human asked for that in-place edit now, in this turn.")
         selections = item.get("selections")

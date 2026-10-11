@@ -173,6 +173,7 @@ import {
 import { resolveRepositoryFileHref, turnArtifactName } from "../core/repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
+  ArtifactEditOutcome,
   AgentRunConfig,
   AgentTask,
   ChatMessage,
@@ -455,6 +456,8 @@ export function NodeChat({
   );
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
+  // A read-only chat composes only artifact comments, and those edit in Discuss.
+  const commentOnly = readOnly && Boolean(artifactContext);
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
   const [annotationViewport, setAnnotationViewport] =
@@ -659,7 +662,9 @@ export function NodeChat({
     sessionId,
     config.provider,
   );
-  const mode = artifactContext ? "discuss" : modeState.value;
+  // A follow-up joins the running turn, so the composer shows that turn's mode.
+  const steeringMode = steeringTask ? parseConversationMode(steeringTask.request.mode) : null;
+  const mode = commentOnly ? "discuss" : (steeringMode ?? modeState.value);
   modeRef.current = mode;
   // A Work turn also needs the provider's Work probe; Discuss does not.
   const providerReady = launchProviderReady(project, config, mode === "work");
@@ -960,12 +965,12 @@ export function NodeChat({
     // A follow-up inherits the running turn's capability, so the toggle would
     // describe something it cannot change. While a turn merely runs unsteerable,
     // the choice still belongs to the next turn and stays available.
-    if (steeringTask || artifactContext) return;
+    if (steeringTask || commentOnly) return;
     selectMode(toggleConversationMode(modeRef.current));
-  }, [steeringTask, artifactContext, selectMode]);
+  }, [steeringTask, commentOnly, selectMode]);
 
   useEffect(() => {
-    if (presentation !== "workspace" || readOnly || artifactContext) return;
+    if (presentation !== "workspace" || readOnly) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
       if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
@@ -974,11 +979,11 @@ export function NodeChat({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [presentation, readOnly, artifactContext, toggleMode]);
+  }, [presentation, readOnly, toggleMode]);
 
   const updateMessage = (next: string) => {
     if (readOnly) return;
-    if (next && !modeState.pinned && !artifactContext) {
+    if (next && !modeState.pinned && !commentOnly) {
       writeStorage(modeKey, mode);
       setModeState({ value: mode, pinned: true });
     }
@@ -1246,7 +1251,7 @@ export function NodeChat({
     const start = textarea?.selectionStart ?? message.length;
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
-    if (!artifactContext) {
+    if (!commentOnly) {
       writeStorage(modeKey, mode);
       setModeState({ value: mode, pinned: true });
     }
@@ -1920,7 +1925,7 @@ export function NodeChat({
       removeSessionStorage(annotationsKey);
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
-      if (!artifactContext) selectMode(mode);
+      if (!commentOnly) selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       setMessage((current) => (current ? current : draftMessage));
@@ -2615,6 +2620,11 @@ export function NodeChat({
                         .join("; ")}`}
                 </p>
               )}
+              {line.artifactEditOutcome && (
+                <p className="chat-artifact-omissions" role="status">
+                  {artifactEditOutcomeText(line.artifactEditOutcome, line.artifacts ?? [])}
+                </p>
+              )}
               {line.role === "agent" && line.graphUpdate && (
                 <GraphUpdateReceipt
                   update={line.graphUpdate}
@@ -2869,7 +2879,7 @@ export function NodeChat({
             }}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
-              if (!artifactContext && isConversationModeShortcut(event.key, event.shiftKey)) {
+              if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
                 if (presentation !== "workspace") {
                   event.preventDefault();
                   toggleMode();
@@ -2941,7 +2951,7 @@ export function NodeChat({
                   />
                 )}
               </div>
-              {!artifactContext && (
+              {!commentOnly && (
                 <>
                   <div
                     className="segmented chat-mode-toggle"
@@ -3007,7 +3017,7 @@ export function NodeChat({
                     disabled={readOnly}
                     onRequestedChange={setBrowserOn}
                   />
-                  {!artifactContext && (
+                  {!commentOnly && (
                     <WorktreeChooser
                       state={worktree.state}
                       chosen={worktree.chosen}
@@ -3199,6 +3209,7 @@ export function NodeChat({
               ref={selectionCommentRef}
               type="button"
               className="chat-selection-comment"
+              data-mode={mode}
               style={{ left: selectionComment.position.left, top: selectionComment.position.top }}
               disabled={submitting}
               // Keep the selection while pressing, so the staged text is what was shown.
@@ -3220,6 +3231,7 @@ export function NodeChat({
             <form
               ref={annotationComposerRef}
               className="chat-annotation-composer"
+              data-mode={mode}
               aria-label={
                 annotationComposer.step === "select" ? "Select answer text" : "Add annotation"
               }
@@ -3489,6 +3501,28 @@ function GraphUpdateReceipt({
       )}
     </div>
   );
+}
+
+const ARTIFACT_EDIT_FAILURES: Record<NonNullable<ArtifactEditOutcome["reason"]>, string> = {
+  missing: "the file was removed",
+  type_changed: "the file type changed",
+  too_large: "the file is too large",
+  unverified: "the edited file could not be verified",
+};
+
+/** Say why a commented artifact has no new version under this reply. */
+function artifactEditOutcomeText(
+  outcome: ArtifactEditOutcome,
+  artifacts: AgentArtifactDescriptor[],
+): string {
+  if (outcome.status === "forked")
+    return "The artifact changed during this turn, so the edit was saved as a separate artifact.";
+  if (outcome.status === "failed")
+    return `Edit not published: ${outcome.reason ? ARTIFACT_EDIT_FAILURES[outcome.reason] : "it could not be read"}. The current version is kept.`;
+  const separate = artifacts.filter((item) => item.artifact_id !== outcome.artifact_id);
+  return separate.length
+    ? `Not edited in place; the current version is kept. ${separate.map((item) => item.name).join(", ")} is a separate artifact.`
+    : "Not edited in place; the current version is kept.";
 }
 
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {

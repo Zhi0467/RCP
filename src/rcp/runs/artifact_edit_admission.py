@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from rcp.artifact_comments import supports_comments
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
@@ -66,7 +67,9 @@ def artifact_edit_availability(
     return ArtifactEditAvailability(reason is None, reason, fresh)
 
 
-def _launch_kind_for_master_owner(owner: AgentTaskRecord | None) -> str:
+def _launch_kind_for_master_owner(
+    owner: AgentTaskRecord | None,
+) -> Literal["discuss", "revoking"]:
     """The task that recorded a session's master is that master's owner.
 
     Its durable kind and patch kind say which contract the session holds; the
@@ -161,19 +164,9 @@ def artifact_comment_message(message: str | None, context: ArtifactContextReques
     return composed
 
 
-def admit_artifact_edit(
-    store: AppStore, service: ProjectService, project_id: str, request: RunRequest
-) -> RunRequest:
-    context = request.artifact_context
-    assert context is not None
-    if context.fresh_session:
-        exact = request.model_copy(
-            update={"artifact_context": context.model_copy(update={"fresh_session": False})}
-        )
-        try:
-            return admit_artifact_edit(store, service, project_id, exact)
-        except ArtifactFreshSessionRequired:
-            pass
+def _checked_artifact(
+    store: AppStore, service: ProjectService, project_id: str, context: ArtifactContextRequest
+) -> tuple[Artifact, AgentTaskRecord, str | None]:
     artifact = store.artifact(context.artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise ValueError("The artifact is unavailable.")
@@ -201,40 +194,105 @@ def admit_artifact_edit(
         "image/svg+xml",
     }:
         raise ValueError("This artifact supports a comment without selections.")
-    fresh = context.fresh_session
-    found, content = None, None
-    launch_kind = "revoking" if reply_episode_id else "discuss"
-    if not fresh:
-        found, content, launch_kind = _origin_master(store, project_id, origin, verify=True)
-    operation_id = str(uuid.uuid4())
+    return artifact, origin, reply_episode_id
+
+
+def _edit_version(store: AppStore, artifact: Artifact, context: ArtifactContextRequest) -> str:
     with store.artifact_lock(artifact.artifact_id):
-        artifact = store.artifact(artifact.artifact_id)
-        assert artifact is not None
-        if context.base_version is not None and context.base_version != artifact.current_version:
+        current = store.artifact(artifact.artifact_id)
+        assert current is not None
+        if context.base_version is not None and context.base_version != current.current_version:
             raise ValueError(
                 "This artifact changed to a new version after the parts were selected. "
                 "Select them again."
             )
-        # Prove the admitted version is readable before creating a task.
         store.read_artifact_bytes(artifact.artifact_id)
-        edit = ArtifactEditAdmission(
-            artifact_id=artifact.artifact_id,
-            base_version=artifact.current_version,
-            source_name=artifact.source_name,
-            media_type=artifact.media_type,
-            operation_id=operation_id,
-            staged_scope_id=operation_id,
-            origin_operation_id=origin.operation_id,
-            launch_kind=launch_kind,
-            master_operation_id=found[0] if found else None,
-            master_sha256=found[1] if found else None,
-            master_path=session_master_label("artifact-master", content) if content else None,
-            stage_host=origin.stage_host if not fresh else None,
-            stage_root=origin.stage_root if not fresh else None,
-            reply_episode_id=reply_episode_id,
-            episode_id=artifact.episode_id or origin.episode_id,
-            fresh_session=fresh,
+        return current.current_version
+
+
+def admit_chat_artifact_edit(
+    store: AppStore, service: ProjectService, project_id: str, request: RunRequest
+) -> RunRequest:
+    """Attach an edit to the current chat without borrowing the origin's session."""
+    context = request.artifact_context
+    assert context is not None
+    artifact, origin, _ = _checked_artifact(store, service, project_id, context)
+    if not request.chat_id or origin.request.get("chat_id") != request.chat_id:
+        raise ValueError("The artifact belongs to another chat.")
+    master = (
+        store.latest_session_master(project_id, origin.native_session_id)
+        if origin.native_session_id
+        else None
+    )
+    owner = store.agent_task(master[0]) if master else origin
+    revoking = owner is not None and (
+        owner.kind == "auto_research" or owner.request.get("patch_kind") == "experiment_loop"
+    )
+    if revoking:
+        if request.mode == "work":
+            raise ValueError(
+                "Artifacts from Experiment or orchestrator sessions can only be edited in Discuss."
+            )
+        return admit_artifact_edit(store, service, project_id, request)
+    operation_id = str(uuid.uuid4())
+    edit = ArtifactEditAdmission(
+        artifact_id=artifact.artifact_id,
+        base_version=_edit_version(store, artifact, context),
+        source_name=artifact.source_name,
+        media_type=artifact.media_type,
+        operation_id=operation_id,
+        staged_scope_id=operation_id,
+        origin_operation_id=origin.operation_id,
+        launch_kind="discuss",
+        episode_id=artifact.episode_id or origin.episode_id,
+    )
+    return request.model_copy(
+        update={
+            "artifact_edit": edit,
+            "message": artifact_comment_message(request.message, context),
+        }
+    )
+
+
+def admit_artifact_edit(
+    store: AppStore, service: ProjectService, project_id: str, request: RunRequest
+) -> RunRequest:
+    context = request.artifact_context
+    assert context is not None
+    if context.fresh_session:
+        exact = request.model_copy(
+            update={"artifact_context": context.model_copy(update={"fresh_session": False})}
         )
+        try:
+            return admit_artifact_edit(store, service, project_id, exact)
+        except ArtifactFreshSessionRequired:
+            pass
+    artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
+    fresh = context.fresh_session
+    found, content = None, None
+    launch_kind: Literal["discuss", "revoking"] = "revoking" if reply_episode_id else "discuss"
+    if not fresh:
+        found, content, launch_kind = _origin_master(store, project_id, origin, verify=True)
+    operation_id = str(uuid.uuid4())
+    base_version = _edit_version(store, artifact, context)
+    edit = ArtifactEditAdmission(
+        artifact_id=artifact.artifact_id,
+        base_version=base_version,
+        source_name=artifact.source_name,
+        media_type=artifact.media_type,
+        operation_id=operation_id,
+        staged_scope_id=operation_id,
+        origin_operation_id=origin.operation_id,
+        launch_kind=launch_kind,
+        master_operation_id=found[0] if found else None,
+        master_sha256=found[1] if found else None,
+        master_path=session_master_label("artifact-master", content) if content else None,
+        stage_host=origin.stage_host if not fresh else None,
+        stage_root=origin.stage_root if not fresh else None,
+        reply_episode_id=reply_episode_id,
+        episode_id=artifact.episode_id or origin.episode_id,
+        fresh_session=fresh,
+    )
     updates = {
         "message": artifact_comment_message(request.message, context),
         "artifact_edit": edit,

@@ -213,7 +213,8 @@ def test_discuss_resolves_only_ask(tmp_path):
     assert _discuss_execution_instructions(discuss_command_handler(None)) == ""
 
 
-def test_artifact_edit_discuss_has_no_ask(tmp_path):
+@pytest.mark.parametrize("origin_bound", [False, True])
+def test_artifact_edit_discuss_ask_follows_chat_authority(tmp_path, origin_bound):
     import json
 
     execution, _ = work_execution(tmp_path, mode="discuss")
@@ -226,7 +227,15 @@ def test_artifact_edit_discuss_has_no_ask(tmp_path):
             "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
             (json.dumps(request), task.operation_id),
         )
-    assert discuss_command_handler(execution).allowed_verbs == frozenset()
+    if origin_bound:
+        with execution.store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET dispatch_authority_json=NULL WHERE operation_id=?",
+                (task.operation_id,),
+            )
+    assert discuss_command_handler(execution).allowed_verbs == (
+        frozenset() if origin_bound else {"ask"}
+    )
 
 
 def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):

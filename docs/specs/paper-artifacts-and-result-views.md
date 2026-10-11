@@ -341,9 +341,12 @@ only while the loaded viewer state still does. A selection cancelled inside the 
 start of a new one) and leaving comment mode close that window. A new version of
 the artifact closes it as well and removes the comments already staged on the
 old version, with a notice, since their regions describe bytes the reader no
-longer sees. One message carries comments on one artifact. Comments still become
-ordinary Discuss turns of the artifact's origin chat, and the edit publishes the
-next version of the same artifact.
+longer sees. One message carries comments on one artifact. Sent from the chat
+composer, comments are that chat's next turn like any other: the composer's
+Discuss or Work mode, provider, model, effort, and machine apply. A read-only
+Auto-research child chat composes only comments, and those stay Discuss. In
+either mode, a change to the staged file publishes the next version of the same
+artifact.
 
 The Runs card's list comes from the run artifact endpoint described in
 [the API spec](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
@@ -414,12 +417,21 @@ question are bounded and treated as untrusted input.
 
 ### Editing and versions
 
-Comment admission records the current artifact version and the origin session's
-recorded master. A chat master, including a child Work boundary, receives an
-ordinary Discuss turn. An Experiment or orchestrator master receives a separate
-revoking artifact-edit task with no master, graph contract, watcher commands,
-or repository write authority. Admission decides this once; prompt construction
-uses the frozen decision. Comments never become Work turns.
+Every comment admission records the artifact, its current version, and a staged
+edit scope. The two routes differ only in whose turn it is.
+
+A comment from a chat composer is an ordinary turn of that chat, admitted only
+when the artifact belongs to that chat. Mode, execution profile, and session
+follow the composer exactly as for any turn, so a Work comment also passes graph
+edit admission and may carry compute and a worktree.
+
+A comment from the artifact viewer resumes the origin session's recorded master.
+A chat master, including a child Work boundary, receives an ordinary Discuss
+turn with the origin turn's execution profile. An Experiment or orchestrator
+master receives a separate revoking artifact-edit task with no master, graph
+contract, watcher commands, or repository write authority; a Work request for
+such an artifact is refused, never downgraded. Admission decides this once;
+prompt construction uses the frozen decision.
 
 Admission atomically reserves the native session and stage against every launch
 owner. A busy session returns 409 with its unavailable reason; comments are
@@ -439,7 +451,13 @@ and the open view has no routing authority.
 RCP stages the admitted base bytes at a writable file in turn scratch, preserving
 its filename. Recovery and Retry reuse that exact staged file and operation key.
 Unchanged bytes do not publish or fork. Once publication is recorded, retries
-retain that result; publication failures retain the answer and an error receipt.
+retain that result; publication failures retain the answer. Every settled edit
+records its outcome, and the task projects `result.artifact_edit_outcome` as
+published, unchanged, failed with a reason code, or forked. The reply states
+each outcome except published, which shows itself as the new version. The
+prompt tells the agent, in every mode, that the staged path's final bytes become
+the next version, that a regenerated artifact must be written to that path, and
+that another file name is a separate artifact.
 RCP reads it after settlement and publishes under the artifact lock only if the
 base is still current. If Undo moved the pointer, the edited bytes become an
 ordinary new artifact on that turn. Other files in the artifact directory are

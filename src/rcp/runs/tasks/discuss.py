@@ -620,7 +620,11 @@ async def stream_discuss_run(
                 if execution is not None
                 else None
             )
-            required_session_id = request.session_id if request.artifact_edit else None
+            required_session_id = (
+                request.session_id
+                if request.artifact_edit is not None and request.artifact_edit.origin_bound
+                else None
+            )
             if question is not None:
                 assert execution is not None
                 require_question_origin_binding(
@@ -836,7 +840,7 @@ async def stream_discuss_run(
                 workspace=str(workspace),
             )
             handler = discuss_command_handler(execution)
-            if request.artifact_edit is not None:
+            if request.artifact_edit is not None and request.artifact_edit.origin_bound:
                 handler = WorkCommandHandler(execution, None, frozenset())
             eligible = "ask" in handler.allowed_verbs
             retained = _retained_chat_patch_values(
@@ -895,7 +899,9 @@ async def stream_discuss_run(
             )
             # Keep multiline prose in one structured overlay value.
             discuss_values["discuss"] = {"execution_instructions": instructions.splitlines()}
-            if (resuming or retry_attempt) and request.artifact_edit is None:
+            if (resuming or retry_attempt) and (
+                request.artifact_edit is None or not request.artifact_edit.origin_bound
+            ):
                 assert request.message is not None
                 retry_diagnostics_path = (
                     _stage_json_task_input(

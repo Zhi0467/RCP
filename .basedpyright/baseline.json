@@ -3386,14 +3386,6 @@
                     "endColumn": 76,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/auto_research.py": [
@@ -3736,30 +3728,6 @@
                 "range": {
                     "startColumn": 24,
                     "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 45,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 65,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 49,
                     "lineCount": 1
                 }
             },

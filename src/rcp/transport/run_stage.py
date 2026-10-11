@@ -1083,13 +1083,14 @@ try:
         fd=os.open(part,flags,dir_fd=fd); fds.append(fd)
     file_fd=os.open(name,os.O_RDONLY|os.O_NONBLOCK|getattr(os,'O_NOFOLLOW',0),dir_fd=fd); fds.append(file_fd)
     info=os.fstat(file_fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(45)
+    if not stat.S_ISREG(info.st_mode): raise SystemExit(45)
+    if info.st_size>limit: raise SystemExit(47)
     remaining=limit+1
     while remaining:
         chunk=os.read(file_fd,min(1024*1024,remaining))
         if not chunk: break
         sys.stdout.buffer.write(chunk); remaining-=len(chunk)
-    if remaining==0: raise SystemExit(45)
+    if remaining==0: raise SystemExit(47)
 except FileNotFoundError as exc:
     print(str(exc),file=sys.stderr); raise SystemExit(44)
 except NotADirectoryError as exc:
@@ -1105,6 +1106,10 @@ finally:
         )
         if result.returncode == 44:
             raise FileNotFoundError("remote artifact is unavailable")
+        if result.returncode == 47:
+            from rcp.regular_file_reader import RegularFileTooLargeError
+
+            raise RegularFileTooLargeError("remote artifact exceeds the per-file limit")
         if result.returncode == 45:
             raise ValueError("remote artifact is not a bounded regular file")
         if result.returncode:
