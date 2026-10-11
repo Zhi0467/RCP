@@ -106,6 +106,12 @@
   font-weight: 550;
   margin: 0;
 }
+.auto-research-continue-title {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  white-space: nowrap;
+}
 .campaign-dialog-fields {
   display: grid;
   gap: 18px;

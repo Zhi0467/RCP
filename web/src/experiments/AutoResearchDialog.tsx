@@ -102,6 +102,7 @@ interface Props {
   ) => void;
   /** The server's branch-name refusal code from the last start, if any. */
   branchNameRefusal?: string | null;
+  branchNamesInUse?: readonly string[];
   /** On an Auto-research branch the dialog continues it instead of starting another. */
   continueBranch?: { name: string; episode: Episode } | null;
   /** Adds turns to an ended orchestrator without a message. */
@@ -124,6 +125,7 @@ export function AutoResearchDialog({
   onClose,
   onAuthorize,
   branchNameRefusal = null,
+  branchNamesInUse = [],
   continueBranch = null,
   onContinue,
   onSendMessage,
@@ -259,7 +261,7 @@ export function AutoResearchDialog({
           <span className="campaign-dialog-mark" aria-hidden="true">
             <Telescope size={20} />
           </span>
-          <h2 id={titleId}>
+          <h2 id={titleId} className={continueBranch ? "auto-research-continue-title" : undefined}>
             {continueBranch ? (
               <>
                 Continue <GitBranch size={16} aria-hidden="true" /> {continueBranch.name}
@@ -342,6 +344,7 @@ export function AutoResearchDialog({
                   value={branch}
                   disabled={busy}
                   refusal={branchNameRefusal}
+                  namesInUse={branchNamesInUse}
                   onChange={setBranch}
                 >
                   <label>

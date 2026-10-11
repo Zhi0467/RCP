@@ -110,6 +110,7 @@ interface Props {
   ) => void;
   /** The server's branch-name refusal code from the last Experiment start, if any. */
   experimentBranchNameRefusal?: string | null;
+  branchNamesInUse?: readonly string[];
   /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
   inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
@@ -188,6 +189,7 @@ export function DetailDrawer({
   project,
   onRunExperiment,
   experimentBranchNameRefusal = null,
+  branchNamesInUse = [],
   inheritedIsolation,
   onOpenChat,
   onOpenRelatedNode,
@@ -780,6 +782,7 @@ export function DetailDrawer({
                         value={experimentBranch}
                         disabled={nodeMutationDisabled || experimentRunBusy}
                         refusal={experimentBranchNameRefusal}
+                        namesInUse={branchNamesInUse}
                         onChange={setExperimentBranch}
                       >
                         {codeWorktreeToggle}

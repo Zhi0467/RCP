@@ -1049,6 +1049,10 @@ function MemberApp({
   } | null>(null);
   const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
   const graphTargetKey = graphSessionKey("", graphTarget);
+  const branchNamesInUse = useMemo(
+    () => (projectGraphRefs ?? []).map((ref) => ref.name),
+    [projectGraphRefs],
+  );
   // On an Auto-research branch the header button continues that branch.
   const continueBranch =
     activeBranchEpisode?.mode === "auto_research"
@@ -5767,6 +5771,7 @@ function MemberApp({
           <DetailDrawer
             key={`${slot}:${node.id}`}
             experimentBranchNameRefusal={experimentBranchRefusal}
+            branchNamesInUse={branchNamesInUse}
             node={node}
             projectId={project.id}
             graphTarget={graphTarget}
@@ -5951,6 +5956,7 @@ function MemberApp({
           )
         }
         branchNameRefusal={autoResearchBranchRefusal}
+        branchNamesInUse={branchNamesInUse}
         continueBranch={continueBranch}
         onContinue={requestEpisodeContinuation}
         onSendMessage={messageEpisodeOrchestrator}

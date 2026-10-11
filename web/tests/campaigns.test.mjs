@@ -125,7 +125,12 @@ test("the branch field warns only on a bad name and reads server refusals", asyn
   assert.equal(warns("loss-sweep"), false);
   assert.equal(warns("Loss"), true);
   assert.equal(warns("main"), true);
-  assert.equal(branchNamePlaceholder("experiment_loop", new Date(2026, 9, 3)), "experiment-oct-03");
+  const day = new Date(Date.UTC(2026, 9, 3, 12));
+  assert.equal(branchNamePlaceholder("experiment_loop", [], day), "experiment-oct-03");
+  assert.equal(
+    branchNamePlaceholder("auto_research", ["research-oct-03", "research-oct-03-2"], day),
+    "research-oct-03-3",
+  );
   const refusal = (status, code) => branchNameRefusal(new ApiError("x", status, { code }));
   assert.equal(refusal(409, "branch_name_taken"), "branch_name_taken");
   assert.equal(refusal(422, "branch_name_invalid"), "branch_name_invalid");

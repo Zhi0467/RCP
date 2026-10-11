@@ -11,9 +11,20 @@ const FALLBACK_PREFIX: Record<LaunchMode, string> = {
   experiment_loop: "experiment-",
 };
 
-/** The name a blank field gets from the server, for today's local date. */
-export function branchNamePlaceholder(mode: LaunchMode, now: Date = new Date()): string {
-  return `${FALLBACK_PREFIX[mode]}${MONTHS[now.getMonth()]}-${String(now.getDate()).padStart(2, "0")}`;
+/**
+ * The name a blank field gets from the server: today's UTC date, suffixed past
+ * names already in use. A renamed branch's old name is reserved server-side and
+ * not listed, so the server may still pick a higher suffix.
+ */
+export function branchNamePlaceholder(
+  mode: LaunchMode,
+  namesInUse: readonly string[] = [],
+  now: Date = new Date(),
+): string {
+  const base = `${FALLBACK_PREFIX[mode]}${MONTHS[now.getUTCMonth()]}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  let name = base;
+  for (let suffix = 2; namesInUse.includes(name); suffix += 1) name = `${base}-${suffix}`;
+  return name;
 }
 
 /** The server's branch-name refusal code, when a start failed on the name. */
@@ -38,6 +49,7 @@ export function BranchNameField({
   value,
   disabled = false,
   refusal = null,
+  namesInUse = [],
   onChange,
   children,
 }: {
@@ -47,6 +59,8 @@ export function BranchNameField({
   disabled?: boolean;
   /** A server refusal code from the last start; shown until the name changes. */
   refusal?: string | null;
+  /** Names of the project's branches, so the placeholder skips taken ones. */
+  namesInUse?: readonly string[];
   onChange: (value: string) => void;
   /** Controls that share the row, such as Code worktree. */
   children?: ReactNode;
@@ -72,7 +86,7 @@ export function BranchNameField({
           <input
             type="text"
             value={value}
-            placeholder={branchNamePlaceholder(mode)}
+            placeholder={branchNamePlaceholder(mode, namesInUse)}
             disabled={disabled}
             spellCheck={false}
             autoCapitalize="off"
