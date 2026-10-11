@@ -303,6 +303,11 @@ def test_branch_routes_reject_unknown_main_and_taken_name(manifest, tmp_path) ->
     response = harness.client.put(f"{path}/{branch_id}/name", json={"name": second_name})
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "branch_name_taken"
+    # A branch may take back a name it held before.
+    original = harness.store.branch_names(harness.project_id)[branch_id]
+    for name in ("interim-name", original):
+        response = harness.client.put(f"{path}/{branch_id}/name", json={"name": name})
+        assert response.status_code == 200, response.text
 
 
 def test_branch_mutations_require_project_membership(tmp_path) -> None:

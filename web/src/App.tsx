@@ -1063,9 +1063,10 @@ function MemberApp({
   // Episode changes move a branch's chain member or merge state; any turn on
   // the shown ref moves its head, which can also change its merge state.
   // Opening the picker also rereads it: task and question markers move without a revision.
-  const [graphRefsOpened, setGraphRefsOpened] = useState(0);
+  // A rename or archive rereads too, so an older in-flight read cannot restore the old label.
+  const [graphRefsReread, setGraphRefsReread] = useState(0);
   const graphRefsKey = JSON.stringify([
-    graphRefsOpened,
+    graphRefsReread,
     graph.revision,
     episodes.map((episode) => [episode.episode_id, episode.status, episode.graph_branch]),
   ]);
@@ -5130,8 +5131,9 @@ function MemberApp({
       projectId={project.id}
       compact={phone}
       onSelect={selectGraphRef}
-      onOpen={() => setGraphRefsOpened((value) => value + 1)}
-      onRefUpdated={(updated) =>
+      onOpen={() => setGraphRefsReread((value) => value + 1)}
+      onRefUpdated={(updated) => {
+        setGraphRefsReread((value) => value + 1);
         setGraphRefs((current) =>
           current?.projectId === project.id
             ? {
@@ -5142,8 +5144,8 @@ function MemberApp({
                   ) ?? null,
               }
             : current,
-        )
-      }
+        );
+      }}
     />
   );
   const trustFilter = showTrustFilter && (

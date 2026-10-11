@@ -141,8 +141,9 @@ class BranchNameStoreMixin(StoreMixinBase):
             if (
                 name in names.values()
                 or connection.execute(
-                    "SELECT 1 FROM branch_name_reservations WHERE project_id = ? AND name = ?",
-                    (project_id, name),
+                    "SELECT 1 FROM branch_name_reservations"
+                    " WHERE project_id = ? AND name = ? AND branch_id != ?",
+                    (project_id, name, branch_id),
                 ).fetchone()
                 is not None
             ):
@@ -153,7 +154,7 @@ class BranchNameStoreMixin(StoreMixinBase):
                 (project_id, names[branch_id], branch_id),
             )
             connection.execute(
-                "INSERT INTO branch_name_reservations VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO branch_name_reservations VALUES (?, ?, ?)",
                 (project_id, name, branch_id),
             )
             connection.execute(

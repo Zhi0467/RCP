@@ -806,7 +806,10 @@ test(
     assert.equal(state.mutations.length, 1);
     state.renameStatus = 200;
     await input.fill("renamed");
+    // A saved rename rereads the list, so an older in-flight read cannot restore the old name.
+    const reread = page.waitForRequest((request) => request.url().endsWith("/graph-refs"));
     await page.getByRole("button", { name: "Save branch name", exact: true }).click();
+    await reread;
     await row(page, "draft").getByRole("button", { name: "renamed", exact: true }).waitFor();
     assert.deepEqual(state.mutations.at(-1).body, { name: "renamed" });
     await page.getByRole("button", { name: "Rename renamed", exact: true }).click();
