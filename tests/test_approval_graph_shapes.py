@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.core.models import GraphState, Patch
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.report import ValidationReport
 
@@ -43,5 +43,5 @@ def test_connection_edit_does_not_allow_unrelated_or_ambiguous_approval_shapes(o
 
 def test_edge_approval_still_requires_human_authorship() -> None:
     patch = Patch(kind="approval", author="agent", summary="Claimed human action.", ops=[_CREATE])
-    report = validate_patch(GraphState(), patch, [])
+    report = validate_patch(GraphState(), patch, ValidationContext([]))
     assert "wrong-author" in {message.code for message in report.messages}

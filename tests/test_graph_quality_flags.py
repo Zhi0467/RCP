@@ -4,7 +4,7 @@ import pytest
 
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Edge, GraphState, Patch
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history import HistoryManager
 
@@ -43,7 +43,7 @@ def _state(*nodes: dict, edges: list[dict] | None = None) -> GraphState:
 
 
 def _flags(state: GraphState, patch: Patch):
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
     assert not report.rejected, report.messages
     flag_introduced_quality_issues(state, apply_valid_patch(state, patch), report, patch.revision)
     return report.flags
@@ -275,12 +275,14 @@ def test_rejected_partial_graph_and_historical_replay_get_no_new_advice() -> Non
             "edges": [{"source": "exp/missing", "target": "ev/result", "relation": "produces"}],
         },
     )
-    report = validate_patch(_state(), patch, ["repo-a"])
+    report = validate_patch(_state(), patch, ValidationContext(["repo-a"]))
     assert report.rejected
     assert not report.flags
 
     replay = validate_patch(
-        _state(), _patch({"op": "create_nodes", "nodes": [_evidence()]}), ["repo-a"], mode="replay"
+        _state(),
+        _patch({"op": "create_nodes", "nodes": [_evidence()]}),
+        ValidationContext(["repo-a"], mode="replay"),
     )
     assert not replay.rejected
     assert not replay.flags

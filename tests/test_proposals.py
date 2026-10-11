@@ -6,7 +6,7 @@ from rcp.config import load_manifest, write_project_scope
 from rcp.core.materialize import prepare_patch_bookkeeping
 from rcp.core.models import Patch
 from rcp.core.operations import adapt_persisted_patch_document, graph_operations_from_proposal
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
 from rcp.service import (
@@ -557,10 +557,7 @@ def test_historical_ontology_proposal_remains_replayable(manifest) -> None:
     patch = Patch.model_validate(adapt_persisted_patch_document(raw))
 
     report = validate_patch(
-        history.state(),
-        patch,
-        manifest.project.truth_scope,
-        mode="replay",
+        history.state(), patch, ValidationContext(manifest.project.truth_scope, mode="replay")
     )
 
     assert not report.rejected
@@ -579,10 +576,7 @@ def test_historical_non_evidence_belief_cause_remains_replayable(manifest) -> No
     patch = Patch.model_validate(raw)
 
     report = validate_patch(
-        history.state(),
-        patch,
-        manifest.project.truth_scope,
-        mode="replay",
+        history.state(), patch, ValidationContext(manifest.project.truth_scope, mode="replay")
     )
 
     assert not report.rejected
@@ -597,10 +591,7 @@ def test_replay_does_not_recheck_rcp_owned_proposal_base_revision(manifest) -> N
     patch = Patch.model_validate(raw)
 
     report = validate_patch(
-        history.state(),
-        patch,
-        manifest.project.truth_scope,
-        mode="replay",
+        history.state(), patch, ValidationContext(manifest.project.truth_scope, mode="replay")
     )
 
     assert not report.rejected

@@ -22,7 +22,7 @@ from rcp.core.models import (
 )
 from rcp.core.operations import graph_operation_from_proposal, graph_operations_from_proposal
 from rcp.core.research_md import render_research_md
-from rcp.core.validation import proposal_dependencies, validate_patch
+from rcp.core.validation import ValidationContext, proposal_dependencies, validate_patch
 from rcp.core.validation.proposals import proposal_is_stale
 from tests.helpers import proposal_operation
 
@@ -136,17 +136,19 @@ def test_legacy_evidence_defaults_unknown_on_replay_but_origin_is_explicit_on_ad
     }
     patch = _patch(1, [{"op": "create_nodes", "nodes": [raw]}])
 
-    admission = validate_patch(GraphState(), patch, ["repo"])
+    admission = validate_patch(GraphState(), patch, ValidationContext(["repo"]))
     assert "missing-evidence-origin" in _codes(admission)
 
-    replay = validate_patch(GraphState(), patch, ["repo"], mode="replay")
+    replay = validate_patch(GraphState(), patch, ValidationContext(["repo"], mode="replay"))
     assert not replay.rejected
-    result = materialize_patches([patch], ["repo"])
+    result = materialize_patches([patch], ValidationContext(["repo"]))
     assert result.state.nodes["ev/legacy"].origin == "unknown"
 
     explicit = raw | {"origin": "external_publication"}
     report = validate_patch(
-        GraphState(), _patch(1, [{"op": "create_nodes", "nodes": [explicit]}]), ["repo"]
+        GraphState(),
+        _patch(1, [{"op": "create_nodes", "nodes": [explicit]}]),
+        ValidationContext(["repo"]),
     )
     assert "missing-evidence-origin" not in _codes(report)
 
@@ -171,7 +173,9 @@ def test_hypothesis_scope_requires_deterministic_source_grounding(
         "source_refs": [_source(excerpt)],
     }
     report = validate_patch(
-        GraphState(), _patch(1, [{"op": "create_nodes", "nodes": [node]}]), ["repo"]
+        GraphState(),
+        _patch(1, [{"op": "create_nodes", "nodes": [node]}]),
+        ValidationContext(["repo"]),
     )
     assert ("ungrounded-hypothesis-scope" not in _codes(report)) is accepted
 
@@ -197,7 +201,7 @@ def test_direct_human_scope_edit_does_not_require_source_grounding() -> None:
         run_truth_scope=[],
         repositories_read=[],
     )
-    report = validate_patch(state, patch, ["repo"])
+    report = validate_patch(state, patch, ValidationContext(["repo"]))
     assert not report.rejected
     assert "ungrounded-hypothesis-scope" not in _codes(report)
 
@@ -231,7 +235,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
         relation="supports",
     )
     assert "invalid-belief-cause" not in _codes(
-        validate_patch(evidence_state, _approval_patch(evidence_ops), ["repo"])
+        validate_patch(evidence_state, _approval_patch(evidence_ops), ValidationContext(["repo"]))
     )
 
     decision_ops = [
@@ -255,7 +259,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
         question="Which method?",
     )
     assert "invalid-belief-cause" not in _codes(
-        validate_patch(decision_state, _approval_patch(decision_ops), ["repo"])
+        validate_patch(decision_state, _approval_patch(decision_ops), ValidationContext(["repo"]))
     )
 
     for cause in (
@@ -270,7 +274,7 @@ def test_all_belief_cause_kinds_validate_and_referents_are_checked() -> None:
             }
         ]
         assert "invalid-belief-cause" not in _codes(
-            validate_patch(_approval_state(ops), _approval_patch(ops), ["repo"])
+            validate_patch(_approval_state(ops), _approval_patch(ops), ValidationContext(["repo"]))
         )
 
     invalid = [
@@ -356,7 +360,7 @@ def test_same_patch_evidence_edge_can_cause_belief_change() -> None:
             },
         ],
     )
-    report = validate_patch(state, patch, ["repo"])
+    report = validate_patch(state, patch, ValidationContext(["repo"]))
     assert not report.rejected
 
 
@@ -408,8 +412,8 @@ def test_existing_decision_belief_cause_is_replay_only() -> None:
             }
         ],
     )
-    admission = validate_patch(state, patch, ["repo"])
-    replay = validate_patch(state, patch, ["repo"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo"], mode="replay"))
 
     assert admission.rejected
     assert any(message.code == "invalid-agent-proposal-shape" for message in admission.messages)
@@ -447,10 +451,10 @@ def test_every_belief_changing_operation_requires_human_authority(
             "hyp/other": _hypothesis().model_copy(update={"id": "hyp/other"}),
         },
     )
-    report = validate_patch(state, _patch(1, [operation]), ["repo"])
+    report = validate_patch(state, _patch(1, [operation]), ValidationContext(["repo"]))
     assert expected_code in _codes(report)
     assert expected_code not in _codes(
-        validate_patch(state, _patch(1, [operation]), ["repo"], mode="replay")
+        validate_patch(state, _patch(1, [operation]), ValidationContext(["repo"], mode="replay"))
     )
 
 
@@ -504,7 +508,7 @@ def test_relation_spec_covers_every_relation_flags_mismatches_and_serializes_lay
     )
     message = next(
         item
-        for item in validate_patch(GraphState(), patch, ["repo"]).messages
+        for item in validate_patch(GraphState(), patch, ValidationContext(["repo"])).messages
         if item.code == "relation-type-mismatch"
     )
     assert message.related_node_ids == ["rq/question", "hyp/answer"]
@@ -554,13 +558,13 @@ def test_authoring_rules_are_skipped_on_replay() -> None:
             },
         ],
     )
-    admission = validate_patch(GraphState(), patch, ["repo"])
+    admission = validate_patch(GraphState(), patch, ValidationContext(["repo"]))
     assert {
         "missing-evidence-origin",
         "ungrounded-hypothesis-scope",
         "relation-type-mismatch",
     } <= _codes(admission)
-    replay = validate_patch(GraphState(), patch, ["repo"], mode="replay")
+    replay = validate_patch(GraphState(), patch, ValidationContext(["repo"], mode="replay"))
     assert not replay.rejected
     assert not replay.flags
 
@@ -599,7 +603,7 @@ def test_rejected_admission_is_skipped_and_later_revision_applies() -> None:
             }
         ],
     )
-    result = materialize_patches([rejected, accepted], ["repo"])
+    result = materialize_patches([rejected, accepted], ValidationContext(["repo"]))
     assert result.state.revision == 2
     assert result.state.replay_status == "complete"
     assert "rq/accepted" in result.state.nodes
@@ -654,7 +658,7 @@ def test_structural_replay_failure_halts_without_cascade() -> None:
             }
         ],
     )
-    result = materialize_patches([first, corrupt, later], ["repo"])
+    result = materialize_patches([first, corrupt, later], ValidationContext(["repo"]))
     assert result.state.revision == 1
     assert result.state.replay_status == "degraded"
     assert result.state.replay_failure is not None
@@ -727,7 +731,7 @@ def test_belief_history_is_derived_from_accepted_patch_log() -> None:
         run_truth_scope=[],
         repositories_read=[],
     )
-    result = materialize_patches([create, propose, approve], ["repo"])
+    result = materialize_patches([create, propose, approve], ValidationContext(["repo"]))
     assert result.state.replay_status == "complete"
     assert result.state.nodes["hyp/main"].status == "active"
     assert [item.model_dump() for item in result.state.belief_transitions] == [
@@ -765,7 +769,7 @@ def test_experiment_attempts_remain_nested_records() -> None:
             }
         ],
     )
-    result = materialize_patches([patch], ["repo"])
+    result = materialize_patches([patch], ValidationContext(["repo"]))
     experiment = result.state.nodes["exp/run"]
     assert experiment.attempts[0].id == "attempt-1"
     assert set(result.state.nodes) == {"exp/run"}
@@ -795,7 +799,7 @@ def test_remove_nodes_keeps_a_dependent_proposal_pending_and_makes_it_stale() ->
     )
 
     assert proposal_dependencies(state, [proposal_op]) == (["hyp/main"], [], [])
-    assert not validate_patch(state, patch, ["repo"]).rejected
+    assert not validate_patch(state, patch, ValidationContext(["repo"])).rejected
 
     updated = apply_valid_operation(state, patch, operation)
     proposal = updated.proposals["prop/change-belief"]
@@ -822,7 +826,7 @@ def _layer_of(source: dict[str, object], target: dict[str, object], relation: st
             },
         ],
     )
-    state = materialize_patches([patch], ["repo"]).state
+    state = materialize_patches([patch], ValidationContext(["repo"])).state
     return state.edges[f"{source['id']}::{relation}::{target['id']}"].layer
 
 

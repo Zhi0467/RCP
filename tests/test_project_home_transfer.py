@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectHomeTransfer
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, ProjectIdentityConflict
 
 PROJECT_ID = "7c35b754-10e5-4bdd-8114-4ec35671437f"
@@ -326,12 +326,11 @@ def test_agents_cannot_author_or_attach_a_home_transfer(mode: str) -> None:
     authored = _transfer_patch(transfer).model_copy(update={"author": "agent", "producer": "agent"})
     ordinary = _ordinary_patch(["repo"]).model_copy(update={"project_home_transfer": transfer})
 
-    authored_report = validate_patch(GraphState(), authored, [], mode=mode)  # type: ignore[arg-type]
+    authored_report = validate_patch(GraphState(), authored, ValidationContext([], mode=mode))  # type: ignore[arg-type]
     ordinary_report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         ordinary,
-        ["repo"],
-        mode=mode,  # type: ignore[arg-type]
+        ValidationContext(["repo"], mode=mode),  # type: ignore[arg-type]
     )
 
     assert {"wrong-author", "wrong-producer"}.issubset(

@@ -15,7 +15,7 @@ from rcp.core.authority import (
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.transition_models import GraphTargetRef
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, build_revision_summaries
 from tests.helpers import refresh_patch, seated_on_every_project, seed_patch
 
@@ -593,9 +593,9 @@ def test_episode_id_is_inert_to_validation_and_apply_permission() -> None:
         report = validate_patch(
             GraphState(),
             patch,
-            ["repo-a"],
-            repository_aliases=["repo-a"],
-            default_run_truth_scope=["repo-a"],
+            ValidationContext(
+                ["repo-a"], repository_aliases=["repo-a"], default_run_truth_scope=["repo-a"]
+            ),
         )
         dispatch = require_apply(authority, patch, is_project_member=seated_on_every_project)
         verdicts.append(

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from rcp.core.models import Patch, Proposal
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.runs.branch_merge import branch_human_review_changes, branch_merge_review_proposal_id
 from rcp.service import ProposalDecisionRequest
 
@@ -504,7 +504,7 @@ def test_special_review_intents_are_rejected_outside_canonical_merge(review_bran
                 run_truth_scope=["repo-a"],
                 ops=[{"op": "create_proposals", "proposals": [proposal]}],
             ),
-            state.project_truth_scope,
+            ValidationContext(state.project_truth_scope),
         )
         assert report.rejected
 
@@ -712,7 +712,7 @@ def test_removed_accepted_ordinary_node_requires_main_review(review_branch, monk
                 run_truth_scope=["repo-a"],
                 ops=[operation],
             ),
-            state.project_truth_scope,
+            ValidationContext(state.project_truth_scope),
         )
         assert report.rejected
     _merge(

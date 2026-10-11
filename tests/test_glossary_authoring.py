@@ -15,6 +15,7 @@ from rcp.core.authority import (
 from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
 from rcp.core.models import Experiment, GraphBranchMetadata, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.validation import ValidationContext
 from rcp.core.validation.patch import validate_patch
 from rcp.history import HistoryManager
 from tests.helpers import fabricated_authorizer, seated_on_every_project
@@ -85,7 +86,9 @@ def test_experiment_loop_can_explain_project_terms_without_changing_control() ->
         },
     )
     patch = _definition_patch("Elastic weight consolidation.", kind="experiment_loop")
-    report = validate_patch(state, patch, ["repo-a"], experiment_control_node_id="exp/test")
+    report = validate_patch(
+        state, patch, ValidationContext(["repo-a"]), experiment_control_node_id="exp/test"
+    )
     assert not report.rejected, report.messages
 
 

@@ -58,7 +58,7 @@ from rcp.core.transitions import (
     accepted_transition_head_chain_failure,
     project_transition_projection,
 )
-from rcp.core.validation import ValidationReport, validate_patch
+from rcp.core.validation import ValidationReport, build_validation_context, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history.delta import (
     RefreshDelta,
@@ -1205,11 +1205,7 @@ class HistoryManager:
             report = validate_patch(
                 current.state,
                 identity_patch,
-                current.state.project_truth_scope,
-                repository_aliases=self.manifest.repository_map,
-                machine_aliases=self.manifest.machine_map,
-                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-                state_repository=self.manifest.state.repository,
+                build_validation_context(self.manifest, current.state),
             )
             candidate = (
                 apply_valid_patch(current.state, identity_patch) if not report.rejected else None
@@ -1252,11 +1248,7 @@ class HistoryManager:
             report = validate_patch(
                 validation_state,
                 patch,
-                validation_state.project_truth_scope,
-                repository_aliases=self.manifest.repository_map,
-                machine_aliases=self.manifest.machine_map,
-                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-                state_repository=self.manifest.state.repository,
+                build_validation_context(self.manifest, validation_state),
             )
             aggregate.messages.extend(report.messages)
             if report.rejected:
@@ -1803,11 +1795,11 @@ class HistoryManager:
         replayable_patches = [] if scope_failure is not None else chain_prefix
         result = materialize_patches(
             replayable_patches,
-            initial_truth_scope=list(initial_truth_scope),
-            repository_aliases=sorted(self.manifest.repository_map),
-            machine_aliases=sorted(self.manifest.machine_map),
-            default_run_truth_scope=list(self.manifest.agent.default_run_truth_scope),
-            state_repository=self.manifest.state.repository,
+            context=build_validation_context(
+                self.manifest,
+                GraphState(project_truth_scope=list(initial_truth_scope)),
+                mode="replay",
+            ),
             accepted_patch_observer=accepted_patch_observer,
         )
         structural_or_chain_failure = min(

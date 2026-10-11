@@ -36,6 +36,7 @@ from rcp.core.models import (
     ResearchQuestion,
 )
 from rcp.core.transition_models import GraphTargetRef
+from rcp.core.validation import ValidationContext
 from rcp.core.validation.patch import validate_patch
 
 from .helpers import fabricated_authorizer, seated_on_every_project
@@ -57,7 +58,7 @@ def _orchestrator_patch(*ops: dict, agent_action: str | None = None) -> Patch:
 
 
 def _report(state: GraphState, patch: Patch):
-    return validate_patch(state, patch, ["repo-a"])
+    return validate_patch(state, patch, ValidationContext(["repo-a"]))
 
 
 def _rejection_codes(state: GraphState, patch: Patch) -> set[str]:

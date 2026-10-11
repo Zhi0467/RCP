@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Patch
 from rcp.core.operations import adapt_persisted_patch_document, graph_operations_from_proposal
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.proposals import normalized_decision_proposal_ops, proposal_is_stale
 from rcp.history import HistoryManager
 from tests.helpers import seed_patch
@@ -193,7 +193,7 @@ def _state_with_second_hypothesis(manifest):
             ],
         }
     ).model_copy(update={"revision": state.revision + 1})
-    report = validate_patch(state, addition, ["repo-a", "repo-b"])
+    report = validate_patch(state, addition, ValidationContext(["repo-a", "repo-b"]))
     assert not report.rejected
     return apply_valid_patch(state, addition)
 
@@ -221,7 +221,7 @@ def test_ordinary_agent_cannot_edit_an_existing_research_question_directly(manif
             "rq/learning-after-shift", {"motivation": "Repeated shifts make this question urgent."}
         )
     )
-    report = validate_patch(history.state(), patch, ["repo-a"])
+    report = validate_patch(history.state(), patch, ValidationContext(["repo-a"]))
 
     node = history.state().nodes["rq/learning-after-shift"]
     assert report.rejected
@@ -240,7 +240,7 @@ def test_agent_cannot_decide_directly_or_by_proposal(manifest) -> None:
         _agent_patch(
             _update_node("dec/evaluation-rule", {"status": "decided", "selected_option": "matched"})
         ),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
     proposal_report = validate_patch(
         state,
@@ -251,7 +251,7 @@ def test_agent_cannot_decide_directly_or_by_proposal(manifest) -> None:
                 changes={"status": "decided", "selected_option": "matched"},
             )
         ),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
 
     assert direct_report.rejected
@@ -277,9 +277,11 @@ def test_belief_transition_still_requires_an_exact_proposal(manifest) -> None:
     direct_report = validate_patch(
         state,
         _agent_patch({"op": "update_nodes", "nodes": [direct_update]}),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
-    proposal_report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    proposal_report = validate_patch(
+        state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"])
+    )
 
     assert direct_report.rejected
     assert not proposal_report.rejected
@@ -336,7 +338,7 @@ def test_every_declared_protected_intent_is_admitted_as_one_human_question(manif
                 base_rev=state.revision,
             )
         )
-        report = validate_patch(state, patch, ["repo-a", "repo-b"])
+        report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
 
         assert not report.rejected, [message.message for message in report.messages]
 
@@ -351,7 +353,7 @@ def test_research_question_lifecycle_uses_content_change_without_evidence(manife
         base_rev=state.revision,
     )
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert not report.rejected
 
@@ -405,7 +407,7 @@ def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, o
             _agent_patch(proposal)
         return
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(message.code == "invalid-agent-proposal-shape" for message in report.messages)
@@ -456,7 +458,7 @@ def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, o
 def test_direct_agent_changes_to_existing_beliefs_are_refused_at_apply(manifest, operation) -> None:
     state = _state_with_second_hypothesis(manifest)
 
-    report = validate_patch(state, _agent_patch(operation), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(operation), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(message.code == "graph-action-refused" for message in report.messages)
@@ -478,7 +480,7 @@ def test_attaching_evidence_to_an_existing_hypothesis_stays_direct(manifest) -> 
         )
     )
 
-    report = validate_patch(state, patch, ["repo-a", "repo-b"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
 
     assert not report.rejected
 
@@ -536,7 +538,7 @@ def test_replay_accepts_historical_proposals_without_declared_intent(manifest) -
     raw["revision"] = state.revision + 1
     patch = Patch.model_validate(adapt_persisted_patch_document(raw))
 
-    report = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"], mode="replay"))
 
     assert not report.rejected
 
@@ -587,12 +589,11 @@ def test_same_patch_edge_recreation_stales_a_new_proposal_but_remains_replayable
         ),
     )
 
-    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
+    admission = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
     historical = validate_patch(
         state,
         patch.model_copy(update={"revision": state.revision + 1}),
-        ["repo-a", "repo-b"],
-        mode="replay",
+        ValidationContext(["repo-a", "repo-b"], mode="replay"),
     )
 
     assert admission.rejected
@@ -611,8 +612,8 @@ def test_replay_does_not_recheck_protected_action_permission(manifest) -> None:
         )
     ).model_copy(update={"revision": state.revision + 1})
 
-    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
-    replay = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"], mode="replay"))
 
     assert admission.rejected
     assert not replay.rejected
@@ -635,7 +636,7 @@ def test_protected_relation_removal_stales_when_the_named_edge_moves(
             base_rev=state.revision,
         )
     ).model_copy(update={"revision": state.revision + 1})
-    assert not validate_patch(state, patch, ["repo-a", "repo-b"]).rejected
+    assert not validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"])).rejected
     proposed = apply_valid_patch(state, patch)
     edges = dict(proposed.edges)
     previous = edges.pop(edge_id)
@@ -662,7 +663,7 @@ def test_removal_proposal_snapshots_exact_incident_edges_and_stales_on_set_chang
             base_rev=state.revision,
         )
     ).model_copy(update={"revision": state.revision + 1})
-    assert not validate_patch(state, patch, ["repo-a", "repo-b"]).rejected
+    assert not validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"])).rejected
     proposed = apply_valid_patch(state, patch)
     proposal = proposed.proposals["prop/remove-replanning"]
 
@@ -735,7 +736,7 @@ def test_supersede_and_merge_intents_require_matching_protected_belief_types(
         base_rev=state.revision,
     )
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(
@@ -769,7 +770,7 @@ def test_protected_relation_intent_cannot_bypass_lifecycle_intent_rules(
         base_rev=state.revision,
     )
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(
@@ -806,7 +807,7 @@ def test_lifecycle_proposal_may_forward_reference_its_new_same_type_target(
         },
     ).model_copy(update={"revision": state.revision + 1})
 
-    report = validate_patch(state, patch, ["repo-a", "repo-b"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
 
     assert not report.rejected, [message.message for message in report.messages]
     staged = apply_valid_patch(state, patch)
@@ -832,8 +833,8 @@ def test_later_update_of_lifecycle_target_stales_new_proposal_but_replay_is_tole
         ),
     ).model_copy(update={"revision": state.revision + 1})
 
-    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
-    replay = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"], mode="replay"))
 
     assert any(message.code == "stale-created-proposal" for message in admission.messages)
     assert not replay.rejected, [message.message for message in replay.messages]
@@ -868,8 +869,8 @@ def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tol
         },
     ).model_copy(update={"revision": state.revision + 1})
 
-    admission = validate_patch(state, patch, ["repo-a", "repo-b"])
-    replay = validate_patch(state, patch, ["repo-a", "repo-b"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"], mode="replay"))
 
     assert any(message.code == "stale-created-proposal" for message in admission.messages)
     assert not replay.rejected, [message.message for message in replay.messages]
@@ -916,7 +917,7 @@ def test_content_proposal_source_refs_retain_originating_agent_scope(
         update={"run_truth_scope": run_scope, "repositories_read": repositories_read}
     )
 
-    report = validate_patch(state, patch, ["repo-a", "repo-b"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
 
     if expected_code is None:
         assert not report.rejected, [message.message for message in report.messages]
@@ -938,7 +939,7 @@ def test_duplicate_proposal_ids_are_rejected_only_at_admission(manifest, mode) -
     patch = _agent_patch(operation)
     if mode == "replay":
         patch = patch.model_copy(update={"revision": state.revision + 1})
-    report = validate_patch(state, patch, ["repo-a", "repo-b"], mode=mode)
+    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"], mode=mode))
     if mode == "admission":
         assert report.rejected
         assert any(message.code == "duplicate-proposal-id" for message in report.messages)
@@ -954,12 +955,13 @@ def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest)
         changes={"status": "decided", "selected_option": "matched"},
     )
 
-    ungoverned = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    ungoverned = validate_patch(
+        state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"])
+    )
     historical = validate_patch(
         state,
         _agent_patch(proposal).model_copy(update={"revision": 3}),
-        ["repo-a", "repo-b"],
-        mode="replay",
+        ValidationContext(["repo-a", "repo-b"], mode="replay"),
     )
     same_patch_governed = validate_patch(
         state,
@@ -967,7 +969,7 @@ def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest)
             _create_edge("exp/evaluation", "dec/evaluation-rule", "governed_by"),
             proposal,
         ),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
     same_patch_experiment = validate_patch(
         state,
@@ -986,7 +988,7 @@ def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest)
             },
             proposal,
         ),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
 
     assert ungoverned.rejected
@@ -1012,7 +1014,7 @@ def test_every_new_decision_proposal_shape_is_refused(manifest, changes) -> None
         changes=changes,
     )
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(
@@ -1038,7 +1040,7 @@ def test_new_decision_proposal_cannot_mark_a_retained_selection_decided(manifest
         changes={"status": "decided"},
     )
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any("decide_decision" in message.message for message in report.messages)
@@ -1093,18 +1095,15 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
         ],
     )
 
-    admission = validate_patch(state, verbatim_approval, ["repo-a", "repo-b"])
+    admission = validate_patch(state, verbatim_approval, ValidationContext(["repo-a", "repo-b"]))
     replay = validate_patch(
-        state,
-        verbatim_approval,
-        ["repo-a", "repo-b"],
-        mode="replay",
+        state, verbatim_approval, ValidationContext(["repo-a", "repo-b"], mode="replay")
     )
-    report = validate_patch(state, approval, ["repo-a", "repo-b"])
+    report = validate_patch(state, approval, ValidationContext(["repo-a", "repo-b"]))
     unnamed = validate_patch(
         state,
         approval.model_copy(update={"human_action": None}),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
 
     assert admission.rejected
@@ -1157,7 +1156,7 @@ def test_legacy_decided_proposal_without_a_listed_selection_is_refused(manifest)
         ],
     )
 
-    report = validate_patch(state, approval, ["repo-a", "repo-b"])
+    report = validate_patch(state, approval, ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(message.code == "incoherent-decision-approval" for message in report.messages)
@@ -1180,7 +1179,7 @@ def test_hypothesis_proposal_requires_an_evidence_edge_cause(manifest, cause) ->
         cause=cause,
     )
 
-    report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
+    report = validate_patch(state, _agent_patch(proposal), ValidationContext(["repo-a", "repo-b"]))
 
     assert report.rejected
     assert any(message.code == "invalid-agent-proposal-shape" for message in report.messages)
@@ -1210,9 +1209,7 @@ def test_agent_proposal_rejects_a_third_shape(manifest) -> None:
     }
 
     report = validate_patch(
-        state,
-        _agent_patch(edge_proposal),
-        ["repo-a", "repo-b"],
+        state, _agent_patch(edge_proposal), ValidationContext(["repo-a", "repo-b"])
     )
 
     assert report.rejected

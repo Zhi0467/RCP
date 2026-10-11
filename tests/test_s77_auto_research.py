@@ -23,7 +23,7 @@ from rcp.core.models import (
     ResearchQuestion,
 )
 from rcp.core.transition_models import GraphTargetRef
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.paper import PaperService
 from rcp.runs.auto_research import AutoResearchCommandDispatcher, AutoResearchRunRequest
@@ -75,7 +75,7 @@ def _orchestrator_patch(
 def _reject_codes(state: GraphState, patch: Patch) -> set[str]:
     return {
         message.code
-        for message in validate_patch(state, patch, _SCOPE).messages
+        for message in validate_patch(state, patch, ValidationContext(_SCOPE)).messages
         if message.level == "reject"
     }
 
@@ -247,7 +247,7 @@ def test_s77_orchestrator_directly_controls_action_layer_and_creates_beliefs() -
         agent_action="decision_choice",
     )
 
-    report = validate_patch(state, patch, _SCOPE)
+    report = validate_patch(state, patch, ValidationContext(_SCOPE))
     assert not report.rejected, [message.message for message in report.messages]
 
     result = apply_valid_patch(state, patch)
@@ -575,7 +575,7 @@ def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path
         revision=1,
         agent_action="decision_choice",
     )
-    assert not validate_patch(state, decision, _SCOPE).rejected
+    assert not validate_patch(state, decision, ValidationContext(_SCOPE)).rejected
 
 
 @pytest.mark.asyncio
@@ -691,7 +691,7 @@ def test_s77_decision_unblocks_experiment_while_belief_review_remains_pending() 
             revision=2,
         ),
     )
-    assert not validate_patch(state, proposal_patch, _SCOPE).rejected
+    assert not validate_patch(state, proposal_patch, ValidationContext(_SCOPE)).rejected
     state = apply_valid_patch(state, proposal_patch)
     assert not derive_experiment_control_state(state, "exp/gated").ready
 
@@ -724,7 +724,7 @@ def test_s77_decision_unblocks_experiment_while_belief_review_remains_pending() 
         revision=3,
         agent_action="decision_choice",
     )
-    report = validate_patch(state, independent, _SCOPE)
+    report = validate_patch(state, independent, ValidationContext(_SCOPE))
     assert not report.rejected, [message.message for message in report.messages]
     state = apply_valid_patch(state, independent)
 

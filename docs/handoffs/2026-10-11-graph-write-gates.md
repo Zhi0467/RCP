@@ -1,7 +1,8 @@
 # Graph write gates
 
-Status: design draft, not started. Nothing is implemented. Waiting for an
-explicit start.
+Status: slices A and C are implemented. Operation profiles own action and apply
+dispatch; validation and replay share a manifest-built context. Slices B and D
+remain separate work; the permission gate has not changed.
 
 ## Goal
 
@@ -39,12 +40,12 @@ replay mode. The funnel is sound. The gates inside it are mixed:
 - `validate_patch` also does permission work: `_validate_authorship`,
   per-op `permits()`, and the authority parts of `validate_approval_shape`
   and `validate_experiment_loop_authority`.
-- Callers assemble the validation context by hand. `validate_patch` takes
-  12 arguments. The branch-merge pre-check passes 3.
-- Each operation's code is spread over five places: the op model, the
-  validation registry, `authority.operation_actions`, the `_apply_patch`
-  chain, and its `depends_*` function. `_apply_patch` has no `else`, so an
-  op missing there applies as a silent no-op.
+- `validate_patch` takes one `ValidationContext`; history and branch-merge
+  prechecks build it from the committing history manager's manifest. Replay
+  carries the same context and updates its scope from the staged graph.
+- Each operation has one `OpRule` in the validation registry. It binds
+  validation, authoring, actions, application, and dependencies. Missing
+  profiles raise during dispatch; historical no-ops have explicit handlers.
 
 ## Target
 
@@ -101,12 +102,12 @@ A failure means an op's checks are incomplete. The fix goes in that op.
 
 Each slice updates the specs it changes and adds tests in proportion.
 
-**A. Operation profiles.** Move code, no behaviour change. Check: the
+**A. Operation profiles — implemented.** Move code, no behaviour change. Check: the
 validation, materialize, and authority test files pass unchanged.
 
 **B. Graph-invariant test.** Add the test. Fix any op it catches.
 
-**C. Validation context.** One context object and builder. Check: branch
+**C. Validation context — implemented.** One context object and builder. Check: branch
 merge and history tests.
 
 **D. Permission gate.** Move permission out of `validate_patch`, add the

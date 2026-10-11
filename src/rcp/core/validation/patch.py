@@ -7,7 +7,7 @@ only through :data:`rcp.core.validation.registry.OP_RULES`.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Literal
+from dataclasses import replace
 
 from rcp.core.authority import operation_actions, permits
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
@@ -33,42 +33,24 @@ from rcp.core.validation.experiment_loop import validate_experiment_loop_authori
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
+from rcp.core.validation.settings import ValidationContext
 
 
 def validate_patch(
     state: GraphState,
     patch: Patch,
-    project_truth_scope: Iterable[str],
-    repository_aliases: Iterable[str] | None = None,
-    machine_aliases: Iterable[str] | None = None,
-    default_run_truth_scope: Iterable[str] | None = None,
-    state_repository: str | None = None,
-    mode: Literal["admission", "replay"] = "admission",
+    context: ValidationContext,
     *,
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
     if patch.transition is not None:
-        return _validate_transition_patch(
-            state,
-            patch,
-            project_truth_scope,
-            repository_aliases=repository_aliases,
-            machine_aliases=machine_aliases,
-            default_run_truth_scope=default_run_truth_scope,
-            state_repository=state_repository,
-            mode=mode,
-        )
+        return _validate_transition_patch(state, patch, context)
     try:
         return _validate_patch(
             state,
             patch,
-            project_truth_scope,
-            repository_aliases=repository_aliases,
-            machine_aliases=machine_aliases,
-            default_run_truth_scope=default_run_truth_scope,
-            state_repository=state_repository,
-            mode=mode,
+            context,
             experiment_control_node_id=experiment_control_node_id,
             experiment_decision_bundle=experiment_decision_bundle,
         )
@@ -85,16 +67,10 @@ def validate_patch(
 def _validate_transition_patch(
     state: GraphState,
     patch: Patch,
-    project_truth_scope: Iterable[str],
-    *,
-    repository_aliases: Iterable[str] | None,
-    machine_aliases: Iterable[str] | None,
-    default_run_truth_scope: Iterable[str] | None,
-    state_repository: str | None,
-    mode: Literal["admission", "replay"],
+    context: ValidationContext,
 ) -> ValidationReport:
     report = ValidationReport()
-    if mode != "replay":
+    if context.mode != "replay":
         report.reject(
             "reserved-transition-trace",
             "A committed transition trace is backend-owned and cannot be supplied for admission.",
@@ -112,12 +88,7 @@ def _validate_transition_patch(
             source_report = validate_patch(
                 validation_state,
                 source_patch,
-                validation_state.project_truth_scope,
-                repository_aliases=repository_aliases,
-                machine_aliases=machine_aliases,
-                default_run_truth_scope=default_run_truth_scope,
-                state_repository=state_repository,
-                mode="replay",
+                replace(context, project_truth_scope=validation_state.project_truth_scope),
             )
             report.messages.extend(source_report.messages)
             if source_report.rejected:
@@ -137,18 +108,13 @@ def _validate_transition_patch(
 def _validate_patch(
     state: GraphState,
     patch: Patch,
-    project_truth_scope: Iterable[str],
-    repository_aliases: Iterable[str] | None = None,
-    machine_aliases: Iterable[str] | None = None,
-    default_run_truth_scope: Iterable[str] | None = None,
-    state_repository: str | None = None,
-    mode: Literal["admission", "replay"] = "admission",
+    context: ValidationContext,
     *,
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
     report = ValidationReport()
-    scope = set(project_truth_scope)
+    scope = set(context.project_truth_scope)
     control_node_id = experiment_control_node_id or patch.experiment_control_node_id
     decision_bundle = tuple(
         experiment_decision_bundle
@@ -162,15 +128,15 @@ def _validate_patch(
         report=report,
         revision=patch.revision or None,
         project_truth_scope=scope,
-        repositories=set(repository_aliases or scope),
-        machines=set(machine_aliases) if machine_aliases is not None else None,
-        default_run_truth_scope=set(default_run_truth_scope or ()),
-        state_repository=state_repository,
-        mode=mode,
+        repositories=set(context.repository_aliases or scope),
+        machines=set(context.machine_aliases) if context.machine_aliases is not None else None,
+        default_run_truth_scope=set(context.default_run_truth_scope or ()),
+        state_repository=context.state_repository,
+        mode=context.mode,
         experiment_control_node_id=control_node_id,
     )
 
-    if mode == "admission" and patch.schema_generation != 2:
+    if context.mode == "admission" and patch.schema_generation != 2:
         report.reject(
             "legacy-schema-write",
             "New graph writes must use the current schema generation.",
@@ -196,7 +162,7 @@ def _validate_patch(
             report,
             control_node_id=control_node_id,
             decision_bundle=decision_bundle,
-            mode=mode,
+            mode=context.mode,
         )
     elif control_node_id or decision_bundle:
         report.reject(
@@ -210,7 +176,7 @@ def _validate_patch(
         report.reject("delete-forbidden", "Graph objects are never deleted.", ctx.revision)
 
     if patch.kind == "approval":
-        validate_approval_shape(state, patch, report, mode=mode)
+        validate_approval_shape(state, patch, report, mode=context.mode)
 
     _validate_operations(ctx)
     _validate_queued_decision_options(ctx)

@@ -13,24 +13,11 @@ from rcp.core.models import (
     Patch,
 )
 from rcp.core.operations import (
-    CreateAmbiguitiesOperation,
     CreateEdgesOperation,
     CreateNodesOperation,
-    CreateProposalsOperation,
     GraphOperation,
-    MergeNodesOperation,
     RemoveEdgesOperation,
-    RemoveNodesOperation,
-    ResolveAmbiguitiesOperation,
-    ResolveProposalsOperation,
-    SetCoverageOperation,
-    SetOntologyOperation,
-    SetProjectTruthScopeOperation,
-    SetStandingOperation,
-    SupersedeNodesOperation,
     UpdateNodesOperation,
-    UpsertGlossaryOperation,
-    WithdrawProposalsOperation,
 )
 from rcp.core.project_types import ProjectType, project_type_of
 from rcp.core.research_rules import queues_decision
@@ -540,71 +527,9 @@ def operation_actions(
     cross action boundaries.
     """
 
-    if isinstance(operation, CreateNodesOperation):
-        return frozenset({CREATE_NODE})
-    if isinstance(operation, UpdateNodesOperation):
-        return _update_actions(state, patch, operation)
-    if isinstance(operation, CreateEdgesOperation):
-        return _create_edge_actions(state, patch, operation)
-    if isinstance(operation, RemoveEdgesOperation):
-        return _remove_edge_actions(state, patch, operation)
-    if isinstance(operation, RemoveNodesOperation):
-        return _node_target_actions(
-            state,
-            patch,
-            operation.node_ids,
-            REMOVE_NODE,
-            REMOVE_PROTECTED_EPISTEMIC,
-        )
-    if isinstance(operation, SupersedeNodesOperation):
-        return _node_lifecycle_actions(
-            state,
-            patch,
-            (item.id for item in operation.nodes),
-            (
-                (item.id, item.superseded_by)
-                for item in operation.nodes
-                if item.superseded_by is not None
-            ),
-            "supersedes",
-            SUPERSEDE_NODE,
-            SUPERSEDE_PROTECTED_EPISTEMIC,
-        )
-    if isinstance(operation, MergeNodesOperation):
-        return _node_lifecycle_actions(
-            state,
-            patch,
-            (item.duplicate for item in operation.merges),
-            ((item.duplicate, item.canonical) for item in operation.merges),
-            "duplicate_of",
-            MERGE_NODE,
-            MERGE_PROTECTED_EPISTEMIC,
-        )
-    if isinstance(operation, SetStandingOperation):
-        if is_existing_protected_node(state, operation.node_id) or project_type_of(
-            state
-        ).is_protected_belief(_created_node_type(patch, operation.node_id)):
-            return frozenset({UPDATE_PROTECTED_EPISTEMIC})
-        return frozenset({SET_STANDING})
-    if isinstance(operation, CreateAmbiguitiesOperation):
-        return frozenset({CREATE_AMBIGUITY})
-    if isinstance(operation, ResolveAmbiguitiesOperation):
-        return frozenset({RESOLVE_AMBIGUITY})
-    if isinstance(operation, CreateProposalsOperation):
-        return frozenset({CREATE_PROPOSAL})
-    if isinstance(operation, ResolveProposalsOperation):
-        return frozenset({RESOLVE_PROPOSAL})
-    if isinstance(operation, WithdrawProposalsOperation):
-        return frozenset({WITHDRAW_PROPOSAL})
-    if isinstance(operation, UpsertGlossaryOperation):
-        return frozenset({UPSERT_GLOSSARY})
-    if isinstance(operation, SetCoverageOperation):
-        return frozenset({SET_COVERAGE})
-    if isinstance(operation, SetProjectTruthScopeOperation):
-        return frozenset({SET_PROJECT_TRUTH_SCOPE})
-    if isinstance(operation, SetOntologyOperation):
-        return frozenset({SET_ONTOLOGY})
-    raise ValueError(f"Unknown graph operation {getattr(operation, 'op', None)!r}.")
+    from rcp.core.validation.registry import OP_RULES
+
+    return OP_RULES[operation.op].actions(state, patch, operation)
 
 
 def is_existing_protected_node(state: GraphState, node_id: str) -> bool:

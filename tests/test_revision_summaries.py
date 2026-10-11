@@ -7,7 +7,7 @@ import pytest
 import rcp.history.delta as delta_module
 from rcp.core.materialize import MaterializationResult, materialize_patches
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
-from rcp.core.validation import ValidationReport
+from rcp.core.validation import ValidationContext, ValidationReport
 from rcp.history import build_revision_summaries
 from rcp.service import ReviewRequest
 from tests.helpers import (
@@ -394,8 +394,7 @@ def test_replay_observer_runs_only_after_successful_patch_application() -> None:
 
     result = materialize_patches(
         [first, corrupt, later],
-        ["repo-a"],
-        repository_aliases=["repo-a"],
+        ValidationContext(["repo-a"], repository_aliases=["repo-a"]),
         accepted_patch_observer=lambda previous, patch, state: observations.append(
             (previous.revision, patch.revision, state.revision)
         ),

@@ -8,7 +8,7 @@ from pydantic import TypeAdapter, ValidationError
 from rcp.core.materialize import apply_valid_patch, materialize_patches
 from rcp.core.models import Ambiguity, Experiment, GraphState, OntologyState, Patch
 from rcp.core.operations import ProposalOperation
-from rcp.core.validation import proposal_dependencies, validate_patch
+from rcp.core.validation import ValidationContext, proposal_dependencies, validate_patch
 from tests.helpers import refresh_patch, seed_patch
 
 
@@ -142,7 +142,7 @@ def test_legacy_patch_replay_preserves_every_recorded_node_and_edge_field() -> N
         seed_patch().model_copy(update={"revision": 1}),
         refresh_patch().model_copy(update={"revision": 2}),
     ]
-    before = materialize_patches(patches, ["repo-a", "repo-b"])
+    before = materialize_patches(patches, ValidationContext(["repo-a", "repo-b"]))
     recorded = before.state.model_dump(mode="json")
     for node in recorded["nodes"].values():
         node.pop("extension_type")
@@ -150,7 +150,7 @@ def test_legacy_patch_replay_preserves_every_recorded_node_and_edge_field() -> N
     recorded.pop("ontology")
 
     opened = GraphState.model_validate(recorded)
-    replayed = materialize_patches(patches, ["repo-a", "repo-b"])
+    replayed = materialize_patches(patches, ValidationContext(["repo-a", "repo-b"]))
 
     assert all(not report.rejected for report in replayed.reports.values())
     for node_id, old_node in recorded["nodes"].items():
@@ -166,11 +166,13 @@ def test_validation_uses_the_ontology_in_force_before_each_patch() -> None:
     define = _set_ontology(1, _ontology())
     create = _agent(2, [{"op": "create_nodes", "nodes": [_custom_node()]}])
 
-    before = validate_patch(GraphState(project_truth_scope=["repo"]), create, ["repo"])
+    before = validate_patch(
+        GraphState(project_truth_scope=["repo"]), create, ValidationContext(["repo"])
+    )
     assert "unknown-extension-type" in _codes(before)
 
-    defined = materialize_patches([define], ["repo"]).state
-    after = validate_patch(defined, create, ["repo"])
+    defined = materialize_patches([define], ValidationContext(["repo"])).state
+    after = validate_patch(defined, create, ValidationContext(["repo"]))
     assert not after.rejected
 
     combined = _approval(
@@ -180,7 +182,9 @@ def test_validation_uses_the_ontology_in_force_before_each_patch() -> None:
             {"op": "create_nodes", "nodes": [_custom_node()]},
         ],
     )
-    combined_report = validate_patch(GraphState(), combined, [], mode="admission")
+    combined_report = validate_patch(
+        GraphState(), combined, ValidationContext([], mode="admission")
+    )
     assert "unknown-extension-type" not in _codes(combined_report)
     assert "invalid-standalone-review" in _codes(combined_report)
 
@@ -202,8 +206,8 @@ def test_removed_type_and_fields_remain_readable_during_replay() -> None:
         _set_ontology(4, removed),
     ]
 
-    at_creation = materialize_patches(patches[:2], ["repo"])
-    final = materialize_patches(patches, ["repo"])
+    at_creation = materialize_patches(patches[:2], ValidationContext(["repo"]))
+    final = materialize_patches(patches, ValidationContext(["repo"]))
 
     assert at_creation.state.replay_status == "complete"
     assert final.state.replay_status == "complete"
@@ -214,12 +218,12 @@ def test_removed_type_and_fields_remain_readable_during_replay() -> None:
 
 
 def test_removal_requires_prior_deprecation_but_replay_does_not_rejudge_safety() -> None:
-    state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
-    report = validate_patch(state, _set_ontology(2, {}), ["repo"])
+    state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
+    report = validate_patch(state, _set_ontology(2, {}), ValidationContext(["repo"]))
     assert "ontology-removal-without-deprecation" in _codes(report)
 
     # Safety is an admission verdict stored with the patch, not a new replay rule.
-    replay = validate_patch(state, _set_ontology(2, {}), ["repo"], mode="replay")
+    replay = validate_patch(state, _set_ontology(2, {}), ValidationContext(["repo"], mode="replay"))
     assert "ontology-removal-without-deprecation" not in _codes(replay)
 
 
@@ -228,7 +232,7 @@ def test_base_ontology_cannot_be_redefined() -> None:
     colliding["types"][0]["name"] = "experiment"
     colliding["fields"][0]["name"] = "title"
     colliding["relations"][0]["name"] = "tests"
-    report = validate_patch(GraphState(), _set_ontology(1, colliding), [])
+    report = validate_patch(GraphState(), _set_ontology(1, colliding), ValidationContext([]))
     assert "base-ontology-collision" in _codes(report)
 
 
@@ -237,14 +241,16 @@ def test_history_may_keep_a_custom_field_that_a_later_base_field_now_names() -> 
     historical["fields"][0]["name"] = "limitations"
 
     assert "base-ontology-collision" in _codes(
-        validate_patch(GraphState(), _set_ontology(1, historical), [])
+        validate_patch(GraphState(), _set_ontology(1, historical), ValidationContext([]))
     )
-    replayed = materialize_patches([_set_ontology(1, historical)], ["repo"]).state
+    replayed = materialize_patches(
+        [_set_ontology(1, historical)], ValidationContext(["repo"])
+    ).state
     assert replayed.replay_status == "complete"
 
 
 def test_new_nodes_validate_required_fields_kinds_and_custom_prefix() -> None:
-    state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
+    state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
     missing = _custom_node()
     missing["extension_fields"] = {}
     wrong_kind = _custom_node()
@@ -253,25 +259,37 @@ def test_new_nodes_validate_required_fields_kinds_and_custom_prefix() -> None:
     wrong_prefix["id"] = "exp/baseline"
 
     assert "missing-required-extension-field" in _codes(
-        validate_patch(state, _agent(2, [{"op": "create_nodes", "nodes": [missing]}]), ["repo"])
+        validate_patch(
+            state,
+            _agent(2, [{"op": "create_nodes", "nodes": [missing]}]),
+            ValidationContext(["repo"]),
+        )
     )
     assert "invalid-extension-field-kind" in _codes(
-        validate_patch(state, _agent(2, [{"op": "create_nodes", "nodes": [wrong_kind]}]), ["repo"])
+        validate_patch(
+            state,
+            _agent(2, [{"op": "create_nodes", "nodes": [wrong_kind]}]),
+            ValidationContext(["repo"]),
+        )
     )
     assert "wrong-slug-prefix" in _codes(
         validate_patch(
-            state, _agent(2, [{"op": "create_nodes", "nodes": [wrong_prefix]}]), ["repo"]
+            state,
+            _agent(2, [{"op": "create_nodes", "nodes": [wrong_prefix]}]),
+            ValidationContext(["repo"]),
         )
     )
 
 
 def test_agent_writable_is_admission_only_and_human_may_write_project_field() -> None:
-    state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
+    state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
     raw = _hypothesis() | {"extension_fields": {"review_note": "Human checked."}}
     agent_patch = _agent(2, [{"op": "create_nodes", "nodes": [raw]}])
-    assert "extension-field-human-only" in _codes(validate_patch(state, agent_patch, ["repo"]))
+    assert "extension-field-human-only" in _codes(
+        validate_patch(state, agent_patch, ValidationContext(["repo"]))
+    )
     assert "extension-field-human-only" not in _codes(
-        validate_patch(state, agent_patch, ["repo"], mode="replay")
+        validate_patch(state, agent_patch, ValidationContext(["repo"], mode="replay"))
     )
 
     state = materialize_patches(
@@ -279,7 +297,7 @@ def test_agent_writable_is_admission_only_and_human_may_write_project_field() ->
             _set_ontology(1, _ontology()),
             _agent(2, [{"op": "create_nodes", "nodes": [_hypothesis()]}]),
         ],
-        ["repo"],
+        ValidationContext(["repo"]),
     ).state
     human_patch = _approval(
         3,
@@ -296,24 +314,28 @@ def test_agent_writable_is_admission_only_and_human_may_write_project_field() ->
             }
         ],
     )
-    assert not validate_patch(state, human_patch, ["repo"]).rejected
+    assert not validate_patch(state, human_patch, ValidationContext(["repo"])).rejected
 
 
 def test_standalone_human_new_node_is_exactly_one_asserted_base_or_custom_node() -> None:
-    state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
+    state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
     valid = _approval(2, [{"op": "create_nodes", "nodes": [_custom_node()]}])
-    assert not validate_patch(state, valid, ["repo"]).rejected
+    assert not validate_patch(state, valid, ValidationContext(["repo"])).rejected
 
     base_only = _approval(2, [{"op": "create_nodes", "nodes": [_hypothesis()]}])
-    assert not validate_patch(state, base_only, ["repo"]).rejected
+    assert not validate_patch(state, base_only, ValidationContext(["repo"])).rejected
 
     multiple = _approval(2, [{"op": "create_nodes", "nodes": [_hypothesis(), _custom_node()]}])
-    assert "invalid-direct-node-create" in _codes(validate_patch(state, multiple, ["repo"]))
+    assert "invalid-direct-node-create" in _codes(
+        validate_patch(state, multiple, ValidationContext(["repo"]))
+    )
 
     accepted = _approval(
         2, [{"op": "create_nodes", "nodes": [_hypothesis() | {"standing": "accepted"}]}]
     )
-    assert "invalid-direct-node-create" in _codes(validate_patch(state, accepted, ["repo"]))
+    assert "invalid-direct-node-create" in _codes(
+        validate_patch(state, accepted, ValidationContext(["repo"]))
+    )
 
     sourced = _custom_node() | {
         "source_refs": [
@@ -331,13 +353,13 @@ def test_standalone_human_new_node_is_exactly_one_asserted_base_or_custom_node()
     report = validate_patch(
         state,
         _approval(2, [{"op": "create_nodes", "nodes": [sourced]}]),
-        ["repo"],
+        ValidationContext(["repo"]),
     )
     assert "invalid-direct-node-create" in _codes(report)
 
 
 def test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as_seam() -> None:
-    state = materialize_patches([_set_ontology(1, _ontology())], ["repo"]).state
+    state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
     create = _agent(
         2,
         [
@@ -354,8 +376,10 @@ def test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as
             },
         ],
     )
-    assert not validate_patch(state, create, ["repo"]).rejected
-    applied = materialize_patches([_set_ontology(1, _ontology()), create], ["repo"])
+    assert not validate_patch(state, create, ValidationContext(["repo"])).rejected
+    applied = materialize_patches(
+        [_set_ontology(1, _ontology()), create], ValidationContext(["repo"])
+    )
     edge = applied.state.edges["training_run/baseline::evaluates::hyp/adapts"]
     # 'evaluates' declares layer "action", but this edge runs from a training_run
     # (an experiment, action) to a hypothesis (epistemic), so it is a seam. A
@@ -380,7 +404,9 @@ def test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as
             },
         ],
     )
-    assert "custom-relation-type-mismatch" in _codes(validate_patch(state, reversed_edge, ["repo"]))
+    assert "custom-relation-type-mismatch" in _codes(
+        validate_patch(state, reversed_edge, ValidationContext(["repo"]))
+    )
 
 
 def test_relation_narrowing_names_the_edges_and_nodes_that_block_it() -> None:
@@ -403,10 +429,10 @@ def test_relation_narrowing_names_the_edges_and_nodes_that_block_it() -> None:
             ],
         ),
     ]
-    state = materialize_patches(patches, ["repo"]).state
+    state = materialize_patches(patches, ValidationContext(["repo"])).state
     narrowed = _ontology()
     narrowed["relations"][0]["source_types"] = ["experiment"]
-    report = validate_patch(state, _set_ontology(3, narrowed), ["repo"])
+    report = validate_patch(state, _set_ontology(3, narrowed), ValidationContext(["repo"]))
     message = next(
         item for item in report.messages if item.code == "relation-narrowing-breaks-existing-edges"
     )
@@ -430,21 +456,20 @@ def test_required_field_cannot_strand_existing_nodes() -> None:
             ],
         ),
     ]
-    state = materialize_patches(patches, ["repo"]).state
-    report = validate_patch(state, _set_ontology(3, _ontology()), ["repo"])
+    state = materialize_patches(patches, ValidationContext(["repo"])).state
+    report = validate_patch(state, _set_ontology(3, _ontology()), ValidationContext(["repo"]))
     assert "required-field-breaks-existing-nodes" in _codes(report)
     assert report.messages[-1].related_node_ids == ["training_run/baseline"]
 
 
 def test_new_required_field_cannot_strand_existing_nodes() -> None:
     state = materialize_patches(
-        [_agent(1, [{"op": "create_nodes", "nodes": [_hypothesis()]}])],
-        ["repo"],
+        [_agent(1, [{"op": "create_nodes", "nodes": [_hypothesis()]}])], ValidationContext(["repo"])
     ).state
     desired = _ontology()
     desired["fields"][1]["required"] = True
 
-    report = validate_patch(state, _set_ontology(2, desired), ["repo"])
+    report = validate_patch(state, _set_ontology(2, desired), ValidationContext(["repo"]))
 
     message = next(
         item for item in report.messages if item.code == "required-field-breaks-existing-nodes"
@@ -484,8 +509,8 @@ def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejecte
         ops=[{"op": "create_proposals", "proposals": [proposal]}],
     )
     state = GraphState(project_truth_scope=["repo"])
-    admission = validate_patch(state, patch, ["repo"])
-    replay = validate_patch(state, patch, ["repo"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo"], mode="replay"))
     assert admission.rejected
     assert not replay.rejected
 
@@ -503,7 +528,7 @@ def test_historical_ontology_proposal_replays_but_new_agent_authoring_is_rejecte
             },
         ],
     )
-    assert not validate_patch(replayed, approval, ["repo"]).rejected
+    assert not validate_patch(replayed, approval, ValidationContext(["repo"])).rejected
     approved = apply_valid_patch(replayed, approval)
     assert approved.ontology.types[0].name == "training_run"
 
@@ -540,10 +565,10 @@ def test_standalone_ambiguity_resolution_is_replay_only() -> None:
     )
 
     assert "invalid-standalone-review" not in _codes(
-        validate_patch(state, patch, ["repo"], mode="replay")
+        validate_patch(state, patch, ValidationContext(["repo"], mode="replay"))
     )
     assert "invalid-standalone-review" in _codes(
-        validate_patch(state, patch, ["repo"], mode="admission")
+        validate_patch(state, patch, ValidationContext(["repo"], mode="admission"))
     )
 
 
@@ -556,7 +581,7 @@ def test_one_staged_node_patch_may_carry_only_one_review() -> None:
             _set_ontology(1, _ontology()),
             _agent(2, [{"op": "create_nodes", "nodes": [_custom_node()]}]),
         ],
-        ["repo"],
+        ValidationContext(["repo"]),
     ).state
     node_id = _custom_node()["id"]
     edit = {
@@ -566,8 +591,10 @@ def test_one_staged_node_patch_may_carry_only_one_review() -> None:
     review = {"op": "set_standing", "node_id": node_id, "standing": "asserted"}
 
     assert "invalid-standalone-review" not in _codes(
-        validate_patch(state, _approval(3, [edit, review]), ["repo"])
+        validate_patch(state, _approval(3, [edit, review]), ValidationContext(["repo"]))
     )
     assert "invalid-standalone-review" in _codes(
-        validate_patch(state, _approval(3, [edit, review, dict(review)]), ["repo"])
+        validate_patch(
+            state, _approval(3, [edit, review, dict(review)]), ValidationContext(["repo"])
+        )
     )
