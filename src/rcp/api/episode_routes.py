@@ -72,7 +72,12 @@ from rcp.runs.episodes.merge import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
-from rcp.storage.branch_names import BranchNameInvalid, BranchNameTaken, normalize_branch_name
+from rcp.storage.branch_names import (
+    BranchNameInvalid,
+    BranchNameTaken,
+    normalize_branch_name,
+    validate_branch_name,
+)
 from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
 from rcp.storage.models import EpisodeRecord
@@ -192,8 +197,12 @@ def rename_graph_branch(
     store: StoreDependency,
 ) -> GraphRefResponse:
     require_registered_project(catalog, project_id)
-    if branch_id == "main":
-        raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"})
+    try:
+        if branch_id == "main":
+            raise BranchNameInvalid("main cannot be renamed.")
+        validate_branch_name(body.name)
+    except BranchNameInvalid as exc:
+        raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
     # Read the ref before committing, so no remote read can fail after the label changed.
     before = _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
     try:

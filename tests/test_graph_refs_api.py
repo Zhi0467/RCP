@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from rcp.api import episode_routes
 from rcp.core.models import EpisodeIsolation, EpisodeMergeAttempt, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
@@ -253,9 +254,15 @@ def test_branch_labels_respect_the_transfer_fence_and_leave_with_the_project(
             ).fetchall()
 
 
+def _unreachable_ref_read(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("the branch read ran before name validation")
+
+
 @pytest.mark.parametrize("name", ["", "main", "A-name", "a", "-name", "name-", "a" * 33])
-def test_rename_branch_invalid_names(manifest, tmp_path, name) -> None:
+def test_rename_branch_invalid_names(manifest, tmp_path, monkeypatch, name) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="none")
+    # An invalid name is refused before the (possibly remote) branch read.
+    monkeypatch.setattr(episode_routes, "_branch_ref_for_http", _unreachable_ref_read)
     path = f"/api/projects/{harness.project_id}/graph-refs/{harness.episode.episode_id}/name"
     response = harness.client.put(path, json={"name": name})
     assert response.status_code == 422, response.text
