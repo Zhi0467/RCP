@@ -1075,7 +1075,13 @@ function MemberApp({
         if (current) setGraphRefs({ projectId, refs });
       })
       .catch(() => {
-        if (current) setGraphRefs({ projectId, refs: null });
+        // A failed refresh keeps the last good list; only a first read shows unavailable.
+        if (current)
+          setGraphRefs((previous) =>
+            previous?.projectId === projectId && previous.refs !== null
+              ? previous
+              : { projectId, refs: null },
+          );
       });
     return () => {
       current = false;
@@ -3682,7 +3688,11 @@ function MemberApp({
       showExperiment,
     ],
   );
-  const [experimentBranchRefusal, setExperimentBranchRefusal] = useState<string | null>(null);
+  // Kept with the node whose start was refused, so another Experiment's drawer never shows it.
+  const [experimentBranchRefusal, setExperimentBranchRefusal] = useState<{
+    nodeId: string;
+    refusal: string | null;
+  } | null>(null);
   const [autoResearchBranchRefusal, setAutoResearchBranchRefusal] = useState<string | null>(null);
   const runExperiment = useCallback(
     async (
@@ -3703,7 +3713,7 @@ function MemberApp({
           launchConfig,
         );
       } catch (caught) {
-        setExperimentBranchRefusal(branchNameRefusal(caught));
+        setExperimentBranchRefusal({ nodeId: node.id, refusal: branchNameRefusal(caught) });
         setNotice({
           kind: "error",
           text: caught instanceof Error ? caught.message : String(caught),
@@ -5774,7 +5784,9 @@ function MemberApp({
         return (
           <DetailDrawer
             key={`${slot}:${node.id}`}
-            experimentBranchNameRefusal={experimentBranchRefusal}
+            experimentBranchNameRefusal={
+              experimentBranchRefusal?.nodeId === node.id ? experimentBranchRefusal.refusal : null
+            }
             graphRefs={projectGraphRefs ?? null}
             node={node}
             projectId={project.id}
