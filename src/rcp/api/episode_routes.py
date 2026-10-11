@@ -175,6 +175,7 @@ def _branch_ref_for_http(
 @router.put(
     "/api/projects/{project_id}/graph-refs/{branch_id}/name",
     response_model=GraphRefResponse,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def rename_graph_branch(
     project_id: str,
@@ -201,6 +202,7 @@ def rename_graph_branch(
 @router.put(
     "/api/projects/{project_id}/graph-refs/{branch_id}/archived",
     response_model=GraphRefResponse,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def archive_graph_branch(
     project_id: str,

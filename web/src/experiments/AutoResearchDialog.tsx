@@ -360,7 +360,7 @@ export function AutoResearchDialog({
               </div>
             </>
           )}
-          {launchOpen && project && launchProfile && launchConfig && (
+          {!continued && launchOpen && project && launchProfile && launchConfig && (
             <AgentConfigControls
               project={project}
               value={launchConfig}
@@ -383,7 +383,8 @@ export function AutoResearchDialog({
           </div>
         )}
         <footer>
-          {project && launchConfig && (
+          {/* A continuation keeps its episode's agent; only a new start picks one. */}
+          {!continued && project && launchConfig && (
             <AgentConfigChip
               project={project}
               value={launchConfig}
@@ -405,6 +406,7 @@ export function AutoResearchDialog({
               busy ||
               !canSubmit ||
               Boolean(
+                !continued &&
                 project &&
                 launchConfig &&
                 !launchProviderReady(project, launchConfig, launchProfile?.work_like_capable),

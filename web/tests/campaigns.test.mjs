@@ -90,6 +90,14 @@ test("the Auto-research dialog names its branch beside Code worktree", () => {
 });
 
 test("on an Auto-research branch the dialog continues it", () => {
+  // The current orchestrator default is not ready; a continuation keeps its own agent.
+  const project = {
+    id: "p",
+    agent_profiles: {
+      orchestrator: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+    },
+    provider_readiness: { local: { claude: { installed: false, authenticated: false } } },
+  };
   const render = (state) =>
     renderToStaticMarkup(
       React.createElement(AutoResearchDialog, {
@@ -97,6 +105,7 @@ test("on an Auto-research branch the dialog continues it", () => {
         busy: false,
         error: null,
         initialInvocationCeiling: 1,
+        project,
         onClose() {},
         onAuthorize() {},
         continueBranch: { name: "loss-sweep", episode: { ...episode, ...state } },
@@ -105,7 +114,12 @@ test("on an Auto-research branch the dialog continues it", () => {
   const running = render({ can_message: true, message_requires_continuation: false });
   assert.equal((running.match(/<textarea/g) ?? []).length, 1);
   assert.doesNotMatch(running, /type="number"|branch-name-field/);
-  const ended = render({ can_message: true, message_requires_continuation: true });
+  const ended = render({
+    can_message: true,
+    can_continue: true,
+    message_requires_continuation: true,
+  });
+  assert.doesNotMatch(ended, /type="submit"[^>]*disabled/);
   assert.match(ended, /type="number"[^>]*value="3"/);
   assert.equal((ended.match(/<textarea/g) ?? []).length, 1);
 });

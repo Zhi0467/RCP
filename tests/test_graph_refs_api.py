@@ -223,6 +223,36 @@ def test_rename_archive_and_unarchive_preserve_branch_history(manifest, tmp_path
     assert history.load_patches() == before
 
 
+def test_branch_labels_respect_the_transfer_fence_and_leave_with_the_project(
+    manifest, tmp_path
+) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="none")
+    store, project_id = harness.store, harness.project_id
+    path = f"/api/projects/{project_id}/graph-refs/{harness.episode.episode_id}"
+    assert harness.client.put(path + "/name", json={"name": "kept-name"}).status_code == 200
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO project_transfer_requests (
+                request_id, side, phase, project_id, source_space_id,
+                target_space_id, record_json, revision, created_at, updated_at
+            ) VALUES ('transfer', 'source', 'source_fenced', ?, ?, 'target', '{}', 1, ?, ?)
+            """,
+            (project_id, store.space_id, store.now(), store.now()),
+        )
+    assert harness.client.put(path + "/name", json={"name": "late-name"}).status_code == 409
+    assert harness.client.put(path + "/archived", json={"archived": True}).status_code == 409
+    assert store.branch_names(project_id)[harness.episode.episode_id] == "kept-name"
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_transfer_requests")
+    store.delete_project_records(project_id)
+    with store.connection() as connection:
+        for table in ("branch_names", "branch_name_reservations"):
+            assert not connection.execute(
+                f"SELECT 1 FROM {table} WHERE project_id = ?", (project_id,)
+            ).fetchall()
+
+
 @pytest.mark.parametrize("name", ["", "main", "A-name", "a", "-name", "name-", "a" * 33])
 def test_rename_branch_invalid_names(manifest, tmp_path, name) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="none")

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import EpisodeRecord
+from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 
 
 class BranchNameInvalid(ValueError):
@@ -131,6 +132,7 @@ class BranchNameStoreMixin(StoreMixinBase):
             raise BranchNameInvalid("main cannot be renamed.")
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
             names = resolve_branch_names(connection, project_id)
             if branch_id not in names:
                 raise KeyError(branch_id)

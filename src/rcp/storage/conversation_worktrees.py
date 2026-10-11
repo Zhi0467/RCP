@@ -12,6 +12,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.mixin_base import StoreMixinBase
+from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 
 
 class UnfinishedEpisodeJobs(ValueError):
@@ -108,6 +109,7 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
         """Change a branch label without touching its canonical history or merge state."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            ProjectProvisioningStoreMixin._require_project_accepts_new_work(connection, project_id)
             root = connection.execute(
                 "SELECT graph_target_json, isolation_owner_episode_id FROM episodes "
                 "WHERE project_id = ? AND episode_id = ?",
