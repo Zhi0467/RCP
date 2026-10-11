@@ -259,9 +259,9 @@ interface ComposerAttachment {
   error?: string;
 }
 
-/** The exact running attempt a Send steers, or null when it starts a new turn. */
-function steerTarget(task: AgentTask | undefined): string | null {
-  return task ? `${task.operation_id}:${task.attempt}:${task.steer_turn_id}` : null;
+/** What a Send addresses: the exact running attempt it steers, or a new turn in a mode. */
+function sendTarget(task: AgentTask | undefined, mode: string): string {
+  return task ? `steer:${task.operation_id}:${task.attempt}:${task.steer_turn_id}` : `new:${mode}`;
 }
 
 /** A network dictation session; `session` is null until the microphone opens. */
@@ -556,7 +556,7 @@ export function NodeChat({
   // Send pressed while dictating: send once the final transcript is in the draft,
   // to the target Send addressed when pressed (a steered attempt, or a new turn).
   const [sendAfterDictation, setSendAfterDictation] = useState<{
-    target: string | null;
+    target: string;
   } | null>(null);
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
@@ -976,8 +976,8 @@ export function NodeChat({
     setSendAfterDictation(null);
     // A failed or kept transcription stays in the composer for the human to review.
     if (dictationState !== "idle" || keptSpeech(draftKey)) return;
-    if (sendAfterDictation.target !== steerTarget(steeringTask)) {
-      setSubmitError("The running turn changed before dictation finished; nothing was sent.");
+    if (sendAfterDictation.target !== sendTarget(steeringTask, mode)) {
+      setSubmitError("The turn or mode changed before dictation finished; nothing was sent.");
       return;
     }
     void send();
@@ -1864,7 +1864,7 @@ export function NodeChat({
   const send = async () => {
     if (!canCompose) return;
     if (dictating) {
-      setSendAfterDictation({ target: steerTarget(steeringTask) });
+      setSendAfterDictation({ target: sendTarget(steeringTask, mode) });
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return;
     }
