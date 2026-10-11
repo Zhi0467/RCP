@@ -245,6 +245,7 @@ def admit_chat_artifact_edit(
         origin_operation_id=origin.operation_id,
         launch_kind="discuss",
         episode_id=artifact.episode_id or origin.episode_id,
+        origin_bound=False,
     )
     return request.model_copy(
         update={

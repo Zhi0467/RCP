@@ -890,13 +890,10 @@ class ArtifactEditAdmission(BaseModel):
     reply_episode_id: str | None = None
     episode_id: str | None = None
     fresh_session: bool = False
-
-    @property
-    def origin_bound(self) -> bool:
-        """Whether the edit owns an origin-session launch rather than a chat attachment."""
-        return bool(
-            self.master_operation_id or self.fresh_session or self.launch_kind == "revoking"
-        )
+    # A viewer comment resumes the origin's session; a composer comment is an
+    # ordinary turn of its chat. Records from before the composer route are all
+    # origin-bound.
+    origin_bound: bool = True
 
 
 class RunRequest(BaseModel):

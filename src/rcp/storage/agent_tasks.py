@@ -97,6 +97,16 @@ if TYPE_CHECKING:
 # remains below its existing 64 KiB storage boundary.
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
 
+
+def _origin_bound_edit(request: Mapping[str, object]) -> bool:
+    """A viewer comment's edit runs on its origin's session, outside chat admission.
+
+    A record from before composer comments carries no flag and was origin-bound.
+    """
+    edit = request.get("artifact_edit")
+    return isinstance(edit, dict) and edit.get("origin_bound", True) is not False
+
+
 _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_admitted",
     "operation_dispatch_attempt",
@@ -673,10 +683,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_child_turn_admission(
         self, connection: sqlite3.Connection, record: AgentTaskRecord
     ) -> None:
-        if record.kind not in {"node_chat", "project_chat"} or (
-            isinstance(record.request.get("artifact_edit"), dict)
-            and record.dispatch_authority is None
-        ):
+        if record.kind not in {"node_chat", "project_chat"} or _origin_bound_edit(record.request):
             return
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str):
@@ -752,9 +759,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         the parent's Stop or ending fence.
         """
 
-        if previous.kind not in {"node_chat", "project_chat"} or (
-            isinstance(previous.request.get("artifact_edit"), dict)
-            and previous.dispatch_authority is None
+        if previous.kind not in {"node_chat", "project_chat"} or _origin_bound_edit(
+            previous.request
         ):
             return None
         chat_id = previous.request.get("chat_id")
@@ -804,7 +810,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self, connection: sqlite3.Connection, episode: EpisodeRecord
     ) -> None:
         rows = connection.execute(
-            "SELECT request_json, dispatch_authority_json FROM graph_runs WHERE project_id = ? "
+            "SELECT request_json FROM graph_runs WHERE project_id = ? "
             "AND graph_target_json = ? AND episode_id IS NULL "
             "AND kind IN ('node_chat', 'project_chat') "
             "AND status IN ('queued', 'running', 'pausing')",
@@ -813,10 +819,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         for row in rows:
             request = json.loads(row["request_json"])
             chat_id = request.get("chat_id")
-            if (
-                isinstance(request.get("artifact_edit"), dict)
-                and row["dispatch_authority_json"] is None
-            ) or not isinstance(chat_id, str):
+            if _origin_bound_edit(request) or not isinstance(chat_id, str):
                 continue
             if self._child_chat_owner(connection, episode.project_id, chat_id) is not None:
                 raise ValueError(f"auto_research_child_turn_active:{chat_id}")
@@ -851,9 +854,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
-        elif record.dispatch_authority is not None or not isinstance(
-            record.request.get("artifact_edit"), dict
-        ):
+        elif not _origin_bound_edit(record.request):
             self.require_episode_binding_admission_open(
                 connection,
                 record.project_id,
@@ -1263,7 +1264,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
               AND native_session_id IS NOT NULL AND native_session_id != ''
               -- Origin-bound viewer edits do not advance the current chat session.
               AND (json_extract(request_json, '$.artifact_edit') IS NULL
-                   OR dispatch_authority_json IS NOT NULL)
+                   OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0)
             ORDER BY created_at DESC, run.rowid DESC LIMIT 1
             """,
             (project_id, kind, chat_id),
