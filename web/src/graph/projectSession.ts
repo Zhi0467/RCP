@@ -92,6 +92,7 @@ export type ProjectSessionAction =
       project_id: string | null;
       graph_target?: GraphTargetRef;
       human_draft?: HumanDraft | null;
+      invalidate_backend?: boolean;
     }
   | {
       kind: "restore_tab";
@@ -229,11 +230,12 @@ export function projectSessionReducer(
         humanDraft: action.human_draft ?? null,
         draftPreviewPending: false,
         paperEditorGeneration: state.paperEditorGeneration + 1,
-        transitionCoordinator: reduceProjectTransitionCoordinator(state.transitionCoordinator, {
-          kind: "activate",
-          project_id: action.project_id,
-          graph_target: action.graph_target,
-        }),
+        transitionCoordinator: reduceProjectTransitionCoordinator(
+          action.invalidate_backend
+            ? emptyProjectTransitionCoordinator()
+            : state.transitionCoordinator,
+          { kind: "activate", project_id: action.project_id, graph_target: action.graph_target },
+        ),
       };
     }
     case "restore_tab": {

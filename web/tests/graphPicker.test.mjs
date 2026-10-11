@@ -15,8 +15,9 @@ const { conversationHref } = await server.ssrLoadModule("/src/chat/chatWorkspace
 const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
   "/src/experiments/experimentBoardModel.ts",
 );
-const { graphPickerOptions, graphRefLabel, selectionAfterGraphSwitch, unlistedActiveBranch } =
-  await server.ssrLoadModule("/src/graph/graphPickerModel.ts");
+const { graphPickerOptions, selectionAfterGraphSwitch } = await server.ssrLoadModule(
+  "/src/graph/graphPickerModel.ts",
+);
 const main = { kind: "main" };
 const branch = { kind: "branch", branch_id: "branch /+" };
 
@@ -58,19 +59,35 @@ test("view-change delegation preserves bare main routes and branch routes", () =
   );
 });
 
-test("picker puts main first, retains branch order, and keeps an archived active ref", () => {
-  const a = { kind: "branch", branch_id: "a", archived: true };
-  const b = { kind: "branch", branch_id: "b", archived: false };
-  const c = { kind: "branch", branch_id: "c", archived: true };
+test("picker orders main, running branches, then newest and retains only the active archived branch", () => {
+  const make = (id, date, extra = {}) => ({
+    kind: "branch",
+    branch_id: id,
+    name: id,
+    created_at: date,
+    running: false,
+    archived: false,
+    ...extra,
+  });
+  const old = make("old", "2026-01-01T00:00:00Z");
+  const recent = make("recent", "2026-03-01T00:00:00Z");
+  const running = make("running", "2026-02-01T00:00:00Z", { running: true });
+  const runningOld = make("running-old", "2026-01-01T00:00:00Z", { running: true });
+  const archived = make("archived", "2026-04-01T00:00:00Z", { archived: true });
+  const otherArchived = make("other-archived", "2026-05-01T00:00:00Z", { archived: true });
   const m = { kind: "main", archived: false };
-  const refs = [a, b, m, c];
-  assert.deepEqual(graphPickerOptions(refs, main), [m, b]);
-  assert.deepEqual(graphPickerOptions(refs, { kind: "branch", branch_id: "c" }), [m, b, c]);
-  assert.deepEqual(graphPickerOptions(refs, main, true), [m, a, b, c]);
-  assert.deepEqual(refs, [a, b, m, c]);
-  assert.equal(unlistedActiveBranch(refs, { kind: "branch", branch_id: "new" }), "new");
-  assert.equal(unlistedActiveBranch(refs, { kind: "branch", branch_id: "c" }), null);
-  assert.equal(unlistedActiveBranch(refs, main), null);
+  const refs = [old, archived, runningOld, recent, m, otherArchived, running];
+  const original = [...refs];
+  assert.deepEqual(graphPickerOptions(refs, main), [m, running, runningOld, recent, old]);
+  assert.deepEqual(graphPickerOptions(refs, { kind: "branch", branch_id: "archived" }), [
+    m,
+    running,
+    runningOld,
+    archived,
+    recent,
+    old,
+  ]);
+  assert.deepEqual(refs, original);
 });
 
 test("switch preserves view and only destination-owned selections", () => {
@@ -106,11 +123,4 @@ test("switch preserves view and only destination-owned selections", () => {
     chatId: null,
     episodeId: null,
   });
-});
-
-test("a branch is named by its owner's title, else a short id", () => {
-  const ref = { kind: "branch", branch_id: "0123456789abcdef", title: "  Find the cause\nmore" };
-  assert.equal(graphRefLabel(ref), "Find the cause");
-  assert.equal(graphRefLabel({ ...ref, title: null }), "01234567");
-  assert.ok(graphRefLabel({ ...ref, title: "x".repeat(500) }).length < 100);
 });

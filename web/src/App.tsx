@@ -111,7 +111,6 @@ import {
 } from "./graph/graphAuthority";
 import { buildGlossaryIndex } from "./graph/glossary";
 import {
-  experimentBoardHref,
   experimentBoardRouteToken,
   experimentIndexEntryForRoute,
   experimentStopPath,
@@ -542,11 +541,9 @@ export default function App() {
     return null;
   });
   const identity = useActorIdentity();
-  // All retained project state belongs to this backend and member. Replacing
-  // the boundary drops rendered state, tab snapshots and in-flight owners in
-  // one commit, before the pending route can open under another identity.
+  // Retained state belongs to the member. Backend restarts reconcile the held
+  // project; a different member still drops every retained snapshot atomically.
   const sessionKey = JSON.stringify([
-    identity.backendKey,
     identity.actorIdentity?.space_id,
     identity.actorIdentity?.space_kind,
     identity.actorIdentity?.user.user_id,
@@ -749,6 +746,9 @@ function MemberApp({
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
+    cacheProjectSnapshot,
+    clearProjectCache,
+    cachedProjectSnapshotForOpen,
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
@@ -768,9 +768,8 @@ function MemberApp({
     projectId,
     graphTarget,
   );
-  // A ref switch keeps the previous ref's snapshot on screen, inert, until the
-  // new ref's snapshot arrives; it is never cached or drafted against. Until the
-  // open effect resets the session, that snapshot is still the session's own.
+  // Activation keeps the previous snapshot on screen, inert, until the target
+  // paints. The held copy is never cached or drafted against.
   const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
   const project =
     targetProject ??
@@ -779,6 +778,8 @@ function MemberApp({
       : heldRefProject?.id === projectId
         ? heldRefProject
         : null);
+  const displayedProjectRef = useRef(project);
+  displayedProjectRef.current = project;
   const graph = project?.graph ?? emptyGraph;
   const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
@@ -801,10 +802,9 @@ function MemberApp({
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
   useEffect(() => {
-    // The new ref painted, or failed like any open: stop holding the old one.
-    if (heldRefProject && (targetProject || projectReconciliation === "failed"))
-      setHeldRefProject(null);
-  }, [heldRefProject, projectReconciliation, targetProject]);
+    // A failed read keeps the last snapshot inert; only a target paint releases it.
+    if (heldRefProject && targetProject) setHeldRefProject(null);
+  }, [heldRefProject, targetProject]);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const watchersRef = useRef(watchers);
@@ -1045,7 +1045,6 @@ function MemberApp({
     projectId: string;
     refs: GraphRef[] | null;
   } | null>(null);
-  const [showArchivedRefs, setShowArchivedRefs] = useState(false);
   const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
   const graphTargetKey = graphSessionKey("", graphTarget);
   // Episode changes move a branch's chain member or merge state; any turn on
@@ -1984,18 +1983,66 @@ function MemberApp({
       return;
     }
     const previousOpen = lastProjectOpen.current;
-    const resumesOpen =
-      projectOpenInterrupted.current &&
+    const sameOpen =
       previousOpen !== null &&
-      (!projectId || getProjectSessionState().project !== null) &&
-      previousOpen.backendKey === backendKey &&
       previousOpen.projectId === projectId &&
-      previousOpen.setupOpen === setupOpen &&
-      sameGraphTarget(previousOpen.graphTarget, graphTarget);
+      previousOpen.setupOpen === setupOpen;
+    const interrupted = projectOpenInterrupted.current;
+    const backendChanged = previousOpen !== null && previousOpen.backendKey !== backendKey;
+    if (backendChanged) {
+      clearProjectCache();
+      authoritativeProjectId.current = null;
+      for (const id of new Set([
+        ...projectReadinessGenerations.current.keys(),
+        ...providerReadinessRequestsInFlight.current.keys(),
+      ])) {
+        invalidateProjectReadinessGenerations(projectReadinessGenerations.current, id, {
+          provider: false,
+          compute: false,
+        });
+      }
+      providerReadinessRequestsInFlight.current.clear();
+      setProviderReadinessRequests({});
+      if (providerSkillReadinessPoll.current) {
+        window.clearTimeout(providerSkillReadinessPoll.current.timeoutId);
+        providerSkillReadinessPoll.current = null;
+      }
+      setHeldRefProject(displayedProjectRef.current);
+      const current = getProjectSessionState();
+      let draft =
+        current.projectId === projectId && sameGraphTarget(current.graphTarget, graphTarget)
+          ? current.humanDraft
+          : null;
+      if (projectId && !sameGraphTarget(current.graphTarget, graphTarget)) {
+        try {
+          const key = humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget);
+          if (key) draft = deserializeHumanDraft(localStorage.getItem(key));
+        } catch (error) {
+          setNotice({ kind: "error", text: String(error) });
+        }
+      }
+      dispatchProjectSession({
+        kind: "reset",
+        project_id: projectId,
+        graph_target: graphTarget,
+        human_draft: draft,
+        invalidate_backend: true,
+      });
+    }
+    const resumesOpen = sameOpen && (!projectId || displayedProjectRef.current?.id === projectId);
     lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
     projectOpenInterrupted.current = false;
+    // Ref activation has its own session lifecycle below. Dependency churn
+    // reconciles the displayed project instead of taking the cold-open path.
+    if (
+      resumesOpen &&
+      !interrupted &&
+      !backendChanged &&
+      !sameGraphTarget(previousOpen.graphTarget, graphTarget)
+    )
+      return;
     if (resumesOpen) {
-      // The same backend came back: reload what is shown, never reopen it.
+      // Reconcile the project already on screen, including a held ref snapshot.
       if (setupOpen) return;
       if (!projectId) {
         void refreshProjectInvitations();
@@ -2040,19 +2087,6 @@ function MemberApp({
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
     const retained = retainedOpen?.state;
-    // Activating another ref of the open project is not a project open: the
-    // shell, view, and header stay, and the old ref's snapshot is held inert.
-    const previousRefProject = getProjectSessionState().project;
-    const activatesRef =
-      !!projectId &&
-      !setupOpen &&
-      previousOpen !== null &&
-      previousOpen.backendKey === backendKey &&
-      previousOpen.projectId === projectId &&
-      !previousOpen.setupOpen &&
-      !sameGraphTarget(previousOpen.graphTarget, graphTarget) &&
-      previousRefProject?.id === projectId;
-    setHeldRefProject(activatesRef && !retained ? previousRefProject : null);
     setNotice(null);
     if (projectId && retained) {
       restoreProjectTabState(
@@ -2061,7 +2095,7 @@ function MemberApp({
         routeMatchesProject && requestedRoute.projectViewSpecified ? requestedRoute : undefined,
       );
     } else {
-      if (!activatesRef) setLoading(true);
+      setLoading(!displayedProjectRef.current || displayedProjectRef.current.id !== projectId);
       setProjectReconciliation("opening");
       authoritativeProjectId.current = null;
       let storedDraft: HumanDraft | null = null;
@@ -2085,20 +2119,19 @@ function MemberApp({
         human_draft: storedDraft,
       });
       // The hash already set the view; a node survives only if the new ref has it.
-      if (!activatesRef)
-        resetProjectSelection(
-          routeMatchesProject ? requestedRoute.view : "overview",
-          routeMatchesProject ? requestedRoute.experimentId : null,
-          routeMatchesProject ? requestedRoute.experimentRoute : null,
-          routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
-        );
+      resetProjectSelection(
+        routeMatchesProject ? requestedRoute.view : "overview",
+        routeMatchesProject ? requestedRoute.experimentId : null,
+        routeMatchesProject ? requestedRoute.experimentRoute : null,
+        routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
+      );
       resetProjectChats();
       resetProjectTasks();
       resetProjectHistory(projectId, graphTarget);
       setUsage(null);
       setWatchers([]);
       setExperimentStartOverlap(null);
-      if (!activatesRef) resetProjectHeader(projectId);
+      resetProjectHeader(projectId);
     }
     if (setupOpen) {
       setLoading(false);
@@ -2178,6 +2211,7 @@ function MemberApp({
     backendKey,
     beginProjectSnapshotRequest,
     cachedProjectStateForOpen,
+    clearProjectCache,
     getProjectSessionState,
     dispatchProjectSession,
     identityIssue,
@@ -2200,6 +2234,106 @@ function MemberApp({
     setupOpen,
     teamSessionRequired,
     backendSessionReady,
+  ]);
+
+  useLayoutEffect(() => {
+    if (!backendSessionReady || !projectId || setupOpen) return;
+    const current = getProjectSessionState();
+    if (current.projectId !== projectId || sameGraphTarget(current.graphTarget, graphTarget))
+      return;
+    setHeldRefProject(displayedProjectRef.current);
+    const retained = cachedProjectStateForOpen(projectId, graphTarget)?.state;
+    if (retained) {
+      restoreProjectTabState(projectId, retained, parseProjectHash(window.location.hash));
+    } else {
+      let draft: HumanDraft | null = null;
+      try {
+        const key = humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget);
+        if (key) draft = deserializeHumanDraft(localStorage.getItem(key));
+      } catch (error) {
+        setNotice({ kind: "error", text: String(error) });
+      }
+      dispatchProjectSession({
+        kind: "reset",
+        project_id: projectId,
+        graph_target: graphTarget,
+        human_draft: draft,
+      });
+      authoritativeProjectId.current = null;
+      setProjectReconciliation("reconciling");
+      resetProjectHistory(projectId, graphTarget);
+      const snapshot = cachedProjectSnapshotForOpen(projectId, graphTarget);
+      if (snapshot && applyProjectSnapshot(snapshot, false)) {
+        authoritativeProjectId.current = projectId;
+        setProjectReconciliation("authoritative");
+      }
+    }
+    let cancelled = false;
+    void reload().catch((error) => {
+      if (cancelled || !isActiveGraph(projectId)) return;
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      setProjectReconciliation("failed");
+    });
+    return () => {
+      cancelled = true;
+      beginProjectSnapshotRequest(projectId);
+    };
+  }, [
+    backendSessionReady,
+    projectId,
+    setupOpen,
+    graphTarget,
+    getProjectSessionState,
+    cachedProjectStateForOpen,
+    cachedProjectSnapshotForOpen,
+    restoreProjectTabState,
+    dispatchProjectSession,
+    resetProjectHistory,
+    applyProjectSnapshot,
+    reload,
+    isActiveGraph,
+    beginProjectSnapshotRequest,
+  ]);
+
+  // Warm only live branches, sequentially, in the same per-ref cache as visits.
+  const prefetchQueue = useRef(Promise.resolve());
+  useEffect(() => {
+    if (!backendSessionReady || !projectId || !projectGraphRefs) return;
+    let cancelled = false;
+    prefetchQueue.current = prefetchQueue.current.then(async () => {
+      for (const ref of projectGraphRefs) {
+        if (cancelled) return;
+        if (ref.kind !== "branch" || ref.archived) continue;
+        const target: GraphTargetRef = { kind: "branch", branch_id: ref.branch_id };
+        if (
+          sameGraphTarget(activeGraphTargetRef.current, target) ||
+          cachedProjectSnapshotForOpen(projectId, target)
+        )
+          continue;
+        try {
+          const snapshot = await api<ProjectSnapshot>(
+            graphTargetUrl(`/api/projects/${encodeURIComponent(projectId)}`, target),
+          );
+          if (!cancelled) cacheProjectSnapshot(snapshot);
+        } catch (error) {
+          if (!cancelled)
+            setNotice({
+              kind: "error",
+              text: `Branch could not be preloaded: ${error instanceof Error ? error.message : String(error)}`,
+            });
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    backendKey,
+    backendSessionReady,
+    projectId,
+    projectGraphRefs,
+    cacheProjectSnapshot,
+    cachedProjectSnapshotForOpen,
   ]);
 
   useEffect(() => {
@@ -4366,12 +4500,10 @@ function MemberApp({
       </section>
     </div>
   ) : null;
-  // A reverification of the backend this page last opened keeps the rendered
-  // tree mounted (scroll, panels, unsent text) under a blocking overlay. A
-  // changed backend fails this test and replaces the tree as before.
+  // Reverification keeps the rendered tree under a blocking overlay. Member
+  // changes still remount the outer identity boundary.
   const holdRenderedTree =
     lastProjectOpen.current !== null &&
-    lastProjectOpen.current.backendKey === backendKey &&
     !!actorIdentity &&
     !!authenticatedHealth &&
     !teamSessionRequired &&
@@ -4449,7 +4581,7 @@ function MemberApp({
     ? parseProjectSetupRoute(window.location.hash)
     : { kind: "none" };
 
-  if (!identityReady)
+  if (!identityReady && !holdRenderedTree)
     return (
       <div className="app-loading">
         <LoaderCircle className="spin" />
@@ -4517,7 +4649,7 @@ function MemberApp({
       </>
     );
   }
-  if (loading)
+  if (loading && !project)
     return (
       <div className="app-loading">
         <LoaderCircle className="spin" />
@@ -4877,33 +5009,6 @@ function MemberApp({
       />
     </>
   );
-  const activeGraphRef =
-    graphTarget.kind === "branch"
-      ? projectGraphRefs?.find(
-          (ref): ref is Extract<GraphRef, { kind: "branch" }> =>
-            ref.kind === "branch" && ref.branch_id === graphTarget.branch_id,
-        )
-      : undefined;
-  const chainMemberId =
-    activeGraphRef?.current_episode_id ?? activeBranchEpisode?.episode_id ?? null;
-  const chainMember =
-    episodes.find((episode) => episode.episode_id === chainMemberId) ??
-    (activeBranchEpisode?.episode_id === chainMemberId ? activeBranchEpisode : null);
-  const episodeTasksHref =
-    chainMemberId === null
-      ? null
-      : chainMember?.mode === "experiment_loop" && chainMember.control_node_id
-        ? experimentBoardHref(project.id, {
-            experiment_id: chainMember.control_node_id,
-            episode_id: chainMember.episode_id,
-            graph_target: graphTarget,
-            parent_episode_id: null,
-          })
-        : (activeGraphRef?.mode ?? chainMember?.mode) === "auto_research"
-          ? projectViewHash(project.id, graphTarget, "execution", {
-              autoResearchEpisodeId: chainMemberId,
-            })
-          : projectViewHash(project.id, graphTarget, "execution");
   const selectGraphRef = (target: GraphTargetRef) => {
     if (sameGraphTarget(target, graphTarget)) return;
     // Nodes are not in the URL: the open effect keeps one only if the new ref has it.
@@ -4975,6 +5080,28 @@ function MemberApp({
         )}
       </button>
     );
+  const branchPicker = (
+    <GraphPicker
+      refs={projectGraphRefs ?? null}
+      activeRef={graphTarget}
+      projectId={project.id}
+      compact={phone}
+      onSelect={selectGraphRef}
+      onRefUpdated={(updated) =>
+        setGraphRefs((current) =>
+          current?.projectId === project.id
+            ? {
+                ...current,
+                refs:
+                  current.refs?.map((ref) =>
+                    ref.kind === "branch" && ref.branch_id === updated.branch_id ? updated : ref,
+                  ) ?? null,
+              }
+            : current,
+        )
+      }
+    />
+  );
   const trustFilter = showTrustFilter && (
     <label className="trust-filter">
       <span>Show</span>
@@ -5010,6 +5137,7 @@ function MemberApp({
       {phone && (
         <PhoneProjectBar
           projectName={project.name}
+          branchPicker={branchPicker}
           hasDraft={draftChangeCount > 0 || behindDraftCount > 0}
           status={reconcilingStatus}
           onBack={returnToProjects}
@@ -5095,27 +5223,12 @@ function MemberApp({
           )}
           {navItems.map(renderNavItem)}
           {trustFilter}
+          {branchPicker}
         </nav>
       )}
 
-      {(projectGraphRefs === null ||
-        graphTarget.kind === "branch" ||
-        projectGraphRefs?.some((ref) => ref.kind === "branch")) && (
-        <GraphPicker
-          refs={projectGraphRefs === undefined ? [] : projectGraphRefs}
-          activeRef={graphTarget}
-          revision={graph.revision}
-          showArchived={showArchivedRefs}
-          onShowArchivedChange={setShowArchivedRefs}
-          onSelect={selectGraphRef}
-          episodeTasksLink={
-            episodeTasksHref && (
-              <a className="button compact secondary" href={episodeTasksHref}>
-                Episode & tasks
-              </a>
-            )
-          }
-        />
+      {(projectReconciliation === "opening" || projectReconciliation === "reconciling") && (
+        <div className="branch-switch-progress" role="progressbar" aria-label="Loading branch" />
       )}
       {(dockedNodes.length > 0 || dockedArtifact) && (
         <section className="node-window-dock" aria-label="Docked windows">
