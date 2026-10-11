@@ -46,7 +46,8 @@ def migrate_branch_names(connection: sqlite3.Connection) -> None:
 def _fallback(mode: str, created_at: str, occupied: set[str]) -> str:
     created = datetime.fromisoformat(created_at).astimezone(UTC)
     month = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
-    prefix = "research" if mode == "auto_research" else "experiment"
+    # Named for the launch mode, not a node type: experiment_loop -> experiment.
+    prefix = "research" if mode == "auto_research" else mode.removesuffix("_loop")
     base = f"{prefix}-{month[created.month - 1]}-{created.day:02d}"
     name, suffix = base, 2
     while name in occupied:
