@@ -983,9 +983,10 @@ export function NodeChat({
 
   const updateMessage = (next: string) => {
     if (readOnly) return;
+    // Pin the next turn's pick, not a running turn's mode shown while steering.
     if (next && !modeState.pinned && !commentOnly) {
-      writeStorage(modeKey, mode);
-      setModeState({ value: mode, pinned: true });
+      writeStorage(modeKey, modeState.value);
+      setModeState({ value: modeState.value, pinned: true });
     }
     setMessage(next);
     skills.readMessage(next);
@@ -1252,8 +1253,8 @@ export function NodeChat({
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
     if (!commentOnly) {
-      writeStorage(modeKey, mode);
-      setModeState({ value: mode, pinned: true });
+      writeStorage(modeKey, modeState.value);
+      setModeState({ value: modeState.value, pinned: true });
     }
     setSubmitError(null);
     setDictationError(null);

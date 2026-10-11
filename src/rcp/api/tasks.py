@@ -1044,6 +1044,15 @@ def retry_agent_task(
                         "run_on": candidate.run_on,
                     }
                 )
+        edit = candidate.artifact_edit if isinstance(candidate, RunRequest) else None
+        if (
+            edit is not None
+            and not edit.origin_bound
+            and candidate.run_on != previous.request.get("run_on")
+            and store.agent_task_has_receipt(edit.operation_id, "artifact_edit_staged")
+        ):
+            # The staged copy lives on the original machine; another one cannot publish it.
+            raise ValueError("An artifact edit retries on the machine that staged it.")
         candidate_payload = candidate.model_dump(mode="json")
         experiment_admission.require_current(service, candidate_payload)
         skills = _validate_stored_task_request(
