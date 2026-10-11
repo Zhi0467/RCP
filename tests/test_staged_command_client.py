@@ -2168,10 +2168,15 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
     }
 
 
-def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    ("status", "delivery", "exit_code"),
+    [("unavailable", "unknown", 2), ("invalid", "not_sent", 1)],
+)
+def test_ask_later_round_failure_keeps_earlier_delivery(
+    tmp_path, monkeypatch, capsys, status, delivery, exit_code
+) -> None:
     from rcp.agents import staged_command_client as client
 
-    delivery = "unknown"
     calls = []
     monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0)
 
@@ -2190,9 +2195,10 @@ def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys)
                 "ask",
                 request_id,
             )
-        # A prior pending state must not conceal an uncertain later transport round.
+        # A later round can fail (e.g. a backgrounded client lost its parent),
+        # but the first round already delivered the question.
         return client._handle_response(
-            {"request_id": request_id, "status": "unavailable", "result": {"delivery": delivery}},
+            {"request_id": request_id, "status": status, "result": {"delivery": delivery}},
             "ask",
             request_id,
         )
@@ -2216,9 +2222,9 @@ def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys)
                 "Proceed?",
             ]
         )
-        == 2
+        == exit_code
     )
-    assert json.loads(capsys.readouterr().out)["result"] == {"delivery": delivery}
+    assert json.loads(capsys.readouterr().out)["result"] == {"delivery": "unknown"}
 
 
 @pytest.mark.asyncio

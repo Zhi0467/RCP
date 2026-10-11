@@ -791,7 +791,9 @@ command result is JSON on stdout, and one invocation shares a single deadline of
 `COMMAND_CLIENT_WAIT_SECONDS`, inside provider shell-tool limits. A transport
 failure also states its `delivery`: `not_sent` never reached RCP, while
 `unknown` reached it or may have, so RCP can still act and the exact same call
-returns that outcome. Handler outcomes such as `submitted` or `disposition` are
+returns that outcome. An `ask` polls in rounds; once one round delivered the
+question, a later round's failure reports `unknown`, never `not_sent`, so the
+agent repeats the same key instead of asking again under a new one. Handler outcomes such as `submitted` or `disposition` are
 separate result fields. A keyed file command sends only the checked file name;
 RCP reads the contents on first admission and answers a known key from its
 record, so a retry works after Apply consumed or replaced the file. Refusals

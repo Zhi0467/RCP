@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -531,6 +532,7 @@ def _run(namespace):
     else:
         if namespace.mailbox_id is not None:
             raise ClientInputError("mailbox id is supplied by the credential")
+        broker = None
         mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
     wait = (
@@ -543,21 +545,29 @@ def _run(namespace):
     namespace.timeout = wait
     deadline = time.monotonic() + wait
     call_id = uuid.uuid4().hex if verb == "ask" else None
+    delivered = False
     while True:
-        response = _run_round(
-            namespace,
-            workspace,
-            mailbox_id,
-            token,
-            verb,
-            key,
-            arguments,
-            broker if namespace.broker is not None else None,
-            deadline,
-            call_id=call_id,
-        )
+        captured = io.StringIO()
+        # Once a round has delivered the question, a later round's failure
+        # cannot honestly say it was never sent.
+        with redirect_stdout(captured if delivered else sys.stdout):
+            response = _run_round(
+                namespace,
+                workspace,
+                mailbox_id,
+                token,
+                verb,
+                key,
+                arguments,
+                broker,
+                deadline,
+                call_id=call_id,
+            )
         if not isinstance(response, dict):
+            if delivered:
+                _print_json(_already_delivered(json.loads(captured.getvalue())))
             return response
+        delivered = True
         if response["result"].get("state") == "answered":
             receipt_token = response["result"].get("receipt_token")
             # A second authenticated request proves consumption on either
@@ -578,7 +588,7 @@ def _run(namespace):
                             verb,
                             key,
                             arguments,
-                            broker if namespace.broker is not None else None,
+                            broker,
                             deadline,
                             receipt_token=receipt_token,
                             call_id=call_id,
@@ -599,6 +609,18 @@ def _run(namespace):
             response["message"] = _pending_guidance(response["result"])
             _print_json(_display_response(response, verb))
             return OK
+
+
+def _already_delivered(printed):
+    result = printed.get("result")
+    if isinstance(result, dict) and result.get("delivery") == "not_sent":
+        result["delivery"] = "unknown"
+        printed["message"] = (
+            "RCP already has this question from an earlier round of this call. "
+            "Repeat the exact same command, with the same key, to keep waiting; "
+            f"never ask it again under a new key. This round failed: {printed.get('message')}"
+        )
+    return printed
 
 
 def _pending_guidance(result):
