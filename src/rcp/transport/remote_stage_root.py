@@ -236,7 +236,7 @@ def _turn_artifact_folder(workspace: str, scope: str, name: str, *, create: bool
     return descriptors
 
 
-def _artifact_digest(folder: int, name: str) -> tuple[str, int] | None:
+def _artifact_digest(folder: int, name: str, max_bytes: int) -> tuple[str, int] | None:
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=folder)
     except FileNotFoundError:
@@ -245,15 +245,21 @@ def _artifact_digest(folder: int, name: str) -> tuple[str, int] | None:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("turn artifact is not a regular file")
+        if info.st_size > max_bytes:
+            # Never hash an oversized file; its size alone settles it.
+            return "", info.st_size
         digest = hashlib.sha256()
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
         return digest.hexdigest(), info.st_size
 
 
-def artifact_digests(workspace: str, entries: list[list[str]]) -> list[tuple[str, str, str, int]]:
+def artifact_digests(
+    workspace: str, entries: list[list[str]], max_bytes: int
+) -> list[tuple[str, str, str, int]]:
     """Each named turn artifact's sha256 and size. A missing file is left out; one
-    that is not a regular file (a symlink, say) has an empty digest and size -1."""
+    that is not a regular file (a symlink, say) has an empty digest and size -1,
+    and one over `max_bytes` has an empty digest and its size, unread."""
     found: list[tuple[str, str, str, int]] = []
     for scope, name in entries:
         try:
@@ -261,7 +267,7 @@ def artifact_digests(workspace: str, entries: list[list[str]]) -> list[tuple[str
         except (OSError, ValueError):
             continue
         try:
-            digest = _artifact_digest(descriptors[-1], name)
+            digest = _artifact_digest(descriptors[-1], name, max_bytes)
         except (OSError, ValueError):
             digest = ("", -1)
         finally:
@@ -272,13 +278,15 @@ def artifact_digests(workspace: str, entries: list[list[str]]) -> list[tuple[str
     return found
 
 
-def sync_artifact(workspace: str, scope: str, name: str, expected: str, data: bytes) -> bool:
+def sync_artifact(
+    workspace: str, scope: str, name: str, expected: str, data: bytes, max_bytes: int
+) -> bool:
     """Replace a turn artifact with `data` only while it holds `expected` (empty: absent)."""
     descriptors = _turn_artifact_folder(workspace, scope, name, create=True)
     folder = descriptors[-1]
     temporary = ""
     try:
-        current = _artifact_digest(folder, name)
+        current = _artifact_digest(folder, name, max_bytes)
         if (current[0] if current else "") != expected:
             return False
         temporary = ".sync-" + os.urandom(16).hex()
@@ -402,10 +410,11 @@ def main(argv: list[str]) -> int:
             remove_stage(argv[2])
         elif len(argv) == 5 and argv[1] == "prepare-artifacts":
             prepare_artifacts(argv[2], argv[3], argv[4] == "1")
-        elif len(argv) == 4 and argv[1] == "artifact-digests":
-            print(json.dumps(artifact_digests(argv[2], json.loads(argv[3]))))
-        elif len(argv) == 6 and argv[1] == "sync-artifact":
-            if not sync_artifact(argv[2], argv[3], argv[4], argv[5], sys.stdin.buffer.read()):
+        elif len(argv) == 5 and argv[1] == "artifact-digests":
+            print(json.dumps(artifact_digests(argv[2], json.loads(argv[3]), int(argv[4]))))
+        elif len(argv) == 7 and argv[1] == "sync-artifact":
+            data = sys.stdin.buffer.read()
+            if not sync_artifact(argv[2], argv[3], argv[4], argv[5], data, int(argv[6])):
                 return 43
         elif len(argv) == 7 and argv[1] == "commit-inputs":
             commit_inputs(

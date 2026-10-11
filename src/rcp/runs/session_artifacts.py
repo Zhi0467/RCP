@@ -92,7 +92,7 @@ def _digests(
     return {
         (scope, name): (digest, size)
         for scope, name, digest, size in artifact_digests(
-            str(workspace), [list(entry) for entry in entries]
+            str(workspace), [list(entry) for entry in entries], CHAT_ARTIFACT_MAX_FILE_BYTES
         )
     }
 
@@ -106,7 +106,14 @@ def _write(
 ) -> bool:
     if remote is not None:
         return remote.sync_artifact(artifact.supplier_id, artifact.source_name, expected, data)
-    return sync_artifact(str(workspace), artifact.supplier_id, artifact.source_name, expected, data)
+    return sync_artifact(
+        str(workspace),
+        artifact.supplier_id,
+        artifact.source_name,
+        expected,
+        data,
+        CHAT_ARTIFACT_MAX_FILE_BYTES,
+    )
 
 
 def _version_sha(store: AppStore, artifact_id: str, version_id: str) -> str:
@@ -248,10 +255,11 @@ def _publish(
     tracked = _tracked(execution, request, scope_id)
     if not tracked:
         return []
+    # Unbounded per category: a replay must see every artifact this turn settled.
     settled = {
         receipt.payload.get("artifact_id"): receipt
-        for receipt in store.agent_task_receipts(execution.operation_id)
-        if receipt.category in OUTCOME_CATEGORIES.values()
+        for category in dict.fromkeys(OUTCOME_CATEGORIES.values())
+        for receipt in store.agent_task_receipts_by_category(execution.operation_id, category)
     }
     digests = _digests(workspace, remote, tracked)
     listed: list[AgentArtifactDescriptor] = []

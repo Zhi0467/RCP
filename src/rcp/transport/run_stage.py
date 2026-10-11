@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from rcp.limits import (
+    CHAT_ARTIFACT_MAX_FILE_BYTES,
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
@@ -954,6 +955,7 @@ finally:
                 "artifact-digests",
                 str(self.workspace),
                 json.dumps([list(entry) for entry in entries]),
+                str(CHAT_ARTIFACT_MAX_FILE_BYTES),
             ]
         )
         if result.returncode:
@@ -980,6 +982,7 @@ finally:
                 scope_id,
                 name,
                 expected_sha256,
+                str(CHAT_ARTIFACT_MAX_FILE_BYTES),
             ],
             input_data=data,
         )

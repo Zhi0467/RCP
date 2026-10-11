@@ -2525,7 +2525,7 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(
         stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
 
 
-def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage) -> None:
+def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage, monkeypatch) -> None:
     def sha(data: bytes) -> str:
         return hashlib.sha256(data).hexdigest()
 
@@ -2548,6 +2548,9 @@ def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage) ->
     with pytest.raises(StateUnavailable):
         stage.sync_artifact("earlier", "linked.html", "", b"never")
     assert tracked.read_bytes() == b"v2"
+    # An oversized file reports its size, unhashed.
+    monkeypatch.setattr("rcp.transport.run_stage.CHAT_ARTIFACT_MAX_FILE_BYTES", 1)
+    assert stage.artifact_digests([("earlier", "page.html")]) == {("earlier", "page.html"): ("", 2)}
 
 
 def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage) -> None:
