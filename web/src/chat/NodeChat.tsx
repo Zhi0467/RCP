@@ -259,9 +259,11 @@ interface ComposerAttachment {
   error?: string;
 }
 
-/** What a Send addresses: the exact running attempt it steers, or a new turn in a mode. */
-function sendTarget(task: AgentTask | undefined, mode: string): string {
-  return task ? `steer:${task.operation_id}:${task.attempt}:${task.steer_turn_id}` : `new:${mode}`;
+/** What a Send addresses: the exact running attempt it steers, a new turn in a
+ *  mode, or nothing while an unsteerable turn runs. */
+function sendTarget(task: AgentTask | undefined, mode: string, active: boolean): string {
+  if (task) return `steer:${task.operation_id}:${task.attempt}:${task.steer_turn_id}`;
+  return active ? "busy" : `new:${mode}`;
 }
 
 /** A network dictation session; `session` is null until the microphone opens. */
@@ -976,7 +978,7 @@ export function NodeChat({
     setSendAfterDictation(null);
     // A failed or kept transcription stays in the composer for the human to review.
     if (dictationState !== "idle" || keptSpeech(draftKey)) return;
-    if (sendAfterDictation.target !== sendTarget(steeringTask, mode)) {
+    if (sendAfterDictation.target !== sendTarget(steeringTask, mode, relatedActive)) {
       setSubmitError("The turn or mode changed before dictation finished; nothing was sent.");
       return;
     }
@@ -1864,7 +1866,7 @@ export function NodeChat({
   const send = async () => {
     if (!canCompose) return;
     if (dictating) {
-      setSendAfterDictation({ target: sendTarget(steeringTask, mode) });
+      setSendAfterDictation({ target: sendTarget(steeringTask, mode, relatedActive) });
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return;
     }
