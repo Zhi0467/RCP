@@ -22,7 +22,7 @@ from rcp.core.models import (
     Patch,
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.history import BranchMergeAlreadyResolved, HistoryManager, ReplayHalted
+from rcp.history import BranchMergeAlreadyResolved, HistoryManager, PatchRejected, ReplayHalted
 from rcp.runs.branch_merge import branch_merge_id
 from rcp.transport import BatchPublishFailed, StateWorkspace
 from rcp.transport.state import (
@@ -1045,3 +1045,23 @@ def test_branch_metadata_json_is_current_after_reopen(manifest) -> None:
 
     raw = json.loads((branch.root / "branch.json").read_text(encoding="utf-8"))
     assert raw["head"] == branch.head_ref().model_dump(mode="json")
+
+
+def test_branch_append_never_records_a_non_member_human_patch(manifest) -> None:
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
+    history.append(seed_patch())
+    metadata = _branch_metadata(history)
+    branch = history.create_episode_branch(metadata)
+    history.project_id = metadata.project_id
+    history.write_authority = WriteAuthority(project_membership_check=lambda _p, _u: False)
+    revision = branch.state().revision
+    patch_files = sorted(branch.patches_dir.glob("*.json"))
+
+    with pytest.raises(PatchRejected):
+        branch.append(
+            Patch(kind="approval", author="human", summary="Review", ops=[]),
+            authorized_by=_authorizer(),
+        )
+
+    assert branch.state().revision == revision
+    assert sorted(branch.patches_dir.glob("*.json")) == patch_files

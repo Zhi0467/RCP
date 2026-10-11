@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.core.authority import refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
@@ -250,7 +251,7 @@ class BranchHistoryManager:
             apply_target=self.graph_target,
         )
         self._require_prepared_branch_patch(prepared)
-        if discard_on_reject and report.rejected:
+        if report.rejected and (discard_on_reject or refused_authorizer(report)):
             raise PatchRejected(report)
         prepared = prepared.model_copy(
             update={

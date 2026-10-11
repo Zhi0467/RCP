@@ -29,7 +29,7 @@ from rcp.config import (
     write_machine_provider_paths,
     write_project_scope,
 )
-from rcp.core.authority import HUMAN_AUTHORIZER_NOT_MEMBER, WriteAuthority
+from rcp.core.authority import WriteAuthority, refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
@@ -1041,10 +1041,7 @@ class HistoryManager:
             revision,
             authorized_by=authorized_by,
         )
-        if report.rejected and (
-            discard_on_reject
-            or any(item.code == HUMAN_AUTHORIZER_NOT_MEMBER for item in report.messages)
-        ):
+        if report.rejected and (discard_on_reject or refused_authorizer(report)):
             raise PatchRejected(report)
         patch = patch.model_copy(
             update={

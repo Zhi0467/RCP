@@ -928,6 +928,12 @@ def _authorship_rejected(patch: Patch) -> bool:
 HUMAN_AUTHORIZER_NOT_MEMBER = "human-authorizer-not-member"
 
 
+def refused_authorizer(report: ValidationReport) -> bool:
+    """Whether admission refused the human authorizer, so nothing may be recorded."""
+
+    return any(item.code == HUMAN_AUTHORIZER_NOT_MEMBER for item in report.messages)
+
+
 class WriteAuthority:
     """Live admission authority. Without resolvers, only system/history use is allowed."""
 
