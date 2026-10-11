@@ -2,28 +2,56 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from typing import Any
+
+from pydantic import TypeAdapter
 
 from rcp.core.models import (
+    Ambiguity,
+    BeliefTransition,
+    Edge,
+    GlossaryTerm,
     GraphState,
     Patch,
+    ProjectNode,
     Proposal,
     ReplayFailure,
+    Standing,
 )
-from rcp.core.ontology import edge_layer
+from rcp.core.ontology import custom_relation, edge_layer
 from rcp.core.operations import (
+    BeliefCause,
+    CreateAmbiguitiesOperation,
+    CreateEdgesOperation,
+    CreateNodesOperation,
     CreateProposalsOperation,
     GraphOperation,
+    MergeNodesOperation,
+    RemoveEdgesOperation,
+    RemoveNodesOperation,
+    ResolveAmbiguitiesOperation,
+    ResolveProposalsOperation,
+    SetCoverageOperation,
+    SetOntologyOperation,
+    SetProjectTruthScopeOperation,
+    SetStandingOperation,
+    SupersedeNodesOperation,
+    UpdateNodesOperation,
     UpsertGlossaryOperation,
+    WithdrawProposalsOperation,
+    strict_project_node,
 )
+from rcp.core.project_types import project_type_of
 from rcp.core.validation import (
+    IMMUTABLE_NODE_UPDATE_FIELDS,
     ValidationContext,
     ValidationReport,
     proposal_dependencies,
     validate_patch,
 )
-from rcp.core.validation.apply_ops import ApplyContext
-from rcp.core.validation.registry import OP_RULES
+from rcp.core.validation.constants import LEGACY_COMPATIBILITY_UPDATE_FIELDS
 
+NODE_ADAPTER = TypeAdapter(ProjectNode)
 AcceptedPatchObserver = Callable[[GraphState, Patch, GraphState], None]
 
 
@@ -305,16 +333,215 @@ def _apply_patch(
         else set()
     )
     for operation_index, op in enumerate(patch.ops):
-        OP_RULES[op.op].apply(
-            op,
-            ApplyContext(
-                state,
-                patch,
-                repository_descriptors,
-                created_edge_ids,
-                system_fields=operation_index in generated_operation_indexes,
-            ),
-        )
+        if isinstance(op, CreateNodesOperation):
+            for raw in op.nodes:
+                data = raw.model_dump(mode="python", exclude_unset=True)
+                data["created_rev"] = revision
+                data["updated_rev"] = revision
+                data["standing"] = data.get("standing", "asserted")
+                node = NODE_ADAPTER.validate_python(data)
+                state.nodes[node.id] = node
+        elif isinstance(op, UpdateNodesOperation):
+            for update in op.nodes:
+                node = state.nodes[update.id]
+                changes = update.changes
+                immutable_fields = IMMUTABLE_NODE_UPDATE_FIELDS
+                if patch.schema_generation == 1:
+                    immutable_fields = immutable_fields - LEGACY_COMPATIBILITY_UPDATE_FIELDS
+                elif operation_index in generated_operation_indexes:
+                    immutable_fields = immutable_fields - {
+                        "current_summary_stale",
+                        "next_action_stale",
+                    }
+                immutable = sorted(set(changes) & immutable_fields)
+                if immutable:
+                    raise ValueError(
+                        f"node updates cannot change system fields: {', '.join(immutable)}"
+                    )
+                data = node.model_dump(mode="python")
+                data.update(changes)
+                data["updated_rev"] = revision
+                data["standing"] = node.standing if patch.kind == "approval" else "asserted"
+                updated = (
+                    NODE_ADAPTER.validate_python(data)
+                    if patch.schema_generation == 1
+                    else strict_project_node(data)
+                )
+                _record_belief_transition(
+                    state,
+                    node,
+                    updated,
+                    revision,
+                    update.cause,
+                )
+                state.nodes[node.id] = updated
+        elif isinstance(op, CreateEdgesOperation):
+            for raw in op.edges:
+                data = raw.model_dump(mode="python", exclude_unset=True)
+                data.setdefault("id", f"{data['source']}::{data['relation']}::{data['target']}")
+                if relation := custom_relation(state.ontology, raw.relation):
+                    data["layer"] = relation.layer
+                data["created_rev"] = revision
+                edge = Edge.model_validate(data)
+                derived = edge_layer(state, edge.source, edge.target, edge.layer)
+                if derived != edge.layer:
+                    edge = edge.model_copy(update={"layer": derived})
+                state.edges[edge.id] = edge
+                created_edge_ids.append(edge.id)
+        elif isinstance(op, RemoveEdgesOperation):
+            for edge_id in op.edge_ids:
+                state.edges.pop(edge_id, None)
+        elif isinstance(op, RemoveNodesOperation):
+            node_ids = set(op.node_ids)
+            state.nodes = {
+                node_id: node for node_id, node in state.nodes.items() if node_id not in node_ids
+            }
+            state.edges = {
+                edge_id: edge
+                for edge_id, edge in state.edges.items()
+                if edge.source not in node_ids and edge.target not in node_ids
+            }
+        elif isinstance(op, SupersedeNodesOperation):
+            for item in op.nodes:
+                previous = state.nodes[item.id]
+                _retire_node(
+                    state,
+                    item.id,
+                    revision,
+                    preserve_standing=patch.kind == "approval",
+                )
+                _record_belief_transition(
+                    state,
+                    previous,
+                    state.nodes[item.id],
+                    revision,
+                    item.cause,
+                )
+                target = item.superseded_by
+                if target:
+                    edge = Edge(
+                        id=f"{item.id}::supersedes::{target}",
+                        source=item.id,
+                        target=target,
+                        relation="supersedes",
+                        explanation=item.explanation,
+                        created_rev=revision,
+                    )
+                    state.edges[edge.id] = edge
+        elif isinstance(op, MergeNodesOperation):
+            for item in op.merges:
+                duplicate = item.duplicate
+                canonical = item.canonical
+                previous = state.nodes[duplicate]
+                _retire_node(
+                    state,
+                    duplicate,
+                    revision,
+                    preserve_standing=patch.kind == "approval",
+                )
+                _record_belief_transition(
+                    state,
+                    previous,
+                    state.nodes[duplicate],
+                    revision,
+                    item.cause,
+                )
+                edge = Edge(
+                    id=f"{duplicate}::duplicate_of::{canonical}",
+                    source=duplicate,
+                    target=canonical,
+                    relation="duplicate_of",
+                    explanation=item.explanation,
+                    created_rev=revision,
+                )
+                state.edges[edge.id] = edge
+        elif isinstance(op, CreateAmbiguitiesOperation):
+            for raw in op.ambiguities:
+                data = raw.model_dump(mode="python", exclude_unset=True)
+                data["raised_rev"] = revision
+                ambiguity = Ambiguity.model_validate(data)
+                state.ambiguities[ambiguity.id] = ambiguity
+        elif isinstance(op, ResolveAmbiguitiesOperation):
+            for resolution in op.resolutions:
+                ambiguity = state.ambiguities[resolution.id]
+                state.ambiguities[ambiguity.id] = ambiguity.model_copy(
+                    update={"status": resolution.status}
+                )
+        elif isinstance(op, CreateProposalsOperation):
+            for raw in op.proposals:
+                related_node_ids, related_edge_ids, related_config_keys = proposal_dependencies(
+                    state, raw.ops
+                )
+                proposal = raw.model_copy(
+                    update={
+                        "base_rev": state.revision,
+                        "related_node_ids": related_node_ids,
+                        "related_edge_ids": related_edge_ids,
+                        "related_config_keys": related_config_keys,
+                        "created_by": raw.created_by
+                        if "created_by" in raw.model_fields_set
+                        else ("human" if patch.author == "human" else "agent"),
+                        "created_by_operation_id": raw.created_by_operation_id
+                        if "created_by_operation_id" in raw.model_fields_set
+                        else patch.source_operation_id,
+                        "raised_rev": revision,
+                    }
+                )
+                state.proposals[proposal.id] = proposal
+        elif isinstance(op, ResolveProposalsOperation):
+            for resolution in op.resolutions:
+                proposal = state.proposals[resolution.id]
+                state.proposals[proposal.id] = proposal.model_copy(
+                    update={
+                        "status": resolution.status,
+                        "resolved_rev": revision,
+                        "resolved_by": "human" if patch.author == "human" else "agent",
+                        "resolved_by_operation_id": patch.source_operation_id,
+                        "resolution_reason": resolution.reason,
+                        "rejection_reason": (
+                            resolution.reason if resolution.status == "rejected" else None
+                        ),
+                    }
+                )
+        elif isinstance(op, WithdrawProposalsOperation):
+            for withdrawal in op.proposals:
+                proposal = state.proposals[withdrawal.id]
+                state.proposals[proposal.id] = proposal.model_copy(
+                    update={
+                        "status": "withdrawn",
+                        "resolved_rev": revision,
+                        "resolved_by": "agent",
+                        "resolved_by_operation_id": patch.source_operation_id,
+                        "resolution_reason": withdrawal.reason,
+                    }
+                )
+        elif isinstance(op, UpsertGlossaryOperation):
+            for raw in op.terms:
+                data = raw.model_dump(mode="python", exclude_unset=True)
+                data["updated_rev"] = revision
+                term = GlossaryTerm.model_validate(data)
+                state.glossary[term.term] = term
+        elif isinstance(op, SetCoverageOperation):
+            # Historical reading reports have no current graph effect.
+            pass
+        elif isinstance(op, SetStandingOperation):
+            node = state.nodes[op.node_id]
+            state.nodes[node.id] = node.model_copy(
+                update={"standing": Standing(op.standing), "updated_rev": revision}
+            )
+        elif isinstance(op, SetProjectTruthScopeOperation):
+            new_scope = set(op.truth_scope)
+            state.project_truth_scope = sorted(new_scope)
+            state.config_revisions["project_truth_scope"] = revision
+            if op.repository is not None:
+                repository_descriptors.append(
+                    op.repository.model_dump(mode="python", exclude_unset=True)
+                )
+        elif isinstance(op, SetOntologyOperation):
+            state.ontology = op.ontology
+            state.config_revisions["ontology"] = revision
+        else:
+            raise ValueError(f"No apply rule for graph operation {op.op!r}.")
 
     # A legal edge may forward-reference a node created later in this patch.
     # Its first pass necessarily uses the relation's declared fallback layer;
@@ -336,3 +563,45 @@ def _apply_patch(
     # tests/test_direct_ingestion_contract.py).
     if patch.kind in {"seed", "refresh"}:
         state.last_refresh_at = patch.created_at
+
+
+def _retire_node(
+    state: GraphState,
+    node_id: str,
+    revision: int,
+    *,
+    preserve_standing: bool,
+) -> None:
+    node = state.nodes[node_id]
+    project_type = project_type_of(state)
+    data: dict[str, Any] = node.model_dump(mode="python")
+    data[project_type.lifecycle_field(node.type)] = project_type.retired_value
+    data["updated_rev"] = revision
+    data["standing"] = node.standing if preserve_standing else "asserted"
+    state.nodes[node_id] = NODE_ADAPTER.validate_python(data)
+
+
+def _record_belief_transition(
+    state: GraphState,
+    previous: ProjectNode,
+    updated: ProjectNode,
+    revision: int,
+    cause: BeliefCause | None,
+) -> None:
+    project_type = project_type_of(state)
+    if (
+        not project_type.is_belief(previous.type)
+        or not project_type.is_belief(updated.type)
+        or previous.status == updated.status
+        or cause is None
+    ):
+        return
+    state.belief_transitions.append(
+        BeliefTransition(
+            hypothesis_id=previous.id,
+            from_status=previous.status,
+            to_status=updated.status,
+            revision=revision,
+            cause=cause.model_dump(mode="python", exclude_unset=True),
+        )
+    )

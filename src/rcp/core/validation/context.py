@@ -9,8 +9,7 @@ from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.core.validation.report import ValidationReport
 
 if TYPE_CHECKING:
-    from rcp.core.authority import GraphAction, Writer
-    from rcp.core.validation.apply_ops import ApplyContext
+    from rcp.core.authority import Writer
 
 
 @dataclass
@@ -58,11 +57,9 @@ class OpRule:
 
     An operation with no ``validate`` carries no operation-level checks; one with
     no ``dependencies`` cannot make a proposal depend on existing graph state.
-    Actions and application are required, including explicit historical no-ops.
+    Per-operation metadata belongs here as further fields.
     """
 
-    actions: Callable[[GraphState, Patch, GraphOperation], frozenset[GraphAction]]
-    apply: Callable[[GraphOperation, ApplyContext], None]
     structural_validate: OpValidator | None = None
     authoring_validate: OpValidator | None = None
     dependencies: OpDependencies | None = None

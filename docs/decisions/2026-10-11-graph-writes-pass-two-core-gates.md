@@ -24,9 +24,8 @@ Reads keep the project-membership check on the routes.
 ## Also settled
 
 - **All 17 operations stay.** They are the format writers use: agents get them
-  as the staged patch schema, and UI Sync builds the same ops. Each operation
-  has one registry profile holding its validation, actions, apply, and
-  dependencies.
+  as the staged patch schema, and UI Sync builds the same ops. Applying an
+  operation with no apply rule raises instead of doing nothing.
 - **"The graph is still well-formed" is a test, not a runtime gate.**
   `tests/test_graph_invariants.py` drives random op sequences through both
   gates and asserts edge endpoints, edge relation types, open Proposal
