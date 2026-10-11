@@ -417,7 +417,7 @@ def author_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
         allowed_sources = ", ".join(sorted(spec.source_types))
         allowed_targets = ", ".join(sorted(spec.target_types))
         same_type = "; source and target must have the same type" if spec.same_type else ""
-        ctx.report.flag(
+        ctx.report.reject(
             "relation-type-mismatch",
             f"Edge {edge_id!r} uses {relation!r} from {source_type} to {target_type}; "
             f"allowed source types are [{allowed_sources}] and target types are "
