@@ -28,6 +28,22 @@ interface GraphPickerProps {
 
 type Branch = Extract<GraphRef, { kind: "branch" }>;
 
+// Matches the popover's CSS width, min(360px, 100vw - 16px).
+const POPOVER_WIDTH = 360;
+const VIEWPORT_GUTTER = 8;
+
+/** Right-aligned under the trigger, shifted left only as far as the viewport allows. */
+function popoverPlacement(trigger: HTMLElement | null) {
+  const rect = trigger?.getBoundingClientRect();
+  if (!rect) return null;
+  const width = Math.min(POPOVER_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER);
+  const right = Math.max(VIEWPORT_GUTTER, window.innerWidth - rect.right);
+  return {
+    top: rect.bottom + 4,
+    right: Math.min(right, window.innerWidth - VIEWPORT_GUTTER - width),
+  };
+}
+
 export function GraphPicker({
   refs,
   activeRef,
@@ -78,9 +94,8 @@ export function GraphPicker({
       setWarning(null);
     };
     const positionList = () => {
-      const rect = button.current?.getBoundingClientRect();
-      if (rect)
-        setPosition({ top: rect.bottom + 4, right: Math.max(8, window.innerWidth - rect.right) });
+      const placement = popoverPlacement(button.current);
+      if (placement) setPosition(placement);
     };
     positionList();
     window.addEventListener("resize", positionList);
@@ -155,12 +170,8 @@ export function GraphPicker({
         aria-haspopup="dialog"
         disabled={refs === null}
         onClick={() => {
-          const rect = button.current?.getBoundingClientRect();
-          if (rect)
-            setPosition({
-              top: rect.bottom + 4,
-              right: Math.max(8, window.innerWidth - rect.right),
-            });
+          const placement = popoverPlacement(button.current);
+          if (placement) setPosition(placement);
           setOpen(!open);
           setEditing(null);
           setWarning(null);

@@ -629,6 +629,9 @@ const mainRef = () => ({
 });
 const picker = (page) => page.locator(".branch-picker-trigger:visible");
 const row = (page, id) => page.locator(`.branch-picker-row[data-branch-id="${id}"]`);
+// The picker names the active ref once the hash route has applied.
+const branchShown = (page, name) =>
+  page.locator(`.branch-picker-trigger:visible[aria-label="Branch: ${name}"]`).waitFor();
 async function switchBranch(page, name) {
   await picker(page).click();
   await page
@@ -690,7 +693,7 @@ test(
     state.branchGate = null;
     gate.resolve();
     await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
-    assert.equal(await picker(page).getAttribute("aria-label"), "Branch: b1");
+    await branchShown(page, "b1");
 
     // Add an uncached branch after prefetch, then leave while its read is pending.
     state.graphRefs.push(branchRef("late"));
@@ -852,7 +855,7 @@ test(
       .getByRole("button", { name: "phone", exact: true })
       .click();
     await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
-    assert.equal(await picker(page).getAttribute("aria-label"), "Branch: phone");
+    await branchShown(page, "phone");
     assert.equal(await picker(page).getByLabel("Another branch needs you").count(), 0);
   },
 );
@@ -894,7 +897,7 @@ test(
     state.branchGate = Promise.withResolvers();
     await switchBranch(page, "second");
     await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
-    assert.equal(await picker(page).getAttribute("aria-label"), "Branch: second");
+    await branchShown(page, "second");
     await switchBranch(page, "main");
     await switchBranch(page, "second");
     assert.equal(await page.locator(".project-panel[inert]").count(), 0);

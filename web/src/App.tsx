@@ -5038,7 +5038,8 @@ function MemberApp({
       {
         view,
         nodeId: null,
-        chatId: view === "chats" ? selectedChatId : null,
+        // The board keeps a remembered chat; only an open one follows the switch.
+        chatId: view === "chats" && !agentsBoard ? selectedChatId : null,
         episodeId: selectedAutoResearchEpisodeId,
       },
       {
