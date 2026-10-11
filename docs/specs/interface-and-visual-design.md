@@ -225,11 +225,11 @@ and is not addressing a running attempt, and every sent turn keeps an immutable
 visible mode label. A resumed task keeps its original mode regardless of the
 current composer setting.
 
-In the Agents workspace, a conversation has one header band: title and meta on
-the left, New session and repository scope on the right. The meta names the
-umbrella provider (`provider_label`, such as Claude or Codex), never its
-runtime; the task inspector keeps the runtime. It shows the latest turn's
-model and effort, and the chat kind. Neither the header nor an agent card
+In the Agents workspace, a conversation header has two rows: the title, then
+the agent picker beside New session and repository scope. There is no metadata
+row; the picker already names the umbrella provider (`provider_label`, such as
+Claude or Codex), model, and effort, and the task inspector keeps the runtime.
+Neither the header nor an agent card
 names Discuss or Work; each turn's own label already carries it. The agent list has no title
 band: a sidebar icon beside its search folds it, a folded list leaves that
 icon at the chat band's top left, and a hairline separates list from chat.
