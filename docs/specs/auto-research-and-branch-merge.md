@@ -381,8 +381,9 @@ stopped. See
 member receives ordinary human mail. Messaging an ended member authorizes an
 Add N turns continuation carrying that message. The composer defaults N to 3,
 editable before sending, and always sends it; the API has no default N, and a
-send without N is ordinary mail only; the composer shows N operational turns (budget B) and the derived
-E = 5N child-Experiment invocations. This remains an orchestrator with branch
+send without N is ordinary mail only. The composer shows an **Add turns** field
+beside Send and no caption; the derived E = 5N child-Experiment invocations are
+not restated there. This remains an orchestrator with branch
 authority, not an ordinary chat.
 An ordinary-mail-only send that races with the episode ending refuses and asks
 for a continuation budget; it cannot silently authorize the default turns.

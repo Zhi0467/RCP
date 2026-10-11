@@ -309,11 +309,6 @@ export function ArtifactViewer() {
           </button>
         </div>
       )}
-      {state?.can_comment && (
-        <div className="artifact-viewer-comment-guidance">
-          Comments edit the artifact; use the source chat for analysis or code.
-        </div>
-      )}
       {source ? (
         <iframe
           ref={iframe}

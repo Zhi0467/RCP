@@ -1926,6 +1926,11 @@ connection under **Runs on** adds `voice` and runs the voice check then. The
 API still accepts `voice` at Connect, where a voice-only key skips the clips.
 A custom base URL must be `https`, or `http` to loopback.
 
+On a macOS or Windows computer, the Connect card opens by naming the keyless
+route: a dictation shortcut set in the ChatGPT desktop app types into the
+composer like any other text, so RCP needs no connection for it. ChatGPT's Linux
+app and phones cannot type into other apps, so they never see it.
+
 One card connects a service and later edits it. It holds every model the
 service has, each with what it does: the dictation model, and for an OpenAI
 key the live voice model and the thinking (delegation) model. Each model

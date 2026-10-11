@@ -5,6 +5,67 @@
    content-driven and sit beside the layout that needs them. */
 
 @media (max-width: 560px) {
+  /* A phone page never pans sideways. Long words wrap, and the page and its
+     main scroller clip anything still wider; wide content such as code or
+     the graph canvas scrolls inside its own box. */
+  html,
+  body,
+  .project-panel {
+    overflow-x: clip;
+  }
+  body {
+    overflow-wrap: anywhere;
+  }
+  /* A button label never breaks inside a word. */
+  button,
+  .button {
+    overflow-wrap: normal;
+  }
+  /* The chat's picker, New session, and repository scope share one row that
+     fits the screen: the picker truncates and New session is its icon. */
+  .chat-context-controls {
+    max-width: 100%;
+    min-width: 0;
+  }
+  .chat-context-controls > .agent-config-chip {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .agent-config-chip-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-new-session-label {
+    display: none;
+  }
+  /* The agent picker takes its own full row; Cancel and the action share the
+     row below, the action filling what Cancel leaves. */
+  .campaign-dialog > footer {
+    display: grid;
+    grid-template-columns: auto 1fr;
+  }
+  .campaign-dialog > footer > .agent-config-chip {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+    margin: 0;
+    min-height: 44px;
+  }
+  /* An open artifact fills the screen; its placement (inline styles) is a
+     desktop window and does not apply here. */
+  .floating-window.artifact-viewer {
+    border: 0;
+    height: 100dvh !important;
+    left: 0 !important;
+    max-height: none !important;
+    top: 0 !important;
+    width: 100% !important;
+  }
+  .artifact-viewer-resize {
+    display: none;
+  }
+
   /* iOS Safari zooms the page when a focused field's text is under 16px.
      Component rules set smaller sizes with varying specificity, hence
      !important. */

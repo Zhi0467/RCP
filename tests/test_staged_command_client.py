@@ -2168,10 +2168,26 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
     }
 
 
-def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    ("later", "exit_code", "printed"),
+    [
+        # Transport or admission failures: the earlier round's card stands.
+        ({"status": "unavailable", "result": {"delivery": "unknown"}}, 0, "pending"),
+        ({"status": "invalid", "result": {"delivery": "not_sent"}}, 0, "pending"),
+        # RCP's own refusal, such as an ended episode, is the outcome.
+        ({"status": "invalid", "message": "question_episode_ended"}, 1, "invalid"),
+        (
+            {"status": "unavailable", "result": {"delivery": "not_sent", "permanent": True}},
+            2,
+            "unavailable",
+        ),
+    ],
+)
+def test_ask_later_round_failure_keeps_rcp_outcomes(
+    tmp_path, monkeypatch, capsys, later, exit_code, printed
+) -> None:
     from rcp.agents import staged_command_client as client
 
-    delivery = "unknown"
     calls = []
     monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0)
 
@@ -2190,12 +2206,7 @@ def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys)
                 "ask",
                 request_id,
             )
-        # A prior pending state must not conceal an uncertain later transport round.
-        return client._handle_response(
-            {"request_id": request_id, "status": "unavailable", "result": {"delivery": delivery}},
-            "ask",
-            request_id,
-        )
+        return client._handle_response({"request_id": request_id, **later}, "ask", request_id)
 
     monkeypatch.setattr(client, "_run_brokered", failed)
     assert (
@@ -2216,9 +2227,13 @@ def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys)
                 "Proceed?",
             ]
         )
-        == 2
+        == exit_code
     )
-    assert json.loads(capsys.readouterr().out)["result"] == {"delivery": delivery}
+    output = json.loads(capsys.readouterr().out)
+    if printed == "pending":
+        assert output["result"] == {"state": "pending", "question_id": "question"}
+    else:
+        assert output["status"] == printed and "state" not in output["result"]
 
 
 @pytest.mark.asyncio

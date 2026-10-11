@@ -263,8 +263,8 @@ legacy URLs redirect to artifact routes.
 Every viewable artifact, including a report, opens in the RCP window's viewer
 panel. Its RCP chrome owns the title, version, Live or Finished status, Undo,
 a labelled **Source chat** button using the source link above, dock, and close.
-When the artifact accepts comments, one line says comments edit the artifact
-and analysis or code goes through the source chat. The embedded shell keeps Keep and notices,
+The labelled Source chat button and the shell's comment box are the two paths;
+no guidance line restates them. The embedded shell keeps Keep and notices,
 selection gestures, a comment box, and Send. The shell allows framing only by
 the same RCP origin. Agent HTML remains inside its unchanged opaque sandbox.
 A small raster image or SVG card also renders its picture; an HTML card has no
