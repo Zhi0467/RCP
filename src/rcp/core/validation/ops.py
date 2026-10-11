@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from rcp.core.authority import DECIDE_DECISION, QUEUE_DECISION, permits
+from rcp.core.authority import DECIDE_DECISION
 from rcp.core.models import RELATION_SPEC, Edge, GraphState, Standing
 from rcp.core.ontology import (
     custom_relation,
@@ -56,7 +56,6 @@ from rcp.core.research_rules import (
     evidence_relation_endpoint_error,
     expectation_applies,
     has_active_experiment_attempt,
-    queues_decision,
     reject_live_legacy_new_node,
     reject_live_legacy_update,
 )
@@ -98,15 +97,15 @@ def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
                 related_node_ids=[node_id],
             )
         raw = node.model_dump(mode="python", exclude_unset=True)
-        validate_new_node(ctx.state, ctx.patch, raw, ctx.report)
-        validate_source_refs(raw, ctx.patch, ctx.report)
+        validate_new_node(ctx.state, ctx.patch, raw, ctx.report, writer=ctx.writer)
+        validate_source_refs(raw, ctx.patch, ctx.report, writer=ctx.writer)
 
 
 def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     for node in op.nodes:
         reject_live_legacy_new_node(node, ctx.report, ctx.revision)
         raw = node.model_dump(mode="python", exclude_unset=True)
-        validate_new_node_authoring(ctx.state, ctx.patch, raw, ctx.report)
+        validate_new_node_authoring(ctx.state, ctx.patch, raw, ctx.report, writer=ctx.writer)
     return None
 
 
@@ -158,6 +157,7 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
             changes,
             ctx.report,
             authoring=False,
+            writer=ctx.writer,
         )
         is_control_update = (
             ctx.patch.kind == "experiment_loop"
@@ -167,11 +167,13 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
         is_chooser = project_type_of(ctx.state).is_chooser(node.type)
         if not is_control_update and requires_proposal(node, changes):
             if is_chooser:
-                if ctx.mode == "admission" and not permits(ctx.patch, DECIDE_DECISION):
+                if ctx.mode == "admission" and not (
+                    ctx.writer.author == "human" or ctx.writer.profile == "orchestrator"
+                ):
                     message = (
                         f"Update to {node_id} uses decide_decision; only a human may write "
                         "selected_option or status decided."
-                        if ctx.patch.profile != "orchestrator"
+                        if ctx.writer.profile != "orchestrator"
                         else f"Update to {node_id} is not permitted to use {DECIDE_DECISION}."
                     )
                     ctx.report.reject(
@@ -180,24 +182,12 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
                         ctx.revision,
                         related_node_ids=[node.id],
                     )
-            elif ctx.patch.kind != "approval":
+            elif ctx.writer.author != "human":
                 ctx.report.reject(
                     "gated-transition",
                     f"Update to {node_id} requires a Proposal and human approval.",
                     ctx.revision,
                 )
-        elif (
-            is_chooser
-            and ctx.mode == "admission"
-            and queues_decision(changes)
-            and not permits(ctx.patch, QUEUE_DECISION)
-        ):
-            ctx.report.reject(
-                "decision-action-refused",
-                f"Update to {node_id} is not permitted to use {QUEUE_DECISION}.",
-                ctx.revision,
-                related_node_ids=[node.id],
-            )
         if (
             ctx.mode == "admission"
             and is_chooser
@@ -209,7 +199,12 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
                 ctx.revision,
                 related_node_ids=[node.id],
             )
-        validate_source_refs({"source_refs": changes.get("source_refs", [])}, ctx.patch, ctx.report)
+        validate_source_refs(
+            {"source_refs": changes.get("source_refs", [])},
+            ctx.patch,
+            ctx.report,
+            writer=ctx.writer,
+        )
 
 
 def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
@@ -219,7 +214,7 @@ def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
         if node is None:
             continue
         is_direct_human_edit = (
-            ctx.patch.kind == "approval"
+            ctx.writer.author == "human"
             and ctx.reference_patch is None
             and not any(
                 isinstance(operation, ResolveProposalsOperation) for operation in ctx.patch.ops
@@ -234,6 +229,7 @@ def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
             changes,
             ctx.report,
             authoring=True,
+            writer=ctx.writer,
         )
         if (
             project_type_of(ctx.state).is_belief(node.type)
@@ -489,7 +485,7 @@ def validate_remove_nodes(op: RemoveNodesOperation, ctx: OpContext) -> Any:
         )
         return None
 
-    is_proposal_approval = ctx.patch.kind == "approval" and (
+    is_proposal_approval = ctx.writer.author == "human" and (
         ctx.reference_patch is not None
         or any(isinstance(operation, ResolveProposalsOperation) for operation in ctx.patch.ops)
     )
@@ -712,6 +708,7 @@ def validate_create_proposals(op: CreateProposalsOperation, ctx: OpContext) -> A
             default_run_truth_scope=ctx.default_run_truth_scope,
             state_repository=ctx.state_repository,
             context_patch=ctx.patch,
+            writer=ctx.writer,
         )
     return None
 
@@ -731,17 +728,12 @@ def author_create_proposals(op: CreateProposalsOperation, ctx: OpContext) -> Any
             validation_mode="admission",
             include_card_flags=True,
             context_patch=ctx.patch,
+            writer=ctx.writer,
         )
     return None
 
 
 def validate_resolve_proposals(op: ResolveProposalsOperation, ctx: OpContext) -> Any:
-    if ctx.mode == "admission" and ctx.patch.kind != "approval":
-        ctx.report.reject(
-            "agent-resolved-proposal",
-            "Only a human approval patch may resolve or withdraw a Proposal.",
-            ctx.revision,
-        )
     for resolution in op.resolutions:
         proposal_id = resolution.id
         proposal = ctx.state.proposals.get(proposal_id)
@@ -761,12 +753,6 @@ def validate_resolve_proposals(op: ResolveProposalsOperation, ctx: OpContext) ->
 
 
 def validate_withdraw_proposals(op: WithdrawProposalsOperation, ctx: OpContext) -> Any:
-    if ctx.patch.author != "agent" or ctx.patch.kind == "approval":
-        ctx.report.reject(
-            "human-only-proposal-withdrawal",
-            "Only an agent patch may withdraw a Proposal.",
-            ctx.revision,
-        )
     for withdrawal in op.proposals:
         proposal_id = withdrawal.id
         proposal = ctx.state.proposals.get(proposal_id)
@@ -786,12 +772,6 @@ def validate_withdraw_proposals(op: WithdrawProposalsOperation, ctx: OpContext) 
 
 
 def validate_set_standing(op: SetStandingOperation, ctx: OpContext) -> Any:
-    if ctx.mode == "admission" and not permits(ctx.patch, "set_standing"):
-        ctx.report.reject(
-            "agent-set-standing",
-            "This Patch producer may not set standing.",
-            ctx.revision,
-        )
     node_id = op.node_id
     if node_id not in ctx.state.nodes:
         ctx.report.reject("unknown-node", f"Cannot review missing node {node_id!r}.", ctx.revision)
@@ -805,12 +785,6 @@ def validate_set_standing(op: SetStandingOperation, ctx: OpContext) -> Any:
 
 
 def validate_set_project_truth_scope(op: SetProjectTruthScopeOperation, ctx: OpContext) -> Any:
-    if ctx.patch.kind != "approval":
-        ctx.report.reject(
-            "agent-set-project-scope",
-            "Project truth-scope membership requires human approval.",
-            ctx.revision,
-        )
     proposed = set(op.truth_scope)
     descriptor = op.repository
     if descriptor is not None:
@@ -864,12 +838,6 @@ def depends_set_project_truth_scope(
 def validate_set_ontology(op: SetOntologyOperation, ctx: OpContext) -> Any:
     ontology = op.ontology
     validate_ontology_structure(ontology, ctx.report, ctx.revision, replay=ctx.mode == "replay")
-    if ctx.patch.kind != "approval":
-        ctx.report.reject(
-            "agent-set-ontology",
-            "Only the human Settings and Sync paths may change ontology.",
-            ctx.revision,
-        )
     if ctx.mode == "admission":
         validate_ontology_change(ctx.state, ontology, ctx.report, ctx.revision)
     return None
@@ -896,7 +864,7 @@ def _validate_belief_cause(
         )
         return
     if isinstance(cause, HumanEditCause):
-        if ctx.patch.kind != "approval" or ctx.patch.author != "human":
+        if ctx.writer.author != "human":
             ctx.report.reject(
                 "invalid-belief-cause",
                 f"human_edit cause for {hypothesis_id!r} is legal only on human approval.",

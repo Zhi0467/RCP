@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import replace
 
-from rcp.core.authority import operation_actions, permits
+from rcp.core.authority import Writer, validate_authorship
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import (
     CreateEdgesOperation,
@@ -41,6 +41,7 @@ def validate_patch(
     patch: Patch,
     context: ValidationContext,
     *,
+    writer: Writer | None = None,
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
@@ -51,6 +52,7 @@ def validate_patch(
             state,
             patch,
             context,
+            writer=writer or Writer.from_patch(patch),
             experiment_control_node_id=experiment_control_node_id,
             experiment_decision_bundle=experiment_decision_bundle,
         )
@@ -110,6 +112,7 @@ def _validate_patch(
     patch: Patch,
     context: ValidationContext,
     *,
+    writer: Writer,
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
@@ -125,6 +128,7 @@ def _validate_patch(
         state=state,
         initial_state=state,
         patch=patch,
+        writer=writer,
         report=report,
         revision=patch.revision or None,
         project_truth_scope=scope,
@@ -149,7 +153,7 @@ def _validate_patch(
             f"Patch revision {patch.revision} must follow graph revision {state.revision}.",
             ctx.revision,
         )
-    _validate_authorship(ctx)
+    validate_authorship(patch, report)
     _validate_identity_shape(ctx)
     _validate_attribution_shape(ctx)
     _validate_declared_agent_action(ctx)
@@ -176,7 +180,7 @@ def _validate_patch(
         report.reject("delete-forbidden", "Graph objects are never deleted.", ctx.revision)
 
     if patch.kind == "approval":
-        validate_approval_shape(state, patch, report, mode=context.mode)
+        validate_approval_shape(state, patch, report, writer=ctx.writer, mode=context.mode)
 
     _validate_operations(ctx)
     _validate_queued_decision_options(ctx)
@@ -355,40 +359,7 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
 
 
 def _validate_authorship(ctx: OpContext) -> None:
-    if ctx.patch.kind == "identity":
-        if ctx.patch.producer != "system":
-            ctx.report.reject(
-                "wrong-producer",
-                "Identity patches must be produced by RCP's system producer.",
-                ctx.revision,
-            )
-        if ctx.patch.author is not None:
-            ctx.report.reject(
-                "wrong-author",
-                "Identity patches have no human or agent author.",
-                ctx.revision,
-            )
-        return
-
-    expected_author = "human" if ctx.patch.kind == "approval" else "agent"
-    if ctx.patch.author != expected_author:
-        ctx.report.reject(
-            "wrong-author",
-            f"{ctx.patch.kind} patches must be authored by {expected_author}.",
-            ctx.revision,
-        )
-    if ctx.patch.producer == "system":
-        ctx.report.reject(
-            "system-producer-forbidden",
-            "The system producer is reserved for identity patches.",
-            ctx.revision,
-        )
-    elif ctx.patch.producer != ctx.patch.author:
-        ctx.report.reject(
-            "producer-author-mismatch",
-            "Human and agent patches must retain the same producer and legacy author role.",
-            ctx.revision,
-        )
+    validate_authorship(ctx.patch, ctx.report)
 
 
 def _validate_identity_shape(ctx: OpContext) -> None:
@@ -522,40 +493,26 @@ def _validate_attribution_shape(ctx: OpContext) -> None:
 
 
 def _validate_declared_agent_action(ctx: OpContext) -> None:
-    patch = ctx.patch
     has_decision_outcome = _has_declared_decision_outcome(ctx)
-    if patch.human_action is not None and patch.agent_action is not None:
+    if ctx.writer.human_action is not None and ctx.writer.agent_action is not None:
         ctx.report.reject(
             "conflicting-authority-actions",
             "A Patch cannot declare both a human and an agent authority action.",
             ctx.revision,
         )
         return
-    if patch.human_action is not None and (patch.kind != "approval" or patch.author != "human"):
-        ctx.report.reject(
-            "invalid-human-action",
-            "Only a human approval Patch may declare a human authority action.",
-            ctx.revision,
-        )
     if (
-        patch.author == "agent"
-        and patch.profile == "orchestrator"
+        ctx.writer.author == "agent"
+        and ctx.writer.profile == "orchestrator"
         and has_decision_outcome
-        and patch.agent_action != "decision_choice"
+        and ctx.writer.agent_action != "decision_choice"
     ):
         ctx.report.reject(
             "missing-decision-action",
             "An orchestrator Decision outcome requires agent_action='decision_choice'.",
             ctx.revision,
         )
-    if patch.agent_action is None:
-        return
-    if patch.author != "agent" or patch.profile != "orchestrator":
-        ctx.report.reject(
-            "invalid-agent-action",
-            "Only the orchestrator profile may declare an agent authority action.",
-            ctx.revision,
-        )
+    if ctx.writer.agent_action is None:
         return
     if not has_decision_outcome:
         ctx.report.reject(
@@ -635,7 +592,6 @@ def _validate_operations(ctx: OpContext) -> None:
             )
             continue
         rejects_before = sum(message.level == "reject" for message in ctx.report.messages)
-        _validate_operation_authority(ctx, op)
         if rule.structural_validate is not None:
             rule.structural_validate(op, ctx)
         if ctx.mode == "admission" and rule.authoring_validate is not None:
@@ -652,24 +608,5 @@ def _validate_operations(ctx: OpContext) -> None:
             ctx.report.reject(
                 "malformed-operation",
                 f"Operation {name!r} could not be staged: {exc}.",
-                ctx.revision,
-            )
-
-
-def _validate_operation_authority(ctx: OpContext, operation: GraphOperation) -> None:
-    """Check live producer permission once, before an operation is staged."""
-
-    if ctx.mode != "admission":
-        return
-    try:
-        actions = operation_actions(ctx.initial_state, ctx.patch, operation)
-    except ValueError:
-        # The operation registry reports missing and unknown operation names.
-        return
-    for action in sorted(actions):
-        if not permits(ctx.patch, action):
-            ctx.report.reject(
-                "graph-action-refused",
-                f"Action {action!r} is not permitted for this Patch producer.",
                 ctx.revision,
             )

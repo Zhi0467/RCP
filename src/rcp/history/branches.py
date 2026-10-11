@@ -919,12 +919,6 @@ class BranchHistoryManager:
     def _require_prepared_branch_patch(self, patch: Patch) -> None:
         if patch.transition is not None and patch.transition.pre_head.target != self.graph_target:
             raise ValueError("prepared branch Patch names a different graph target")
-        if (
-            self.parent.require_attribution
-            and patch.kind == "experiment_loop"
-            and patch.episode_id is None
-        ):
-            raise ValueError("Experiment-loop patches require canonical episode attribution")
         # Human Sync and ordinary Work also write branches. Admission supplies
         # their human/task attribution and exact target; an operational episode
         # id belongs only to work actually owned by that episode.

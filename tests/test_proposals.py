@@ -15,7 +15,7 @@ from rcp.service import (
     ReviewRequest,
 )
 from rcp.storage import AppStore
-from tests.helpers import seed_patch
+from tests.helpers import seed_patch, unchecked_write_authority
 
 
 def ontology_payload() -> dict[str, object]:
@@ -280,7 +280,7 @@ def evidence_proposal_patch(*, remove_cause: bool = False) -> Patch:
 
 
 def test_approval_replays_exact_ops_and_accepts_node(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(proposal_patch())
     service = ProjectService(
@@ -303,7 +303,7 @@ def test_approval_replays_exact_ops_and_accepts_node(manifest, tmp_path) -> None
 def test_content_intent_survives_materialization_and_applies_without_evidence(
     manifest, tmp_path
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(content_proposal_patch())
     stored = history.state().proposals["prop/clarify-learning-question"]
@@ -329,7 +329,7 @@ def test_content_intent_survives_materialization_and_applies_without_evidence(
 
 
 def test_approved_removal_intent_can_remove_an_accepted_hypothesis(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     node_id = "hyp/replanning-restores-plasticity"
     history.append(
@@ -391,7 +391,7 @@ def test_approved_removal_intent_can_remove_an_accepted_hypothesis(manifest) -> 
 
 
 def test_evidence_grounded_proposal_can_be_approved(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(evidence_proposal_patch())
     service = ProjectService(
@@ -412,7 +412,7 @@ def test_evidence_grounded_proposal_can_be_approved(manifest, tmp_path) -> None:
 
 
 def test_same_patch_removal_of_a_belief_cause_rejects_the_proposal(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
 
     with pytest.raises(PatchRejected):
@@ -422,7 +422,7 @@ def test_same_patch_removal_of_a_belief_cause_rejects_the_proposal(manifest) -> 
 
 
 def test_later_removal_of_a_belief_cause_withdraws_the_stale_proposal(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(evidence_proposal_patch())
     history.append(
@@ -451,7 +451,7 @@ def test_later_removal_of_a_belief_cause_withdraws_the_stale_proposal(manifest, 
 
 
 def test_agent_withdraws_a_pending_proposal_with_provenance(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(proposal_patch().model_copy(update={"source_operation_id": "task-create"}))
     withdrawal = Patch(
@@ -486,7 +486,7 @@ def test_agent_withdraws_a_pending_proposal_with_provenance(manifest) -> None:
 
 
 def test_human_created_proposal_records_operation_provenance(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     state = history.state()
     patch = proposal_patch().model_copy(
@@ -507,7 +507,7 @@ def test_human_created_proposal_records_operation_provenance(manifest) -> None:
 
 
 def test_agent_cannot_resolve_a_pending_proposal_with_human_decision_status(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(proposal_patch())
     resolution = Patch(
@@ -537,7 +537,7 @@ def test_agent_cannot_resolve_a_pending_proposal_with_human_decision_status(mani
 
 
 def test_agent_ontology_proposal_is_rejected(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
 
     with pytest.raises(PatchRejected):
@@ -548,7 +548,7 @@ def test_agent_ontology_proposal_is_rejected(manifest) -> None:
 
 
 def test_historical_ontology_proposal_remains_replayable(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = ontology_proposal_patch().model_dump(mode="python", exclude_unset=True)
     raw.pop("schema_generation", None)
@@ -564,7 +564,7 @@ def test_historical_ontology_proposal_remains_replayable(manifest) -> None:
 
 
 def test_historical_non_evidence_belief_cause_remains_replayable(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
     raw["revision"] = 2
@@ -583,7 +583,7 @@ def test_historical_non_evidence_belief_cause_remains_replayable(manifest) -> No
 
 
 def test_replay_does_not_recheck_rcp_owned_proposal_base_revision(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
     raw["revision"] = 2
@@ -598,7 +598,7 @@ def test_replay_does_not_recheck_rcp_owned_proposal_base_revision(manifest) -> N
 
 
 def test_stale_proposal_is_withdrawn_without_replay(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(proposal_patch())
     node = history.state().nodes["hyp/replanning-restores-plasticity"]
@@ -637,7 +637,7 @@ def test_stale_proposal_is_withdrawn_without_replay(manifest, tmp_path) -> None:
 
 
 def test_extension_field_proposal_withdraws_after_ontology_moves(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(
         Patch(
@@ -722,7 +722,7 @@ def test_extension_field_proposal_withdraws_after_ontology_moves(manifest, tmp_p
 def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
     manifest, legacy_bookkeeping: str
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
     raw["source_operation_id"] = "agent-create-proposal"
@@ -783,7 +783,7 @@ def test_rcp_overwrites_legacy_proposal_bookkeeping_before_admission(
 
 
 def test_proposal_bookkeeping_derives_removed_edge_dependencies_from_state(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     state = history.state()
     edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
@@ -812,7 +812,7 @@ def test_proposal_bookkeeping_derives_removed_edge_dependencies_from_state(manif
 def test_canonical_patch_persists_dependencies_seen_after_earlier_same_patch_operations(
     manifest,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     edge_id = "edge/same-patch-removal-dependency"
     proposal_id = "prop/remove-after-same-patch-edge"
@@ -880,7 +880,7 @@ def test_canonical_patch_persists_dependencies_seen_after_earlier_same_patch_ope
 
 
 def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     service = ProjectService(
         manifest,
@@ -931,7 +931,7 @@ def test_agent_edge_touching_accepted_node_applies_directly(manifest, tmp_path) 
 
 
 def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     before = manifest.path.read_text(encoding="utf-8")
     patch = Patch(
@@ -1002,7 +1002,7 @@ def test_manifest_scope_write_validates_before_replacing_file(manifest) -> None:
 
 
 def test_proposal_replay_is_dry_run_materialized_at_creation(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = proposal_patch().model_dump(mode="python", exclude_unset=True)
     raw_proposal = raw["ops"][0]["proposals"][0]
@@ -1033,7 +1033,7 @@ def test_proposal_replay_is_dry_run_materialized_at_creation(manifest) -> None:
 
 
 def test_agent_cannot_propose_a_project_scope_change(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     patch = Patch(
         schema_generation=1,

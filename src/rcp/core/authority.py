@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from hashlib import sha256
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.core.models import (
     RELATION_SPEC,
     AuthorizedHuman,
+    BranchMergeReceipt,
     GraphState,
     Patch,
 )
@@ -23,6 +25,10 @@ from rcp.core.project_types import ProjectType, project_type_of
 from rcp.core.research_rules import queues_decision
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import AgentCapability
+
+if TYPE_CHECKING:
+    from rcp.core.validation.report import ValidationReport
+
 
 AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v2"
 
@@ -701,3 +707,365 @@ def created_edge_ids(patch: Patch) -> set[str]:
         for edge in operation.edges:
             edge_ids.add(edge.id or f"{edge.source}::{edge.relation}::{edge.target}")
     return edge_ids
+
+
+@dataclass(frozen=True)
+class Writer:
+    """Resolved role used by staged rules; no live identity or task lookups."""
+
+    author: Literal["human", "agent"] | None
+    profile: AgentProfile | None
+    human_action: str | None = None
+    agent_action: str | None = None
+
+    @classmethod
+    def from_patch(cls, patch: Patch) -> Writer:
+        return cls(patch.author, patch.profile, patch.human_action, patch.agent_action)
+
+
+def validate_authorship(patch: Patch, report: ValidationReport) -> None:
+    """Persisted producer/kind consistency, shared by admission and replay."""
+    revision = patch.revision or None
+    if patch.kind == "identity":
+        if patch.producer != "system":
+            report.reject(
+                "wrong-producer",
+                "Identity patches must be produced by RCP's system producer.",
+                revision,
+            )
+        if patch.author is not None:
+            report.reject(
+                "wrong-author",
+                "Identity patches have no human or agent author.",
+                revision,
+            )
+        return
+
+    expected_author = "human" if patch.kind == "approval" else "agent"
+    if patch.author != expected_author:
+        report.reject(
+            "wrong-author",
+            f"{patch.kind} patches must be authored by {expected_author}.",
+            revision,
+        )
+    if patch.producer == "system":
+        report.reject(
+            "system-producer-forbidden",
+            "The system producer is reserved for identity patches.",
+            revision,
+        )
+    elif patch.producer != patch.author:
+        report.reject(
+            "producer-author-mismatch",
+            "Human and agent patches must retain the same producer and legacy author role.",
+            revision,
+        )
+
+
+def validate_operation_authority(state: GraphState, patch: Patch, report: ValidationReport) -> None:
+    """Profile-only feedback, evaluated against the pre-Patch graph."""
+
+    from rcp.core.validation.registry import OP_RULES
+
+    for operation in patch.ops:
+        # Historical-only operations have no live channel. Gate 2 retains their
+        # legacy-only-operation shape rejection before any graph rule runs.
+        if OP_RULES[operation.op].legacy_only:
+            continue
+        for action in sorted(operation_actions(state, patch, operation)):
+            if not permits(patch, action):
+                report.reject(
+                    "graph-action-refused",
+                    f"Action {action!r} is not permitted for this Patch producer.",
+                    patch.revision or None,
+                )
+
+
+def validate_writer_actions(state: GraphState, patch: Patch, report: ValidationReport) -> None:
+    """Check action declarations that depend only on the writer's role."""
+
+    revision = patch.revision or None
+    if patch.human_action is not None and (patch.kind != "approval" or patch.author != "human"):
+        report.reject(
+            "invalid-human-action",
+            "Only a human approval Patch may declare a human authority action.",
+            revision,
+        )
+    if patch.agent_action is not None and (
+        patch.author != "agent" or patch.profile != "orchestrator"
+    ):
+        report.reject(
+            "invalid-agent-action",
+            "Only the orchestrator profile may declare an agent authority action.",
+            revision,
+        )
+
+    # These checks depend on the writer, never on written-order staging.
+    for operation in patch.ops:
+        if operation.op == "resolve_proposals" and patch.kind != "approval":
+            report.reject(
+                "agent-resolved-proposal",
+                "Only a human approval patch may resolve or withdraw a Proposal.",
+                revision,
+            )
+        elif operation.op == "withdraw_proposals" and (
+            patch.author != "agent" or patch.kind == "approval"
+        ):
+            report.reject(
+                "human-only-proposal-withdrawal",
+                "Only an agent patch may withdraw a Proposal.",
+                revision,
+            )
+        elif operation.op == "set_standing" and not permits(patch, "set_standing"):
+            report.reject(
+                "agent-set-standing", "This Patch producer may not set standing.", revision
+            )
+        elif operation.op == "set_project_truth_scope" and patch.kind != "approval":
+            report.reject(
+                "agent-set-project-scope",
+                "Project truth-scope membership requires human approval.",
+                revision,
+            )
+        elif operation.op == "set_ontology" and patch.kind != "approval":
+            report.reject(
+                "agent-set-ontology",
+                "Only the human Settings and Sync paths may change ontology.",
+                revision,
+            )
+
+    if patch.kind != "approval" or permits(patch, DECIDE_DECISION):
+        return
+    from rcp.core.operations import ResolveProposalsOperation
+    from rcp.core.validation.approval import _writes_decision_outcome
+
+    approved_resolution = any(
+        resolution.status == "approved"
+        for operation in patch.ops
+        if isinstance(operation, ResolveProposalsOperation)
+        for resolution in operation.resolutions
+    )
+    if patch.human_action == "decision_choice" and not approved_resolution:
+        report.reject(
+            "invalid-direct-decision-choice",
+            f"Only an actor permitted to {DECIDE_DECISION} may choose a Decision option.",
+            revision,
+        )
+    elif patch.human_action == "decision_choice" and _writes_decision_outcome(state, patch.ops):
+        report.reject(
+            "decision-action-refused",
+            f"This actor is not permitted to {DECIDE_DECISION} through a legacy Decision Proposal approval.",
+            revision,
+        )
+
+
+class WriteAuthority:
+    """Live admission authority. Without resolvers, only system/history use is allowed."""
+
+    def __init__(
+        self,
+        *,
+        agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
+        project_membership_check: ProjectMembershipCheck | None = None,
+    ) -> None:
+        self.agent_authority_resolver = agent_authority_resolver
+        self.project_membership_check = project_membership_check
+
+    def validate_permissions(self, state: GraphState, patch: Patch) -> ValidationReport:
+        from rcp.core.validation.report import ValidationReport
+
+        report = ValidationReport()
+        validate_authorship(patch, report)
+        try:
+            validate_writer_actions(state, patch, report)
+            validate_operation_authority(state, patch, report)
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            report.reject(
+                "malformed-operation",
+                f"Patch operations are malformed: {exc}.",
+                patch.revision or None,
+            )
+        return report
+
+    def admit(
+        self,
+        state: GraphState,
+        patch: Patch,
+        *,
+        project_id: str | None,
+        authorized_by: AuthorizedHuman | None,
+        apply_target: GraphTargetRef,
+    ) -> tuple[Patch, Writer, ValidationReport]:
+        from rcp.core.validation.report import ValidationReport
+
+        report = ValidationReport()
+        validate_authorship(patch, report)
+        if report.rejected:
+            return patch, Writer.from_patch(patch), report
+        patch = self.stamp_attribution(
+            patch, project_id=project_id, authorized_by=authorized_by, apply_target=apply_target
+        )
+        if patch.kind == "approval" and (
+            project_id is None
+            or self.project_membership_check is None
+            or patch.authorized_by is None
+            or not self.project_membership_check(project_id, patch.authorized_by.user_id)
+        ):
+            report.reject(
+                "human-authorizer-not-member",
+                "The authorizing human is not a current project member.",
+                patch.revision or None,
+            )
+            return patch, Writer.from_patch(patch), report
+        report = self.validate_permissions(state, patch)
+        return patch, Writer.from_patch(patch), report
+
+    def stamp_attribution(
+        self,
+        patch: Patch,
+        *,
+        project_id: str | None,
+        authorized_by: AuthorizedHuman | None,
+        apply_target: GraphTargetRef,
+    ) -> Patch:
+        if patch.kind == "identity":
+            if authorized_by is not None or any(
+                value is not None
+                for value in (
+                    patch.authorized_by,
+                    patch.profile,
+                    patch.task_id,
+                    patch.episode_id,
+                )
+            ):
+                raise ValueError("identity patches are system-owned and cannot carry attribution")
+            return patch
+
+        if patch.kind == "approval":
+            if authorized_by is None:
+                raise ValueError(
+                    "human approval patches require an explicit authorized_by snapshot"
+                )
+            authorizer = self._canonical_authorizer(authorized_by)
+            return patch.model_copy(
+                update={
+                    "authorized_by": authorizer,
+                    "profile": None,
+                    "task_id": None,
+                    "episode_id": None,
+                }
+            )
+
+        if authorized_by is not None:
+            raise ValueError("explicit authorized_by is only valid for human approval patches")
+        operation_id = patch.source_operation_id
+        if not operation_id or not operation_id.strip():
+            raise ValueError("agent patches require a non-empty direct source_operation_id")
+        if (
+            project_id is None
+            or self.agent_authority_resolver is None
+            or self.project_membership_check is None
+        ):
+            raise ValueError(
+                "agent attribution requires a canonical project-scoped agent_authority_resolver "
+                "and project_membership_check"
+            )
+        try:
+            resolved = self.agent_authority_resolver(project_id, operation_id)
+        except KeyError as exc:
+            raise ValueError(f"unknown agent task {operation_id!r}") from exc
+        if resolved.operation_id != operation_id or resolved.project_id != project_id:
+            raise ValueError("agent authority resolver returned another task or project")
+        if resolved.apply_target != apply_target:
+            raise ValueError(
+                f"agent task {operation_id!r} is authorized to Apply to "
+                f"{resolved.apply_target.key}, not {apply_target.key}"
+            )
+        dispatch = require_apply(resolved, patch, is_project_member=self.project_membership_check)
+        if (
+            apply_target != GraphTargetRef()
+            and patch.kind == "experiment_loop"
+            and resolved.episode_id is None
+        ):
+            raise ValueError("Experiment-loop patches require canonical episode attribution")
+        if dispatch.profile == "orchestrator" and resolved.episode_id is None:
+            raise ValueError("orchestrator agent tasks require a canonical episode_id")
+        assert resolved.authorized_by is not None
+        authorizer = self._canonical_authorizer(resolved.authorized_by)
+        canonical = (authorizer, dispatch.profile, operation_id, resolved.episode_id)
+        supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.episode_id)
+        if any(value is not None for value in supplied) and supplied != canonical:
+            raise ValueError(
+                "agent patch attribution does not match the canonical task attribution"
+            )
+        return patch.model_copy(
+            update={
+                "authorized_by": authorizer,
+                "profile": dispatch.profile,
+                "task_id": operation_id,
+                "episode_id": resolved.episode_id,
+            }
+        )
+
+    @staticmethod
+    def _canonical_authorizer(authorizer: AuthorizedHuman) -> AuthorizedHuman:
+        try:
+            snapshot = AuthorizedHuman.model_validate(authorizer.model_dump(mode="python"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("authorized_by must be a valid authorizer snapshot") from exc
+        if not snapshot.display_name.strip():
+            raise ValueError("authorized_by must name the authorizing human")
+        return snapshot
+
+    def require_no_change_merge(
+        self, receipt: BranchMergeReceipt, *, project_id: str | None
+    ) -> None:
+        """Apply the live task and membership gate before admitting a no-change receipt."""
+
+        operation_id = receipt.provenance.merge_task_id
+        if (
+            project_id is None
+            or self.agent_authority_resolver is None
+            or self.project_membership_check is None
+        ):
+            raise ValueError(
+                "branch merge receipt attribution requires a canonical project-scoped "
+                "agent_authority_resolver and project_membership_check"
+            )
+        try:
+            resolved = self.agent_authority_resolver(project_id, operation_id)
+        except KeyError as exc:
+            raise ValueError(f"unknown agent task {operation_id!r}") from exc
+        if resolved.operation_id != operation_id or resolved.project_id != project_id:
+            raise ValueError("agent authority resolver returned another task or project")
+        if resolved.apply_target != GraphTargetRef():
+            raise ValueError("a branch merge receipt requires main-target Apply authority")
+        dispatch = resolved.dispatch_authority
+        if dispatch is None:
+            raise ValueError("branch merge receipt task has no dispatch authority binding")
+        probe = Patch(
+            kind="work",
+            author="agent",
+            producer="agent",
+            summary="Validate no-change branch merge receipt authority.",
+            source_operation_id=operation_id,
+            run_truth_scope=list(dispatch.scope.run_truth_scope),
+            repositories_read=[],
+            profile="orchestrator",
+            task_id=operation_id,
+            episode_id=receipt.provenance.episode_id,
+            authorized_by=receipt.authorized_by,
+            ops=[],
+        )
+        bound = require_apply(
+            resolved,
+            probe,
+            is_project_member=self.project_membership_check,
+        )
+        if bound.profile != "orchestrator":
+            raise ValueError("a branch merge receipt requires orchestrator authority")
+        if resolved.episode_id != receipt.provenance.episode_id:
+            raise ValueError("branch merge receipt episode does not match its task authority")
+        if resolved.authorized_by is None:
+            raise ValueError("branch merge receipt task has no authorizer snapshot")
+        if self._canonical_authorizer(resolved.authorized_by) != receipt.authorized_by:
+            raise ValueError("branch merge receipt authorizer does not match its task authority")

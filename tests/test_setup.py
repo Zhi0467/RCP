@@ -29,7 +29,7 @@ from rcp.setup import (
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateWorkspace
-from tests.helpers import signed_in_client
+from tests.helpers import signed_in_client, unchecked_write_authority
 
 from .helpers import seed_patch
 
@@ -366,7 +366,7 @@ def test_existing_research_preflight_reports_exact_degraded_boundary_without_wri
     manifest,
     tmp_path,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     appended, _ = history.append(seed_patch())
     patch_path = manifest.research_dir / "patches" / f"{appended.revision:06d}.json"
     raw = json.loads(patch_path.read_text(encoding="utf-8"))
@@ -414,7 +414,7 @@ def test_degraded_existing_research_opens_last_coherent_state_without_claiming_h
     tmp_path,
 ) -> None:
     data_dir = tmp_path / "data"
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     appended, _ = history.append(seed_patch())
     patch_path = manifest.research_dir / "patches" / f"{appended.revision:06d}.json"
     raw = json.loads(patch_path.read_text(encoding="utf-8"))
@@ -675,7 +675,9 @@ def test_connect_requires_confirmation_and_names_the_sole_writable_home(
 
     assert connected.status_code == 200
     assert connected.json()["home_space_id"] == app.state.space_id
-    patches = HistoryManager(load_manifest(manifest.path)).load_patches()
+    patches = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).load_patches()
     assert len(patches) == 1
     assert patches[0].kind == "identity"
     assert patches[0].project_identity is not None

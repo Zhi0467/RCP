@@ -1972,7 +1972,7 @@ def test_experiment_apply_attributes_retry_patch_to_its_root(
         continuation="retry",
         parent_operation_id=root.operation_id,
     )
-    real_resolver = service.history.agent_authority_resolver
+    real_resolver = service.history.write_authority.agent_authority_resolver
     assert real_resolver is not None
     resolved_operations: list[str] = []
 
@@ -1980,7 +1980,7 @@ def test_experiment_apply_attributes_retry_patch_to_its_root(
         resolved_operations.append(operation_id)
         return real_resolver(project, operation_id)
 
-    service.history.agent_authority_resolver = root_resolver
+    service.history.write_authority.agent_authority_resolver = root_resolver
     revision_before_apply = service.history.state().revision
     result, failure = _apply_work_patch(
         service,

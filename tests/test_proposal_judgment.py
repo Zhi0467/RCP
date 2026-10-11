@@ -17,7 +17,7 @@ from rcp.service import (
     ReviewRequest,
 )
 from rcp.storage import AppStore
-from tests.helpers import seed_patch
+from tests.helpers import seed_patch, unchecked_write_authority
 
 QUESTION_ID = "rq/learning-after-shift"
 HYPOTHESIS_ID = "hyp/replanning-restores-plasticity"
@@ -75,7 +75,7 @@ INTENT_OPERATIONS: dict[str, dict[str, Any]] = {
 
 
 def _service(manifest: Manifest, tmp_path) -> ProjectService:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(
         Patch(

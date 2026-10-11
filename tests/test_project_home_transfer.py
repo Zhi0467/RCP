@@ -8,9 +8,11 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.config import load_manifest
+from rcp.core.authority import WriteAuthority
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectHomeTransfer
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, ProjectIdentityConflict
+from tests.helpers import unchecked_write_authority
 
 PROJECT_ID = "7c35b754-10e5-4bdd-8114-4ec35671437f"
 SOURCE_SPACE_ID = "6f85ff9c-fe58-4e8f-b790-230e8a3b2f2d"
@@ -86,7 +88,9 @@ def _transition_patch() -> Patch:
 
 
 def test_home_transfer_moves_only_the_derived_home_and_preserves_both_actors(manifest) -> None:
-    source = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    source = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     original = source.claim_project_identity("created", project_id=PROJECT_ID)
     transfer = source.transfer_project_home(
         project_id=PROJECT_ID,
@@ -115,7 +119,11 @@ def test_home_transfer_moves_only_the_derived_home_and_preserves_both_actors(man
     with pytest.raises(ProjectIdentityConflict):
         source.append(_ordinary_patch(manifest.project.truth_scope))
 
-    target = HistoryManager(load_manifest(manifest.path), expected_space_id=TARGET_SPACE_ID)
+    target = HistoryManager(
+        load_manifest(manifest.path),
+        expected_space_id=TARGET_SPACE_ID,
+        write_authority=unchecked_write_authority(),
+    )
     target.update_machine_provider_paths({"laptop": {"codex": "/target/codex"}})
     assert load_manifest(manifest.path).machine_map["laptop"].provider_paths["codex"] == (
         "/target/codex"
@@ -123,7 +131,7 @@ def test_home_transfer_moves_only_the_derived_home_and_preserves_both_actors(man
 
 
 def test_old_transition_hash_replays_without_the_new_optional_field(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     appended, _result = history.append(_transition_patch())
     assert appended.transition is not None
     assert (
@@ -137,7 +145,11 @@ def test_old_transition_hash_replays_without_the_new_optional_field(manifest) ->
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     legacy_bytes = path.read_bytes()
 
-    replay = HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=False).state
+    replay = (
+        HistoryManager(load_manifest(manifest.path), write_authority=unchecked_write_authority())
+        .materialize(write_outputs=False)
+        .state
+    )
 
     assert replay.replay_status == "complete"
     assert replay.revision == 1
@@ -146,7 +158,9 @@ def test_old_transition_hash_replays_without_the_new_optional_field(manifest) ->
 
 
 def test_home_transfer_is_exactly_idempotent_but_different_retry_is_refused(manifest) -> None:
-    source = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    source = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     source.claim_project_identity("created", project_id=PROJECT_ID)
     first = source.transfer_project_home(
         project_id=PROJECT_ID,
@@ -177,9 +191,15 @@ def test_home_transfer_is_exactly_idempotent_but_different_retry_is_refused(mani
 
 
 def test_concurrent_exact_home_transfer_appends_one_revision(manifest) -> None:
-    first = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    first = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     first.claim_project_identity("created", project_id=PROJECT_ID)
-    second = HistoryManager(load_manifest(manifest.path), expected_space_id=SOURCE_SPACE_ID)
+    second = HistoryManager(
+        load_manifest(manifest.path),
+        expected_space_id=SOURCE_SPACE_ID,
+        write_authority=unchecked_write_authority(),
+    )
     ready = threading.Barrier(3)
 
     def transfer(history: HistoryManager) -> ProjectHomeTransfer:
@@ -203,7 +223,9 @@ def test_concurrent_exact_home_transfer_appends_one_revision(manifest) -> None:
 
 
 def test_replay_reduces_home_transfers_in_canonical_order(manifest) -> None:
-    source = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    source = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     source.claim_project_identity("created", project_id=PROJECT_ID)
     source.transfer_project_home(
         project_id=PROJECT_ID,
@@ -212,7 +234,11 @@ def test_replay_reduces_home_transfers_in_canonical_order(manifest) -> None:
         source_released_by=_actor(SOURCE_SPACE_ID, "Source owner"),
         target_admitted_by=_actor(TARGET_SPACE_ID, "Team reviewer"),
     )
-    target = HistoryManager(load_manifest(manifest.path), expected_space_id=TARGET_SPACE_ID)
+    target = HistoryManager(
+        load_manifest(manifest.path),
+        expected_space_id=TARGET_SPACE_ID,
+        write_authority=unchecked_write_authority(),
+    )
     target.transfer_project_home(
         project_id=PROJECT_ID,
         previous_home_space_id=TARGET_SPACE_ID,
@@ -221,7 +247,9 @@ def test_replay_reduces_home_transfers_in_canonical_order(manifest) -> None:
         target_admitted_by=_actor(OTHER_SPACE_ID, "Other reviewer"),
     )
 
-    derived = HistoryManager(load_manifest(manifest.path)).project_identity()
+    derived = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).project_identity()
     assert derived is not None
     assert derived.project_id == PROJECT_ID
     assert derived.home_space_id == OTHER_SPACE_ID
@@ -229,7 +257,9 @@ def test_replay_reduces_home_transfers_in_canonical_order(manifest) -> None:
 
 
 def test_replay_refuses_a_second_nameplate_matching_the_transferred_home(manifest) -> None:
-    source = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    source = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     source.claim_project_identity("created", project_id=PROJECT_ID)
     source.transfer_project_home(
         project_id=PROJECT_ID,
@@ -238,7 +268,9 @@ def test_replay_refuses_a_second_nameplate_matching_the_transferred_home(manifes
         source_released_by=_actor(SOURCE_SPACE_ID, "Source owner"),
         target_admitted_by=_actor(TARGET_SPACE_ID, "Team reviewer"),
     )
-    HistoryManager(load_manifest(manifest.path)).append(
+    HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).append(
         Patch(
             kind="identity",
             author=None,
@@ -258,9 +290,15 @@ def test_replay_refuses_a_second_nameplate_matching_the_transferred_home(manifes
 
 
 def test_only_the_source_home_can_append_the_transfer(manifest) -> None:
-    source = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    source = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     source.claim_project_identity("created", project_id=PROJECT_ID)
-    target = HistoryManager(load_manifest(manifest.path), expected_space_id=TARGET_SPACE_ID)
+    target = HistoryManager(
+        load_manifest(manifest.path),
+        expected_space_id=TARGET_SPACE_ID,
+        write_authority=unchecked_write_authority(),
+    )
 
     with pytest.raises(ProjectIdentityConflict):
         target.transfer_project_home(
@@ -288,9 +326,13 @@ def test_replay_refuses_a_transfer_that_does_not_continue_canonical_home(
     manifest,
     transfer: ProjectHomeTransfer,
 ) -> None:
-    guarded = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    guarded = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     guarded.claim_project_identity("created", project_id=PROJECT_ID)
-    HistoryManager(load_manifest(manifest.path)).append(_transfer_patch(transfer))
+    HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).append(_transfer_patch(transfer))
 
     with pytest.raises(ProjectIdentityConflict):
         guarded.project_identity()
@@ -299,8 +341,14 @@ def test_replay_refuses_a_transfer_that_does_not_continue_canonical_home(
 
 
 def test_replay_refuses_a_home_transfer_before_project_identity(manifest) -> None:
-    HistoryManager(manifest).append(_transfer_patch(_transfer()))
-    guarded = HistoryManager(load_manifest(manifest.path), expected_space_id=TARGET_SPACE_ID)
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).append(
+        _transfer_patch(_transfer())
+    )
+    guarded = HistoryManager(
+        load_manifest(manifest.path),
+        expected_space_id=TARGET_SPACE_ID,
+        write_authority=unchecked_write_authority(),
+    )
 
     with pytest.raises(ProjectIdentityConflict):
         guarded.project_identity()
@@ -326,7 +374,11 @@ def test_agents_cannot_author_or_attach_a_home_transfer(mode: str) -> None:
     authored = _transfer_patch(transfer).model_copy(update={"author": "agent", "producer": "agent"})
     ordinary = _ordinary_patch(["repo"]).model_copy(update={"project_home_transfer": transfer})
 
-    authored_report = validate_patch(GraphState(), authored, ValidationContext([], mode=mode))  # type: ignore[arg-type]
+    authored_report = (
+        WriteAuthority().validate_permissions(GraphState(), authored)
+        if mode == "admission"
+        else validate_patch(GraphState(), authored, ValidationContext([], mode="replay"))
+    )
     ordinary_report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         ordinary,
@@ -342,7 +394,9 @@ def test_agents_cannot_author_or_attach_a_home_transfer(mode: str) -> None:
 
 
 def test_existing_identity_patch_remains_byte_compatible(manifest) -> None:
-    history = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    history = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     identity = history.claim_project_identity("created", project_id=PROJECT_ID)
     path = manifest.research_dir / "patches" / "000001.json"
     document = json.loads(path.read_bytes())
@@ -351,12 +405,19 @@ def test_existing_identity_patch_remains_byte_compatible(manifest) -> None:
     before = path.read_bytes()
 
     assert "project_home_transfer" not in document
-    assert HistoryManager(load_manifest(manifest.path)).project_identity() == identity
+    assert (
+        HistoryManager(
+            load_manifest(manifest.path), write_authority=unchecked_write_authority()
+        ).project_identity()
+        == identity
+    )
     assert path.read_bytes() == before
 
 
 def test_transfer_revision_summary_is_visible_without_changing_graph_semantics(manifest) -> None:
-    history = HistoryManager(manifest, expected_space_id=SOURCE_SPACE_ID)
+    history = HistoryManager(
+        manifest, expected_space_id=SOURCE_SPACE_ID, write_authority=unchecked_write_authority()
+    )
     history.claim_project_identity("created", project_id=PROJECT_ID)
     before = history.state()
     history.transfer_project_home(

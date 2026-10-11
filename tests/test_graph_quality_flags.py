@@ -7,6 +7,7 @@ from rcp.core.models import Edge, GraphState, Patch
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history import HistoryManager
+from tests.helpers import unchecked_write_authority
 
 
 def _patch(*ops: dict) -> Patch:
@@ -236,7 +237,7 @@ def test_human_batch_advice_describes_final_atomic_graph(manifest, connect: bool
             kind="approval", author="human", summary="Edit the research graph.", ops=[operation]
         )
 
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     patches = [
         approval({"op": "create_nodes", "nodes": [_experiment()]}),
         approval({"op": "create_nodes", "nodes": [_evidence()]}),
@@ -298,7 +299,7 @@ def test_quality_runs_once_per_transition_and_never_during_replay(manifest, monk
         flag_introduced_quality_issues(initial, candidate, report, revision)
 
     monkeypatch.setattr(manager_module, "flag_introduced_quality_issues", record)
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append_batch(
         [
             Patch(

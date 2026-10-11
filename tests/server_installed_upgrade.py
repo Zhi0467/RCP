@@ -572,6 +572,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     workspace = Path(__file__).resolve().parents[1]
     for name in (
         "__init__.py",
+        "helpers.py",
         "server_installed_upgrade.py",
         "server_installed_upgrade_hook.py",
         "server_upgrade_scratch.py",

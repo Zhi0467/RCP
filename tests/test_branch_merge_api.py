@@ -1404,7 +1404,9 @@ def test_no_change_receipt_rechecks_live_project_membership(
 ) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     task = _admit_held_merge_task(harness, monkeypatch)
-    harness.service.history.project_membership_check = lambda _project_id, _user_id: False
+    harness.service.history.write_authority.project_membership_check = (
+        lambda _project_id, _user_id: False
+    )
 
     with pytest.raises(ValueError, match="not a member"):
         harness.branch.write_merge_receipt(_current_receipt(harness, task_id=task.operation_id))

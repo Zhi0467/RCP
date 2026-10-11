@@ -55,7 +55,11 @@ from rcp.agents.schema import (
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import Manifest
-from rcp.core.authority import RESTRUCTURE_PROTECTED_EPISTEMIC, operation_actions
+from rcp.core.authority import (
+    RESTRUCTURE_PROTECTED_EPISTEMIC,
+    operation_actions,
+    validate_operation_authority,
+)
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     AuthorizedHuman,
@@ -1134,6 +1138,7 @@ def _require_possible_merge_plan(
         report = validate_patch(
             context.main_graph, candidate, build_validation_context(manifest, context.main_graph)
         )
+        validate_operation_authority(context.main_graph, candidate, report)
         if report.rejected:
             raise BranchMergeCandidateProblem(_validation_diagnostic(report)[0])
     conflicts = _branch_conflict_paths(context.deterministic_conflicts)

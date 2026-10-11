@@ -14,6 +14,7 @@ from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
     AgentTaskAuthority,
+    WriteAuthority,
     require_apply,
     require_dispatch,
 )
@@ -904,9 +905,10 @@ def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
     history = HistoryManager(
         manifest,
         project_id="project-one",
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=store.agent_task_authority,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=store.agent_task_authority,
+        ),
     )
     patch = seed_patch().model_copy(
         update={
@@ -941,9 +943,10 @@ def test_valid_work_apply_stamps_canonical_task_and_replay_needs_no_task_rows(
     history = HistoryManager(
         manifest,
         project_id="project-one",
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=store.agent_task_authority,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=store.agent_task_authority,
+        ),
     )
     patch = seed_patch().model_copy(
         update={
@@ -965,9 +968,10 @@ def test_valid_work_apply_stamps_canonical_task_and_replay_needs_no_task_rows(
     replay = HistoryManager(
         manifest,
         project_id="project-one",
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=resolver_must_not_run,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=resolver_must_not_run,
+        ),
     )
     assert replay.state().revision == 1
 

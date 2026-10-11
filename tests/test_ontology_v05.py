@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import apply_valid_operation, materialize_patches
 from rcp.core.models import (
     RELATION_SPEC,
@@ -451,7 +452,9 @@ def test_every_belief_changing_operation_requires_human_authority(
             "hyp/other": _hypothesis().model_copy(update={"id": "hyp/other"}),
         },
     )
-    report = validate_patch(state, _patch(1, [operation]), ValidationContext(["repo"]))
+    patch = _patch(1, [operation])
+    report = validate_patch(state, patch, ValidationContext(["repo"]))
+    report.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
     assert expected_code in _codes(report)
     assert expected_code not in _codes(
         validate_patch(state, _patch(1, [operation]), ValidationContext(["repo"], mode="replay"))

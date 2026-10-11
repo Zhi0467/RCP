@@ -13,6 +13,7 @@ from rcp.paper import PaperService
 from rcp.service import ProjectService, RunRequest
 from rcp.sources import preflight_provider_roots
 from rcp.storage import AppStore
+from tests.helpers import unchecked_write_authority
 
 
 def test_local_preflight_checks_metadata_without_enumerating(manifest, monkeypatch) -> None:
@@ -114,7 +115,7 @@ def test_assemble_run_keeps_missing_root_as_non_blocking_source_error(manifest, 
     )
     service = ProjectService(
         manifest,
-        HistoryManager(manifest),
+        HistoryManager(manifest, write_authority=unchecked_write_authority()),
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
     )
 

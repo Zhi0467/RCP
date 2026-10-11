@@ -24,6 +24,7 @@ from rcp.runs.branch_merge import (
     stream_branch_merge_run,
 )
 from rcp.service import RunRequest
+from tests.helpers import unchecked_write_authority
 
 from .test_branch_merge import _branch_source_ref, _context, _local_scope, _SequenceLauncher
 
@@ -67,7 +68,7 @@ def _new_blocker() -> dict:
 
 @pytest.fixture
 def merge_history(manifest):
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     _append(
         history,
         {
@@ -179,7 +180,7 @@ class _NoProvider:
 async def test_merge_recomputes_guidance_validity_without_provider(
     manifest, tmp_path: Path, new_experiment: bool, refresh_guidance: bool
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     experiment = {
         "id": "exp/guided",
         "type": "experiment",
@@ -632,7 +633,7 @@ async def test_invalid_fixed_ops_reject_before_launching_for_protected_residue(
 def _forked(manifest, *main_ops: dict, human_ops: tuple[dict, ...] = ()):
     """One main history and a branch forked after the given main operations."""
 
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     _append(history, *main_ops)
     for operation in human_ops:
         _append(history, operation, human=True)

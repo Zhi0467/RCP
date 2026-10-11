@@ -234,6 +234,13 @@ the only merge identity.
 
 ## Transition preparation
 
+Live admission runs core `WriteAuthority` under the append lock before
+`validate_patch`. It resolves attribution and membership and checks actions on
+the pre-Patch graph. Validation uses that resolved writer role for staged rules.
+Replay runs only validation, including persisted producer/author consistency;
+it never consults live authority. Historical restoration and system identity
+publication retain their separate paths.
+
 The synchronous backend transition manager is the sole semantic path from an
 initiating graph intent to a new main or branch revision. It handles human Sync,
 ordinary Work Apply, Auto-research Apply, Experiment-loop handoff, branch Apply,

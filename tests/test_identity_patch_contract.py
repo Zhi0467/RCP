@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.agents.schema import AgentPatch
+from rcp.core.authority import WriteAuthority
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
 from rcp.core.validation import ValidationContext, validate_patch
@@ -137,9 +138,10 @@ def test_system_producer_is_reserved_and_identity_has_no_legacy_author(mode: str
     human_identity = _identity_patch().model_copy(update={"producer": "human"})
 
     reports = [
-        validate_patch(GraphState(), system_refresh, ValidationContext(["repo"], mode=mode)),  # type: ignore[arg-type]
-        validate_patch(GraphState(), authored_identity, ValidationContext([], mode=mode)),  # type: ignore[arg-type]
-        validate_patch(GraphState(), human_identity, ValidationContext([], mode=mode)),  # type: ignore[arg-type]
+        WriteAuthority().validate_permissions(GraphState(), patch)
+        if mode == "admission"
+        else validate_patch(GraphState(), patch, ValidationContext(["repo"], mode="replay"))
+        for patch in (system_refresh, authored_identity, human_identity)
     ]
 
     assert "system-producer-forbidden" in {message.code for message in reports[0].messages}

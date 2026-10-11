@@ -3,13 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Patch
 from rcp.core.operations import adapt_persisted_patch_document, graph_operations_from_proposal
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.proposals import normalized_decision_proposal_ops, proposal_is_stale
 from rcp.history import HistoryManager
-from tests.helpers import seed_patch
+from tests.helpers import seed_patch, unchecked_write_authority
 
 
 def _update_node(node_id, changes, *, intent=None, cause=None):
@@ -112,7 +113,7 @@ def _intent_proposal(*, proposal_id: str, operation: dict, base_rev: int) -> dic
 
 
 def _state_with_decision(manifest, *, governed: bool = True):
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     edges = [
         {
@@ -199,7 +200,7 @@ def _state_with_second_hypothesis(manifest):
 
 
 def test_ordinary_agent_cannot_edit_an_existing_research_question_directly(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     history.append(
         Patch(
@@ -221,14 +222,11 @@ def test_ordinary_agent_cannot_edit_an_existing_research_question_directly(manif
             "rq/learning-after-shift", {"motivation": "Repeated shifts make this question urgent."}
         )
     )
-    report = validate_patch(history.state(), patch, ValidationContext(["repo-a"]))
+    report = WriteAuthority().validate_permissions(history.state(), patch)
 
     node = history.state().nodes["rq/learning-after-shift"]
     assert report.rejected
-    assert any(
-        message.code == "graph-action-refused" and "update_protected_epistemic" in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in report.messages)
     assert node.motivation == "Persistent agents encounter repeated changes."
     assert node.standing == "accepted"
 
@@ -256,8 +254,10 @@ def test_agent_cannot_decide_directly_or_by_proposal(manifest) -> None:
 
     assert direct_report.rejected
     assert proposal_report.rejected
-    assert any("decide_decision" in message.message for message in direct_report.messages)
-    assert any("decide_decision" in message.message for message in proposal_report.messages)
+    assert any(message.code == "decision-action-refused" for message in direct_report.messages)
+    assert any(
+        message.code == "invalid-agent-proposal-shape" for message in proposal_report.messages
+    )
 
 
 def test_belief_transition_still_requires_an_exact_proposal(manifest) -> None:
@@ -458,7 +458,7 @@ def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, o
 def test_direct_agent_changes_to_existing_beliefs_are_refused_at_apply(manifest, operation) -> None:
     state = _state_with_second_hypothesis(manifest)
 
-    report = validate_patch(state, _agent_patch(operation), ValidationContext(["repo-a", "repo-b"]))
+    report = WriteAuthority().validate_permissions(state, _agent_patch(operation))
 
     assert report.rejected
     assert any(message.code == "graph-action-refused" for message in report.messages)
@@ -602,7 +602,7 @@ def test_same_patch_edge_recreation_stales_a_new_proposal_but_remains_replayable
 
 
 def test_replay_does_not_recheck_protected_action_permission(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     state = history.state()
     patch = _agent_patch(
@@ -612,7 +612,7 @@ def test_replay_does_not_recheck_protected_action_permission(manifest) -> None:
         )
     ).model_copy(update={"revision": state.revision + 1})
 
-    admission = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    admission = WriteAuthority().validate_permissions(state, patch)
     replay = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"], mode="replay"))
 
     assert admission.rejected

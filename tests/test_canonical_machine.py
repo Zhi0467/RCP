@@ -10,6 +10,7 @@ from rcp.providers import ModelChoice
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
+from tests.helpers import unchecked_write_authority
 
 
 def test_manifest_rejects_graph_agent_off_canonical_machine(manifest) -> None:
@@ -60,7 +61,7 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
 
 def test_runtime_override_cannot_move_graph_agent(manifest, tmp_path) -> None:
     manifest.machines.append(type(manifest.machines[0])(alias="remote", host="gpu.example"))
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
@@ -77,7 +78,7 @@ def test_provider_override_does_not_inherit_previous_provider_model(manifest, tm
     manifest.agent.project_chat = stored.model_copy(
         update={"provider": "codex", "model": "gpt-5.6-luna"}
     )
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
@@ -101,7 +102,7 @@ def test_provider_override_does_not_inherit_previous_provider_model(manifest, tm
 
 
 def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")

@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 import rcp.history.branches as branch_module
-from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope, AgentTaskAuthority
+from rcp.core.authority import (
+    AgentDispatchAuthority,
+    AgentDispatchScope,
+    AgentTaskAuthority,
+    WriteAuthority,
+)
 from rcp.core.models import (
     AuthorizedHuman,
     BranchMergeProvenance,
@@ -25,7 +30,7 @@ from rcp.transport.state import (
     _validated_patch_path,
     _validated_relative_path,
 )
-from tests.helpers import seated_on_every_project, seed_patch
+from tests.helpers import seated_on_every_project, seed_patch, unchecked_write_authority
 
 
 def _authorizer() -> AuthorizedHuman:
@@ -106,7 +111,7 @@ def _task_authority(
 
 
 def test_branch_starts_at_exact_main_head_and_advances_without_mutating_main(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
 
@@ -144,7 +149,7 @@ def test_branch_starts_at_exact_main_head_and_advances_without_mutating_main(man
 
 
 def test_branch_glossary_edits_remain_on_branch_and_replay(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -174,7 +179,7 @@ def test_branch_glossary_edits_remain_on_branch_and_replay(manifest) -> None:
 
 
 def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -185,9 +190,11 @@ def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -
         authority.operation_id: authority for authority in (exact_branch, main_only, branch_only)
     }
     history.project_id = metadata.project_id
-    history.require_attribution = True
-    history.project_membership_check = seated_on_every_project
-    history.agent_authority_resolver = lambda _project_id, operation_id: authorities[operation_id]
+    history.write_authority = WriteAuthority()
+    history.write_authority.project_membership_check = seated_on_every_project
+    history.write_authority.agent_authority_resolver = lambda _project_id, operation_id: (
+        authorities[operation_id]
+    )
 
     appended, _result = branch.append(
         _branch_patch("ev/exact-branch").model_copy(
@@ -217,7 +224,7 @@ def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -
 
 
 def test_branch_replays_immutable_main_prefix_after_main_moves(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -245,7 +252,7 @@ def test_branch_replays_immutable_main_prefix_after_main_moves(manifest) -> None
 
 
 def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -293,9 +300,9 @@ def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(man
         ),
     )
     history.project_id = metadata.project_id
-    history.require_attribution = True
-    history.project_membership_check = seated_on_every_project
-    history.agent_authority_resolver = lambda _project, _operation: authority
+    history.write_authority = WriteAuthority()
+    history.write_authority.project_membership_check = seated_on_every_project
+    history.write_authority.agent_authority_resolver = lambda _project, _operation: authority
     patch = Patch(
         kind="experiment_loop",
         author="agent",
@@ -340,14 +347,14 @@ def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(man
     assert history.head_ref() == main_head
     assert "exp/child" not in history.state().nodes
     # Replay relies on the committed transition, not live operational lineage.
-    history.agent_authority_resolver = None
+    history.write_authority.agent_authority_resolver = None
     replayed = history.branch(metadata.branch_id).state()
     assert replayed.nodes["exp/child"].status == "completed"
     assert replayed.replay_status == "complete"
 
 
 def test_branch_base_state_fails_closed_when_accepted_main_prefix_is_tampered(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     appended, _result = history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -375,7 +382,7 @@ def test_branch_base_state_fails_closed_when_accepted_main_prefix_is_tampered(ma
 
 
 def test_branch_open_rejects_identity_mismatch_and_unsafe_paths(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     history.create_episode_branch(metadata)
@@ -396,7 +403,7 @@ def test_branch_open_rejects_identity_mismatch_and_unsafe_paths(manifest, tmp_pa
 
 
 def test_branch_transition_target_or_chain_tampering_halts_replay(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -459,7 +466,7 @@ class _RecordingRemoteWorkspace(StateWorkspace):
 
 def test_branch_remote_publication_uses_nested_atomic_commit_points(manifest) -> None:
     workspace = _RecordingRemoteWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
 
@@ -478,7 +485,7 @@ def test_branch_remote_publication_uses_nested_atomic_commit_points(manifest) ->
 @pytest.mark.parametrize("commit_status", ["absent", "present"])
 def test_branch_remote_patch_failure_reconciles_commit_point(manifest, commit_status: str) -> None:
     workspace = _RecordingRemoteWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -497,7 +504,7 @@ def test_branch_remote_patch_failure_reconciles_commit_point(manifest, commit_st
 
 def test_confirmed_remote_branch_patch_fences_and_repairs_before_the_next_write(manifest) -> None:
     workspace = _RecordingRemoteWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -518,7 +525,7 @@ def test_confirmed_remote_branch_patch_fences_and_repairs_before_the_next_write(
 
 def test_unknown_remote_branch_commit_is_repaired_if_a_later_refresh_proves_it(manifest) -> None:
     workspace = _RecordingRemoteWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -544,7 +551,7 @@ def test_local_branch_output_failure_fences_the_committed_patch_until_repair(
     manifest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -567,7 +574,7 @@ def test_local_branch_output_failure_fences_the_committed_patch_until_repair(
 
 
 def test_branch_read_snapshot_semantically_replays_the_tail_and_fails_closed(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -592,7 +599,7 @@ def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(
     manifest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -635,7 +642,7 @@ def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(
 
 
 def test_merge_receipts_are_append_only_exact_and_support_no_change(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -684,7 +691,7 @@ def test_merge_receipts_are_append_only_exact_and_support_no_change(manifest) ->
 
 
 def test_independent_no_change_writers_return_the_first_canonical_receipt(manifest) -> None:
-    first_history = HistoryManager(manifest)
+    first_history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     first_history.append(seed_patch())
     metadata = _branch_metadata(first_history)
     first_branch = first_history.create_episode_branch(metadata)
@@ -708,7 +715,7 @@ def test_independent_no_change_writers_return_the_first_canonical_receipt(manife
     )
     assert first_branch.write_merge_receipt(winner) == winner
 
-    second_history = HistoryManager(manifest)
+    second_history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     second_branch = second_history.branch(
         metadata.branch_id,
         expected_episode_id=metadata.episode_id,
@@ -730,7 +737,7 @@ def test_independent_no_change_writers_return_the_first_canonical_receipt(manife
 
 def test_remote_present_no_change_receipt_is_parsed_and_validated(manifest) -> None:
     workspace = _RecordingRemoteWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -758,7 +765,7 @@ def test_remote_present_no_change_receipt_is_parsed_and_validated(manifest) -> N
 
 
 def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -798,7 +805,7 @@ def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> 
 
 
 def test_no_change_writer_reconciles_a_concurrently_committed_main_winner(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -843,7 +850,7 @@ def test_no_change_writer_reconciles_a_concurrently_committed_main_winner(manife
 
 
 def test_no_change_receipt_wins_before_a_concurrent_main_append(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -884,7 +891,7 @@ def test_no_change_receipt_wins_before_a_concurrent_main_append(manifest) -> Non
 
 
 def test_reconcile_rejects_corrupted_existing_no_change_receipt(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -922,7 +929,7 @@ def test_reconcile_rejects_corrupted_existing_no_change_receipt(manifest) -> Non
 
 
 def test_reconcile_rejects_corrupted_existing_committed_receipt(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -980,7 +987,7 @@ def test_branch_child_enumeration_refuses_symlinked_directories(
     tmp_path: Path,
     child: str,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -999,7 +1006,7 @@ def test_branch_child_enumeration_refuses_symlinked_directories(
 
 
 def test_open_branch_refuses_symlinked_metadata(manifest, tmp_path: Path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -1030,7 +1037,7 @@ def test_transport_accepts_only_exact_branch_commit_shapes() -> None:
 
 
 def test_branch_metadata_json_is_current_after_reopen(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)

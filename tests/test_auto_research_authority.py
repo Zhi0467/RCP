@@ -24,6 +24,7 @@ from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
     AgentTaskAuthority,
+    WriteAuthority,
     operation_actions,
     require_apply,
     require_dispatch,
@@ -58,7 +59,9 @@ def _orchestrator_patch(*ops: dict, agent_action: str | None = None) -> Patch:
 
 
 def _report(state: GraphState, patch: Patch):
-    return validate_patch(state, patch, ValidationContext(["repo-a"]))
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    report.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
+    return report
 
 
 def _rejection_codes(state: GraphState, patch: Patch) -> set[str]:
@@ -419,3 +422,27 @@ def test_orchestrator_schema_is_elevated_without_widening_ordinary_schema() -> N
     )
     assert prepared.agent_action == "decision_choice"
     assert prepared.profile is None
+
+
+def test_rules_validation_does_not_refuse_writer_graph_permissions() -> None:
+    state = GraphState(
+        project_truth_scope=["repo-a"],
+        nodes={
+            "ev/result": Evidence(
+                id="ev/result",
+                type="evidence",
+                title="Result",
+                observation="The evaluation completed.",
+                origin="internal_run",
+            ),
+        },
+    )
+    patch = _orchestrator_patch(
+        {"op": "set_standing", "node_id": "ev/result", "standing": "accepted"},
+    ).model_copy(update={"profile": "ordinary"})
+
+    permission_report = WriteAuthority().validate_permissions(state, patch)
+    rules_report = validate_patch(state, patch, ValidationContext(["repo-a"]))
+
+    assert "graph-action-refused" in {message.code for message in permission_report.messages}
+    assert not rules_report.rejected

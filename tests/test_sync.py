@@ -25,7 +25,12 @@ from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest, RunRequest
 from rcp.storage import AgentTaskRecord
-from tests.helpers import append_fixture_patch, seed_patch, signed_in_client
+from tests.helpers import (
+    append_fixture_patch,
+    seed_patch,
+    signed_in_client,
+    unchecked_write_authority,
+)
 from tests.helpers import create_named_app as create_app
 
 from .helpers import authorized_human
@@ -1375,7 +1380,7 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(app) -> No
 
 
 def test_batch_overwrites_forged_admission_receipts(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     forged = ValidationMessage(level="reject", code="forged", message="forged")
     raw = Patch(
@@ -1406,7 +1411,7 @@ def test_batch_overwrites_forged_admission_receipts(manifest) -> None:
 def test_batch_commits_one_patch_then_replays_canonical_history_for_outputs(
     manifest, monkeypatch
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = Patch(
         kind="approval",
@@ -1442,7 +1447,7 @@ def test_batch_commits_one_patch_then_replays_canonical_history_for_outputs(
 
 
 def test_batch_builder_receives_fresh_state_under_append_lock(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     lock_attempts: list[bool] = []
 
@@ -1500,7 +1505,7 @@ def test_graph_sync_refuses_stale_project_draft(app) -> None:
 
 
 def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, monkeypatch) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     before_graph = (manifest.research_dir / "graph.json").read_bytes()
     patches = [
@@ -1551,7 +1556,7 @@ def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, m
 
 
 def test_replay_ignores_an_uncommitted_hidden_batch(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     hidden = manifest.research_dir / "patches" / ".batch-interrupted"
     hidden.mkdir()

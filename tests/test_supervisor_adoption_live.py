@@ -27,6 +27,7 @@ def test_adoption_payload_adds_only_declared_files_to_the_shared_guest_payload(
     tests.mkdir(parents=True)
     names = (
         "__init__.py",
+        "helpers.py",
         "supervisor_reboot_guest.py",
         "supervisor_reboot_data.py",
         "supervisor_adoption_guest.py",

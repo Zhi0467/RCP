@@ -20,6 +20,7 @@ import rcp.storage.base as storage_base_module
 import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.config import load_manifest
+from rcp.core.authority import WriteAuthority
 from rcp.history import HistoryManager
 from rcp.server_ops.deployment import UPDATE_SOURCE_FLOOR
 from rcp.storage import AppStore
@@ -374,7 +375,7 @@ def _exercise_candidate_upgrade(
                 manifest,
                 expected_space_id=space_id,
                 project_id=project_id,
-                require_attribution=True,
+                write_authority=WriteAuthority(),
             )
             .initialize()
             .state

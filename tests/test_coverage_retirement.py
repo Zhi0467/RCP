@@ -10,12 +10,12 @@ from rcp.runs.tasks.graph import _read_prepared_graph_context, _stage_prepared_g
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
 from tests.helpers import create_named_app as create_app
-from tests.helpers import seed_patch
+from tests.helpers import seed_patch, unchecked_write_authority
 
 
 @pytest.mark.parametrize("kind", ["seed", "refresh", "work"])
 def test_new_reading_reports_are_rejected(manifest, kind: str) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     patch = Patch.model_validate(
         {
             "kind": kind,
@@ -36,7 +36,7 @@ def test_new_reading_reports_are_rejected(manifest, kind: str) -> None:
 
 
 def test_historical_reading_report_replays_without_outputs_or_history_rewrite(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     # A pre-transition historical seed contains real graph operations and a report.
     raw = seed_patch().model_dump(mode="json")

@@ -1,16 +1,17 @@
 # Graph write gates
 
-Status: slices A and C are implemented. Operation profiles own action and apply
-dispatch; validation and replay share a manifest-built context. Slices B and D
-remain separate work; the permission gate has not changed.
+Status: slices A, C, and D are implemented. Operation profiles own action and
+apply dispatch. Validation and replay share a manifest-built context. Core
+write authority runs before validation. Slice B remains separate work.
 
 ## Goal
 
-Every graph write passes two gates, in this order:
+Every live semantic Patch admission passes two gates, in this order:
 
 1. **Permission.** Who is writing, and may they do these actions on this
    project and graph target?
-2. **Validation.** Is this write legal for the graph? It never asks who wrote it.
+2. **Validation.** Is this write legal for the graph? It uses the resolved writer
+   role for staged rules, without live identity lookups.
 
 Both gates live in the core. Neither depends on the HTTP layer.
 
@@ -27,57 +28,54 @@ Both gates live in the core. Neither depends on the HTTP layer.
 
 ## Today
 
-Every committed write already funnels through
-`HistoryManager._prepare_transition_locked`. Replay re-runs validation in
-replay mode. The funnel is sound. The gates inside it are mixed:
+Live main and branch admissions call core write authority under the append lock.
+Identity admission uses its separate manager path. Human and agent membership
+are checked live. Constructors require a write-authority object; there is no
+production attribution switch. Replay retains persisted-shape checks only.
 
-- Human membership is checked only at the HTTP edge (router dependency or an
-  inline check). The core trusts the `authorized_by` it is given.
-- Agent permission is checked in the core, under the append lock
-  (`require_apply`, live membership).
-- `HistoryManager(require_attribution=False)` is the default. Production
-  turns it on at three sites in `projects.py`.
-- `validate_patch` also does permission work: `_validate_authorship`,
-  per-op `permits()`, and the authority parts of `validate_approval_shape`
-  and `validate_experiment_loop_authority`.
-- `validate_patch` takes one `ValidationContext`; history and branch-merge
-  prechecks build it from the committing history manager's manifest. Replay
-  carries the same context and updates its scope from the staged graph.
-- Each operation has one `OpRule` in the validation registry. It binds
-  validation, authoring, actions, application, and dependencies. Missing
-  profiles raise during dispatch; historical no-ops have explicit handlers.
+Each operation has one registry profile for validation, authoring, actions,
+application, and dependencies. Validation uses one manifest-built context.
 
 ## Target
 
 ### Gate 1: permission (`core/authority.py`)
 
 One entry point, called by `HistoryManager` under the append lock before
-validation. It takes the patch, the actor, and the graph target. It returns
-the stamped patch or refuses.
+validation. It takes the pre-Patch graph, patch, authorizer, and graph target.
+It returns the stamped patch and resolved writer role, or a rejection.
 
 - Human writer: the authorizer must be a live project member
   (`is_project_member`), checked here, under the lock. This is new.
 - Agent writer: the existing task-binding and live-membership checks.
-- Patch kind matches the writer (approval is human; the rest are agent).
+- Patch kind matches the writer: approval is human, identity is system, and
+  other kinds are agent.
 - Each op's graph actions are allowed for the writer's profile
   (`operation_actions` + `permits`, moved out of the validator).
-- The authority parts of approval and experiment-loop checks move here.
-  Their rule parts stay in validation.
+- Writer action legality lives here. Shape and staged-state rules stay in validation.
 
 Replay does not run Gate 1. Membership is live state, and history is not
 re-judged (invariant 6b).
 
 `require_attribution` is removed. Gate 1 always runs. Tests get a fixture
-that supplies a resolver and a membership check.
+that bypasses live attribution while retaining permission checks.
 
 ### Gate 2: validation (`core/validation/`)
 
 `validate_patch` takes the state, the patch, and one `ValidationContext`.
-It has no actor input. The manager builds the context once from the
-manifest. The branch-merge pre-check uses the same builder.
+It also receives the resolved writer role for staged rules. The manager builds
+the context from the manifest. Branch-merge prechecks use the same builder.
 
 It keeps: envelope rules (schema generation, revision order, scope), each
 op's structural and authoring rules, and patch-level rules.
+
+Exceptions and staging boundaries:
+
+- Replay checks persisted producer/author/kind consistency, never live authority.
+- Writer-dependent staged rules stay in Gate 2 with one explicit writer value.
+- Proposal simulation uses a synthetic human writer and never runs Gate 1.
+- Historical restore, identity claims, home transfer, scope bootstrap, branch
+  metadata, and merge receipts retain their publication paths. No-change merge
+  receipts always run the live authority gate.
 
 ### Operation profiles
 
@@ -110,22 +108,21 @@ validation, materialize, and authority test files pass unchanged.
 **C. Validation context — implemented.** One context object and builder. Check: branch
 merge and history tests.
 
-**D. Permission gate.** Move permission out of `validate_patch`, add the
-human membership check, remove `require_attribution`. Check: permission
-tests that attempt each refusal (non-member human, departed agent
-authorizer, wrong profile action), plus the Sync, approval, provisioning,
-and branch-merge API tests.
+**D. Permission gate — implemented.** Permission runs before `validate_patch`.
+Human membership is checked live and `require_attribution` is removed.
+Focused permission, history, validation, and API checks pass. The broad run still
+has sandbox-blocked acceptance cases. The unchanged graph-invariant test also
+passes a list where slice C requires `ValidationContext`; its four randomized
+cases need that separate integration fix.
 
-## Open checks before slice D
+## Slice D integration facts
 
-- Project creation: is the creator a project member before the first
-  approval patch lands? If not, the new check refuses project setup.
-- Personal (desktop) space: confirm the local owner is a member of every
-  project it writes.
-- An agent on a member's own page writes as that member. Confirm it carries
-  that member's `authorized_by`.
-- About 210 test sites construct `HistoryManager`. Count how many need the
-  new fixture.
+- Registration writes system identity before seating the creator; later human
+  approvals check the seated membership.
+- Personal registration seats the local owner; legacy migration backfills membership.
+- Member-page writes carry the authenticated member's authorizer snapshot.
+- Test constructors use one test-only stand-in. Production history-only callers
+  use an authority without live resolvers, which refuses human and agent admission.
 
 ## Invariants
 

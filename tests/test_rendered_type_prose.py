@@ -23,6 +23,7 @@ from rcp.core import project_types
 from rcp.core.authority import (
     _AGENT_GRAPH_AUTHORITY_BODY,
     AGENT_GRAPH_AUTHORITY_POLICY_DIGEST,
+    Writer,
     _render_agent_graph_authority_body,
 )
 from rcp.core.materialize import apply_valid_patch
@@ -156,6 +157,6 @@ def test_proposal_intent_messages_follow_the_project_type(renamed: None) -> None
         intent="content_change",
         nodes=[{"id": "missing/node", "changes": {"title": "x"}}],
     )
-    assert proposals._validate_content_change_intent(seeded, None, content) == (
-        "a content change must target one existing Goal or Design."
-    )
+    assert proposals._validate_content_change_intent(
+        seeded, None, content, Writer(author="agent", profile="ordinary")
+    ) == ("a content change must target one existing Goal or Design.")

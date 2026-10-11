@@ -25,7 +25,7 @@ from rcp.projects import ProjectCatalog
 from rcp.setup import ProjectSetupRequest
 from rcp.sources import project_cache_roots
 from rcp.storage import AppStore
-from tests.helpers import signed_in_client
+from tests.helpers import signed_in_client, unchecked_write_authority
 
 from .helpers import seed_patch
 from .storage_helpers import downgrade_artifacts
@@ -488,19 +488,19 @@ def test_a_non_member_patch_is_refused_at_apply_under_the_append_lock(manifest, 
     history = catalog.open(project_id).history
     before = history.state().revision
 
-    assert history.project_membership_check is not None
-    assert history.project_membership_check(project_id, creator.user_id)
-    assert not history.project_membership_check(project_id, outsider.user_id)
+    assert history.write_authority.project_membership_check is not None
+    assert history.write_authority.project_membership_check(project_id, creator.user_id)
+    assert not history.write_authority.project_membership_check(project_id, outsider.user_id)
 
     # The gate is the live check, not a snapshot taken at dispatch.
     store.seat_project_member(project_id, outsider.user_id)
-    assert history.project_membership_check(project_id, outsider.user_id)
+    assert history.write_authority.project_membership_check(project_id, outsider.user_id)
     with store.connection() as connection:
         connection.execute(
             "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",
             (project_id, outsider.user_id),
         )
-    assert not history.project_membership_check(project_id, outsider.user_id)
+    assert not history.write_authority.project_membership_check(project_id, outsider.user_id)
     assert history.state().revision == before
 
 
@@ -561,15 +561,17 @@ def test_replay_succeeds_with_no_membership_records_present(manifest, tmp_path) 
     project_id = app.state.default_project_id
 
     service = catalog.open(project_id)
-    HistoryManager(service.manifest, service.history.workspace).append(seed_patch())
+    HistoryManager(
+        service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
+    ).append(seed_patch())
 
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members")
     assert store.project_members(project_id) == []
 
-    replayed = HistoryManager(service.manifest, service.history.workspace).materialize(
-        write_outputs=False
-    )
+    replayed = HistoryManager(
+        service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
+    ).materialize(write_outputs=False)
     assert replayed.state.replay_status == "complete"
     assert replayed.state.revision > 0
 

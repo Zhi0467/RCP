@@ -11,6 +11,7 @@ from rcp.core.authority import (
     RESTRUCTURE_PROTECTED_EPISTEMIC,
     SUPERSEDE_NODE,
     UPDATE_NODE,
+    WriteAuthority,
     operation_actions,
     permits,
 )
@@ -220,12 +221,9 @@ def test_generated_meta_relation_cannot_bypass_protected_endpoint_authority(
         {ordinary_action, RESTRUCTURE_PROTECTED_EPISTEMIC}
     )
     report = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    report.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
     assert report.rejected
-    assert any(
-        message.code == "graph-action-refused"
-        and RESTRUCTURE_PROTECTED_EPISTEMIC in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in report.messages)
     assert any(message.code == "generated-relation-type-mismatch" for message in report.messages)
 
 
@@ -283,12 +281,10 @@ def test_existing_protected_node_cannot_be_removed_then_recreated_with_same_id()
     ).model_copy(update={"revision": 2})
 
     admission = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    admission.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
     replay = validate_patch(state, patch, ValidationContext(["repo-a"], mode="replay"))
 
-    assert any(
-        message.code == "graph-action-refused" and "remove_protected_epistemic" in message.message
-        for message in admission.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in admission.messages)
     assert any(message.code == "initial-node-id-replacement" for message in admission.messages)
     assert not replay.rejected, [message.message for message in replay.messages]
 
@@ -338,12 +334,10 @@ def test_later_same_id_creation_cannot_exempt_an_earlier_protected_action(
     ).model_copy(update={"revision": 2})
 
     report = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    report.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
 
     assert expected_action in operation_actions(state, patch, patch.ops[0])
-    assert any(
-        message.code == "graph-action-refused" and expected_action in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in report.messages)
     assert any(message.code == "initial-node-id-replacement" for message in report.messages)
 
 

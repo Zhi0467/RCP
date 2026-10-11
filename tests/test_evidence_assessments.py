@@ -9,6 +9,7 @@ from rcp.core.authority import (
     CREATE_EDGE,
     UPDATE_PROTECTED_EPISTEMIC,
     AgentProfile,
+    WriteAuthority,
     operation_actions,
     permits,
 )
@@ -37,7 +38,12 @@ from rcp.core.operations import (
 from rcp.core.research_md import render_research_md
 from rcp.core.validation import ValidationContext, ValidationReport, validate_patch
 from rcp.history import HistoryManager
-from tests.helpers import create_named_app, fabricated_authorizer, signed_in_client
+from tests.helpers import (
+    create_named_app,
+    fabricated_authorizer,
+    signed_in_client,
+    unchecked_write_authority,
+)
 
 EVIDENCE_ID = "ev/transfer-result"
 HYPOTHESIS_A_ID = "hyp/transfer-persists"
@@ -327,7 +333,7 @@ def test_history_decoder_preserves_legacy_strength_without_rewriting_bytes(
     expected_legacy: str,
     expected_role: str,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.ensure_layout()
     patch_path = manifest.research_dir / "patches" / "000001.json"
     source_bytes = json.dumps(
@@ -663,13 +669,13 @@ def test_evidence_edge_authority_stays_direct_while_hypothesis_edits_stay_protec
     )
     assert protected_action == frozenset({UPDATE_PROTECTED_EPISTEMIC})
     assert not any(permits(hypothesis_patch, action) for action in protected_action)
-    protected_report = validate_patch(state, hypothesis_patch, ValidationContext(["repo-a"]))
+    protected_report = WriteAuthority().validate_permissions(state, hypothesis_patch)
     assert "graph-action-refused" in _codes(protected_report)
     assert "invalid-agent-attribution" not in _codes(protected_report)
 
 
 def test_remove_and_create_replaces_assessment_without_rewriting_prior_patch(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(
         _agent_patch(
             _create_nodes_operation(),
@@ -768,7 +774,7 @@ def test_research_markdown_and_graph_dump_place_assessment_on_edges() -> None:
 
 
 def test_graph_api_serializes_assessment_on_the_relation(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.ensure_layout()
     legacy_create = _legacy_document(
         strength="confirmatory",

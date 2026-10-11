@@ -20,6 +20,7 @@ from rcp.sources.indexer import (
 )
 from rcp.storage import AppStore
 from rcp.transport import SSHStateWorkspace
+from tests.helpers import unchecked_write_authority
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
@@ -480,7 +481,7 @@ def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkey
         "research.example",
         "/remote/project",
     )
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     service = ProjectService(
         manifest,
         history,
@@ -623,7 +624,7 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
 
 
 def test_out_of_scope_run_is_rejected_before_index(manifest, tmp_path, monkeypatch) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     service = ProjectService(
         manifest,
         history,
