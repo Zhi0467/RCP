@@ -945,6 +945,8 @@ export interface SpaceRunIndexEntry extends Pick<
   mode: SpaceRunMode;
   title: string;
   graph_target: GraphTargetRef;
+  /** The target's display name, resolved by the server across projects. */
+  graph_branch_name: string;
   parent_episode_id: string | null;
   experiment_id: string | null;
   started_at: string;

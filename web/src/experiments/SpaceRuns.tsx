@@ -293,7 +293,7 @@ export function SpaceRunRow({
             </span>
           )}
           {/* Space rows span projects; names arrive once the index carries them. */}
-          <BranchTag refs={null} target={entry.graph_target} />
+          <BranchTag refs={null} target={entry.graph_target} name={entry.graph_branch_name} />
           <time dateTime={entry.started_at}>{formatActivity(entry.started_at)}</time>
         </span>
         <ChevronRight className="space-run-arrow" size={16} aria-hidden="true" />
