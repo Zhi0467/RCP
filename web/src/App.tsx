@@ -182,6 +182,8 @@ import { useConsolidation } from "./projects/useConsolidation";
 import { useProjectDigest } from "./projects/useProjectDigest";
 import { digestChangedNodeIds } from "./projects/projectDigest";
 import { DetailDrawer } from "./graph/DetailDrawer";
+import { branchNameRefusal } from "./graph/BranchNameField";
+import { branchName } from "./core/branchNames";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { ProjectDock } from "./projects/ProjectDock";
@@ -1048,6 +1050,11 @@ function MemberApp({
   const [showArchivedRefs, setShowArchivedRefs] = useState(false);
   const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
   const graphTargetKey = graphSessionKey("", graphTarget);
+  // On an Auto-research branch the header button continues that branch.
+  const continueBranch =
+    activeBranchEpisode?.mode === "auto_research"
+      ? { name: branchName(projectGraphRefs, graphTarget), episode: activeBranchEpisode }
+      : null;
   // Episode changes move a branch's chain member or merge state; any turn on
   // the shown ref moves its head, which can also change its merge state.
   const graphRefsKey = JSON.stringify([
@@ -3534,6 +3541,8 @@ function MemberApp({
       showExperiment,
     ],
   );
+  const [experimentBranchRefusal, setExperimentBranchRefusal] = useState<string | null>(null);
+  const [autoResearchBranchRefusal, setAutoResearchBranchRefusal] = useState<string | null>(null);
   const runExperiment = useCallback(
     async (
       node: GraphNode,
@@ -3542,6 +3551,7 @@ function MemberApp({
       browserRequested = false,
       launchConfig?: AgentRunConfig,
     ) => {
+      setExperimentBranchRefusal(null);
       try {
         await startExperiment(
           node,
@@ -3552,6 +3562,7 @@ function MemberApp({
           launchConfig,
         );
       } catch (caught) {
+        setExperimentBranchRefusal(branchNameRefusal(caught));
         setNotice({
           kind: "error",
           text: caught instanceof Error ? caught.message : String(caught),
@@ -3615,6 +3626,7 @@ function MemberApp({
       browserRequested = false,
       requestId?: string,
       launchConfig?: AgentRunConfig,
+      branchName: string | null = null,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3632,6 +3644,7 @@ function MemberApp({
             browser_requested: browserRequested,
             invocation_ceiling: invocationCeiling,
             starting_instruction: startingInstruction,
+            branch_name: branchName,
             // Omitted, the server turns code isolation on only where it is eligible.
             ...(codeWorktree ? {} : { code_worktree: false }),
             // Omitted, the server uses the Settings orchestrator profile.
@@ -3681,8 +3694,10 @@ function MemberApp({
     codeWorktree = true,
     browserRequested = false,
     launchConfig?: AgentRunConfig,
+    branchName: string | null = null,
   ) => {
     reportAutoResearchStartError(null);
+    setAutoResearchBranchRefusal(null);
     try {
       await startAutoResearch(
         invocationCeiling,
@@ -3691,8 +3706,10 @@ function MemberApp({
         browserRequested,
         undefined,
         launchConfig,
+        branchName,
       );
     } catch (error) {
+      setAutoResearchBranchRefusal(branchNameRefusal(error));
       reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
     }
   };
@@ -4443,7 +4460,11 @@ function MemberApp({
     <AcceptanceAgentIndicator agentMode={verifiedHealth?.agent_mode} />
   );
   const voiceSurface = (
-    <VoicePanel voice={voice} onOpenSettings={() => setSpaceSettingsOpen(true)} />
+    <VoicePanel
+      voice={voice}
+      graphRefs={graphRefs}
+      onOpenSettings={() => setSpaceSettingsOpen(true)}
+    />
   );
   const setupRoute: ProjectSetupRoute = setupOpen
     ? parseProjectSetupRoute(window.location.hash)
@@ -4820,10 +4841,11 @@ function MemberApp({
   const autoResearchButton = (
     <button
       className="button secondary auto-research-control"
-      disabled={autoResearchRefusal !== null}
+      disabled={autoResearchRefusal !== null && continueBranch === null}
       aria-label="Auto-research"
-      title={autoResearchRefusal ?? undefined}
+      title={continueBranch ? undefined : (autoResearchRefusal ?? undefined)}
       onClick={() => {
+        setAutoResearchBranchRefusal(null);
         openAutoResearchDialog();
       }}
     >
@@ -5383,6 +5405,7 @@ function MemberApp({
                 onChange={changeView}
               />
               <Artifacts
+                graphRefs={projectGraphRefs ?? null}
                 key={project.id}
                 projectId={project.id}
                 nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
@@ -5396,12 +5419,14 @@ function MemberApp({
               {experimentStartOverlap?.projectId === project.id && (
                 <ExperimentStartOverlap
                   projectId={project.id}
+                  graphRefs={projectGraphRefs ?? null}
                   loops={experimentStartOverlap.loops}
                   onDismiss={() => setExperimentStartOverlap(null)}
                 />
               )}
               <ExecutionView
                 graphTarget={graphTarget}
+                graphRefs={projectGraphRefs ?? null}
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
                 machines={project.machines}
@@ -5627,6 +5652,7 @@ function MemberApp({
         return (
           <DetailDrawer
             key={`${slot}:${node.id}`}
+            experimentBranchNameRefusal={experimentBranchRefusal}
             node={node}
             projectId={project.id}
             graphTarget={graphTarget}
@@ -5783,7 +5809,12 @@ function MemberApp({
       />
       <AutoResearchDialog
         open={autoResearchDialogOpen}
-        busy={episodeAction === "start"}
+        busy={
+          episodeAction === "start" ||
+          (continueBranch !== null &&
+            (episodeAction === `message:${continueBranch.episode.episode_id}` ||
+              episodeAction === `continue:${continueBranch.episode.episode_id}`))
+        }
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
         project={project}
@@ -5794,6 +5825,7 @@ function MemberApp({
           codeWorktree,
           browserRequested,
           launchConfig,
+          branchName,
         ) =>
           void authorizeAutoResearch(
             invocationCeiling,
@@ -5801,8 +5833,13 @@ function MemberApp({
             codeWorktree,
             browserRequested,
             launchConfig,
+            branchName,
           )
         }
+        branchNameRefusal={autoResearchBranchRefusal}
+        continueBranch={continueBranch}
+        onContinue={requestEpisodeContinuation}
+        onSendMessage={messageEpisodeOrchestrator}
       />
       {retryTask && retryConfig && (
         <RunDialog
