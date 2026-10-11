@@ -416,7 +416,9 @@ class ExperimentStoreMixin(StoreMixinBase):
                         auto_research_route,
                         admission_id=auto_research_admission_id,
                     )
-                self._insert_episode(connection, started)
+                self._insert_episode(
+                    connection, started, branch_name=record.request.get("branch_name")
+                )
                 if continues_episode_id is not None:
                     reopened = connection.execute(
                         """WITH RECURSIVE owners(episode_id) AS (

@@ -87,6 +87,7 @@ class StartEpisodeBody(BaseModel):
     browser_requested: bool = False
     code_worktree: bool | None = None
     graph_isolation: Literal[True] = True
+    branch_name: str | None = None
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(
         default=None,

@@ -57,6 +57,7 @@ class BranchReadSnapshot:
 
     metadata: GraphBranchMetadata
     receipts: tuple[BranchMergeReceipt, ...]
+    state: GraphState
 
 
 def canonical_branch_id(value: str) -> str:
@@ -1299,7 +1300,7 @@ def _read_branch_snapshot(
     ):
         raise ValueError("committed branch merge receipt has no accepted main provenance")
     receipts = tuple(sorted(receipts_by_id.values(), key=lambda item: item.created_at))
-    return BranchReadSnapshot(metadata=exact_metadata, receipts=receipts)
+    return BranchReadSnapshot(metadata=exact_metadata, receipts=receipts, state=replayed.state)
 
 
 def _main_heads_by_revision(main: MaterializationResult) -> dict[int, GraphHeadRef]:

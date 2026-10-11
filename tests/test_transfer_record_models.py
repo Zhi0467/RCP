@@ -527,6 +527,60 @@ def test_graph_archive_state_transfers_only_in_record_schema_three(tmp_path: Pat
     assert store.episode_isolation(PROJECT_ID, episode_id).worktree is None
 
 
+def test_branch_names_transfer_with_reservations_and_preserve_older_payloads(
+    tmp_path: Path,
+) -> None:
+    episode_id = "66666666-6666-4666-8666-666666666666"
+    episode = TransferEpisodeRecord(
+        episode_id=episode_id,
+        mode="auto_research",
+        graph_target=TransferGraphTarget(kind="branch", branch_id=episode_id),
+        graph_base_head=TransferGraphHead(revision=4, transition_id="c" * 64),
+        status="completed",
+        invocation_ceiling=5,
+        invocations_used=0,
+        ending="completed",
+        wrapup_state="not_started",
+        report_attempts_used=0,
+        created_at=NOW,
+        updated_at=NOW,
+        ended_at=NOW,
+        auto_research=TransferAutoResearchHistory(created_at=NOW, updated_at=NOW),
+    )
+    bundle = {"project_id": PROJECT_ID, "attributions": (), "tasks": (), "watchers": ()}
+    old = TransferRecordBundle(**bundle, schema_version=3, episodes=(episode,))
+    payload = old.model_dump_json()
+    assert "branch_name" not in payload
+    assert TransferRecordBundle.model_validate_json(payload).model_dump_json() == payload
+    named = episode.model_copy(
+        update={"branch_name": "new-name", "reserved_branch_names": ("new-name", "old-name")}
+    )
+    with pytest.raises(ValidationError, match="schema version 4"):
+        TransferRecordBundle(**bundle, schema_version=3, episodes=(named,))
+    records = TransferRecordBundle(**bundle, schema_version=4, episodes=(named,))
+    store = AppStore(tmp_path / "source.sqlite3")
+    target = AppStore(tmp_path / "target.sqlite3")
+    with store.connection() as connection:
+        store._insert_transfer_episodes(connection, records, {})
+        exported = store._transfer_episodes(connection, PROJECT_ID, ())
+    assert exported == records.episodes
+    assert store.project_transfer_record_schema_version(PROJECT_ID) == 4
+    backup_path = tmp_path / "backup.sqlite3"
+    store.online_snapshot(backup_path)
+    backup = AppStore.open_read_only_snapshot(backup_path)
+    try:
+        with backup.connection() as connection:
+            assert backup._transfer_episodes(connection, PROJECT_ID, ()) == exported
+    finally:
+        backup.close()
+    restored = TransferRecordBundle.model_validate_json(
+        TransferRecordBundle(**bundle, schema_version=4, episodes=exported).model_dump_json()
+    )
+    with target.connection() as connection:
+        target._insert_transfer_episodes(connection, restored, {})
+        assert target._transfer_episodes(connection, PROJECT_ID, ()) == exported
+
+
 def test_bundle_resolves_human_attribution_and_preserves_paper_conflict_state() -> None:
     bundle = TransferRecordBundle(
         project_id=PROJECT_ID,

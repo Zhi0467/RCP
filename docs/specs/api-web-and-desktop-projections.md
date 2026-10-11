@@ -21,18 +21,31 @@ For a branch, `episode_id` is the chain-root owner and `current_episode_id`
 is the newest chain member. `archived` is the owner's graph-isolation archive
 state, independent of episode-history archiving. Merge fields reuse the episode
 branch summary, including its reservation and live-writer checks.
-A branch row also carries the chain root's `mode` and a display `title`: an
-Auto-research starting instruction, or the Experiment's title from the main
-display cache; `title` is null when neither is known.
-Main has its exact current head, `archived: false`, `merge_eligible: false`,
+A branch row also carries the chain root's `mode` and `created_at`, its resolved
+`name`, `running` (any task on that target in `ACTIVE_AGENT_TASK_STATUSES`), and
+`needs_you` (the Inbox attention projection has an open Decision or blocker,
+or the branch has an unanswered, answerable agent question). `title` is absent.
+The name comes from the shared SQLite branch-name owner, including deterministic
+date fallbacks for legacy branches. Archived branches remain in this inventory.
+Main has `name: "main"`, `running: false`, `needs_you: false`, `created_at: null`,
+its exact current head, `archived: false`, `merge_eligible: false`,
 and null branch, episode, base, and merge-detail fields. Branch ownership and
 persisted records are unchanged: `branch_id == episode_id` names the root.
+
+`PUT /api/projects/{project_id}/graph-refs/{branch_id}/name` takes
+`{"name": str}`; `PUT /api/projects/{project_id}/graph-refs/{branch_id}/archived`
+takes `{"archived": bool}`. Both return the updated GraphRef and admit any
+project member. Rename returns 422 with `detail.code: branch_name_invalid` or
+409 with `detail.code: branch_name_taken`; unknown branches return 404.
+Main cannot be renamed or archived. Archive and unarchive update the isolation
+state, creating that state for a legacy branch when needed, without changing
+Patch history or episode-history archiving.
 
 The project shell shows a graph picker whenever the project has a branch, on
 main too, and on any branch route. It puts main first, preserves inventory
 branch order, and hides archived refs unless requested or active; an active
 branch missing from the list still has its own option. A branch is named by its
-`title`, else a short id; the active branch shows its revision and merge state.
+`name`; the active branch shows its revision and merge state.
 When the list cannot be read the picker is disabled, says so, and still names
 the current ref. **Episode & tasks** is a link to the ref's current chain
 member, shown only when it has one.

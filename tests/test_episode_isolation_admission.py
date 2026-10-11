@@ -120,6 +120,51 @@ def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeyp
     )
 
 
+@pytest.mark.parametrize("name", ["my-research", "", None, "Bad-name", "main"])
+def test_auto_start_reserves_branch_name(manifest, tmp_path, monkeypatch, name):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    monkeypatch.setattr(
+        app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
+    )
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    response = client.post(
+        f"/api/projects/{project_id}/episodes",
+        json={
+            "mode": "auto_research",
+            "invocation_ceiling": 1,
+            "code_worktree": False,
+            "branch_name": name,
+        },
+    )
+    if name in {"Bad-name", "main"}:
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["code"] == "branch_name_invalid"
+        assert store.episodes(project_id) == []
+        return
+    assert response.status_code == 202, response.text
+    episode_id = response.json()["episode_id"]
+    refs = client.get(f"/api/projects/{project_id}/graph-refs").json()
+    branch = next(ref for ref in refs if ref["branch_id"] == episode_id)
+    if name:
+        assert branch["name"] == name
+        collision = client.post(
+            f"/api/projects/{project_id}/episodes",
+            json={
+                "mode": "auto_research",
+                "invocation_ceiling": 1,
+                "code_worktree": False,
+                "branch_name": name,
+            },
+        )
+        assert collision.status_code == 409, collision.text
+        assert collision.json()["detail"]["code"] == "branch_name_taken"
+        assert len(store.episodes(project_id)) == 1
+    else:
+        assert branch["name"].startswith("research-")
+
+
 def test_internal_code_defaults_skip_eligibility(manifest, tmp_path, monkeypatch):
     store = _store(manifest, tmp_path)
 
