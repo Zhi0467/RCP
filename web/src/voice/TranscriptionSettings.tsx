@@ -68,6 +68,13 @@ const MODEL_ROLES = {
   live: { label: "Live voice", hint: "The voice you talk to." },
 };
 
+/** ChatGPT's desktop dictation types into other apps only on macOS and Windows computers. */
+function chatgptDictationTypesHere(): boolean {
+  if (typeof navigator === "undefined") return false;
+  // iPadOS reports a Mac platform; touch points tell them apart.
+  return /^(Mac|Win)/.test(navigator.platform) && navigator.maxTouchPoints <= 1;
+}
+
 function serviceChoice(connection: ServiceConnection): ServiceChoice {
   if (connection.kind === "gemini") return "gemini";
   return connection.preset ?? "custom";
@@ -590,7 +597,7 @@ function ServiceCard({
           <h2 id={titleId}>{editing ? `Edit ${editing.label}` : "Connect a service"}</h2>
         </header>
         <div className="transcription-dialog-body">
-          {editing ? null : (
+          {editing || !chatgptDictationTypesHere() ? null : (
             <p className="transcription-dialog-tip">
               No key needed if you have the ChatGPT desktop app: set a dictation shortcut in its
               Settings, under Keyboard shortcuts, and dictate straight into RCP on your ChatGPT
