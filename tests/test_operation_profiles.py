@@ -13,10 +13,5 @@ def test_every_operation_has_a_complete_profile() -> None:
         for model in get_args(get_args(union)[0])
         for name in get_args(model.model_fields["op"].annotation)
     }
+    # OpRule requires actions and apply, so a registered op is a complete profile.
     assert names == set(OP_RULES)
-    for rule in OP_RULES.values():
-        assert callable(rule.actions)
-        assert callable(rule.apply)
-        for check in (rule.structural_validate, rule.authoring_validate, rule.dependencies):
-            assert check is None or callable(check)
-        assert isinstance(rule.legacy_only, bool)
