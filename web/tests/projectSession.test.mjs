@@ -1031,3 +1031,35 @@ test("a branch view compares its Experiment signal only against the same graph",
     false,
   );
 });
+
+test("a replacement backend accepts its own revision and invalidates old Sync fences", () => {
+  const oldHead = { target: { kind: "main" }, revision: 9, transition_id: transitionOne };
+  const fence = { project_id: "alpha", request_id: 1, expected_head: oldHead, draft_generation: 0 };
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(9, { graph_head: oldHead }),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "sync_started",
+    fence,
+    snapshot_request_id: 1,
+    sync_request_sequence: 1,
+  });
+  assert.equal(transitionSyncCompletionDisposition(state.transitionCoordinator, fence), "apply");
+  state = projectSessionReducer(state, {
+    kind: "reset",
+    project_id: "alpha",
+    invalidate_backend: true,
+  });
+  assert.equal(
+    transitionSyncCompletionDisposition(state.transitionCoordinator, fence),
+    "reload_active",
+  );
+  state = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: snapshot(2),
+    preserve_readiness: false,
+  });
+  assert.equal(state.renderedRevision, 2);
+});
