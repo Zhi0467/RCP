@@ -282,8 +282,8 @@ group: a tinted card, an accent border, a bold title, and a New pill. A failed
 or stopped turn that is unread stays in its own group. Search runs in the browser over what each card
 already holds: its name, node, chat kind, latest message, and every loaded
 turn's prompt, provider, model, effort, and repositories; every word must match.
-Chips filter to All or Working. Above the conversation, a header
-names the title, provider, model, effort, repository, and chat scope; a failed or stopped turn adds a banner
+Chips filter to All or Working. Above the conversation, the two-row header
+described above names the title and holds the agent picker; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
 The Agents tab opens on a **board**; a link that names a chat (Ask, a source-chat
