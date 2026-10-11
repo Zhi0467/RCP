@@ -1972,3 +1972,92 @@ def test_a_request_persisted_before_isolation_fields_still_roundtrips():
     assert not _persisted_request_roundtrips(
         request.model_copy(update={"code_worktree": True}), stored
     )
+
+
+@pytest.mark.parametrize("name", ["a", "main", "Main", "-ab", "ab-", "a_b", "a" * 33, " ab", " "])
+def test_branch_name_validation(name):
+    from rcp.storage.branch_names import (
+        BranchNameInvalid,
+        normalize_branch_name,
+        validate_branch_name,
+    )
+
+    with pytest.raises(BranchNameInvalid):
+        validate_branch_name(name)
+    with pytest.raises(BranchNameInvalid):
+        normalize_branch_name(name)
+    assert normalize_branch_name(None) is None
+    assert normalize_branch_name("") is None
+    assert validate_branch_name("ab") == "ab"
+    assert validate_branch_name("a" * 32) == "a" * 32
+
+
+def test_branch_fallbacks_are_utc_and_legacy_names_survive_other_rename(tmp_path):
+    from rcp.storage.branch_names import BranchNameTaken
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    for index in range(3):
+        root = _episode(store, f"root-{index}").model_copy(
+            update={
+                "graph_target": GraphTargetRef(kind="branch", branch_id=f"root-{index}"),
+                "graph_base_head": GraphHeadRef(revision=0),
+                "created_at": f"2026-09-08T23:0{index}:00-02:00",
+            }
+        )
+        store.create_episode(root)
+    expected = {
+        "root-0": "experiment-sep-09",
+        "root-1": "experiment-sep-09-2",
+        "root-2": "experiment-sep-09-3",
+    }
+    assert store.branch_names("project") == expected
+    with store.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM branch_names").fetchone()[0] == 3
+        # Rows predating this migration have neither explicit names nor reservations.
+        connection.execute("DELETE FROM branch_names")
+        connection.execute("DELETE FROM branch_name_reservations")
+    assert store.branch_names("project") == expected
+    with pytest.raises(BranchNameTaken):
+        store.rename_branch("project", "root-0", "experiment-sep-09-2")
+    store.rename_branch("project", "root-0", "new-name")
+    assert store.branch_names("project") == {**expected, "root-0": "new-name"}
+    with pytest.raises(BranchNameTaken):
+        store.rename_branch("project", "root-1", "experiment-sep-09")
+    store.rename_branch("project", "root-0", "another-name")
+    with pytest.raises(BranchNameTaken):
+        store.rename_branch("project", "root-1", "new-name")
+
+
+def test_branch_reservation_and_episode_creation_share_concurrent_transaction(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from rcp.storage.branch_names import BranchNameTaken
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    roots = [
+        _episode(store, f"root-{index}").model_copy(
+            update={
+                "graph_target": GraphTargetRef(kind="branch", branch_id=f"root-{index}"),
+                "graph_base_head": GraphHeadRef(revision=0),
+            }
+        )
+        for index in range(2)
+    ]
+    barrier = Barrier(2)
+
+    def reserve(root):
+        barrier.wait()
+        try:
+            with store.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                store._insert_episode(connection, root, branch_name="one-name")
+            return True
+        except BranchNameTaken:
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(reserve, roots))
+    assert sorted(outcomes) == [False, True]
+    assert len(store.episodes("project")) == 1
+    assert list(store.branch_names("project").values()) == ["one-name"]

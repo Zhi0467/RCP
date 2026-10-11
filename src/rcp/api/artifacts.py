@@ -82,6 +82,8 @@ class SavedArtifactResponse(BaseModel):
     download_url: str | None
     can_open: bool
     unavailable_reason: str | None = None
+    # The owning branch's display name, resolved here so the tag never guesses from a link.
+    graph_branch_name: str = "main"
 
 
 def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
@@ -356,7 +358,26 @@ def saved_artifacts(
                 can_open=view not in {"file", "pdf"},
             )
         )
+    _name_artifact_branches(store, project_id, entries)
     return sorted(entries, key=lambda entry: (entry.created_at, entry.id), reverse=True)
+
+
+def _name_artifact_branches(
+    store: AppStore, project_id: str, entries: list[SavedArtifactResponse]
+) -> None:
+    """Name each entry's branch from its episode, else its producing task."""
+    names = store.branch_names(project_id)
+    for entry in entries:
+        episode = store.episode(entry.episode_id) if entry.episode_id else None
+        task = store.agent_task(entry.operation_id) if entry.operation_id else None
+        if episode is not None and episode.project_id == project_id:
+            target = episode.graph_target
+        elif task is not None and task.project_id == project_id:
+            target = task.graph_target
+        else:
+            continue
+        if target.kind == "branch" and target.branch_id is not None:
+            entry.graph_branch_name = names.get(target.branch_id, target.branch_id[:8])
 
 
 def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):

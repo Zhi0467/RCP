@@ -5,40 +5,20 @@ export function graphRefTarget(ref: GraphRef): GraphTargetRef {
   return ref.kind === "main" ? { kind: "main" } : { kind: "branch", branch_id: ref.branch_id };
 }
 
-const GRAPH_REF_LABEL_MAX = 60;
-
-/** A branch is named by its owner's title; a short id only when the backend has none. */
-export function graphRefLabel(ref: GraphRef): string {
-  if (ref.kind === "main") return "Main";
-  const title = ref.title?.trim().split("\n")[0]?.trim();
-  if (!title) return ref.branch_id.slice(0, 8);
-  return title.length > GRAPH_REF_LABEL_MAX ? `${title.slice(0, GRAPH_REF_LABEL_MAX - 1)}…` : title;
-}
-
-/** The active branch when the loaded list does not have it yet (a branch newer than the list). */
-export function unlistedActiveBranch(
-  refs: readonly GraphRef[],
-  activeRef: GraphTargetRef,
-): string | null {
-  return activeRef.kind === "branch" &&
-    !refs.some((ref) => sameGraphTarget(graphRefTarget(ref), activeRef))
-    ? activeRef.branch_id
-    : null;
-}
-
-/** Main first; retain the API's branch order and always expose the active ref. */
+/** Main first, then running branches; newest first within each group. */
 export function graphPickerOptions(
   refs: readonly GraphRef[],
   activeRef: GraphTargetRef,
-  showArchived = false,
 ): GraphRef[] {
-  const visible = refs.filter(
-    (ref) => !ref.archived || showArchived || sameGraphTarget(graphRefTarget(ref), activeRef),
-  );
-  return [
-    ...visible.filter((ref) => ref.kind === "main"),
-    ...visible.filter((ref) => ref.kind !== "main"),
-  ];
+  return refs
+    .filter((ref) => !ref.archived || sameGraphTarget(graphRefTarget(ref), activeRef))
+    .sort((a, b) => {
+      if (a.kind === "main") return b.kind === "main" ? 0 : -1;
+      if (b.kind === "main") return 1;
+      return (
+        Number(b.running) - Number(a.running) || Date.parse(b.created_at) - Date.parse(a.created_at)
+      );
+    });
 }
 
 export interface GraphPickerSelection {

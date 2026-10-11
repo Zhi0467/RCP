@@ -20,6 +20,7 @@ from rcp.storage.artifacts import ArtifactStoreMixin
 from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
 from rcp.storage.base import AppStoreBase
+from rcp.storage.branch_names import BranchNameStoreMixin
 from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.client_requests import ClientRequestStoreMixin
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
@@ -52,6 +53,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    BranchNameStoreMixin,
     ClientRequestStoreMixin,
     OwnerAuthStoreMixin,
     DigestStoreMixin,

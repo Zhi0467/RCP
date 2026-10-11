@@ -87,3 +87,8 @@ by the exact boundary source from the preceding immutable fixture.
 `pre-repository-contracts-v20-d352cee` retains the last shape before repository provisioning
 contracts (storage migration 46), ending at migration 45. It is built by the
 exact boundary source from the preceding immutable fixture.
+
+`pre-branch-names-v21-32d8c2d` retains the last shape before graph branches
+gained durable names and name reservations (storage migration 47), ending at
+migration 46. It is built by the exact boundary source from the preceding
+immutable fixture.

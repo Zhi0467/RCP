@@ -445,7 +445,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         actual_configuration_sha256 = project_transfer_source_configuration_sha256(configuration)
         if actual_configuration_sha256 != source_configuration_sha256:
             raise ValueError("source transfer configuration digest does not match its payload")
-        if configuration.record_schema_version not in {None, 2, TRANSFER_RECORD_SCHEMA_VERSION}:
+        if configuration.record_schema_version not in {None, 2, 3, TRANSFER_RECORD_SCHEMA_VERSION}:
             raise ValueError("target does not support the source transfer record schema")
         if accepted_schema_generation != configuration.source_schema_generation:
             raise ValueError("target does not accept the source transfer schema")

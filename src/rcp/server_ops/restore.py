@@ -46,6 +46,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Branch names (v47), fresh plus the immutable fixture upgrades
+        # and in-place upgrades.
+        "d725078e7dd9329f9dd3e3a6fb80c44fa0222875d5070ffb61fa880211e6397e",
+        "24e3fa84a0f6bf23f38de11c583bbab6a2cd8b65c72a3427f7d9750de85ec00e",
+        "169ec5558da54e8991d29306dfe829a06fce135b9c11f8addaa6c45d0a54ad24",
+        "ac5d4ee325d3881826d08449d9757914c10ddb68c54f6ec5dcb5e42dd633d56f",
+        "f297a8f6d0014abf7e4f57373d85c28770eaa2095044fa4fb23ea2d033836e3b",
+        "b8923e93e6247c07e83e52ad8f3ec4432a3154875e4faf00316a1d418baf7237",
+        "2f8b908b9c466193f6b85d378ed0821ac7b08b97c677d8348db88d45eb4b5c0c",
+        "3b4a2f0903d9e66b54dcc44bb62d8f4994fd2b2b70aa2fca32b8f2d41f35c4e5",
+        "5be9e8cf63e3336b01dbb121c1e95e1ba817bf8f5562ec64bbbdf36a8362f5a1",
+        "aece3e5e612263de6f0f0feb0f705d3d1c51c0fde26e7a1b35e5e7c5b97972b3",
+        "fe4daddee853f15568b9f04e2231d0e8285c68a6203a014d9868e07a51988ffe",
         # Optional repository sources and existing-project provisioning (v46),
         # fresh plus the immutable fixture upgrades and in-place graph-run shape.
         "3ea6a2df34cb94d46fe0d641e695e165d0a18c925f94963411f19d9835a5cf85",

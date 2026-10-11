@@ -181,7 +181,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   );
   const activeProjectId = useRef(projectId);
   const openProjectTabsRef = useRef(openProjectTabs);
-  const projectTabStatesRef = useRef(new Map<string, T>());
+  const projectTabStatesRef = useRef(
+    new Map<string, { project: ProjectSnapshot; state: T | null }>(),
+  );
   // Where the human left each project; background cache writes never change it.
   const leftGraphTargetsRef = useRef(new Map<string, GraphTargetRef>());
   const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
@@ -399,18 +401,45 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   }, []);
 
   const cacheProjectState = useCallback((id: string, state: T) => {
-    cacheProjectTabState(
-      projectTabStatesRef.current,
-      graphSessionKey(id, state.project.graph_target),
-      state,
-    );
+    const cache = projectTabStatesRef.current;
+    const key = graphSessionKey(id, state.project.graph_target);
+    cache.delete(key);
+    cache.set(key, { project: state.project, state });
+    // Speculative snapshots must not evict a visited ref's draft and UI state.
+    const visited = [...cache].filter(([, entry]) => entry.state !== null);
+    for (const [oldest] of visited.slice(
+      0,
+      Math.max(0, visited.length - PROJECT_TAB_CACHE_LIMIT),
+    )) {
+      cache.delete(oldest);
+    }
   }, []);
+  const clearProjectCache = useCallback(() => projectTabStatesRef.current.clear(), []);
+  const cacheProjectSnapshot = useCallback((snapshot: ProjectSnapshot) => {
+    const key = graphSessionKey(snapshot.id, snapshot.graph_target);
+    // Never replace a visited ref (including its draft) with speculative data.
+    if (!projectTabStatesRef.current.has(key)) {
+      projectTabStatesRef.current.set(key, { project: snapshot, state: null });
+    }
+  }, []);
+  const cachedProjectSnapshotForOpen = useCallback(
+    (id: string, target: GraphTargetRef) =>
+      projectTabStatesRef.current.get(graphSessionKey(id, target))?.project ?? null,
+    [],
+  );
   const rememberLeftGraphTarget = useCallback((id: string, target: GraphTargetRef) => {
     leftGraphTargetsRef.current.set(id, target);
   }, []);
   const cachedProjectStateForOpen = useCallback(
-    (id: string, graphTarget: GraphTargetRef = MAIN_GRAPH) =>
-      projectTabStateForOpen(projectTabStatesRef.current, graphSessionKey(id, graphTarget)),
+    (id: string, graphTarget: GraphTargetRef = MAIN_GRAPH) => {
+      const key = graphSessionKey(id, graphTarget);
+      const cache = projectTabStatesRef.current;
+      const cached = cache.get(key);
+      if (!cached?.state) return null;
+      cache.delete(key);
+      cache.set(key, cached);
+      return { state: cached.state, loading: false as const };
+    },
     [],
   );
   const inactiveCachedProjectState = useCallback(
@@ -420,7 +449,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
         openProjectTabsRef.current,
         activeProjectId.current,
         id,
-      ),
+      )?.state ?? null,
     [],
   );
   const isProjectTabOpen = useCallback(
@@ -529,6 +558,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
+    cacheProjectSnapshot,
+    clearProjectCache,
+    cachedProjectSnapshotForOpen,
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,

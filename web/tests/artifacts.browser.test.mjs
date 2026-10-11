@@ -44,6 +44,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       can_download: false,
       download_url: null,
       unavailable_reason: null,
+      graph_branch_name: "main",
       viewer_url: `/viewer-shell/${artifact_id}`,
       ...fields,
     });
@@ -54,12 +55,14 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         episode_mode: "experiment_loop",
         source_chat_href:
           "#/projects/project?view=runs&experiment=experiment%2Ftransfer&episode=old-episode&target=branch&branch=branch-one&parent=parent-episode",
+        graph_branch_name: "transfer-sweep",
       }),
       entry("plot", "Saved plot", {
         operation_id: "task",
         episode_mode: "experiment_loop",
         path: "artifacts/plot.html",
         source_chat_href: "#/projects/project?view=chats&branch_id=branch-one&chat=plot-chat",
+        graph_branch_name: "transfer-sweep",
         source_node_id: "exp/transfer",
         can_download: true,
         download_url: "/api/projects/project/tasks/task/artifacts/plot/download",
@@ -75,6 +78,8 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         kind: "report",
         episode_id: "no-chat",
         episode_mode: "auto_research",
+        // A branch report with no source link still names its branch.
+        graph_branch_name: "night-run",
       }),
     ];
     entries.push(
@@ -90,6 +95,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         can_download: true,
         viewer_url: null,
         download_url: `/api/projects/project/tasks/task/artifacts/${view}/download`,
+        graph_branch_name: "main",
       })),
     );
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -104,15 +110,19 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       0,
     );
     await page.getByRole("link", { name: "Open Report", exact: true }).waitFor();
-    assert.equal(await page.locator(".artifact-episode-tag").count(), 3);
+    // Every row names its branch, main included.
     assert.equal(
-      await page
-        .locator(".artifact-entry")
-        .filter({ hasText: "Unavailable plot" })
-        .locator(".artifact-episode-tag")
-        .count(),
-      0,
+      await page.locator(".artifact-entry .branch-tag").count(),
+      await page.locator(".artifact-entry").count(),
     );
+    const tag = (name) =>
+      page
+        .locator(".artifact-entry")
+        .filter({ has: page.getByRole("heading", { name, exact: true }) })
+        .locator(".branch-tag")
+        .getAttribute("title");
+    assert.equal(await tag("Validation report"), "transfer-sweep");
+    assert.equal(await tag("Report"), "night-run");
     const layout = await page.evaluate(() => {
       const panel = document.querySelector(".artifacts-view");
       const heading = panel.querySelector("h2");

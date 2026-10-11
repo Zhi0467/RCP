@@ -180,7 +180,7 @@ and centering offsets.
 
 ## Agent browser controls
 
-Discuss and Work chats have a **Browser** switch in the composer's Options
+Discuss and Work chats have a **Browser use** switch in the composer's Options
 menu, beside **Work in a worktree**. The folded chip is a sliders icon with no
 label; it counts the options that are on, so a Browser grant stays visible. On
 a phone the open menu spans the composer, and the chat view keeps a
@@ -189,14 +189,9 @@ Escape, or a switch to another chat. New chats start with it off. Each chat load
 switch waits for a successful load and keeps the server value after a failed
 save. Errors offer a check-again action. Paper coaching has no Browser switch.
 
-The chat's consent line is primary content at normal reading size. It states
-that the browser runs agent-written code outside the chat's folders, that
-changes apply from the next turn, and that turning Browser off deletes the
-chat's logins. Experiment launch controls in node detail and Runs, and the
-Auto-research launch dialog, carry the same switch with a launch-time consent
-paragraph: the run's agents can use a headless browser on the run's machine,
-and browser actions can run agent-written code and write outside the run's
-folders.
+Experiment launch controls in node detail and Runs, and the Auto-research
+launch dialog, carry the same switch. Every instance is the switch and its
+**Browser use** name only, with no caption line beside it.
 Continuations keep the episode's existing grant.
 
 Unavailable or lost browser access appears as a notice on the affected chat
@@ -286,7 +281,8 @@ Chips filter to All or Working. Above the conversation, the two-row header
 described above names the title and holds the agent picker; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
-The Agents tab opens on a **board**; a link that names a chat (Ask, a source-chat
+The Agents tab shows the selected branch's agents only, with no graph filter
+and no branch or role tags on cards; the user tag stays. It opens on a **board**; a link that names a chat (Ask, a source-chat
 link, or a chat route) opens that chat instead, and the list's board icon returns
 to the board. The board has four columns: **Needs you** (New reply, Failed,
 Stopped), **Working**, **Done**, and **Archived**. Each card shows the provider
@@ -327,7 +323,7 @@ than execution configuration. Settings supplies fresh conversation defaults; an
 existing native conversation retains the profile it last ran with, so
 continuation never silently moves providers or machines.
 
-The composer also has one compact **Compute** menu. It lists only the project's
+The composer's **+** menu holds Upload file, From RCP, and a **Compute** sub-list. It lists only the project's
 configured compute connections, shows green reachable or red unavailable status
 for the conversation's actual execution machine, and attaches or detaches each
 resource without changing the provider or `run_on`. The active count and checked
@@ -350,8 +346,8 @@ success cannot replace the empty state left by a failed new-target probe.
 
 Project Settings shows its machines as small tiles (name, host, and status dots
 for each provider, the jobs route, and the writable-path count) with a dashed
-**Add machine** tile; one machine's card is open below at a time, the first
-until another tile is clicked, grouping
+**Add machine** tile. Every card starts closed; clicking a tile opens that
+machine's card below, one at a time, grouping
 provider executables, **Long-running jobs**, and the machine's writable paths.
 The same writable-path record appears in space Settings, so the project card
 says the list applies to every project on that machine. **Add machine** opens

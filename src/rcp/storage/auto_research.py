@@ -94,7 +94,9 @@ class AutoResearchStoreMixin(StoreMixinBase):
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 self._require_project_accepts_new_work(connection, episode.project_id)
-                self._insert_episode(connection, episode)
+                self._insert_episode(
+                    connection, episode, branch_name=task.request.get("branch_name")
+                )
                 connection.execute(
                     """
                     INSERT INTO auto_research_episodes (

@@ -29,8 +29,10 @@ import type {
   Episode,
   EpisodeTimelineResponse,
   ExperimentLoopIndexEntry,
+  GraphRef,
   MergeEpisodeBody,
 } from "../core/types";
+import { BranchTag } from "../core/BranchTag";
 import { EpisodeMergePanel } from "./EpisodeMergePanel";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 import {
@@ -41,6 +43,7 @@ import {
 
 export function AutoResearchEpisodeCard({
   episode,
+  graphRefs = null,
   initiallyExpanded,
   selected = false,
   detailRef,
@@ -58,6 +61,8 @@ export function AutoResearchEpisodeCard({
   onArchive,
 }: {
   episode: Episode;
+  /** The project's refs, so the card names its branch. */
+  graphRefs?: GraphRef[] | null;
   initiallyExpanded: boolean;
   selected?: boolean;
   detailRef?: Ref<HTMLDivElement>;
@@ -246,6 +251,7 @@ export function AutoResearchEpisodeCard({
           <span className="campaign-run-meta">
             <span className={`status-pill ${projection.health}`}>{projection.healthLabel}</span>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
+            <BranchTag refs={graphRefs} target={episode.graph_target} />
             <EpisodeAuthor author={episode.authorized_by} />
             {chain.length > 1 && (
               <span

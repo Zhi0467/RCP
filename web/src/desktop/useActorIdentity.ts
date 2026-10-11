@@ -104,9 +104,17 @@ export function useActorIdentity() {
             (field) => previous[field] !== detail.health![field],
           );
         if (backendChanged) {
-          setActorIdentity(null);
           setActorIdentityChecked(false);
-          setAuthenticatedHealth(null);
+          // Keep this member's rendered project under the verification overlay
+          // across a restart. A new space or the admitted identity below still
+          // replaces the member boundary before any project becomes interactive.
+          if (
+            previous.space_id !== detail.health.space_id ||
+            previous.space_kind !== detail.health.space_kind
+          ) {
+            setActorIdentity(null);
+            setAuthenticatedHealth(null);
+          }
         }
         const health =
           verifiedHealthRef.current?.instance_id === detail.health.instance_id

@@ -349,21 +349,12 @@
   }
 }
 
-.branch-graph-banner,
-.branch-graph-banner > span,
-.branch-graph-banner > div,
 .branch-graph-controls,
 .branch-change-legend {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-}
-.branch-graph-banner {
-  justify-content: space-between;
-  padding: 12px 22px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
 }
 .branch-graph-controls {
   margin: 12px 0;
@@ -563,17 +554,6 @@
   align-items: baseline;
   flex-wrap: wrap;
   gap: 6px 10px;
-}
-
-.artifact-episode-tag {
-  background: var(--surface-cool);
-  border-radius: 4px;
-  color: var(--ink-soft);
-  font-size: var(--type-2xs);
-  font-weight: 600;
-  line-height: 1.5;
-  padding: 1px 6px;
-  white-space: nowrap;
 }
 
 .artifacts-list {
@@ -1435,4 +1415,21 @@
   min-height: 3.2rem;
   flex: 1 1 260px;
   width: 100%;
+}
+
+.branch-switch-progress {
+  height: 2px;
+  flex: none;
+  background: linear-gradient(90deg, transparent, var(--cobalt), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: branch-switch-progress 1s ease-in-out infinite;
+}
+@keyframes branch-switch-progress {
+  from {
+    background-position: -70% 0;
+  }
+  to {
+    background-position: 170% 0;
+  }
 }

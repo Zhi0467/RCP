@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
 from rcp.core.transition_models import GraphHeadRef
 from rcp.storage import AppStore, EpisodeRecord, ProjectTransferRepositorySource
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
@@ -103,9 +104,19 @@ def test_archived_record_capability_refuses_previous_target_before_source_releas
     assert source.project(request.project_id).home_space_id == source.space_id
 
 
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_target_accepts_graph_archive_and_named_branch_record_versions(tmp_path, schema_version):
+    configuration = _source_configuration(record_schema_version=schema_version)
+    request = ProjectTransferSourceConfigurationRequest.model_validate_json(
+        configuration.model_dump_json()
+    )
+    assert request.record_schema_version == schema_version
+    _linked_pair(tmp_path, configuration=configuration)
+
+
 def test_target_validates_record_capability_instead_of_echoing_unknown_version(tmp_path):
     with pytest.raises(ValueError, match="does not support the source transfer record schema"):
-        _linked_pair(tmp_path, configuration=_source_configuration(record_schema_version=4))
+        _linked_pair(tmp_path, configuration=_source_configuration(record_schema_version=5))
     target = AppStore(tmp_path / "team" / "rcp.sqlite3")
     source = AppStore(tmp_path / "personal" / "rcp.sqlite3")
     assert target.project_transfer_requests() == []

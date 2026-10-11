@@ -3839,22 +3839,6 @@ button.agent-provider-label {
   font-weight: 650;
 }
 
-.agent-conversation-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.agent-conversation-tags > span {
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: var(--type-2xs);
-}
-.agent-graph-filter {
-  max-width: 150px;
-  min-width: 80px;
-  font-size: var(--type-xs);
-}
 .agent-board-fold {
   background: none;
   border: 0;

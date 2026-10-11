@@ -1238,6 +1238,64 @@ test("an isolated closed experiment stays disabled with its server reason", () =
   }
 });
 
+test("a branch hides the new-branch toggle and keeps Code worktree", () => {
+  const node = {
+    id: "experiment/toggles",
+    type: "experiment",
+    title: "Toggles",
+    status: "planned",
+    standing: "asserted",
+    source_refs: [],
+    extension_fields: {},
+    attempts: [],
+    invocation_ceiling: 3,
+  };
+  const toggles = (graphTarget, inheritedIsolation) => {
+    const html = renderToStaticMarkup(
+      React.createElement(DetailDrawer, {
+        node,
+        edges: [],
+        allNodes: { [node.id]: node },
+        glossaryIndex: { entriesByInitial: new Map() },
+        beliefTransitions: [],
+        validationMessages: [],
+        ontology: { types: [], fields: [], relations: [] },
+        graphTarget,
+        inheritedIsolation,
+        experimentControl: {
+          can_start: true,
+          graph_reasons: [],
+          reasons: [],
+          isolated_start_reasons: [],
+          invocations_used: 0,
+          invocation_ceiling: 3,
+          invocations_remaining: 3,
+          governing_decisions: [],
+          decision_drift: [],
+        },
+        onRunExperiment() {},
+      }),
+    );
+    const group = html.match(/<div class="experiment-isolation"[^>]*>(.*?)<\/div>/s)?.[1] ?? "";
+    return (group.match(/type="checkbox"/g) ?? []).length;
+  };
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1440, innerHeight: 900 };
+  try {
+    assert.equal(toggles({ kind: "main" }, null), 2);
+    assert.equal(
+      toggles(
+        { kind: "branch", branch_id: "branch-1" },
+        { graph_isolation: true, code_worktree: false },
+      ),
+      1,
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 test("Run presents other-target live episodes before submission without disabling admission", () => {
   const node = {
     id: "experiment/shared",

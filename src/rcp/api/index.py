@@ -158,6 +158,8 @@ class SpaceRunIndexEntryResponse(BaseModel):
     mode: SpaceRunMode
     title: str
     graph_target: GraphTargetRef
+    #: The target's one display name; rows span projects, so the client cannot resolve it.
+    graph_branch_name: str = "main"
     parent_episode_id: str | None
     experiment_id: str | None
     started_at: str
@@ -643,6 +645,24 @@ def space_runs(
                     parent_episode_id=(route.auto_research_episode_id if route else None),
                 )
             )
+    branch_names = {
+        project_id: store.branch_names(project_id)
+        for project_id in {
+            entry.project_id for entry in entries if entry.graph_target.kind == "branch"
+        }
+    }
+    entries = [
+        entry
+        if entry.graph_target.kind == "main"
+        else entry.model_copy(
+            update={
+                "graph_branch_name": branch_names[entry.project_id].get(
+                    entry.graph_target.branch_id or "", (entry.graph_target.branch_id or "")[:8]
+                )
+            }
+        )
+        for entry in entries
+    ]
     return sorted(
         (entry for entry in entries if _space_run_is_visible(entry, as_of=as_of)),
         key=lambda entry: (entry.started_at, entry.episode_id),
