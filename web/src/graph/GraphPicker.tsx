@@ -120,6 +120,11 @@ export function GraphPicker({
     if (confirm) dialog.current?.showModal();
   }, [confirm]);
 
+  // A failed list read withdraws an open Archive confirmation with the list.
+  useEffect(() => {
+    if (unavailable) setConfirm(null);
+  }, [unavailable]);
+
   function showError(error: unknown) {
     setWarning(
       error instanceof ApiError && error.code === "branch_name_taken"
@@ -325,6 +330,7 @@ export function GraphPicker({
           document.body,
         )}
       {confirm &&
+        !unavailable &&
         createPortal(
           <dialog
             ref={dialog}
