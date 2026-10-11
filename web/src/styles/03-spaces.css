@@ -151,7 +151,7 @@
   border: 1px solid var(--landing-rule);
   border-radius: 6px 16px 16px 6px;
   box-shadow: 0 28px 72px rgb(var(--shadow-rgb) / 32%);
-  max-height: calc(100vh - 64px);
+  max-height: calc(100dvh - 64px);
   overflow: auto;
   padding: 24px;
   width: min(520px, calc(100vw - 40px));
@@ -1306,7 +1306,7 @@
 
 .setup-shell {
   background: var(--paper);
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 .setup-header {
   align-items: center;

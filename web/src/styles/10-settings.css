@@ -1,12 +1,19 @@
+/* A dialog taller than the screen scrolls here rather than leaving part of
+   itself out of reach, and a scroll never moves the page underneath. */
 .modal-backdrop {
-  align-items: center;
+  align-items: flex-start;
   background: rgb(var(--shadow-rgb) / 35%);
   display: flex;
   inset: 0;
   justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px;
   position: fixed;
   z-index: 140;
+}
+.modal-backdrop > * {
+  margin-block: auto;
 }
 .project-delete-dialog {
   background: var(--surface);
@@ -364,7 +371,7 @@
   color: var(--walnut);
   display: flex;
   justify-content: center;
-  min-height: 100vh;
+  min-height: 100dvh;
   padding: 28px;
 }
 .team-login-card {
@@ -494,8 +501,9 @@
   background: var(--surface);
   border: 1px solid var(--line-strong);
   box-shadow: var(--shadow);
-  max-height: 92vh;
+  max-height: 92dvh;
   overflow: auto;
+  overscroll-behavior: contain;
   width: min(880px, 96vw);
 }
 .run-dialog > header {
@@ -2700,7 +2708,7 @@ button.agent-provider-label {
   }
   .node-detail-window,
   .node-chat-window {
-    height: calc(100vh - 24px);
+    height: calc(100dvh - 24px);
     width: calc(100vw - 24px);
   }
   .chats-workspace {
@@ -3064,7 +3072,7 @@ button.agent-provider-label {
 .space-settings-shell {
   background: var(--paper);
   color: var(--ink);
-  height: 100vh;
+  height: 100dvh;
   overflow: auto;
 }
 .space-settings-header {

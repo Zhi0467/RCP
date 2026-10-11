@@ -149,7 +149,7 @@
   }
   .app-shell {
     height: auto;
-    min-height: 100vh;
+    min-height: 100dvh;
     overflow: visible;
   }
   /* Chats keep the screen-height shell, so the composer stays at the bottom. */
@@ -1368,7 +1368,7 @@ a.digest-title:hover {
   background-size: 18px 18px;
   border: 1px solid var(--line);
   border-radius: 0 0 5px 5px;
-  height: clamp(520px, calc(100vh - 300px), 840px);
+  height: clamp(520px, calc(100dvh - 300px), 840px);
   min-height: 520px;
   overscroll-behavior: auto;
   overflow: auto;
@@ -1566,7 +1566,7 @@ a.digest-title:hover {
   background: var(--paper);
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   padding: 12px;
   width: 100vw;
 }

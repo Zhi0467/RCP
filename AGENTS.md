@@ -69,6 +69,9 @@ failures, shared-contract changes, or integration uncertainty warrant it.
 - User-visible workflows, reported product failures, and substantial route,
   background, or view changes need the affected served-app journey. Inspect
   network, console, and server logs; report the exact gap if it cannot be driven.
+- Every UI change is also checked at phone width (390px) against the "Phone
+  layout" and "No commentary lines" rules in
+  `docs/specs/interface-and-visual-design.md`.
 - Remote behavior needs a reachable host. Migration or recovery checks that
   depend on existing records use a copy of real data. Never test against the
   human's live data directory.

@@ -57,6 +57,16 @@ Chat and coaching surfaces contain no sample prompts, slogans, instructional
 empty-state copy, or textarea placeholder text. An empty conversation is simply
 empty.
 
+## Phone layout
+
+At phone width every surface sticks to the screen edges like a native app. Text
+wraps, so no page or panel pans sideways; wide content such as code, tables, or
+the graph canvas scrolls inside its own box. Screen-height surfaces use the
+visible viewport (`dvh`), so nothing sits behind the browser toolbar. A dialog
+taller than the screen scrolls to its last control, and scrolling it never moves
+the page underneath. An open artifact fills the screen. Pinch zoom magnifies the
+page without resizing RCP's windows.
+
 ## Project shell
 
 The shell is intentionally bare: no RCP wordmark, product logo, or revision label
