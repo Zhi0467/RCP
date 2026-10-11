@@ -18,7 +18,8 @@ Capabilities are fixed in code:
   writes only its RCP scratch Patch.
 - **Discuss** has writable conversation scratch, read-only project reasoning,
   public-web tools, and no active Patch contract. Human conversation turns receive
-  only `ask` through the broker command mailbox; artifact edits receive no commands.
+  only `ask` through the broker command mailbox, including a chat composer's
+  artifact comment; an origin-bound viewer edit receives no commands.
 - **Work** has noninteractive project operational tools, public-web tools, exact
   project repository write roots, and one optional semantic Patch. A nightly
   consolidation turn is Work that may also commit keyed Patches inside the turn
