@@ -116,6 +116,56 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
     assert binding["continuation"] == "message_wake"
 
 
+def test_answer_continues_a_composer_artifact_edit_on_the_current_version(tmp_path):
+    from rcp.service import ArtifactContextRequest, ArtifactEditAdmission
+    from rcp.storage import Artifact
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    store.create_artifact(
+        Artifact(
+            artifact_id="a" * 24,
+            project_id="project",
+            supplier="turn",
+            supplier_id="origin",
+            source_name="page.html",
+            media_type="text/html",
+            created_at=store.now(),
+            origin_operation_id="origin",
+            chat_id="chat",
+        ),
+        data=b"<p>v1</p>",
+    )
+    artifact = store.artifact("a" * 24)
+    context = ArtifactContextRequest(operation_id="origin", artifact_id=artifact.artifact_id)
+    edit = ArtifactEditAdmission(
+        artifact_id=artifact.artifact_id,
+        base_version="older",
+        source_name="page.html",
+        media_type="text/html",
+        operation_id="origin-edit",
+        staged_scope_id="origin-edit",
+        origin_operation_id="origin",
+        launch_kind="discuss",
+        origin_bound=False,
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = json_set(request_json, "
+            "'$.artifact_context', json(?), '$.artifact_edit', json(?)) "
+            "WHERE operation_id = 'origin'",
+            (context.model_dump_json(), edit.model_dump_json()),
+        )
+    task = store.admit_chat_question_followup(question.question_id)
+    carried = RunRequest.model_validate(task.request)
+    assert carried.artifact_edit is not None and carried.artifact_context is not None
+    assert carried.artifact_edit.operation_id == task.operation_id
+    assert carried.artifact_edit.staged_scope_id == task.operation_id
+    assert carried.artifact_edit.base_version == artifact.current_version
+    assert not carried.artifact_edit.origin_bound
+    assert carried.artifact_context.selections == []
+
+
 @pytest.mark.parametrize("browser_requested", [True, False])
 def test_answer_turn_takes_the_chat_browser_choice_at_admission(tmp_path, browser_requested):
     store = AppStore(tmp_path / "store.sqlite3")

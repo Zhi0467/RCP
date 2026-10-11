@@ -341,7 +341,37 @@ class AgentTaskStoreMixin(StoreMixinBase):
             if unavailable is not None:
                 raise ValueError("question_origin_session_unavailable")
             self._require_project_accepts_new_work(connection, origin.project_id)
-            request = RunRequest.model_validate(task.request).model_copy(
+            # A composer comment's answer continues that edit on the artifact's
+            # current version, so a change made after the answer still publishes.
+            artifact_context, artifact_edit = None, None
+            edit = task.request.get("artifact_edit")
+            context = task.request.get("artifact_context")
+            if (
+                isinstance(edit, dict)
+                and isinstance(context, dict)
+                and not _origin_bound_edit(task.request)
+            ):
+                row = connection.execute(
+                    "SELECT json_extract(metadata, '$.current_version') FROM artifacts "
+                    "WHERE artifact_id = ?",
+                    (edit.get("artifact_id"),),
+                ).fetchone()
+                if row is not None and isinstance(row[0], str):
+                    version = row[0]
+                    artifact_context = {**context, "selections": [], "base_version": version}
+                    artifact_edit = {
+                        **edit,
+                        "operation_id": operation_id,
+                        "staged_scope_id": operation_id,
+                        "base_version": version,
+                    }
+            request = RunRequest.model_validate(
+                {
+                    **task.request,
+                    "artifact_context": artifact_context,
+                    "artifact_edit": artifact_edit,
+                }
+            ).model_copy(
                 update={
                     "browser_requested": self._chat_browser_requested(
                         connection, origin.project_id, origin.owner_id
@@ -354,8 +384,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "attachment_batch_id": None,
                     "attachment_set_id": None,
                     "attachment_client_id": None,
-                    "artifact_context": None,
-                    "artifact_edit": None,
                     "watcher_ids": [],
                 }
             )

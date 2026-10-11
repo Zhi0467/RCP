@@ -1179,7 +1179,11 @@ def _admit_artifact_context_request(
         raise ValueError("Artifact comments require a conversation or artifact comment route.")
     from rcp.runs.artifact_edit_admission import admit_chat_artifact_edit
 
-    return admit_chat_artifact_edit(store, service, project_id, request)
+    admitted = admit_chat_artifact_edit(store, service, project_id, request)
+    if admitted.artifact_edit is not None and admitted.artifact_edit.origin_bound:
+        return admitted
+    # A composer comment is an ordinary turn, resolved like one.
+    return _resolved_graph_request(service, kind, admitted)
 
 
 def _validated_task_request(
@@ -1255,6 +1259,10 @@ def _validated_task_request(
         uuid.UUID(request.chat_id)
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
+    # An artifact comment is classified first: an Experiment or orchestrator
+    # artifact runs on its origin's profile, so a composer pick must not refuse it.
+    if request.artifact_context is not None:
+        return request
     return _resolved_graph_request(service, kind, request)
 
 

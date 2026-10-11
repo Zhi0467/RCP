@@ -544,10 +544,14 @@ def test_composer_experiment_edit_rejects_work_and_keeps_discuss_origin(edit_ori
     response = client.post(url, json={**body, "mode": "work"})
     assert response.status_code == 422
     assert "Discuss" in response.json()["detail"]
-    response = client.post(url, json={**body, "mode": "discuss", "reasoning": "high"})
+    # A stale composer machine must not refuse an edit that runs on the origin's profile.
+    response = client.post(
+        url, json={**body, "mode": "discuss", "reasoning": "high", "run_on": "gone"}
+    )
     assert response.status_code == 202, response.text
     (admitted,) = started
     assert admitted.artifact_edit.launch_kind == "revoking"
+    assert admitted.run_on == task.request["run_on"]
     assert admitted.session_id == task.native_session_id
     assert admitted.reasoning == task.request["reasoning"]
 
