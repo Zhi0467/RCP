@@ -23,6 +23,7 @@ interface GraphPickerProps {
   activeRef: GraphTargetRef;
   projectId: string;
   onSelect: (target: GraphTargetRef) => void;
+  onOpen?: () => void;
   onRefUpdated: (ref: GraphRef) => void;
   compact?: boolean;
 }
@@ -50,6 +51,7 @@ export function GraphPicker({
   activeRef,
   projectId,
   onSelect,
+  onOpen,
   onRefUpdated,
   compact = false,
 }: GraphPickerProps) {
@@ -175,6 +177,7 @@ export function GraphPicker({
         onClick={() => {
           const placement = popoverPlacement(button.current);
           if (placement) setPosition(placement);
+          if (!open) onOpen?.();
           setOpen(!open);
           setEditing(null);
           setWarning(null);

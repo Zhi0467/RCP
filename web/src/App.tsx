@@ -1060,7 +1060,10 @@ function MemberApp({
       : null;
   // Episode changes move a branch's chain member or merge state; any turn on
   // the shown ref moves its head, which can also change its merge state.
+  // Opening the picker also rereads it: task and question markers move without a revision.
+  const [graphRefsOpened, setGraphRefsOpened] = useState(0);
   const graphRefsKey = JSON.stringify([
+    graphRefsOpened,
     graph.revision,
     episodes.map((episode) => [episode.episode_id, episode.status, episode.graph_branch]),
   ]);
@@ -5114,6 +5117,7 @@ function MemberApp({
       projectId={project.id}
       compact={phone}
       onSelect={selectGraphRef}
+      onOpen={() => setGraphRefsOpened((value) => value + 1)}
       onRefUpdated={(updated) =>
         setGraphRefs((current) =>
           current?.projectId === project.id

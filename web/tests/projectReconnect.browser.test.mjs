@@ -756,7 +756,10 @@ test(
     assert.equal(await page.locator(".branch-graph-banner").count(), 0);
     assert.equal(await picker(page).locator(".branch-picker-spinner").count(), 0);
     assert.equal(await picker(page).getByLabel("Another branch needs you").count(), 1);
+    // Opening rereads the list, so markers follow task and question changes.
+    const reread = page.waitForRequest((request) => request.url().endsWith("/graph-refs"));
     await picker(page).click();
+    await reread;
     assert.deepEqual(
       await page
         .locator(".branch-picker-row")

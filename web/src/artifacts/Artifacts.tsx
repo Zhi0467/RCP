@@ -39,6 +39,8 @@ export function Artifacts({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  // Names are resolved by the server, so a rename rereads the inventory.
+  const branchNamesKey = (graphRefs ?? []).map((ref) => `${ref.branch_id}:${ref.name}`).join();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -60,7 +62,7 @@ export function Artifacts({
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [projectId, refresh]);
+  }, [projectId, refresh, branchNamesKey]);
 
   useEffect(() => {
     const onFocus = () => setRefresh((value) => value + 1);
