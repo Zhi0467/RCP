@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-None.
+No implementation handoff is active.
 
 Unfinished agent-link work is tracked in issue #280.
 
@@ -60,8 +60,8 @@ stands in for it. Run one on disposable data, then delete its line here.
   watcher wakes, its report, then Add N turns on the same session, checking the
   recorded prompts carry a pointer, no pointer, and a re-opened master in turn.
 - Agents and branch episodes: with a real provider on a team server, start an
-  Experiment on a graph branch from main and confirm its Agents row reads
-  Working with a Branch tag, then Done, and opens its Runs card; start a second
+  Experiment on a new branch from main and confirm the branch's Agents board
+  shows its row Working, then Done, and that it opens its Runs card; start a second
   Run on a node that already has a human chat and confirm that chat is
   untouched; let a watcher wake a human chat and confirm its Activity row shows
   while it runs.
@@ -160,6 +160,11 @@ stands in for it. Run one on disposable data, then delete its line here.
   reads the message. On a real phone in a team space, return to a discarded
   tab and record the navigation type the browser reports; the route fix
   covers `reload` only.
+- Branch switching: on a throwaway team server with two live branches and an
+  open chat, switch branches from Agents and from Overview, restart the server
+  mid-switch, and show the desktop window again; the page never shows
+  "Opening project", the network shows no project reopen, and the console stays
+  clean.
 - Teammate heartbeat: with a real provider turn running, a teammate's steer
   shows on another member's open chat within a heartbeat; a teammate's
   Experiment start and stop reloads another member's page once.

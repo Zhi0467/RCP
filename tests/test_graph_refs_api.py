@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from typing import cast
 
+import pytest
+
+from rcp.api import episode_routes
 from rcp.core.models import EpisodeIsolation, EpisodeMergeAttempt, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history.branches import BranchHistoryManager
 from rcp.storage import EpisodeRecord
 from tests.helpers import authorized_human, create_named_app, signed_in_client
 
@@ -24,6 +29,10 @@ def test_graph_refs_includes_main_without_episodes(manifest, tmp_path) -> None:
     [main] = response.json()
     assert main == {
         "kind": "main",
+        "name": "main",
+        "running": False,
+        "needs_you": False,
+        "created_at": None,
         "branch_id": None,
         "episode_id": None,
         "current_episode_id": None,
@@ -142,6 +151,7 @@ def test_graph_refs_carries_live_and_completed_merge_projection(manifest, tmp_pa
     response = harness.client.get(path)
     assert response.status_code == 200, response.text
     _, branch = response.json()
+    assert branch["running"] is True
     assert branch["merge_state"] == "running"
     assert branch["active_merge_task_id"] == task.operation_id
     assert branch["merge_eligible"] is False
@@ -153,6 +163,7 @@ def test_graph_refs_carries_live_and_completed_merge_projection(manifest, tmp_pa
     response = harness.client.get(path)
     assert response.status_code == 200, response.text
     _, branch = response.json()
+    assert branch["running"] is False
     assert branch["merge_state"] == "merged"
     assert branch["latest_successful_merge"] == receipt.model_dump(mode="json")
     assert branch["active_merge_task_id"] is None
@@ -168,14 +179,218 @@ def test_graph_refs_requires_project_membership(tmp_path) -> None:
     assert client.get(f"/api/projects/{project_id}/graph-refs").status_code == 404
 
 
-def test_graph_refs_titles_a_branch_by_its_owner(manifest, tmp_path) -> None:
+def test_graph_refs_names_a_branch_by_its_owner(manifest, tmp_path) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
-    with harness.store.connection() as connection:
-        connection.execute(
-            "UPDATE auto_research_episodes SET starting_instruction = ? WHERE episode_id = ?",
-            ("Find the cause", harness.episode.episode_id),
-        )
     response = harness.client.get(f"/api/projects/{harness.project_id}/graph-refs")
     assert response.status_code == 200, response.text
     _, branch = response.json()
-    assert (branch["mode"], branch["title"]) == ("auto_research", "Find the cause")
+    assert branch["mode"] == "auto_research"
+    assert (
+        branch["name"] == harness.store.branch_names(harness.project_id)[harness.episode.episode_id]
+    )
+    assert branch["created_at"] == harness.episode.created_at
+    assert "title" not in branch
+
+
+def test_rename_archive_and_unarchive_preserve_branch_history(manifest, tmp_path) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    branch_id = harness.episode.episode_id
+    path = f"/api/projects/{harness.project_id}/graph-refs/{branch_id}"
+    history = cast(BranchHistoryManager, harness.branch)
+    before = history.load_patches()
+    # Older branch roots need not have any isolation state.
+    with harness.store.connection() as connection:
+        connection.execute(
+            "DELETE FROM episode_isolation_states WHERE owner_episode_id = ?", (branch_id,)
+        )
+    response = harness.client.put(path + "/name", json={"name": "new-label"})
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "new-label"
+    for archived in (True, False):
+        response = harness.client.put(path + "/archived", json={"archived": archived})
+        assert response.status_code == 200, response.text
+        assert response.json()["archived"] is archived
+        assert response.json()["name"] == "new-label"
+        saved = harness.store.episode_isolation_state(harness.project_id, branch_id)
+        assert saved is not None and saved.graph_archived is archived
+        if archived:
+            # A subsequent Merge can establish the legacy binding without erasing Archive.
+            harness.store.create_episode_isolation(
+                harness.project_id,
+                EpisodeIsolation(owner_episode_id=branch_id, graph_branch_id=branch_id),
+            )
+            saved = harness.store.episode_isolation_state(harness.project_id, branch_id)
+            assert saved is not None and saved.graph_archived is True
+    assert history.load_patches() == before
+
+
+def test_branch_labels_respect_the_transfer_fence_and_leave_with_the_project(
+    manifest, tmp_path
+) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="none")
+    store, project_id = harness.store, harness.project_id
+    path = f"/api/projects/{project_id}/graph-refs/{harness.episode.episode_id}"
+    assert harness.client.put(path + "/name", json={"name": "kept-name"}).status_code == 200
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO project_transfer_requests (
+                request_id, side, phase, project_id, source_space_id,
+                target_space_id, record_json, revision, created_at, updated_at
+            ) VALUES ('transfer', 'source', 'source_fenced', ?, ?, 'target', '{}', 1, ?, ?)
+            """,
+            (project_id, store.space_id, store.now(), store.now()),
+        )
+    assert harness.client.put(path + "/name", json={"name": "late-name"}).status_code == 409
+    assert harness.client.put(path + "/archived", json={"archived": True}).status_code == 409
+    assert store.branch_names(project_id)[harness.episode.episode_id] == "kept-name"
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_transfer_requests")
+    store.delete_project_records(project_id)
+    with store.connection() as connection:
+        for table in ("branch_names", "branch_name_reservations"):
+            assert not connection.execute(
+                f"SELECT 1 FROM {table} WHERE project_id = ?", (project_id,)
+            ).fetchall()
+
+
+def _unreachable_ref_read(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("the branch read ran before name validation")
+
+
+@pytest.mark.parametrize("name", ["", "main", "A-name", "a", "-name", "name-", "a" * 33])
+def test_rename_branch_invalid_names(manifest, tmp_path, monkeypatch, name) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="none")
+    # An invalid name is refused before the (possibly remote) branch read.
+    monkeypatch.setattr(episode_routes, "_branch_ref_for_http", _unreachable_ref_read)
+    path = f"/api/projects/{harness.project_id}/graph-refs/{harness.episode.episode_id}/name"
+    response = harness.client.put(path, json={"name": name})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "branch_name_invalid"
+
+
+def test_branch_routes_reject_unknown_main_and_taken_name(manifest, tmp_path) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="none")
+    path = f"/api/projects/{harness.project_id}/graph-refs"
+    for branch_id, expected in ((str(uuid.uuid4()), 404), ("main", 422)):
+        assert (
+            harness.client.put(f"{path}/{branch_id}/name", json={"name": "valid-name"}).status_code
+            == expected
+        )
+        assert (
+            harness.client.put(f"{path}/{branch_id}/archived", json={"archived": True}).status_code
+            == expected
+        )
+    branch_id = harness.episode.episode_id
+    second_id = str(uuid.uuid4())
+    now = harness.store.now()
+    harness.store.create_episode(
+        EpisodeRecord(
+            episode_id=second_id,
+            project_id=harness.project_id,
+            mode="auto_research",
+            graph_target=GraphTargetRef(kind="branch", branch_id=second_id),
+            graph_base_head=harness.episode.graph_base_head,
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=harness.episode.authorized_by,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    second_name = harness.store.branch_names(harness.project_id)[second_id]
+    harness.store.set_branch_archived(harness.project_id, second_id, archived=True)
+    response = harness.client.put(f"{path}/{branch_id}/name", json={"name": second_name})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "branch_name_taken"
+    # A branch may take back a name it held before.
+    original = harness.store.branch_names(harness.project_id)[branch_id]
+    for name in ("interim-name", original):
+        response = harness.client.put(f"{path}/{branch_id}/name", json={"name": name})
+        assert response.status_code == 200, response.text
+
+
+def test_branch_mutations_require_project_membership(tmp_path) -> None:
+    _app, client, _store, people, acting = _team_app(tmp_path, members=2)
+    member, outsider = people
+    project_id = _create_project(client, tmp_path / "repo", seat_member=member.user_id)
+    acting[0] = outsider.user_id
+    path = f"/api/projects/{project_id}/graph-refs/{uuid.uuid4()}"
+    assert client.put(path + "/name", json={"name": "valid-name"}).status_code == 404
+    assert client.put(path + "/archived", json={"archived": True}).status_code == 404
+
+
+def test_graph_refs_attention_tracks_branch_graph_and_pending_questions(manifest, tmp_path) -> None:
+    from rcp.storage.question_models import QuestionOrigin
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    path = f"/api/projects/{harness.project_id}/graph-refs"
+    # The main blocker is resolved only on this branch; main attention must not leak.
+    assert harness.client.get(path).json()[1]["needs_you"] is False
+    question = harness.store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="chat",
+            project_id=harness.project_id,
+            owner_id="chat",
+            operation_id=harness.root.operation_id,
+            provider="codex",
+            native_session_id="session",
+            stage_root="/stage",
+            capability="discuss",
+            graph_target=harness.episode.graph_target,
+        ),
+        key="pick",
+        question="Which result?",
+    )
+    assert harness.client.get(path).json()[1]["needs_you"] is True
+    harness.store.answer_question(
+        question.question_id, answer="First", resolved_by=authorized_human(harness.store)
+    )
+    assert harness.client.get(path).json()[1]["needs_you"] is False
+
+
+def test_graph_refs_open_blocker_needs_you(manifest, tmp_path) -> None:
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    response = harness.client.get(f"/api/projects/{harness.project_id}/graph-refs")
+    assert response.status_code == 200, response.text
+    assert response.json()[1]["needs_you"] is True
+
+
+def test_graph_refs_decision_uses_inbox_attention(manifest, tmp_path) -> None:
+    from rcp.core.models import Patch
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    history = cast(BranchHistoryManager, harness.branch)
+    state = history.current_materialization().state
+    history.append(
+        Patch.model_validate(
+            {
+                "kind": "work",
+                "author": "agent",
+                "producer": "agent",
+                "summary": "Ready decision",
+                "run_truth_scope": ["repo-a"],
+                "repositories_read": ["repo-a"],
+                "source_operation_id": harness.root.operation_id,
+                "ops": [
+                    {
+                        "op": "create_nodes",
+                        "nodes": [
+                            {
+                                "id": "dec/pick",
+                                "type": "decision",
+                                "title": "Pick a direction",
+                                "question": "Which direction?",
+                                "options": ["First", "Second"],
+                                "status": "ready",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        expected_revision=state.revision,
+    )
+    response = harness.client.get(f"/api/projects/{harness.project_id}/graph-refs")
+    assert response.status_code == 200, response.text
+    assert response.json()[1]["needs_you"] is True

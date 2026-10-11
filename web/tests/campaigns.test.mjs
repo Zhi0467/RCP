@@ -67,6 +67,90 @@ test("the Auto-research dialog meters only operational invocations", () => {
   assert.doesNotMatch(html, /<button[^>]*type="submit"[^>]*disabled/);
 });
 
+test("the Auto-research dialog names its branch beside Code worktree", () => {
+  const render = (props = {}) =>
+    renderToStaticMarkup(
+      React.createElement(AutoResearchDialog, {
+        open: true,
+        busy: false,
+        error: null,
+        initialInvocationCeiling: 1,
+        onClose() {},
+        onAuthorize() {},
+        ...props,
+      }),
+    );
+  const html = render();
+  const row = html.match(/<div class="branch-name-row">(.*?)<\/div>/s)?.[1] ?? "";
+  assert.match(row, /placeholder="research-[a-z]{3}-\d{2}"/);
+  assert.equal((row.match(/type="checkbox"/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /type="checkbox" checked="" disabled=""/);
+  assert.doesNotMatch(html, /role="alert"/);
+  assert.match(render({ branchNameRefusal: "branch_name_taken" }), /class="branch-name-warning"/);
+});
+
+test("on an Auto-research branch the dialog continues it", () => {
+  // The current orchestrator default is not ready; a continuation keeps its own agent.
+  const project = {
+    id: "p",
+    agent_profiles: {
+      orchestrator: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+    },
+    provider_readiness: { local: { claude: { installed: false, authenticated: false } } },
+  };
+  const render = (state) =>
+    renderToStaticMarkup(
+      React.createElement(AutoResearchDialog, {
+        open: true,
+        busy: false,
+        error: null,
+        initialInvocationCeiling: 1,
+        project,
+        onClose() {},
+        onAuthorize() {},
+        continueBranch: { name: "loss-sweep", episode: { ...episode, ...state } },
+      }),
+    );
+  const running = render({ can_message: true, message_requires_continuation: false });
+  assert.equal((running.match(/<textarea/g) ?? []).length, 1);
+  assert.doesNotMatch(running, /type="number"|branch-name-field/);
+  const ended = render({
+    can_message: true,
+    can_continue: true,
+    message_requires_continuation: true,
+  });
+  assert.doesNotMatch(ended, /type="submit"[^>]*disabled/);
+  assert.match(ended, /type="number"[^>]*value="3"/);
+  assert.equal((ended.match(/<textarea/g) ?? []).length, 1);
+});
+
+test("the branch field warns only on a bad name and reads server refusals", async () => {
+  const { BranchNameField, branchNameRefusal, branchNamePlaceholder } = await server.ssrLoadModule(
+    "/src/graph/BranchNameField.tsx",
+  );
+  const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
+  const warns = (value) =>
+    /role="alert"/.test(
+      renderToStaticMarkup(
+        React.createElement(BranchNameField, { mode: "auto_research", value, onChange() {} }),
+      ),
+    );
+  assert.equal(warns(""), false);
+  assert.equal(warns("loss-sweep"), false);
+  assert.equal(warns("Loss"), true);
+  assert.equal(warns("main"), true);
+  const day = new Date(Date.UTC(2026, 9, 3, 12));
+  assert.equal(branchNamePlaceholder("experiment_loop", [], day), "experiment-oct-03");
+  assert.equal(
+    branchNamePlaceholder("auto_research", ["research-oct-03", "research-oct-03-2"], day),
+    "research-oct-03-3",
+  );
+  const refusal = (status, code) => branchNameRefusal(new ApiError("x", status, { code }));
+  assert.equal(refusal(409, "branch_name_taken"), "branch_name_taken");
+  assert.equal(refusal(422, "branch_name_invalid"), "branch_name_invalid");
+  assert.equal(refusal(409, "other"), null);
+});
+
 function renderEpisodes(values, { busyAction = null } = {}) {
   return renderToStaticMarkup(
     React.createElement(

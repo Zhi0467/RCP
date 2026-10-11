@@ -456,6 +456,10 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert auto_research["experiment_id"] is None
     assert auto_research["title"] == "Auto-research"
     assert auto_research["run_section"] == "running"
+    branch_name = store.branch_names(project_id)[parent.episode_id]
+    assert auto_research["graph_branch_name"] == branch_name
+    assert child_entry["graph_branch_name"] == branch_name
+    assert experiment["graph_branch_name"] == "main"
 
     episodes = client.get(f"/api/projects/{project_id}/episodes")
     assert episodes.status_code == 200, episodes.text

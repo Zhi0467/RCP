@@ -30,10 +30,12 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 3
+TRANSFER_RECORD_SCHEMA_VERSION = 4
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
+        "branch_names",
+        "branch_name_reservations",
         "agent_usage",
         "artifacts",
         "artifact_versions",
@@ -1035,6 +1037,8 @@ class TransferEpisodeRecord(_StrictTransferRecord):
     archive: TransferEpisodeArchiveRecord | None = None
     # A merged graph branch that cleanup archived; only its isolation owner carries it.
     graph_archived: bool = False
+    branch_name: str | None = None
+    reserved_branch_names: tuple[str, ...] = ()
     invocations: tuple[TransferEpisodeInvocation, ...] = ()
     report_attempts: tuple[TransferEpisodeReportAttempt, ...] = ()
     wrapup: TransferEpisodeWrapup | None = None
@@ -1044,6 +1048,15 @@ class TransferEpisodeRecord(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_episode(self) -> TransferEpisodeRecord:
+        if self.branch_name is not None or self.reserved_branch_names:
+            from rcp.storage.branch_names import validate_branch_name
+
+            if self.graph_target.kind != "branch" or self.graph_target.branch_id != self.episode_id:
+                raise ValueError("only a branch root can carry branch names")
+            if self.branch_name is not None and self.branch_name not in self.reserved_branch_names:
+                raise ValueError("a stored branch name requires its reservation")
+            for name in self.reserved_branch_names:
+                validate_branch_name(name)
         if self.invocations_used > self.invocation_ceiling:
             raise ValueError("episode history exceeds its invocation ceiling")
         if self.mode == "experiment_loop":
@@ -1118,7 +1131,7 @@ class TransferPaperDraft(_StrictTransferRecord):
 
 
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[1, 2, TRANSFER_RECORD_SCHEMA_VERSION] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
@@ -1139,6 +1152,16 @@ class TransferRecordBundle(_StrictTransferRecord):
             raise ValueError("episode archive state requires transfer record schema version 2")
         if self.schema_version < 3 and any(episode.graph_archived for episode in self.episodes):
             raise ValueError("graph branch archive state requires transfer record schema version 3")
+        if self.schema_version < 4 and any(
+            episode.branch_name is not None or episode.reserved_branch_names
+            for episode in self.episodes
+        ):
+            raise ValueError("branch names require transfer record schema version 4")
+        reserved_names = [
+            name for episode in self.episodes for name in episode.reserved_branch_names
+        ]
+        if len(reserved_names) != len(set(reserved_names)):
+            raise ValueError("transfer bundle repeats a reserved branch name")
         attribution_ids = {item.archive_actor_id for item in self.attributions}
         references = {
             item.authorized_by_attribution_id
@@ -1232,6 +1255,10 @@ class TransferRecordBundle(_StrictTransferRecord):
     @model_serializer(mode="wrap")
     def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
         data = handler(self)
+        if self.schema_version < 4:
+            for episode in data.get("episodes", []):
+                episode.pop("branch_name", None)
+                episode.pop("reserved_branch_names", None)
         if self.schema_version < 3:
             # Older payloads predate the graph archive flag; keep their canonical bytes.
             for episode in data.get("episodes", []):

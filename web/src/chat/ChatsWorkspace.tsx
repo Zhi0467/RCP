@@ -323,24 +323,6 @@ type BoardCard = AgentBoardCard & {
   status: ConversationAgentStatus;
 };
 
-function ConversationTags({ conversation }: { conversation: ChatConversation }) {
-  const kind = conversation.conversationKind ?? "chat";
-  return (
-    <span className="agent-conversation-tags">
-      <span data-graph-target={conversation.graphTarget?.branch_id ?? "main"}>
-        {conversation.graphTitle ?? conversation.graphTarget?.branch_id ?? "Main"}
-      </span>
-      <span data-conversation-kind={kind}>
-        {kind === "auto_research_child"
-          ? "Auto-research child"
-          : kind === "episode"
-            ? "Episode"
-            : "Chat"}
-      </span>
-    </span>
-  );
-}
-
 const BOARD_LABELS: Record<AgentBoardColumn, string> = {
   needs_you: "Needs you",
   working: "Working",
@@ -382,7 +364,6 @@ export function ChatsWorkspace({
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [filter, setFilter] = useState<AgentFilter>("all");
   const [query, setQuery] = useState("");
-  const [graphFilter, setGraphFilter] = useState("all");
   const [listWidth, setListWidth] = useState(() => readChatListWidth(project.id));
   const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
   const [widthBounds, setWidthBounds] = useState<ChatListWidthBounds>(() =>
@@ -408,29 +389,9 @@ export function ChatsWorkspace({
       ),
     [storedConversations, display.titles],
   );
-  const graphOptions = new Map<string, string>([["main", "Main"]]);
-  for (const conversation of conversations) {
-    const branchId = conversation.graphTarget?.branch_id;
-    if (branchId) graphOptions.set(branchId, conversation.graphTitle ?? branchId);
-  }
-  const filteredConversations = conversations.filter(
-    (conversation) =>
-      graphFilter === "all" || (conversation.graphTarget?.branch_id ?? "main") === graphFilter,
-  );
-  const graphFilterControl = (
-    <select
-      className="agent-graph-filter"
-      aria-label="Filter agents by graph"
-      value={graphFilter}
-      onChange={(event) => setGraphFilter(event.target.value)}
-    >
-      <option value="all">All</option>
-      {[...graphOptions].map(([id, title]) => (
-        <option key={id} value={id}>
-          {title}
-        </option>
-      ))}
-    </select>
+  // Agents follows the selected branch; another target's chats are not listed.
+  const filteredConversations = conversations.filter((conversation) =>
+    sameGraphTarget(conversation.graphTarget ?? MAIN_GRAPH, graphTarget),
   );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
@@ -439,7 +400,6 @@ export function ChatsWorkspace({
   const listed = filteredConversations.filter(
     (conversation) => archivedChatIds.has(conversation.chatId) === showingArchived,
   );
-  // The inventory is complete before a graph filter is applied.
   const archivedCount = filteredConversations.filter((conversation) =>
     archivedChatIds.has(conversation.chatId),
   ).length;
@@ -608,8 +568,6 @@ export function ChatsWorkspace({
   const focusComposer = useRef(false);
   const openCard = (card: BoardCard) => {
     onSelect(card.id);
-    // Cross-target selection enters through the route after its workspace loads.
-    if (!sameGraphTarget(card.conversation.graphTarget, graphTarget)) return;
     // The board already did the list's job, so the chat opens with the list folded.
     setListCollapsed(true);
     focusComposer.current = true;
@@ -638,7 +596,6 @@ export function ChatsWorkspace({
     setListCollapsed(readChatListCollapsed(project.id));
     setQuery("");
     setFilter("all");
-    setGraphFilter("all");
   }, [project.id]);
 
   useEffect(() => {
@@ -795,7 +752,6 @@ export function ChatsWorkspace({
           )}
           {!renaming && agentMenu(conversation, status, card.column === "archived")}
         </div>
-        <ConversationTags conversation={conversation} />
         <span className="agent-card-meta">
           {agentCardMeta(status, conversation.kind, providerLabel)}
         </span>
@@ -831,7 +787,6 @@ export function ChatsWorkspace({
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          {graphFilterControl}
         </header>
         {archiveError && (
           <p className="agent-list-error" role="alert">
@@ -909,7 +864,6 @@ export function ChatsWorkspace({
                 onChange={(event) => setQuery(event.target.value)}
               />
             </label>
-            {graphFilterControl}
           </div>
           <div className="agent-list-filters" role="group" aria-label="Filter agents">
             {(archivedCount > 0 || showingArchived
@@ -1001,7 +955,6 @@ export function ChatsWorkspace({
                               {unread && <span className="agent-new-pill">New</span>}
                               {conversation.title}
                             </span>
-                            <ConversationTags conversation={conversation} />
                             <span className="agent-row-meta">
                               {latest ? (
                                 <>

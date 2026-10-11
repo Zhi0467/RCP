@@ -3049,6 +3049,72 @@ def test_run_pins_experiment_graph_isolation(loop, isolated) -> None:
     assert episode.graph_base_head == (main_head if isolated else None)
 
 
+@pytest.mark.parametrize(
+    ("name", "isolated", "status"),
+    [
+        ("my-experiment", True, 202),
+        ("", True, 202),
+        (None, True, 202),
+        ("my-experiment", False, 422),
+        ("Bad-name", True, 422),
+        ("main", True, 422),
+    ],
+)
+def test_run_reserves_experiment_branch_name(loop, monkeypatch, name, isolated, status):
+    monkeypatch.setattr(
+        loop.app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
+    )
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "graph_isolation": isolated, "branch_name": name},
+    )
+    assert response.status_code == status, response.text
+    if status == 422:
+        assert response.json()["detail"]["code"] == "branch_name_invalid"
+        assert loop.store.episodes(loop.project_id) == []
+        return
+    episode_id = response.json()["episode_id"]
+    refs = loop.client.get(f"/api/projects/{loop.project_id}/graph-refs").json()
+    branch = next(ref for ref in refs if ref["branch_id"] == episode_id)
+    assert branch["name"] == name if name else branch["name"].startswith("experiment-")
+    if name:
+        collision = loop.client.post(
+            f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+            json={"chat_id": str(uuid.uuid4()), "graph_isolation": True, "branch_name": name},
+        )
+        assert collision.status_code == 409, collision.text
+        assert collision.json()["detail"]["code"] == "branch_name_taken"
+        assert len(loop.store.episodes(loop.project_id)) == 1
+
+
+def test_concurrent_experiment_starts_reserve_one_branch_name(loop, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    monkeypatch.setattr(
+        loop.app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
+    )
+    fence = Barrier(2)
+
+    def start():
+        fence.wait(timeout=10)
+        return loop.client.post(
+            f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+            json={
+                "chat_id": str(uuid.uuid4()),
+                "graph_isolation": True,
+                "branch_name": "same-name",
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _: start(), range(2)))
+    assert sorted(response.status_code for response in responses) == [202, 409]
+    refused = next(response for response in responses if response.status_code == 409)
+    assert refused.json()["detail"]["code"] == "branch_name_taken"
+    assert len(loop.store.episodes(loop.project_id)) == 1
+
+
 def test_artifact_edit_does_not_replace_episode_control_or_block_watcher_wake(loop, tmp_path):
     from rcp.api.episode_timeline import build_episode_timeline
     from rcp.api.episodes import serialize_episode

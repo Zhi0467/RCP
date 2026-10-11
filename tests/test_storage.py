@@ -2208,6 +2208,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "operational_lessons": 0,
         "chat_pins": 0,
         "conversation_worktrees": 0,
+        "branch_names": 0,
+        "branch_name_reservations": 0,
         "episode_isolations": 0,
         "episode_isolation_states": 0,
         "compute_jobs": 0,

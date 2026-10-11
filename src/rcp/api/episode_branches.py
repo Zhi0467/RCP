@@ -5,12 +5,11 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import get_project_service
-from rcp.control import experiment_node
+from rcp.core.attention import project_graph_attention
 from rcp.core.models import (
     BranchMergeReceipt,
     GraphBranchMetadata,
     GraphBranchSummary,
-    GraphState,
 )
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
@@ -26,6 +25,10 @@ class MainGraphRefResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    name: Literal["main"] = "main"
+    running: Literal[False] = False
+    needs_you: Literal[False] = False
+    created_at: None = None
     kind: Literal["main"] = "main"
     branch_id: None = None
     episode_id: None = None
@@ -44,10 +47,11 @@ class MainGraphRefResponse(BaseModel):
 class BranchGraphRefResponse(GraphBranchSummary):
     kind: Literal["branch"] = "branch"
     archived: bool
-    #: The chain root's mode and display title: an Auto-research starting
-    #: instruction, or an Experiment's title from the main display cache.
     mode: EpisodeMode
-    title: str | None
+    name: str
+    running: bool
+    needs_you: bool
+    created_at: str
 
 
 GraphRefResponse = Annotated[
@@ -72,7 +76,7 @@ def project_graph_refs(
         if episode.graph_target.kind == "branch":
             assert episode.graph_target.branch_id is not None
             branches.setdefault(episode.graph_target.branch_id, episode)
-    summaries = graph_branch_summaries(
+    summaries, attention = _graph_branch_projections(
         list(branches.values()),
         store=store,
         catalog=catalog,
@@ -85,7 +89,12 @@ def project_graph_refs(
         raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
     refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
     isolation = store.episode_isolation_states(project_id)
-    main_state = _cached_main_graph(catalog, project_id)
+    names = store.branch_names(project_id)
+    question_branches = {
+        question.origin.graph_target.branch_id
+        for question in store.list_questions(project_id=project_id, open_only=True)
+        if question.origin.graph_target.kind == "branch"
+    }
     for episode in branches.values():
         summary = summaries[episode.episode_id]
         state = isolation.get(episode.isolation_owner_episode_id or summary.episode_id)
@@ -95,28 +104,16 @@ def project_graph_refs(
                 **summary.model_dump(),
                 archived=state.graph_archived if state else False,
                 mode=root.mode,
-                title=_branch_title(root, store=store, main_state=main_state),
+                name=names[summary.branch_id],
+                running=any(
+                    task.status in ACTIVE_AGENT_TASK_STATUSES
+                    for task in store.unsettled_graph_target_tasks(project_id, root.graph_target)
+                ),
+                needs_you=attention[summary.branch_id] or summary.branch_id in question_branches,
+                created_at=root.created_at,
             )
         )
     return refs
-
-
-def _cached_main_graph(catalog: ProjectCatalog, project_id: str) -> GraphState | None:
-    _status, snapshot = catalog.cached_snapshot_status(project_id)
-    try:
-        return GraphState.model_validate(snapshot["graph"]) if snapshot is not None else None
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _branch_title(
-    root: EpisodeRecord, *, store: AppStore, main_state: GraphState | None
-) -> str | None:
-    if root.mode == "auto_research":
-        state = store.auto_research_state(root.episode_id)
-        return state.starting_instruction if state is not None else None
-    node = experiment_node(main_state, root.control_node_id) if main_state else None
-    return node.title if node is not None else None
 
 
 def ensure_episode_graph_target(
@@ -157,6 +154,21 @@ def graph_branch_summaries(
     catalog: ProjectCatalog,
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> dict[str, GraphBranchSummary]:
+    return _graph_branch_projections(
+        episodes,
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=refresh_max_age_seconds,
+    )[0]
+
+
+def _graph_branch_projections(
+    episodes: list[EpisodeRecord],
+    *,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    refresh_max_age_seconds: float,
+) -> tuple[dict[str, GraphBranchSummary], dict[str, bool]]:
     """One summary per episode; every member of a chain shares its branch's summary."""
 
     branches: dict[str, EpisodeRecord] = {}
@@ -178,6 +190,7 @@ def graph_branch_summaries(
     for root in branches.values():
         grouped.setdefault(root.project_id, []).append(root)
     by_branch: dict[str, GraphBranchSummary] = {}
+    attention: dict[str, bool] = {}
     for project_id, roots in grouped.items():
         service = get_project_service(catalog, project_id)
         snapshots = service.history.branch_read_snapshots(
@@ -186,6 +199,11 @@ def graph_branch_summaries(
         )
         for root in roots:
             snapshot = snapshots[root.episode_id]
+            projection = project_graph_attention(snapshot.state) if snapshot else None
+            attention[root.episode_id] = bool(
+                projection
+                and (projection.decisions_awaiting_choice_ids or projection.open_blocker_ids)
+            )
             current_episode_id = store.episode_chain(root.episode_id)[-1].episode_id
             by_branch[root.episode_id] = (
                 missing_graph_branch_summary(root, store=store)
@@ -198,9 +216,13 @@ def graph_branch_summaries(
                     current_episode_id=current_episode_id,
                 )
             )
-    return {
-        episode.episode_id: by_branch[episode.graph_target.branch_id or ""] for episode in episodes
-    }
+    return (
+        {
+            episode.episode_id: by_branch[episode.graph_target.branch_id or ""]
+            for episode in episodes
+        },
+        attention,
+    )
 
 
 def missing_graph_branch_summary(

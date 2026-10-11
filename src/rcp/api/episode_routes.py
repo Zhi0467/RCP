@@ -72,6 +72,12 @@ from rcp.runs.episodes.merge import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
+from rcp.storage.branch_names import (
+    BranchNameInvalid,
+    BranchNameTaken,
+    normalize_branch_name,
+    validate_branch_name,
+)
 from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
 from rcp.storage.models import EpisodeRecord
@@ -148,6 +154,90 @@ def graph_refs(
         catalog=catalog,
         refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     )
+
+
+class RenameBranchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str
+
+
+def _branch_ref_for_http(
+    project_id: str, branch_id: str, *, store: AppStore, catalog: ProjectCatalog
+) -> GraphRefResponse:
+    ref = next(
+        (
+            ref
+            for ref in project_graph_refs(
+                project_id,
+                store=store,
+                catalog=catalog,
+                refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+            )
+            if ref.branch_id == branch_id
+        ),
+        None,
+    )
+    if ref is None:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    return ref
+
+
+@router.put(
+    "/api/projects/{project_id}/graph-refs/{branch_id}/name",
+    response_model=GraphRefResponse,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def rename_graph_branch(
+    project_id: str,
+    branch_id: str,
+    body: RenameBranchBody,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> GraphRefResponse:
+    require_registered_project(catalog, project_id)
+    try:
+        if branch_id == "main":
+            raise BranchNameInvalid("main cannot be renamed.")
+        validate_branch_name(body.name)
+    except BranchNameInvalid as exc:
+        raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
+    # Read the ref before committing, so no remote read can fail after the label changed.
+    before = _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
+    try:
+        name = store.rename_branch(project_id, branch_id, body.name)
+    except BranchNameInvalid as exc:
+        raise HTTPException(status_code=422, detail={"code": "branch_name_invalid"}) from exc
+    except BranchNameTaken as exc:
+        raise HTTPException(status_code=409, detail={"code": "branch_name_taken"}) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Branch not found") from exc
+    return before.model_copy(update={"name": name})
+
+
+@router.put(
+    "/api/projects/{project_id}/graph-refs/{branch_id}/archived",
+    response_model=GraphRefResponse,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def archive_graph_branch(
+    project_id: str,
+    branch_id: str,
+    body: ArchiveEpisodeBody,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> GraphRefResponse:
+    require_registered_project(catalog, project_id)
+    if branch_id == "main":
+        raise HTTPException(status_code=422, detail={"code": "branch_archive_invalid"})
+    before = _branch_ref_for_http(project_id, branch_id, store=store, catalog=catalog)
+    try:
+        state = store.set_branch_archived(project_id, branch_id, archived=body.archived)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Branch not found") from exc
+    return before.model_copy(update={"archived": state.graph_archived})
 
 
 @router.get(
@@ -259,6 +349,7 @@ def start_episode(
                 )
             service = get_project_service(catalog, project_id)
             try:
+                body.branch_name = normalize_branch_name(body.branch_name)
                 start_request = _resolved_auto_research_start_request(service, body)
                 if body.code_worktree is None:
                     start_request = start_request.model_copy(
@@ -287,6 +378,14 @@ def start_episode(
                     episode,
                     branch_summary=_branch_summary(store, catalog),
                 )
+            except BranchNameInvalid as exc:
+                raise HTTPException(
+                    status_code=422, detail={"code": "branch_name_invalid", "message": str(exc)}
+                ) from exc
+            except BranchNameTaken as exc:
+                raise HTTPException(
+                    status_code=409, detail={"code": "branch_name_taken", "message": str(exc)}
+                ) from exc
             except ClientRequestConflict:
                 raise
             except ValueError as exc:
@@ -901,6 +1000,7 @@ def _resolved_auto_research_start_request(
         browser_requested=body.browser_requested,
         code_worktree=body.code_worktree if body.code_worktree is not None else False,
         graph_isolation=body.graph_isolation,
+        branch_name=body.branch_name,
         starting_instruction=body.starting_instruction,
         provider=profile.provider,
         model=profile.model,

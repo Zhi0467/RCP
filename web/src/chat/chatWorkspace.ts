@@ -29,7 +29,6 @@ export interface ChatConversation {
   /** The latest message's text from the stored summary, for search. */
   preview?: string;
   graphTarget?: GraphTargetRef;
-  graphTitle?: string;
   conversationKind?: "chat" | "episode" | "auto_research_child";
   orchestratorEpisodeId?: string | null;
   humanTurnRefusal?: ChatSummary["human_turn_refusal"];
@@ -263,7 +262,6 @@ export function groupChatConversations(
       updatedAt: summary.updated_at,
       preview: summary.last_message_preview,
       graphTarget: summary.graph_target,
-      graphTitle: summary.graph_title,
       conversationKind: summary.conversation_kind,
       orchestratorEpisodeId: summary.orchestrator_episode_id,
       humanTurnRefusal: summary.human_turn_refusal,
@@ -274,7 +272,6 @@ export function groupChatConversations(
       grouped.set(draft.chatId, {
         ...draft,
         graphTarget: viewedTarget,
-        graphTitle: viewedTarget.kind === "main" ? "Main" : viewedTarget.branch_id.slice(0, 8),
         conversationKind: "chat",
         tasks: [],
         updatedAt: "",
@@ -304,8 +301,6 @@ export function groupChatConversations(
         tasks: [task],
         updatedAt: task.updated_at,
         graphTarget: task.graph_target,
-        graphTitle:
-          task.graph_target?.kind === "branch" ? task.graph_target.branch_id.slice(0, 8) : "Main",
         // Ownership is unknown until the inventory lists this conversation.
         conversationKind: undefined,
       });

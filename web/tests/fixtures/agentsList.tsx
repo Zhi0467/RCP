@@ -73,7 +73,6 @@ if (new URLSearchParams(location.search).has("inventory")) {
     tasks: [],
     updatedAt: new Date().toISOString(),
     graphTarget: { kind: "branch", branch_id: "branch-one" },
-    graphTitle: "Branch one",
     conversationKind: "auto_research_child",
     orchestratorEpisodeId: "parent-one",
   });

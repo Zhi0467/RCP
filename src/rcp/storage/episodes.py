@@ -11,6 +11,7 @@ from rcp.core.graph_targets import graph_target_json
 from rcp.core.models import AuthorizedHuman, EpisodeIsolation
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
+from rcp.storage.branch_names import reserve_branch_name
 from rcp.storage.digest import (
     append_digest_event,
     append_episode_ended,
@@ -191,7 +192,9 @@ class EpisodeStoreMixin(StoreMixinBase):
                         "updated_at": root_task.created_at,
                     }
                 )
-                self._insert_episode(connection, started)
+                self._insert_episode(
+                    connection, started, branch_name=root_task.request.get("branch_name")
+                )
                 self._insert_agent_task(connection, root_task, continuation_cause="fresh")
                 connection.execute(
                     """
@@ -2339,7 +2342,14 @@ class EpisodeStoreMixin(StoreMixinBase):
             if task.request.get(field) != getattr(wrapup, field):
                 raise ValueError(f"the hidden report task changed its frozen {field}")
 
-    def _insert_episode(self, connection: sqlite3.Connection, record: EpisodeRecord) -> None:
+    def _insert_episode(
+        self,
+        connection: sqlite3.Connection,
+        record: EpisodeRecord,
+        *,
+        branch_name: object = None,
+    ) -> None:
+        reserve_branch_name(connection, record, branch_name)
         self.require_episode_binding_admission_open(
             connection,
             record.project_id,
