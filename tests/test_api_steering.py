@@ -186,6 +186,33 @@ def test_delivered_steer_is_one_durable_human_message_without_changing_mode(runn
     assert transferred[2]["operationId"] == target_operation
 
 
+def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
+    run = running_chat
+    inventory = f"/api/projects/{run.project_id}/chats?inventory=true"
+
+    def chat_version():
+        summary = next(
+            item
+            for item in run.client.get(inventory).json()["items"]
+            if item["chat_id"] == run.chat_id
+        )
+        return summary["updated_at"], summary["message_count"]
+
+    before = chat_version()
+    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 0
+    assert run.client.post(run.url + "/steer", json=_body()).status_code == 200
+    # The queued record and the final receipt each move the task list's revision;
+    # the summary it prompts the page to fetch moves too.
+    assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 2
+    assert chat_version() != before
+    # The heartbeat moves too, for a page that no longer polls this finished task.
+    assert run.client.get(f"/api/projects/{run.project_id}").status_code == 200
+    heartbeat = run.client.get(f"/api/projects/{run.project_id}/cached/revision").json()
+    assert heartbeat["steer_epoch"] == 2
+    # Another project's heartbeat never sees this project's steers.
+    assert run.background.steer_epoch("another-project") == 0
+
+
 @pytest.mark.parametrize(
     "changes,reason",
     [
@@ -266,7 +293,7 @@ def test_unknown_reservation_survives_restart_and_overlapping_retry_without_rese
             expected_turn_id="owned-turn",
             text=body["message"],
         )
-        stored = finish_chat_steer(run.app.state.service, record, delivery)
+        stored = finish_chat_steer(run.app.state.service, restarted, record, delivery)
         assert stored.steering.status == "unknown"
         assert len(run.receipts) == 1
         pending.set_result(ProviderSteerReceipt("unknown", "Connection lost."))

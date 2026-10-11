@@ -68,6 +68,7 @@ import {
   conversationHref,
   chatEntryConversationId,
   groupChatConversations,
+  chatIdForTask,
   startConversationTurn,
   unsentConversation,
   type ChatKind,
@@ -158,6 +159,7 @@ import {
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
+  heartbeatNamesUnknownId,
   projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
@@ -805,6 +807,8 @@ function MemberApp({
   }, [heldRefProject, projectReconciliation, targetProject]);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
+  const watchersRef = useRef(watchers);
+  watchersRef.current = watchers;
   const [providerReadinessRequests, setProviderReadinessRequests] = useState<
     Record<string, ProviderReadinessRequestState>
   >({});
@@ -933,6 +937,13 @@ function MemberApp({
     restoreProjectTasks,
   } = useAgentTasks({ projectId, reportError: reportErrorNotice });
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
+  const projectTasksRef = useRef(projectTasks);
+  projectTasksRef.current = projectTasks;
+  // Chat-summary refreshes the heartbeat still owes, per project. Each debt is a
+  // fresh object, so a retry clears only the debt it was started for.
+  const chatRefreshOwedRef = useRef(new Map<string, object>());
+  // The last steer epoch each project's heartbeat reported.
+  const steerEpochsRef = useRef(new Map<string, number>());
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1420,6 +1431,58 @@ function MemberApp({
         if (isActiveProject(requestedProjectId)) {
           if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
           window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
+          const loadedTaskIds = projectTasksRef.current.map((task) => task.operation_id);
+          // A final steer receipt can land after its task stopped being polled.
+          // Recorded only once the tasks are read, so a failed read retries.
+          const seenSteerEpoch = steerEpochsRef.current.get(requestedProjectId);
+          // A first observation counts as moved: a receipt may have landed between
+          // this page's task load and its first heartbeat.
+          const steerMoved =
+            observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
+          if (steerMoved || heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
+            const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
+            if (!isActiveProject(requestedProjectId)) return;
+            replaceTasks(nextTasks);
+            // A teammate's turn may have started and finished between heartbeats;
+            // its chat history then changed without any status change seen here.
+            if (
+              nextTasks.some(
+                (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
+              )
+            )
+              chatRefreshOwedRef.current.set(requestedProjectId, {});
+          }
+          if (observation.steer_epoch !== undefined)
+            steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
+          // Owed until it succeeds: the task is already listed, so no later
+          // heartbeat would notice it again.
+          const owed = chatRefreshOwedRef.current.get(requestedProjectId);
+          if (owed) {
+            await refreshChatSummaries(requestedProjectId, base)
+              .then(() => {
+                // A refresh for a project no longer shown returns without
+                // applying, so the debt stands until it is shown again.
+                if (
+                  isActiveProject(requestedProjectId) &&
+                  chatRefreshOwedRef.current.get(requestedProjectId) === owed
+                )
+                  chatRefreshOwedRef.current.delete(requestedProjectId);
+              })
+              .catch(() => {
+                // Stays owed; the next heartbeat retries.
+              });
+          }
+          const loadedWatcherIds = watchersRef.current.map((watcher) => watcher.watcher_id);
+          if (heartbeatNamesUnknownId(observation.latest_watcher_id, loadedWatcherIds)) {
+            const nextWatchers = await api<WatcherRecord[]>(
+              projectWatchersPath(base, requestedTarget),
+            );
+            if (
+              isActiveProject(requestedProjectId) &&
+              sameGraphTarget(requestedTarget, activeGraphTargetRef.current)
+            )
+              setWatchers(nextWatchers);
+          }
           if (
             canonicalRevisionNeedsReload(
               observedRevision,
@@ -1494,7 +1557,9 @@ function MemberApp({
       isActiveProject,
       isProjectTabOpen,
       reloadAuthoritativeProject,
+      refreshChatSummaries,
       removeProject,
+      replaceTasks,
       runProjectHeartbeat,
     ],
   );
@@ -2787,6 +2852,8 @@ function MemberApp({
     if (recordTaskUpdates(projectTasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
+          // The task change is already recorded, so the heartbeat owes the retry.
+          chatRefreshOwedRef.current.set(projectId, {});
           setNotice({
             kind: "error",
             text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,

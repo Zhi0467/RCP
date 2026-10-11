@@ -731,6 +731,66 @@ def _snapshot_payload(snapshot: ProjectSnapshot) -> dict[str, object]:
     raise TypeError("project snapshot must be an internal draft or dictionary")
 
 
+# What a settings save, machine card, or provider path resolution can change.
+_SETTINGS_SIGNAL_KEYS = (
+    "name",
+    "run_on",
+    "project_truth_scope",
+    "default_run_truth_scope",
+    "default_auto_research_invocation_ceiling",
+    "agent_profiles",
+    "skill_defaults",
+    "repositories",
+    "machines",
+    "compute_connections",
+    "provider_readiness",
+)
+# Lifecycle fields only: progress inside a running episode must not make every
+# open page reload each second.
+_EXPERIMENT_SIGNAL_KEYS = (
+    "episode_id",
+    "active",
+    "paused",
+    "live",
+    "stop_pending",
+    "task_control",
+    "node_closed",
+    "report_episode_id",
+)
+
+
+def _signal_digest(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
+
+
+def _stamp_display_signals(payload: dict[str, object]) -> None:
+    """Stamp digests a heartbeat can compare for state no graph revision covers.
+
+    A teammate's settings save or Experiment start changes neither the graph
+    revision nor the freshness fields, so an open page would otherwise miss it.
+    """
+
+    payload["settings_signal"] = _signal_digest(
+        {key: payload.get(key) for key in _SETTINGS_SIGNAL_KEYS}
+    )
+    payload["experiment_signal"] = experiment_signal(payload.get("experiment_control"))
+
+
+def experiment_signal(controls: object) -> str:
+    """Digest of each Experiment's lifecycle fields, shared by snapshots and heartbeats."""
+
+    return _signal_digest(
+        {
+            experiment_id: {key: control.get(key) for key in _EXPERIMENT_SIGNAL_KEYS}
+            for experiment_id, control in controls.items()
+            if isinstance(control, dict)
+        }
+        if isinstance(controls, dict)
+        else None
+    )
+
+
 class ProjectDeletionResult(BaseModel):
     project_id: str
     database_records: dict[str, int]
@@ -2645,6 +2705,7 @@ class ProjectDisplayCache:
             for machine in payload["machines"]
         ]
         payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
+        _stamp_display_signals(payload)
         return payload
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:

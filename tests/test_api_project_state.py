@@ -19,7 +19,7 @@ from rcp.history import HistoryManager
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, WatcherContinuation, WatcherRecord
 from rcp.transport import StateUnavailable
 from tests.helpers import sign_in_async_client, signed_in_client
 
@@ -253,6 +253,39 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
             AssertionError("an unchanged head must not start a full refresh")
         ),
     )
+    # A teammate's new task changes no graph revision; the heartbeat names it.
+    store = app.state.background_tasks.store
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="teammate-task",
+            project_id=project_id,
+            kind="node_chat",
+            status="running",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="teammate-watcher",
+                project_id=project_id,
+                origin_operation_id="teammate-task",
+                origin_task_kind="node_chat",
+                chat_id="teammate-chat",
+                check_command="true",
+                log_path=str(tmp_path / "teammate.log"),
+                cwd=str(tmp_path),
+                continuation=WatcherContinuation(
+                    provider="claude", run_on="laptop", run_truth_scope=["repo-a"]
+                ),
+                created_at=now,
+            )
+        ]
+    )
 
     async def drive() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -273,8 +306,73 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "snapshot_freshness": "fresh",
         "last_remote_sync_at": None,
         "compute_probes_probed_at": None,
+        "settings_signal": initial["settings_signal"],
+        "experiment_signal": initial["experiment_signal"],
+        "latest_task_id": "teammate-task",
+        "latest_watcher_id": "teammate-watcher",
+        "steer_epoch": 0,
     }
     assert probes == 1
+
+
+def test_heartbeat_signals_a_settings_save_the_page_has_not_rendered(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    rendered = client.get(f"/api/projects/{project_id}").json()
+    heartbeat = client.get(f"/api/projects/{project_id}/cached/revision").json()
+    # The page and the heartbeat agree, so an idle page never reloads.
+    assert heartbeat["settings_signal"] == rendered["settings_signal"]
+    assert heartbeat["experiment_signal"] == rendered["experiment_signal"]
+
+    body = {
+        "default_run_truth_scope": rendered["default_run_truth_scope"],
+        "default_auto_research_invocation_ceiling": (
+            rendered["default_auto_research_invocation_ceiling"] + 1
+        ),
+        "agent_profiles": {
+            surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+            for surface, profile in rendered["agent_profiles"].items()
+        },
+    }
+    assert client.put(f"/api/projects/{project_id}/settings", json=body).status_code == 200
+
+    after = client.get(f"/api/projects/{project_id}/cached/revision").json()
+    assert after["revision"] == heartbeat["revision"]
+    assert after["settings_signal"] != rendered["settings_signal"]
+    assert after["experiment_signal"] == rendered["experiment_signal"]
+
+
+def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="aliased-task",
+            project_id=project_id,
+            kind="node_chat",
+            status="succeeded",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
+            ("legacy-project-url", project_id),
+        )
+    # Reopen to load the durable alias into the catalog's request-path snapshot.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    base = "/api/projects/legacy-project-url"
+    assert client.get(base).status_code == 200  # warms the display cache, as a page does
+    assert client.get(f"{base}/cached/revision").json()["latest_task_id"] == "aliased-task"
+    assert [task["operation_id"] for task in client.get(f"{base}/tasks").json()] == ["aliased-task"]
+    assert client.get(f"{base}/tasks/aliased-task").status_code == 200
 
 
 @pytest.mark.parametrize("refresh_fails", [False, True])

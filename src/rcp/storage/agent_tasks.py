@@ -2225,6 +2225,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
             assert stored is not None
         return self._agent_task_record(stored)
 
+    def latest_agent_task_id(self, project_id: str) -> str | None:
+        """The newest visible task's id, so a page notices a teammate's new task."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE project_id = ? AND visible = 1"
+                " ORDER BY created_at DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        return None if row is None else row["operation_id"]
+
     def agent_tasks(
         self,
         project_id: str,

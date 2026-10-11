@@ -11,6 +11,7 @@ const server = await createServer({
 });
 const {
   emptyProjectSessionState,
+  heartbeatNamesUnknownId,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   projectHeartbeatMetadataChanged,
@@ -985,5 +986,48 @@ test("unchanged branch heartbeat ignores main-cache freshness metadata", () => {
       metadataChanged,
     }),
     { kind: "ignore" },
+  );
+});
+
+test("a heartbeat naming an unloaded record asks for its list", () => {
+  assert.equal(heartbeatNamesUnknownId("teammate", ["mine"]), true);
+  assert.equal(heartbeatNamesUnknownId("mine", ["mine"]), false);
+  assert.equal(heartbeatNamesUnknownId(null, ["mine"]), false);
+  assert.equal(heartbeatNamesUnknownId(undefined, []), false);
+});
+
+test("a changed settings or Experiment signal reloads the main view", () => {
+  const rendered = { settings_signal: "s1", experiment_signal: "e1" };
+  assert.equal(projectHeartbeatMetadataChanged({ ...rendered }, rendered), false);
+  assert.equal(
+    projectHeartbeatMetadataChanged({ ...rendered, settings_signal: "s2" }, rendered),
+    true,
+  );
+  assert.equal(
+    projectHeartbeatMetadataChanged({ ...rendered, experiment_signal: "e2" }, rendered),
+    true,
+  );
+  // An older server sends no signal; that is not a change.
+  assert.equal(projectHeartbeatMetadataChanged({}, rendered), false);
+});
+
+test("a branch view compares its Experiment signal only against the same graph", () => {
+  const branch = { kind: "branch", branch_id: "b" };
+  const rendered = { settings_signal: "s1", experiment_signal: "e1", graph_target: branch };
+  // The branch heartbeat names no target; it was read for the branch.
+  assert.equal(
+    projectHeartbeatMetadataChanged({ experiment_signal: "e2" }, rendered, branch),
+    true,
+  );
+  // Settings stay main-only.
+  assert.equal(projectHeartbeatMetadataChanged({ settings_signal: "s2" }, rendered, branch), false);
+  // A main snapshot never compares against a branch page.
+  assert.equal(
+    projectHeartbeatMetadataChanged(
+      { experiment_signal: "e2", graph_target: { kind: "main" } },
+      rendered,
+      branch,
+    ),
+    false,
   );
 });

@@ -105,7 +105,15 @@ test("chat question answers stay separate from steering and resolved cards enter
       { id: "multiple", action: "answer", body: { answer: "detail", choices: ["a", "b"] } },
       { id: "dismiss", action: "dismiss", body: {} },
     ]);
-    assert.equal(await page.locator(".node-chat-lines .question-card textarea").count(), 0);
+    // Resolved cards are read-only; open cards also end the transcript now.
+    assert.equal(
+      await page
+        .locator(
+          '.node-chat-lines .question-card:is([data-question-state="answered"], [data-question-state="dismissed"]) textarea',
+        )
+        .count(),
+      0,
+    );
     assert.equal(
       await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(),
       "",

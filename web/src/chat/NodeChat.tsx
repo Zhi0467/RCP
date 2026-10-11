@@ -827,7 +827,8 @@ export function NodeChat({
     const element = chatLinesRef.current;
     if (!element || !shouldStickToBottomRef.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [chatId, transcript]);
+    // Question cards load after the transcript and end it, so they move the bottom too.
+  }, [chatId, transcript, questionState.questions]);
 
   useEffect(() => {
     attachmentSetIdRef.current = attachmentSetId;
@@ -2638,10 +2639,13 @@ export function NodeChat({
             </div>
           );
         })}
-        {submitError && <div className="node-chat-line error">{submitError}</div>}
-      </div>
-      <div className="chat-open-questions">
-        {questionState.error && <div role="alert">{questionState.error}</div>}
+        {/* Open cards end the transcript and scroll with it, so they never
+            squeeze the conversation above the composer. */}
+        {questionState.error && (
+          <div className="node-chat-line error" role="alert">
+            {questionState.error}
+          </div>
+        )}
         {questionState.questions
           .filter((question) => questionIsOpen(question) && !question.withdrawn_readonly)
           .map((question) => (
@@ -2653,6 +2657,7 @@ export function NodeChat({
               continueChat={question.state === "parked" && !relatedActive}
             />
           ))}
+        {submitError && <div className="node-chat-line error">{submitError}</div>}
       </div>
       {!canCompose && readOnlyNotice}
       {canCompose && (

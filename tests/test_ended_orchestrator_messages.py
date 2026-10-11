@@ -10,6 +10,7 @@ import rcp.api.episode_routes as routes
 from rcp.agents import AgentEvent
 from rcp.runs.auto_research import auto_research_exhaustion_signal, auto_research_wrapup_spec
 from rcp.runs.auto_research_admission import continue_auto_research
+from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from tests.helpers import create_named_app, signed_in_client, wait_for_task
 from tests.test_episode_api import _sse, create_terminal_auto_episode
@@ -158,6 +159,12 @@ def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
     manifest, tmp_path, monkeypatch
 ):
     app, store, original, url = _ended_app(manifest, tmp_path, monkeypatch, launch=True)
+    # This test ends the first continuation by hand below. The app's own settlement
+    # may also start that wrap-up once the root turn goes quiet, with a different
+    # fence, so whichever ran first decided the outcome; keep the test's path only.
+    monkeypatch.setattr(
+        EpisodeReconciler, "reconcile_auto_research_wrapup", lambda *_args, **_kwargs: False
+    )
     seen = []
 
     async def stream(_project_id, kind, request, execution):

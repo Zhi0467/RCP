@@ -502,6 +502,16 @@ class WatcherStoreMixin(StoreMixinBase):
             rows = connection.execute(query, parameters).fetchall()
         return [self._watcher_record(row) for row in rows]
 
+    def latest_watcher_id(self, project_id: str) -> str | None:
+        """The newest watcher's id, so a page notices one a teammate's agent set."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT watcher_id FROM watchers WHERE project_id = ?"
+                " ORDER BY created_at DESC, watcher_id LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        return None if row is None else row["watcher_id"]
+
     def active_graph_watchers(self, project_id: str) -> list[GraphWatcherRecord]:
         """Return graph conditions awaiting a canonical revision boundary."""
 

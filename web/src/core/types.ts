@@ -1880,7 +1880,14 @@ export interface GraphRevisionSnapshot {
   snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
   last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
   compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
+  settings_signal?: ProjectSnapshot["settings_signal"];
+  experiment_signal?: ProjectSnapshot["experiment_signal"];
   graph_mutation?: GraphMutationAvailability;
+  /** The newest visible task and watcher, so a teammate's new ones reach an open page. */
+  latest_task_id?: string | null;
+  latest_watcher_id?: string | null;
+  /** Moves with every steer write on the server; a change rereads tasks. */
+  steer_epoch?: number;
 }
 
 export interface RevisionedTransitionGraph {
@@ -2429,6 +2436,8 @@ export interface AgentTask {
   can_steer: boolean;
   steer_unavailable_reason: string | null;
   steer_turn_id: string | null;
+  /** Bumped by each queued steer and each final steer receipt; a change means new chat history. */
+  steer_revision?: number;
   //: What sending into this running attempt does, worded by the runtime that
   //: owns the behaviour: Codex app-server injects into the turn, Claude
   //: stream-json queues a follow-up turn. The composer renders this verbatim.
@@ -3003,6 +3012,9 @@ export interface ProjectSnapshot {
   last_remote_sync_at: string | null;
   /** Latest stored compute probe; absent from snapshots cached by older versions. */
   compute_probes_probed_at?: string | null;
+  /** Digests of settings and Experiment lifecycle; a change means a teammate acted. */
+  settings_signal?: string;
+  experiment_signal?: string;
   state_repository: string;
   canonical_state: {
     remote: boolean;

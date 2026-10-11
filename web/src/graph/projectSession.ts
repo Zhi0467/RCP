@@ -528,7 +528,15 @@ export function reconcileInactiveProjectSession(
 }
 
 type HeartbeatMetadata = Partial<
-  Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at" | "compute_probes_probed_at">
+  Pick<
+    ProjectSnapshot,
+    | "snapshot_freshness"
+    | "last_remote_sync_at"
+    | "compute_probes_probed_at"
+    | "settings_signal"
+    | "experiment_signal"
+    | "graph_target"
+  >
 >;
 
 export function projectHeartbeatMetadataChanged(
@@ -536,17 +544,37 @@ export function projectHeartbeatMetadataChanged(
   rendered: HeartbeatMetadata | null,
   graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): boolean {
+  if (!rendered) return false;
+  // Experiment controls are per graph target, so a branch view compares them too,
+  // but only against a snapshot of that same graph. A heartbeat names no target;
+  // it was read for `graphTarget`.
+  if (
+    observed.experiment_signal !== undefined &&
+    sameGraphTarget(observed.graph_target ?? graphTarget, rendered.graph_target ?? graphTarget) &&
+    observed.experiment_signal !== rendered.experiment_signal
+  )
+    return true;
   return Boolean(
     graphTarget.kind === "main" &&
-    rendered &&
     ((observed.snapshot_freshness !== undefined &&
       observed.snapshot_freshness !== rendered.snapshot_freshness) ||
       (observed.last_remote_sync_at !== undefined &&
         observed.last_remote_sync_at !== rendered.last_remote_sync_at) ||
       // A background compute probe finished, so the rendered results are stale.
       (observed.compute_probes_probed_at !== undefined &&
-        observed.compute_probes_probed_at !== (rendered.compute_probes_probed_at ?? null))),
+        observed.compute_probes_probed_at !== (rendered.compute_probes_probed_at ?? null)) ||
+      // A teammate saved the project's settings.
+      (observed.settings_signal !== undefined &&
+        observed.settings_signal !== rendered.settings_signal)),
   );
+}
+
+/** True when the heartbeat names a record the page has not loaded, such as a teammate's. */
+export function heartbeatNamesUnknownId(
+  latest: string | null | undefined,
+  loadedIds: readonly string[],
+): boolean {
+  return Boolean(latest) && !loadedIds.includes(latest as string);
 }
 
 export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =

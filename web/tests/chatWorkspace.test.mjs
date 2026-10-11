@@ -20,6 +20,7 @@ import {
   latestPersistedChatConfig,
   latestPersistedConversationMode,
   newlyFinishedChatTaskIds,
+  newlySteeredChatTaskIds,
   parseConversationMode,
   providerSwitchStartsFreshSession,
   startConversationTurn,
@@ -613,6 +614,21 @@ test("inventory retains every target while latest selection cannot reuse another
       conversation.graphTarget,
     );
   }
+});
+
+test("a moved steer revision marks a running chat task for refresh", () => {
+  const running = {
+    operation_id: "turn",
+    kind: "node_chat",
+    request: { chat_id: "chat-a" },
+    status: "running",
+    steer_revision: 1,
+  };
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map([["turn", 0]])), ["turn"]);
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map([["turn", 1]])), []);
+  // A turn first seen with steers already queued has history this page lacks.
+  assert.deepEqual(newlySteeredChatTaskIds([running], new Map()), ["turn"]);
+  assert.deepEqual(newlySteeredChatTaskIds([{ ...running, steer_revision: 0 }], new Map()), []);
 });
 
 test("child conversation inventory preserves admission refusal and later unlock", () => {

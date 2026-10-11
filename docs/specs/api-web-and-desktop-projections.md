@@ -471,8 +471,9 @@ The strict request rejects additional fields.
 `POST .../questions/{question_id}/dismiss` accepts an empty object, resolves the
 card only, and never wakes an owner.
 
-Node and project chats show open question cards above the composer and resolved
-cards read-only in transcript order. The composer retains its steering behavior.
+Node and project chats show resolved cards read-only in transcript order and
+open question cards at the end of the transcript, scrolling with it. The
+composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format. A parked
 chat answer with no running turn names Discuss or Work continuation on its submit
@@ -604,6 +605,15 @@ Visible clients notice canonical main changes without browser reload or
 repurposing the Seed/Refresh action. Every open project tab sends a cache-only
 heartbeat on the bounded visible cadence; the active tab observes completed
 cached revision updates more frequently, and visibility resume sweeps all tabs.
+A teammate's action can change state without moving the graph revision, so the
+main heartbeat also carries signals for it. It names the newest visible task
+and the newest watcher; one the active tab has not loaded makes it reload that
+list. It also carries digests of the settings fields and of each Experiment's
+lifecycle fields (not its progress); a changed digest reloads the project.
+A steer lives only in the chat history, so each chat task also reports a steer
+revision, bumped when a steer is queued and again when its final receipt is
+written. A changed revision makes other members' pages refresh chat summaries,
+which reloads an open transcript. A composer draft never leaves its page.
 
 A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
 per project. A temporarily unavailable head does not replay or copy the graph.

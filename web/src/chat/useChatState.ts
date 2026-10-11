@@ -15,6 +15,7 @@ import {
   latestConversation,
   mergeChatReads,
   newlyFinishedChatTaskIds,
+  newlySteeredChatTaskIds,
   type ChatConversation,
   type ChatKind,
   type DraftConversation,
@@ -183,6 +184,7 @@ export function useChatState({
   );
   const [selectedCanonicalChat, setSelectedCanonicalChat] = useState<ChatSummary | null>(null);
   const chatTaskStatuses = useRef<Map<string, AgentTask["status"]>>(new Map());
+  const chatTaskSteerRevisions = useRef<Map<string, number>>(new Map());
   const chatSummariesRef = useRef<ChatSummary[]>([]);
   const selectedChatIdRef = useRef<string | null>(null);
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
@@ -459,12 +461,16 @@ export function useChatState({
     const previousStatuses = chatTaskStatuses.current;
     const nextStatuses = new Map(previousStatuses);
     const completedChatTasks = newlyFinishedChatTaskIds(tasks, previousStatuses);
+    const steeredChatTasks = newlySteeredChatTaskIds(tasks, chatTaskSteerRevisions.current);
+    const nextSteerRevisions = new Map(chatTaskSteerRevisions.current);
     for (const task of tasks) {
       if (!chatIdForTask(task)) continue;
       nextStatuses.set(task.operation_id, task.status);
+      nextSteerRevisions.set(task.operation_id, task.steer_revision ?? 0);
     }
     chatTaskStatuses.current = nextStatuses;
-    return completedChatTasks.length > 0;
+    chatTaskSteerRevisions.current = nextSteerRevisions;
+    return completedChatTasks.length > 0 || steeredChatTasks.length > 0;
   }, []);
 
   const recordWatcherResults = useCallback((tasks: AgentTask[]) => {
