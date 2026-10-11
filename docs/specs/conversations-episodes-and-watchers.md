@@ -340,8 +340,9 @@ The composer may turn dictated speech into editable text, through
 macOS dictation in the desktop app or through the member's own transcription
 service (see [dictation](api-web-and-desktop-projections.md#dictation)). It never
 sends on its own; Send pressed while dictating finishes the dictation and sends
-the final transcript once it is in the draft, to the target Send addressed when
-pressed, and in the mode chosen then; if either changed, nothing is sent and the
+the final transcript once it is in the draft, to the target and launch
+settings (mode, agent, repositories, compute, attachments) Send had when pressed;
+if any changed, nothing is sent and the
 draft stays. RCP never stores the audio. SpeechAnalyzer recognizes
 speech on the Mac; the older Apple recognizer, used before macOS 26, for
 unsupported languages, and in builds without SpeechAnalyzer, may send audio to

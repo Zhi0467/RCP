@@ -259,11 +259,11 @@ interface ComposerAttachment {
   error?: string;
 }
 
-/** What a Send addresses: the exact running attempt it steers, a new turn in a
- *  mode, or nothing while an unsteerable turn runs. */
-function sendTarget(task: AgentTask | undefined, mode: string, active: boolean): string {
+/** What a Send addresses: the exact running attempt it steers, a new turn with
+ *  its launch settings, or nothing while an unsteerable turn runs. */
+function sendTarget(task: AgentTask | undefined, launch: string, active: boolean): string {
   if (task) return `steer:${task.operation_id}:${task.attempt}:${task.steer_turn_id}`;
-  return active ? "busy" : `new:${mode}`;
+  return active ? "busy" : `new:${launch}`;
 }
 
 /** A network dictation session; `session` is null until the microphone opens. */
@@ -978,8 +978,10 @@ export function NodeChat({
     setSendAfterDictation(null);
     // A failed or kept transcription stays in the composer for the human to review.
     if (dictationState !== "idle" || keptSpeech(draftKey)) return;
-    if (sendAfterDictation.target !== sendTarget(steeringTask, mode, relatedActive)) {
-      setSubmitError("The turn or mode changed before dictation finished; nothing was sent.");
+    if (sendAfterDictation.target !== sendTarget(steeringTask, launchSettings(), relatedActive)) {
+      setSubmitError(
+        "The turn or its settings changed before dictation finished; nothing was sent.",
+      );
       return;
     }
     void send();
@@ -1863,10 +1865,25 @@ export function NodeChat({
     }
   };
 
+  /** Everything a new turn launches with besides its text, for a dictated Send. */
+  const launchSettings = () =>
+    JSON.stringify([
+      mode,
+      config,
+      scope,
+      computeState.ids,
+      artifactContext,
+      references.map((item) => item.selector),
+      attachments.length,
+      readyAttachments.length,
+      skills.selection,
+      mode === "work" && worktree.chosen,
+    ]);
+
   const send = async () => {
     if (!canCompose) return;
     if (dictating) {
-      setSendAfterDictation({ target: sendTarget(steeringTask, mode, relatedActive) });
+      setSendAfterDictation({ target: sendTarget(steeringTask, launchSettings(), relatedActive) });
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return;
     }
@@ -2259,8 +2276,14 @@ export function NodeChat({
     <div className="chat-context-controls">
       {(showProvider || !readOnly) && agentSummary}
       {!fixedConversation && !readOnly && (
-        <button className="chat-new-session" type="button" onClick={onNewSession}>
-          <MessageCirclePlus size={14} /> New session
+        <button
+          className="chat-new-session"
+          type="button"
+          aria-label="New session"
+          onClick={onNewSession}
+        >
+          <MessageCirclePlus size={14} />
+          <span className="chat-new-session-label">New session</span>
         </button>
       )}
       {presentation === "workspace" && watcherToggle}

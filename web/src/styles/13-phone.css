@@ -21,6 +21,25 @@
   .button {
     overflow-wrap: normal;
   }
+  /* The chat's picker, New session, and repository scope share one row that
+     fits the screen: the picker truncates and New session is its icon. */
+  .chat-context-controls {
+    max-width: 100%;
+    min-width: 0;
+  }
+  .chat-context-controls > .agent-config-chip {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .agent-config-chip-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-new-session-label {
+    display: none;
+  }
   /* The agent picker takes its own full row; Cancel and the action share the
      row below, the action filling what Cancel leaves. */
   .campaign-dialog > footer {
