@@ -1893,6 +1893,34 @@
 .chat-add-picker {
   position: relative;
 }
+.chat-add-count,
+.chat-add-menu button strong {
+  align-items: center;
+  background: var(--cobalt-soft);
+  border-radius: 50%;
+  color: var(--cobalt-dark);
+  display: inline-flex;
+  font: 700 var(--type-2xs) var(--mono);
+  height: 15px;
+  justify-content: center;
+  min-width: 15px;
+}
+.chat-add-count {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+}
+.chat-add-menu button > svg:last-child:not(:first-child) {
+  margin-left: auto;
+}
+/* Inside the + menu the compute list unfolds in place, not as a popover. */
+.chat-add-menu .chat-compute-menu {
+  border: 0;
+  border-top: 1px solid var(--line);
+  box-shadow: none;
+  min-width: 0;
+  position: static;
+}
 .chat-add-menu,
 .chat-reference-picker {
   background: var(--surface);

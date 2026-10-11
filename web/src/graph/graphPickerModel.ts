@@ -5,14 +5,8 @@ export function graphRefTarget(ref: GraphRef): GraphTargetRef {
   return ref.kind === "main" ? { kind: "main" } : { kind: "branch", branch_id: ref.branch_id };
 }
 
-const GRAPH_REF_LABEL_MAX = 60;
-
-/** A branch is named by its owner's title; a short id only when the backend has none. */
 export function graphRefLabel(ref: GraphRef): string {
-  if (ref.kind === "main") return "Main";
-  const title = ref.title?.trim().split("\n")[0]?.trim();
-  if (!title) return ref.branch_id.slice(0, 8);
-  return title.length > GRAPH_REF_LABEL_MAX ? `${title.slice(0, GRAPH_REF_LABEL_MAX - 1)}…` : title;
+  return ref.name;
 }
 
 /** The active branch when the loaded list does not have it yet (a branch newer than the list). */
