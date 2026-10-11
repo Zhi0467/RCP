@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -531,6 +532,7 @@ def _run(namespace):
     else:
         if namespace.mailbox_id is not None:
             raise ClientInputError("mailbox id is supplied by the credential")
+        broker = None
         mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
     wait = (
@@ -543,21 +545,44 @@ def _run(namespace):
     namespace.timeout = wait
     deadline = time.monotonic() + wait
     call_id = uuid.uuid4().hex if verb == "ask" else None
+    pending = None
     while True:
-        response = _run_round(
-            namespace,
-            workspace,
-            mailbox_id,
-            token,
-            verb,
-            key,
-            arguments,
-            broker if namespace.broker is not None else None,
-            deadline,
-            call_id=call_id,
-        )
+        captured = io.StringIO()
+        # Once a round returned pending, the card exists: a later round's
+        # failure only means this check for an answer did not get through.
+        with redirect_stdout(captured if pending is not None else sys.stdout):
+            response = _run_round(
+                namespace,
+                workspace,
+                mailbox_id,
+                token,
+                verb,
+                key,
+                arguments,
+                broker,
+                deadline,
+                call_id=call_id,
+            )
         if not isinstance(response, dict):
-            return response
+            if pending is None:
+                return response
+            printed = json.loads(captured.getvalue())
+            result = printed.get("result")
+            if not isinstance(result, dict) or "delivery" not in result or result.get("permanent"):
+                # RCP's own outcome, such as dismissed, an ended episode, or a
+                # closed mailbox that no repeat can reach.
+                sys.stdout.write(captured.getvalue())
+                return response
+            # This round never reached RCP's handler; the card is still there.
+            failure = printed.get("message")
+            pending["message"] = (
+                "The question is on the human's card. This check for an answer failed: "
+                f"{failure} Repeat the exact same command, with the same key, in the "
+                "foreground to keep waiting; never ask it again under a new key."
+            )
+            _print_json(_display_response(pending, verb))
+            return OK
+        pending = response
         if response["result"].get("state") == "answered":
             receipt_token = response["result"].get("receipt_token")
             # A second authenticated request proves consumption on either
@@ -578,7 +603,7 @@ def _run(namespace):
                             verb,
                             key,
                             arguments,
-                            broker if namespace.broker is not None else None,
+                            broker,
                             deadline,
                             receipt_token=receipt_token,
                             call_id=call_id,

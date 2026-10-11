@@ -146,7 +146,7 @@ for (const [actionLabel, receiptLabel] of [
       assert.equal(await composer.inputValue(), "A steer with a lost response");
 
       // The recorded runtime can be exec after a profile's app-server fallback. The
-      // composer then explains why sending is unavailable.
+      // disabled send button alone says sending is unavailable.
       await page.evaluate(() =>
         window.setSteeringFixture({
           can_steer: false,
@@ -158,7 +158,6 @@ for (const [actionLabel, receiptLabel] of [
       await startTurn.waitFor();
       assert.equal(await sendSteer.count(), 0);
       assert.equal(await startTurn.isDisabled(), true);
-      await page.getByText("Codex exec has no live input channel.", { exact: true }).waitFor();
       await composer.press("Enter");
       assert.equal(requests.length, 4);
       assert.equal(await composer.inputValue(), "A steer with a lost response");

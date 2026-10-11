@@ -710,18 +710,6 @@ export function ChatsWorkspace({
     selected && selectedStatus ? (
       <>
         <strong>{selected.title}</strong>
-        <span className="conversation-header-meta">
-          {[
-            selectedLatest?.provider_label ??
-              project.providers?.[project.agent_profiles?.[selected.kind]?.provider]?.label,
-            selectedLatest?.request.model,
-            selectedLatest?.request.reasoning,
-            selectedLatest?.request.run_truth_scope?.join(", "),
-            selected.kind === "project_chat" ? "Project chat" : "Node chat",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
-        </span>
         {selected.conversationKind === "auto_research_child" && (
           <span className="conversation-header-meta">
             Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
