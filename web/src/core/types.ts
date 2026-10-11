@@ -1799,12 +1799,23 @@ export type GraphRef =
   | (GraphBranchSummary & {
       kind: "branch";
       archived: boolean;
-      /** The chain root's mode and display title, when the backend has one. */
+      /** The chain root's mode: who made the branch. */
       mode: EpisodeMode;
-      title: string | null;
+      /** The one display name: stored, or the date fallback the backend computed. */
+      name: string;
+      /** An agent task on this branch is active. */
+      running: boolean;
+      /** Open Decisions or blockers on the branch, or an unanswered agent question. */
+      needs_you: boolean;
+      /** Root episode creation time, for newest-first ordering. */
+      created_at: string;
     })
   | {
       kind: "main";
+      name: "main";
+      running: false;
+      needs_you: false;
+      created_at: null;
       branch_id: null;
       episode_id: null;
       current_episode_id: null;
