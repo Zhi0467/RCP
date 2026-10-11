@@ -969,11 +969,10 @@ matching responses before marking outstanding receipts unknown at stream shutdow
 Claude becomes ready when `command_lifecycle state=started` names the initial
 RCP command UUID. `state=queued` for a pending follow-up UUID acknowledges
 acceptance immediately; replayed user echoes are consumed but never establish
-readiness or delivery. Its durable `delivered` receipt is labelled **Delivered**
-with a reason saying Claude decides where the message lands — inside the running
-turn when a tool call is in progress, otherwise as the next turn — and that it
-keeps the captured capability and write scope either way. Receipt wording is
-chosen from the task's recorded runtime when receipts are written.
+readiness or delivery. Its durable `delivered` receipt is labelled **Delivered**,
+like every runtime's, with no reason; Claude decides where the message lands,
+inside the running turn when a tool call is in progress and otherwise as the
+next turn, and it keeps the captured capability and write scope either way.
 
 Both placements are handled by one rule. Lifecycle lines admit a command to the
 outstanding set and `completed` removes it; a result then removes the commands

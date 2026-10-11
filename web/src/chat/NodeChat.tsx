@@ -259,6 +259,11 @@ interface ComposerAttachment {
   error?: string;
 }
 
+/** The exact running attempt a Send steers, or null when it starts a new turn. */
+function steerTarget(task: AgentTask | undefined): string | null {
+  return task ? `${task.operation_id}:${task.attempt}:${task.steer_turn_id}` : null;
+}
+
 /** A network dictation session; `session` is null until the microphone opens. */
 interface NetworkDictation {
   sessionId: string;
@@ -548,8 +553,11 @@ export function NodeChat({
   const [discardPrompt, setDiscardPrompt] = useState<"dictate" | "send" | null>(null);
   const [dictationDeadline, setDictationDeadline] = useState<number | null>(null);
   const [dictationClock, setDictationClock] = useState(() => Date.now());
-  // Send pressed while dictating: send once the final transcript is in the draft.
-  const [sendAfterDictation, setSendAfterDictation] = useState(false);
+  // Send pressed while dictating: send once the final transcript is in the draft,
+  // to the target Send addressed when pressed (a steered attempt, or a new turn).
+  const [sendAfterDictation, setSendAfterDictation] = useState<{
+    target: string | null;
+  } | null>(null);
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
     () => new Set(),
@@ -965,9 +973,14 @@ export function NodeChat({
 
   useEffect(() => {
     if (!sendAfterDictation || dictating) return;
-    setSendAfterDictation(false);
+    setSendAfterDictation(null);
     // A failed or kept transcription stays in the composer for the human to review.
-    if (dictationState === "idle" && !keptSpeech(draftKey)) void send();
+    if (dictationState !== "idle" || keptSpeech(draftKey)) return;
+    if (sendAfterDictation.target !== steerTarget(steeringTask)) {
+      setSubmitError("The running turn changed before dictation finished; nothing was sent.");
+      return;
+    }
+    void send();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on dictation end only
   }, [sendAfterDictation, dictating]);
 
@@ -1851,7 +1864,7 @@ export function NodeChat({
   const send = async () => {
     if (!canCompose) return;
     if (dictating) {
-      setSendAfterDictation(true);
+      setSendAfterDictation({ target: steerTarget(steeringTask) });
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return;
     }
@@ -2853,7 +2866,7 @@ export function NodeChat({
             disabled={awaitingSteerReceipt}
             value={message}
             onChange={(event) => {
-              setSendAfterDictation(false);
+              setSendAfterDictation(null);
               if (dictating) stopDictation(true);
               updateMessage(event.target.value);
             }}
