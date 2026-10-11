@@ -482,6 +482,13 @@
   line-height: 1.55;
   margin: 0;
 }
+.transcription-dialog-body p.transcription-dialog-tip {
+  background: var(--green-soft);
+  border: 1px solid color-mix(in srgb, var(--green) 40%, var(--line));
+  border-radius: 5px;
+  color: var(--ink);
+  padding: 10px 12px;
+}
 .transcription-dialog-error {
   background: var(--red-soft);
   border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));

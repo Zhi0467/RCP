@@ -490,7 +490,6 @@ function ServiceCard({
     Boolean(address) &&
     (!dictation || Boolean(model.trim())) &&
     (!openai || (Boolean(delegation.trim()) && Boolean(live.trim())));
-  const destination = custom ? "the server at this address" : service.label;
   const close = () => {
     if (!busy) onClose();
   };
@@ -597,6 +596,13 @@ function ServiceCard({
         </header>
         <div className="transcription-dialog-body">
           {editing ? null : (
+            <p className="transcription-dialog-tip">
+              No key needed if you have the ChatGPT desktop app: set a dictation shortcut in its
+              Settings, under Keyboard shortcuts, and dictate straight into RCP on your ChatGPT
+              plan.
+            </p>
+          )}
+          {editing ? null : (
             <label>
               Service
               <select
@@ -688,14 +694,6 @@ function ServiceCard({
               />
             </>
           ) : null}
-          <p>
-            RCP keeps the key on its server and never shows it again.
-            {dictation
-              ? ` Dictation audio passes through RCP to ${destination} and is not stored.`
-              : ""}
-            {openai ? " Voice audio goes straight between this page and OpenAI." : ""} Saving checks
-            dictation with two short test clips{openai ? " and the voice models with OpenAI" : ""}.
-          </p>
         </div>
         {error ? (
           <div className="transcription-dialog-error" role="alert">
