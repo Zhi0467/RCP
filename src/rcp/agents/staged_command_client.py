@@ -568,8 +568,9 @@ def _run(namespace):
                 return response
             printed = json.loads(captured.getvalue())
             result = printed.get("result")
-            if not isinstance(result, dict) or "delivery" not in result:
-                # RCP's own outcome, such as dismissed or an ended episode.
+            if not isinstance(result, dict) or "delivery" not in result or result.get("permanent"):
+                # RCP's own outcome, such as dismissed, an ended episode, or a
+                # closed mailbox that no repeat can reach.
                 sys.stdout.write(captured.getvalue())
                 return response
             # This round never reached RCP's handler; the card is still there.

@@ -2176,6 +2176,11 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
         ({"status": "invalid", "result": {"delivery": "not_sent"}}, 0, "pending"),
         # RCP's own refusal, such as an ended episode, is the outcome.
         ({"status": "invalid", "message": "question_episode_ended"}, 1, "invalid"),
+        (
+            {"status": "unavailable", "result": {"delivery": "not_sent", "permanent": True}},
+            2,
+            "unavailable",
+        ),
     ],
 )
 def test_ask_later_round_failure_keeps_rcp_outcomes(
@@ -2228,7 +2233,7 @@ def test_ask_later_round_failure_keeps_rcp_outcomes(
     if printed == "pending":
         assert output["result"] == {"state": "pending", "question_id": "question"}
     else:
-        assert output["status"] == "invalid" and "state" not in output["result"]
+        assert output["status"] == printed and "state" not in output["result"]
 
 
 @pytest.mark.asyncio
