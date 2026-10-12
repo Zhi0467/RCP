@@ -362,7 +362,7 @@ class ChatSummary(BaseModel):
     updated_at: str
     message_count: int = Field(ge=0)
     last_message_preview: str
-    conversation_kind: Literal["chat", "episode", "auto_research_child"] = "chat"
+    conversation_kind: Literal["chat", "episode", "auto_research_child", "auto_research"] = "chat"
     orchestrator_episode_id: str | None = None
     human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"
@@ -879,7 +879,8 @@ class ArtifactEditAdmission(BaseModel):
     source_name: str
     media_type: str
     operation_id: str
-    staged_scope_id: str
+    # Recorded by edits that staged a separate copy; the tracked file replaced it.
+    staged_scope_id: str | None = None
     origin_operation_id: str
     launch_kind: Literal["discuss", "revoking"]
     master_operation_id: str | None = None
@@ -890,6 +891,10 @@ class ArtifactEditAdmission(BaseModel):
     reply_episode_id: str | None = None
     episode_id: str | None = None
     fresh_session: bool = False
+    # A viewer comment resumes the origin's session; a composer comment is an
+    # ordinary turn of its chat. Records from before the composer route are all
+    # origin-bound.
+    origin_bound: bool = True
 
 
 class RunRequest(BaseModel):

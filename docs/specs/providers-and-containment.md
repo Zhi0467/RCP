@@ -18,7 +18,8 @@ Capabilities are fixed in code:
   writes only its RCP scratch Patch.
 - **Discuss** has writable conversation scratch, read-only project reasoning,
   public-web tools, and no active Patch contract. Human conversation turns receive
-  only `ask` through the broker command mailbox; artifact edits receive no commands.
+  only `ask` through the broker command mailbox, including a chat composer's
+  artifact comment; an origin-bound viewer edit receives no commands.
 - **Work** has noninteractive project operational tools, public-web tools, exact
   project repository write roots, and one optional semantic Patch. A nightly
   consolidation turn is Work that may also commit keyed Patches inside the turn
@@ -36,7 +37,9 @@ Capabilities are fixed in code:
 - **Artifact edit** revokes the retained operational contract and uses Discuss
   capability with writable scratch only. Its admitted request fixes the exact
   session, stage, version base, and reply destination; it carries no master or
-  operational commands. A chat-master artifact instead uses ordinary Discuss.
+  operational commands. A chat-master artifact commented from the viewer instead
+  uses ordinary Discuss; one commented from a chat composer is that chat's
+  ordinary Discuss or Work turn with the same capability as any other.
 - **Paper coach** is read-only and has no graph, draft-write, or Apply channel.
 
 The manifest and selected skills may choose execution details or add guidance;
@@ -814,8 +817,8 @@ call or end the turn. Transport failures retain their separate `delivery`
 semantics. Human-started Discuss and Work chats, human-started Experiment episodes,
 and the Auto-research orchestrator authorize `ask`, each from its handler's
 resolved allowed verbs. Discuss chat turns use the same handler and broker
-with exactly `ask`; artifact-edit Discuss turns, workers, and child Work or
-Experiments refuse it. The prompt reads the handler's same resolved verb set.
+with exactly `ask`; origin-bound viewer artifact edits, workers, and child Work
+or Experiments refuse it. The prompt reads the handler's same resolved verb set.
 For a live Discuss, Work, or Experiment answer, the response carries a server-generated
 receipt token persisted against that turn, question, and answer revision. Only
 after parsing the complete `answered` response does the client echo that token

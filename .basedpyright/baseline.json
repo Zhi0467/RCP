@@ -3370,14 +3370,6 @@
                     "endColumn": 76,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/auto_research.py": [
@@ -3704,46 +3696,6 @@
                 "range": {
                     "startColumn": 32,
                     "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 84,
-                    "endColumn": 87,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 45,
-                    "endColumn": 56,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 65,
-                    "endColumn": 80,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 38,
-                    "endColumn": 49,
                     "lineCount": 1
                 }
             },
@@ -10130,16 +10082,6 @@
                 "range": {
                     "startColumn": 57,
                     "endColumn": 89,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/rcp/transport/remote_stage_root.py": [
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 40,
-                    "endColumn": 46,
                     "lineCount": 1
                 }
             }

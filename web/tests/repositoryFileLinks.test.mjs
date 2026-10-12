@@ -5,6 +5,7 @@ import {
   isRepositoryFileHrefCandidate,
   repositoryFilePreviewUrl,
   resolveRepositoryFileHref,
+  turnArtifactLocation,
   turnArtifactName,
 } from "../src/core/repositoryFileLinks.ts";
 
@@ -84,4 +85,15 @@ test("a turn's own artifact path is bound to that turn's artifact directory", ()
   assert.equal(turnArtifactName(`${directory}/nested/analysis.html`, "turn-1"), null);
   assert.equal(turnArtifactName(`${directory}/analysis.html:4`, "turn-1"), null);
   assert.equal(turnArtifactName("/work/repo/src/analysis.html", "turn-1"), null);
+});
+
+test("a cited tracked file names its turn folder and file", () => {
+  const directory = "/tmp/rcp-run.chat-abc/workspace/turns/turn-1/artifacts";
+
+  assert.deepEqual(turnArtifactLocation(`${directory}/analysis.html`), {
+    folder: "turn-1",
+    name: "analysis.html",
+  });
+  assert.equal(turnArtifactLocation(`${directory}/nested/analysis.html`), null);
+  assert.equal(turnArtifactLocation("/work/repo/src/analysis.html"), null);
 });

@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 from datetime import UTC, datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import GraphBranchMetadata, GraphState, Patch
@@ -15,18 +15,13 @@ from rcp.episode_health import episode_needs_action, load_episode_health
 from rcp.history.delta import semantic_delta
 from rcp.limits import DIGEST_RECHECK_SECONDS, DIGEST_STOP_TIMEOUT_SECONDS
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
+from rcp.storage.branch_names import resolve_branch_names
 from rcp.storage.digest import append_digest_event
 from rcp.transport import StateUnavailable
 
 _LOG = logging.getLogger(__name__)
-_RAN = {
-    "episode_ended",
-    "job_ended",
-    "task_failed",
-    "consolidation_report",
-    "consolidation_failed",
-    "episode_report",
-}
+# Reports are the only operational lines; ended and failed runs stay stored but unshown.
+_REPORTS = {"consolidation_report", "episode_report"}
 
 
 def deep_link(project_id: str, target: str, kind: str, item_id: str) -> str:
@@ -190,7 +185,6 @@ def graph_event(
             deep_link=deep_link(project_id, target, "episode", episode_id),
             needs_action=any(kind == "decision" for kind, _ in new),
         )
-        payload["attention"] = []
     return dict(
         project_id=project_id,
         kind=kind,
@@ -203,6 +197,38 @@ def graph_event(
     )
 
 
+def _app_hash(project_id: str, view: str, **params: str) -> str:
+    """An in-app route in `projectViewHash` form, so a digest link needs no resolving."""
+    query = urlencode({"view": view, **params}, quote_via=quote)
+    return f"#/projects/{quote(project_id, safe='')}?{query}"
+
+
+def _run_link(project_id: str, branch_id: str) -> str:
+    """An Auto-research run opens its orchestrator card on its own branch."""
+    return _app_hash(project_id, "chats", chat=branch_id, branch_id=branch_id)
+
+
+def _experiment_link(project_id: str, episode) -> str:
+    """The Runs entry of one Experiment episode, as `experimentBoardHref` writes it."""
+    target = episode.graph_target
+    route = (
+        f"&target=branch&branch={quote(target.branch_id, safe='')}"
+        if target.kind == "branch"
+        else "&target=main"
+    )
+    node, episode_id = (
+        quote(value, safe="") for value in (episode.control_node_id, episode.episode_id)
+    )
+    return f"{_app_hash(project_id, 'runs')}&experiment={node}&episode={episode_id}{route}"
+
+
+def _run_child(event_target: str, episode_id: str, runs: dict[str, str], chain) -> bool:
+    """An episode on a run's branch that is no orchestrator: neither the chain
+    root nor a continuation, which keeps the root's branch under a new id."""
+    root = event_target.removeprefix("branch:")
+    return event_target in runs and episode_id != root and episode_id not in chain
+
+
 def assemble_digest(
     project_id: str,
     user_id: str,
@@ -211,8 +237,22 @@ def assemble_digest(
     cursor: int,
     state: GraphState | None = None,
     chat_reads: dict | None = None,
+    *,
+    target: str = "main",
+    runs: dict[str, str] | None = None,
+    chain: frozenset[str] = frozenset(),
 ) -> dict:
-    """The sole rendered-line grouping function, also used by landing counts."""
+    """The sole rendered-line grouping function, also used by landing counts.
+
+    `target` is the graph the reader has open. `runs` names each Auto-research
+    run by its branch target key, and `chain` holds every orchestrator
+    episode id, roots and continuations. Only main's own edits are main's changes; a
+    run reaches main's digest solely as one Needs you line, while something on
+    its branch waits for the human: an open question, Proposal, or Decision
+    there, or its own orchestrator episode, whose id is its branch id. Its
+    child episodes' health is never a line, here or on its branch.
+    """
+    runs = runs or {}
     resets = {}
     for event in events:
         if event["kind"] == "reset":
@@ -225,7 +265,7 @@ def assemble_digest(
         if event["kind"] not in {"graph_change", "branch_change"}
         or event["seq"] > resets.get(event["target"], 0)
     ]
-    attention, latest_nodes, groups, branches, ran = {}, {}, {}, {}, {}
+    attention, latest_nodes, groups, reports = {}, {}, {}, {}
     node_edits = {}
     merged = {}
     for event in events:
@@ -236,19 +276,22 @@ def assemble_digest(
             )
     for event in events:
         payload = event["payload"]
-        kind, item_id, target = event["kind"], event["item_id"], event["target"]
-        if kind == "graph_change":
+        kind, item_id, event_target = event["kind"], event["item_id"], event["target"]
+        if kind in {"graph_change", "branch_change"}:
+            if kind == "branch_change" and int(item_id) <= merged.get(payload["episode_id"], -1):
+                continue
+            in_scope = event_target == target
+            if not in_scope and not (target == "main" and event_target in runs):
+                continue
             for entry in payload.get("attention", []):
-                identity = (target, entry["kind"], entry["item_id"])
+                identity = (event_target, entry["kind"], entry["item_id"])
                 attention[identity] = dict(
                     entry,
-                    target=target,
+                    target=event_target,
                     created_at=event["created_at"],
-                    deep_link=deep_link(project_id, target, entry["kind"], entry["item_id"]),
+                    deep_link=deep_link(project_id, event_target, entry["kind"], entry["item_id"]),
                 )
-            if _viewers_own(event, user_id, chat_reads):
-                continue
-            if not payload["edits"]:
+            if not in_scope or _viewers_own(event, user_id, chat_reads) or not payload["edits"]:
                 continue
             key = event["source_key"]
             group = groups.setdefault(
@@ -259,7 +302,6 @@ def assemble_digest(
                     label=event["source_label"],
                     edits=0,
                     node_ids=[],
-                    report_artifact_id=payload.get("report_artifact_id"),
                     deep_link=payload.get("deep_link"),
                 ),
             )
@@ -270,127 +312,256 @@ def assemble_digest(
                 node_edits[(key, node_id)] = node_edits.get((key, node_id), 0) + 1
             for node_id in event["node_ids"]:
                 latest_nodes[node_id] = key
-        elif kind == "branch_change":
-            if _viewers_own(event, user_id, chat_reads):
-                continue
-            episode_id = payload["episode_id"]
-            if payload["edits"] and int(item_id) > merged.get(episode_id, -1):
-                branch = branches.setdefault(
-                    episode_id,
-                    dict(
-                        episode_id=episode_id,
-                        title=payload["title"],
-                        edits=0,
-                        deep_link=payload.get("deep_link"),
-                    ),
-                )
-                branch["edits"] += payload["edits"]
         elif kind in {"question_attention", "episode_attention"}:
+            if event_target != target and not (target == "main" and event_target in runs):
+                continue
             item_kind = "question" if kind == "question_attention" else "episode"
-            attention[(target, item_kind, item_id)] = dict(
+            if item_kind == "episode" and _run_child(event_target, item_id, runs, chain):
+                continue
+            attention[(event_target, item_kind, item_id)] = dict(
                 kind=item_kind,
                 item_id=item_id,
-                target=target,
+                target=event_target,
                 title=payload["title"],
                 active=payload["active"],
                 created_at=event["created_at"],
                 deep_link=payload.get("deep_link"),
             )
-        elif kind in _RAN:
-            if kind == "consolidation_report":
-                group = groups.get("consolidation:" + item_id)
-                if group is not None:
-                    group["report_artifact_id"] = payload.get("report_artifact_id")
-            ran[(kind, item_id)] = dict(
+        elif kind in _REPORTS and event_target == target:
+            reports[(kind, item_id)] = dict(
                 kind=kind,
                 item_id=item_id,
                 title=payload["title"],
-                status=payload.get("status"),
+                report_artifact_id=payload.get("report_artifact_id"),
                 deep_link=payload.get("deep_link"),
                 created_at=event["created_at"],
             )
     for node_id, key in sorted(latest_nodes.items()):
         groups[key]["node_ids"].append(node_id)
         groups[key]["edits"] += node_edits.get((key, node_id), 0)
-    needs = []
+    needs, run_needs = [], {}
     for item in attention.values():
         if not item.pop("active"):
             continue
-        needs.append(item)
+        run = item["target"] in runs and (item["kind"] == "episode" or target == "main")
+        if run:
+            run_needs[item["target"]] = max(run_needs.get(item["target"], ""), item["created_at"])
+        else:
+            needs.append(item)
+    for run_target, created_at in run_needs.items():
+        branch_id = run_target.removeprefix("branch:")
+        needs.append(
+            dict(
+                kind="auto_research",
+                item_id=branch_id,
+                title=runs[run_target],
+                target=run_target,
+                deep_link=_run_link(project_id, branch_id),
+                created_at=created_at,
+            )
+        )
     changed_ids = sorted(
-        node_id for node_id in latest_nodes if state is None or node_id in state.nodes
+        node_id
+        for node_id in latest_nodes
+        if target == "main" and (state is None or node_id in state.nodes)
     )
-    changed, branch_lines, ran_lines = (
-        [group for group in groups.values() if group["edits"] or group["node_ids"]],
-        list(branches.values()),
-        list(ran.values()),
-    )
+    changed = [group for group in groups.values() if group["edits"] or group["node_ids"]]
+    report_lines = list(reports.values())
     return dict(
         cursor=cursor,
         mark=mark,
+        target=target,
         needs_you=needs,
         changed=changed,
-        branches=branch_lines,
-        ran=ran_lines,
+        reports=report_lines,
         changed_node_ids=changed_ids,
-        count=len(needs) + len(changed) + len(branch_lines) + len(ran_lines),
+        count=len(needs) + len(changed) + len(report_lines),
     )
 
 
-def read_digest(store, catalog, project_id: str, user_id: str) -> dict:
+def _main_state(catalog, project_id: str, *, required: bool) -> GraphState | None:
+    service = catalog.loaded_service(project_id)
+    if service is not None:
+        with service.history.workspace.snapshot_lock:
+            return GraphState.model_validate_json((service.history.root / "graph.json").read_text())
+    snapshot = catalog.cached_snapshot(project_id)
+    if snapshot is None:
+        if not required:
+            return None
+        raise StateUnavailable("The project graph snapshot is not available yet.")
+    return GraphState.model_validate(snapshot["graph"])
+
+
+def _branch_state(catalog, project_id: str, branch_id: str) -> GraphState | None:
+    """The branch's own graph, which names Experiments it created or renamed."""
+    service = catalog.loaded_service(project_id)
+    if service is None:
+        return None
+    return service.history.branch(branch_id, initialize=False).state()
+
+
+def read_digest(
+    store, catalog, project_id: str, user_id: str, branch_id: str | None = None
+) -> dict:
     mark, cursor, events = store.digest_snapshot(project_id, user_id)
-    if not events:
-        return assemble_digest(project_id, user_id, events, mark, cursor)
-    state = GraphState()
-    if any(event["kind"] == "graph_change" for event in events):
-        service = catalog.loaded_service(project_id)
-        if service is not None:
-            with service.history.workspace.snapshot_lock:
-                state = GraphState.model_validate_json(
-                    (service.history.root / "graph.json").read_text()
-                )
-        else:
-            snapshot = catalog.cached_snapshot(project_id)
-            if snapshot is None:
-                raise StateUnavailable("The project graph snapshot is not available yet.")
-            state = GraphState.model_validate(snapshot["graph"])
-    return _assemble_current(store, project_id, user_id, events, mark, cursor, state)
+    kinds = {event["kind"] for event in events}
+    if branch_id is not None:
+        # Changed-node dots are main's only, so a branch graph just names Experiments.
+        state = (
+            _branch_state(catalog, project_id, branch_id) if "episode_attention" in kinds else None
+        )
+    else:
+        # Main filters the dots and names Experiments; only the dots require it.
+        state = (
+            _main_state(catalog, project_id, required="graph_change" in kinds)
+            if kinds & {"graph_change", "episode_attention"}
+            else None
+        )
+    target = "main" if branch_id is None else "branch:" + branch_id
+    return _assemble_current(store, project_id, user_id, events, mark, cursor, state, target)
 
 
-def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None):
-    result = assemble_digest(
-        project_id,
-        user_id,
-        events,
-        mark,
-        cursor,
-        state,
-        store.chat_read_markers(project_id, user_id),
+def _orchestrator_episodes(conn, project_id: str) -> frozenset[str]:
+    """Every Auto-research episode: chain roots and their continuations."""
+    return frozenset(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT episode_id FROM episodes WHERE project_id=? AND mode='auto_research'",
+            (project_id,),
+        )
     )
-    question_ids = [item["item_id"] for item in result["needs_you"] if item["kind"] == "question"]
-    with store.connection() as conn:
-        open_questions = (
-            {
+
+
+def _auto_research_runs(conn, project_id: str) -> dict[str, str]:
+    """Each Auto-research run's branch target key and its branch name."""
+    names = resolve_branch_names(conn, project_id)
+    branch_ids = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT episode_id FROM episodes WHERE project_id=? AND mode='auto_research' "
+            "AND json_extract(graph_target_json, '$.branch_id') = episode_id",
+            (project_id,),
+        )
+    ]
+    return {"branch:" + branch_id: names.get(branch_id, branch_id[:8]) for branch_id in branch_ids}
+
+
+def _drop_closed_attention(store, project_id: str, events: list[dict]) -> list[dict]:
+    """Drop every opening of a question or episode that no longer needs the human.
+
+    Removing all of an item's openings is the same as hiding its latest state,
+    and it lets a run fold only the children that still need the human.
+    """
+    opened = {
+        kind: [e["item_id"] for e in events if e["kind"] == kind and e["payload"]["active"]]
+        for kind in ("question_attention", "episode_attention")
+    }
+    open_ids = set()
+    if opened["question_attention"]:
+        with store.connection() as conn:
+            open_ids |= {
                 row[0]
                 for row in conn.execute(
                     "SELECT question_id FROM questions WHERE state='pending' AND withdrawn_readonly=0 "
                     "AND question_id IN (SELECT value FROM json_each(?))",
-                    (json.dumps(question_ids),),
+                    (json.dumps(opened["question_attention"]),),
                 )
             }
-            if question_ids
-            else set()
-        )
-    episode_ids = [item["item_id"] for item in result["needs_you"] if item["kind"] == "episode"]
-    _, active = _episode_attention(store, project_id, episode_ids)
-    result["needs_you"] = [
-        item
-        for item in result["needs_you"]
-        if (item["kind"] != "question" or item["item_id"] in open_questions)
-        and (item["kind"] != "episode" or active.get(item["item_id"], False))
+    if opened["episode_attention"]:
+        _, active = _episode_attention(store, project_id, opened["episode_attention"])
+        open_ids |= {episode_id for episode_id, needs in active.items() if needs}
+    return [
+        event
+        for event in events
+        if event["kind"] not in opened
+        or not event["payload"]["active"]
+        or event["item_id"] in open_ids
     ]
-    result["count"] = sum(len(result[key]) for key in ("needs_you", "changed", "branches", "ran"))
+
+
+def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None, target="main"):
+    with store.connection() as conn:
+        runs = _auto_research_runs(conn, project_id)
+        chain = _orchestrator_episodes(conn, project_id)
+    result = assemble_digest(
+        project_id,
+        user_id,
+        _drop_closed_attention(store, project_id, events),
+        mark,
+        cursor,
+        state,
+        store.chat_read_markers(project_id, user_id),
+        target=target,
+        runs=runs,
+        chain=chain,
+    )
+    _present_current(store, project_id, result, state, runs)
     return result
+
+
+def _present_current(store, project_id, result, state, runs) -> None:
+    """Live titles and final in-app links; stored payload titles predate both."""
+    needs, reports = result["needs_you"], result["reports"]
+    question_ids = [item["item_id"] for item in needs if item["kind"] == "question"]
+    report_ids = [item["item_id"] for item in reports if item["kind"] == "episode_report"]
+    with store.connection() as conn:
+        owners = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute(
+                "SELECT question_id, owner_kind, owner_id FROM questions "
+                "WHERE question_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(question_ids),),
+            )
+        }
+        report_rows = {
+            row[0]: (row[1], row[2])
+            for row in conn.execute(
+                "SELECT report_id, artifact_id, display_title FROM episode_reports "
+                "WHERE report_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(report_ids),),
+            )
+        }
+    episode_ids = {item["item_id"] for item in needs if item["kind"] == "episode"} | {
+        owner_id for kind, owner_id in owners.values() if kind == "episode"
+    }
+    episodes = store.episodes_by_ids(sorted(episode_ids)) if episode_ids else {}
+
+    def episode_link(episode) -> str | None:
+        if episode.graph_target.key in runs:
+            return _run_link(project_id, episode.graph_target.branch_id)
+        if episode.mode == "experiment_loop" and episode.control_node_id:
+            return _experiment_link(project_id, episode)
+        return None
+
+    for item in needs:
+        if item["kind"] == "episode" and (episode := episodes.get(item["item_id"])):
+            node = state.nodes.get(episode.control_node_id or "") if state else None
+            item["title"] = node.title if node else (episode.control_node_id or item["title"])
+            item["deep_link"] = episode_link(episode) or item["deep_link"]
+        elif item["kind"] == "question" and item["item_id"] in owners:
+            owner_kind, owner_id = owners[item["item_id"]]
+            if owner_kind == "chat":
+                branch = {}
+                if item["target"] != "main":
+                    branch["branch_id"] = item["target"].removeprefix("branch:")
+                item["deep_link"] = _app_hash(project_id, "chats", chat=owner_id, **branch)
+            elif episode := episodes.get(owner_id):
+                item["deep_link"] = episode_link(episode) or item["deep_link"]
+    for item in reports:
+        if item["item_id"] in report_rows:
+            artifact_id, title = report_rows[item["item_id"]]
+            item["report_artifact_id"] = artifact_id
+            item["title"] = title or item["title"]
+    for group in result["changed"]:
+        if group["source_kind"] == "episode":
+            # A merged branch is named by its branch, like its run line was.
+            episode = store.episode(group["source_key"].removeprefix("episode:"))
+            if episode and episode.graph_target.key in runs:
+                group["label"] = runs[episode.graph_target.key]
+                group["deep_link"] = _run_link(project_id, episode.graph_target.branch_id)
+    if result["target"] in runs:
+        for group in result["changed"]:
+            group["deep_link"] = _run_link(project_id, result["target"].removeprefix("branch:"))
 
 
 def digest_counts(store, project_ids: list[str], user_id: str) -> dict[str, int]:
@@ -718,10 +889,13 @@ def _episode_attention(store, project_id, episode_ids=None):
     health = load_episode_health(store, episodes)
     active = {}
     with store.connection() as conn:
+        runs = _auto_research_runs(conn, project_id)
         for episode in episodes:
             current, _, _, blocked = health[episode.episode_id]
             active[episode.episode_id] = episode_needs_action(current, blocked)
-            if episode.graph_target.kind != "branch":
+            # An Auto-research branch carries its own Decisions into the digest;
+            # another episode's branch Decision surfaces through its episode.
+            if episode.graph_target.kind != "branch" or episode.graph_target.key in runs:
                 continue
             branch = conn.execute(
                 "SELECT item_id,payload_json FROM digest_events WHERE project_id=? AND kind='branch_change' AND target=? ORDER BY seq DESC LIMIT 1",

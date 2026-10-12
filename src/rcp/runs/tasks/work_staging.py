@@ -217,8 +217,9 @@ async def stage_work_turn(
             if execution is not None
             else str(uuid.uuid4())
         )
+        artifact_directory: Path | PurePosixPath
         if remote_stage is not None:
-            artifact_directory: Path | PurePosixPath = remote_stage.prepare_artifact_directory(
+            artifact_directory = remote_stage.prepare_artifact_directory(
                 artifact_scope_id,
                 reuse=resuming,
             )

@@ -8,6 +8,7 @@ from rcp.api.app import _auto_research_worker_request
 from rcp.config import write_agent_settings
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.providers import ModelChoice
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 from tests.helpers import signed_in_client
@@ -342,7 +343,9 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     assert store.episode_budget_meter(episode_id).invocations_used == 1
 
 
-def test_worker_request_uses_the_current_human_node_work_profile(manifest, tmp_path) -> None:
+def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
+    manifest, tmp_path, monkeypatch
+) -> None:
     profiles = {
         name: manifest.agent_profile(name).model_copy(deep=True) for name in _EXECUTION_PROFILES
     }
@@ -457,3 +460,34 @@ def test_worker_request_uses_the_current_human_node_work_profile(manifest, tmp_p
     assert worker.session_id is None
     assert worker.watcher_ids == []
     assert worker.model != request.model
+
+    monkeypatch.setattr(
+        service.launcher,
+        "readiness",
+        lambda provider, *, host="", binary=None, refresh=False: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            models=[ModelChoice(id="reviewer", label="Reviewer", reasoning=["medium", "xhigh"])],
+        ),
+    )
+    picked = _auto_research_worker_request(
+        service,
+        AutoResearchCommandContext(episode=episode, task=task, request=request),
+        SpawnArguments(
+            seat_node_id="blocker-1",
+            instruction_file="worker-task.md",
+            provider="codex",
+            model="reviewer",
+            reasoning="xhigh",
+        ),
+        "Review the candidate.",
+        str(uuid.uuid4()),
+    )
+
+    assert (picked.provider, picked.model, picked.reasoning, picked.run_on) == (
+        "codex",
+        "reviewer",
+        "xhigh",
+        profiles["node_chat"].run_on,
+    )

@@ -123,6 +123,7 @@ from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
     decode_recorded_turn,
 )
+from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     _parent_task_contract_path,
@@ -645,13 +646,18 @@ async def _stage_work_turn(
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
     ) -> StagedArtifactAccess:
+        edit_path = (
+            sync_session_artifacts(execution, request, artifact_directory, layout.remote_stage)
+            if execution is not None
+            else None
+        )
         artifact_context = stage_artifact_context(
             service,
             request,
             execution,
             local_stage=layout.local_stage,
             remote_stage=layout.remote_stage,
-            artifact_path=str(artifact_directory),
+            edit_path=edit_path,
         )
         has_references = any(item.reference is not None for item in request.attachments)
         local_references = has_references and layout.remote_stage is None
@@ -2190,6 +2196,8 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
     caller knows the rest of the finalization is not owed.
     """
 
+    if turn.request.artifact_edit is not None and (turn.outcome.failed or turn.outcome.paused):
+        return []
     retained_answer = _retained_primary_answer(turn)
     answer = (
         retained_answer
@@ -2255,7 +2263,14 @@ def _finalize_work_artifacts(
                 detail=str(exc),
             )
         artifacts = []
-    return artifacts
+    return publish_session_artifacts(
+        turn.execution,
+        turn.request,
+        Path(str(turn.artifact_directory)),
+        turn.remote_stage,
+        artifacts=artifacts,
+        service=turn.service,
+    )
 
 
 async def finalize_work_result(

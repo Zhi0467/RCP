@@ -209,11 +209,17 @@
   min-height: 0;
   width: 100%;
 }
-.chat-dock[data-mode="discuss"] {
+/* The selection pill and annotation popover are portaled out of the dock, so
+   they carry the chat's mode themselves. */
+.chat-dock[data-mode="discuss"],
+.chat-selection-comment[data-mode="discuss"],
+.chat-annotation-composer[data-mode="discuss"] {
   --chat-mode-accent: var(--plum);
   --chat-mode-soft: color-mix(in srgb, var(--sheet) 78%, var(--plum));
 }
-.chat-dock[data-mode="work"] {
+.chat-dock[data-mode="work"],
+.chat-selection-comment[data-mode="work"],
+.chat-annotation-composer[data-mode="work"] {
   --chat-mode-accent: var(--forest);
   --chat-mode-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
 }
@@ -473,6 +479,18 @@
   padding: 3px 5px;
   text-transform: uppercase;
   width: fit-content;
+}
+/* An unsent turn: a red edge instead of the progress spinner, and its one
+   action, an icon-only Resend, in the top-right corner. */
+.node-chat-line.unsent {
+  border-color: var(--red);
+  position: relative;
+}
+.chat-turn-resend {
+  color: var(--red);
+  position: absolute;
+  right: 8px;
+  top: 8px;
 }
 .chat-turn-mode.discuss {
   background: transparent;
@@ -1078,13 +1096,13 @@
 }
 .chat-annotatable-answer::selection,
 .chat-annotatable-answer *::selection {
-  background: color-mix(in srgb, var(--plum) 28%, transparent);
+  background: color-mix(in srgb, var(--chat-mode-accent, var(--plum)) 28%, transparent);
 }
 .chat-answer-annotation-button {
   align-items: center;
   background: transparent;
   border: 0;
-  color: var(--plum);
+  color: var(--chat-mode-accent, var(--plum));
   display: flex;
   font: 700 var(--type-3xs) var(--mono);
   gap: 4px;
@@ -1195,7 +1213,7 @@
 /* Offered over a finished answer selection; the composer opens only from here. */
 .chat-selection-comment {
   align-items: center;
-  background: var(--plum);
+  background: var(--chat-mode-accent, var(--plum));
   border: 0;
   border-radius: 999px;
   box-shadow: 0 5px 14px rgb(var(--shadow-rgb) / 24%);
@@ -1225,9 +1243,8 @@
   outline-offset: 2px;
 }
 .chat-annotation-composer {
-  --chat-mode-accent: var(--plum);
   background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--plum) 65%, var(--line));
+  border: 1px solid color-mix(in srgb, var(--chat-mode-accent, var(--plum)) 65%, var(--line));
   border-radius: 9px;
   box-shadow: 0 16px 42px rgb(var(--shadow-rgb) / 22%);
   display: grid;
@@ -1257,8 +1274,8 @@
   white-space: pre-wrap;
 }
 .chat-annotation-composer textarea:focus-visible {
-  border-color: var(--plum);
-  outline: 2px solid color-mix(in srgb, var(--plum) 30%, transparent);
+  border-color: var(--chat-mode-accent, var(--plum));
+  outline: 2px solid color-mix(in srgb, var(--chat-mode-accent, var(--plum)) 30%, transparent);
   outline-offset: 1px;
 }
 .chat-annotation-composer > .button {
@@ -2117,4 +2134,14 @@
 .chat-watcher-row > time {
   flex-basis: 100%;
   order: 10;
+}
+/* The orchestrator card's mail form spans the composer: Add turns, message, Send. */
+.chat-composer.orchestrator-composer {
+  align-items: stretch;
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+.orchestrator-composer .campaign-message-composer {
+  margin-top: 0;
+  width: 100%;
 }

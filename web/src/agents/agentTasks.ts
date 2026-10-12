@@ -1,5 +1,6 @@
 import type {
   AgentArtifactDescriptor,
+  ArtifactEditOutcome,
   ArtifactOmissions,
   AgentTask,
   AgentTaskKind,
@@ -21,6 +22,7 @@ export interface TaskTranscriptLine {
   timestamp: string;
   artifacts?: AgentArtifactDescriptor[];
   artifactOmissions?: ArtifactOmissions;
+  artifactEditOutcomes?: ArtifactEditOutcome[];
   attachments?: ChatAttachmentDescriptor[];
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
@@ -209,12 +211,14 @@ export function reconcileChatHistoryArtifacts(
   tasks.forEach((task) => {
     const artifacts = taskArtifacts(task);
     const artifactOmissions = taskArtifactOmissions(task);
+    const artifactEditOutcomes = taskArtifactEditOutcomes(task);
     const lineIndex = answerLineByOperationId.get(task.operation_id);
     if (lineIndex !== undefined) {
       lines[lineIndex] = {
         ...lines[lineIndex],
         ...(artifacts.length ? { artifacts } : {}),
         ...(artifactOmissions ? { artifactOmissions } : {}),
+        ...(artifactEditOutcomes.length ? { artifactEditOutcomes } : {}),
       };
       return;
     }
@@ -227,7 +231,8 @@ export function reconcileChatHistoryArtifacts(
       operationMessages.some((message) => message.role === "user" && !message.steering) &&
       (operationMessages.some((message) => message.steering) ||
         artifacts.length > 0 ||
-        artifactOmissions !== undefined)
+        artifactOmissions !== undefined ||
+        artifactEditOutcomes.length > 0)
     ) {
       lines.push(...reconstructTaskTranscript([task]).filter((line) => line.role !== "human"));
     }
@@ -262,6 +267,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
       : [];
     const artifacts = taskArtifacts(task);
     const artifactOmissions = taskArtifactOmissions(task);
+    const artifactEditOutcomes = taskArtifactEditOutcomes(task);
     messages.forEach((text, index) =>
       lines.push({
         lineId: `task:${task.operation_id}:answer:${index}`,
@@ -273,12 +279,18 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         trigger,
         ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
         ...(index === messages.length - 1 && artifactOmissions ? { artifactOmissions } : {}),
+        ...(index === messages.length - 1 && artifactEditOutcomes.length
+          ? { artifactEditOutcomes }
+          : {}),
         ...(index === messages.length - 1 && graphUpdate ? { graphUpdate } : {}),
       }),
     );
     if (
       !messages.length &&
-      (artifacts.length || artifactOmissions || (graphUpdate && graphUpdate.status !== "none"))
+      (artifacts.length ||
+        artifactOmissions ||
+        artifactEditOutcomes.length ||
+        (graphUpdate && graphUpdate.status !== "none"))
     ) {
       lines.push({
         lineId: `task:${task.operation_id}:deliverables`,
@@ -290,6 +302,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         trigger,
         ...(artifacts.length ? { artifacts } : {}),
         ...(artifactOmissions ? { artifactOmissions } : {}),
+        ...(artifactEditOutcomes.length ? { artifactEditOutcomes } : {}),
         ...(graphUpdate ? { graphUpdate } : {}),
       });
     }
@@ -410,7 +423,9 @@ function conversationMode(value: unknown): ConversationMode | null {
 }
 
 function taskTrigger(value: unknown): TaskTrigger {
-  return value === "experiment_run" || value === "watcher" ? value : "human";
+  return value === "experiment_run" || value === "watcher" || value === "orchestrator"
+    ? value
+    : "human";
 }
 
 export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
@@ -430,6 +445,19 @@ export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       typeof item.can_keep === "boolean" &&
       typeof item.can_discuss === "boolean",
   );
+}
+
+/** Only outcomes the reader would otherwise miss; a published version shows itself. */
+export function taskArtifactEditOutcomes(task: AgentTask): ArtifactEditOutcome[] {
+  const values = task.result?.artifact_edit_outcomes;
+  return Array.isArray(values)
+    ? values.filter(
+        (value) =>
+          !!value &&
+          typeof value === "object" &&
+          ["published", "unchanged", "failed", "forked"].includes(value.status),
+      )
+    : [];
 }
 
 export function taskArtifactOmissions(task: AgentTask): ArtifactOmissions | undefined {

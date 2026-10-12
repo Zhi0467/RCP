@@ -499,3 +499,61 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
     assert task_chat not in {
         row.chat_id for row in service.chat_summaries(task_summaries=on_main).items
     }
+
+
+def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
+    manifest, tmp_path, monkeypatch
+):
+    from tests.test_episode_api import create_terminal_auto_episode
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    tasks = app.state.background_tasks
+    store = tasks.store
+    root, root_task, _ = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="orchestrator-card",
+        report_error="Report unavailable.",
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET result_json = ? WHERE operation_id = ?",
+            (json.dumps({"messages": ["First findings."]}), root_task.operation_id),
+        )
+    monkeypatch.setattr(
+        tasks, "launch_admitted", lambda operation_id: store.agent_task(operation_id)
+    )
+    # Messaging the ended orchestrator continues the chain; its opening turn delivers the mail.
+    sent = client.post(
+        f"/api/projects/{project_id}/episodes/{root.episode_id}/messages",
+        json={"body": "Check the control.", "invocation_ceiling": 1, "request_id": "r1"},
+    )
+    assert sent.status_code == 201, sent.text
+    continuation = store.episode(sent.json()["episode_id"])
+    assert continuation is not None and continuation.episode_id != root.episode_id
+
+    url = f"/api/projects/{project_id}/chats"
+    cards = [
+        row
+        for row in client.get(f"{url}?inventory=true").json()["items"]
+        if row["conversation_kind"] == "auto_research"
+    ]
+    assert len(cards) == 1
+    assert cards[0]["chat_id"] == root.episode_id
+    assert cards[0]["graph_target"] == root.graph_target.model_dump()
+    assert cards[0]["message_count"] == 3
+
+    branch = client.get(f"{url}/{root.episode_id}?branch_id={root.episode_id}")
+    assert branch.status_code == 200, branch.text
+    assert [
+        (message["role"], message["operation_id"], message["text"])
+        for message in branch.json()["messages"]
+    ] == [
+        ("user", root_task.operation_id, "Trace the strongest evidence."),
+        ("assistant", root_task.operation_id, "First findings."),
+        ("user", continuation.root_operation_id, "Check the control."),
+    ]
+    assert client.get(f"{url}/{root.episode_id}").status_code == 404

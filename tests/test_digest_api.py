@@ -30,10 +30,10 @@ def test_landing_counts_batch_events_without_history(manifest, tmp_path, monkeyp
         append_digest_event(
             conn,
             project_id=project_id,
-            kind="job_ended",
-            item_id="job",
+            kind="consolidation_report",
+            item_id="night",
             created_at=store.now(),
-            payload={"title": "Finished job", "status": "exited"},
+            payload={"title": "Nightly consolidation", "report_artifact_id": None},
         )
     response = client.get("/api/projects")
     assert response.status_code == 200
@@ -59,10 +59,10 @@ def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_p
             return append_digest_event(
                 conn,
                 project_id=project_id,
-                kind="job_ended",
+                kind="consolidation_report",
                 item_id=identifier,
                 created_at=store.now(),
-                payload={"title": identifier, "status": "exited"},
+                payload={"title": identifier, "report_artifact_id": None},
             )
 
     first = finish("first")
@@ -75,7 +75,7 @@ def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_p
     remaining = client.get(url)
     assert remaining.status_code == 200
     assert remaining.json()["cursor"] == second
-    assert [item["item_id"] for item in remaining.json()["ran"]] == ["second"]
+    assert [item["item_id"] for item in remaining.json()["reports"]] == ["second"]
     assert client.post(f"{url}/caught-up", json={"seq": second + 1}).status_code == 409
     assert client.post(f"{url}/caught-up", json={"seq": True}).status_code == 422
 
@@ -101,10 +101,10 @@ def test_get_waits_for_projector_before_baselining(manifest, tmp_path, monkeypat
             mark=None,
             cursor=0,
             count=0,
+            target="main",
             needs_you=[],
             changed=[],
-            branches=[],
-            ran=[],
+            reports=[],
             changed_node_ids=[],
         )
         assert signals == [project_id]

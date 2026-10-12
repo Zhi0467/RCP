@@ -56,6 +56,7 @@ from rcp.runs.chat import (
     artifact_omissions,
 )
 from rcp.runs.chat_admission import admit_fresh_chat_turn
+from rcp.runs.session_artifacts import artifact_edit_outcomes
 from rcp.runs.steering import (
     begin_chat_steer,
     chat_steer_action_label,
@@ -129,6 +130,9 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_download: bool
     can_keep: bool
     can_discuss: bool
+    # The turn folder holding the artifact's tracked file, so a later turn's
+    # citation of that path resolves to the card it published.
+    turn_folder: str | None = None
 
 
 def _agent_artifact_response(
@@ -175,6 +179,9 @@ def _agent_artifact_response(
         can_download=available,
         can_keep=available and not kept and not record.history_only,
         can_discuss=can_discuss,
+        turn_folder=stored.supplier_id
+        if stored is not None and stored.supplier == "turn"
+        else None,
     )
 
 
@@ -189,6 +196,7 @@ def _agent_task_response(
     degradations: Mapping[str, str] | None = None,
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
+    edit_outcomes: Mapping[str, list[AgentTaskReceiptRecord]] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
@@ -228,6 +236,19 @@ def _agent_task_response(
     receipt = (discoveries or {}).get(record.operation_id)
     if receipt is not None:
         result["artifact_omissions"] = artifact_omissions(receipt)
+    edit = record.request.get("artifact_edit")
+    edit = edit if isinstance(edit, dict) else {}
+    receipts = [
+        receipt
+        for operation_id in _artifact_outcome_operation_ids([record])
+        for receipt in (edit_outcomes or {}).get(operation_id, [])
+    ]
+    outcomes = artifact_edit_outcomes(
+        receipts,
+        edit["artifact_id"] if isinstance(edit.get("artifact_id"), str) else None,
+    )
+    if outcomes:
+        result["artifact_edit_outcomes"] = outcomes
     if record.history_only or consolidation:
         graph_update = result.get("graph_update")
         if isinstance(graph_update, dict):
@@ -251,6 +272,17 @@ def _agent_task_response(
         )
     result["artifacts"] = projected
     return response
+
+
+def _artifact_outcome_operation_ids(records: list[AgentTaskRecord]) -> list[str]:
+    """Each turn's own receipts; an edit retry also shows its admitted edit's."""
+    operation_ids: list[str] = []
+    for record in records:
+        edit = record.request.get("artifact_edit")
+        if isinstance(edit, dict) and isinstance(edit.get("operation_id"), str):
+            operation_ids.append(edit["operation_id"])
+        operation_ids.append(record.operation_id)
+    return list(dict.fromkeys(operation_ids))
 
 
 def _current_chat_session_id(
@@ -329,12 +361,6 @@ def start_agent_task(
             chat_admission_lock = None
             try:
                 request = _validated_task_request(service, kind, body)
-                if task_graph_capable(kind, request) and not (
-                    isinstance(request, RunRequest) and request.artifact_context is not None
-                ):
-                    require_graph_edit_admission(
-                        store, catalog.resolve_project_id(project_id), service.history.graph_target
-                    )
                 if isinstance(request, RunRequest):
                     request = _admit_artifact_context_request(
                         store,
@@ -342,6 +368,10 @@ def start_agent_task(
                         project_id,
                         kind,
                         request,
+                    )
+                if task_graph_capable(kind, request):
+                    require_graph_edit_admission(
+                        store, catalog.resolve_project_id(project_id), service.history.graph_target
                     )
 
                 if isinstance(request, RunRequest) and request.artifact_edit is not None:
@@ -355,7 +385,7 @@ def start_agent_task(
                 if (
                     kind in {"node_chat", "project_chat"}
                     and isinstance(request, RunRequest)
-                    and request.artifact_edit is None
+                    and (request.artifact_edit is None or not request.artifact_edit.origin_bound)
                 ):
                     assert request.chat_id is not None
                     chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
@@ -395,15 +425,50 @@ def start_agent_task(
                                 "references": [],
                             }
                         )
+                composer_edit = (
+                    request.artifact_edit
+                    if isinstance(request, RunRequest)
+                    and request.artifact_edit is not None
+                    and not request.artifact_edit.origin_bound
+                    else None
+                )
                 try:
-                    record = background_tasks.start(
-                        project_id,
-                        kind,
-                        request,
-                        operation_id=operation_id,
-                        authorized_by=authorized_by,
-                        graph_target=service.history.graph_target,
-                    )
+                    # Expiry checks admitted edits under this lock, so the base must
+                    # stay readable until the task that protects it is recorded.
+                    with (
+                        store.artifact_lock(composer_edit.artifact_id)
+                        if composer_edit is not None
+                        else nullcontext()
+                    ):
+                        if composer_edit is not None:
+                            try:
+                                store.read_artifact_bytes(
+                                    composer_edit.artifact_id, composer_edit.base_version
+                                )
+                            except (KeyError, OSError, ValueError) as exc:
+                                raise AgentTaskAdmissionConflict(
+                                    "The selected artifact version is no longer available. "
+                                    "Send the comment again."
+                                ) from exc
+                            # An Undo or another edit since admission makes the
+                            # comment's base stale; the human must select again.
+                            current = store.artifact(composer_edit.artifact_id)
+                            if (
+                                current is None
+                                or current.current_version != composer_edit.base_version
+                            ):
+                                raise AgentTaskAdmissionConflict(
+                                    "This artifact changed to a new version after the parts "
+                                    "were selected. Select them again."
+                                )
+                        record = background_tasks.start(
+                            project_id,
+                            kind,
+                            request,
+                            operation_id=operation_id,
+                            authorized_by=authorized_by,
+                            graph_target=service.history.graph_target,
+                        )
                 except BaseException:
                     if claimed_set is not None and store.agent_task(operation_id) is None:
                         attachment_store.release(*claimed_set)
@@ -466,10 +531,13 @@ def agent_tasks(
     records = store.agent_tasks(project_id, graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
+    edit_outcomes = store.agent_task_artifact_edit_outcomes(
+        _artifact_outcome_operation_ids(records)
+    )
     chat_sessions: dict[tuple[str, str], str | None] = {}
     return [
         _agent_task_response(
-            store, record, background_tasks, degradations, discoveries, chat_sessions
+            store, record, background_tasks, degradations, discoveries, chat_sessions, edit_outcomes
         )
         for record in records
     ]
@@ -494,6 +562,9 @@ def agent_task(
         background_tasks,
         store.agent_task_degradations([operation_id]),
         store.agent_task_artifact_discoveries([operation_id]),
+        edit_outcomes=store.agent_task_artifact_edit_outcomes(
+            _artifact_outcome_operation_ids([record])
+        ),
     )
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
@@ -1036,7 +1107,7 @@ def _chat_recovery_admission(
         RunRequest, previous.request, operation_id=previous.operation_id
     )
     assert isinstance(request, RunRequest)
-    if request.artifact_edit is not None:
+    if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         return nullcontext()
     return conversation_worktree_recovery_admission(service, store, previous.project_id, request)
 
@@ -1084,11 +1155,20 @@ def _read_agent_artifact_bytes(
 ) -> tuple[AgentArtifactResponse, bytes]:
     """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
-    # An in-place edit lists the artifact it published, which its origin turn's scope owns.
-    # A revoking edit runs as its own `artifact_edit` task whose other outputs share the
-    # server-recorded staging scope.
+    # A turn lists the earlier artifacts it published a version of, which their origin
+    # turns' scopes own. Its other outputs, and a separate artifact, share its own scope.
     edit = record.request.get("artifact_edit") if record is not None else None
-    edited = isinstance(edit, dict) and edit.get("artifact_id") == artifact_id
+    edited = (isinstance(edit, dict) and edit.get("artifact_id") == artifact_id) or (
+        record is not None
+        and any(
+            receipt.payload.get("artifact_id") == artifact_id
+            and receipt.payload.get("status") == "published"
+            for receipts in store.agent_task_artifact_edit_outcomes(
+                _artifact_outcome_operation_ids([record])
+            ).values()
+            for receipt in receipts
+        )
+    )
     if (
         record is None
         or record.project_id != project_id
@@ -1112,13 +1192,24 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    # Mirrors the turn's staging: an edit binding fixes the scope, even across a Retry.
-    scope_id = (
-        edit["staged_scope_id"]
-        if isinstance(edit, dict)
-        else _logical_chat_turn_operation_id(store, record.operation_id)
-    )
-    if not edited and scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
+    # Mirrors the turn's staging: a revoking edit's folder is its own operation. An
+    # older edit binding staged its copy under a fixed scope, even across a Retry,
+    # whose own outputs still use the turn's scope.
+    legacy_scope = edit.get("staged_scope_id") if isinstance(edit, dict) else None
+    if (
+        not edited
+        and not (
+            isinstance(legacy_scope, str)
+            and scoped_artifact_id(legacy_scope, descriptor.name) == descriptor.artifact_id
+        )
+        and scoped_artifact_id(
+            record.operation_id
+            if record.kind == "artifact_edit"
+            else _logical_chat_turn_operation_id(store, record.operation_id),
+            descriptor.name,
+        )
+        != descriptor.artifact_id
+    ):
         raise ValueError("artifact descriptor does not match its task scope")
     stored = store.artifact(artifact_id)
     if stored is None or stored.project_id != project_id:
@@ -1154,9 +1245,23 @@ def _admit_artifact_context_request(
         return request
     if kind not in {"node_chat", "project_chat"}:
         raise ValueError("Artifact comments require a conversation or artifact comment route.")
-    from rcp.runs.artifact_edit_admission import admit_artifact_edit
+    from rcp.runs.artifact_edit_admission import admit_chat_artifact_edit
 
-    return admit_artifact_edit(store, service, project_id, request)
+    admitted = admit_chat_artifact_edit(store, service, project_id, request)
+    if admitted.artifact_edit is not None and admitted.artifact_edit.origin_bound:
+        # The viewer's origin-bound edit carries no skills; client-supplied ones
+        # would reach the prompt unresolved.
+        return admitted.model_copy(
+            update={
+                "invoked_workflow_ids": [],
+                "invoked_skill_ids": [],
+                "invoked_provider_skill_names": [],
+                "resolved_provider_skills": [],
+                "resolved_skill_packages": None,
+            }
+        )
+    # A composer comment is an ordinary turn, resolved like one.
+    return _resolved_graph_request(service, kind, admitted)
 
 
 def _validated_task_request(
@@ -1232,8 +1337,8 @@ def _validated_task_request(
         uuid.UUID(request.chat_id)
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
-    # Artifact-context admission resolves the chat's current execution profile.
-    # Do not first resolve stale settings from the currently open client.
+    # An artifact comment is classified first: an Experiment or orchestrator
+    # artifact runs on its origin's profile, so a composer pick must not refuse it.
     if request.artifact_context is not None:
         return request
     return _resolved_graph_request(service, kind, request)
@@ -1257,7 +1362,7 @@ def _validate_stored_task_request(
         resolved_coach = _resolved_coach_request(service, CoachRequest.model_validate(body))
         return service.resolve_skill_selection(resolved_coach)
     request = RunRequest.model_validate(body)
-    if request.artifact_edit is not None:
+    if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         return None
     if kind in {"seed", "refresh"}:
         service.history.require_writable()

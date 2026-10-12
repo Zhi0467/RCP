@@ -3486,6 +3486,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_pa
                 "can_download": False,
                 "can_keep": False,
                 "can_discuss": False,
+                "turn_folder": None,
             }
         ],
     }
@@ -3835,8 +3836,9 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "chat_id": origin.request["chat_id"],
             "message": "Why does this section jump?",
             "mode": "discuss",
-            # Artifact edits retain the artifact's origin session and profile.
-            "run_on": "stale-machine",
+            # Composer edits follow this chat's current session and settings.
+            "run_on": "laptop",
+            "reasoning": "high",
             "artifact_context": {
                 "source": "task",
                 "operation_id": origin.operation_id,
@@ -3848,8 +3850,8 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert asked.status_code == 202
     admitted = admitted_requests[-1]
     assert admitted.mode == "discuss"
-    assert admitted.session_id == origin.native_session_id
-    assert admitted.reasoning == origin.request["reasoning"]
+    assert admitted.session_id is None  # The ordinary chat launcher resolves the current session.
+    assert admitted.reasoning == "high"
     assert admitted.artifact_context is not None
     assert admitted.artifact_context.operation_id == origin.operation_id
 

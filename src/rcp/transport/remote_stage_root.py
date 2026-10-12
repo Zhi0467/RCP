@@ -212,48 +212,108 @@ def prepare_artifacts(workspace: str, scope: str, reuse: bool) -> None:
         os.makedirs(target, mode=0o700, exist_ok=False)
 
 
-def prepare_edit_artifacts(workspace: str, scope: str, staged: bool) -> None:
-    """Preserve an existing edit directory, including a pre-receipt interrupted attempt."""
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", scope) or scope in {".", ".."}:
-        raise ValueError("artifact scope is unsafe")
-    scope_path = os.path.join(workspace, "turns", scope)
-    prepare_artifacts(workspace, scope, reuse=staged or os.path.lexists(scope_path))
+_SCOPE = re.compile(r"[A-Za-z0-9._-]+")
 
 
-def stage_artifact(workspace: str, scope: str, name: str, data: bytes) -> None:
-    """Create a writable edit once; retries preserve the agent's exact existing file."""
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", scope) or scope in {".", ".."}:
+def _turn_artifact_folder(workspace: str, scope: str, name: str, *, create: bool) -> list[int]:
+    """Open `turns/<scope>/artifacts` without following links; the last descriptor is it."""
+    if not _SCOPE.fullmatch(scope) or scope in {".", ".."}:
         raise ValueError("artifact scope is unsafe")
-    if os.path.basename(name) != name or name in {"", ".", ".."}:
+    if os.path.basename(name) != name or name in {"", ".", ".."} or "\0" in name:
         raise ValueError("artifact name is unsafe")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    descriptors = []
+    descriptors = [os.open(workspace, flags)]
+    try:
+        for part in ("turns", scope, "artifacts"):
+            if create:
+                with suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=descriptors[-1])
+            descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
+    except BaseException:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+        raise
+    return descriptors
+
+
+#: What a tracked path that is not a regular file (a symlink, say) reports.
+IRREGULAR_ARTIFACT = ("irregular", -1)
+
+
+def _artifact_digest(folder: int, name: str, max_bytes: int) -> tuple[str, int] | None:
+    """The file's sha256 and size. One over `max_bytes` reports `oversized:<size>`,
+    read no further than one byte past the limit, even when it grew after fstat."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=folder)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return IRREGULAR_ARTIFACT
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            return IRREGULAR_ARTIFACT
+        if info.st_size > max_bytes:
+            return f"oversized:{info.st_size}", info.st_size
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := stream.read(min(1024 * 1024, max_bytes + 1 - size)):
+            size += len(chunk)
+            if size > max_bytes:
+                return f"oversized:{size}", size
+            digest.update(chunk)
+        return digest.hexdigest(), size
+
+
+def artifact_digests(
+    workspace: str, entries: list[list[str]], max_bytes: int
+) -> list[tuple[str, str, str, int]]:
+    """Each named turn artifact's digest and size, as `_artifact_digest` reports them.
+    A missing file is left out; an unreadable one reports as irregular."""
+    found: list[tuple[str, str, str, int]] = []
+    for scope, name in entries:
+        try:
+            descriptors = _turn_artifact_folder(workspace, scope, name, create=False)
+        except (OSError, ValueError):
+            continue
+        try:
+            digest = _artifact_digest(descriptors[-1], name, max_bytes)
+        except (OSError, ValueError):
+            digest = IRREGULAR_ARTIFACT
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+        if digest is not None:
+            found.append((scope, name, digest[0], digest[1]))
+    return found
+
+
+def sync_artifact(
+    workspace: str, scope: str, name: str, expected: str, data: bytes, max_bytes: int
+) -> bool:
+    """Replace a turn artifact with `data` only while it holds `expected` (empty: absent),
+    as `_artifact_digest` reports it."""
+    descriptors = _turn_artifact_folder(workspace, scope, name, create=True)
+    folder = descriptors[-1]
     temporary = ""
     try:
-        folder = os.open(workspace, flags)
-        descriptors.append(folder)
-        for part in ("turns", scope, "artifacts"):
-            folder = os.open(part, flags, dir_fd=folder)
-            descriptors.append(folder)
-        try:
-            info = os.stat(name, dir_fd=folder, follow_symlinks=False)
-        except FileNotFoundError:
-            info = None
-        if info is not None:
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("staged edit is not a regular file")
-            return
-        temporary = ".edit-" + os.urandom(16).hex()
+        current = _artifact_digest(folder, name, max_bytes)
+        if (current[0] if current else "") != expected:
+            return False
+        temporary = ".sync-" + os.urandom(16).hex()
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=folder)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+        temporary = ""
         os.fsync(folder)
+        return True
     finally:
         if temporary:
-            os.unlink(temporary, dir_fd=folder)
+            with suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=folder)
         for descriptor in reversed(descriptors):
             os.close(descriptor)
 
@@ -361,10 +421,12 @@ def main(argv: list[str]) -> int:
             remove_stage(argv[2])
         elif len(argv) == 5 and argv[1] == "prepare-artifacts":
             prepare_artifacts(argv[2], argv[3], argv[4] == "1")
-        elif len(argv) == 5 and argv[1] == "prepare-edit-artifacts":
-            prepare_edit_artifacts(argv[2], argv[3], argv[4] == "1")
-        elif len(argv) == 5 and argv[1] == "stage-artifact":
-            stage_artifact(argv[2], argv[3], argv[4], sys.stdin.buffer.read())
+        elif len(argv) == 5 and argv[1] == "artifact-digests":
+            print(json.dumps(artifact_digests(argv[2], json.loads(argv[3]), int(argv[4]))))
+        elif len(argv) == 7 and argv[1] == "sync-artifact":
+            data = sys.stdin.buffer.read()
+            if not sync_artifact(argv[2], argv[3], argv[4], argv[5], data, int(argv[6])):
+                return 43
         elif len(argv) == 7 and argv[1] == "commit-inputs":
             commit_inputs(
                 argv[2], argv[3], json.loads(argv[4]), argv[5] == "1", set(json.loads(argv[6]))

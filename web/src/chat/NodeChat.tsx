@@ -91,7 +91,10 @@ import {
   providerSwitchStartsFreshSession,
   startConversationTurn,
   toggleConversationMode,
+  type ConversationTurnSubmission,
+  type StartConversationTask,
 } from "./chatWorkspace";
+import { chatFollowsBottom, chatReaderMovedUp } from "./chatLayout";
 import {
   openArtifact as openArtifactPanel,
   openRepositoryFile as openRepositoryFilePanel,
@@ -171,9 +174,10 @@ import {
   startDesktopDictation,
   stopDesktopDictation,
 } from "../core/desktopRuntime";
-import { resolveRepositoryFileHref, turnArtifactName } from "../core/repositoryFileLinks";
+import { resolveRepositoryFileHref, turnArtifactLocation } from "../core/repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
+  ArtifactEditOutcome,
   AgentRunConfig,
   AgentTask,
   ChatMessage,
@@ -186,7 +190,6 @@ import type {
   ProjectArtifact,
   ProjectSnapshot,
   ServiceConnection,
-  StartAgentTask,
   WatcherRecord,
   WorktreeIntegrationOption,
 } from "../core/types";
@@ -226,10 +229,12 @@ interface Props {
   fixedConversation?: boolean;
   readOnly?: boolean;
   readOnlyNotice?: ReactNode;
+  /** Questions belong to this episode rather than the chat, as an orchestrator's do. */
+  questionEpisodeId?: string;
   allowArtifactComments?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
-  onStartTask: StartAgentTask;
+  onStartTask: StartConversationTask;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onRepairGraphUpdate: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
@@ -244,10 +249,18 @@ interface Props {
 
 interface PendingChatTurn {
   clientId: string;
+  /** The start's Idempotency-Key, kept across a Resend. */
+  requestId: string;
   text: string;
+  /** The composer text it was sent from, which a failed send puts back. */
+  draft: string;
   timestamp: string;
   mode: ConversationMode;
   attachments: ChatAttachmentDescriptor[];
+  submission: ConversationTurnSubmission;
+  submittedOverride: { chatId: string; config: AgentRunConfig } | null;
+  /** Set when the start got no admission; the turn stays here to be resent. */
+  error?: string;
 }
 
 type AttachmentStatus = "preparing" | "ready" | "error";
@@ -295,6 +308,15 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+
+function chatScrollObservation(element: HTMLElement, previousTop: number) {
+  return {
+    previousTop,
+    top: element.scrollTop,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  };
+}
 // macOS dictation stops at 55 s, counting down the last 10; network dictation
 // has no limit (see networkDictation.ts).
 const DICTATION_SEGMENT_MS = 55_000;
@@ -337,6 +359,7 @@ export function NodeChat({
   readOnly = false,
   allowArtifactComments = false,
   readOnlyNotice,
+  questionEpisodeId,
   reviewPending = false,
   graphChangesDisabled = false,
   onStartTask,
@@ -367,7 +390,12 @@ export function NodeChat({
     .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
     .sort()
     .join("\0");
-  const questionState = useQuestions(questionApiBase, "chat", chatId, questionFreshness);
+  const questionState = useQuestions(
+    questionApiBase,
+    questionEpisodeId ? "episode" : "chat",
+    questionEpisodeId ?? chatId,
+    questionFreshness,
+  );
   const [steeringMessages, setSteeringMessages] = useState<{
     chatId: string;
     messages: ChatMessage[];
@@ -463,6 +491,8 @@ export function NodeChat({
   );
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
+  // A read-only chat composes only artifact comments, and those edit in Discuss.
+  const commentOnly = readOnly && Boolean(artifactContext);
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
   const [annotationViewport, setAnnotationViewport] =
@@ -588,6 +618,9 @@ export function NodeChat({
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
   const networkDictationRef = useRef<NetworkDictation | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  // The last scroll position this view observed; a smaller one means the reader
+  // moved up, and only the reader's own return to the bottom re-sticks.
+  const lastScrollTopRef = useRef(0);
   const lastChatIdRef = useRef(chatId);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
@@ -669,7 +702,9 @@ export function NodeChat({
     sessionId,
     config.provider,
   );
-  const mode = artifactContext ? "discuss" : modeState.value;
+  // A follow-up joins the running turn, so the composer shows that turn's mode.
+  const steeringMode = steeringTask ? parseConversationMode(steeringTask.request.mode) : null;
+  const mode = commentOnly ? "discuss" : (steeringMode ?? modeState.value);
   modeRef.current = mode;
   // A Work turn also needs the provider's Work probe; Discuss does not.
   const providerReady = launchProviderReady(project, config, mode === "work");
@@ -841,8 +876,14 @@ export function NodeChat({
       setRepositoryFileErrors(new Map());
     }
     const element = chatLinesRef.current;
-    if (!element || !shouldStickToBottomRef.current) return;
+    if (!element) return;
+    // A refresh can render between the reader's scroll and its scroll event; their
+    // position wins over a follow decided before they moved.
+    if (chatReaderMovedUp(chatScrollObservation(element, lastScrollTopRef.current)))
+      shouldStickToBottomRef.current = false;
+    if (!shouldStickToBottomRef.current) return;
     element.scrollTop = element.scrollHeight;
+    lastScrollTopRef.current = element.scrollTop;
     // Question cards load after the transcript and end it, so they move the bottom too.
   }, [chatId, transcript, questionState.questions]);
 
@@ -976,9 +1017,9 @@ export function NodeChat({
     // A follow-up inherits the running turn's capability, so the toggle would
     // describe something it cannot change. While a turn merely runs unsteerable,
     // the choice still belongs to the next turn and stays available.
-    if (steeringTask || artifactContext) return;
+    if (steeringTask || commentOnly) return;
     selectMode(toggleConversationMode(modeRef.current));
-  }, [steeringTask, artifactContext, selectMode]);
+  }, [steeringTask, commentOnly, selectMode]);
 
   useEffect(() => {
     if (!sendAfterDictation || dictating) return;
@@ -996,7 +1037,7 @@ export function NodeChat({
   }, [sendAfterDictation, dictating]);
 
   useEffect(() => {
-    if (presentation !== "workspace" || readOnly || artifactContext) return;
+    if (presentation !== "workspace" || readOnly) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
       if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
@@ -1005,13 +1046,14 @@ export function NodeChat({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [presentation, readOnly, artifactContext, toggleMode]);
+  }, [presentation, readOnly, toggleMode]);
 
   const updateMessage = (next: string) => {
     if (readOnly) return;
-    if (next && !modeState.pinned && !artifactContext) {
-      writeStorage(modeKey, mode);
-      setModeState({ value: mode, pinned: true });
+    // Pin the next turn's pick, not a running turn's mode shown while steering.
+    if (next && !modeState.pinned && !commentOnly) {
+      writeStorage(modeKey, modeState.value);
+      setModeState({ value: modeState.value, pinned: true });
     }
     setMessage(next);
     skills.readMessage(next);
@@ -1277,9 +1319,9 @@ export function NodeChat({
     const start = textarea?.selectionStart ?? message.length;
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
-    if (!artifactContext) {
-      writeStorage(modeKey, mode);
-      setModeState({ value: mode, pinned: true });
+    if (!commentOnly) {
+      writeStorage(modeKey, modeState.value);
+      setModeState({ value: modeState.value, pinned: true });
     }
     setSubmitError(null);
     setDictationError(null);
@@ -1501,9 +1543,11 @@ export function NodeChat({
 
   const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
-    shouldStickToBottomRef.current =
-      element.scrollHeight - element.scrollTop - element.clientHeight <=
-      CHAT_SCROLL_BOTTOM_TOLERANCE_PX;
+    shouldStickToBottomRef.current = chatFollowsBottom(
+      chatScrollObservation(element, lastScrollTopRef.current),
+      CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
+    );
+    lastScrollTopRef.current = element.scrollTop;
   };
 
   const openAnnotationComposer = (range: Range) => {
@@ -1925,21 +1969,18 @@ export function NodeChat({
       return;
     if (!confirmDiscardKeptSpeech("send")) return;
     if (dictating) stopDictation(true);
-    shouldStickToBottomRef.current = true;
-    const clientId = `pending-${crypto.randomUUID()}`;
-    setPendingTurn({
-      clientId,
+    // A new send is a new request; only Resend reuses a failed turn's key.
+    const requestId = crypto.randomUUID();
+    setMessage("");
+    await submitTurn({
+      clientId: `pending-${requestId}`,
+      requestId,
       text,
+      draft: draftMessage,
       timestamp: new Date().toISOString(),
       mode,
       attachments: readyAttachments,
-    });
-    setMessage("");
-    setSubmitError(null);
-    setSubmitting(true);
-    const submittedOverride = configOverride;
-    try {
-      await startConversationTurn(onStartTask, {
+      submission: {
         kind: surface,
         config,
         runTruthScope: scope,
@@ -1956,12 +1997,26 @@ export function NodeChat({
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
         worktree: mode === "work" && worktree.chosen,
-      });
+      },
+      submittedOverride: configOverride,
+    });
+  };
+
+  /** Start a turn, or start it again after a failed send under the same key. */
+  const submitTurn = async (turn: PendingChatTurn) => {
+    const pending = { ...turn, error: undefined };
+    shouldStickToBottomRef.current = true;
+    setPendingTurn(pending);
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      await startConversationTurn(onStartTask, turn.submission, turn.requestId);
       // The admitted turn now carries the pick, so the chat follows its history
       // again; a newer pick made while submitting stays.
-      setConfigOverride((current) => (current === submittedOverride ? null : current));
+      setConfigOverride((current) => (current === turn.submittedOverride ? null : current));
       worktree.refresh();
-      setPendingTurn((current) => (current?.clientId === clientId ? null : current));
+      setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
+      setMessage((current) => (current === turn.draft ? "" : current));
       skills.reset();
       setAttachments([]);
       setReferences([]);
@@ -1971,11 +2026,25 @@ export function NodeChat({
       removeSessionStorage(annotationsKey);
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
-      if (!artifactContext) selectMode(mode);
+      if (!commentOnly) selectMode(turn.mode);
     } catch (error) {
-      setPendingTurn((current) => (current?.clientId === clientId ? null : current));
-      setMessage((current) => (current ? current : draftMessage));
-      setSubmitError(error instanceof Error ? error.message : String(error));
+      // The request may never have reached the server, so the turn stays where it
+      // was sent, with Resend under the same key: at most one turn is admitted.
+      // The composer gets the text back too, so it survives leaving this chat.
+      // fetch rejects a lost connection with a TypeError and the start timeout
+      // with a TimeoutError; neither message tells the reader anything.
+      const lost =
+        error instanceof TypeError ||
+        (error instanceof DOMException && error.name === "TimeoutError");
+      const reason = lost
+        ? "Not sent: the connection to RCP dropped."
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      setPendingTurn((current) =>
+        current?.clientId === turn.clientId ? { ...pending, error: reason } : current,
+      );
+      setMessage((current) => (current ? current : turn.draft));
     } finally {
       setSubmitting(false);
     }
@@ -2125,13 +2194,19 @@ export function NodeChat({
       // repository, so the artifact the task already registered owns the preview.
       // Only when no root claims the path. Several matching roots stay a visible
       // error, because the reader must not be handed a guess about which one won.
-      const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
-      if (name) {
+      const location = resolution.reason === "no-match" ? turnArtifactLocation(href) : null;
+      if (location) {
         const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
         // An older answer's task has aged out of the recent list, so fetch the exact
         // task rather than refusing a citation the transcript still displays.
         const task = known ?? (await onRefreshTask(taskId).catch(() => null));
-        const artifact = task?.result?.artifacts?.find((candidate) => candidate.name === name);
+        // The turn's own folder, or the tracked file of an earlier artifact this turn
+        // published a version of.
+        const artifact = task?.result?.artifacts?.find(
+          (candidate) =>
+            candidate.name === location.name &&
+            (location.folder === taskId || candidate.turn_folder === location.folder),
+        );
         if (artifact) {
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
           if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
@@ -2411,14 +2486,30 @@ export function NodeChat({
               ? task
               : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;
+          const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
           const collapsible =
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
           return (
-            <div className={`node-chat-line ${line.role}`} key={line.lineId}>
+            <div
+              className={`node-chat-line ${line.role}${failedTurn ? " unsent" : ""}`}
+              key={line.lineId}
+            >
               <BrowserTurnNotice status={line.browserStatus} />
               {line.role === "human" && line.mode && (
                 <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+              )}
+              {failedTurn && (
+                <button
+                  type="button"
+                  className="icon-button chat-turn-resend"
+                  aria-label="Resend"
+                  title={failedTurn.error}
+                  disabled={submitting}
+                  onClick={() => void submitTurn(failedTurn)}
+                >
+                  <RotateCcw size={14} />
+                </button>
               )}
               {line.trigger === "watcher" && (
                 <span className="chat-turn-trigger watcher">Watcher</span>
@@ -2542,7 +2633,7 @@ export function NodeChat({
                     />
                   ) : activeLineTask ? (
                     <InlineTaskProgress task={activeLineTask} />
-                  ) : pendingLine ? (
+                  ) : failedTurn ? null : pendingLine ? (
                     <InlineTaskProgress task={null} />
                   ) : null}
                 </>
@@ -2672,6 +2763,18 @@ export function NodeChat({
                         .join("; ")}`}
                 </p>
               )}
+              {/* A published version shows itself; every outcome still tells new from updated. */}
+              {line.artifactEditOutcomes
+                ?.filter((outcome) => outcome.status !== "published")
+                .map((outcome) => (
+                  <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
+                    {artifactEditOutcomeText(
+                      outcome,
+                      line.artifactEditOutcomes ?? [],
+                      line.artifacts ?? [],
+                    )}
+                  </p>
+                ))}
               {line.role === "agent" && line.graphUpdate && (
                 <GraphUpdateReceipt
                   update={line.graphUpdate}
@@ -2711,7 +2814,7 @@ export function NodeChat({
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueChat={question.state === "parked" && !relatedActive}
+              continueChat={!questionEpisodeId && question.state === "parked" && !relatedActive}
             />
           ))}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
@@ -2922,7 +3025,7 @@ export function NodeChat({
             }}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
-              if (!artifactContext && isConversationModeShortcut(event.key, event.shiftKey)) {
+              if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
                 if (presentation !== "workspace") {
                   event.preventDefault();
                   toggleMode();
@@ -3045,7 +3148,7 @@ export function NodeChat({
                   />
                 )}
               </div>
-              {!artifactContext && (
+              {!commentOnly && (
                 <>
                   <div
                     className="segmented chat-mode-toggle"
@@ -3111,7 +3214,7 @@ export function NodeChat({
                     disabled={readOnly}
                     onRequestedChange={setBrowserOn}
                   />
-                  {!artifactContext && (
+                  {!commentOnly && (
                     <WorktreeChooser
                       state={worktree.state}
                       chosen={worktree.chosen}
@@ -3255,6 +3358,7 @@ export function NodeChat({
               ref={selectionCommentRef}
               type="button"
               className="chat-selection-comment"
+              data-mode={mode}
               style={{ left: selectionComment.position.left, top: selectionComment.position.top }}
               disabled={submitting}
               // Keep the selection while pressing, so the staged text is what was shown.
@@ -3276,6 +3380,7 @@ export function NodeChat({
             <form
               ref={annotationComposerRef}
               className="chat-annotation-composer"
+              data-mode={mode}
               aria-label={
                 annotationComposer.step === "select" ? "Select answer text" : "Add annotation"
               }
@@ -3545,6 +3650,32 @@ function GraphUpdateReceipt({
       )}
     </div>
   );
+}
+
+const ARTIFACT_EDIT_FAILURES: Record<NonNullable<ArtifactEditOutcome["reason"]>, string> = {
+  missing: "the file was removed",
+  type_changed: "the file type changed",
+  too_large: "the file is too large",
+  unverified: "the edited file could not be verified",
+};
+
+/** Say why an artifact of this session has no new version under this reply. */
+function artifactEditOutcomeText(
+  outcome: ArtifactEditOutcome,
+  outcomes: ArtifactEditOutcome[],
+  artifacts: AgentArtifactDescriptor[],
+): string {
+  if (outcome.status === "forked")
+    return "The artifact changed during this turn, so the edit was saved as a separate artifact.";
+  if (outcome.status === "failed")
+    return `Edit not published: ${outcome.reason ? ARTIFACT_EDIT_FAILURES[outcome.reason] : "it could not be read"}. The current version is kept.`;
+  // Only artifacts this turn created; one it updated in place has its own outcome.
+  const separate = artifacts.filter(
+    (item) => !outcomes.some((other) => other.artifact_id === item.artifact_id),
+  );
+  return separate.length
+    ? `Not edited in place; the current version is kept. ${separate.map((item) => item.name).join(", ")} is a separate artifact.`
+    : "Not edited in place; the current version is kept.";
 }
 
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {

@@ -140,8 +140,9 @@ of the current session: `session_stale` (the provider no longer has it) or
 requires a retry), the classification Retry uses to refuse resuming a dropped
 session. A `session_limit` failure continues the session: its classification
 also matches account quota, after which the session can still resume. An
-artifact edit runs on the artifact's saved session and never becomes the
-chat's current session. The exact provider, machine, chat, graph target,
+artifact edit from the viewer runs on the artifact's saved session and never
+becomes the chat's current session; a comment sent from the chat composer is an
+ordinary turn on the chat's current session. The exact provider, machine, chat, graph target,
 stage, and launch write scope remain enforced. **New session** creates a new
 chat id.
 
@@ -319,7 +320,9 @@ the actual runtime, including a fallback to exec. The composer shows no hint
 line: the action label names the send button, and the button's enabled or
 disabled state alone shows whether the running attempt can be steered.
 The mode toggle is disabled exactly while the composer addresses the running
-attempt, because a follow-up uses that attempt's captured mode. A turn that
+attempt, because a follow-up uses that attempt's captured mode. While steering,
+the toggle and send button show the running turn's mode; the mode the human
+picked for their next turn returns when the turn stops taking input. A turn that
 cannot receive input leaves the toggle available for the next ordinary turn.
 Episode workers cannot be steered; the human continues to message their orchestrator
 through the episode's ordinary mail path.
@@ -483,8 +486,8 @@ orchestrator wake is offered the switch like any other orchestrator turn: the
 wake names the delivery attached to the turn, and that delivery is staged from
 the paid allocation, so a clean session still receives it. The switch rebinds
 that one turn, so an Auto-research switch names the children it leaves behind:
-they resolve their own binding from the project's node_chat profile, which only
-Settings moves. Because the switch exists to change the binding, it holds its
+a child without the orchestrator's own pick resolves its binding from the
+project's node_chat profile, which only Settings moves. Because the switch exists to change the binding, it holds its
 submission until the selection actually differs from the one that failed, and
 the execution machine is part of that selection wherever the recovery is free to
 move it. A run that can retry unchanged keeps its own plain Retry and never
@@ -576,8 +579,8 @@ separately visible as **Next episode limit**.
 A human fresh start may pick provider, model, and reasoning, defaulting to the
 Settings node_chat profile; the machine stays the profile's. The pick is pinned
 for every turn and watcher wake of that episode, like any resolved binding. A
-continuation keeps its source's binding, and an Auto-research child, which
-names none, takes the Settings profile.
+continuation keeps its source's binding, and an Auto-research child takes the
+orchestrator's pick when it names one, otherwise the Settings profile.
 
 Human Experiment-loop episode starts, including a completed-watcher start, are
 not gated on compute readiness. The helper probes when invoked; Settings shows

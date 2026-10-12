@@ -4,6 +4,7 @@ import type {
   ProjectReferenceSelector,
   AgentRunConfig,
   AgentTask,
+  AgentTaskKind,
   AgentTaskRequest,
   AgentTaskStatus,
   ArtifactContextRequest,
@@ -13,7 +14,6 @@ import type {
   ConversationMode,
   GraphTargetRef,
   SkillDefaults,
-  StartAgentTask,
   WorktreeIntegrationOption,
 } from "../core/types";
 
@@ -29,9 +29,11 @@ export interface ChatConversation {
   /** The latest message's text from the stored summary, for search. */
   preview?: string;
   graphTarget?: GraphTargetRef;
-  conversationKind?: "chat" | "episode" | "auto_research_child";
+  conversationKind?: ChatSummary["conversation_kind"];
   orchestratorEpisodeId?: string | null;
   humanTurnRefusal?: ChatSummary["human_turn_refusal"];
+  /** Set from a server projection that says a human is owed an answer, such as an open question. */
+  needsHuman?: boolean;
 }
 
 /** Whether messaging the orchestrator can lift a child chat's lock; isolation and merge refusals bind it too. */
@@ -221,17 +223,35 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
   };
 }
 
+/** Starts a task; `requestId` is the start's Idempotency-Key, so sending the
+ *  same start again after an unanswered request admits at most one turn. */
+export type StartConversationTask = (
+  kind: AgentTaskKind,
+  request: AgentTaskRequest,
+  requestId?: string,
+) => Promise<AgentTask>;
+
 /** One ordinary Discuss/Work dispatch boundary shared by the visible composer
  * and non-UI callers. Admission and durable task recording remain in App's
- * StartAgentTask owner. */
+ * start-task owner. */
 export async function startConversationTurn(
-  startTask: StartAgentTask,
+  startTask: StartConversationTask,
   submission: ConversationTurnSubmission,
+  requestId?: string,
 ): Promise<AgentTask> {
-  return startTask(submission.kind, conversationTurnRequest(submission));
+  return startTask(submission.kind, conversationTurnRequest(submission), requestId);
+}
+
+/** An Auto-research orchestrator turn: its chain's conversation is named by the
+ *  chain root, which is also the branch every chain member writes. */
+function orchestratorChatId(task: AgentTask): string | null {
+  if (task.kind !== "auto_research" || task.request.role !== "orchestrator") return null;
+  return task.graph_target?.kind === "branch" ? (task.graph_target.branch_id ?? null) : null;
 }
 
 export function chatIdForTask(task: AgentTask): string | null {
+  const orchestrator = orchestratorChatId(task);
+  if (orchestrator) return orchestrator;
   if (task.kind !== "node_chat" && task.kind !== "project_chat") return null;
   const value = task.request.chat_id;
   return typeof value === "string" && value.trim() ? value : null;
@@ -280,7 +300,8 @@ export function groupChatConversations(
   for (const task of tasks) {
     const chatId = chatIdForTask(task);
     if (!chatId) continue;
-    const kind = task.kind as ChatKind;
+    const orchestrator = task.kind === "auto_research";
+    const kind: ChatKind = orchestrator ? "project_chat" : (task.kind as ChatKind);
     const nodeId =
       kind === "node_chat" && typeof task.request.node_id === "string"
         ? task.request.node_id
@@ -302,7 +323,7 @@ export function groupChatConversations(
         updatedAt: task.updated_at,
         graphTarget: task.graph_target,
         // Ownership is unknown until the inventory lists this conversation.
-        conversationKind: undefined,
+        conversationKind: orchestrator ? "auto_research" : undefined,
       });
     }
   }
@@ -318,6 +339,47 @@ export function groupChatConversations(
       Date.parse(right.updatedAt || "9999-01-01") - Date.parse(left.updatedAt || "9999-01-01") ||
       left.title.localeCompare(right.title),
   );
+}
+
+/**
+ * The orchestrator conversation as NodeChat reads a chat: each loaded orchestrator
+ * turn becomes a project-chat turn carrying the human input its transcript line
+ * recorded (or the starting instruction), so status and progress come from the
+ * live task; the transcript keeps only turns the bounded task list no longer holds.
+ */
+export function orchestratorChatTurns(
+  conversation: ChatConversation,
+  history: readonly ChatMessage[],
+): { tasks: AgentTask[]; history: ChatMessage[] } {
+  const loaded = new Set(conversation.tasks.map((task) => task.operation_id));
+  const humanText = new Map(
+    history.flatMap((message) =>
+      message.role === "user" && message.operation_id
+        ? [[message.operation_id, message.text] as const]
+        : [],
+    ),
+  );
+  return {
+    tasks: conversation.tasks.map((task) => {
+      const instruction = task.request.instruction;
+      const message =
+        humanText.get(task.operation_id) ??
+        (typeof instruction === "string" && instruction.trim() ? instruction : null);
+      return {
+        ...task,
+        kind: "project_chat",
+        request: {
+          ...task.request,
+          chat_id: conversation.chatId,
+          message,
+          trigger: message ? "human" : "orchestrator",
+        },
+      };
+    }),
+    history: history.filter(
+      (message) => !message.operation_id || !loaded.has(message.operation_id),
+    ),
+  };
 }
 
 /** What a conversation's latest turn asks of the human, for the Agents panel. */
@@ -347,7 +409,7 @@ export function conversationAgentStatus(
   const result = { latest, unread };
   if (latest?.failed) return { ...result, state: "failed", group: "failed" };
   // After failures, the backend attention flag covers paused and interrupted turns.
-  if (latest?.paused || latest?.awaiting_human) {
+  if (latest?.paused || latest?.awaiting_human || conversation.needsHuman) {
     return { ...result, state: "stopped", group: "stopped" };
   }
   if (latest?.active) return { ...result, state: "working", group: "working" };
@@ -464,6 +526,7 @@ export function latestConversation(
       (conversation) =>
         sameGraphTarget(conversation.graphTarget, graphTarget) &&
         conversation.conversationKind !== "auto_research_child" &&
+        conversation.conversationKind !== "auto_research" &&
         conversation.kind === kind &&
         (kind === "project_chat" || conversation.nodeId === nodeId),
     ) ?? null

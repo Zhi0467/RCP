@@ -14,6 +14,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   versionedArtifactContentUrl,
+  taskArtifactEditOutcomes,
   taskArtifactOmissions,
   taskArtifacts,
 } from "../src/agents/agentTasks.ts";
@@ -747,6 +748,35 @@ test("omissions retain only known nonnegative integer counts and a boolean failu
     { discovery_failed: false, empty: 0 },
   ]) {
     assert.equal(taskArtifactOmissions(task({ result: { artifact_omissions: value } })), undefined);
+  }
+});
+
+test("artifact outcomes reach the reply, published ones included for classification", () => {
+  const outcome = (status, artifact_id = "a1") => ({ status, artifact_id });
+  const lines = reconstructTaskTranscript([
+    task({
+      operation_id: "outcomes",
+      request: {},
+      result: {
+        messages: ["Done"],
+        artifact_edit_outcomes: [
+          outcome("published", "a0"),
+          outcome("unchanged", "a1"),
+          outcome("failed", "a2"),
+          outcome("forked", "a3"),
+        ],
+      },
+    }),
+  ]);
+  assert.deepEqual(
+    lines.at(-1).artifactEditOutcomes.map((item) => item.artifact_id),
+    ["a0", "a1", "a2", "a3"],
+  );
+  for (const value of [[outcome("other")], null, outcome("failed")]) {
+    assert.deepEqual(
+      taskArtifactEditOutcomes(task({ result: { artifact_edit_outcomes: value } })),
+      [],
+    );
   }
 });
 

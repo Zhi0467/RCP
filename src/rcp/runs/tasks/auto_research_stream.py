@@ -59,6 +59,10 @@ from rcp.runs.auto_research import (
     AutoResearchCommandInvalid,
     AutoResearchRunRequest,
 )
+from rcp.runs.auto_research_admission import (
+    ChildProfileChoices,
+    auto_research_child_profile_choices,
+)
 from rcp.runs.auto_research_lifecycle import (
     AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
     auto_research_lifecycle_delivery,
@@ -330,6 +334,7 @@ async def stream_auto_research_orchestrator_run(
                 skill_pointers=orchestrator_skill_pointers,
                 write_scope=write_scope,
                 browser_grant=browser_grant,
+                child_profiles=auto_research_child_profile_choices(service),
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -1463,6 +1468,7 @@ def _orchestrator_prompt(
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
     browser_grant: BrowserGrant,
+    child_profiles: ChildProfileChoices,
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
@@ -1484,6 +1490,7 @@ def _orchestrator_prompt(
         write_scope=write_scope,
         skill_pointers=skill_pointers,
         allowed_verbs=auto_research_allowed_verbs("orchestrator"),
+        child_profiles=child_profiles,
     )
 
     snapshot, dismissal_ids = auto_research_question_snapshot(
@@ -1529,6 +1536,7 @@ def _orchestrator_prompt(
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
+            child_profiles=child_profiles,
         )
 
     def start_contract() -> str:

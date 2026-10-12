@@ -411,10 +411,20 @@ def chat(
         transcript = service.chat_transcript(chat_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if transcript is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
     project_id = catalog.resolve_project_id(project_id)
     summary = next(iter(store.chat_inventory(project_id, chat_id)), None)
+    if (
+        transcript is None
+        and summary is not None
+        and summary["conversation_kind"] == "auto_research"
+        and summary["graph_target"] == service.history.graph_target.model_dump()
+    ):
+        # The orchestrator's conversation is its chain's tasks and human mail, not a chat file.
+        messages = store.orchestrator_chat_messages(project_id, chat_id)
+        if messages:
+            transcript = ChatTranscript.model_validate({**summary, "messages": messages})
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
     transcript = transcript.model_copy(
         update={
             "graph_title": "Main"

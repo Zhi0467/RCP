@@ -271,7 +271,7 @@ import {
   type TextScaleAction,
 } from "./ui/textScale";
 import { useTheme } from "./ui/useTheme";
-import { NOTICE_TIMEOUT_MS } from "./core/uiConstants";
+import { IDEMPOTENT_TASK_START_TIMEOUT_MS, NOTICE_TIMEOUT_MS } from "./core/uiConstants";
 import {
   createWebMcpToolRegistry,
   episodeStopRefusal,
@@ -308,6 +308,7 @@ import {
   episodeNotificationHash,
   graphNotificationHash,
   initialNotificationLink,
+  isNotificationLinkHash,
   parseNotificationLink,
   type NotificationLink,
 } from "./core/notificationLinks";
@@ -924,6 +925,7 @@ function MemberApp({
     taskInspectorLoading,
     activeTask,
     activityTask,
+    beginTasksRead,
     replaceTasks,
     consumeTerminalTasks,
     upsertTask,
@@ -1295,9 +1297,10 @@ function MemberApp({
         authoritativeProjectId.current = requestedProjectId;
         setProjectReconciliation("authoritative");
       });
+      const tasksRead = beginTasksRead();
       const tasksRequest = includeTasks
         ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
-            if (responseIsCurrent()) replaceTasks(nextTasks);
+            if (responseIsCurrent()) replaceTasks(nextTasks, tasksRead);
           })
         : Promise.resolve();
       const usageRequest = api<AgentUsageSnapshot>(`${base}/usage`)
@@ -1338,6 +1341,7 @@ function MemberApp({
       projectId,
       projectSnapshotRequestIsCurrent,
       refreshChatSummaries,
+      beginTasksRead,
       replaceTasks,
     ],
   );
@@ -1462,9 +1466,10 @@ function MemberApp({
           const steerMoved =
             observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
           if (steerMoved || heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
+            const tasksRead = beginTasksRead();
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
             if (!isActiveProject(requestedProjectId)) return;
-            replaceTasks(nextTasks);
+            replaceTasks(nextTasks, tasksRead);
             // A teammate's turn may have started and finished between heartbeats;
             // its chat history then changed without any status change seen here.
             if (
@@ -1581,6 +1586,7 @@ function MemberApp({
       reloadAuthoritativeProject,
       refreshChatSummaries,
       removeProject,
+      beginTasksRead,
       replaceTasks,
       runProjectHeartbeat,
     ],
@@ -1632,10 +1638,11 @@ function MemberApp({
       const activeId = getActiveProjectId();
       if (activeId) {
         const visibleProjectId = activeId;
+        const tasksRead = beginTasksRead();
         const nextTasks = await api<AgentTask[]>(
           `/api/projects/${encodeURIComponent(visibleProjectId)}/tasks`,
         );
-        if (isActiveProject(visibleProjectId)) replaceTasks(nextTasks);
+        if (isActiveProject(visibleProjectId)) replaceTasks(nextTasks, tasksRead);
         setProjectReconciliation("reconciling");
         void reloadRef.current(false).catch((error) => {
           if (!isActiveProject(visibleProjectId) || stopped) return;
@@ -1724,6 +1731,7 @@ function MemberApp({
     recordDesktopUpdateReady,
     refreshDesktopUpdate,
     replaceProjects,
+    beginTasksRead,
     replaceTasks,
     reportIdentityIssue,
     reverifyIdentity,
@@ -1969,6 +1977,9 @@ function MemberApp({
 
   useEffect(() => {
     const handleHashChange = () => {
+      // A notification link is not a project route; the resolver below replaces it
+      // with one, so the open project stays mounted meanwhile.
+      if (isNotificationLinkHash(window.location.hash)) return;
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
@@ -2412,7 +2423,7 @@ function MemberApp({
     error: projectDigestError,
     catchingUp: projectDigestCatchingUp,
     catchUp: catchUpProjectDigest,
-  } = useProjectDigest(projectId, String(graph.revision), refreshProjectIndexQuietly);
+  } = useProjectDigest(projectId, graphTarget, String(graph.revision), refreshProjectIndexQuietly);
   const digestChangedNodes = useMemo(
     () => digestChangedNodeIds(projectDigest, graphTarget),
     [projectDigest, graphTarget],
@@ -3057,6 +3068,7 @@ function MemberApp({
     };
     const poll = async () => {
       let next: AgentTask[];
+      const tasksRead = beginTasksRead();
       try {
         next = await api<AgentTask[]>(`/api/projects/${encodeURIComponent(projectId)}/tasks`);
       } catch (error) {
@@ -3111,7 +3123,9 @@ function MemberApp({
           }
         }
       }
-      replaceTasks(next);
+      // The awaits above can outlive this effect; a stopped poll applies nothing.
+      if (stopped) return;
+      replaceTasks(next, tasksRead);
       if (next.some(isActiveTask)) schedule(1000);
     };
     schedule(500);
@@ -3127,6 +3141,7 @@ function MemberApp({
     projectId,
     graphTarget,
     reloadAuthoritativeProject,
+    beginTasksRead,
     replaceTasks,
     reverifyIdentity,
   ]);
@@ -3142,6 +3157,7 @@ function MemberApp({
     };
     const poll = async () => {
       const requestId = beginProjectSnapshotRequest(requestedProjectId);
+      const tasksRead = beginTasksRead();
       try {
         const {
           watchers: nextWatchers,
@@ -3163,7 +3179,7 @@ function MemberApp({
           authoritativeProjectId.current = requestedProjectId;
           setProjectReconciliation("authoritative");
           setWatchers(nextWatchers);
-          replaceTasks(nextTasks);
+          replaceTasks(nextTasks, tasksRead);
           if (hasUnseenWatcherResults) {
             void refreshChatSummaries(requestedProjectId, base).catch((error) => {
               if (!stopped && isActiveProject(requestedProjectId)) {
@@ -3200,6 +3216,7 @@ function MemberApp({
     graphTarget,
     recordWatcherResults,
     refreshChatSummaries,
+    beginTasksRead,
     replaceTasks,
     reportErrorNotice,
     watchersAwaitingDelivery,
@@ -3438,7 +3455,14 @@ function MemberApp({
           {
             method: "POST",
             body: JSON.stringify(request),
-            ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
+            // A keyed start can be sent again safely, so a lost request ends
+            // instead of holding the start lock with no answer.
+            ...(requestId
+              ? {
+                  headers: { "Idempotency-Key": requestId },
+                  signal: AbortSignal.timeout(IDEMPOTENT_TASK_START_TIMEOUT_MS),
+                }
+              : {}),
           },
         );
         if (
@@ -5450,9 +5474,11 @@ function MemberApp({
               onNavigate={changeView}
               digest={{
                 digest: projectDigest,
+                targetName: branchName(projectGraphRefs, graphTarget),
                 error: projectDigestError,
                 catchingUp: projectDigestCatchingUp,
-                onCatchUp: () => void catchUpProjectDigest(),
+                onCatchUp:
+                  graphTarget.kind === "main" ? () => void catchUpProjectDigest() : undefined,
                 onOpenArtifact: (artifactId) => openArtifact({ projectId: project.id, artifactId }),
               }}
             />
@@ -5730,6 +5756,11 @@ function MemberApp({
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
+              orchestratorEpisode={
+                activeBranchEpisode?.mode === "auto_research" ? activeBranchEpisode : null
+              }
+              episodeAction={episodeAction}
+              onSendOrchestratorMessage={messageEpisodeOrchestrator}
               onArchiveChange={() =>
                 void refreshChatReads().catch((error) =>
                   reportErrorNotice(

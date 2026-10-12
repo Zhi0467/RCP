@@ -61,6 +61,7 @@ import type {
   VoiceSavedSession,
   VoiceSessionPage,
   VoiceSettings,
+  GraphTargetRef,
 } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
@@ -728,8 +729,15 @@ export function markChatRead(path: string, readThrough: string): Promise<ChatRea
   return api(path, { method: "POST", body: JSON.stringify({ read_through: readThrough }) });
 }
 
-export function loadProjectDigest(projectId: string): Promise<ProjectDigest> {
-  return api(`/api/projects/${encodeURIComponent(projectId)}/digest`);
+/** The digest of the open graph target; Caught up is offered on main only. */
+export function loadProjectDigest(
+  projectId: string,
+  target: GraphTargetRef,
+): Promise<ProjectDigest> {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/digest`;
+  return api(
+    target.kind === "main" ? path : `${path}?branch_id=${encodeURIComponent(target.branch_id)}`,
+  );
 }
 
 /** `seq` is the cursor of the digest on screen, never "now"; the mark never moves back. */

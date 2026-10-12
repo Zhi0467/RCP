@@ -126,6 +126,9 @@ COMMAND_CLIENT_WAIT_MARGIN_SECONDS = 30
 # probed 2026-09-29), so a slow command must return inside that and let the
 # agent rerun the same keyed call; RCP keeps working on the request meanwhile.
 COMMAND_CLIENT_WAIT_SECONDS = 90.0
+# Models listed per provider in the orchestrator's child-profile choices; the
+# rest stay valid picks and are named in the provider's documentation or CLI.
+CHILD_PROFILE_PROMPT_MAX_MODELS = 20
 COMMAND_ASK_POLL_SECONDS = 2.0
 ASK_MAX_ATTEMPTS = 3
 ASK_TRACKED_CALLS = 32

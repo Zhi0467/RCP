@@ -40,6 +40,28 @@ export function reconcileKnownActiveTasks(
   return terminal;
 }
 
+/**
+ * A task list read numbered `read` when it was requested replaces the list,
+ * except for tasks this page recorded after that request: the read was answered
+ * before they existed (or changed), so the recorded version stays.
+ */
+export function mergeTaskListRead(
+  current: readonly AgentTask[],
+  listed: readonly AgentTask[],
+  localWrites: ReadonlyMap<string, number>,
+  read: number,
+): AgentTask[] {
+  const newer = new Map(
+    current
+      .filter((task) => (localWrites.get(task.operation_id) ?? 0) > read)
+      .map((task) => [task.operation_id, task]),
+  );
+  if (newer.size === 0) return [...listed];
+  const merged = listed.map((task) => newer.get(task.operation_id) ?? task);
+  const listedIds = new Set(listed.map((task) => task.operation_id));
+  return [...[...newer.values()].filter((task) => !listedIds.has(task.operation_id)), ...merged];
+}
+
 export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) {
   const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
   const [taskStarting, setTaskStarting] = useState(false);
@@ -51,6 +73,12 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   const [activityTaskId, setActivityTaskId] = useState<string | null>(null);
   const taskStartLock = useRef(false);
   const knownActiveTasks = useRef(new Map<string, AgentTask>());
+  // One sequence numbers list reads when requested and local task records when
+  // made. Reads answer out of order on a slow link; only the newest requested
+  // read applies, and it never drops a record made after it was requested.
+  const taskSequence = useRef(0);
+  const appliedTaskRead = useRef(0);
+  const localTaskWrites = useRef(new Map<string, number>());
 
   const rememberActiveTasks = useCallback((nextTasks: AgentTask[]) => {
     for (const task of nextTasks) {
@@ -100,16 +128,28 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     };
   }, [inspectorVersion, projectId, reportError, taskInspectorId]);
 
+  /** Number a task list read before requesting it; pass the number to `replaceTasks`. */
+  const beginTasksRead = useCallback(() => ++taskSequence.current, []);
+
+  /** Apply a list read unless a newer one already applied; false when discarded. */
   const replaceTasks = useCallback(
-    (nextTasks: AgentTask[]) => {
+    (nextTasks: AgentTask[], read: number): boolean => {
+      if (read < appliedTaskRead.current) return false;
+      appliedTaskRead.current = read;
+      for (const [operationId, written] of localTaskWrites.current) {
+        if (written <= read) localTaskWrites.current.delete(operationId);
+      }
+      const localWrites = new Map(localTaskWrites.current);
       rememberActiveTasks(nextTasks);
-      setTasks(nextTasks);
+      setTasks((current) => mergeTaskListRead(current, nextTasks, localWrites, read));
+      return true;
     },
     [rememberActiveTasks],
   );
 
   const upsertTask = useCallback(
     (task: AgentTask) => {
+      localTaskWrites.current.set(task.operation_id, ++taskSequence.current);
       rememberActiveTasks([task]);
       setTasks((current) => [
         task,
@@ -121,14 +161,10 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
 
   const recordStartedTask = useCallback(
     (task: AgentTask) => {
-      rememberActiveTasks([task]);
-      setTasks((current) => [
-        task,
-        ...current.filter((item) => item.operation_id !== task.operation_id),
-      ]);
+      upsertTask(task);
       setActivityTaskId(task.operation_id);
     },
-    [rememberActiveTasks],
+    [upsertTask],
   );
 
   const consumeTerminalTasks = useCallback(
@@ -188,17 +224,25 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     [taskActionId, taskStarting],
   );
 
+  // Reads requested for the previous project state never apply to the new one.
+  const discardPendingTaskReads = useCallback(() => {
+    appliedTaskRead.current = ++taskSequence.current;
+    localTaskWrites.current.clear();
+  }, []);
+
   const resetProjectTasks = useCallback(() => {
+    discardPendingTaskReads();
     knownActiveTasks.current.clear();
     setRetryTask(null);
     setTasks([]);
     setTaskInspectorId(null);
     setInspectedTask(null);
     setActivityTaskId(null);
-  }, []);
+  }, [discardPendingTaskReads]);
 
   const restoreProjectTasks = useCallback(
     (snapshot: AgentTasksSnapshot) => {
+      discardPendingTaskReads();
       knownActiveTasks.current.clear();
       rememberActiveTasks(snapshot.tasks);
       setRetryTask(snapshot.retryTask);
@@ -207,7 +251,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
       setInspectedTask(snapshot.inspectedTask);
       setActivityTaskId(snapshot.activityTaskId);
     },
-    [rememberActiveTasks],
+    [discardPendingTaskReads, rememberActiveTasks],
   );
 
   const snapshot = useMemo<AgentTasksSnapshot>(
@@ -228,6 +272,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     taskInspectorLoading,
     activeTask,
     activityTask,
+    beginTasksRead,
     replaceTasks,
     consumeTerminalTasks,
     upsertTask,

@@ -943,17 +943,16 @@ a.digest-title:hover {
   color: var(--cobalt);
   text-decoration: underline;
 }
-.digest-report {
-  align-items: center;
+.digest-title-button {
   background: none;
   border: 0;
-  color: var(--cobalt);
   cursor: pointer;
-  display: inline-flex;
-  font-size: var(--type-sm);
-  font-weight: 700;
-  gap: 4px;
   padding: 0;
+  text-align: left;
+}
+.digest-title-button:hover {
+  color: var(--cobalt);
+  text-decoration: underline;
 }
 /* .dag-node is already absolutely positioned. */
 .research-node-card.digest-changed {

@@ -287,10 +287,11 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           json = {
             cursor: 0,
             mark: null,
+            target: "main",
             needs_you: [],
             changed: [],
             branches: [],
-            ran: [],
+            reports: [],
             changed_node_ids: [],
             count: 0,
           };

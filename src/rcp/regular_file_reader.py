@@ -12,6 +12,10 @@ import sys
 from pathlib import Path
 
 
+class RegularFileTooLargeError(ValueError):
+    """A regular file exceeds the caller's byte bound."""
+
+
 def _open_local_directory(directory: Path) -> int:
     if not directory.is_absolute():
         raise ValueError("artifact directory must be absolute")
@@ -63,7 +67,7 @@ def read_local_regular_file(
             if not stat.S_ISREG(metadata.st_mode):
                 raise ValueError("artifact is not a regular file")
             if metadata.st_size > max_bytes and not tail:
-                raise ValueError("artifact exceeds the per-file limit")
+                raise RegularFileTooLargeError("artifact exceeds the per-file limit")
             if tail and metadata.st_size > max_bytes:
                 os.lseek(file_fd, -max_bytes, os.SEEK_END)
             chunks: list[bytes] = []
@@ -76,7 +80,7 @@ def read_local_regular_file(
                 remaining -= len(chunk)
             data = b"".join(chunks)
             if len(data) > max_bytes:
-                raise ValueError("artifact exceeds the per-file limit")
+                raise RegularFileTooLargeError("artifact exceeds the per-file limit")
             return data
         finally:
             os.close(file_fd)

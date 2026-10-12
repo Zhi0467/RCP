@@ -12,26 +12,25 @@ const digest = (overrides = {}) => ({
   mark: null,
   needs_you: [],
   changed: [],
-  branches: [],
-  ran: [],
+  reports: [],
   changed_node_ids: [],
   count: 0,
   ...overrides,
 });
 
-const ranItem = (seq) => ({
-  kind: "job_ended",
-  item_id: `job_${seq}`,
-  title: `job ${seq}`,
-  status: "exited",
+const reportItem = (seq) => ({
+  kind: "episode_report",
+  item_id: `report_${seq}`,
+  title: `report ${seq}`,
+  report_artifact_id: null,
   deep_link: null,
   created_at: "2026-10-03T00:00:00Z",
 });
 
-test("the digest is empty only when all four groups are empty", () => {
+test("the digest is empty only when all three groups are empty", () => {
   assert.equal(projectDigestIsEmpty(null), true);
   assert.equal(projectDigestIsEmpty(digest({ cursor: 9 })), true);
-  for (const group of ["needs_you", "changed", "branches", "ran"]) {
+  for (const group of ["needs_you", "changed", "reports"]) {
     assert.equal(projectDigestIsEmpty(digest({ [group]: [{}] })), false, group);
   }
 });
@@ -71,12 +70,12 @@ test("Caught up marks the on-screen cursor and keeps items recorded after it", a
   const server = { events: [1, 2], mark: 0, marks: [] };
   const read = async () => {
     const seqs = server.events.filter((seq) => seq > server.mark);
-    return digest({ cursor: Math.max(0, ...server.events), ran: seqs.map(ranItem) });
+    return digest({ cursor: Math.max(0, ...server.events), reports: seqs.map(reportItem) });
   };
   let onScreen = await read();
   assert.deepEqual(
-    onScreen.ran.map((item) => item.item_id),
-    ["job_1", "job_2"],
+    onScreen.reports.map((item) => item.item_id),
+    ["report_1", "report_2"],
   );
   server.events.push(3); // arrives while the reader looks at the card
 
@@ -92,8 +91,8 @@ test("Caught up marks the on-screen cursor and keeps items recorded after it", a
 
   assert.deepEqual(server.marks, [["p", 2]]);
   assert.deepEqual(
-    onScreen.ran.map((item) => item.item_id),
-    ["job_3"],
+    onScreen.reports.map((item) => item.item_id),
+    ["report_3"],
   );
 });
 

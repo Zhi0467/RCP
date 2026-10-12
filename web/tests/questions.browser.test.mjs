@@ -127,6 +127,8 @@ test("chat question answers stay separate from steering and resolved cards enter
       true,
     );
     // A project heartbeat refreshes parked questions even when tasks stop changing.
+    // Earlier answers may still be refreshing; none may read the parked question.
+    await page.waitForLoadState("networkidle");
     questions.push({
       ...questions[0],
       question_id: "parked",

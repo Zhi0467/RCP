@@ -124,6 +124,7 @@ from rcp.runs.auto_research import (
 from rcp.runs.auto_research_admission import (
     reconcile_committed_auto_research_dispatches,
     reconcile_reserved_auto_research_roots,
+    require_auto_research_child_profile_pick,
 )
 from rcp.runs.auto_research_child_reconcile import (
     reconcile_pending_auto_research_child_admissions,
@@ -2488,8 +2489,14 @@ def _auto_research_worker_request(
     instruction: str,
     worker_id: str,
 ) -> RunRequest:
-    """Resolve a spawned child through the current ordinary node-Work profile."""
+    """Resolve a spawned child through the node-Work profile and the orchestrator's pick."""
 
+    reasoning = require_auto_research_child_profile_pick(
+        service,
+        provider=arguments.provider,
+        model=arguments.model,
+        reasoning=arguments.reasoning,
+    )
     return _resolved_graph_request(
         service,
         "node_chat",
@@ -2501,6 +2508,9 @@ def _auto_research_worker_request(
             mode="work",
             trigger="orchestrator",
             patch_kind="work",
+            provider=arguments.provider,
+            model=arguments.model,
+            reasoning=reasoning,
         ),
     )
 

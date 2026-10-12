@@ -164,3 +164,49 @@ def test_experiment_inventory_kind_survives_a_later_human_turn(tmp_path: Path) -
     assert rows[0]["updated_at"] == now
     assert rows[0]["conversation_kind"] == "episode"
     assert rows[0]["orchestrator_episode_id"] is None
+
+
+def test_an_orchestrator_turn_stays_listed_and_finishes_its_chain_conversation(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    _chat_turn(store, "superseded-orchestrator", "first", "running", 0)
+    _chat_turn(store, "running-orchestrator", "second", "running", 1)
+    branch = GraphTargetRef(kind="branch", branch_id="chain-root")
+    # Admission needs a real episode and branch; the projections read only these columns.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET kind = 'auto_research', request_json = ?, "
+            "graph_target_json = ? WHERE operation_id LIKE '%-orchestrator'",
+            ('{"role": "orchestrator"}', branch.model_dump_json()),
+        )
+    # Children and other chats crowd the orchestrator out of the recency window.
+    for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
+        _chat_turn(store, f"newer-{index}", f"chat-newer-{index}", "succeeded", 10 + index)
+
+    listed = {task.operation_id for task in store.agent_tasks("project")}
+    assert "running-orchestrator" in listed
+    assert "superseded-orchestrator" not in listed
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status = 'succeeded', finished_at = ? "
+            "WHERE operation_id = 'running-orchestrator'",
+            (store.now(),),
+        )
+    assert set(store.chat_reads("project", "user", branch)["latest_finished"]) == {"chain-root"}
+
+
+def test_a_paused_rebound_edit_keeps_its_artifact_from_expiry(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    _chat_turn(store, "answer", "chat", "paused", 0)
+    # An answer turn rebound to another stage's artifact carries no artifact context.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = json_set(request_json, "
+            "'$.artifact_edit', json('{\"artifact_id\": \"rebound\"}')) "
+            "WHERE operation_id = 'answer'"
+        )
+    assert "rebound" in store.protected_edit_artifact_ids()

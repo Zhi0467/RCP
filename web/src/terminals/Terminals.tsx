@@ -206,7 +206,7 @@ export function Terminals({ projectId }: { projectId: string }) {
               onEnded={(reason) => {
                 activeSnapshot.current = null;
                 setSelected(null);
-                setEndedReason(reason);
+                setEndedReason(reason || null);
                 setSessions((current) =>
                   current.filter((session) => session.session_id !== active.session_id),
                 );

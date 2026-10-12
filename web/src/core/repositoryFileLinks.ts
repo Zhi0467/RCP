@@ -57,13 +57,22 @@ export function resolveRepositoryFileHref(
 }
 
 export function turnArtifactName(href: string, taskId: string): string | null {
-  const parsed = parseAbsoluteFileHref(href);
-  if (!parsed || parsed.line !== null) return null;
-  const slash = parsed.path.lastIndexOf("/");
+  const location = turnArtifactLocation(href);
   // The turn's own directory, not any path ending in a registered name: a stale
   // citation must not quietly open a different turn's evidence.
-  if (!parsed.path.slice(0, slash).endsWith(`/turns/${taskId}/artifacts`)) return null;
-  return parsed.path.slice(slash + 1) || null;
+  return location?.folder === taskId ? location.name : null;
+}
+
+/** The turn folder and file name of a cited `.../turns/<folder>/artifacts/<name>`. */
+export function turnArtifactLocation(href: string): { folder: string; name: string } | null {
+  const parsed = parseAbsoluteFileHref(href);
+  if (!parsed || parsed.line !== null) return null;
+  const parts = parsed.path.split("/");
+  const name = parts.at(-1);
+  if (parts.length < 5 || parts.at(-2) !== "artifacts" || parts.at(-4) !== "turns" || !name) {
+    return null;
+  }
+  return { folder: parts.at(-3) as string, name };
 }
 
 export function repositoryFilePreviewUrl(projectId: string, target: RepositoryFileTarget): string {

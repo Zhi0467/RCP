@@ -3074,7 +3074,7 @@ def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
     from rcp.agents.auto_research_prompt import _auto_research_commands
     from rcp.storage import AutoResearchLifecycleNoticeRecord
 
-    prompt = _auto_research_commands("/stage/rcp-agent")
+    prompt = _auto_research_commands("/stage/rcp-agent", {})
     assert "inbox --harvest" in prompt
     assert "inbox --clear" in prompt
     assert "wake_suppressed" in prompt
@@ -3269,6 +3269,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             skill_pointers=[],
             write_scope=scope,
             browser_grant=BrowserGrant(),
+            child_profiles={},
         )
         overlap_blocks = [
             json.loads(line) for line in prompt.splitlines() if line.startswith('{"rows":')
@@ -3279,3 +3280,15 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         assert read_path not in master_text
         assert "main-loop" not in master_text
         assert not {"main_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
+
+
+def test_child_profile_choices_list_at_most_the_capped_models_per_provider():
+    from rcp.agents.auto_research_prompt import render_child_profile_choices
+    from rcp.limits import CHILD_PROFILE_PROMPT_MAX_MODELS
+
+    models = {
+        f"model-{index:02d}": ["high"] for index in range(CHILD_PROFILE_PROMPT_MAX_MODELS + 5)
+    }
+    rendered = render_child_profile_choices({"codex": models})
+    listed = [name for name in models if name in rendered]
+    assert listed == list(models)[:CHILD_PROFILE_PROMPT_MAX_MODELS]

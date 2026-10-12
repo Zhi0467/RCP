@@ -97,6 +97,16 @@ if TYPE_CHECKING:
 # remains below its existing 64 KiB storage boundary.
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
 
+
+def _origin_bound_edit(request: Mapping[str, object]) -> bool:
+    """A viewer comment's edit runs on its origin's session, outside chat admission.
+
+    A record from before composer comments carries no flag and was origin-bound.
+    """
+    edit = request.get("artifact_edit")
+    return isinstance(edit, dict) and edit.get("origin_bound", True) is not False
+
+
 _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_admitted",
     "operation_dispatch_attempt",
@@ -107,6 +117,9 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "chat_session_resolution",
     # The latest discovery outcome is projected as the turn's omission notice.
     "artifact_discovery",
+    "artifact_edit_published",
+    "artifact_edit_publish_failed",
+    "artifact_edit_unchanged",
     "compute_command_started",
     "compute_command_result",
     "remote_provider_started",
@@ -298,7 +311,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or task.write_scope_fingerprint != origin.write_scope_fingerprint
                 or task.dispatch_authority is None
                 or task.dispatch_authority.task_contract != origin.capability
-                or task.request.get("artifact_edit") is not None
                 or task.request.get("mode")
                 != ("discuss" if origin.capability == "discuss" else "work")
                 or (
@@ -329,7 +341,38 @@ class AgentTaskStoreMixin(StoreMixinBase):
             if unavailable is not None:
                 raise ValueError("question_origin_session_unavailable")
             self._require_project_accepts_new_work(connection, origin.project_id)
-            request = RunRequest.model_validate(task.request).model_copy(
+            edit = task.request.get("artifact_edit")
+            followup_edit = None
+            if isinstance(edit, dict):
+                row = connection.execute(
+                    "SELECT json_extract(metadata, '$.expires_at'), "
+                    "json_extract(metadata, '$.kept_at'), "
+                    "json_extract(metadata, '$.current_version'), "
+                    "json_extract(metadata, '$.origin_operation_id') "
+                    "FROM artifacts WHERE artifact_id = ?",
+                    (edit.get("artifact_id"),),
+                ).fetchone()
+                # An expired artifact is no longer tracked, so a change made after the
+                # answer could never publish; refuse rather than run without it.
+                if row is None or (row[1] is None and row[0] is not None and row[0] <= self.now()):
+                    raise ValueError("question_origin_artifact_unavailable")
+                artifact_stage = connection.execute(
+                    "SELECT stage_host, stage_root FROM graph_runs WHERE operation_id = ?",
+                    (row[3],),
+                ).fetchone()
+                # A composer comment on another stage's artifact wrote it here for one
+                # turn; the answer rebinds it so its changes still publish.
+                if not _origin_bound_edit(task.request) and (
+                    artifact_stage is None
+                    or (artifact_stage[0] or "", artifact_stage[1])
+                    != (origin.stage_host or "", origin.stage_root)
+                ):
+                    followup_edit = {**edit, "operation_id": operation_id, "base_version": row[2]}
+            # Otherwise the answer is an ordinary turn: any artifact it changes in
+            # place becomes that artifact's next version without a comment binding.
+            request = RunRequest.model_validate(
+                {**task.request, "artifact_context": None, "artifact_edit": followup_edit}
+            ).model_copy(
                 update={
                     "browser_requested": self._chat_browser_requested(
                         connection, origin.project_id, origin.owner_id
@@ -613,6 +656,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ).fetchall()
         return {row["episode_id"] for row in rows}
 
+    def child_human_turn_refusal(self, project_id: str, chat_id: str) -> dict[str, str] | None:
+        """Why a read-only Auto-research child chat refuses an ordinary human turn."""
+        with self.connection() as connection:
+            return self._child_human_turn_refusal(connection, project_id, chat_id)
+
     def _child_human_turn_refusal(
         self, connection: sqlite3.Connection, project_id: str, chat_id: str
     ) -> dict[str, str] | None:
@@ -669,9 +717,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_child_turn_admission(
         self, connection: sqlite3.Connection, record: AgentTaskRecord
     ) -> None:
-        if record.kind not in {"node_chat", "project_chat"} or isinstance(
-            record.request.get("artifact_edit"), dict
-        ):
+        if record.kind not in {"node_chat", "project_chat"} or _origin_bound_edit(record.request):
             return
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str):
@@ -747,8 +793,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         the parent's Stop or ending fence.
         """
 
-        if previous.kind not in {"node_chat", "project_chat"} or isinstance(
-            previous.request.get("artifact_edit"), dict
+        if previous.kind not in {"node_chat", "project_chat"} or _origin_bound_edit(
+            previous.request
         ):
             return None
         chat_id = previous.request.get("chat_id")
@@ -807,7 +853,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         for row in rows:
             request = json.loads(row["request_json"])
             chat_id = request.get("chat_id")
-            if isinstance(request.get("artifact_edit"), dict) or not isinstance(chat_id, str):
+            if _origin_bound_edit(request) or not isinstance(chat_id, str):
                 continue
             if self._child_chat_owner(connection, episode.project_id, chat_id) is not None:
                 raise ValueError(f"auto_research_child_turn_active:{chat_id}")
@@ -842,7 +888,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
-        elif not isinstance(record.request.get("artifact_edit"), dict):
+        elif not _origin_bound_edit(record.request):
             self.require_episode_binding_admission_open(
                 connection,
                 record.project_id,
@@ -1250,8 +1296,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
               AND native_session_id IS NOT NULL AND native_session_id != ''
-              -- An artifact edit runs on the artifact's own origin session.
-              AND json_extract(request_json, '$.artifact_edit') IS NULL
+              -- Origin-bound viewer edits do not advance the current chat session.
+              AND (json_extract(request_json, '$.artifact_edit') IS NULL
+                   OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0)
             ORDER BY created_at DESC, run.rowid DESC LIMIT 1
             """,
             (project_id, kind, chat_id),
@@ -2247,7 +2294,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         A chat turn that is running or waiting on a person stays listed after
         newer tasks push it past ``limit``, so the Chats panel can always show
-        it. Only a chat's latest turn counts: a failure followed by a later turn
+        it. An Auto-research orchestrator turn is a turn of its chain's
+        conversation, which its branch names, so its children cannot push it out. Only a chat's latest turn counts: a failure followed by a later turn
         in the same chat is history, not an open item. A latest turn that
         finished recently stays too, so a client that saw it open also sees it
         end.
@@ -2266,6 +2314,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             " AND (:target IS NULL OR {run}.graph_target_json = :target)"
         )
         own_scope, later_scope = scope.format(run="graph_runs"), scope.format(run="later")
+        chat_turn = (
+            "(kind IN ('node_chat', 'project_chat') OR (kind = 'auto_research' "
+            "AND json_extract(request_json, '$.role') = 'orchestrator'))"
+        )
         statuses = ",".join(f":status{index}" for index in range(len(open_statuses)))
         with self.connection() as connection:
             rows = connection.execute(
@@ -2277,28 +2329,43 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     LIMIT :limit
                 ),
                 candidates AS (
-                    SELECT operation_id, created_at, 1 AS still_open,
+                    SELECT operation_id, created_at, 1 AS still_open, kind, graph_target_json,
                            json_extract(request_json, '$.chat_id') AS chat_id
                     FROM graph_runs
                     WHERE {own_scope} AND status IN ({statuses})
-                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                      AND {chat_turn} AND history_only = 0
                     UNION ALL
-                    SELECT operation_id, created_at, 0 AS still_open,
+                    SELECT operation_id, created_at, 0 AS still_open, kind, graph_target_json,
                            json_extract(request_json, '$.chat_id') AS chat_id
                     FROM graph_runs
                     WHERE {own_scope} AND finished_at >= :finished_since
                       AND status NOT IN ({statuses})
-                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                      AND {chat_turn} AND history_only = 0
                 ),
                 open_chats AS (
                     SELECT operation_id FROM candidates
-                    WHERE chat_id IS NOT NULL AND NOT EXISTS (
-                        SELECT 1 FROM graph_runs AS later
-                        WHERE {later_scope}
-                          AND json_extract(later.request_json, '$.chat_id') = candidates.chat_id
-                          AND later.kind IN ('node_chat', 'project_chat')
-                          AND (later.created_at, later.operation_id)
-                              > (candidates.created_at, candidates.operation_id)
+                    WHERE (
+                        candidates.kind = 'auto_research' OR (
+                            chat_id IS NOT NULL AND NOT EXISTS (
+                                SELECT 1 FROM graph_runs AS later
+                                WHERE {later_scope}
+                                  AND json_extract(later.request_json, '$.chat_id')
+                                      = candidates.chat_id
+                                  AND later.kind IN ('node_chat', 'project_chat')
+                                  AND (later.created_at, later.operation_id)
+                                      > (candidates.created_at, candidates.operation_id)
+                            )
+                        )
+                    ) AND (
+                        candidates.kind != 'auto_research' OR NOT EXISTS (
+                            SELECT 1 FROM graph_runs AS later
+                            WHERE {later_scope}
+                              AND later.graph_target_json = candidates.graph_target_json
+                              AND later.kind = 'auto_research'
+                              AND json_extract(later.request_json, '$.role') = 'orchestrator'
+                              AND (later.created_at, later.operation_id)
+                                  > (candidates.created_at, candidates.operation_id)
+                        )
                     )
                     ORDER BY still_open DESC, created_at DESC, operation_id DESC
                     LIMIT :open_limit
@@ -3181,6 +3248,33 @@ class AgentTaskStoreMixin(StoreMixinBase):
             data["payload"] = json.loads(data.pop("payload_json"))
             receipt = AgentTaskReceiptRecord.model_validate(data)
             receipts[receipt.operation_id] = receipt
+        return receipts
+
+    def agent_task_artifact_edit_outcomes(
+        self, operation_ids: Sequence[str]
+    ) -> dict[str, list[AgentTaskReceiptRecord]]:
+        """Read each operation's artifact outcome receipts, oldest first, in one query."""
+        if not operation_ids:
+            return {}
+        placeholders = ",".join("?" for _ in operation_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM graph_run_receipts
+                WHERE operation_id IN ({placeholders}) AND category IN (
+                    'artifact_edit_published', 'artifact_edit_publish_failed',
+                    'artifact_edit_unchanged'
+                )
+                ORDER BY receipt_id
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                tuple(operation_ids),
+            ).fetchall()
+        receipts: dict[str, list[AgentTaskReceiptRecord]] = {}
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipt = AgentTaskReceiptRecord.model_validate(data)
+            receipts.setdefault(receipt.operation_id, []).append(receipt)
         return receipts
 
     def agent_task_degradations(self, operation_ids: Sequence[str]) -> dict[str, str]:

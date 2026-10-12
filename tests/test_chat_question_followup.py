@@ -116,6 +116,72 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
     assert binding["continuation"] == "message_wake"
 
 
+@pytest.mark.parametrize("case", ["same_stage", "expired", "other_stage"])
+def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, case):
+    # A change the answer turn makes still publishes: every turn end versions
+    # its session's changed artifacts, so the answer needs no edit binding.
+    # An expired artifact is untracked, so its answer is refused instead; one
+    # from another stage is not discovered, so the answer rebinds it to itself.
+    expired = case == "expired"
+    from datetime import UTC, datetime, timedelta
+
+    from rcp.service import ArtifactContextRequest, ArtifactEditAdmission
+    from rcp.storage import Artifact
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    now = datetime.fromisoformat(store.now())
+    store.create_artifact(
+        Artifact(
+            artifact_id="a" * 24,
+            project_id="project",
+            supplier="turn",
+            supplier_id="origin",
+            source_name="page.html",
+            media_type="text/html",
+            created_at=store.now(),
+            expires_at=(now + timedelta(days=-1 if expired else 1)).astimezone(UTC).isoformat(),
+            origin_operation_id="elsewhere" if case == "other_stage" else "origin",
+            chat_id="chat",
+        ),
+        data=b"<p>v1</p>",
+    )
+    context = ArtifactContextRequest(operation_id="origin", artifact_id="a" * 24)
+    edit = ArtifactEditAdmission(
+        artifact_id="a" * 24,
+        base_version="v1",
+        source_name="page.html",
+        media_type="text/html",
+        operation_id="origin",
+        origin_operation_id="origin",
+        launch_kind="discuss",
+        origin_bound=False,
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = json_set(request_json, "
+            "'$.artifact_context', json(?), '$.artifact_edit', json(?)) "
+            "WHERE operation_id = 'origin'",
+            (context.model_dump_json(), edit.model_dump_json()),
+        )
+    if expired:
+        with pytest.raises(ValueError, match="question_origin_artifact_unavailable"):
+            store.admit_chat_question_followup(question.question_id)
+        return
+    followup = store.admit_chat_question_followup(question.question_id)
+    carried = RunRequest.model_validate(followup.request)
+    assert carried.artifact_context is None
+    if case == "same_stage":
+        assert carried.artifact_edit is None
+        return
+    current = store.artifact("a" * 24).current_version
+    assert carried.artifact_edit is not None
+    assert (carried.artifact_edit.operation_id, carried.artifact_edit.base_version) == (
+        followup.operation_id,
+        current,
+    )
+
+
 @pytest.mark.parametrize("browser_requested", [True, False])
 def test_answer_turn_takes_the_chat_browser_choice_at_admission(tmp_path, browser_requested):
     store = AppStore(tmp_path / "store.sqlite3")

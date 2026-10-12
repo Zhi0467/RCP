@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shlex
@@ -2535,6 +2536,57 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(
     )
     with pytest.raises(StateUnavailable, match="EIO"):
         stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
+
+
+def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage, monkeypatch) -> None:
+    def sha(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    stage = local_remote_stage
+    workspace = Path(str(stage.root)) / "workspace"
+    workspace.mkdir()
+    # Absent: a restore writes it, creating the turn folder.
+    assert stage.sync_artifact("earlier", "page.html", "", b"v1")
+    tracked = workspace / "turns" / "earlier" / "artifacts" / "page.html"
+    assert tracked.read_bytes() == b"v1"
+    # A file that no longer holds the expected digest is the agent's; it is kept.
+    tracked.write_bytes(b"agent")
+    assert not stage.sync_artifact("earlier", "page.html", sha(b"v1"), b"v2")
+    assert stage.sync_artifact("earlier", "page.html", sha(b"agent"), b"v2")
+    assert tracked.read_bytes() == b"v2"
+    (tracked.parent / "linked.html").symlink_to(tracked)
+    assert stage.artifact_digests(
+        [("earlier", "page.html"), ("earlier", "linked.html"), ("gone", "page.html")]
+    ) == {("earlier", "page.html"): (sha(b"v2"), 2), ("earlier", "linked.html"): ("irregular", -1)}
+    # An irregular file is replaced only while it is still the one RCP saw.
+    assert not stage.sync_artifact("earlier", "linked.html", "", b"never")
+    assert stage.sync_artifact("earlier", "linked.html", "irregular", b"restored")
+    assert not (tracked.parent / "linked.html").is_symlink()
+    assert tracked.read_bytes() == b"v2"
+    # An oversized file reports its size, unhashed.
+    monkeypatch.setattr("rcp.transport.run_stage.CHAT_ARTIFACT_MAX_FILE_BYTES", 1)
+    assert stage.artifact_digests([("earlier", "page.html")]) == {
+        ("earlier", "page.html"): ("oversized:2", 2)
+    }
+
+
+def test_artifact_digest_stops_one_byte_past_a_file_that_grew(tmp_path, monkeypatch) -> None:
+    from rcp.transport import remote_stage_root
+
+    folder = tmp_path / "turns" / "t" / "artifacts"
+    folder.mkdir(parents=True)
+    (folder / "page.html").write_bytes(b"x" * 64)
+    real = os.fstat
+
+    def shrunk(fd):
+        # fstat saw the file before it grew past the limit.
+        info = real(fd)
+        return os.stat_result((info.st_mode, *info[1:6], 3, *info[7:]))
+
+    monkeypatch.setattr(remote_stage_root.os, "fstat", shrunk)
+    assert remote_stage_root.artifact_digests(str(tmp_path), [["t", "page.html"]], 4) == [
+        ("t", "page.html", "oversized:5", 5)
+    ]
 
 
 def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage) -> None:

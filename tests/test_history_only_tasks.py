@@ -347,6 +347,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_download": True,
         "can_keep": False,
         "can_discuss": False,
+        "turn_folder": chat_operation_id,
     }
     reason = artifacts["temporary.html"].pop("unavailable_reason")
     assert (reason is None) == retained_temporary
@@ -358,6 +359,8 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_download": retained_temporary,
         "can_keep": False,
         "can_discuss": False,
+        # Only a still-stored artifact names its turn folder.
+        "turn_folder": chat_operation_id if retained_temporary else None,
     }
     base = f"/api/projects/{project_id}/tasks/{chat_operation_id}/artifacts"
     kept_base = f"{base}/{kept.artifact_id}"
@@ -397,8 +400,10 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
             },
         },
     )
-    assert context_response.status_code == 409
-    assert context_response.json()["detail"]
+    # Composer admission uses the current chat, so origin history-only status
+    # does not mask ordinary comment validation.
+    assert context_response.status_code == 422
+    assert "comment needs text" in context_response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count
 
 

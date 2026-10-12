@@ -461,9 +461,11 @@ class _RecordingExperimentCoordinator:
     def __init__(self, store: AppStore) -> None:
         self.store = store
         self.goal: str | None = None
+        self.pick: tuple[str | None, ...] = ()
 
     def kick_off(self, **kwargs) -> AutoResearchExperimentAction:
         self.goal = kwargs["goal"]
+        self.pick = (kwargs["provider"], kwargs["model"], kwargs["reasoning"])
         now = self.store.now()
         child_id = kwargs["child_episode_id"]
         parent_id = kwargs["auto_research_episode_id"]
@@ -520,6 +522,9 @@ def test_restart_reconciles_experiment_goal_from_durable_snapshot(tmp_path) -> N
             "node_id": "exp/runtime",
             "goal_file": "goal.md",
             "invocation_limit": 4,
+            "provider": "codex",
+            "model": "reviewer",
+            "reasoning": "xhigh",
         },
         file_kind="goal",
         filename="goal.md",
@@ -540,6 +545,7 @@ def test_restart_reconciles_experiment_goal_from_durable_snapshot(tmp_path) -> N
     command = store.agent_command("episode-command")
     assert result.reflected == 1 and result.cancelled == 0
     assert coordinator.goal == goal
+    assert coordinator.pick == ("codex", "reviewer", "xhigh")
     assert admission is not None and admission.state == "reflected"
     assert command is not None and command.status == "ok"
 

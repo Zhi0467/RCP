@@ -42,6 +42,10 @@ export function TerminalPane({
       cursorBlink: true,
       scrollback: 2000,
       allowProposedApi: false,
+      // A full-screen program such as Codex turns on mouse reporting, which
+      // sends drags to it instead of selecting. Shift-drag forces a selection
+      // elsewhere; on a Mac xterm offers Option-drag only behind this option.
+      macOptionClickForcesSelection: true,
       // Seeded here because a theme assigned in the same tick as open() is
       // overwritten by the renderer's own initialization.
       theme: readTheme(),
@@ -85,7 +89,7 @@ export function TerminalPane({
       if (event.data instanceof ArrayBuffer) {
         terminal.write(new Uint8Array(event.data));
       } else {
-        const message = JSON.parse(event.data) as { type: string; reason?: string };
+        const message = JSON.parse(event.data) as { type: string; reason?: string | null };
         if (message.type === "detached") {
           // The shell is still running; this viewer fell behind its own
           // output. Keep the session in the rail and offer Reconnect.
@@ -95,7 +99,7 @@ export function TerminalPane({
         }
         if (message.type === "ended") {
           reported = true;
-          const reason = message.reason || "Session ended";
+          const reason = message.reason ?? "";
           setStatus(reason);
           setSessionEnded(true);
           endedCallback.current(reason);

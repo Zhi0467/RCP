@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from rcp.limits import (
+    CHAT_ARTIFACT_MAX_FILE_BYTES,
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
@@ -940,7 +941,10 @@ finally:
             raise _ssh_failure(result, "could not prepare remote artifact directory")
         return target
 
-    def prepare_artifact_edit_directory(self, scope_id: str, *, staged: bool) -> PurePosixPath:
+    def artifact_digests(
+        self, entries: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], tuple[str, int]]:
+        """Digest named turn artifacts across turn folders in one SSH call."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         result = self._ssh(
@@ -948,18 +952,24 @@ finally:
                 "python3",
                 "-c",
                 _remote_script("remote_stage_root.py"),
-                "prepare-edit-artifacts",
+                "artifact-digests",
                 str(self.workspace),
-                scope_id,
-                "1" if staged else "0",
+                json.dumps([list(entry) for entry in entries]),
+                str(CHAT_ARTIFACT_MAX_FILE_BYTES),
             ]
         )
         if result.returncode:
-            raise _ssh_failure(result, "could not prepare the retained artifact edit directory")
-        return self.workspace / "turns" / scope_id / "artifacts"
+            raise _ssh_failure(result, "could not digest remote turn artifacts")
+        try:
+            return {
+                (str(scope), str(name)): (str(digest), int(size))
+                for scope, name, digest, size in json.loads(result.stdout)
+            }
+        except (TypeError, ValueError) as exc:
+            raise StateUnavailable("remote artifact digests were invalid") from exc
 
-    def stage_artifact_bytes(self, scope_id: str, name: str, data: bytes) -> None:
-        """Stage editable bytes once; a recovered edit keeps its retained file."""
+    def sync_artifact(self, scope_id: str, name: str, expected_sha256: str, data: bytes) -> bool:
+        """Replace a turn artifact only while it holds `expected_sha256` (empty: absent)."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         result = self._ssh_bytes(
@@ -967,15 +977,20 @@ finally:
                 "python3",
                 "-c",
                 _remote_script("remote_stage_root.py"),
-                "stage-artifact",
+                "sync-artifact",
                 str(self.workspace),
                 scope_id,
                 name,
+                expected_sha256,
+                str(CHAT_ARTIFACT_MAX_FILE_BYTES),
             ],
             input_data=data,
         )
+        if result.returncode == 43:
+            return False
         if result.returncode:
-            raise _ssh_failure(result, "could not stage remote artifact edit")
+            raise _ssh_failure(result, "could not sync remote turn artifact")
+        return True
 
     def list_artifact_files(self, scope_id: str) -> list[tuple[str, int]]:
         """List direct, non-symlink regular artifact candidates and their sizes."""
@@ -1083,13 +1098,14 @@ try:
         fd=os.open(part,flags,dir_fd=fd); fds.append(fd)
     file_fd=os.open(name,os.O_RDONLY|os.O_NONBLOCK|getattr(os,'O_NOFOLLOW',0),dir_fd=fd); fds.append(file_fd)
     info=os.fstat(file_fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(45)
+    if not stat.S_ISREG(info.st_mode): raise SystemExit(45)
+    if info.st_size>limit: raise SystemExit(47)
     remaining=limit+1
     while remaining:
         chunk=os.read(file_fd,min(1024*1024,remaining))
         if not chunk: break
         sys.stdout.buffer.write(chunk); remaining-=len(chunk)
-    if remaining==0: raise SystemExit(45)
+    if remaining==0: raise SystemExit(47)
 except FileNotFoundError as exc:
     print(str(exc),file=sys.stderr); raise SystemExit(44)
 except NotADirectoryError as exc:
@@ -1105,6 +1121,10 @@ finally:
         )
         if result.returncode == 44:
             raise FileNotFoundError("remote artifact is unavailable")
+        if result.returncode == 47:
+            from rcp.regular_file_reader import RegularFileTooLargeError
+
+            raise RegularFileTooLargeError("remote artifact exceeds the per-file limit")
         if result.returncode == 45:
             raise ValueError("remote artifact is not a bounded regular file")
         if result.returncode:

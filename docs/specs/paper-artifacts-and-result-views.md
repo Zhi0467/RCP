@@ -52,8 +52,9 @@ exact RCP-created artifact directory, of any type. It ignores provider
 directives, provider-owned paths, URLs in prose, nested files, and symlinks.
 Discovery reads at most eight files, each at most 16 MiB, and attaches at most
 32 MiB per turn; a size is checked before a read is spent. Files are considered
-in filename order. An admitted edit reads its exact staged file separately;
-discovery attaches only the other outputs as new artifacts.
+in filename order. Discovery reads only the turn's own directory; an earlier
+turn's artifact changed in place publishes as its next version instead
+([Editing and versions](#editing-and-versions)).
 Empty files and files past a bound get no card, but the turn reports how many
 were left out and why, and says so when discovery itself failed. The report
 comes from the durable discovery receipt; it carries counts, never paths.
@@ -341,9 +342,12 @@ only while the loaded viewer state still does. A selection cancelled inside the 
 start of a new one) and leaving comment mode close that window. A new version of
 the artifact closes it as well and removes the comments already staged on the
 old version, with a notice, since their regions describe bytes the reader no
-longer sees. One message carries comments on one artifact. Comments still become
-ordinary Discuss turns of the artifact's origin chat, and the edit publishes the
-next version of the same artifact.
+longer sees. One message carries comments on one artifact. Sent from the chat
+composer, comments are that chat's next turn like any other: the composer's
+Discuss or Work mode, provider, model, effort, and machine apply. A read-only
+Auto-research child chat composes only comments, and those stay Discuss. In
+either mode, a change to the artifact's tracked file publishes the next version
+of the same artifact.
 
 The Runs card's list comes from the run artifact endpoint described in
 [the API spec](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
@@ -414,12 +418,21 @@ question are bounded and treated as untrusted input.
 
 ### Editing and versions
 
-Comment admission records the current artifact version and the origin session's
-recorded master. A chat master, including a child Work boundary, receives an
-ordinary Discuss turn. An Experiment or orchestrator master receives a separate
-revoking artifact-edit task with no master, graph contract, watcher commands,
-or repository write authority. Admission decides this once; prompt construction
-uses the frozen decision. Comments never become Work turns.
+Every comment admission records the artifact and its current version. The two
+routes differ only in whose turn it is.
+
+A comment from a chat composer is an ordinary turn of that chat, admitted only
+when the artifact belongs to that chat. Mode, execution profile, and session
+follow the composer exactly as for any turn, so a Work comment also passes graph
+edit admission and may carry compute and a worktree.
+
+A comment from the artifact viewer resumes the origin session's recorded master.
+A chat master, including a child Work boundary, receives an ordinary Discuss
+turn with the origin turn's execution profile. An Experiment or orchestrator
+master receives a separate revoking artifact-edit task with no master, graph
+contract, watcher commands, or repository write authority; a Work request for
+such an artifact is refused, never downgraded. Admission decides this once;
+prompt construction uses the frozen decision.
 
 Admission atomically reserves the native session and stage against every launch
 owner. A busy session returns 409 with its unavailable reason; comments are
@@ -436,20 +449,66 @@ Runs orchestrator thread: the human comment is recorded as already-delivered
 mail, and the edit task's labelled answer is its reply. No new chat is created,
 and the open view has no routing authority.
 
-RCP stages the admitted base bytes at a writable file in turn scratch, preserving
-its filename. Recovery and Retry reuse that exact staged file and operation key.
-Unchanged bytes do not publish or fork. Once publication is recorded, retries
-retain that result; publication failures retain the answer and an error receipt.
-RCP reads it after settlement and publishes under the artifact lock only if the
-base is still current. If Undo moved the pointer, the edited bytes become an
-ordinary new artifact on that turn. Other files in the artifact directory are
-ordinary outputs. Artifact storage remains outside the provider's writable
-scratch. A failed turn retains its stage and does not publish a version.
+Each turn artifact has one tracked file: the file discovery first recorded,
+`turns/<turn>/artifacts/<name>` in the workspace of its origin task's stage.
+RCP records the digest it last knows is there, set when discovery creates the
+artifact and whenever RCP publishes from or rewrites that file; an older record
+without one uses its first version's digest. A turn's session artifacts are the
+live turn artifacts whose origin task ran on the same stage host and root. The
+artifact contract says earlier turns' artifacts stay in their turn folders, that
+changing one in place under the same name makes its next version, and that in
+place versus a new file is the agent's judgement: in place when the request
+corrects or enriches it.
+
+Before a turn starts, RCP rewrites each session artifact whose file still holds
+the recorded digest to the artifact's current version, so after Undo or another
+edit the agent changes what the human sees. A file the agent changed is left
+alone; a missing one is skipped. A comment, from either route, names its
+artifact's tracked file in the prompt instead of staging a copy. A new comment
+rewrites that file to the version the comment was drawn on, even when an earlier
+failed turn left it changed, and restores it if it is gone. Only a retry of the
+same comment keeps the agent's changes; a missing file then gets the current
+version, so a retry never needs its pruned base. A turn never tracks a file on
+another stage. When a comment runs on a stage other than its artifact's, as an
+edit in a new session or a standalone recovery moved to another machine does,
+that stage gets the commented artifact at its turn-relative path for that turn,
+which publishes from it at turn end. An answer to a question that turn asked
+rebinds the file to the answer turn at the artifact's current version; nothing
+else later tracks that file. Read-only crops
+of the commented version are still staged beside the turn's inputs.
+
+When the turn settles, RCP digests every session artifact file, in one SSH call
+for a remote stage. A file that differs from its recorded digest publishes as the
+next version, based on the version that digest belongs to, under the artifact
+lock. If the current version moved since (Undo, another edit), or no retained
+version has that digest any more, the bytes become a separate artifact of this
+turn instead, written to its own tracked file in this turn's folder so later
+turns track it. The fork's name adds the original's id prefix to its stem, so it
+never collides with a file the turn made itself. A changed file type, an oversized file, or an unreadable file
+records a failure with its reason code; a missing file records nothing. Digests
+read no more than one byte past the size limit. A commented artifact that ends
+unchanged records `unchanged`, and one whose file is gone records a `missing`
+failure. Every recorded outcome resets the digest to what the file holds,
+including a marker for an oversized or irregular file, so the next turn start
+rewrites a rejected or forked file to the current version. A replayed settlement
+keeps its recorded outcomes, and one that stopped after publishing finds the
+version its operation published instead of calling the file unchanged. A later
+turn's card for a version it published accepts comments, and a reply citing the
+tracked file opens that card. A publication that cannot run, for example because
+the stage is unreachable, never fails the answer; the change stays on the file
+and a later turn end publishes it. Each outcome is a receipt on the turn, and the
+task projects `result.artifact_edit_outcomes` as a list of published, unchanged,
+failed with a reason code, or forked, one per artifact; older single receipts
+project into the same list. The reply states each outcome except published,
+which shows itself as the new version. Other files in the turn's own artifact
+directory are ordinary outputs. Artifact storage remains outside the provider's
+writable scratch. A failed turn retains its stage and does not publish a
+version; the next turn end does.
 
 Undo moves back one retained version under the same lock as publication, Keep,
 expiry, and pruning. The original remains; there is no redo. Undo is permitted
-while an edit is admitted. Version bases awaiting staging are retained so
-concurrent publication cannot remove the admitted bytes.
+while an edit is admitted. An active edit's base version is retained so
+concurrent publication cannot remove the commented bytes.
 
 A history-only origin or missing native session or stage returns an unavailable
 reason. Only after exact-session admission identifies a resumability failure

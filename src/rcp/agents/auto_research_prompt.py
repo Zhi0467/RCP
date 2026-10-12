@@ -24,10 +24,11 @@ from rcp.limits import (
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
     AUTO_RESEARCH_APPLY_MAX_PER_TURN,
+    CHILD_PROFILE_PROMPT_MAX_MODELS,
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v4"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v5"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -97,7 +98,10 @@ def _command_invocations(
         "validate": ("validate patch.json",),
         "apply": ("apply --key <key> patch.json",),
         "status": ("status [--worker-id <worker-id> | --episode-id <episode-id>]",),
-        "spawn": ("spawn --key <key> --seat-node <node-id> --instruction-file <filename>",),
+        "spawn": (
+            "spawn --key <key> --seat-node <node-id> --instruction-file <filename> "
+            "[--provider <provider>] [--model <model>] [--effort <effort>]",
+        ),
         "pause": ("pause --key <key> <worker-id>",),
         "resume": ("resume --key <key> <worker-id>",),
         "stop": ("stop --key <key> <worker-id>",),
@@ -109,7 +113,8 @@ def _command_invocations(
         "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
         "episode": (
             "episode --key <key> --kick-off-experiment --node <node-id> "
-            "[--goal-file <filename>] [--invocation-limit <positive-int>]",
+            "[--goal-file <filename>] [--invocation-limit <positive-int>] "
+            "[--provider <provider>] [--model <model>] [--effort <effort>]",
             "episode --key <key> --stop <episode-id>",
             "episode --key <key> --resume <episode-id>",
         ),
@@ -182,7 +187,30 @@ def _orchestration_progress() -> str:
 """
 
 
-def _auto_research_commands(command_client: str) -> str:
+def render_child_profile_choices(choices: dict[str, dict[str, list[str]]]) -> str:
+    """One compact line per ready provider: its first model ids, each with its efforts."""
+
+    if not choices:
+        return "  - none are known to be ready; omit the profile flags"
+
+    def listed(models: dict[str, list[str]]) -> str:
+        if not models:
+            return "catalog unknown; name no model or effort"
+        shown = list(models.items())[:CHILD_PROFILE_PROMPT_MAX_MODELS]
+        text = ", ".join(
+            f"{model} ({'|'.join(efforts)})" if efforts else model for model, efforts in shown
+        )
+        hidden = len(models) - len(shown)
+        if hidden:
+            text += f", and {hidden} more (see the provider's documentation or CLI)"
+        return text
+
+    return "\n".join(f"  - {provider}: {listed(models)}" for provider, models in choices.items())
+
+
+def _auto_research_commands(
+    command_client: str, child_profiles: dict[str, dict[str, list[str]]]
+) -> str:
     """Explain operational semantics once when the native session starts."""
 
     return f"""{_command_invocations(command_client)}
@@ -203,11 +231,18 @@ def _auto_research_commands(command_client: str) -> str:
   accepts at most {AUTO_RESEARCH_APPLY_MAX_PER_TURN} distinct keyed Apply admissions, including
   effects that return `unavailable`; a same-key retry uses no additional place. The next distinct
   key is refused before its file is read, so finish the turn before applying again.
-- `spawn` starts ordinary node Work, not another Auto-research actor. Experiment kickoff resolves
-  the current human-configured node Work profile. This client exposes no provider, model, effort,
-  execution-host, profile, or nested Auto-research option. Omitting `--invocation-limit` uses the
-  Experiment's current setting. Every actual child Experiment invocation shares the allowance
-  shown by RCP; a refused limit must be lowered to that displayed total.
+- `spawn` starts ordinary node Work, not another Auto-research actor. A worker or child Experiment
+  runs the human-configured node Work profile unless you name `--provider`, `--model`, or
+  `--effort`; an omitted flag keeps that profile's value. Naming only a different provider takes
+  that provider's default model and effort; naming only the profile's own provider keeps the
+  profile unchanged. Pick a different provider when it helps, such as an independent
+  reviewer. The child stays on the profile's machine, where these `child_profiles` are ready
+  (provider: model (efforts)); RCP refuses any other pick:
+{render_child_profile_choices(child_profiles)}
+  There is no execution-host, profile, or nested Auto-research option. Omitting
+  `--invocation-limit` uses the Experiment's current setting. Every actual child Experiment
+  invocation shares the allowance shown by RCP; a refused limit must be lowered to that displayed
+  total.
 - Resume always means the exact saved worker or child-episode allocation and spends no new
   allocation. There is no Retry command. If Resume returns `resume_unavailable`, use the named
   fresh `spawn` command for a worker. For an unusable child Experiment binding, first Stop that
@@ -368,6 +403,7 @@ def auto_research_prompt_values(
     skill_pointers: list[dict[str, object]] | None = None,
     reply_key: str | None = None,
     allowed_verbs: tuple[CommandVerb, ...] | None = None,
+    child_profiles: dict[str, dict[str, list[str]]] | None = None,
 ) -> dict[str, object]:
     """The values an actor's master states that can differ on a later launch.
 
@@ -411,6 +447,8 @@ def auto_research_prompt_values(
             }
     if reply_key is not None:
         values["reply_key"] = reply_key
+    if child_profiles is not None:
+        values["child_profiles"] = child_profiles
     return values
 
 
@@ -429,8 +467,10 @@ def auto_research_orchestrator_task_contract(
     instruction_path: str | None = None,
     messages_path: str | None = None,
     lifecycle_path: str | None = None,
+    child_profiles: dict[str, dict[str, list[str]]] | None = None,
 ) -> str:
     """Build the immutable contract for the sole elevated Auto-research profile."""
+    child_profiles = child_profiles or {}
 
     return f"""# RCP auto-research orchestrator contract
 
@@ -469,7 +509,7 @@ Worker coordination:
 - There is no blocking primitive. Continue useful independent work, send a message, or register a
   graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.
 
-{_packages(skill_pointers)}{_auto_research_commands(command_client)}
+{_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles)}
 {_orchestrator_ask_contract()}
 {_orchestrator_stale_guidance()}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}

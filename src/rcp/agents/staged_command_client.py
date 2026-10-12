@@ -58,6 +58,24 @@ class ClientInputError(Exception):
     pass
 
 
+_PROFILE_PICK_FLAGS = (("provider", "--provider"), ("model", "--model"), ("reasoning", "--effort"))
+
+
+def _add_profile_pick_arguments(parser):
+    for dest, flag in _PROFILE_PICK_FLAGS:
+        parser.add_argument(flag, dest=dest)
+
+
+def _profile_pick(namespace):
+    """The child provider profile fields the orchestrator named, and no others."""
+
+    return {
+        dest: _nonblank(getattr(namespace, dest), flag)
+        for dest, flag in _PROFILE_PICK_FLAGS
+        if getattr(namespace, dest) is not None
+    }
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         raise ClientInputError(message)
@@ -188,6 +206,7 @@ def _parser():
     spawn.add_argument("--key", required=True)
     spawn.add_argument("--seat-node", required=True)
     spawn.add_argument("--instruction-file", required=True)
+    _add_profile_pick_arguments(spawn)
 
     for verb in ("pause", "resume", "stop"):
         control = subparsers.add_parser(verb)
@@ -213,6 +232,7 @@ def _parser():
     episode.add_argument("--node")
     episode.add_argument("--goal-file")
     episode.add_argument("--invocation-limit", type=int)
+    _add_profile_pick_arguments(episode)
 
     inbox = subparsers.add_parser("inbox")
     inbox.add_argument("--key", required=True)
@@ -304,6 +324,7 @@ def _request_arguments(namespace, workspace):
         arguments = {
             "seat_node_id": _nonblank(namespace.seat_node, "seat node"),
             "instruction_file": instruction_file,
+            **_profile_pick(namespace),
         }
     elif verb in ("pause", "resume", "stop"):
         arguments = {"worker_id": _nonblank(namespace.worker_id, "worker id")}
@@ -344,6 +365,7 @@ def _request_arguments(namespace, workspace):
                 "node_id": _nonblank(node_id, "Experiment node"),
                 "goal_file": goal_file,
                 "invocation_limit": invocation_limit,
+                **_profile_pick(namespace),
             }
         else:
             if namespace.node is not None:
@@ -354,6 +376,11 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError(
                     "--invocation-limit is available only for Experiment kickoff"
                 )
+            for dest, flag in _PROFILE_PICK_FLAGS:
+                if getattr(namespace, dest) is not None:
+                    raise ClientInputError(
+                        f"{flag} is available only for spawn and Experiment kickoff"
+                    )
             if namespace.stop is not None:
                 action = "stop"
                 episode_id = namespace.stop
