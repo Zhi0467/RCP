@@ -3,10 +3,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
+from rcp.history.queries import StepRecord
 from rcp.storage.artifact_models import Artifact
 
 from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
@@ -130,7 +132,22 @@ def test_covered_head_preserves_external_interleaving_and_counts_resolved_propos
         (state(5, ["proposal"]), patch("human", "outside"), state(6, ["proposal"])),
         (state(6, ["proposal"]), patch("night", "second"), state(7, ["proposal"])),
     ]
-    revisions, proposals, covered = operation_outcome(boundaries, "night", 4)
+    steps = [
+        SimpleNamespace(
+            before_state=before, patch=patch, after_state=after, after_head=after, accepted=True
+        )
+        for before, patch, after in boundaries
+    ]
+    steps.append(
+        SimpleNamespace(
+            before_state=state(7, []),
+            after_state=state(8, ["rejected-proposal"]),
+            after_head=state(8, []),
+            patch=patch("night", "rejected"),
+            accepted=False,
+        )
+    )
+    revisions, proposals, covered = operation_outcome(cast(list[StepRecord], steps), "night", 4)
     assert [entry["revision"] for entry in revisions] == [5, 7]
     assert proposals == 1
     assert covered == 5
@@ -351,13 +368,13 @@ def test_unavailable_history_is_retried_without_changing_settled_outcome(
         ),
         data=b"<html>Report</html>",
     )
-    history = runtime.app.state.catalog.open(run.project_id).history
-    original = history.accepted_patch_boundaries
+    engine = runtime.app.state.catalog.open(run.project_id).history_engine
+    original = engine.steps
 
-    def unavailable():
+    def unavailable(head):
         raise OSError("canonical history unavailable")
 
-    monkeypatch.setattr(history, "accepted_patch_boundaries", unavailable)
+    monkeypatch.setattr(engine, "steps", unavailable)
     runtime.poller.reconcile_outcomes()
     failed = runtime.store.consolidation_run(run.run_id)
     assert failed.kind == "failure" and not failed.revisions_verified
@@ -382,7 +399,7 @@ def test_unavailable_history_is_retried_without_changing_settled_outcome(
         datetime.fromisoformat(runtime.store.consolidation_schedule(run.project_id).next_due_at)
         > next_day
     )
-    monkeypatch.setattr(history, "accepted_patch_boundaries", original)
+    monkeypatch.setattr(engine, "steps", original)
     runtime.poller.reconcile_outcomes()
     verified = runtime.store.consolidation_run(run.run_id)
     assert verified.revisions_verified
@@ -486,22 +503,19 @@ def test_due_resolution_failure_creates_occurrence_failure_without_task(
 
     if failure == "unexpected":
 
-        def unexpected():
+        def unexpected(head):
             raise RuntimeError("Unexpected failure")
 
-        monkeypatch.setattr(service.history, "accepted_patch_boundaries", unexpected)
+        monkeypatch.setattr(service.history_engine, "steps", unexpected)
     elif failure == "incomplete":
-        replay, boundaries = service.history.accepted_patch_boundaries()
-        replay.state.replay_status = "degraded"
-        monkeypatch.setattr(
-            service.history, "accepted_patch_boundaries", lambda: (replay, boundaries)
-        )
+        state = service.history.state().model_copy(update={"replay_status": "degraded"})
+        monkeypatch.setattr(service.history_engine, "state_at", lambda head: state)
     elif failure == "history":
 
-        def history_unavailable():
+        def history_unavailable(head):
             raise OSError("Unavailable history")
 
-        monkeypatch.setattr(service.history, "accepted_patch_boundaries", history_unavailable)
+        monkeypatch.setattr(service.history_engine, "steps", history_unavailable)
     elif failure == "machine":
         original = runtime.poller._task
 

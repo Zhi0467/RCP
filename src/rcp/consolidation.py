@@ -12,7 +12,9 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
+from rcp.history.queries import HeadSpec, HistoryEngine, StepRecord
 from rcp.limits import CONSOLIDATION_POLL_SECONDS
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS, consolidation_skill_selection
@@ -22,7 +24,6 @@ from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
-    from rcp.core.models import GraphState, Patch
     from rcp.server_ops.maintenance import RuntimeAdmissionGate
     from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule
 
@@ -146,10 +147,7 @@ class ConsolidationPoller:
             self.store.require_project_accepts_new_work(schedule.project_id)
             service = self.service_for(schedule.project_id)
             failure_code = "history_unavailable"
-            replay, boundaries = service.history.accepted_patch_boundaries()
-            if replay.state.replay_status != "complete":
-                raise ValueError("Canonical graph history is incomplete")
-            input_head = replay.state.revision
+            input_head, steps = _main_steps(service)
             consolidation_operations = {
                 run.operation_id
                 for run in self.store.consolidation_runs(schedule.project_id)
@@ -157,9 +155,9 @@ class ConsolidationPoller:
             }
             covered = schedule.covered_head
             changed = covered is None or any(
-                state.revision > covered
-                and patch.source_operation_id not in consolidation_operations
-                for _, patch, state in boundaries
+                step.after_head.revision > covered
+                and step.patch.source_operation_id not in consolidation_operations
+                for step in steps
             )
             if changed:
                 failure_code = "consolidation_launch_unavailable"
@@ -271,18 +269,14 @@ class ConsolidationPoller:
         committed_digests: set[str | None] = set()
         if not prelaunch_failure:
             try:
-                replay, boundaries = self.service_for(
-                    run.project_id
-                ).history.accepted_patch_boundaries()
-                if replay.state.replay_status != "complete":
-                    raise ValueError("Canonical graph history is incomplete")
+                _, steps = _main_steps(self.service_for(run.project_id))
                 revisions, proposals, covered = operation_outcome(
-                    boundaries, task.operation_id, run.input_head
+                    steps, task.operation_id, run.input_head
                 )
                 committed_digests = {
-                    patch.source_effect_sha256
-                    for _, patch, _ in boundaries
-                    if patch.source_operation_id == task.operation_id
+                    step.patch.source_effect_sha256
+                    for step in steps
+                    if step.patch.source_operation_id == task.operation_id
                 }
                 verified = True
             except Exception:
@@ -364,19 +358,27 @@ class ConsolidationPoller:
             self._stop.wait(self.interval)
 
 
+def _main_steps(service: ProjectService) -> tuple[int, list[StepRecord]]:
+    engine: HistoryEngine = service.history_engine
+    head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+    if engine.state_at(head).replay_status != "complete":
+        raise ValueError("Canonical graph history is incomplete")
+    return head.revision, [step for step in engine.steps(head) if step.accepted]
+
+
 def operation_outcome(
-    boundaries: list[tuple[GraphState, Patch, GraphState]],
+    steps: list[StepRecord],
     operation_id: str,
     input_head: int,
 ) -> tuple[list[dict[str, object]], int, int]:
     revisions: list[dict[str, object]] = []
     proposals: set[str] = set()
     covered = input_head
-    for previous, patch, state in boundaries:
-        if patch.source_operation_id != operation_id:
+    for step in steps:
+        if not step.accepted or step.patch.source_operation_id != operation_id:
             continue
-        revisions.append({"revision": state.revision, "summary": patch.summary})
-        proposals.update(set(state.proposals) - set(previous.proposals))
-        if state.revision == covered + 1:
-            covered = state.revision
+        revisions.append({"revision": step.after_head.revision, "summary": step.patch.summary})
+        proposals.update(set(step.after_state.proposals) - set(step.before_state.proposals))
+        if step.after_head.revision == covered + 1:
+            covered = step.after_head.revision
     return revisions, len(proposals), covered
