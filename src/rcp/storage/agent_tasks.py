@@ -2294,7 +2294,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         A chat turn that is running or waiting on a person stays listed after
         newer tasks push it past ``limit``, so the Chats panel can always show
-        it. Only a chat's latest turn counts: a failure followed by a later turn
+        it. An Auto-research orchestrator turn is a turn of its chain's
+        conversation, which its branch names, so its children cannot push it out. Only a chat's latest turn counts: a failure followed by a later turn
         in the same chat is history, not an open item. A latest turn that
         finished recently stays too, so a client that saw it open also sees it
         end.
@@ -2313,6 +2314,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             " AND (:target IS NULL OR {run}.graph_target_json = :target)"
         )
         own_scope, later_scope = scope.format(run="graph_runs"), scope.format(run="later")
+        chat_turn = (
+            "(kind IN ('node_chat', 'project_chat') OR (kind = 'auto_research' "
+            "AND json_extract(request_json, '$.role') = 'orchestrator'))"
+        )
         statuses = ",".join(f":status{index}" for index in range(len(open_statuses)))
         with self.connection() as connection:
             rows = connection.execute(
@@ -2324,28 +2329,43 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     LIMIT :limit
                 ),
                 candidates AS (
-                    SELECT operation_id, created_at, 1 AS still_open,
+                    SELECT operation_id, created_at, 1 AS still_open, kind, graph_target_json,
                            json_extract(request_json, '$.chat_id') AS chat_id
                     FROM graph_runs
                     WHERE {own_scope} AND status IN ({statuses})
-                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                      AND {chat_turn} AND history_only = 0
                     UNION ALL
-                    SELECT operation_id, created_at, 0 AS still_open,
+                    SELECT operation_id, created_at, 0 AS still_open, kind, graph_target_json,
                            json_extract(request_json, '$.chat_id') AS chat_id
                     FROM graph_runs
                     WHERE {own_scope} AND finished_at >= :finished_since
                       AND status NOT IN ({statuses})
-                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                      AND {chat_turn} AND history_only = 0
                 ),
                 open_chats AS (
                     SELECT operation_id FROM candidates
-                    WHERE chat_id IS NOT NULL AND NOT EXISTS (
-                        SELECT 1 FROM graph_runs AS later
-                        WHERE {later_scope}
-                          AND json_extract(later.request_json, '$.chat_id') = candidates.chat_id
-                          AND later.kind IN ('node_chat', 'project_chat')
-                          AND (later.created_at, later.operation_id)
-                              > (candidates.created_at, candidates.operation_id)
+                    WHERE (
+                        candidates.kind = 'auto_research' OR (
+                            chat_id IS NOT NULL AND NOT EXISTS (
+                                SELECT 1 FROM graph_runs AS later
+                                WHERE {later_scope}
+                                  AND json_extract(later.request_json, '$.chat_id')
+                                      = candidates.chat_id
+                                  AND later.kind IN ('node_chat', 'project_chat')
+                                  AND (later.created_at, later.operation_id)
+                                      > (candidates.created_at, candidates.operation_id)
+                            )
+                        )
+                    ) AND (
+                        candidates.kind != 'auto_research' OR NOT EXISTS (
+                            SELECT 1 FROM graph_runs AS later
+                            WHERE {later_scope}
+                              AND later.graph_target_json = candidates.graph_target_json
+                              AND later.kind = 'auto_research'
+                              AND json_extract(later.request_json, '$.role') = 'orchestrator'
+                              AND (later.created_at, later.operation_id)
+                                  > (candidates.created_at, candidates.operation_id)
+                        )
                     )
                     ORDER BY still_open DESC, created_at DESC, operation_id DESC
                     LIMIT :open_limit

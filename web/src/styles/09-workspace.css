@@ -954,20 +954,6 @@ a.digest-title:hover {
   color: var(--cobalt);
   text-decoration: underline;
 }
-.digest-subhead {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  font-size: var(--type-2xs);
-  font-weight: 700;
-  gap: 5px;
-  letter-spacing: 0.06em;
-  margin: 10px 0 6px;
-  text-transform: uppercase;
-}
-.digest-group h3 + .digest-subhead {
-  margin-top: 0;
-}
 /* .dag-node is already absolutely positioned. */
 .research-node-card.digest-changed {
   position: relative;

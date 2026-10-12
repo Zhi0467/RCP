@@ -36,3 +36,26 @@ export function isChatListToggleShortcut(
     event.key.toLowerCase() === "b"
   );
 }
+
+/** Where a scrolled chat view stands, from the last position it observed. */
+export interface ChatScrollObservation {
+  previousTop: number;
+  top: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/**
+ * True when the reader moved the view up. A position that dropped only because
+ * content below shrank lands on the bottom, so it is not a move up.
+ */
+export function chatReaderMovedUp(observation: ChatScrollObservation): boolean {
+  const distance = observation.scrollHeight - observation.top - observation.clientHeight;
+  return observation.top < observation.previousTop - 1 && distance > 1;
+}
+
+/** A chat follows new content only while the reader sits at its bottom. */
+export function chatFollowsBottom(observation: ChatScrollObservation, tolerance: number): boolean {
+  if (chatReaderMovedUp(observation)) return false;
+  return observation.scrollHeight - observation.top - observation.clientHeight <= tolerance;
+}

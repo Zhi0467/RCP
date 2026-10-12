@@ -2,7 +2,6 @@ import {
   Check,
   ExternalLink,
   FileText,
-  GitBranch,
   GitCommitHorizontal,
   Sparkles,
   TriangleAlert,
@@ -241,47 +240,21 @@ function DigestCard({
             ))}
           </DigestGroup>
         )}
-        {digest.changed.length + digest.branches.length > 0 && (
+        {digest.changed.length > 0 && (
           <DigestGroup
             tone="change"
             icon={<GitCommitHorizontal size={16} />}
             title={`Changed on ${targetName}`}
-            count={digest.changed.length + digest.branches.length}
-            after={
-              digest.branches.length > 0 && (
-                <>
-                  <h4 className="digest-subhead">
-                    <GitBranch size={12} />
-                    Auto-research
-                  </h4>
-                  <ul>
-                    {digest.branches.map((run) => (
-                      <li className="digest-row" key={`run:${run.branch_id}`}>
-                        <DigestLink href={run.deep_link}>{run.title}</DigestLink>
-                        <span className="digest-row-meta">
-                          {run.needs_you && (
-                            <span className="digest-pill status-bad">needs you</span>
-                          )}
-                          {run.edits > 0 && (
-                            <span className="digest-pill">{editCountLabel(run.edits)}</span>
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )
-            }
+            count={digest.changed.length}
           >
-            {digest.changed.length > 0 &&
-              digest.changed.map((change) => (
-                <li className="digest-row" key={change.source_key}>
-                  <DigestLink href={change.deep_link}>{change.label}</DigestLink>
-                  <span className="digest-row-meta">
-                    <span className="digest-pill">{editCountLabel(change.edits)}</span>
-                  </span>
-                </li>
-              ))}
+            {digest.changed.map((change) => (
+              <li className="digest-row" key={change.source_key}>
+                <DigestLink href={change.deep_link}>{change.label}</DigestLink>
+                <span className="digest-row-meta">
+                  <span className="digest-pill">{editCountLabel(change.edits)}</span>
+                </span>
+              </li>
+            ))}
           </DigestGroup>
         )}
         {digest.reports.length > 0 && (
@@ -320,15 +293,12 @@ function DigestGroup({
   title,
   count,
   children,
-  after,
 }: {
   tone: "attention" | "change" | "ran";
   icon: ReactNode;
   title: string;
   count: number;
   children: ReactNode;
-  /** A small trailing list, such as main's Auto-research runs. */
-  after?: ReactNode;
 }) {
   return (
     <div className={`digest-group ${tone}`}>
@@ -337,8 +307,7 @@ function DigestGroup({
         {title}
         <span className="digest-group-count">{count}</span>
       </h3>
-      {children && <ul>{children}</ul>}
-      {after}
+      <ul>{children}</ul>
     </div>
   );
 }

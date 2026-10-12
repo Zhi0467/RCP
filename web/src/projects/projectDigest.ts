@@ -11,10 +11,7 @@ import type {
 export function projectDigestIsEmpty(digest: ProjectDigest | null): boolean {
   return (
     !digest ||
-    (digest.needs_you.length === 0 &&
-      digest.changed.length === 0 &&
-      digest.branches.length === 0 &&
-      digest.reports.length === 0)
+    (digest.needs_you.length === 0 && digest.changed.length === 0 && digest.reports.length === 0)
   );
 }
 
@@ -105,9 +102,7 @@ export function reportKindLabel(item: ProjectDigestReport): string {
 
 /** The header line: what needs you, how many edits, how many reports. */
 export function digestSummary(digest: ProjectDigest): string {
-  const edits =
-    digest.changed.reduce((total, change) => total + change.edits, 0) +
-    digest.branches.reduce((total, run) => total + run.edits, 0);
+  const edits = digest.changed.reduce((total, change) => total + change.edits, 0);
   const needs = digest.needs_you.length;
   const reports = digest.reports.length;
   return [

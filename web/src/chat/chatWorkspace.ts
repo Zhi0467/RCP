@@ -4,6 +4,7 @@ import type {
   ProjectReferenceSelector,
   AgentRunConfig,
   AgentTask,
+  AgentTaskKind,
   AgentTaskRequest,
   AgentTaskStatus,
   ArtifactContextRequest,
@@ -13,7 +14,6 @@ import type {
   ConversationMode,
   GraphTargetRef,
   SkillDefaults,
-  StartAgentTask,
   WorktreeIntegrationOption,
 } from "../core/types";
 
@@ -223,14 +223,23 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
   };
 }
 
+/** Starts a task; `requestId` is the start's Idempotency-Key, so sending the
+ *  same start again after an unanswered request admits at most one turn. */
+export type StartConversationTask = (
+  kind: AgentTaskKind,
+  request: AgentTaskRequest,
+  requestId?: string,
+) => Promise<AgentTask>;
+
 /** One ordinary Discuss/Work dispatch boundary shared by the visible composer
  * and non-UI callers. Admission and durable task recording remain in App's
- * StartAgentTask owner. */
+ * start-task owner. */
 export async function startConversationTurn(
-  startTask: StartAgentTask,
+  startTask: StartConversationTask,
   submission: ConversationTurnSubmission,
+  requestId?: string,
 ): Promise<AgentTask> {
-  return startTask(submission.kind, conversationTurnRequest(submission));
+  return startTask(submission.kind, conversationTurnRequest(submission), requestId);
 }
 
 /** An Auto-research orchestrator turn: its chain's conversation is named by the

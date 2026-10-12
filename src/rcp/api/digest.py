@@ -50,16 +50,6 @@ class DigestChange(BaseModel):
     deep_link: str | None
 
 
-class DigestBranch(BaseModel):
-    """One Auto-research run, shown on main: its branch's unmerged edits and whether it needs you."""
-
-    branch_id: str
-    title: str
-    edits: int
-    needs_you: bool
-    deep_link: str
-
-
 class DigestReport(BaseModel):
     kind: Literal["consolidation_report", "episode_report"]
     item_id: str
@@ -75,7 +65,6 @@ class DigestResponse(BaseModel):
     target: str
     needs_you: list[DigestAttention]
     changed: list[DigestChange]
-    branches: list[DigestBranch]
     reports: list[DigestReport]
     changed_node_ids: list[str]
     count: int

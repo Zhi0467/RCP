@@ -197,8 +197,8 @@ session expiry and metadata are owned by
 The pull-only digest is per member and project, and follows the open graph
 target. `GET /api/projects/{id}/digest` reads main; `?branch_id=` reads one
 branch and is 404 for an unknown branch. It returns `cursor`, `mark`, `target`,
-`needs_you`, `changed`, `branches`, `reports`, `changed_node_ids`, and `count`.
-The count is the number of rendered lines across those four groups. The mark is
+`needs_you`, `changed`, `reports`, `changed_node_ids`, and `count`.
+The count is the number of rendered lines across those three groups. The mark is
 one per member, not per target, so the Overview offers Caught up on main only;
 a branch's digest cannot acknowledge main lines that are not on screen. Opening a project or reading its digest never advances an
 existing mark. A member without a mark starts at the event log's current cursor
@@ -223,10 +223,13 @@ the digest.
 
 Needs you contains the open target's new, still-open Proposals, ready/revisit
 Decisions, open ask questions, and episodes needing human action. An
-Auto-research run is one item, named by its branch name, while the run or any
-of its children needs the human; child Experiments and workers are never items.
-On the run's branch its open questions are listed too; on main they fold into
-the run. A standalone Experiment is named by its Experiment node.
+Auto-research run is one item, named by its branch name, only while something
+on it waits for the human: an open question, Proposal, or ready/revisit Decision
+on its branch, or its orchestrator episode needing action. On the run's branch
+those questions, Proposals, and Decisions are listed themselves, and the run
+item stands for the orchestrator. Its child Experiments and workers are never items and
+never surface the run, on main or on its branch. A standalone Experiment is
+named by its Experiment node.
 
 Changed on the open target groups accepted semantic changes by their attributed
 source; a merged Auto-research branch is named by its branch. Each touched node
@@ -237,10 +240,9 @@ remains visible. A turn that finished after the viewer left stays in their
 digest until they read that chat. Excluding a Work turn is a visibility rule
 only: the provider agent remains its author. Removed nodes and changed edge
 endpoints participate in grouping, while `changed_node_ids` contains only nodes
-still present on main and is empty on a branch. On main, `branches` has one line
-per Auto-research run with unmerged edits or needing the human: its branch name,
-edit count, and whether it needs you. Other branches appear only on their own
-target. Reports lists the target's episode and consolidation reports by their
+still present on main and is empty on a branch. Main lists only main's own
+changes: unmerged branch edits, an Auto-research run's included, appear only on
+that branch's target. Reports lists the target's episode and consolidation reports by their
 report titles and opens the report artifact; ended episodes, jobs, and failed
 tasks are stored but not shown. Lessons and chat messages or turns as such are
 excluded.

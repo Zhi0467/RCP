@@ -91,7 +91,10 @@ import {
   providerSwitchStartsFreshSession,
   startConversationTurn,
   toggleConversationMode,
+  type ConversationTurnSubmission,
+  type StartConversationTask,
 } from "./chatWorkspace";
+import { chatFollowsBottom, chatReaderMovedUp } from "./chatLayout";
 import {
   openArtifact as openArtifactPanel,
   openRepositoryFile as openRepositoryFilePanel,
@@ -187,7 +190,6 @@ import type {
   ProjectArtifact,
   ProjectSnapshot,
   ServiceConnection,
-  StartAgentTask,
   WatcherRecord,
   WorktreeIntegrationOption,
 } from "../core/types";
@@ -232,7 +234,7 @@ interface Props {
   allowArtifactComments?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
-  onStartTask: StartAgentTask;
+  onStartTask: StartConversationTask;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onRepairGraphUpdate: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
@@ -247,10 +249,18 @@ interface Props {
 
 interface PendingChatTurn {
   clientId: string;
+  /** The start's Idempotency-Key, kept across a Resend. */
+  requestId: string;
   text: string;
+  /** The composer text it was sent from, which a failed send puts back. */
+  draft: string;
   timestamp: string;
   mode: ConversationMode;
   attachments: ChatAttachmentDescriptor[];
+  submission: ConversationTurnSubmission;
+  submittedOverride: { chatId: string; config: AgentRunConfig } | null;
+  /** Set when the start got no admission; the turn stays here to be resent. */
+  error?: string;
 }
 
 type AttachmentStatus = "preparing" | "ready" | "error";
@@ -298,6 +308,15 @@ interface KeyboardChatAnnotationComposer {
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+
+function chatScrollObservation(element: HTMLElement, previousTop: number) {
+  return {
+    previousTop,
+    top: element.scrollTop,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  };
+}
 // macOS dictation stops at 55 s, counting down the last 10; network dictation
 // has no limit (see networkDictation.ts).
 const DICTATION_SEGMENT_MS = 55_000;
@@ -599,6 +618,9 @@ export function NodeChat({
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
   const networkDictationRef = useRef<NetworkDictation | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  // The last scroll position this view observed; a smaller one means the reader
+  // moved up, and only the reader's own return to the bottom re-sticks.
+  const lastScrollTopRef = useRef(0);
   const lastChatIdRef = useRef(chatId);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
@@ -854,8 +876,14 @@ export function NodeChat({
       setRepositoryFileErrors(new Map());
     }
     const element = chatLinesRef.current;
-    if (!element || !shouldStickToBottomRef.current) return;
+    if (!element) return;
+    // A refresh can render between the reader's scroll and its scroll event; their
+    // position wins over a follow decided before they moved.
+    if (chatReaderMovedUp(chatScrollObservation(element, lastScrollTopRef.current)))
+      shouldStickToBottomRef.current = false;
+    if (!shouldStickToBottomRef.current) return;
     element.scrollTop = element.scrollHeight;
+    lastScrollTopRef.current = element.scrollTop;
     // Question cards load after the transcript and end it, so they move the bottom too.
   }, [chatId, transcript, questionState.questions]);
 
@@ -1515,9 +1543,11 @@ export function NodeChat({
 
   const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
-    shouldStickToBottomRef.current =
-      element.scrollHeight - element.scrollTop - element.clientHeight <=
-      CHAT_SCROLL_BOTTOM_TOLERANCE_PX;
+    shouldStickToBottomRef.current = chatFollowsBottom(
+      chatScrollObservation(element, lastScrollTopRef.current),
+      CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
+    );
+    lastScrollTopRef.current = element.scrollTop;
   };
 
   const openAnnotationComposer = (range: Range) => {
@@ -1939,21 +1969,20 @@ export function NodeChat({
       return;
     if (!confirmDiscardKeptSpeech("send")) return;
     if (dictating) stopDictation(true);
-    shouldStickToBottomRef.current = true;
-    const clientId = `pending-${crypto.randomUUID()}`;
-    setPendingTurn({
-      clientId,
+    // Sending a failed turn's text again is its Resend: the same key admits at
+    // most one turn even if the failed request did reach the server.
+    const requestId =
+      pendingTurn?.error && pendingTurn.text === text ? pendingTurn.requestId : crypto.randomUUID();
+    setMessage("");
+    await submitTurn({
+      clientId: `pending-${requestId}`,
+      requestId,
       text,
+      draft: draftMessage,
       timestamp: new Date().toISOString(),
       mode,
       attachments: readyAttachments,
-    });
-    setMessage("");
-    setSubmitError(null);
-    setSubmitting(true);
-    const submittedOverride = configOverride;
-    try {
-      await startConversationTurn(onStartTask, {
+      submission: {
         kind: surface,
         config,
         runTruthScope: scope,
@@ -1970,12 +1999,26 @@ export function NodeChat({
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
         worktree: mode === "work" && worktree.chosen,
-      });
+      },
+      submittedOverride: configOverride,
+    });
+  };
+
+  /** Start a turn, or start it again after a failed send under the same key. */
+  const submitTurn = async (turn: PendingChatTurn) => {
+    const pending = { ...turn, error: undefined };
+    shouldStickToBottomRef.current = true;
+    setPendingTurn(pending);
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      await startConversationTurn(onStartTask, turn.submission, turn.requestId);
       // The admitted turn now carries the pick, so the chat follows its history
       // again; a newer pick made while submitting stays.
-      setConfigOverride((current) => (current === submittedOverride ? null : current));
+      setConfigOverride((current) => (current === turn.submittedOverride ? null : current));
       worktree.refresh();
-      setPendingTurn((current) => (current?.clientId === clientId ? null : current));
+      setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
+      setMessage((current) => (current === turn.draft ? "" : current));
       skills.reset();
       setAttachments([]);
       setReferences([]);
@@ -1985,11 +2028,16 @@ export function NodeChat({
       removeSessionStorage(annotationsKey);
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
-      if (!commentOnly) selectMode(mode);
+      if (!commentOnly) selectMode(turn.mode);
     } catch (error) {
-      setPendingTurn((current) => (current?.clientId === clientId ? null : current));
-      setMessage((current) => (current ? current : draftMessage));
-      setSubmitError(error instanceof Error ? error.message : String(error));
+      // The request may never have reached the server, so the turn stays where it
+      // was sent, with Resend under the same key: at most one turn is admitted.
+      // The composer gets the text back too, so it survives leaving this chat.
+      const reason = error instanceof Error ? error.message : String(error);
+      setPendingTurn((current) =>
+        current?.clientId === turn.clientId ? { ...pending, error: reason } : current,
+      );
+      setMessage((current) => (current ? current : turn.draft));
     } finally {
       setSubmitting(false);
     }
@@ -2431,6 +2479,7 @@ export function NodeChat({
               ? task
               : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;
+          const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
           const collapsible =
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
@@ -2562,6 +2611,18 @@ export function NodeChat({
                     />
                   ) : activeLineTask ? (
                     <InlineTaskProgress task={activeLineTask} />
+                  ) : failedTurn ? (
+                    <div className="chat-task-inline paused" role="alert">
+                      <span>{failedTurn.error}</span>
+                      <button
+                        type="button"
+                        className="button compact primary"
+                        disabled={submitting}
+                        onClick={() => void submitTurn(failedTurn)}
+                      >
+                        <RotateCcw size={12} /> Resend
+                      </button>
+                    </div>
                   ) : pendingLine ? (
                     <InlineTaskProgress task={null} />
                   ) : null}

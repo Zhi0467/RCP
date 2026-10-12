@@ -17,9 +17,8 @@ const {
   loadExperimentWatcherPoll,
   terminalTaskNeedsAuthoritativeProjectReload,
 } = await server.ssrLoadModule("/src/App.tsx");
-const { cloneAgentTasksSnapshot, reconcileKnownActiveTasks } = await server.ssrLoadModule(
-  "/src/agents/useAgentTasks.ts",
-);
+const { cloneAgentTasksSnapshot, mergeTaskListRead, reconcileKnownActiveTasks } =
+  await server.ssrLoadModule("/src/agents/useAgentTasks.ts");
 
 after(() => server.close());
 
@@ -35,6 +34,30 @@ test("agent task snapshots do not retain dismissed notification state", () => {
 
   assert.equal("dismissedTaskIds" in snapshot, false);
   assert.deepEqual(snapshot.tasks, []);
+});
+
+test("a task list read never drops or reverts a task recorded after it was requested", () => {
+  const old = withTaskAnswers({ operation_id: "old", status: "succeeded" });
+  const started = withTaskAnswers({ operation_id: "new", status: "running" });
+  const current = [started, old];
+  // Read 1 was requested before the start was recorded as write 2.
+  const stale = mergeTaskListRead(current, [old], new Map([["new", 2]]), 1);
+  assert.deepEqual(
+    stale.map((task) => task.operation_id),
+    ["new", "old"],
+  );
+  const queued = mergeTaskListRead(
+    current,
+    [{ ...started, status: "queued" }, old],
+    new Map([["new", 2]]),
+    1,
+  );
+  assert.equal(queued.find((task) => task.operation_id === "new").status, "running");
+  // A read requested after the record is the server's answer, even without the task.
+  assert.deepEqual(
+    mergeTaskListRead(current, [old], new Map(), 3).map((task) => task.operation_id),
+    ["old"],
+  );
 });
 
 test("terminal Experiment work refetches control state even without a graph revision", () => {

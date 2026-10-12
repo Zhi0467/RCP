@@ -373,28 +373,36 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             ).fetchall()
             # Finished turns as `AgentTaskRecord.finished` defines them; the task
             # list is bounded, so an old reply is found only here.
+            # An orchestrator turn belongs to its chain's conversation, which
+            # its branch names.
             finished = connection.execute(
                 """
-                SELECT json_extract(runs.request_json, '$.chat_id') AS chat_id,
-                       MAX(runs.finished_at) AS finished_at
-                FROM graph_runs AS runs
+                SELECT turns.chat_id, MAX(turns.finished_at) AS finished_at
+                FROM (
+                    SELECT json_extract(request_json, '$.chat_id') AS chat_id, finished_at
+                    FROM graph_runs
+                    WHERE project_id = :project AND kind IN ('node_chat', 'project_chat')
+                      AND (:target IS NULL OR graph_target_json = :target)
+                      AND visible = 1 AND finished_at IS NOT NULL
+                      AND status IN ('succeeded', 'failed', 'interrupted')
+                    UNION ALL
+                    SELECT json_extract(graph_target_json, '$.branch_id'), finished_at
+                    FROM graph_runs
+                    WHERE project_id = :project AND kind = 'auto_research'
+                      AND json_extract(request_json, '$.role') = 'orchestrator'
+                      AND (:target IS NULL OR graph_target_json = :target)
+                      AND visible = 1 AND finished_at IS NOT NULL
+                      AND status IN ('succeeded', 'failed', 'interrupted')
+                ) AS turns
                 LEFT JOIN chat_display AS display
-                  ON display.project_id = runs.project_id
-                 AND display.chat_id = json_extract(runs.request_json, '$.chat_id')
-                WHERE runs.project_id = ? AND (? IS NULL OR runs.graph_target_json = ?)
-                  AND runs.visible = 1
-                  AND runs.kind IN ('node_chat', 'project_chat')
-                  AND runs.status IN ('succeeded', 'failed', 'interrupted')
-                  AND runs.finished_at IS NOT NULL
-                  AND json_extract(runs.request_json, '$.chat_id') IS NOT NULL
-                  AND display.archived_at IS NULL
+                  ON display.project_id = :project AND display.chat_id = turns.chat_id
+                WHERE turns.chat_id IS NOT NULL AND display.archived_at IS NULL
                 GROUP BY 1
                 """,
-                (
-                    project_id,
-                    graph_target_json(graph_target) if graph_target else None,
-                    graph_target_json(graph_target) if graph_target else None,
-                ),
+                {
+                    "project": project_id,
+                    "target": graph_target_json(graph_target) if graph_target else None,
+                },
             ).fetchall()
             archived = connection.execute(
                 "SELECT chat_id FROM chat_display "

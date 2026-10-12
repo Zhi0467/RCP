@@ -12,7 +12,6 @@ const digest = (overrides = {}) => ({
   mark: null,
   needs_you: [],
   changed: [],
-  branches: [],
   reports: [],
   changed_node_ids: [],
   count: 0,
@@ -28,10 +27,10 @@ const reportItem = (seq) => ({
   created_at: "2026-10-03T00:00:00Z",
 });
 
-test("the digest is empty only when all four groups are empty", () => {
+test("the digest is empty only when all three groups are empty", () => {
   assert.equal(projectDigestIsEmpty(null), true);
   assert.equal(projectDigestIsEmpty(digest({ cursor: 9 })), true);
-  for (const group of ["needs_you", "changed", "branches", "reports"]) {
+  for (const group of ["needs_you", "changed", "reports"]) {
     assert.equal(projectDigestIsEmpty(digest({ [group]: [{}] })), false, group);
   }
 });

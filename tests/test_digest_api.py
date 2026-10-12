@@ -104,7 +104,6 @@ def test_get_waits_for_projector_before_baselining(manifest, tmp_path, monkeypat
             target="main",
             needs_you=[],
             changed=[],
-            branches=[],
             reports=[],
             changed_node_ids=[],
         )

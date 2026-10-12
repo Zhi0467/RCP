@@ -185,7 +185,6 @@ def graph_event(
             deep_link=deep_link(project_id, target, "episode", episode_id),
             needs_action=any(kind == "decision" for kind, _ in new),
         )
-        payload["attention"] = []
     return dict(
         project_id=project_id,
         kind=kind,
@@ -223,6 +222,11 @@ def _experiment_link(project_id: str, episode) -> str:
     return f"{_app_hash(project_id, 'runs')}&experiment={node}&episode={episode_id}{route}"
 
 
+def _run_child(event_target: str, episode_id: str, runs: dict[str, str]) -> bool:
+    """An episode on a run's branch other than the orchestrator, the chain root."""
+    return event_target in runs and episode_id != event_target.removeprefix("branch:")
+
+
 def assemble_digest(
     project_id: str,
     user_id: str,
@@ -238,9 +242,11 @@ def assemble_digest(
     """The sole rendered-line grouping function, also used by landing counts.
 
     `target` is the graph the reader has open. `runs` names each Auto-research
-    run by its branch target key. A run's children are never lines of their
-    own: on its branch they fold into the run, and on main the whole branch,
-    questions included, folds into one run line.
+    run by its branch target key. Only main's own edits are main's changes; a
+    run reaches main's digest solely as one Needs you line, while something on
+    its branch waits for the human: an open question, Proposal, or Decision
+    there, or its own orchestrator episode, whose id is its branch id. Its
+    child episodes' health is never a line, here or on its branch.
     """
     runs = runs or {}
     resets = {}
@@ -255,7 +261,7 @@ def assemble_digest(
         if event["kind"] not in {"graph_change", "branch_change"}
         or event["seq"] > resets.get(event["target"], 0)
     ]
-    attention, latest_nodes, groups, run_edits, reports = {}, {}, {}, {}, {}
+    attention, latest_nodes, groups, reports = {}, {}, {}, {}
     node_edits = {}
     merged = {}
     for event in events:
@@ -281,10 +287,7 @@ def assemble_digest(
                     created_at=event["created_at"],
                     deep_link=deep_link(project_id, event_target, entry["kind"], entry["item_id"]),
                 )
-            if _viewers_own(event, user_id, chat_reads) or not payload["edits"]:
-                continue
-            if not in_scope:
-                run_edits[event_target] = run_edits.get(event_target, 0) + payload["edits"]
+            if not in_scope or _viewers_own(event, user_id, chat_reads) or not payload["edits"]:
                 continue
             key = event["source_key"]
             group = groups.setdefault(
@@ -309,6 +312,8 @@ def assemble_digest(
             if event_target != target and not (target == "main" and event_target in runs):
                 continue
             item_kind = "question" if kind == "question_attention" else "episode"
+            if item_kind == "episode" and _run_child(event_target, item_id, runs):
+                continue
             attention[(event_target, item_kind, item_id)] = dict(
                 kind=item_kind,
                 item_id=item_id,
@@ -351,17 +356,6 @@ def assemble_digest(
                 created_at=created_at,
             )
         )
-    branch_lines = [
-        dict(
-            branch_id=run_target.removeprefix("branch:"),
-            title=name,
-            edits=run_edits.get(run_target, 0),
-            needs_you=run_target in run_needs,
-            deep_link=_run_link(project_id, run_target.removeprefix("branch:")),
-        )
-        for run_target, name in runs.items()
-        if target == "main" and (run_edits.get(run_target) or run_target in run_needs)
-    ]
     changed_ids = sorted(
         node_id
         for node_id in latest_nodes
@@ -375,10 +369,9 @@ def assemble_digest(
         target=target,
         needs_you=needs,
         changed=changed,
-        branches=branch_lines,
         reports=report_lines,
         changed_node_ids=changed_ids,
-        count=len(needs) + len(changed) + len(branch_lines) + len(report_lines),
+        count=len(needs) + len(changed) + len(report_lines),
     )
 
 
@@ -865,10 +858,13 @@ def _episode_attention(store, project_id, episode_ids=None):
     health = load_episode_health(store, episodes)
     active = {}
     with store.connection() as conn:
+        runs = _auto_research_runs(conn, project_id)
         for episode in episodes:
             current, _, _, blocked = health[episode.episode_id]
             active[episode.episode_id] = episode_needs_action(current, blocked)
-            if episode.graph_target.kind != "branch":
+            # An Auto-research branch carries its own Decisions into the digest;
+            # another episode's branch Decision surfaces through its episode.
+            if episode.graph_target.kind != "branch" or episode.graph_target.key in runs:
                 continue
             branch = conn.execute(
                 "SELECT item_id,payload_json FROM digest_events WHERE project_id=? AND kind='branch_change' AND target=? ORDER BY seq DESC LIMIT 1",

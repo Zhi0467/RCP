@@ -22,6 +22,7 @@ import {
   type ConversationAgentStatus,
   orchestratorCanUnlock,
   orchestratorChatTurns,
+  type StartConversationTask,
 } from "./chatWorkspace";
 import { OrchestratorComposer, type SendOrchestratorMessage } from "./OrchestratorComposer";
 import {
@@ -54,7 +55,6 @@ import type {
   GraphTargetRef,
   GraphUpdateRecovery,
   ProjectSnapshot,
-  StartAgentTask,
   WatcherRecord,
 } from "../core/types";
 import { AgentBoard, type AgentBoardCard } from "./AgentBoard";
@@ -84,7 +84,7 @@ interface Props {
   unreadChatIds: ReadonlySet<string>;
   chatTranscripts: ReadonlyMap<string, ChatTranscript>;
   onSelect: (chatId: string) => void;
-  onStartTask: StartAgentTask;
+  onStartTask: StartConversationTask;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;

@@ -3804,15 +3804,6 @@ export interface ProjectDigestChange {
   deep_link: string | null;
 }
 
-/** One Auto-research run on main's digest: its branch's unmerged edits and whether it needs you. */
-export interface ProjectDigestRun {
-  branch_id: string;
-  title: string;
-  edits: number;
-  needs_you: boolean;
-  deep_link: string;
-}
-
 export interface ProjectDigestReport {
   kind: "consolidation_report" | "episode_report";
   item_id: string;
@@ -3830,7 +3821,6 @@ export interface ProjectDigest {
   target: string;
   needs_you: ProjectDigestNeedsYou[];
   changed: ProjectDigestChange[];
-  branches: ProjectDigestRun[];
   reports: ProjectDigestReport[];
   changed_node_ids: string[];
   count: number;
