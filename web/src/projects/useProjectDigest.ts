@@ -67,7 +67,8 @@ export function useProjectDigest(
   const digest = snapshot && snapshot.key === key ? snapshot.digest : null;
 
   const catchUp = useCallback(async () => {
-    if (!projectId || !digest) return;
+    // One mark per member covers every target, so only main may move it.
+    if (!projectId || !digest || target.kind !== "main") return;
     setCatchingUp(true);
     // A read issued before the mark moves must not repaint the acknowledged lines.
     fence.current.invalidate();

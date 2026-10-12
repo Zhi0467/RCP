@@ -199,8 +199,8 @@ target. `GET /api/projects/{id}/digest` reads main; `?branch_id=` reads one
 branch and is 404 for an unknown branch. It returns `cursor`, `mark`, `target`,
 `needs_you`, `changed`, `branches`, `reports`, `changed_node_ids`, and `count`.
 The count is the number of rendered lines across those four groups. The mark is
-one per member, not per target, so Caught up on any target acknowledges the
-whole displayed cursor. Opening a project or reading its digest never advances an
+one per member, not per target, so the Overview offers Caught up on main only;
+a branch's digest cannot acknowledge main lines that are not on screen. Opening a project or reading its digest never advances an
 existing mark. A member without a mark starts at the event log's current cursor
 and sees an empty digest; listing project cards does not create marks. The initial
 main projector checkpoint is persisted, after existing branches and episodes are

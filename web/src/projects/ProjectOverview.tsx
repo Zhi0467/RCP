@@ -33,7 +33,8 @@ export interface DigestCardProps {
   targetName: string;
   error: string | null;
   catchingUp: boolean;
-  onCatchUp: () => void;
+  /** Main only: one mark per member covers every target, so a branch never acknowledges main. */
+  onCatchUp?: () => void;
   onOpenArtifact: (artifactId: string) => void;
 }
 
@@ -174,7 +175,7 @@ export function ProjectOverview({
   );
 }
 
-/** "Since you last looked": hidden when empty; Caught up acknowledges what is on screen. */
+/** "Since you last looked": hidden when empty; Caught up, offered on main, acknowledges it. */
 function DigestCard({
   digest,
   targetName,
@@ -211,15 +212,17 @@ function DigestCard({
           <h2>{digestSummary(digest)}</h2>
           {digest.mark && <small>Last caught up {formatDigestTime(digest.mark.marked_at)}</small>}
         </div>
-        <button
-          className="button primary compact"
-          type="button"
-          disabled={catchingUp}
-          onClick={onCatchUp}
-        >
-          <Check size={14} />
-          Caught up
-        </button>
+        {onCatchUp && (
+          <button
+            className="button primary compact"
+            type="button"
+            disabled={catchingUp}
+            onClick={onCatchUp}
+          >
+            <Check size={14} />
+            Caught up
+          </button>
+        )}
       </header>
       {error && <p role="alert">{error}</p>}
       <div className="digest-groups">

@@ -5457,7 +5457,8 @@ function MemberApp({
                 targetName: branchName(projectGraphRefs, graphTarget),
                 error: projectDigestError,
                 catchingUp: projectDigestCatchingUp,
-                onCatchUp: () => void catchUpProjectDigest(),
+                onCatchUp:
+                  graphTarget.kind === "main" ? () => void catchUpProjectDigest() : undefined,
                 onOpenArtifact: (artifactId) => openArtifact({ projectId: project.id, artifactId }),
               }}
             />
