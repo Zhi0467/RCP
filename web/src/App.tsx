@@ -3455,15 +3455,11 @@ function MemberApp({
           {
             method: "POST",
             body: JSON.stringify(request),
-            // A keyed start can be sent again safely, so a lost request ends
-            // instead of holding the start lock with no answer.
-            ...(requestId
-              ? {
-                  headers: { "Idempotency-Key": requestId },
-                  signal: AbortSignal.timeout(IDEMPOTENT_TASK_START_TIMEOUT_MS),
-                }
-              : {}),
+            ...(requestId ? { headers: { "Idempotency-Key": requestId } } : {}),
           },
+          // A keyed start can be sent again safely, so a lost request ends
+          // instead of holding the start lock with no answer.
+          requestId ? { attemptTimeoutMs: IDEMPOTENT_TASK_START_TIMEOUT_MS } : {},
         );
         if (
           (kind === "node_chat" || kind === "project_chat") &&
