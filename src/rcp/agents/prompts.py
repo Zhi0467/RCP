@@ -17,6 +17,7 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 
@@ -213,10 +214,10 @@ one `- key: value` line each, and it lists every value that differs from this co
 what changed since the launch before. A listed value replaces this contract's value for that
 launch; a key it does not list has this contract's value. The keys: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
 `work.*` the Work write roots and launch facts, `discuss.*` the Discuss command contract, and likewise `repositories`, `skills`, `settings.*`,
-and `workspace.path`. `current.graph_revision` is the one exception: it is listed only when the
-graph changed since the last committed turn of this chat, so an omitted revision means no one else
-changed the graph, not that it returned to this contract's revision. It never means the human
-approved anything; read the live graph for the records you rely on."""
+and `workspace.path`. `current.graph_changed_since` and `current.graph_head` are turn-relative:
+they name the range from the last snapshot this owner received to this turn's staged snapshot.
+An omitted range can mean the earlier head is unknown. It never means the human approved
+anything; read the live graph for the records you rely on."""
 
 
 def _work_write_boundary(scope: ProjectWriteScope | None) -> str:
@@ -236,6 +237,27 @@ def _command_client_rule(command_client: str) -> str:
         f"- Command client: `{command_client}`\n"
         f"  Every staged RCP command below starts with it where it shows `{COMMAND_CLIENT}`. A later\n"
         "  turn that changes it sends `patch.command_client`."
+    )
+
+
+def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
+    """Render the exact read grant used by this launch's command dispatcher."""
+
+    forms = {
+        "graph_diff": "<head A> <head B> [ids] | --branch-changes <branch>",
+        "graph_log": "<id> [--at <head>]",
+    }
+    calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
+    return (
+        "## Graph history queries\n\n"
+        f"Project: `{scope.project_id}`. Readable targets: main and every branch of this project. "
+        f"Unqualified heads use `{scope.target.key}`. Reads grant no write authority.\n"
+        f"{calls}\n"
+        "A continuation that changes `history_client` or `patch.command_client` replaces the command prefix above. "
+        "Heads: `main@R`, `branch:<id>@R`, or `@R`; `head` may replace R. "
+        "Continue a paged answer with the same verb and its returned cursor (`--cursor`). "
+        "When a continuation lists `current.graph_changed_since` and `current.graph_head`, "
+        "query that range with graph_diff. The range tracks only this run's target."
     )
 
 
@@ -925,6 +947,7 @@ class PromptFactory:
         execution_instructions: str = "",
         auto_research_child_boundary: str = "",
         discuss_execution_instructions: str = "",
+        graph_read_scope: GraphReadScope | None = None,
     ) -> str:
         """Render the one master a conversation session holds for both modes.
 
@@ -1002,6 +1025,8 @@ Turn protocol:
 - The human message follows unchanged.
 
 {_CHANGED_VALUES_RULE}
+
+{render_graph_history(graph_read_scope, command_client) if graph_read_scope else ""}
 
 {context}
 {_focused_node_snapshot(graph_revision, focused_node, focused_relations)}
@@ -1254,6 +1279,7 @@ Boundary:
         attachments: list[dict[str, object]] | None = None,
         compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
+        graph_read_scope: GraphReadScope | None = None,
     ) -> str:
         """Render the Work contract a session starts from.
 
@@ -1328,6 +1354,7 @@ Optional watcher handoff:
             + _patch_validator_rules(f"{COMMAND_CLIENT} {shlex.join(['validate', patch_path])}")
         )
         return _tidy(f"""# RCP Work task contract
+{render_graph_history(graph_read_scope, command_client) if graph_read_scope and not embedded else ""}
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 

@@ -13,13 +13,16 @@ from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from rcp.agents.continuation_prompt import MasterRef
+from rcp.agents.continuation_prompt import MasterRef, graph_head_delta
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history.queries import HeadSpec
 from rcp.runs.shared import _stage_or_reuse_task_input, _stage_task_contract
 from rcp.storage import AppStore
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
+    from rcp.service import ProjectService
 
 SESSION_MASTER_ROLE = "session_master"
 SESSION_MASTER_KEY_ROLE = "session_master_key"
@@ -206,3 +209,186 @@ def record_inline_prompt(
         local_stage, remote_stage, label, prompt, execution=execution, role=role
     )
     return contract_path
+
+
+def staged_graph_head(
+    service: ProjectService, target: GraphTargetRef, revision: int
+) -> GraphHeadRef:
+    """Resolve the exact snapshot, never the live head after staging."""
+
+    return service.history_engine.resolve(
+        HeadSpec(target=target, revision=revision), default_target=target
+    )
+
+
+def _graph_observation_contracts(store: AppStore, operation_id: str) -> list[str]:
+    return [
+        record.content
+        for record in store.agent_task_contracts(operation_id)
+        if record.role.startswith("graph_observation:")
+    ]
+
+
+def prepare_graph_observation(
+    execution: AgentTaskExecution | None,
+    service: ProjectService,
+    *,
+    owner_id: str,
+    target: GraphTargetRef,
+    revision: int,
+    native_session_id: str | None,
+    previous_head: GraphHeadRef | None = None,
+) -> GraphHeadRef:
+    """Stage an observation candidate; only successful settlement publishes it."""
+
+    head = staged_graph_head(service, target, revision)
+    if execution is None:
+        return head
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        raise ValueError("The graph-reading task record is unavailable.")
+    previous = (
+        execution.store.graph_seen_head_record(task.project_id, owner_id, native_session_id, target)
+        if native_session_id is not None
+        else None
+    )
+    prior_candidates = _graph_observation_contracts(execution.store, execution.operation_id)
+    prior = json.loads(prior_candidates[0]) if prior_candidates else None
+    if prior is not None and (
+        prior["owner_id"] != owner_id
+        or GraphHeadRef.model_validate(prior["head"]).target != target
+        or prior["native_session_id"] not in (None, native_session_id)
+    ):
+        raise ValueError("Graph observation correction changed its owner or session binding.")
+    content = json.dumps(
+        {
+            "project_id": task.project_id,
+            "owner_id": owner_id,
+            "native_session_id": native_session_id,
+            "kind": task.kind,
+            "episode_id": task.episode_id,
+            "task_target": task.graph_target.model_dump(mode="json"),
+            "head": head.model_dump(mode="json"),
+            "previous_head": previous_head.model_dump(mode="json") if previous_head else None,
+            "expected_operation_id": (
+                prior["expected_operation_id"]
+                if prior is not None
+                else previous[1]
+                if previous is not None
+                else None
+            ),
+        }
+    )
+    if not prior_candidates or prior_candidates[-1] != content:
+        execution.store.record_agent_task_contract(
+            execution.operation_id,
+            f"graph_observation:{len(prior_candidates)}",
+            content,
+            _sha256(content),
+        )
+    return head
+
+
+def _own_applied_head(
+    service: ProjectService,
+    staged_head: GraphHeadRef,
+    applied_head: GraphHeadRef | None,
+    operation_id: str,
+) -> GraphHeadRef:
+    if applied_head is None or applied_head.target != staged_head.target:
+        return staged_head
+    steps = [
+        step
+        for step in service.history_engine.steps(applied_head)
+        if step.accepted and step.after_head.revision > staged_head.revision
+    ]
+    if steps and all(
+        step.patch.source_operation_id == operation_id or step.patch.task_id == operation_id
+        for step in steps
+    ):
+        return applied_head
+    return staged_head
+
+
+def commit_prepared_graph_observation(
+    execution: AgentTaskExecution | None,
+    service: ProjectService,
+    *,
+    native_session_id: str | None,
+    applied_revision: int | None = None,
+) -> None:
+    """Commit precisely the snapshot captured for this turn, including recovered turns."""
+
+    if execution is None or native_session_id is None:
+        return
+    operation_id = execution.operation_id
+    candidates = _graph_observation_contracts(execution.store, operation_id)
+    content = candidates[-1] if candidates else None
+    visited: set[str] = set()
+    while content is None:
+        if operation_id in visited:
+            raise ValueError("Graph observation recovery ancestry contains a cycle.")
+        visited.add(operation_id)
+        task = execution.store.agent_task(operation_id)
+        if task is None or task.parent_operation_id is None:
+            return
+        operation_id = task.parent_operation_id
+        candidates = _graph_observation_contracts(execution.store, operation_id)
+        content = candidates[-1] if candidates else None
+    candidate = json.loads(content)
+    head = GraphHeadRef.model_validate(candidate["head"])
+    current = execution.store.agent_task(execution.operation_id)
+    origin = execution.store.agent_task(operation_id)
+    if (
+        current is None
+        or origin is None
+        or current.project_id != candidate["project_id"]
+        or current.graph_target != GraphTargetRef.model_validate(candidate["task_target"])
+        or current.kind != candidate["kind"]
+        or current.episode_id != candidate["episode_id"]
+        or origin.project_id != current.project_id
+        or origin.graph_target != current.graph_target
+        or current.native_session_id not in (None, native_session_id)
+        or origin.native_session_id not in (None, native_session_id)
+        or candidate["native_session_id"] not in (None, native_session_id)
+    ):
+        raise ValueError("Graph observation recovery changed its owner, session, or target.")
+    applied = (
+        staged_graph_head(service, head.target, applied_revision)
+        if applied_revision is not None
+        else None
+    )
+    head = _own_applied_head(service, head, applied, execution.operation_id)
+    execution.store.commit_graph_seen_head(
+        project_id=candidate["project_id"],
+        owner_id=candidate["owner_id"],
+        native_session_id=native_session_id,
+        head=head,
+        operation_id=execution.operation_id,
+        expected_operation_id=candidate["expected_operation_id"],
+    )
+
+
+def prepared_graph_observation_delta(
+    execution: AgentTaskExecution | None, native_session_id: str | None
+) -> dict[str, dict[str, object]]:
+    """Compare this owner's captured snapshot with its last committed observation."""
+
+    if execution is None or native_session_id is None:
+        return {}
+    candidates = _graph_observation_contracts(execution.store, execution.operation_id)
+    if not candidates:
+        return {}
+    content = candidates[-1]
+    candidate = json.loads(content)
+    head = GraphHeadRef.model_validate(candidate["head"])
+    seen = (
+        GraphHeadRef.model_validate(candidate["previous_head"])
+        if candidate.get("previous_head") is not None
+        else execution.store.graph_seen_head(
+            candidate["project_id"], candidate["owner_id"], native_session_id, head.target
+        )
+    )
+    delta = graph_head_delta(seen, head)
+    current = delta.get("current")
+    return {"current": current} if isinstance(current, dict) else {}

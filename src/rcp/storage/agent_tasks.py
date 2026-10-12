@@ -31,7 +31,7 @@ from rcp.core.models import (
     BranchMergeReceipt,
     EpisodeIsolationState,
 )
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
     AGENT_TASK_ESTIMATE_HISTORY_LIMIT,
@@ -1896,7 +1896,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             """,
             (selected_json,),
         ).rowcount
-        for table in ("writing_sessions", "chat_session_contexts"):
+        for table in ("writing_sessions", "chat_session_contexts", "graph_seen_heads"):
             connection.execute(
                 f"""
                 DELETE FROM {table}
@@ -2847,6 +2847,64 @@ class AgentTaskStoreMixin(StoreMixinBase):
         stored = self.chat_session_context(provider, execution_machine, native_session_id)
         assert stored is not None
         return stored
+
+    def graph_seen_head(
+        self, project_id: str, owner_id: str, native_session_id: str, target: GraphTargetRef
+    ) -> GraphHeadRef | None:
+        """Last committed snapshot for this logical owner; missing means unknown."""
+
+        record = self.graph_seen_head_record(project_id, owner_id, native_session_id, target)
+        return record[0] if record is not None else None
+
+    def graph_seen_head_record(
+        self, project_id: str, owner_id: str, native_session_id: str, target: GraphTargetRef
+    ) -> tuple[GraphHeadRef, str] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """SELECT head_json, committed_operation_id FROM graph_seen_heads
+                   WHERE project_id = ? AND owner_id = ? AND native_session_id = ?
+                     AND graph_target = ?""",
+                (project_id, owner_id, native_session_id, target.key),
+            ).fetchone()
+        if row is None:
+            return None
+        return GraphHeadRef.model_validate_json(row["head_json"]), row["committed_operation_id"]
+
+    def commit_graph_seen_head(
+        self,
+        *,
+        project_id: str,
+        owner_id: str,
+        native_session_id: str,
+        head: GraphHeadRef,
+        operation_id: str,
+        expected_operation_id: str | None,
+    ) -> None:
+        """Generalized conversation CAS: only the observed predecessor may be replaced."""
+
+        key = (project_id, owner_id, native_session_id, head.target.key)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT head_json, committed_operation_id FROM graph_seen_heads
+                   WHERE project_id = ? AND owner_id = ? AND native_session_id = ?
+                     AND graph_target = ?""",
+                key,
+            ).fetchone()
+            previous = row["committed_operation_id"] if row is not None else None
+            if previous == operation_id and row is not None:
+                recorded = GraphHeadRef.model_validate_json(row["head_json"])
+                if recorded.revision >= head.revision:
+                    return
+            if previous != expected_operation_id and previous != operation_id:
+                raise ValueError("Graph seen head compare-and-swap failed: prior turn changed.")
+            connection.execute(
+                """INSERT INTO graph_seen_heads VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(project_id, owner_id, native_session_id, graph_target)
+                   DO UPDATE SET head_json = excluded.head_json,
+                                 committed_operation_id = excluded.committed_operation_id""",
+                (*key, head.model_dump_json(), operation_id),
+            )
 
     def record_agent_usage(
         self,

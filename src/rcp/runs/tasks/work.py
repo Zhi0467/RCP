@@ -7,7 +7,7 @@ import shlex
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -23,8 +23,10 @@ from rcp.agents import (
     validate_work_patch,
 )
 from rcp.agents.command_mailbox import (
+    CommandTurnIdentity,
     StagedCommandMailbox,
 )
+from rcp.agents.command_protocol import CommandRequest, CommandResponse
 from rcp.agents.context import ChatContext
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
@@ -35,6 +37,7 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
@@ -52,7 +55,9 @@ from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
 from rcp.core.models import Patch
 from rcp.core.operations import CreateProposalsOperation
+from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ReplayHalted
+from rcp.history.queries import format_head
 from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
@@ -73,7 +78,6 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
     _read_watch_request,
-    _record_applied_graph_revision,
     _record_artifact_discovery_receipt,
     _stage_chat_patch_inputs,
     _stage_chat_turn_contract,
@@ -87,6 +91,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.consolidation import (
     consolidation_apply_handler,
+    consolidation_covered_head,
     consolidation_skill_selection,
     is_consolidation,
     require_consolidation_launch,
@@ -124,7 +129,14 @@ from rcp.runs.recorded_turn import (
     decode_recorded_turn,
 )
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
-from rcp.runs.session_master import record_inline_prompt, record_session_master
+from rcp.runs.session_master import (
+    commit_prepared_graph_observation,
+    prepare_graph_observation,
+    prepared_graph_observation_delta,
+    record_inline_prompt,
+    record_session_master,
+    staged_graph_head,
+)
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -328,14 +340,37 @@ def _prepare_work_chat_prompt(
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
-def _work_turn_command_handler(turn: WorkTurn) -> WorkCommandHandler:
+@dataclass(frozen=True)
+class _HistoryWorkCommandHandler:
+    handler: WorkCommandHandler
+    service: Callable[[], ProjectService]
+    scope: GraphReadScope
+
+    @property
+    def allowed_verbs(self) -> frozenset[str]:
+        return self.handler.allowed_verbs | self.scope.verbs
+
+    def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
+        if request.verb in self.scope.verbs:
+            from rcp.runs.graph_history_queries import handle_graph_history_command
+
+            return handle_graph_history_command(self.service(), self.scope, request)
+        return self.handler(request, identity)
+
+
+def _work_turn_command_handler(
+    turn: WorkTurn,
+) -> WorkCommandHandler | _HistoryWorkCommandHandler:
     """Render the very handler resolved for this launch, including its verb set."""
     lifecycle = getattr(turn, "validator_lifecycle", None)
     handler = getattr(lifecycle, "command_handler", None)
-    if isinstance(handler, WorkCommandHandler):
+    if isinstance(handler, (WorkCommandHandler, _HistoryWorkCommandHandler)):
         return handler
     # Child owners retain their separate dispatcher; this resolves no ask for them.
-    return _work_command_handler(turn.execution, turn.compute_commands)
+    handler = _work_command_handler(turn.execution, turn.compute_commands)
+    if turn.graph_read_scope is not None:
+        return _HistoryWorkCommandHandler(handler, lambda: turn.service, turn.graph_read_scope)
+    return handler
 
 
 def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> str:
@@ -398,9 +433,42 @@ def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
     return values
 
 
+def _prepare_work_observation(turn: WorkTurn, previous_head: GraphHeadRef | None = None) -> None:
+    if turn.execution is not None:
+        child = turn.execution.store.auto_research_child_work_for_operation(
+            turn.execution.operation_id
+        )
+        owner_id = f"auto-child:{child.worker_id}" if child else f"chat:{turn.request.chat_id}"
+        prepare_graph_observation(
+            turn.execution,
+            turn.service,
+            owner_id=owner_id,
+            target=turn.service.history.graph_target,
+            revision=turn.context.graph_revision,
+            native_session_id=turn.request.session_id,
+            previous_head=previous_head,
+        )
+
+
+def _refresh_work_snapshot(turn: WorkTurn) -> GraphHeadRef:
+    previous = staged_graph_head(
+        turn.service, turn.service.history.graph_target, turn.context.graph_revision
+    )
+    refreshed = turn.service.assemble_chat(turn.request)
+    turn.context = turn.context.model_copy(
+        update={
+            "graph_revision": refreshed.graph_revision,
+            "node": refreshed.node,
+            "relations": refreshed.relations,
+        }
+    )
+    return previous
+
+
 def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, object]:
     """The stable values a Work master states, built from the inputs its renderer uses."""
 
+    _prepare_work_observation(turn)
     return chat_prompt_values(
         turn.context,
         turn.request,
@@ -414,6 +482,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
     )
+
 
 
 def _resolve_work_execution(
@@ -789,7 +858,7 @@ def _work_contract_text(
             f"task-{staged.token}-human-request.txt",
             turn.request.message,
         )
-    return PromptFactory.work_task_contract(
+    contract = PromptFactory.work_task_contract(
         execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
@@ -808,6 +877,7 @@ def _work_contract_text(
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         command_client=turn.patch_inputs.command_client,
+        graph_read_scope=turn.graph_read_scope,
         write_scope=turn.write_scope,
         skill_pointers=staged.skill_pointers,
         invoked_skill_pointers=invoked_package_pointers(
@@ -819,6 +889,11 @@ def _work_contract_text(
         attachments=staged.attachment_pointers,
         compute_connections=compute_profiles,
     )
+
+    covered = consolidation_covered_head(turn.service, turn.execution)
+    if covered is not None:
+        contract += f"\n\nConsolidation covered head: `{format_head(covered)}`."
+    return contract
 
 
 def _stage_work_contract(
@@ -917,6 +992,13 @@ def _work_continuation(
         force_bootstrap=force_bootstrap,
     )
     delta = changed_since_master(replace(master, bootstrap=False), values)
+    observed = prepared_graph_observation_delta(turn.execution, session_id)
+    if observed:
+        current = (delta or {}).get("current", {})
+        delta = {
+            **(delta or {}),
+            "current": {**(current if isinstance(current, dict) else {}), **observed["current"]},
+        }
     question_part = prepare_work_question_snapshot(turn)
     parts = [part, question_part] if question_part else [part]
     if browser_grant is not None and browser_grant.status != "not_requested":
@@ -1000,6 +1082,7 @@ def _work_chat_master_context(
         workspace_path=str(turn.workspace),
         output_schema_path=turn.patch_inputs.schema_path,
         command_client=turn.patch_inputs.command_client,
+        graph_read_scope=turn.graph_read_scope,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
@@ -1326,14 +1409,19 @@ def _compose_work_correction_prompt(
 ) -> tuple[str, str]:
     """Send a correction inline in its Work session; return the prompt and its record path.
 
-    A correction runs with its own command client; every other value is the turn's own.
+    A correction receives a fresh graph snapshot and its own command client.
     """
 
+    previous_head = _refresh_work_snapshot(turn)
+    _prepare_work_observation(turn, previous_head)
     if composed.prompt_values is None:
         raise ValueError("A Work correction needs the values its turn was composed with.")
     patch = composed.prompt_values["patch"]
     assert isinstance(patch, dict)
-    values = {**composed.prompt_values, "patch": {**patch, "command_client": command_client}}
+    values = {
+        **composed.prompt_values,
+        "patch": {**patch, "command_client": command_client},
+    }
     prompt = _work_continuation(
         turn,
         composed.render_master,
@@ -1662,6 +1750,7 @@ async def _settle_patch_deliverable(
                 budget=launch_turn.validator_budget,
                 compute_commands=launch_turn.compute_commands,
                 run_truth_scope=turn.run_truth_scope,
+                graph_read_scope=launch_turn.graph_read_scope,
             )
             correction_prompt, correction_path = _compose_work_correction_prompt(
                 launch_turn,
@@ -1855,6 +1944,7 @@ async def _settle_watch_deliverable(
             budget=launch_turn.validator_budget,
             compute_commands=launch_turn.compute_commands,
             run_truth_scope=turn.run_truth_scope,
+            graph_read_scope=launch_turn.graph_read_scope,
         )
         primary_error: BaseException | None = None
         try:
@@ -2018,22 +2108,6 @@ def _finalize_work_turn(
     answer: str,
     graph_update: GraphUpdateResult,
 ) -> tuple[str, str]:
-    if turn.uses_master_protocol:
-        try:
-            _record_applied_graph_revision(
-                turn.execution,
-                turn.request,
-                turn.outcome.session_id,
-                graph_update.applied_revision,
-            )
-        except ValueError as exc:
-            if turn.execution is not None:
-                turn.execution.store.record_agent_task_event(
-                    turn.execution.operation_id,
-                    "This turn's own revision could not be absorbed into the session "
-                    f"baseline; the next turn may re-announce it: {exc}",
-                    level="warning",
-                )
     try:
         _append_chat_exchange(
             turn.service,
@@ -2051,6 +2125,13 @@ def _finalize_work_turn(
                 f"The reply was delivered but could not be written to the chat transcript: {exc}",
                 level="warning",
             )
+    if graph_update.status in {"applied", "none"}:
+        commit_prepared_graph_observation(
+            turn.execution,
+            turn.service,
+            native_session_id=turn.outcome.session_id,
+            applied_revision=graph_update.applied_revision,
+        )
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),
     }
@@ -2658,12 +2739,20 @@ async def _stream_work_graph_repair(
             ask_wait_seconds=ask_hold_seconds(shell_timeout),
             shell_timeout_seconds=shell_timeout,
         )
+        task_record = execution.store.agent_task(execution.operation_id)
+        if task_record is None:
+            raise ValueError("The graph-reading task record is unavailable.")
+        graph_read_scope = GraphReadScope(
+            project_id=task_record.project_id,
+            target=service.history.graph_target,
+        )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
             patch_inputs.validator_staged,
             execution=execution,
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
+            graph_read_scope=graph_read_scope,
         )
         read_dirs = _chat_read_dirs(
             context,
@@ -2688,6 +2777,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,
             request=request,
@@ -2856,6 +2946,13 @@ async def _stream_work_graph_repair(
             f"The graph repair completed but its chat receipt could not be written: {exc}",
             level="warning",
         )
+    if graph_update.status in {"applied", "none"}:
+        commit_prepared_graph_observation(
+            execution,
+            service,
+            native_session_id=outcome.session_id,
+            applied_revision=graph_update.applied_revision,
+        )
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),
     }
@@ -2873,6 +2970,7 @@ def _start_work_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
+    graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     command_handler = _work_command_handler(
         execution,
@@ -2883,6 +2981,10 @@ def _start_work_validator_mailbox(
             else None
         ),
     )
+    if graph_read_scope is not None:
+        command_handler = _HistoryWorkCommandHandler(
+            command_handler, lambda: service, graph_read_scope
+        )
     return start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -2890,7 +2992,10 @@ def _start_work_validator_mailbox(
         command_handler=command_handler,
         serve=serve_patch_validation_mailbox,
         resume_context=_work_mailbox_context(
-            run_truth_scope, compute_commands, ask_allowed="ask" in command_handler.allowed_verbs
+            run_truth_scope,
+            compute_commands,
+            ask_allowed="ask" in command_handler.allowed_verbs,
+            graph_read_scope=graph_read_scope,
         ).model_dump(mode="json"),
         validate=lambda text: _validate_work_patch_live(
             service,
@@ -2908,6 +3013,7 @@ class _WorkMailboxContext(BaseModel):
 
     run_truth_scope: list[str]
     ask_allowed: bool = False
+    graph_read_scope: GraphReadScope | None = None
     write_scope: ProjectWriteScope | None = None
     episode_id: str | None = None
     manifest: Manifest | None = None
@@ -2918,10 +3024,12 @@ def _work_mailbox_context(
     compute_commands: WorkComputeCommands | None,
     *,
     ask_allowed: bool = False,
+    graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkMailboxContext:
     return _WorkMailboxContext(
         run_truth_scope=run_truth_scope,
         ask_allowed=ask_allowed,
+        graph_read_scope=graph_read_scope,
         write_scope=compute_commands.write_scope if compute_commands is not None else None,
         episode_id=compute_commands.episode_id if compute_commands is not None else None,
         manifest=compute_commands.manifest if compute_commands is not None else None,
@@ -2968,16 +3076,19 @@ def _resume_work_command_handler(
         mailbox = RunStageMailbox(
             Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
         )
-        return _work_command_handler(
+        handler = _work_command_handler(
             execution,
             None,
             consolidation_apply=consolidation_apply_handler(
                 service, execution, mailbox, context.run_truth_scope
             ),
         )
-    handler = _work_command_handler(execution, compute_commands)
+    else:
+        handler = _work_command_handler(execution, compute_commands)
     if not context.ask_allowed:
-        handler = WorkCommandHandler(execution, compute_commands, handler.allowed_verbs - {"ask"})
+        handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})
+    if context.graph_read_scope is not None:
+        return _HistoryWorkCommandHandler(handler, service, context.graph_read_scope)
     return handler if handler.allowed_verbs != {"validate"} else None
 
 

@@ -21,6 +21,7 @@ from rcp.agents.command_mailbox import (
 )
 from rcp.agents.command_protocol import CommandResponse
 from rcp.agents.context import ChatContext
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
@@ -192,6 +193,7 @@ class WorkTurn:
     question_snapshot: QuestionSnapshot | None = None
     hidden_read_scope: HiddenReadScope | None = None
     data_dir: Path | None = None
+    graph_read_scope: GraphReadScope | None = None
 
     @property
     def run_truth_scope(self) -> list[str]:

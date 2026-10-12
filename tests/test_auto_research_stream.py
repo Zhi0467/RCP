@@ -3049,7 +3049,9 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         original_contract_path="/stage/inputs/original.md", mode="continuation", **common
     )
     assert "/stage/inputs/original.md" in continued
-    assert "other_branch_loops" not in auto_research_prompt_values(**common)
+    values = auto_research_prompt_values(**common)
+    assert "other_branch_loops" not in values
+    assert values["history_client"] == common["command_client"]
     assert package_path in fresh
     assert graph_rules(edits=True, ontology_extensions=False) in fresh
     # A continuation sends the packages again only when one of them changed.
@@ -3292,3 +3294,100 @@ def test_child_profile_choices_list_at_most_the_capped_models_per_provider():
     rendered = render_child_profile_choices({"codex": models})
     listed = [name for name in models if name in rendered]
     assert listed == list(models)[:CHILD_PROFILE_PROMPT_MAX_MODELS]
+
+
+@pytest.mark.parametrize("role", ["orchestrator", "worker"])
+def test_actor_master_history_verbs_follow_scope(role: str) -> None:
+    from rcp.agents.auto_research_prompt import (
+        auto_research_orchestrator_task_contract,
+        auto_research_worker_task_contract,
+    )
+    from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.agents.write_scope import ProjectWriteScope
+
+    scope = GraphReadScope(
+        project_id="project", target=GraphTargetRef(), verbs=frozenset({"graph_log"})
+    )
+    common: dict[str, Any] = dict(
+        project_name="project",
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        command_client="/stage/client",
+        graph_read_scope=scope,
+        write_scope=ProjectWriteScope.create(
+            project_id="project",
+            execution_machine="local",
+            execution_host="",
+            capability="orchestrate" if role == "orchestrator" else "work_auto",
+            stage_root="/stage",
+            workspace_root="/stage",
+            repositories=[],
+            protected_write_paths=[],
+        ),
+    )
+    rendered = (
+        auto_research_orchestrator_task_contract(**common)
+        if role == "orchestrator"
+        else auto_research_worker_task_contract(
+            seat_node_type="node",
+            seat_node_id="node/one",
+            seat_difficulty="assignment",
+            instruction_path="/stage/instruction",
+            reply_key="reply",
+            **common,
+        )
+    )
+    assert "/stage/client graph_log " in rendered
+    assert "/stage/client graph_diff " not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_fails", [False, True])
+async def test_orchestrator_observes_snapshot_only_after_success(
+    manifest,
+    tmp_path,
+    monkeypatch,
+    provider_fails: bool,
+) -> None:
+    service, store, _episode, root, _worker = _setup_branch_auto_research(
+        _service(manifest, tmp_path),
+        tmp_path / "store",
+    )
+    snapshot = service.history.head_ref()
+
+    class SnapshotEngine:
+        def resolve(self, spec, *, default_target):
+            assert spec.revision == snapshot.revision
+            assert default_target == snapshot.target
+            return snapshot
+
+    monkeypatch.setattr(
+        ProjectService, "history_engine", property(lambda _self: SnapshotEngine()), raising=False
+    )
+    owner = f"auto-root:{root.operation_id}"
+    session = "orchestrator-session"
+
+    def during_provider(_contract: str, _workspace: Path) -> None:
+        assert store.graph_seen_head(root.project_id, owner, session, snapshot.target) is None
+        if provider_fails:
+            raise OSError("provider failed before completing its turn")
+
+    class ObservationLauncher(_WorkerLauncher):
+        async def stream(self, *args, **kwargs):
+            kwargs["invocation_gate"] = None
+            async for event in super().stream(*args, **kwargs):
+                yield event
+
+    events = await _orchestrator_events(
+        service,
+        ObservationLauncher(session_id=session, writer=during_provider),
+        store,
+        root,
+        tmp_path / "data",
+    )
+    observed = store.graph_seen_head(root.project_id, owner, session, snapshot.target)
+    assert observed == (None if provider_fails else snapshot)
+    assert events[-1].event == ("error" if provider_fails else "done")

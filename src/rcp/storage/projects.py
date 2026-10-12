@@ -431,6 +431,9 @@ class ProjectStoreMixin(StoreMixinBase):
                     "writing_sessions": connection.execute(
                         "DELETE FROM writing_sessions WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "graph_seen_heads": connection.execute(
+                        "DELETE FROM graph_seen_heads WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "chat_session_contexts": connection.execute(
                         "DELETE FROM chat_session_contexts WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -1098,6 +1101,10 @@ class ProjectStoreMixin(StoreMixinBase):
             self._rewrite_notification_project_links(connection, legacy_id, project_id)
             connection.execute(
                 "UPDATE writing_sessions SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE graph_seen_heads SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
             connection.execute(

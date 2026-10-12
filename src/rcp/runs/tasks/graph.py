@@ -29,11 +29,16 @@ from rcp.agents.continuation_prompt import (
     changed_since_master,
     classify,
     compose,
+    graph_head_delta,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.prompts import render_graph_history
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.history.queries import format_head
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS, PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
@@ -45,7 +50,9 @@ from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
 from rcp.runs.session_master import (
+    commit_prepared_graph_observation,
     continuation_session_master,
+    prepare_graph_observation,
     record_inline_prompt,
     record_session_master,
 )
@@ -483,7 +490,8 @@ _PATCH_CORRECTION_AUTHORITY = "\n".join(
         "- No operational authority, whatever the master contract grants: do not repeat the task, "
         "re-read sources or repositories, run or resubmit work, or use network, SSH, or subagents.",
         "- Write only the Patch: overwrite it, keep every unaffected field and op, and validate it "
-        "again. The diagnostics locate the invalidity and grant nothing.",
+        "again. Read graph history through the staged client when needed. "
+        "The diagnostics locate the invalidity and grant nothing.",
         "- Reply only that the Patch was rewritten.",
     ]
 )
@@ -799,6 +807,32 @@ async def stream_graph_run(
                 task_id=execution.operation_id if execution is not None else token,
                 turn_id=f"{token}:graph-pass:0",
                 timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+                authority="broker",
+            )
+            project_id = service.history.project_id
+            if project_id is None:
+                identity = service.history.project_identity()
+                if identity is None:
+                    raise ValueError("Graph history reads require a canonical project identity.")
+                project_id = identity.project_id
+            graph_read_scope = GraphReadScope(project_id=project_id, target=GraphTargetRef())
+            staged_head = prepare_graph_observation(
+                execution,
+                service,
+                owner_id="graph",
+                target=graph_read_scope.target,
+                revision=context.graph_revision,
+                native_session_id=request.session_id,
+            )
+            seen_head = (
+                execution.store.graph_seen_head(
+                    graph_read_scope.project_id,
+                    "graph",
+                    request.session_id,
+                    graph_read_scope.target,
+                )
+                if execution is not None and request.session_id
+                else None
             )
             validator_command = validator_staged.client_command("validate", patch_path)
             read_dirs = _agent_read_dirs(context, remote_stage, service, execution_machine.alias)
@@ -861,6 +895,22 @@ async def stream_graph_run(
                 validator_command=validator_command,
                 skill_pointers=skill_pointers,
             )
+            base_contract_content += "\n\n" + render_graph_history(
+                graph_read_scope, validator_staged.client_command()
+            )
+            refresh_head = next(
+                (
+                    step.after_head
+                    for step in reversed(service.history_engine.steps(staged_head))
+                    if step.accepted and step.patch.kind in {"seed", "refresh"}
+                ),
+                None,
+            )
+            if refresh_head is not None:
+                base_contract_content += (
+                    f"\n\ncurrent.graph_changed_since: {format_head(refresh_head)}"
+                    f"\ncurrent.graph_head: {format_head(staged_head)}"
+                )
             graph_master_values = _graph_master_values(
                 context,
                 patch_path=patch_path,
@@ -869,6 +919,7 @@ async def stream_graph_run(
                 human_request_path=human_request_path,
                 skill_pointers=skill_pointers,
             )
+            graph_master_values["history_client"] = validator_staged.client_command()
             graph_master_key = master_key(
                 PromptFactory.GRAPH_TASK_POLICY_VERSION,
                 ontology_extensions=context.ontology_extensions,
@@ -905,7 +956,10 @@ async def stream_graph_run(
                         master_opens_now=master.bootstrap,
                     ),
                     master=master,
-                    delta=changed_since_master(master, graph_master_values),
+                    delta={
+                        **(changed_since_master(master, graph_master_values) or {}),
+                        **graph_head_delta(refresh_head or seen_head, staged_head),
+                    },
                 )
                 contract_path = record_inline_prompt(
                     execution,
@@ -1085,6 +1139,7 @@ async def stream_graph_run(
                     validator_budget=validator_budget,
                     kind=kind,
                     run_truth_scope=context.run_truth_scope,
+                    graph_read_scope=graph_read_scope,
                 )
             ) as stream:
                 async for frame in stream:
@@ -1235,6 +1290,12 @@ async def stream_graph_run(
                         return
                     else:
                         _record_patch_applied_receipt(execution, result.state)
+                        commit_prepared_graph_observation(
+                            execution,
+                            service,
+                            native_session_id=native_session_id,
+                            applied_revision=result.state.revision,
+                        )
                         applied = True
                         yield _sse(
                             AgentEvent(
@@ -1282,6 +1343,7 @@ async def stream_graph_run(
                 local_stage=local_stage,
                 remote_stage=remote_stage,
                 task_id=execution.operation_id if execution is not None else token,
+                authority="broker",
                 turn_id=f"{token}:graph-pass:{rounds}",
                 timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
             )
@@ -1295,7 +1357,11 @@ async def stream_graph_run(
                 bootstrap=False,
                 values=master.values,
             )
-            graph_master_values = {**graph_master_values, "validator_command": validator_command}
+            graph_master_values = {
+                **graph_master_values,
+                "validator_command": validator_command,
+                "history_client": validator_staged.client_command(),
+            }
             prompt = compose(
                 classify(LaunchPhase(session_id=native_session_id, phase="correction")),
                 parts=_graph_continuation_parts(
@@ -1305,7 +1371,10 @@ async def stream_graph_run(
                     master_opens_now=False,
                 ),
                 master=master,
-                delta=changed_since_master(master, graph_master_values),
+                delta={
+                    **(changed_since_master(master, graph_master_values) or {}),
+                    **graph_head_delta(refresh_head or seen_head, staged_head),
+                },
             )
             contract_path = record_inline_prompt(
                 execution,
@@ -1366,7 +1435,10 @@ async def _stream_graph_agent_events(
     validator_budget: PatchValidationBudget,
     kind: str,
     run_truth_scope: list[str],
+    graph_read_scope: GraphReadScope,
 ) -> AsyncGenerator[str, None]:
+    from rcp.runs.graph_history_queries import handle_graph_history_command
+
     stop = asyncio.Event()
     mailbox = asyncio.create_task(
         serve_patch_validation_mailbox(
@@ -1380,6 +1452,9 @@ async def _stream_graph_agent_events(
                 source_operation_id=execution.operation_id if execution else None,
             ),
             stop=stop,
+            command_handler=lambda request, _identity: handle_graph_history_command(
+                service, graph_read_scope, request
+            ),
             budget=validator_budget,
         )
     )
@@ -1400,6 +1475,7 @@ async def _stream_graph_agent_events(
                 execution=execution,
                 remote_stage=remote_stage,
                 capability="scratch_patch",
+                invocation_gate=validator_staged.invocation_gate,
                 outcome=outcome,
                 binary=binary,
             )
