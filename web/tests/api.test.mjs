@@ -206,6 +206,40 @@ test("a read that loses its transport reports it; an abort or a parse error does
   }
 });
 
+test("an attempt timeout bounds each request, not the name prompt between them", async () => {
+  const originalFetch = globalThis.fetch;
+  const signals = [];
+  globalThis.fetch = async (_path, requestInit) => {
+    signals.push(requestInit.signal);
+    return new Response(
+      JSON.stringify(
+        signals.length === 1
+          ? { detail: { code: "identity_name_required", message: "Choose a name." } }
+          : { saved: true },
+      ),
+      { status: signals.length === 1 ? 428 : 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+  // The human takes longer to choose a name than one attempt may last.
+  registerIdentityNameRequiredHandler(
+    () => new Promise((resolve) => setTimeout(() => resolve(true), 80)),
+  );
+  try {
+    const result = await api(
+      "/api/projects/demo/tasks/project_chat",
+      { method: "POST", body: "{}" },
+      { attemptTimeoutMs: 40 },
+    );
+    assert.deepEqual(result, { saved: true });
+    assert.equal(signals.length, 2);
+    assert.notEqual(signals[0], signals[1]);
+    assert.equal(signals[1].aborted, false);
+  } finally {
+    registerIdentityNameRequiredHandler(null);
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("a named identity retries the exact mutation once before reconnect handling", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];

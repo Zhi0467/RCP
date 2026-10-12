@@ -96,7 +96,11 @@ export class ApiError extends Error {
 export async function api<T>(
   path: string,
   init?: RequestInit,
-  options: { retryIdentity?: boolean } = {},
+  options: {
+    retryIdentity?: boolean;
+    /** Bounds each attempt, never the human's display-name prompt between them. */
+    attemptTimeoutMs?: number;
+  } = {},
 ): Promise<T> {
   const mutation = isMutationRequest(init);
   const headers = new Headers(init?.headers);
@@ -115,6 +119,9 @@ export async function api<T>(
     fetch(path, {
       ...init,
       headers,
+      ...(options.attemptTimeoutMs !== undefined
+        ? { signal: AbortSignal.timeout(options.attemptTimeoutMs) }
+        : {}),
     });
   let response: Response;
   try {
