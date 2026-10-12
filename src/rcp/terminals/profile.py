@@ -49,7 +49,7 @@ for protected_path do
     esac
 done
 printf '\036rcp-terminal-ready\037'
-exec /bin/bash --noprofile --norc -i
+exec /bin/bash --login -i
 """
 
 

@@ -12,7 +12,8 @@ def main() -> None:
     # job control and delivers SIGHUP when the server's last master fd closes.
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
     os.write(1, b"\x1ercp-terminal-ready\x1f")
-    os.execv("/bin/bash", ["/bin/bash", "--noprofile", "--norc", "-i"])
+    # A login shell finds the programs the account's own login finds, as agents do.
+    os.execv("/bin/bash", ["/bin/bash", "--login", "-i"])
 
 
 if __name__ == "__main__":
