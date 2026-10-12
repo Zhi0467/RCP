@@ -21,6 +21,7 @@ import pytest
 
 from rcp.config import load_manifest
 from rcp.history.manager import HistoryManager
+from tests.helpers import unchecked_write_authority
 
 FIXTURE = Path(__file__).resolve().parents[1] / "examples" / "demo-project"
 
@@ -35,7 +36,7 @@ def demo_state(tmp_path: Path) -> Path:
 
 def test_demo_fixture_replays_from_its_patch_log(demo_state: Path) -> None:
     manifest = load_manifest(demo_state / ".research" / "manifest.toml")
-    state = HistoryManager(manifest).initialize().state
+    state = HistoryManager(manifest, write_authority=unchecked_write_authority()).initialize().state
 
     assert state.replay_status == "complete"
     assert state.replay_failure is None
@@ -53,7 +54,12 @@ def test_demo_fixture_still_offers_the_work_the_scenarios_open_it_for(
     demo_state: Path,
 ) -> None:
     state = (
-        HistoryManager(load_manifest(demo_state / ".research" / "manifest.toml")).initialize().state
+        HistoryManager(
+            load_manifest(demo_state / ".research" / "manifest.toml"),
+            write_authority=unchecked_write_authority(),
+        )
+        .initialize()
+        .state
     )
 
     # S08 approves a pending Proposal. S94 keeps the historical Ambiguity as a
@@ -78,7 +84,8 @@ def test_checked_in_graph_json_is_what_the_patch_log_produces(demo_state: Path) 
     """
     committed = json.loads((demo_state / ".research" / "graph.json").read_text())
     replayed = HistoryManager(
-        load_manifest(demo_state / ".research" / "manifest.toml")
+        load_manifest(demo_state / ".research" / "manifest.toml"),
+        write_authority=unchecked_write_authority(),
     ).initialize()
 
     assert set(replayed.state.nodes) == set(committed["nodes"])

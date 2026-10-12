@@ -27,6 +27,7 @@ from rcp.config import load_manifest
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
+    WriteAuthority,
 )
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -72,6 +73,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.transport.workspace_mailbox import RunStageMailbox
+from tests.helpers import unchecked_write_authority
 
 from .helpers import (
     agent_patch_json,
@@ -192,7 +194,7 @@ def _seat_patch() -> Patch:
 
 
 def _service(manifest, tmp_path: Path) -> ProjectService:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(_seat_patch())
     return ProjectService(
         manifest,
@@ -544,9 +546,9 @@ def _enable_task_attribution(
     store: AppStore,
 ) -> None:
     service.history.project_id = "project"
-    service.history.require_attribution = True
-    service.history.agent_authority_resolver = store.agent_task_authority
-    service.history.project_membership_check = seated_on_every_project
+    service.history.write_authority = WriteAuthority()
+    service.history.write_authority.agent_authority_resolver = store.agent_task_authority
+    service.history.write_authority.project_membership_check = seated_on_every_project
 
 
 def _setup_branch_auto_research(

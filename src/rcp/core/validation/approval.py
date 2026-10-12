@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from rcp.core.authority import DECIDE_DECISION, permits
+from rcp.core.authority import DECIDE_DECISION, Writer
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
@@ -92,6 +92,7 @@ def validate_approval_shape(
     report: ValidationReport,
     *,
     mode: Literal["admission", "replay"],
+    writer: Writer,
 ) -> None:
     revision = patch.revision or None
     resolution_ops = [op for op in patch.ops if isinstance(op, ResolveProposalsOperation)]
@@ -100,7 +101,7 @@ def validate_approval_shape(
         for operation in resolution_ops
         for resolution in operation.resolutions
     )
-    if patch.human_action == "decision_choice" and not approved_resolution:
+    if writer.human_action == "decision_choice" and not approved_resolution:
         _validate_direct_decision_choice(state, patch, resolution_ops, report, revision)
         return
     if not resolution_ops:
@@ -229,21 +230,14 @@ def validate_approval_shape(
             _validate_approved_decision_result(state, semantic_ops, report, revision)
         writes_decision_outcome = _writes_decision_outcome(state, semantic_ops)
         if mode == "admission" and writes_decision_outcome:
-            if patch.human_action != "decision_choice":
+            if writer.human_action != "decision_choice":
                 report.reject(
                     "unnamed-decision-action",
                     f"Approving a legacy Decision Proposal that writes selected_option or status "
                     f"decided must name the {DECIDE_DECISION} action.",
                     revision,
                 )
-            elif not permits(patch, DECIDE_DECISION):
-                report.reject(
-                    "decision-action-refused",
-                    f"This actor is not permitted to {DECIDE_DECISION} through a legacy "
-                    "Decision Proposal approval.",
-                    revision,
-                )
-        elif patch.human_action == "decision_choice" and not writes_decision_outcome:
+        elif writer.human_action == "decision_choice" and not writes_decision_outcome:
             report.reject(
                 "invalid-direct-decision-choice",
                 "A decision_choice Proposal approval must replay a legacy Decision outcome.",
@@ -283,10 +277,6 @@ def _validate_direct_decision_choice(
             revision,
             related_node_ids=[node_id] if node_id else [],
         )
-
-    if not permits(patch, DECIDE_DECISION):
-        refuse(f"Only an actor permitted to {DECIDE_DECISION} may choose a Decision option.")
-        return
 
     names = [op.op for op in patch.ops]
     if not names or set(names) - {"update_nodes", "resolve_proposals", "set_standing"}:
@@ -547,13 +537,10 @@ def _validate_direct_node_edit(
         return
     if mode == "admission" and isinstance(node, Decision) and is_decision_choice(changes):
         action = DECIDE_DECISION
-        permitted = permits(patch, action)
         report.reject(
             "unnamed-decision-action",
             f"An ordinary node edit may queue Decision {node.id}, but only a patch naming "
-            f"human_action='decision_choice' may {action}."
-            if permitted
-            else f"This actor is not permitted to {action} on Decision {node.id}.",
+            f"human_action='decision_choice' may {action}.",
             revision,
             related_node_ids=[node.id],
         )

@@ -20,6 +20,7 @@ from rcp.sources import (
     project_cache_roots,
 )
 from rcp.storage import AppStore
+from tests.helpers import unchecked_write_authority
 
 
 class FakeClock:
@@ -77,7 +78,7 @@ def test_direct_service_without_canonical_project_id_never_writes_legacy_shared_
     manifest, tmp_path
 ) -> None:
     data_dir = tmp_path / "data"
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     service = ProjectService(
         manifest,
         history,

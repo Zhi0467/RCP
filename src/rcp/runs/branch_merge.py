@@ -54,7 +54,12 @@ from rcp.agents.schema import (
     prepare_agent_patch,
 )
 from rcp.agents.write_scope import ProjectWriteScope
-from rcp.core.authority import RESTRUCTURE_PROTECTED_EPISTEMIC, operation_actions
+from rcp.config import Manifest
+from rcp.core.authority import (
+    RESTRUCTURE_PROTECTED_EPISTEMIC,
+    operation_actions,
+    validate_operation_authority,
+)
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     AuthorizedHuman,
@@ -94,7 +99,7 @@ from rcp.core.transitions import (
     project_transition_projection,
     transition_trigger_manifest,
 )
-from rcp.core.validation import validate_patch
+from rcp.core.validation import build_validation_context, validate_patch
 from rcp.core.validation.constants import IMMUTABLE_NODE_UPDATE_FIELDS
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import (
@@ -426,6 +431,8 @@ class BranchMergeSourceChanged(ValueError):
 
 
 class _BranchMergeHistory(Protocol):
+    manifest: Manifest
+
     def validate_candidate(
         self, patch: Patch, **kwargs: object
     ) -> tuple[Patch, Any, GraphState]: ...
@@ -1110,6 +1117,7 @@ def _residue_legend(reasons: set[str]) -> str:
 
 def _require_possible_merge_plan(
     context: BranchMergeContext,
+    manifest: Manifest,
     ops: list[dict[str, Any]],
     residue: dict[SemanticWritePath, str],
 ) -> None:
@@ -1127,7 +1135,10 @@ def _require_possible_merge_plan(
         deterministic_ops=ops,
     )
     if ops:
-        report = validate_patch(context.main_graph, candidate, context.run_truth_scope)
+        report = validate_patch(
+            context.main_graph, candidate, build_validation_context(manifest, context.main_graph)
+        )
+        validate_operation_authority(context.main_graph, candidate, report)
         if report.rejected:
             raise BranchMergeCandidateProblem(_validation_diagnostic(report)[0])
     conflicts = _branch_conflict_paths(context.deterministic_conflicts)
@@ -1150,7 +1161,9 @@ def _require_possible_merge_plan(
             context,
             deterministic_ops=ops,
         )
-        report = validate_patch(context.main_graph, probe, context.run_truth_scope)
+        report = validate_patch(
+            context.main_graph, probe, build_validation_context(manifest, context.main_graph)
+        )
         # Other diagnostics may depend on nodes still in the residue. Source scope
         # cannot: a mandatory source Proposal must retain its exact provenance.
         for message in report.messages:
@@ -1850,7 +1863,9 @@ async def stream_branch_merge_run(
         deterministic_ops, residue = build_deterministic_merge_ops(context)
         if residue:
             try:
-                _require_possible_merge_plan(context, deterministic_ops, residue)
+                _require_possible_merge_plan(
+                    context, main_history.manifest, deterministic_ops, residue
+                )
             except BranchMergeCandidateProblem as exc:
                 outcome.status = "rejected"
                 outcome.diagnostic = exc.message
@@ -2047,7 +2062,9 @@ async def stream_branch_merge_run(
                 first_turn = True
                 continue
             try:
-                _require_possible_merge_plan(context, deterministic_ops, residue)
+                _require_possible_merge_plan(
+                    context, main_history.manifest, deterministic_ops, residue
+                )
             except BranchMergeCandidateProblem as exc:
                 outcome.status = "rejected"
                 outcome.diagnostic = exc.message

@@ -29,7 +29,7 @@ from rcp.config import (
     write_machine_provider_paths,
     write_project_scope,
 )
-from rcp.core.authority import AgentTaskAuthority, ProjectMembershipCheck, require_apply
+from rcp.core.authority import WriteAuthority, refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
@@ -58,7 +58,7 @@ from rcp.core.transitions import (
     accepted_transition_head_chain_failure,
     project_transition_projection,
 )
-from rcp.core.validation import ValidationReport, validate_patch
+from rcp.core.validation import ValidationReport, build_validation_context, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history.delta import (
     RefreshDelta,
@@ -409,9 +409,7 @@ class HistoryManager:
         *,
         expected_space_id: str | None = None,
         project_id: str | None = None,
-        require_attribution: bool = False,
-        agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
-        project_membership_check: ProjectMembershipCheck | None = None,
+        write_authority: WriteAuthority,
         on_accepted_transition: Callable[[int], None] | None = None,
         on_accepted_branch_transition: Callable[[str, int], None] | None = None,
     ) -> None:
@@ -431,9 +429,7 @@ class HistoryManager:
         self._accepted_revision: int | None = None
         self.expected_space_id = expected_space_id
         self.project_id = project_id
-        self.require_attribution = require_attribution
-        self.agent_authority_resolver = agent_authority_resolver
-        self.project_membership_check = project_membership_check
+        self.write_authority = write_authority
         self.on_accepted_transition = on_accepted_transition
         self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
@@ -1045,7 +1041,7 @@ class HistoryManager:
             revision,
             authorized_by=authorized_by,
         )
-        if discard_on_reject and report.rejected:
+        if report.rejected and (discard_on_reject or refused_authorizer(report)):
             raise PatchRejected(report)
         patch = patch.model_copy(
             update={
@@ -1197,19 +1193,20 @@ class HistoryManager:
         authorized_by: AuthorizedHuman | None = None,
     ) -> tuple[Patch, ValidationReport, GraphState | None]:
         if patch.kind == "identity" and not patch.ops:
-            identity_patch = self._stamp_attribution_for_admission(
-                patch,
+            identity_patch, writer, report = self.write_authority.admit(
+                current.state,
+                patch.model_copy(update={"revision": revision}),
+                project_id=self.project_id,
                 authorized_by=authorized_by,
                 apply_target=self.graph_target,
-            ).model_copy(update={"revision": revision})
-            report = validate_patch(
-                current.state,
-                identity_patch,
-                current.state.project_truth_scope,
-                repository_aliases=self.manifest.repository_map,
-                machine_aliases=self.manifest.machine_map,
-                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-                state_repository=self.manifest.state.repository,
+            )
+            report.messages.extend(
+                validate_patch(
+                    current.state,
+                    identity_patch,
+                    build_validation_context(self.manifest, current.state),
+                    writer=writer,
+                ).messages
             )
             candidate = (
                 apply_valid_patch(current.state, identity_patch) if not report.rejected else None
@@ -1242,24 +1239,26 @@ class HistoryManager:
         staged = current.state
         prepared_sources: list[Patch] = []
         for raw_patch in raw_patches:
-            patch = self._stamp_attribution_for_admission(
-                raw_patch,
+            validation_state = staged.model_copy(update={"revision": current.state.revision})
+            patch, writer, report = self.write_authority.admit(
+                validation_state,
+                raw_patch.model_copy(update={"revision": revision}),
+                project_id=self.project_id,
                 authorized_by=authorized_by,
                 apply_target=target,
-            ).model_copy(update={"revision": revision})
-            validation_state = staged.model_copy(update={"revision": current.state.revision})
-            patch = prepare_patch_bookkeeping(validation_state, patch)
-            report = validate_patch(
-                validation_state,
-                patch,
-                validation_state.project_truth_scope,
-                repository_aliases=self.manifest.repository_map,
-                machine_aliases=self.manifest.machine_map,
-                default_run_truth_scope=self.manifest.agent.default_run_truth_scope,
-                state_repository=self.manifest.state.repository,
             )
             aggregate.messages.extend(report.messages)
-            if report.rejected:
+            # Gate 2 runs even after a permission refusal, so a writer sees every
+            # broken rule at once. Nothing is applied unless both gates pass.
+            patch = prepare_patch_bookkeeping(validation_state, patch)
+            rules = validate_patch(
+                validation_state,
+                patch,
+                build_validation_context(self.manifest, validation_state),
+                writer=writer,
+            )
+            aggregate.messages.extend(rules.messages)
+            if report.rejected or rules.rejected:
                 return patch, aggregate, None
             try:
                 candidate = apply_valid_patch(validation_state, patch)
@@ -1344,152 +1343,8 @@ class HistoryManager:
         )
         return transition_patch, aggregate, candidate
 
-    def _stamp_attribution_for_admission(
-        self,
-        patch: Patch,
-        *,
-        authorized_by: AuthorizedHuman | None,
-        apply_target: GraphTargetRef,
-    ) -> Patch:
-        if not self.require_attribution:
-            return patch
-
-        if patch.kind == "identity":
-            if authorized_by is not None or any(
-                value is not None
-                for value in (
-                    patch.authorized_by,
-                    patch.profile,
-                    patch.task_id,
-                    patch.episode_id,
-                )
-            ):
-                raise ValueError("identity patches are system-owned and cannot carry attribution")
-            return patch
-
-        if patch.kind == "approval":
-            if authorized_by is None:
-                raise ValueError(
-                    "human approval patches require an explicit authorized_by snapshot"
-                )
-            authorizer = self._canonical_authorizer(authorized_by)
-            return patch.model_copy(
-                update={
-                    "authorized_by": authorizer,
-                    "profile": None,
-                    "task_id": None,
-                    "episode_id": None,
-                }
-            )
-
-        if authorized_by is not None:
-            raise ValueError("explicit authorized_by is only valid for human approval patches")
-        operation_id = patch.source_operation_id
-        if not operation_id or not operation_id.strip():
-            raise ValueError("agent patches require a non-empty direct source_operation_id")
-        if (
-            self.project_id is None
-            or self.agent_authority_resolver is None
-            or self.project_membership_check is None
-        ):
-            raise ValueError(
-                "agent attribution requires a canonical project-scoped agent_authority_resolver "
-                "and project_membership_check"
-            )
-        try:
-            resolved = self.agent_authority_resolver(self.project_id, operation_id)
-        except KeyError as exc:
-            raise ValueError(f"unknown agent task {operation_id!r}") from exc
-        if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
-            raise ValueError("agent authority resolver returned another task or project")
-        if resolved.apply_target != apply_target:
-            raise ValueError(
-                f"agent task {operation_id!r} is authorized to Apply to "
-                f"{resolved.apply_target.key}, not {apply_target.key}"
-            )
-        dispatch = require_apply(resolved, patch, is_project_member=self.project_membership_check)
-        if dispatch.profile == "orchestrator" and resolved.episode_id is None:
-            raise ValueError("orchestrator agent tasks require a canonical episode_id")
-        assert resolved.authorized_by is not None
-        authorizer = self._canonical_authorizer(resolved.authorized_by)
-        canonical = (authorizer, dispatch.profile, operation_id, resolved.episode_id)
-        supplied = (patch.authorized_by, patch.profile, patch.task_id, patch.episode_id)
-        if any(value is not None for value in supplied) and supplied != canonical:
-            raise ValueError(
-                "agent patch attribution does not match the canonical task attribution"
-            )
-        return patch.model_copy(
-            update={
-                "authorized_by": authorizer,
-                "profile": dispatch.profile,
-                "task_id": operation_id,
-                "episode_id": resolved.episode_id,
-            }
-        )
-
-    @staticmethod
-    def _canonical_authorizer(authorizer: AuthorizedHuman) -> AuthorizedHuman:
-        try:
-            snapshot = AuthorizedHuman.model_validate(authorizer.model_dump(mode="python"))
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ValueError("authorized_by must be a valid authorizer snapshot") from exc
-        if not snapshot.display_name.strip():
-            raise ValueError("authorized_by must name the authorizing human")
-        return snapshot
-
     def _require_no_change_merge_authority(self, receipt: BranchMergeReceipt) -> None:
-        """Apply the live task and membership gate before admitting a no-change receipt."""
-
-        if not self.require_attribution:
-            return
-        operation_id = receipt.provenance.merge_task_id
-        if (
-            self.project_id is None
-            or self.agent_authority_resolver is None
-            or self.project_membership_check is None
-        ):
-            raise ValueError(
-                "branch merge receipt attribution requires a canonical project-scoped "
-                "agent_authority_resolver and project_membership_check"
-            )
-        try:
-            resolved = self.agent_authority_resolver(self.project_id, operation_id)
-        except KeyError as exc:
-            raise ValueError(f"unknown agent task {operation_id!r}") from exc
-        if resolved.operation_id != operation_id or resolved.project_id != self.project_id:
-            raise ValueError("agent authority resolver returned another task or project")
-        if resolved.apply_target != GraphTargetRef():
-            raise ValueError("a branch merge receipt requires main-target Apply authority")
-        dispatch = resolved.dispatch_authority
-        if dispatch is None:
-            raise ValueError("branch merge receipt task has no dispatch authority binding")
-        probe = Patch(
-            kind="work",
-            author="agent",
-            producer="agent",
-            summary="Validate no-change branch merge receipt authority.",
-            source_operation_id=operation_id,
-            run_truth_scope=list(dispatch.scope.run_truth_scope),
-            repositories_read=[],
-            profile="orchestrator",
-            task_id=operation_id,
-            episode_id=receipt.provenance.episode_id,
-            authorized_by=receipt.authorized_by,
-            ops=[],
-        )
-        bound = require_apply(
-            resolved,
-            probe,
-            is_project_member=self.project_membership_check,
-        )
-        if bound.profile != "orchestrator":
-            raise ValueError("a branch merge receipt requires orchestrator authority")
-        if resolved.episode_id != receipt.provenance.episode_id:
-            raise ValueError("branch merge receipt episode does not match its task authority")
-        if resolved.authorized_by is None:
-            raise ValueError("branch merge receipt task has no authorizer snapshot")
-        if self._canonical_authorizer(resolved.authorized_by) != receipt.authorized_by:
-            raise ValueError("branch merge receipt authorizer does not match its task authority")
+        self.write_authority.require_no_change_merge(receipt, project_id=self.project_id)
 
     def update_agent_settings(
         self,
@@ -1803,11 +1658,11 @@ class HistoryManager:
         replayable_patches = [] if scope_failure is not None else chain_prefix
         result = materialize_patches(
             replayable_patches,
-            initial_truth_scope=list(initial_truth_scope),
-            repository_aliases=sorted(self.manifest.repository_map),
-            machine_aliases=sorted(self.manifest.machine_map),
-            default_run_truth_scope=list(self.manifest.agent.default_run_truth_scope),
-            state_repository=self.manifest.state.repository,
+            context=build_validation_context(
+                self.manifest,
+                GraphState(project_truth_scope=list(initial_truth_scope)),
+                mode="replay",
+            ),
             accepted_patch_observer=accepted_patch_observer,
         )
         structural_or_chain_failure = min(

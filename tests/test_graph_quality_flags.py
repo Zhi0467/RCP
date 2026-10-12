@@ -4,9 +4,10 @@ import pytest
 
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Edge, GraphState, Patch
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history import HistoryManager
+from tests.helpers import unchecked_write_authority
 
 
 def _patch(*ops: dict) -> Patch:
@@ -43,7 +44,7 @@ def _state(*nodes: dict, edges: list[dict] | None = None) -> GraphState:
 
 
 def _flags(state: GraphState, patch: Patch):
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
     assert not report.rejected, report.messages
     flag_introduced_quality_issues(state, apply_valid_patch(state, patch), report, patch.revision)
     return report.flags
@@ -236,7 +237,7 @@ def test_human_batch_advice_describes_final_atomic_graph(manifest, connect: bool
             kind="approval", author="human", summary="Edit the research graph.", ops=[operation]
         )
 
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     patches = [
         approval({"op": "create_nodes", "nodes": [_experiment()]}),
         approval({"op": "create_nodes", "nodes": [_evidence()]}),
@@ -275,12 +276,14 @@ def test_rejected_partial_graph_and_historical_replay_get_no_new_advice() -> Non
             "edges": [{"source": "exp/missing", "target": "ev/result", "relation": "produces"}],
         },
     )
-    report = validate_patch(_state(), patch, ["repo-a"])
+    report = validate_patch(_state(), patch, ValidationContext(["repo-a"]))
     assert report.rejected
     assert not report.flags
 
     replay = validate_patch(
-        _state(), _patch({"op": "create_nodes", "nodes": [_evidence()]}), ["repo-a"], mode="replay"
+        _state(),
+        _patch({"op": "create_nodes", "nodes": [_evidence()]}),
+        ValidationContext(["repo-a"], mode="replay"),
     )
     assert not replay.rejected
     assert not replay.flags
@@ -296,7 +299,7 @@ def test_quality_runs_once_per_transition_and_never_during_replay(manifest, monk
         flag_introduced_quality_issues(initial, candidate, report, revision)
 
     monkeypatch.setattr(manager_module, "flag_introduced_quality_issues", record)
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append_batch(
         [
             Patch(

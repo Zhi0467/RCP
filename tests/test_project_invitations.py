@@ -473,16 +473,16 @@ def test_membership_lost_between_dispatch_and_apply_is_refused_at_apply(manifest
 
     catalog = app.state.catalog
     history = catalog.open(project_id).history
-    assert history.project_membership_check is not None
+    assert history.write_authority.project_membership_check is not None
 
     # Authorized at dispatch...
-    assert history.project_membership_check(project_id, leaver.user_id)
+    assert history.write_authority.project_membership_check(project_id, leaver.user_id)
 
     acting[0] = leaver.user_id
     assert client.post(f"/api/projects/{project_id}/leave", json={}).status_code == 204
 
     # ...and refused at Apply, which reads membership live under the append lock.
-    assert not history.project_membership_check(project_id, leaver.user_id)
+    assert not history.write_authority.project_membership_check(project_id, leaver.user_id)
 
 
 def test_revoking_a_token_mid_run_refuses_nothing_and_fences_nothing(manifest, tmp_path) -> None:
@@ -505,8 +505,8 @@ def test_revoking_a_token_mid_run_refuses_nothing_and_fences_nothing(manifest, t
     # Revocation is about a credential, so neither membership nor Apply moves.
     assert store.is_project_member(project_id, alice.user_id)
     history = app.state.catalog.open(project_id).history
-    assert history.project_membership_check is not None
-    assert history.project_membership_check(project_id, alice.user_id)
+    assert history.write_authority.project_membership_check is not None
+    assert history.write_authority.project_membership_check(project_id, alice.user_id)
 
 
 def test_the_whole_flow_works_through_a_real_browser_session(manifest, tmp_path) -> None:

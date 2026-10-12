@@ -40,6 +40,7 @@ from rcp.transfer import (
 )
 from rcp.transfer.configuration import build_transfer_target_configuration
 from rcp.transport import StateUnavailable
+from tests.helpers import unchecked_write_authority
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
 SOURCE_SPACE_ID = "22222222-2222-4222-8222-222222222222"
@@ -80,6 +81,7 @@ def _configuration_fixture(manifest, tmp_path: Path):
         manifest,
         expected_space_id=SOURCE_SPACE_ID,
         project_id=PROJECT_ID,
+        write_authority=unchecked_write_authority(),
     )
     history.claim_project_identity("created", project_id=PROJECT_ID)
     branch_base = history.head_ref(history.materialize(write_outputs=False))
@@ -591,6 +593,7 @@ def test_prior_home_can_read_its_branch_but_cannot_authorize_new_team_work(
         load_manifest(manifest.path),
         expected_space_id=TARGET_SPACE_ID,
         project_id=PROJECT_ID,
+        write_authority=unchecked_write_authority(),
     )
 
     assert target.branch(BRANCH_ID, expected_project_id=PROJECT_ID).head_ref().revision == 2

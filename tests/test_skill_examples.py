@@ -8,7 +8,7 @@ import pytest
 from rcp.agents.schema import parse_agent_patch_json, prepare_agent_patch
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import GraphState
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.skill_registry import official_registry
 
 from .helpers import fabricated_authorizer
@@ -31,7 +31,7 @@ def test_causality_examples_plan_then_observe_without_choosing_the_gate() -> Non
         patch = prepare_agent_patch(
             parse_agent_patch_json(example), kind="work", run_truth_scope=["repo"]
         ).model_copy(update={"revision": state.revision + 1})
-        report = validate_patch(state, patch, ["repo"])
+        report = validate_patch(state, patch, ValidationContext(["repo"]))
         assert not report.rejected, [message.model_dump() for message in report.messages]
         state = apply_valid_patch(state, patch)
 
@@ -63,7 +63,7 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
         patch = prepare_agent_patch(
             parse_agent_patch_json(example), kind="work", run_truth_scope=["repo"]
         ).model_copy(update={"revision": state.revision + 1})
-        assert not validate_patch(state, patch, ["repo"]).rejected
+        assert not validate_patch(state, patch, ValidationContext(["repo"])).rejected
         state = apply_valid_patch(state, patch)
 
     with pytest.raises(ValueError, match="graph operation schema"):
@@ -82,7 +82,7 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
             "task_id": "example-orchestrator-turn",
         }
     )
-    report = validate_patch(state, patch, ["repo"])
+    report = validate_patch(state, patch, ValidationContext(["repo"]))
     assert not report.rejected, [message.model_dump() for message in report.messages]
     chosen = apply_valid_patch(state, patch)
     assert (
@@ -98,7 +98,7 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
     ordinary_patch = prepare_agent_patch(
         parse_agent_patch_json(json.dumps(ordinary)), kind="work", run_truth_scope=["repo"]
     )
-    assert validate_patch(state, ordinary_patch, ["repo"]).rejected
+    assert validate_patch(state, ordinary_patch, ValidationContext(["repo"])).rejected
 
 
 def test_causality_smoke_example_gates_only_the_main_experiment() -> None:
@@ -107,7 +107,7 @@ def test_causality_smoke_example_gates_only_the_main_experiment() -> None:
     patch = prepare_agent_patch(
         parse_agent_patch_json(smoke), kind="work", run_truth_scope=["repo"]
     ).model_copy(update={"revision": state.revision + 1})
-    report = validate_patch(state, patch, ["repo"])
+    report = validate_patch(state, patch, ValidationContext(["repo"]))
     assert not report.rejected, [message.model_dump() for message in report.messages]
     state = apply_valid_patch(state, patch)
 

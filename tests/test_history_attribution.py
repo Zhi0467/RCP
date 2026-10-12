@@ -10,14 +10,20 @@ from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
     AgentTaskAuthority,
+    WriteAuthority,
     require_apply,
     require_dispatch,
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.transition_models import GraphTargetRef
-from rcp.core.validation import validate_patch
-from rcp.history import HistoryManager, build_revision_summaries
-from tests.helpers import refresh_patch, seated_on_every_project, seed_patch
+from rcp.core.validation import ValidationContext, validate_patch
+from rcp.history import HistoryManager, PatchRejected, build_revision_summaries
+from tests.helpers import (
+    refresh_patch,
+    seated_on_every_project,
+    seed_patch,
+    unchecked_write_authority,
+)
 
 from .helpers import fabricated_authorizer
 
@@ -110,7 +116,7 @@ def test_orchestrator_dispatch_requires_an_exact_episode_id() -> None:
 
 
 def test_persisted_legacy_campaign_id_replays_as_episode_id(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.ensure_layout()
     document = (
         seed_patch()
@@ -135,7 +141,7 @@ def test_persisted_legacy_campaign_id_replays_as_episode_id(manifest) -> None:
 
 
 def test_persisted_patch_with_both_lineage_keys_is_rejected(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.ensure_layout()
     document = (
         seed_patch()
@@ -164,10 +170,11 @@ def test_opt_in_human_single_and_batch_use_explicit_snapshot(manifest) -> None:
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
-            operation_id, authorizer
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
+                operation_id, authorizer
+            ),
         ),
     )
     history.append(_agent_patch("seed-operation"))
@@ -209,10 +216,11 @@ def test_opt_in_human_from_state_stamps_the_whole_transaction(manifest) -> None:
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
-            operation_id, authorizer
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
+                operation_id, authorizer
+            ),
         ),
     )
     history.append(_agent_patch("seed-operation"))
@@ -234,7 +242,7 @@ def test_opt_in_human_from_state_stamps_the_whole_transaction(manifest) -> None:
 
 def test_opt_in_human_rejects_missing_explicit_snapshot_without_revision(manifest) -> None:
     authorizer = fabricated_authorizer("Alice")
-    history = HistoryManager(manifest, require_attribution=True)
+    history = HistoryManager(manifest, write_authority=WriteAuthority())
     preattributed = _approval().model_copy(update={"authorized_by": authorizer})
 
     with pytest.raises(ValueError, match="explicit authorized_by"):
@@ -252,12 +260,13 @@ def test_agent_candidate_and_append_use_resolved_direct_task_snapshot(manifest) 
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, requested: (
-            _task_authority(requested, authorizer)
-            if requested == operation_id
-            else _task_authority(requested, None)
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, requested: (
+                _task_authority(requested, authorizer)
+                if requested == operation_id
+                else _task_authority(requested, None)
+            ),
         ),
     )
     raw = _agent_patch(operation_id)
@@ -295,9 +304,10 @@ def test_episode_worker_keeps_ordinary_profile_and_episode_id(manifest) -> None:
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        ),
     )
     raw = Patch(
         kind="work",
@@ -345,9 +355,10 @@ def test_episode_orchestrator_patch_keeps_episode_id(manifest) -> None:
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        ),
     )
 
     appended, _ = history.append(
@@ -399,9 +410,10 @@ def test_orchestrator_without_canonical_episode_id_is_refused(manifest) -> None:
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        ),
     )
     raw = Patch(
         kind="work",
@@ -431,9 +443,10 @@ def test_supplied_episode_id_must_match_canonical_task(manifest) -> None:
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, _operation_id: authority,
+        ),
     )
     raw = Patch(
         kind="work",
@@ -457,10 +470,11 @@ def test_rogue_agent_attribution_cannot_replace_resolved_snapshot(manifest) -> N
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
-            operation_id, canonical
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project,
+            agent_authority_resolver=lambda _project_id, operation_id: _task_authority(
+                operation_id, canonical
+            ),
         ),
     )
     patch = _agent_patch().model_copy(
@@ -526,9 +540,9 @@ def test_agent_attribution_failures_do_not_write_or_spend_revision(
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=resolver,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project, agent_authority_resolver=resolver
+        ),
     )
 
     with pytest.raises(ValueError, match=message):
@@ -540,11 +554,7 @@ def test_agent_attribution_failures_do_not_write_or_spend_revision(
 
 def test_identity_claim_stays_system_owned_under_attribution_policy(manifest) -> None:
     space_id = str(uuid.uuid4())
-    history = HistoryManager(
-        manifest,
-        expected_space_id=space_id,
-        require_attribution=True,
-    )
+    history = HistoryManager(manifest, expected_space_id=space_id, write_authority=WriteAuthority())
 
     identity = history.claim_project_identity("created")
     stored = history.load_patches()[0]
@@ -557,8 +567,8 @@ def test_identity_claim_stays_system_owned_under_attribution_policy(manifest) ->
     assert stored.episode_id is None
 
 
-def test_default_manager_remains_attribution_opt_out_compatible(manifest) -> None:
-    history = HistoryManager(manifest)
+def test_unchecked_test_authority_preserves_unattributed_fixtures(manifest) -> None:
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
 
     appended, result = history.append(seed_patch())
 
@@ -568,11 +578,8 @@ def test_default_manager_remains_attribution_opt_out_compatible(manifest) -> Non
 
 
 def test_attribution_policy_does_not_apply_during_legacy_replay(manifest) -> None:
-    HistoryManager(manifest).append(seed_patch())
-    guarded = HistoryManager(
-        load_manifest(manifest.path),
-        require_attribution=True,
-    )
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).append(seed_patch())
+    guarded = HistoryManager(load_manifest(manifest.path), write_authority=WriteAuthority())
 
     state = guarded.state()
 
@@ -593,9 +600,9 @@ def test_episode_id_is_inert_to_validation_and_apply_permission() -> None:
         report = validate_patch(
             GraphState(),
             patch,
-            ["repo-a"],
-            repository_aliases=["repo-a"],
-            default_run_truth_scope=["repo-a"],
+            ValidationContext(
+                ["repo-a"], repository_aliases=["repo-a"], default_run_truth_scope=["repo-a"]
+            ),
         )
         dispatch = require_apply(authority, patch, is_project_member=seated_on_every_project)
         verdicts.append(
@@ -624,9 +631,9 @@ def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> 
     history = HistoryManager(
         manifest,
         project_id=PROJECT_ID,
-        require_attribution=True,
-        project_membership_check=seated_on_every_project,
-        agent_authority_resolver=resolve,
+        write_authority=WriteAuthority(
+            project_membership_check=seated_on_every_project, agent_authority_resolver=resolve
+        ),
     )
     history.append(_agent_patch("operation-1"))
     current = current.model_copy(update={"display_name": "After rename"})
@@ -639,3 +646,27 @@ def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> 
     assert stored[0].authorized_by.display_name == "Before rename"
     assert stored[1].authorized_by is not None
     assert stored[1].authorized_by.display_name == "After rename"
+
+
+def test_nonmember_human_is_refused_without_revision(manifest) -> None:
+    authorizer = fabricated_authorizer("Former member")
+    checked = []
+
+    def is_member(project_id: str, user_id: str) -> bool:
+        checked.append((project_id, user_id))
+        return False
+
+    history = HistoryManager(
+        manifest,
+        project_id=PROJECT_ID,
+        write_authority=WriteAuthority(project_membership_check=is_member),
+    )
+    with pytest.raises(PatchRejected) as refused:
+        history.append(_approval(), authorized_by=authorizer)
+
+    assert "human-authorizer-not-member" in {
+        message.code for message in refused.value.report.messages
+    }
+    assert checked == [(PROJECT_ID, authorizer.user_id)]
+    assert history.load_patches() == []
+    assert history.state().revision == 0

@@ -12,12 +12,22 @@ import sqlite3
 import uuid
 from contextlib import chdir
 from pathlib import Path
+from typing import Any
 
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+
+# Older releases have no write-authority constructor argument. This builder only
+# initializes, claims system identity, and replays history, so the new form is read-only.
+_HISTORY_AUTHORITY: dict[str, Any] = {}
+if "write_authority" in inspect.signature(HistoryManager).parameters:
+    from rcp.core.authority import WriteAuthority
+
+    _HISTORY_AUTHORITY["write_authority"] = WriteAuthority()
+
 
 FIXTURE_SCHEMA_VERSION = 1
 
@@ -56,8 +66,8 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
     if persisted_session is None or persisted_session["session_hash"] != session_hash:
         raise RuntimeError("fixture member session was not persisted")
     manifest = load_manifest(manifest_path)
-    HistoryManager(manifest).initialize()
-    history = HistoryManager(manifest, expected_space_id=store.space_id)
+    HistoryManager(manifest, **_HISTORY_AUTHORITY).initialize()
+    history = HistoryManager(manifest, expected_space_id=store.space_id, **_HISTORY_AUTHORITY)
     identity = history.claim_project_identity("created")
     materialized = history.initialize().state
     relative_locator = "project/.research/manifest.toml"
@@ -187,7 +197,7 @@ def upgrade_fixture(
             manifest,
             expected_space_id=store.space_id,
             project_id=project_id,
-            require_attribution=True,
+            **_HISTORY_AUTHORITY,
         ).initialize()
         if materialized.state.replay_status != "complete":
             raise RuntimeError("fixture upgrade could not replay canonical history")

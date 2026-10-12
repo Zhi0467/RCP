@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pydantic import TypeAdapter
@@ -44,6 +44,7 @@ from rcp.core.operations import (
 from rcp.core.project_types import project_type_of
 from rcp.core.validation import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
+    ValidationContext,
     ValidationReport,
     proposal_dependencies,
     validate_patch,
@@ -65,24 +66,16 @@ class MaterializationResult:
 
 def materialize_patches(
     patches: Iterable[Patch],
-    initial_truth_scope: Iterable[str],
-    repository_aliases: Iterable[str] | None = None,
-    machine_aliases: Iterable[str] | None = None,
-    default_run_truth_scope: Iterable[str] | None = None,
-    state_repository: str | None = None,
+    context: ValidationContext,
     accepted_patch_observer: AcceptedPatchObserver | None = None,
 ) -> MaterializationResult:
     """Replay patches, optionally observing successful applications through a read-only callback."""
 
-    initial_scope = list(initial_truth_scope)
-    state = GraphState(project_truth_scope=initial_scope)
+    state = GraphState(project_truth_scope=list(context.project_truth_scope))
     return materialize_patches_from_state(
         patches,
         initial_state=state,
-        repository_aliases=repository_aliases,
-        machine_aliases=machine_aliases,
-        default_run_truth_scope=default_run_truth_scope,
-        state_repository=state_repository,
+        context=context,
         accepted_patch_observer=accepted_patch_observer,
     )
 
@@ -91,10 +84,7 @@ def materialize_patches_from_state(
     patches: Iterable[Patch],
     *,
     initial_state: GraphState,
-    repository_aliases: Iterable[str] | None = None,
-    machine_aliases: Iterable[str] | None = None,
-    default_run_truth_scope: Iterable[str] | None = None,
-    state_repository: str | None = None,
+    context: ValidationContext,
     accepted_patch_observer: AcceptedPatchObserver | None = None,
 ) -> MaterializationResult:
     """Replay a tail from an already materialized immutable graph state."""
@@ -124,12 +114,7 @@ def materialize_patches_from_state(
         report = validate_patch(
             state,
             patch,
-            state.project_truth_scope,
-            repository_aliases=repository_aliases,
-            machine_aliases=machine_aliases,
-            default_run_truth_scope=default_run_truth_scope,
-            state_repository=state_repository,
-            mode="replay",
+            replace(context, project_truth_scope=state.project_truth_scope, mode="replay"),
         )
         report.messages.extend(patch.admission_messages)
         reports[patch.revision] = report
@@ -555,6 +540,8 @@ def _apply_patch(
         elif isinstance(op, SetOntologyOperation):
             state.ontology = op.ontology
             state.config_revisions["ontology"] = revision
+        else:
+            raise ValueError(f"No apply rule for graph operation {op.op!r}.")
 
     # A legal edge may forward-reference a node created later in this patch.
     # Its first pass necessarily uses the relation's declared fallback layer;

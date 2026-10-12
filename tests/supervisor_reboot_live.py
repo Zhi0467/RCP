@@ -104,7 +104,12 @@ def payload(
     with tarfile.open(destination, "w:gz") as archive:
         for name in ("base", "target", "build-receipt.json"):
             archive.add(bundles / name, arcname=f"bundles/{name}")
-        for name in ("__init__.py", "supervisor_reboot_guest.py", "supervisor_reboot_data.py"):
+        for name in (
+            "__init__.py",
+            "helpers.py",
+            "supervisor_reboot_guest.py",
+            "supervisor_reboot_data.py",
+        ):
             archive.add(workspace / "tests" / name, arcname=f"tests/{name}")
         if adoption is not None:
             for name in ("historical-source.bundle", "node-runtime.tar.gz", "package-receipt.json"):

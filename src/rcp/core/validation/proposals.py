@@ -16,6 +16,7 @@ from rcp.core.authority import (
     STANDING_CHANGE_INTENT,
     STATUS_CHANGE_INTENT,
     SUPERSEDE_INTENT,
+    Writer,
     created_edge_ids,
     created_node_ids,
 )
@@ -240,7 +241,13 @@ def validate_proposal(
     validation_mode: Literal["admission", "replay"] = "replay",
     include_card_flags: bool = False,
     context_patch: Patch | None = None,
+    writer: Writer | None = None,
 ) -> None:
+    writer = writer or (
+        Writer.from_patch(context_patch)
+        if context_patch is not None
+        else Writer(author="agent", profile=None, human_action=None, agent_action=None)
+    )
     if not isinstance(proposal, Proposal):
         try:
             proposal = Proposal.model_validate(proposal)
@@ -284,15 +291,14 @@ def validate_proposal(
                 f"Proposal {proposal.id} uses unexplained identifiers: {', '.join(unresolved)}.",
                 revision,
             )
-    if validation_mode == "admission" and (
-        context_patch is None or context_patch.author == "agent"
-    ):
+    if validation_mode == "admission" and (writer.author == "agent"):
         _validate_agent_proposal_boundary(
             proposal,
             state,
             report,
             revision,
             context_patch=context_patch,
+            writer=writer,
         )
     _validate_proposal_ops(
         proposal,
@@ -306,6 +312,7 @@ def validate_proposal(
         state_repository=state_repository,
         validation_mode=validation_mode,
         context_patch=context_patch,
+        writer=writer,
     )
 
 
@@ -316,11 +323,14 @@ def _validate_agent_proposal_boundary(
     revision: int | None,
     *,
     context_patch: Patch | None,
+    writer: Writer,
 ) -> None:
     def refuse(message: str) -> None:
         report.reject("invalid-agent-proposal-shape", message, revision)
 
-    if len(proposal.ops) != 1 and not _is_same_node_merge_bundle(state, context_patch, proposal):
+    if len(proposal.ops) != 1 and not _is_same_node_merge_bundle(
+        state, context_patch, proposal, writer
+    ):
         refuse(f"Proposal {proposal.id} must declare exactly one protected-change intent.")
         return
     validators = {
@@ -340,13 +350,15 @@ def _validate_agent_proposal_boundary(
                 f"{', '.join(sorted(PROPOSAL_INTENTS))}."
             )
             continue
-        error = validators[intent](state, context_patch, operation)
+        error = validators[intent](state, context_patch, operation, writer)
         if error is not None:
             refuse(f"Proposal {proposal.id} declares {intent!r}, but {error}")
 
 
-def _is_same_node_merge_bundle(state: GraphState, patch: Patch | None, proposal: Proposal) -> bool:
-    if not _is_branch_merge(patch) or not 2 <= len(proposal.ops) <= 3:
+def _is_same_node_merge_bundle(
+    state: GraphState, patch: Patch | None, proposal: Proposal, writer: Writer
+) -> bool:
+    if not _is_branch_merge(patch, writer) or not 2 <= len(proposal.ops) <= 3:
         return False
     intents: set[str] = set()
     targets: set[str] = set()
@@ -371,6 +383,7 @@ def _validate_content_change_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     update, error = _one_update(operation)
     if error is not None:
@@ -395,6 +408,7 @@ def _validate_status_change_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     update, error = _one_update(operation)
     if error is not None:
@@ -416,7 +430,7 @@ def _validate_status_change_intent(
     if changes["status"] == node.status:
         return "a status change must actually change the Hypothesis status."
     cause = update.cause
-    if isinstance(cause, HumanEditCause) and _is_branch_merge(context_patch):
+    if isinstance(cause, HumanEditCause) and _is_branch_merge(context_patch, writer):
         # The merge owner separately proves this exact value against canonical
         # human source operations. This remains a pending, unapplied Proposal.
         return None
@@ -425,11 +439,11 @@ def _validate_status_change_intent(
     return None
 
 
-def _is_branch_merge(patch: Patch | None) -> bool:
+def _is_branch_merge(patch: Patch | None, writer: Writer) -> bool:
     return (
         patch is not None
-        and patch.author == "agent"
-        and patch.profile == "orchestrator"
+        and writer.author == "agent"
+        and writer.profile == "orchestrator"
         and patch.branch_merge is not None
     )
 
@@ -438,10 +452,11 @@ def _validate_standing_change_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     if not isinstance(operation, ProposalStandingChangeOperation):
         return "a standing change requires one set_standing operation."
-    if not _is_branch_merge(context_patch):
+    if not _is_branch_merge(context_patch, writer):
         return "standing changes may be proposed only by a canonical branch merge."
     node = state.nodes.get(operation.node_id)
     if node is None or node.standing == operation.standing:
@@ -453,6 +468,7 @@ def _validate_removal_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     if not isinstance(operation, ProposalRemovalOperation):
         return "removal requires exactly one remove_nodes operation."
@@ -461,7 +477,11 @@ def _validate_removal_intent(
         return "removal must name exactly one node."
     if _existing_protected_node(state, context_patch, node_ids[0]) is None:
         node = state.nodes.get(node_ids[0])
-        if _is_branch_merge(context_patch) and node is not None and node.standing == "accepted":
+        if (
+            _is_branch_merge(context_patch, writer)
+            and node is not None
+            and node.standing == "accepted"
+        ):
             return None
         return f"removal must target one existing {_protected_names(state)}."
     return None
@@ -471,6 +491,7 @@ def _validate_supersede_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     if not isinstance(operation, ProposalSupersedeOperation):
         return "supersede requires exactly one supersede_nodes operation."
@@ -499,6 +520,7 @@ def _validate_merge_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     if not isinstance(operation, ProposalMergeOperation):
         return "merge requires exactly one merge_nodes operation."
@@ -527,6 +549,7 @@ def _validate_protected_relation_change_intent(
     state: GraphState,
     context_patch: Patch | None,
     operation: ProposalOperation,
+    writer: Writer,
 ) -> str | None:
     if not isinstance(operation, ProposalProtectedRelationOperation):
         return "a protected relation change requires one create_edges or remove_edges operation."
@@ -632,6 +655,7 @@ def _validate_proposal_ops(
     state_repository: str | None,
     validation_mode: Literal["admission", "replay"],
     context_patch: Patch | None,
+    writer: Writer,
 ) -> None:
     # Imported lazily because the operation registry reaches this module.
     from rcp.core.validation.context import OpContext
@@ -644,7 +668,10 @@ def _validate_proposal_ops(
             for update in operation.nodes:
                 if update.changes.get("source_refs"):
                     validate_source_refs(
-                        {"source_refs": update.changes["source_refs"]}, context_patch, report
+                        {"source_refs": update.changes["source_refs"]},
+                        context_patch,
+                        report,
+                        writer=writer,
                     )
 
     synthetic_state = state.model_copy(
@@ -669,6 +696,7 @@ def _validate_proposal_ops(
         state=synthetic_state,
         initial_state=synthetic_state,
         patch=synthetic_patch,
+        writer=Writer.from_patch(synthetic_patch),
         report=replay_report,
         revision=revision,
         project_truth_scope=set(project_truth_scope),

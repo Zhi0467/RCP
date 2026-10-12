@@ -13,6 +13,7 @@ from rcp.agents import AgentEvent
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
+from rcp.config import Manifest
 from rcp.core.models import (
     AuthorizedHuman,
     Blocker,
@@ -25,7 +26,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import GraphTransitionManager
-from rcp.core.validation import ValidationReport, validate_patch
+from rcp.core.validation import ValidationContext, ValidationReport, validate_patch
 from rcp.history import RevisionConflict
 from rcp.runs.branch_merge import (
     BranchMergeCandidateProblem,
@@ -257,7 +258,7 @@ def test_merge_carries_branch_provenance_without_declaring_a_repository_read() -
     report = validate_patch(
         context.main_graph,
         candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
-        ["repo"],
+        ValidationContext(["repo"]),
     )
 
     assert candidate.repositories_read == []
@@ -274,7 +275,7 @@ def test_merge_still_rejects_a_carried_ref_outside_the_run_truth_scope() -> None
     report = validate_patch(
         context.main_graph,
         candidate.model_copy(update={"revision": context.main_graph.revision + 1}),
-        ["repo", "unscoped-repo"],
+        ValidationContext(["repo", "unscoped-repo"]),
     )
 
     assert any(message.code == "source-outside-run-scope" for message in report.messages), [
@@ -553,6 +554,8 @@ class _FakeLauncher:
 
 
 class _MovingMainHistory:
+    manifest: Manifest
+
     def __init__(
         self,
         first: BranchMergeContext,
@@ -585,6 +588,8 @@ class _MovingMainHistory:
 
 
 class _RejectingHistory:
+    manifest: Manifest
+
     def __init__(self, context: BranchMergeContext, *, reject_count: int) -> None:
         self.context = context
         self.reject_count = reject_count
@@ -807,6 +812,7 @@ def test_candidate_conformance_includes_generated_guidance_closure() -> None:
 @pytest.mark.asyncio
 async def test_conflict_only_empty_candidate_resolves_to_main_without_append(
     tmp_path: Path,
+    manifest: Manifest,
 ) -> None:
     context = _context(main_question=_question(motivation="Main motivation", updated_rev=4))
     assert context.deterministic_conflicts
@@ -831,7 +837,7 @@ async def test_conflict_only_empty_candidate_resolves_to_main_without_append(
             RunRequest(provider="codex", run_on="laptop"),
             launcher,  # type: ignore[arg-type]
             load_context=lambda: context,
-            main_history=SimpleNamespace(),
+            main_history=SimpleNamespace(manifest=manifest),
             stage=stage,
             write_scope=_local_scope(stage, context),
             validator_command="python3 validator.py validate patch.json",
@@ -847,7 +853,9 @@ async def test_conflict_only_empty_candidate_resolves_to_main_without_append(
 
 
 @pytest.mark.asyncio
-async def test_moving_main_discards_candidate_and_rebases_same_session(tmp_path: Path) -> None:
+async def test_moving_main_discards_candidate_and_rebases_same_session(
+    tmp_path: Path, manifest: Manifest
+) -> None:
     first = _context(main_revision=4)
     moved_template = _context(
         main_revision=5,
@@ -866,6 +874,7 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(tmp_path:
         run_truth_scope=first.run_truth_scope,
     )
     history = _MovingMainHistory(first, second)
+    history.manifest = manifest
     root = tmp_path / "stage"
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
@@ -934,9 +943,11 @@ def test_a_merge_continuation_resends_rules_only_when_main_ontology_changed() ->
 @pytest.mark.asyncio
 async def test_semantic_conflict_uses_two_bounded_same_session_corrections(
     tmp_path: Path,
+    manifest: Manifest,
 ) -> None:
     context = _context()
     history = _RejectingHistory(context, reject_count=3)
+    history.manifest = manifest
     root = tmp_path / "stage"
     workspace = root / "workspace"
     workspace.mkdir(parents=True)

@@ -55,6 +55,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.provisioning import project_provisioning_review_digest
+from tests.helpers import unchecked_write_authority
 
 SPACE_ID = "70994440-4c57-41b0-a2f6-8878856db969"
 PROJECT_ID = "9c59550a-9787-466a-9435-1e59f0a9803f"
@@ -294,7 +295,7 @@ def test_unsafe_database_entry_is_not_accepted_as_snapshot_input(tmp_path: Path)
 def test_canonical_inventory_reuses_retained_inputs_and_excludes_materializations(
     manifest: Manifest,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.initialize()
     root = manifest.research_dir
     for delegated in ("chat", "facts", "paper"):
@@ -370,7 +371,7 @@ def test_canonical_inventory_reuses_retained_inputs_and_excludes_materialization
 
 
 def test_branch_metadata_must_match_the_observed_patch_head(manifest: Manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.initialize()
     root = manifest.research_dir
     branch_id = str(uuid.uuid4())

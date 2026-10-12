@@ -186,11 +186,16 @@ permission principal.
 
 ### Apply
 
-Immediately before canonical append, RCP reloads live membership and project
-state, re-prepares RCP-owned bookkeeping, runs the transition manager and
-semantic validator, and rechecks the target-specific action under the append
-lock. Graph movement alone is not a rejection; current semantic invalidity or
-lost authority is.
+Under the append lock, core `WriteAuthority` runs Gate 1 before validation.
+It checks the producer, live human membership, agent task binding and membership,
+and each operation's permitted actions against the pre-Patch graph. Human
+approvals require an explicit authorizer. Branch writes use the parent's authority.
+No-change merge receipts also require live task authority.
+
+Gate 2 checks graph rules with the resolved writer role. Ordered staging keeps
+state-dependent writer rules, but never looks up identities, membership, or tasks.
+Agent validation reports profile refusals before Apply. Graph movement alone is
+not a rejection; current semantic invalidity or lost authority is.
 
 A refusal is not a rollback. Provider cost, repository writes, external calls,
 and compute already performed remain real, and the task answer remains visible
@@ -200,7 +205,8 @@ independently of the Patch verdict.
 
 Replay performs no permission check. Once admitted, a Patch cannot later be
 invalidated by user, membership, profile, or task changes. Historical records
-with no current attribution continue to materialize.
+with no current attribution continue to materialize. Producer, author, and kind
+consistency remain persisted-shape checks during replay.
 
 ## Agent profiles
 

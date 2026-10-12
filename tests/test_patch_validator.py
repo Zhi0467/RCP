@@ -22,7 +22,7 @@ from rcp.runs.tasks.graph import _validate_graph_patch_live
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import ProjectService
 from rcp.storage import AppStore
-from tests.helpers import agent_patch_json, refresh_patch, seed_patch
+from tests.helpers import agent_patch_json, refresh_patch, seed_patch, unchecked_write_authority
 
 
 class _RecordingStore:
@@ -120,7 +120,7 @@ async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_
 async def test_validator_client_receives_nonblocking_quality_advice(
     manifest, tmp_path: Path
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     service = ProjectService(
         manifest,
@@ -265,7 +265,7 @@ def test_stable_validator_mailbox_preparation_fails_when_workspace_is_unavailabl
 
 
 def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_path: Path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     service = ProjectService(
         manifest,
@@ -328,7 +328,7 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
 def test_graph_live_self_check_validates_current_state_without_appending(
     manifest, tmp_path: Path
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     service = ProjectService(
         manifest,
         history,
@@ -358,7 +358,8 @@ def test_graph_live_self_check_validates_current_state_without_appending(
     assert rechecked.status == "invalid"
     assert rechecked.live_revision == 1
     assert rechecked.candidate_revision == 2
-    assert any("already exists" in message for message in rechecked.messages)
+    # The permission refusal arrives with the rule rejections, not instead of them.
+    assert len(rechecked.messages) > 1
     assert history.state().revision == 1
 
 

@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from rcp.core.authority import QUEUE_DECISION, permits
+from rcp.core.authority import Writer
 from rcp.core.models import (
     Decision,
     GraphState,
@@ -24,7 +24,12 @@ from rcp.core.validation.report import ValidationReport
 
 
 def validate_new_node(
-    state: GraphState, patch: Patch, raw: dict[str, Any], report: ValidationReport
+    state: GraphState,
+    patch: Patch,
+    raw: dict[str, Any],
+    report: ValidationReport,
+    *,
+    writer: Writer,
 ) -> None:
     revision = patch.revision or None
     node_id = raw.get("id", "")
@@ -43,7 +48,7 @@ def validate_new_node(
             f"{extension_type or raw.get('type')!r}.",
             revision,
         )
-    if raw.get("standing", "asserted") != "asserted" and patch.kind != "approval":
+    if raw.get("standing", "asserted") != "asserted" and writer.author != "human":
         report.reject(
             "agent-created-trusted-node", "Agent-created nodes must start asserted.", revision
         )
@@ -66,7 +71,12 @@ def validate_new_node(
 
 
 def validate_new_node_authoring(
-    state: GraphState, patch: Patch, raw: dict[str, Any], report: ValidationReport
+    state: GraphState,
+    patch: Patch,
+    raw: dict[str, Any],
+    report: ValidationReport,
+    *,
+    writer: Writer,
 ) -> None:
     revision = patch.revision or None
     node_id = raw.get("id", "")
@@ -77,7 +87,7 @@ def validate_new_node_authoring(
         report,
         revision,
         authoring=True,
-        agent_authored=patch.author == "agent",
+        agent_authored=writer.author == "agent",
     )
     if node_type == "evidence" and "origin" not in raw:
         report.reject(
@@ -89,7 +99,7 @@ def validate_new_node_authoring(
     if node_type == "hypothesis" and raw.get("scope"):
         _validate_grounded_scope(raw, report, revision)
     if (
-        patch.author == "agent"
+        writer.author == "agent"
         and node_type == "hypothesis"
         and raw.get("status", "proposed") != "proposed"
     ):
@@ -123,13 +133,6 @@ def validate_new_node_authoring(
             report.reject(
                 "agent-created-decision-action",
                 f"New Decision {node_id!r} must start open or ready.",
-                revision,
-                related_node_ids=[node_id] if isinstance(node_id, str) else [],
-            )
-        elif status in {"open", "ready"} and not permits(patch, QUEUE_DECISION):
-            report.reject(
-                "agent-created-decision-action",
-                f"Agent-created Decision {node_id!r} is not permitted to use queue_decision.",
                 revision,
                 related_node_ids=[node_id] if isinstance(node_id, str) else [],
             )
@@ -171,6 +174,7 @@ def validate_extension_update(
     report: ValidationReport,
     *,
     authoring: bool,
+    writer: Writer,
 ) -> None:
     validate_updated_extension_fields(
         state,
@@ -179,7 +183,7 @@ def validate_extension_update(
         report,
         patch.revision or None,
         authoring=authoring,
-        agent_authored=patch.author == "agent",
+        agent_authored=writer.author == "agent",
     )
 
 
@@ -223,7 +227,9 @@ def created_node_id(patch: Patch, node_id: Any) -> bool:
     )
 
 
-def validate_source_refs(raw: dict[str, Any], patch: Patch, report: ValidationReport) -> None:
+def validate_source_refs(
+    raw: dict[str, Any], patch: Patch, report: ValidationReport, *, writer: Writer
+) -> None:
     run_scope = set(patch.run_truth_scope)
     for item in raw.get("source_refs", []):
         try:
@@ -235,7 +241,7 @@ def validate_source_refs(raw: dict[str, Any], patch: Patch, report: ValidationRe
                 patch.revision or None,
             )
             continue
-        if patch.kind != "approval" and ref.truth_repository not in run_scope:
+        if writer.author != "human" and ref.truth_repository not in run_scope:
             report.reject(
                 "source-outside-run-scope",
                 f"Source reference uses {ref.truth_repository!r} outside this run scope.",

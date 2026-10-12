@@ -12,9 +12,8 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
-import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from pydantic import TypeAdapter
@@ -23,10 +22,17 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import create_app
 from rcp.background import BackgroundAgentTasks
-from rcp.core.models import AuthorizedHuman, Patch
+from rcp.core.authority import WriteAuthority, Writer
+from rcp.core.models import AuthorizedHuman, BranchMergeReceipt, GraphState, Patch
 from rcp.core.operations import GraphOperation, ProposalOperation
+from rcp.core.transition_models import GraphTargetRef
+from rcp.core.validation.report import ValidationReport
 from rcp.history import HistoryManager
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
+
+if TYPE_CHECKING:
+    import pytest
+
 
 # Background tasks run on their own thread, so this bounds a genuine hang rather
 # than the expected duration. The poll returns the moment the task is terminal,
@@ -64,6 +70,30 @@ _RCP_OWNED_ITEM_FIELDS = {
     ),
     "upsert_glossary": ("terms", {"updated_rev"}),
 }
+
+
+class _UncheckedWriteAuthority(WriteAuthority):
+    """Test fixture policy preserving legacy unstamped patch admission."""
+
+    def admit(
+        self,
+        state: GraphState,
+        patch: Patch,
+        *,
+        project_id: str | None,
+        authorized_by: AuthorizedHuman | None,
+        apply_target: GraphTargetRef,
+    ) -> tuple[Patch, Writer, ValidationReport]:
+        return patch, Writer.from_patch(patch), self.validate_permissions(state, patch)
+
+    def require_no_change_merge(
+        self, receipt: BranchMergeReceipt, *, project_id: str | None
+    ) -> None:
+        pass
+
+
+def unchecked_write_authority() -> WriteAuthority:
+    return _UncheckedWriteAuthority()
 
 
 def launch_contract_path(prompt: str) -> Path:
@@ -375,7 +405,9 @@ def wait_for_task_response(
 def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):
     """Prepare canonical graph state without impersonating a production agent task."""
 
-    fixture_history = HistoryManager(service.manifest, service.history.workspace)
+    fixture_history = HistoryManager(
+        service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
+    )
     appended, result = fixture_history.append(patch, **kwargs)
     # Mirror the cache update that the production manager would have performed
     # if this test-only legacy fixture had gone through its guarded admission.
@@ -656,6 +688,8 @@ def isolate_host(
 @contextmanager
 def isolated_template_build(root: Path) -> Iterator[pytest.MonkeyPatch]:
     """Isolate a module template build the way `isolated_host` isolates a test."""
+
+    import pytest
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         engines = isolate_host(monkeypatch, root)

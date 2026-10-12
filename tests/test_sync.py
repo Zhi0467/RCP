@@ -21,11 +21,16 @@ from rcp.core.operations import (
     UpdateNodesOperation,
     graph_operations_from_proposal,
 )
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager
 from rcp.service import GraphSyncNodeChange, GraphSyncRequest, ReviewRequest, RunRequest
 from rcp.storage import AgentTaskRecord
-from tests.helpers import append_fixture_patch, seed_patch, signed_in_client
+from tests.helpers import (
+    append_fixture_patch,
+    seed_patch,
+    signed_in_client,
+    unchecked_write_authority,
+)
 from tests.helpers import create_named_app as create_app
 
 from .helpers import authorized_human
@@ -169,7 +174,9 @@ def append_decision_fixture(service, *, with_proposals: bool) -> None:
         ops=[{"op": "create_proposals", "proposals": proposals}],
         admission="accepted",
     )
-    assert not validate_patch(state, legacy_patch, ["repo-a"], mode="replay").rejected
+    assert not validate_patch(
+        state, legacy_patch, ValidationContext(["repo-a"], mode="replay")
+    ).rejected
     path = service.history.patches_dir / f"{legacy_patch.revision:06d}.json"
     path.write_text(legacy_patch.model_dump_json(indent=2) + "\n", encoding="utf-8")
     service.history.materialize(write_outputs=True)
@@ -262,7 +269,7 @@ def test_graph_sync_queues_a_decision_without_claiming_choice_authority(app) -> 
 
     assert len(patches) == 1
     assert patches[0].human_action is None
-    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    assert not validate_patch(state, patches[0], ValidationContext(["repo-a"])).rejected
     queued = apply_valid_patch(state, patches[0]).nodes[decision.id]
     assert queued.status == "ready"
 
@@ -317,7 +324,9 @@ def test_graph_sync_direct_choice_atomically_withdraws_same_decision_proposals(a
         "prop/evaluation-shifted",
     }
     assert all(item.status == "withdrawn" and item.reason for item in resolutions)
-    assert not validate_patch(before_sync, stored, ["repo-a"], mode="replay").rejected
+    assert not validate_patch(
+        before_sync, stored, ValidationContext(["repo-a"], mode="replay")
+    ).rejected
 
 
 def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(app) -> None:
@@ -369,7 +378,9 @@ def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(app
             }
         ],
     )
-    replay_report = validate_patch(state, legacy_patch, ["repo-a"], mode="replay")
+    replay_report = validate_patch(
+        state, legacy_patch, ValidationContext(["repo-a"], mode="replay")
+    )
     assert not replay_report.rejected
     state = apply_valid_patch(state, legacy_patch)
     decision = state.nodes["dec/evaluation-rule"]
@@ -400,7 +411,7 @@ def test_direct_choice_withdraws_a_replay_valid_mixed_target_legacy_proposal(app
     assert isinstance(resolution_operation, ResolveProposalsOperation)
     assert resolution_operation.resolutions[0].id == "prop/legacy-mixed-target"
     assert resolution_operation.resolutions[0].status == "withdrawn"
-    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    assert not validate_patch(state, patches[0], ValidationContext(["repo-a"])).rejected
 
 
 def test_direct_choice_validator_requires_every_targeted_proposal_withdrawal(app) -> None:
@@ -440,7 +451,7 @@ def test_direct_choice_validator_requires_every_targeted_proposal_withdrawal(app
         ],
     )
 
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert report.rejected
     assert any(
@@ -521,7 +532,9 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(app) -> None:
             }
         ],
     )
-    assert not validate_patch(state, legacy_proposal, ["repo-a"], mode="replay").rejected
+    assert not validate_patch(
+        state, legacy_proposal, ValidationContext(["repo-a"], mode="replay")
+    ).rejected
     state = apply_valid_patch(state, legacy_proposal)
     legacy_approval = Patch(
         revision=state.revision + 1,
@@ -536,7 +549,9 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(app) -> None:
             },
         ],
     )
-    assert not validate_patch(state, legacy_approval, ["repo-a"], mode="replay").rejected
+    assert not validate_patch(
+        state, legacy_approval, ValidationContext(["repo-a"], mode="replay")
+    ).rejected
     state = apply_valid_patch(state, legacy_approval)
     decision = state.nodes["dec/evaluation-rule"]
     assert (decision.selected_option, decision.status) == ("shifted", "open")
@@ -557,7 +572,7 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(app) -> None:
 
     assert len(patches) == 1
     assert patches[0].human_action == "decision_choice"
-    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    assert not validate_patch(state, patches[0], ValidationContext(["repo-a"])).rejected
     repaired = apply_valid_patch(state, patches[0]).nodes["dec/evaluation-rule"]
     assert (repaired.selected_option, repaired.status) == ("shifted", "decided")
     assert repaired.standing == "accepted"
@@ -602,7 +617,9 @@ def test_graph_sync_approves_a_legacy_decision_proposal_through_decision_choice(
             }
         ],
     )
-    assert not validate_patch(state, legacy_proposal, ["repo-a"], mode="replay").rejected
+    assert not validate_patch(
+        state, legacy_proposal, ValidationContext(["repo-a"], mode="replay")
+    ).rejected
     state = apply_valid_patch(state, legacy_proposal)
     request = GraphSyncRequest(
         base_revision=state.revision,
@@ -618,7 +635,7 @@ def test_graph_sync_approves_a_legacy_decision_proposal_through_decision_choice(
 
     assert len(patches) == 1
     assert patches[0].human_action == "decision_choice"
-    assert not validate_patch(state, patches[0], ["repo-a"]).rejected
+    assert not validate_patch(state, patches[0], ValidationContext(["repo-a"])).rejected
     updated = apply_valid_patch(state, patches[0])
     assert updated.proposals["prop/legacy-decision-choice"].status == "approved"
     decision = updated.nodes["dec/evaluation-rule"]
@@ -655,7 +672,7 @@ def test_a_decision_choice_patch_that_does_not_name_the_action_is_refused(app) -
         ],
     )
 
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert report.rejected
     assert any(message.code == "non-prose-node-edit" for message in report.messages)
@@ -1363,7 +1380,7 @@ def test_graph_sync_preserves_an_unchanged_deprecated_extension_field(app) -> No
 
 
 def test_batch_overwrites_forged_admission_receipts(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     forged = ValidationMessage(level="reject", code="forged", message="forged")
     raw = Patch(
@@ -1394,7 +1411,7 @@ def test_batch_overwrites_forged_admission_receipts(manifest) -> None:
 def test_batch_commits_one_patch_then_replays_canonical_history_for_outputs(
     manifest, monkeypatch
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     raw = Patch(
         kind="approval",
@@ -1430,7 +1447,7 @@ def test_batch_commits_one_patch_then_replays_canonical_history_for_outputs(
 
 
 def test_batch_builder_receives_fresh_state_under_append_lock(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     lock_attempts: list[bool] = []
 
@@ -1488,7 +1505,7 @@ def test_graph_sync_refuses_stale_project_draft(app) -> None:
 
 
 def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, monkeypatch) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     before_graph = (manifest.research_dir / "graph.json").read_bytes()
     patches = [
@@ -1539,7 +1556,7 @@ def test_interrupted_transition_patch_write_exposes_none_of_the_sync(manifest, m
 
 
 def test_replay_ignores_an_uncommitted_hidden_batch(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     hidden = manifest.research_dir / "patches" / ".batch-interrupted"
     hidden.mkdir()

@@ -15,9 +15,10 @@ from rcp.core.authority import (
 from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
 from rcp.core.models import Experiment, GraphBranchMetadata, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.validation import ValidationContext
 from rcp.core.validation.patch import validate_patch
 from rcp.history import HistoryManager
-from tests.helpers import fabricated_authorizer, seated_on_every_project
+from tests.helpers import fabricated_authorizer, seated_on_every_project, unchecked_write_authority
 
 
 def _definition_patch(definition, *, kind="work", profile="ordinary", term="EWC"):
@@ -43,7 +44,7 @@ def _definition_patch(definition, *, kind="work", profile="ordinary", term="EWC"
     [("seed", "ordinary"), ("refresh", "ordinary"), ("work", "ordinary"), ("work", "orchestrator")],
 )
 def test_project_glossary_can_be_added_revised_and_replayed(manifest, kind, profile) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     original, first = history.append(
         _definition_patch("Elastic weight consolidation.", kind=kind, profile=profile)
     )
@@ -68,7 +69,12 @@ def test_project_glossary_can_be_added_revised_and_replayed(manifest, kind, prof
     )
     assert original_path.read_bytes() == original_bytes
     assert updated.ops[0].terms[0].term == "EWC"
-    assert HistoryManager(manifest).materialize().state.glossary == second.state.glossary
+    assert (
+        HistoryManager(manifest, write_authority=unchecked_write_authority())
+        .materialize()
+        .state.glossary
+        == second.state.glossary
+    )
     assert (
         json.loads((history.root / "glossary.json").read_text())["EWC"]["updated_rev"]
         == updated.revision
@@ -85,7 +91,9 @@ def test_experiment_loop_can_explain_project_terms_without_changing_control() ->
         },
     )
     patch = _definition_patch("Elastic weight consolidation.", kind="experiment_loop")
-    report = validate_patch(state, patch, ["repo-a"], experiment_control_node_id="exp/test")
+    report = validate_patch(
+        state, patch, ValidationContext(["repo-a"]), experiment_control_node_id="exp/test"
+    )
     assert not report.rejected, report.messages
 
 
@@ -112,7 +120,7 @@ def test_glossary_operation_does_not_grant_discuss_an_apply_channel() -> None:
 
 
 def test_branch_glossary_upsert_is_isolated_and_replays_its_own_state(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(_definition_patch("Main definition."))
     before = {
         path.relative_to(history.root): path.read_bytes() for path in history.root.rglob("*.json")
@@ -170,7 +178,7 @@ def test_same_patch_cased_glossary_upserts_share_first_spelling(manifest) -> Non
         patch.ops[0].terms[0].model_copy(update={"term": "EWC", "plain_definition": "Second."})
     )
     patch.ops.extend(_definition_patch("Last definition.", term="ewc").ops)
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     recorded, result = history.append(patch)
     assert list(result.state.glossary) == ["Ewc"]
     assert result.state.glossary["Ewc"].plain_definition == "Last definition."

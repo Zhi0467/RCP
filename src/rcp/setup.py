@@ -26,6 +26,7 @@ from rcp.config import (
     load_manifest,
     permissions_for,
 )
+from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import ProjectIdentity
 from rcp.history import HistoryManager, ProjectIdentityConflict
@@ -538,8 +539,7 @@ class ProjectSetupManager:
                 retained = self._inspect_retained_research(canonical, existing_content)
                 existing_research = retained.preview
                 identity = HistoryManager(
-                    retained.manifest,
-                    retained.workspace,
+                    retained.manifest, retained.workspace, write_authority=WriteAuthority()
                 ).project_identity(retained.materialization)
                 if identity is not None and identity.home_space_id != self.catalog.store.space_id:
                     raise ProjectIdentityConflict(
@@ -1118,7 +1118,7 @@ class ProjectSetupManager:
             )
         fingerprint_before = workspace.retained_history_fingerprint()
         manifest = load_manifest(workspace.root / "manifest.toml")
-        history = HistoryManager(manifest, workspace)
+        history = HistoryManager(manifest, workspace, write_authority=WriteAuthority())
         patch_paths = _retained_patch_paths(history.root)
         materialization = history.materialize(write_outputs=False)
         replay_failure = materialization.state.replay_failure

@@ -14,6 +14,7 @@ import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.config import Manifest
+from rcp.core.authority import WriteAuthority
 from rcp.core.models import GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import accepted_transition_head_chain_failure
@@ -490,6 +491,7 @@ def _replay_archive(
             LocalStateWorkspace(research_root, str(research_root)),
             expected_space_id=archive.target_space_id,
             project_id=archive.project_id,
+            write_authority=WriteAuthority(),
         )
         result = history.restore_canonical_history(
             sources,
