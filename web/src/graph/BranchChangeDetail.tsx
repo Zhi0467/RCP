@@ -38,6 +38,8 @@ const INTERNAL_FIELDS = new Set([
   "created_rev",
   "updated_rev",
   "draft_touched",
+  "current_summary_stale",
+  "next_action_stale",
   "extension_type",
   "source_refs",
   "type",
