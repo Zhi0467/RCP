@@ -24,6 +24,7 @@ from rcp.limits import (
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
     AUTO_RESEARCH_APPLY_MAX_PER_TURN,
+    CHILD_PROFILE_PROMPT_MAX_MODELS,
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
@@ -187,21 +188,24 @@ def _orchestration_progress() -> str:
 
 
 def render_child_profile_choices(choices: dict[str, dict[str, list[str]]]) -> str:
-    """One compact line per ready provider: its model ids, each with its effort choices."""
+    """One compact line per ready provider: its first model ids, each with its efforts."""
 
     if not choices:
         return "  - none are known to be ready; omit the profile flags"
-    return "\n".join(
-        f"  - {provider}: "
-        + (
-            ", ".join(
-                f"{model} ({'|'.join(efforts)})" if efforts else model
-                for model, efforts in models.items()
-            )
-            or "catalog unknown; name no model or effort"
+
+    def listed(models: dict[str, list[str]]) -> str:
+        if not models:
+            return "catalog unknown; name no model or effort"
+        shown = list(models.items())[:CHILD_PROFILE_PROMPT_MAX_MODELS]
+        text = ", ".join(
+            f"{model} ({'|'.join(efforts)})" if efforts else model for model, efforts in shown
         )
-        for provider, models in choices.items()
-    )
+        hidden = len(models) - len(shown)
+        if hidden:
+            text += f", and {hidden} more (see the provider's documentation or CLI)"
+        return text
+
+    return "\n".join(f"  - {provider}: {listed(models)}" for provider, models in choices.items())
 
 
 def _auto_research_commands(
