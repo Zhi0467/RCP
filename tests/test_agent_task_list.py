@@ -196,3 +196,17 @@ def test_an_orchestrator_turn_stays_listed_and_finishes_its_chain_conversation(
             (store.now(),),
         )
     assert set(store.chat_reads("project", "user", branch)["latest_finished"]) == {"chain-root"}
+
+
+def test_a_paused_rebound_edit_keeps_its_artifact_from_expiry(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    _chat_turn(store, "answer", "chat", "paused", 0)
+    # An answer turn rebound to another stage's artifact carries no artifact context.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = json_set(request_json, "
+            "'$.artifact_edit', json('{\"artifact_id\": \"rebound\"}')) "
+            "WHERE operation_id = 'answer'"
+        )
+    assert "rebound" in store.protected_edit_artifact_ids()

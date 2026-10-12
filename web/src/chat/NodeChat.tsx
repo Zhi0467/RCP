@@ -1969,10 +1969,8 @@ export function NodeChat({
       return;
     if (!confirmDiscardKeptSpeech("send")) return;
     if (dictating) stopDictation(true);
-    // Sending a failed turn's text again is its Resend: the same key admits at
-    // most one turn even if the failed request did reach the server.
-    const requestId =
-      pendingTurn?.error && pendingTurn.text === text ? pendingTurn.requestId : crypto.randomUUID();
+    // A new send is a new request; only Resend reuses a failed turn's key.
+    const requestId = crypto.randomUUID();
     setMessage("");
     await submitTurn({
       clientId: `pending-${requestId}`,
