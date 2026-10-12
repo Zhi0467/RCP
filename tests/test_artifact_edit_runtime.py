@@ -860,3 +860,16 @@ def test_an_untouched_fresh_session_retry_after_the_artifact_moved_is_unchanged(
     assert receipt.payload["status"] == "unchanged"
     project_id = store.artifact(source.artifact_id).project_id
     assert [item.artifact_id for item in store.artifacts(project_id)] == [source.artifact_id]
+
+
+def test_an_unreadable_tracked_file_records_an_unverified_failure(manifest, tmp_path):
+    app, request, execution, _source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    tracked = _tracked_file(staged)
+    tracked.write_bytes(b"<p>edited</p>")
+    tracked.chmod(0)
+    try:
+        _finalize(app, request, execution, directory)
+    finally:
+        tracked.chmod(0o600)
+    [receipt] = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    assert receipt.payload["reason"] == "unverified"

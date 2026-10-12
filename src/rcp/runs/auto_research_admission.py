@@ -1978,6 +1978,8 @@ def require_auto_research_child_profile_pick(
             "model_unknown",
             f"Model {model!r} is not in the {picked} catalog; no child was started.",
         )
+    if not models and model is None and reasoning is None:
+        return  # An unknown catalog: the CLI picks its own model and effort.
     # Check the effort the child will actually run with, including one kept from
     # Settings when only a provider or model was named.
     resolved = service.resolve_agent_profile(

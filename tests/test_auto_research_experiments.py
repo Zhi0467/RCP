@@ -1417,3 +1417,25 @@ def test_unusable_child_stop_settles_without_resume_and_allows_fresh_kickoff(
     assert isinstance(operation_id, str)
     wait_for_task(store, operation_id, expect="failed")
     assert store.auto_research_experiment_allowance(parent_id).used == 2
+
+
+def test_a_provider_only_pick_runs_when_its_catalog_is_unknown(
+    manifest: Manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
+
+    service = _setup(manifest, tmp_path)[0]
+    monkeypatch.setattr(
+        service.launcher,
+        "readiness",
+        lambda provider, **_: ProviderReadiness(
+            provider=provider, installed=True, authenticated=True, models=[]
+        ),
+    )
+    require_auto_research_child_profile_pick(service, provider="codex", model=None, reasoning=None)
+    with pytest.raises(AutoResearchChildProfileInvalid):
+        require_auto_research_child_profile_pick(
+            service, provider="codex", model=None, reasoning="high"
+        )

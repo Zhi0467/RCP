@@ -380,7 +380,8 @@ def _publish(
                 reason = "missing"
             except RegularFileTooLargeError:
                 reason = "too_large"
-            except ValueError:
+            except (ValueError, PermissionError):
+                # An unreadable file stays unreadable; other OS errors are transient.
                 reason = "unverified"
         media_type = classify_artifact_bytes(artifact.source_name, data) if not reason else None
         if media_type is not None and media_type != artifact.media_type:
