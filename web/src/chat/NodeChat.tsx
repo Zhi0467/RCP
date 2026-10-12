@@ -2493,27 +2493,26 @@ export function NodeChat({
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
           return (
-            <div className={`node-chat-line ${line.role}`} key={line.lineId}>
+            <div
+              className={`node-chat-line ${line.role}${failedTurn ? " unsent" : ""}`}
+              key={line.lineId}
+            >
               <BrowserTurnNotice status={line.browserStatus} />
-              {line.role === "human" &&
-                line.mode &&
-                (failedTurn ? (
-                  // An unsent turn says so with its one action, beside its mode.
-                  <div className="chat-turn-head">
-                    <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
-                    <button
-                      type="button"
-                      className="button compact chat-turn-resend"
-                      title={failedTurn.error}
-                      disabled={submitting}
-                      onClick={() => void submitTurn(failedTurn)}
-                    >
-                      <RotateCcw size={12} /> Resend
-                    </button>
-                  </div>
-                ) : (
-                  <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
-                ))}
+              {line.role === "human" && line.mode && (
+                <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+              )}
+              {failedTurn && (
+                <button
+                  type="button"
+                  className="icon-button chat-turn-resend"
+                  aria-label="Resend"
+                  title={failedTurn.error}
+                  disabled={submitting}
+                  onClick={() => void submitTurn(failedTurn)}
+                >
+                  <RotateCcw size={14} />
+                </button>
+              )}
               {line.trigger === "watcher" && (
                 <span className="chat-turn-trigger watcher">Watcher</span>
               )}

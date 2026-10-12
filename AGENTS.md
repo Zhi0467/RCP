@@ -73,7 +73,7 @@ failures, shared-contract changes, or integration uncertainty warrant it.
   layout" and "No commentary lines" rules in
   `docs/specs/interface-and-visual-design.md`. No explanatory or error caption
   goes under or beside a control, and no state stacks a box under an item; a
-  recoverable failure is its one compact action in the item's existing row.
+  recoverable failure is shown visually (a red edge) with one icon-only action.
 - Remote behavior needs a reachable host. Migration or recovery checks that
   depend on existing records use a copy of real data. Never test against the
   human's live data directory.

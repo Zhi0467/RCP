@@ -49,9 +49,10 @@ subtitles and descriptive microcopy are removed wherever they appear; primary
 wording, hierarchy, shape, color, motion, and control state carry the meaning.
 
 Actual errors, conflicts, required warnings, and accessibility labels stay
-explicit, except a failure the reader recovers from with one action: it shows
-only that action, compact, in the item's existing row (an unsent chat turn
-carries Resend beside its mode), never a stacked error box or caption. When an item genuinely has more to say, a card carries its name and
+explicit, except a failure the reader recovers from with one action: the item
+shows the failure visually and carries only that action, as an icon, never a
+stacked error box or caption. An unsent chat turn has a red edge where a sent
+turn has its spinner, and an icon-only Resend in its top-right corner. When an item genuinely has more to say, a card carries its name and
 state and an explicit control opens a read-only inspector — never a caption under
 the card.
 

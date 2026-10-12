@@ -480,19 +480,17 @@
   text-transform: uppercase;
   width: fit-content;
 }
-.chat-turn-head {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-  margin: 0 0 6px;
-}
-.chat-turn-head .chat-turn-mode {
-  margin: 0;
+/* An unsent turn: a red edge instead of the progress spinner, and its one
+   action, an icon-only Resend, in the top-right corner. */
+.node-chat-line.unsent {
+  border-color: var(--red);
+  position: relative;
 }
 .chat-turn-resend {
-  min-height: 0;
-  padding: 2px 8px;
+  color: var(--red);
+  position: absolute;
+  right: 8px;
+  top: 8px;
 }
 .chat-turn-mode.discuss {
   background: transparent;

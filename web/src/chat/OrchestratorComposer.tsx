@@ -51,13 +51,15 @@ export function OrchestratorComposer({
     if (!body || busy || disabled) return;
     setError(null);
     try {
-      if (request.current?.body !== body || request.current?.turns !== messageTurns) {
-        request.current = {
-          body,
-          turns: messageTurns,
-          invocationCeiling: continues ? parsedTurns : undefined,
-          id: crypto.randomUUID(),
-        };
+      // A retry reuses its key only while what it asks is unchanged, including
+      // whether the run must continue: an ended run needs the turns allowance.
+      const invocationCeiling = continues ? parsedTurns : undefined;
+      if (
+        request.current?.body !== body ||
+        request.current?.turns !== messageTurns ||
+        request.current?.invocationCeiling !== invocationCeiling
+      ) {
+        request.current = { body, turns: messageTurns, invocationCeiling, id: crypto.randomUUID() };
       }
       await onSendMessage(
         episode.episode_id,

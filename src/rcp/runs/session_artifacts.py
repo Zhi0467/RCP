@@ -277,7 +277,9 @@ def publish_session_artifacts(
 ) -> list[AgentArtifactDescriptor]:
     """At turn end, publish each changed tracked file as its artifact's next version.
 
-    Failures leave the change in place, so a later turn end still publishes it.
+    Failures leave a tracked file's change in place, so a later turn end still
+    publishes it. A one-turn file has no later turn end, so its comment settles
+    as failed instead of ending without an outcome.
     """
     if execution is None:
         return artifacts
@@ -289,7 +291,29 @@ def publish_session_artifacts(
             f"Changed artifacts of this session could not be published yet: {exc}",
             level="warning",
         )
+        _settle_one_turn_edit(execution, request, directory)
         return artifacts
+
+
+def _settle_one_turn_edit(
+    execution: AgentTaskExecution, request: RunRequest, directory: Path | PurePosixPath
+) -> None:
+    edit = request.artifact_edit
+    if edit is None:
+        return
+    store = execution.store
+    if any(
+        receipt.payload.get("artifact_id") == edit.artifact_id
+        for category in dict.fromkeys(OUTCOME_CATEGORIES.values())
+        for receipt in store.agent_task_receipts_by_category(execution.operation_id, category)
+    ):
+        return
+    try:
+        tracked = _tracked(execution, request, _parts(directory)[1])
+    except ValueError:
+        tracked = []
+    if not any(item.durable and item.artifact.artifact_id == edit.artifact_id for item in tracked):
+        _record(execution, "failed", edit.artifact_id, reason="unverified")
 
 
 def _publish(
