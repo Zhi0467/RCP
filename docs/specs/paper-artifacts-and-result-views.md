@@ -472,7 +472,9 @@ version, so a retry never needs its pruned base. A turn never tracks a file on
 another stage. When a comment runs on a stage other than its artifact's, as an
 edit in a new session or a standalone recovery moved to another machine does,
 that stage gets the commented artifact at its turn-relative path for that turn,
-which publishes from it at turn end; nothing later tracks that file. Read-only crops
+which publishes from it at turn end. An answer to a question that turn asked
+rebinds the file to the answer turn at the artifact's current version; nothing
+else later tracks that file. Read-only crops
 of the commented version are still staged beside the turn's inputs.
 
 When the turn settles, RCP digests every session artifact file, in one SSH call

@@ -116,11 +116,13 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
     assert binding["continuation"] == "message_wake"
 
 
-@pytest.mark.parametrize("expired", [False, True])
-def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, expired):
+@pytest.mark.parametrize("case", ["same_stage", "expired", "other_stage"])
+def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, case):
     # A change the answer turn makes still publishes: every turn end versions
     # its session's changed artifacts, so the answer needs no edit binding.
-    # An expired artifact is untracked, so its answer is refused instead.
+    # An expired artifact is untracked, so its answer is refused instead; one
+    # from another stage is not discovered, so the answer rebinds it to itself.
+    expired = case == "expired"
     from datetime import UTC, datetime, timedelta
 
     from rcp.service import ArtifactContextRequest, ArtifactEditAdmission
@@ -139,7 +141,7 @@ def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, expired):
             media_type="text/html",
             created_at=store.now(),
             expires_at=(now + timedelta(days=-1 if expired else 1)).astimezone(UTC).isoformat(),
-            origin_operation_id="origin",
+            origin_operation_id="elsewhere" if case == "other_stage" else "origin",
             chat_id="chat",
         ),
         data=b"<p>v1</p>",
@@ -166,10 +168,18 @@ def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, expired):
         with pytest.raises(ValueError, match="question_origin_artifact_unavailable"):
             store.admit_chat_question_followup(question.question_id)
         return
-    carried = RunRequest.model_validate(
-        store.admit_chat_question_followup(question.question_id).request
+    followup = store.admit_chat_question_followup(question.question_id)
+    carried = RunRequest.model_validate(followup.request)
+    assert carried.artifact_context is None
+    if case == "same_stage":
+        assert carried.artifact_edit is None
+        return
+    current = store.artifact("a" * 24).current_version
+    assert carried.artifact_edit is not None
+    assert (carried.artifact_edit.operation_id, carried.artifact_edit.base_version) == (
+        followup.operation_id,
+        current,
     )
-    assert carried.artifact_edit is None and carried.artifact_context is None
 
 
 @pytest.mark.parametrize("browser_requested", [True, False])

@@ -342,20 +342,36 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 raise ValueError("question_origin_session_unavailable")
             self._require_project_accepts_new_work(connection, origin.project_id)
             edit = task.request.get("artifact_edit")
+            followup_edit = None
             if isinstance(edit, dict):
                 row = connection.execute(
                     "SELECT json_extract(metadata, '$.expires_at'), "
-                    "json_extract(metadata, '$.kept_at') FROM artifacts WHERE artifact_id = ?",
+                    "json_extract(metadata, '$.kept_at'), "
+                    "json_extract(metadata, '$.current_version'), "
+                    "json_extract(metadata, '$.origin_operation_id') "
+                    "FROM artifacts WHERE artifact_id = ?",
                     (edit.get("artifact_id"),),
                 ).fetchone()
                 # An expired artifact is no longer tracked, so a change made after the
                 # answer could never publish; refuse rather than run without it.
                 if row is None or (row[1] is None and row[0] is not None and row[0] <= self.now()):
                     raise ValueError("question_origin_artifact_unavailable")
-            # The answer is an ordinary turn: any artifact it changes in place
-            # becomes that artifact's next version without a comment binding.
+                artifact_stage = connection.execute(
+                    "SELECT stage_host, stage_root FROM graph_runs WHERE operation_id = ?",
+                    (row[3],),
+                ).fetchone()
+                # A composer comment on another stage's artifact wrote it here for one
+                # turn; the answer rebinds it so its changes still publish.
+                if not _origin_bound_edit(task.request) and (
+                    artifact_stage is None
+                    or (artifact_stage[0] or "", artifact_stage[1])
+                    != (origin.stage_host or "", origin.stage_root)
+                ):
+                    followup_edit = {**edit, "operation_id": operation_id, "base_version": row[2]}
+            # Otherwise the answer is an ordinary turn: any artifact it changes in
+            # place becomes that artifact's next version without a comment binding.
             request = RunRequest.model_validate(
-                {**task.request, "artifact_context": None, "artifact_edit": None}
+                {**task.request, "artifact_context": None, "artifact_edit": followup_edit}
             ).model_copy(
                 update={
                     "browser_requested": self._chat_browser_requested(
