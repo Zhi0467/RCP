@@ -15,7 +15,7 @@ const { conversationHref } = await server.ssrLoadModule("/src/chat/chatWorkspace
 const { parseProjectHash, projectHashAfterViewChange } = await server.ssrLoadModule(
   "/src/experiments/experimentBoardModel.ts",
 );
-const { graphPickerOptions, selectionAfterGraphSwitch } = await server.ssrLoadModule(
+const { graphPickerOptions, refNeedsYou, selectionAfterGraphSwitch } = await server.ssrLoadModule(
   "/src/graph/graphPickerModel.ts",
 );
 const main = { kind: "main" };
@@ -88,6 +88,13 @@ test("picker orders main, running branches, then newest and retains only the act
     old,
   ]);
   assert.deepEqual(refs, original);
+});
+
+test("an archived branch never needs you", () => {
+  const ref = { kind: "branch", branch_id: "b", needs_you: true, archived: false };
+  assert.equal(refNeedsYou(ref), true);
+  assert.equal(refNeedsYou({ ...ref, archived: true }), false);
+  assert.equal(refNeedsYou({ kind: "main", needs_you: false }), false);
 });
 
 test("switch preserves view and only destination-owned selections", () => {
