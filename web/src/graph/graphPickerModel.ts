@@ -5,6 +5,11 @@ export function graphRefTarget(ref: GraphRef): GraphTargetRef {
   return ref.kind === "main" ? { kind: "main" } : { kind: "branch", branch_id: ref.branch_id };
 }
 
+/** An archived branch is silenced: it never shows the attention dot. */
+export function refNeedsYou(ref: GraphRef): boolean {
+  return ref.kind === "branch" && ref.needs_you && !ref.archived;
+}
+
 /** Main first, then running branches; newest first within each group. */
 export function graphPickerOptions(
   refs: readonly GraphRef[],

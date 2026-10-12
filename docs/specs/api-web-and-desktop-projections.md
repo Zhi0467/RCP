@@ -43,11 +43,11 @@ Patch history or episode-history archiving.
 
 The branch picker is a `⑂ <name>` button at the right end of the view tabs; on
 a phone it is a chip beside the project name. It is hidden on main when the
-project has no live branch. The button shows an amber dot when another branch
-`needs_you`, and no spinner. Its list puts main first, then running branches,
+project has no live branch. The button shows an amber dot when another unarchived
+branch `needs_you`, and no spinner. Its list puts main first, then running branches,
 then newest first, and hides archived branches except the active one, which
 offers unarchive. Each branch row shows a spinner when `running`, an amber dot
-when `needs_you`, and always-visible rename and archive icons; the current row
+when `needs_you` and not archived, and always-visible rename and archive icons; the current row
 has a check. Rename edits the name inline and shows one warning for an invalid
 or taken name. Archiving an unmerged branch asks first. When the list cannot be
 read the button is disabled and still names the current ref.
@@ -229,7 +229,8 @@ on its branch, or its orchestrator episode needing action. On the run's branch
 those questions, Proposals, and Decisions are listed themselves, and the run
 item stands for the orchestrator. Its child Experiments and workers are never items and
 never surface the run, on main or on its branch. A standalone Experiment is
-named by its Experiment node.
+named by its Experiment node. An archived branch contributes no Needs you
+item, on main or on the branch itself.
 
 Changed on the open target groups accepted semantic changes by their attributed
 source; a merged Auto-research branch is named by its branch. Each touched node
