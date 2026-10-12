@@ -63,7 +63,7 @@ const repositories = [
     running_work: [],
   },
 ];
-async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
+async function fixture(t, { failLaunch = false, cooperative = false, mac = false } = {}) {
   let projectedRepositories = repositories.map((repository) =>
     cooperative && repository.eligible
       ? {
@@ -77,6 +77,10 @@ async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
   );
   const context = await browser.newContext();
   t.after(() => context.close());
+  if (mac)
+    await context.addInitScript(() =>
+      Object.defineProperty(navigator, "platform", { get: () => "MacIntel" }),
+    );
   const page = await context.newPage();
   const errors = [];
   const input = [];
@@ -148,6 +152,7 @@ async function fixture(t, { failLaunch = false, cooperative = false } = {}) {
     removeSessions: () => {
       sessions = [];
     },
+    send: (text) => latestSocket.send(Buffer.from(text)),
     dropLink: () => {
       sessions = [];
       latestSocket.send(
@@ -236,6 +241,24 @@ test("sessions reconnect after navigating, resize and type, expose Work on both 
   await page.getByRole("button", { name: "End code terminal" }).click();
   await page.getByRole("button", { name: "code /srv/project/code", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "End notes terminal" }).count(), 1);
+});
+
+test("Option-drag selects text while a full-screen program reports the mouse", async (t) => {
+  const { page, send } = await fixture(t, { mac: true });
+  await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
+  await page.locator(".xterm-rows").getByText("repository $").waitFor();
+  await page.waitForFunction(() => !document.querySelector(".terminal-connection"));
+  // Codex turns on button, drag, and any-motion reporting with SGR encoding.
+  send("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h https://example.test/sign-in");
+  await page.locator(".xterm-rows").getByText("sign-in").waitFor();
+  const box = await page.locator(".xterm-screen").boundingBox();
+  await page.keyboard.down("Alt");
+  await page.mouse.move(box.x + 4, box.y + 6);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + 6, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  assert.ok((await page.locator(".xterm-selection div").count()) > 0);
 });
 
 test("both themes and all modes show the cooperative warning, repaint the emulator, and keep mobile controls reachable", async (t) => {

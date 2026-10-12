@@ -42,6 +42,10 @@ export function TerminalPane({
       cursorBlink: true,
       scrollback: 2000,
       allowProposedApi: false,
+      // A full-screen program such as Codex turns on mouse reporting, which
+      // sends drags to it instead of selecting. Shift-drag forces a selection
+      // elsewhere; on a Mac xterm offers Option-drag only behind this option.
+      macOptionClickForcesSelection: true,
       // Seeded here because a theme assigned in the same tick as open() is
       // overwritten by the renderer's own initialization.
       theme: readTheme(),

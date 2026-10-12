@@ -226,6 +226,10 @@ A viewer that cannot keep up with its own output is detached, not ended: the
 shell keeps running and the view offers a reconnect. Reusing the session-end
 signal there would report a live shell as terminated.
 
+While a full-screen program such as Codex reports the mouse, a drag goes to
+that program; Option-drag on a Mac, or Shift-drag elsewhere, still selects text
+to copy.
+
 Sessions outlive the Terminals view and disconnected browsers. Only terminal
 input renews the 30-minute idle lifetime in `limits.py`, and it renews it on
 arrival rather than once the shell has taken it, because a backpressured PTY
