@@ -99,7 +99,8 @@ interface Props {
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
   /** The newest Auto-research episode owning the viewed branch, for its orchestrator card. */
-  orchestratorEpisode?: Episode | null;
+  /** Each branch's current Auto-research episode, so every listed orchestrator keeps its attention. */
+  orchestratorEpisodes?: readonly Episode[];
   episodeAction?: string | null;
   onSendOrchestratorMessage?: SendOrchestratorMessage;
 }
@@ -197,12 +198,15 @@ function agentMeta(status: ConversationAgentStatus, conversation: ChatConversati
   return parts.filter(Boolean).join(" · ");
 }
 
+const NO_EPISODES: readonly Episode[] = [];
+
 /** The orchestrator card's episode comes from the server's projection, not its tasks. */
-function chainEpisode(conversation: ChatConversation, episode: Episode | null): Episode | null {
-  return conversation.conversationKind === "auto_research" &&
-    episode?.graph_target.branch_id === conversation.chatId
-    ? episode
-    : null;
+function chainEpisode(
+  conversation: ChatConversation,
+  episodes: readonly Episode[],
+): Episode | null {
+  if (conversation.conversationKind !== "auto_research") return null;
+  return episodes.find((episode) => episode.graph_target.branch_id === conversation.chatId) ?? null;
 }
 
 function agentTypeLabel(conversation: ChatConversation): string {
@@ -380,7 +384,7 @@ export function ChatsWorkspace({
   onStopWatcher,
   onNewSession,
   onRemoveDraft,
-  orchestratorEpisode = null,
+  orchestratorEpisodes = NO_EPISODES,
   episodeAction = null,
   onSendOrchestratorMessage,
 }: Props) {
@@ -410,11 +414,11 @@ export function ChatsWorkspace({
         const named = display.titles[conversation.chatId]
           ? { ...conversation, title: display.titles[conversation.chatId] }
           : conversation;
-        return chainEpisode(named, orchestratorEpisode)?.health === "needs_action"
+        return chainEpisode(named, orchestratorEpisodes)?.health === "needs_action"
           ? { ...named, needsHuman: true }
           : named;
       }),
-    [storedConversations, display.titles, orchestratorEpisode],
+    [storedConversations, display.titles, orchestratorEpisodes],
   );
   const filteredConversations = listedAgentConversations(conversations, graphTarget);
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
@@ -671,7 +675,7 @@ export function ChatsWorkspace({
   }, [project.id, narrow, board]);
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
-  const selectedChainEpisode = selected ? chainEpisode(selected, orchestratorEpisode) : null;
+  const selectedChainEpisode = selected ? chainEpisode(selected, orchestratorEpisodes) : null;
   const selectedHistory = selected ? chatTranscripts.get(selected.chatId)?.messages : undefined;
   const selectedOrchestratorTurns = useMemo(
     () =>

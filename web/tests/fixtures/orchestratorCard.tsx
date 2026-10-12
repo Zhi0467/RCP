@@ -111,6 +111,13 @@ const episode = {
   message_refusal: null,
 } as unknown as Episode;
 
+const otherEpisode = {
+  ...episode,
+  episode_id: "other-root",
+  graph_target: { kind: "branch", branch_id: "other-root" },
+  health: "healthy",
+} as unknown as Episode;
+
 function Fixture() {
   const [selected, setSelected] = useState(conversation.chatId);
   return (
@@ -145,7 +152,8 @@ function Fixture() {
         onRepairGraphUpdate={async () => {}}
         onNewSession={() => {}}
         onRemoveDraft={() => {}}
-        orchestratorEpisode={episode}
+        // Another branch's orchestrator episode comes first; the card finds its own by branch.
+        orchestratorEpisodes={[otherEpisode, episode]}
         onSendOrchestratorMessage={async (...args) => {
           window.sentMessages.push(args);
         }}

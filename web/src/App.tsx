@@ -1046,6 +1046,16 @@ function MemberApp({
     runsVisible: view === "execution",
   });
   const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
+  // Agents lists every branch's orchestrator, so each needs its branch's current episode.
+  const orchestratorEpisodes = useMemo(
+    () =>
+      episodes.filter(
+        (episode) =>
+          episode.mode === "auto_research" &&
+          episode.episode_id === episode.graph_branch?.current_episode_id,
+      ),
+    [episodes],
+  );
   // undefined while loading; null when the list could not be read.
   const [graphRefs, setGraphRefs] = useState<{
     projectId: string;
@@ -5763,9 +5773,7 @@ function MemberApp({
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
-              orchestratorEpisode={
-                activeBranchEpisode?.mode === "auto_research" ? activeBranchEpisode : null
-              }
+              orchestratorEpisodes={orchestratorEpisodes}
               episodeAction={episodeAction}
               onSendOrchestratorMessage={messageEpisodeOrchestrator}
               onArchiveChange={() =>
