@@ -335,9 +335,10 @@ def test_a_run_surfaces_only_for_what_waits_on_its_branch_never_its_children():
     ]
     mark = {"seq": 0, "marked_at": "now"}
     runs = {run: "research-oct-11", quiet: "research-quiet"}
+    chain = frozenset({"run", "quiet", "continuation"})
 
     def lines(target):
-        result = assemble_digest("p", "me", events, mark, 11, runs=runs, target=target)
+        result = assemble_digest("p", "me", events, mark, 11, runs=runs, target=target, chain=chain)
         return (
             [(item["kind"], item["item_id"]) for item in result["needs_you"]],
             [item["item_id"] for item in result["reports"]],
@@ -356,6 +357,9 @@ def test_a_run_surfaces_only_for_what_waits_on_its_branch_never_its_children():
     assert lines(run)[0] == [("question", "q-run"), ("auto_research", "run")]
     # A standalone Experiment's branch shows only that Experiment.
     assert lines(other) == ([("episode", "exp")], [], 1)
+    # A continuation keeps its root's branch under a new id; it is no child.
+    events.append(_event(13, "episode_attention", "continuation", quiet, active=True, title="E"))
+    assert ("auto_research", "quiet") in lines("main")[0]
 
 
 def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):

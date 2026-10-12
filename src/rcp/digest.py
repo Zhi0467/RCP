@@ -222,9 +222,11 @@ def _experiment_link(project_id: str, episode) -> str:
     return f"{_app_hash(project_id, 'runs')}&experiment={node}&episode={episode_id}{route}"
 
 
-def _run_child(event_target: str, episode_id: str, runs: dict[str, str]) -> bool:
-    """An episode on a run's branch other than the orchestrator, the chain root."""
-    return event_target in runs and episode_id != event_target.removeprefix("branch:")
+def _run_child(event_target: str, episode_id: str, runs: dict[str, str], chain) -> bool:
+    """An episode on a run's branch that is no orchestrator: neither the chain
+    root nor a continuation, which keeps the root's branch under a new id."""
+    root = event_target.removeprefix("branch:")
+    return event_target in runs and episode_id != root and episode_id not in chain
 
 
 def assemble_digest(
@@ -238,11 +240,13 @@ def assemble_digest(
     *,
     target: str = "main",
     runs: dict[str, str] | None = None,
+    chain: frozenset[str] = frozenset(),
 ) -> dict:
     """The sole rendered-line grouping function, also used by landing counts.
 
     `target` is the graph the reader has open. `runs` names each Auto-research
-    run by its branch target key. Only main's own edits are main's changes; a
+    run by its branch target key, and `chain` holds every orchestrator
+    episode id, roots and continuations. Only main's own edits are main's changes; a
     run reaches main's digest solely as one Needs you line, while something on
     its branch waits for the human: an open question, Proposal, or Decision
     there, or its own orchestrator episode, whose id is its branch id. Its
@@ -312,7 +316,7 @@ def assemble_digest(
             if event_target != target and not (target == "main" and event_target in runs):
                 continue
             item_kind = "question" if kind == "question_attention" else "episode"
-            if item_kind == "episode" and _run_child(event_target, item_id, runs):
+            if item_kind == "episode" and _run_child(event_target, item_id, runs, chain):
                 continue
             attention[(event_target, item_kind, item_id)] = dict(
                 kind=item_kind,
@@ -388,19 +392,44 @@ def _main_state(catalog, project_id: str, *, required: bool) -> GraphState | Non
     return GraphState.model_validate(snapshot["graph"])
 
 
+def _branch_state(catalog, project_id: str, branch_id: str) -> GraphState | None:
+    """The branch's own graph, which names Experiments it created or renamed."""
+    service = catalog.loaded_service(project_id)
+    if service is None:
+        return None
+    return service.history.branch(branch_id, initialize=False).state()
+
+
 def read_digest(
     store, catalog, project_id: str, user_id: str, branch_id: str | None = None
 ) -> dict:
     mark, cursor, events = store.digest_snapshot(project_id, user_id)
-    # Main filters the dots and names Experiments; only the dots require it.
     kinds = {event["kind"] for event in events}
-    state = (
-        _main_state(catalog, project_id, required="graph_change" in kinds)
-        if kinds & {"graph_change", "episode_attention"}
-        else None
-    )
+    if branch_id is not None:
+        # Changed-node dots are main's only, so a branch graph just names Experiments.
+        state = (
+            _branch_state(catalog, project_id, branch_id) if "episode_attention" in kinds else None
+        )
+    else:
+        # Main filters the dots and names Experiments; only the dots require it.
+        state = (
+            _main_state(catalog, project_id, required="graph_change" in kinds)
+            if kinds & {"graph_change", "episode_attention"}
+            else None
+        )
     target = "main" if branch_id is None else "branch:" + branch_id
     return _assemble_current(store, project_id, user_id, events, mark, cursor, state, target)
+
+
+def _orchestrator_episodes(conn, project_id: str) -> frozenset[str]:
+    """Every Auto-research episode: chain roots and their continuations."""
+    return frozenset(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT episode_id FROM episodes WHERE project_id=? AND mode='auto_research'",
+            (project_id,),
+        )
+    )
 
 
 def _auto_research_runs(conn, project_id: str) -> dict[str, str]:
@@ -453,6 +482,7 @@ def _drop_closed_attention(store, project_id: str, events: list[dict]) -> list[d
 def _assemble_current(store, project_id, user_id, events, mark, cursor, state=None, target="main"):
     with store.connection() as conn:
         runs = _auto_research_runs(conn, project_id)
+        chain = _orchestrator_episodes(conn, project_id)
     result = assemble_digest(
         project_id,
         user_id,
@@ -463,6 +493,7 @@ def _assemble_current(store, project_id, user_id, events, mark, cursor, state=No
         store.chat_read_markers(project_id, user_id),
         target=target,
         runs=runs,
+        chain=chain,
     )
     _present_current(store, project_id, result, state, runs)
     return result
