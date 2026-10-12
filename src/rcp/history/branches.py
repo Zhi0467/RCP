@@ -20,7 +20,6 @@ from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
     materialize_patches,
-    materialize_patches_from_state,
 )
 from rcp.core.models import (
     AuthorizedHuman,
@@ -40,12 +39,14 @@ from rcp.core.transitions import (
     project_transition_projection,
 )
 from rcp.core.validation import ValidationReport, build_validation_context
-from rcp.history.delta import RevisionSummary, render_revision_summary
+from rcp.history.delta import build_revision_summaries
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.transport import BatchPublishFailed, StateUnavailable
 
 if TYPE_CHECKING:
+    from rcp.history.engine import ProjectHistoryEngine
     from rcp.history.manager import HistoryManager
+    from rcp.history.queries import StepRecord
 
 
 _PATCH_NAME = re.compile(r"[0-9]{6}\.json")
@@ -84,6 +85,10 @@ class BranchHistoryManager:
         self._process_lock = parent._process_lock
         self._metadata = metadata
         self._identity_metadata = metadata
+
+    @property
+    def history_engine(self) -> ProjectHistoryEngine:
+        return self.parent.history_engine
 
     @property
     def graph_target(self) -> GraphTargetRef:
@@ -496,52 +501,50 @@ class BranchHistoryManager:
         result, boundaries = self.accepted_patch_boundaries()
         return result, [state for _previous, _patch, state in boundaries]
 
+    def _history_projection(self) -> tuple[MaterializationResult, list[StepRecord]]:
+        projection = self.history_engine.projection(self.graph_target)
+        with self._process_lock:
+            self._read_metadata()
+        return projection
+
     def accepted_patch_boundaries(
         self,
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
-        boundaries: list[tuple[GraphState, Patch, GraphState]] = []
-
-        def collect(previous: GraphState, patch: Patch, state: GraphState) -> None:
-            if patch.revision > self._metadata.base_head.revision:
-                boundaries.append((previous, patch, state))
-
-        with self._process_lock:
-            if not self.workspace.refresh_if_stale():
-                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-            self._metadata = self._read_metadata()
-            result = self.materialize(write_outputs=False, accepted_patch_observer=collect)
-            return result, boundaries
+        result, steps = self._history_projection()
+        return result, [
+            (step.before_state, step.patch, step.after_state) for step in steps if step.accepted
+        ]
 
     def revision_summaries(
         self,
         from_revision: int = 1,
         to_revision: int | None = None,
     ) -> list[dict[str, object]]:
-        end = to_revision if to_revision is not None else 10**12
-        summaries: list[RevisionSummary] = []
-
-        def collect(previous_state: GraphState, patch: Patch, state: GraphState) -> None:
-            if (
-                patch.revision > self._metadata.base_head.revision
-                and from_revision <= patch.revision <= end
-            ):
-                summaries.append(render_revision_summary(previous_state, patch, state))
-
-        self.materialize(write_outputs=False, accepted_patch_observer=collect)
-        return [item.model_dump(mode="json") for item in summaries]
+        result, steps = self._history_projection()
+        return [
+            item.model_dump(mode="json")
+            for item in build_revision_summaries(
+                result.patches,
+                result,
+                from_revision=from_revision,
+                to_revision=to_revision,
+                steps=steps,
+            )
+        ]
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
         end = to_revision if to_revision is not None else 10**12
+        _result, steps = self._history_projection()
         return [
             {
-                "revision": patch.revision,
-                "kind": patch.kind,
-                "created_at": patch.created_at.isoformat(),
-                "summary": patch.summary,
-                "change_summary": patch.change_summary,
+                "revision": step.patch.revision,
+                "kind": step.patch.kind,
+                "created_at": step.patch.created_at.isoformat(),
+                "summary": step.patch.summary,
+                "change_summary": step.patch.change_summary,
             }
-            for patch in self.load_patches()
-            if from_revision <= patch.revision <= end
+            for step in steps
+            if from_revision <= step.patch.revision <= end
         ]
 
     def merge_receipts(self) -> list[BranchMergeReceipt]:
@@ -1165,23 +1168,31 @@ def read_branch_snapshots(
     with parent._process_lock:
         if not parent.workspace.refresh_if_stale(refresh_max_age_seconds):
             raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-        parent._reload_manifest()
-        accepted_main_states: dict[int, GraphState] = {}
-
-        def remember_main_state(_previous: GraphState, patch: Patch, state: GraphState) -> None:
-            accepted_main_states[patch.revision] = state
-
-        main = parent.materialize(
-            write_outputs=False,
-            accepted_patch_observer=remember_main_state,
-        )
-        parent.require_writable(main.state)
-        main_heads = _main_heads_by_revision(main)
-        main_states = _main_states_by_revision(parent, main, accepted_main_states)
-        main_receipts = _main_merge_receipts(main)
-        snapshots: dict[str, BranchReadSnapshot | None] = {}
-        for branch_id, (episode_id, project_id) in expected.items():
-            snapshots[branch_id] = _read_branch_snapshot(
+        metadata_contents: dict[str, bytes] = {}
+        for branch_id in expected:
+            path = _safe_branch_root(parent.root, branch_id, create=False) / "branch.json"
+            try:
+                _require_regular_file(path, "graph branch metadata")
+                metadata_contents[branch_id] = path.read_bytes()
+            except FileNotFoundError:
+                continue
+        targets = [
+            GraphTargetRef(kind="branch", branch_id=branch_id) for branch_id in metadata_contents
+        ]
+    projections = parent.history_engine.projections(targets, refresh=False)
+    main, main_steps = projections["main"]
+    main_heads = _main_heads_by_revision(main)
+    initial = main_steps[0].before_state if main_steps else main.state
+    main_states = {0: initial, **{step.patch.revision: step.after_state for step in main_steps}}
+    main_receipts = _main_merge_receipts(main)
+    with parent._process_lock:
+        for branch_id, content in metadata_contents.items():
+            path = _safe_branch_root(parent.root, branch_id, create=False) / "branch.json"
+            _require_regular_file(path, "graph branch metadata")
+            if path.read_bytes() != content:
+                raise StateUnavailable("graph branch metadata changed during the history read")
+        return {
+            branch_id: _read_branch_snapshot(
                 parent,
                 branch_id,
                 expected_episode_id=episode_id,
@@ -1190,8 +1201,14 @@ def read_branch_snapshots(
                 main_heads=main_heads,
                 main_states=main_states,
                 main_receipts=main_receipts.get(branch_id, ()),
+                materialization=projections[GraphTargetRef(kind="branch", branch_id=branch_id).key][
+                    0
+                ],
             )
-        return snapshots
+            if GraphTargetRef(kind="branch", branch_id=branch_id).key in projections
+            else None
+            for branch_id, (episode_id, project_id) in expected.items()
+        }
 
 
 def _read_branch_snapshot(
@@ -1204,6 +1221,7 @@ def _read_branch_snapshot(
     main_heads: dict[int, GraphHeadRef],
     main_states: dict[int, GraphState],
     main_receipts: tuple[BranchMergeReceipt, ...],
+    materialization: MaterializationResult,
 ) -> BranchReadSnapshot | None:
     root = _safe_branch_root(parent.root, branch_id, create=False)
     metadata_path = root / "branch.json"
@@ -1236,39 +1254,7 @@ def _read_branch_snapshot(
         raise ValueError("graph branch immutable main base has no coherent main state")
 
     branch = BranchHistoryManager(parent, metadata)
-    branch_paths = branch._patch_paths()
-    branch_patches, failure = branch._decode_paths(branch_paths)
-    if failure is None:
-        failure = branch._validate_revision_sequence(
-            branch_paths,
-            branch_patches,
-            start=metadata.base_head.revision + 1,
-        )
-    if failure is None:
-        failure = accepted_transition_head_chain_failure(
-            branch_patches,
-            target=branch.graph_target,
-            initial_transition_id=metadata.base_head.transition_id,
-        )
-    if failure is not None:
-        from rcp.history.manager import ReplayHalted
-
-        raise ReplayHalted(
-            GraphState(
-                revision=max(
-                    metadata.base_head.revision,
-                    branch_patches[-1].revision if branch_patches else 0,
-                ),
-                replay_status="degraded",
-                replay_failure=failure,
-            )
-        )
-
-    replayed = _replay_branch_tail(
-        branch,
-        base_state,
-        branch_patches,
-    )
+    replayed = _replay_branch_tail(branch, base_state, materialization)
     branch.require_writable(replayed.state)
     exact_metadata = metadata.model_copy(update={"head": branch.head_ref(replayed)})
 
@@ -1307,51 +1293,16 @@ def _main_heads_by_revision(main: MaterializationResult) -> dict[int, GraphHeadR
     return heads
 
 
-def _main_states_by_revision(
-    parent: HistoryManager,
-    main: MaterializationResult,
-    accepted_states: dict[int, GraphState],
-) -> dict[int, GraphState]:
-    scope_path = parent.root / "scope-base.json"
-    if scope_path.is_file():
-        scope = json.loads(scope_path.read_text(encoding="utf-8"))["truth_scope"]
-    else:
-        scope = list(parent.manifest.project.truth_scope)
-    initial = materialize_patches(
-        [],
-        context=build_validation_context(
-            parent.manifest, GraphState(project_truth_scope=scope), mode="replay"
-        ),
-    ).state
-    states = {0: initial}
-    current = initial
-    for patch in main.patches:
-        if patch.admission == "accepted":
-            current = accepted_states[patch.revision]
-        else:
-            current = current.model_copy(
-                update={
-                    "revision": patch.revision,
-                    "validation_messages": [
-                        *current.validation_messages,
-                        *patch.admission_messages,
-                    ],
-                }
-            )
-        states[patch.revision] = current
-    return states
-
-
 def _replay_branch_tail(
     branch: BranchHistoryManager,
     base_state: GraphState,
-    patches: list[Patch],
+    materialization: MaterializationResult,
 ) -> MaterializationResult:
-    return materialize_patches_from_state(
-        patches,
-        initial_state=base_state,
-        context=build_validation_context(branch.manifest, base_state, mode="replay"),
-    )
+    """Project the engine's already-replayed tail at this exact immutable base."""
+    if base_state.revision != branch._metadata.base_head.revision:
+        raise ValueError("graph branch snapshot has a different immutable main base")
+    branch.require_writable(materialization.state)
+    return materialization
 
 
 def _main_merge_receipts(
@@ -1499,14 +1450,14 @@ def open_branch(
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> BranchHistoryManager:
     canonical_branch_id(branch_id)
+    main = (
+        parent.history_engine.materialization(
+            GraphTargetRef(), refresh_max_age_seconds=refresh_max_age_seconds
+        )
+        if not initialize
+        else None
+    )
     with parent._process_lock:
-        main = None
-        if not initialize:
-            if not parent.workspace.refresh_if_stale(refresh_max_age_seconds):
-                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-            parent._reload_manifest()
-            main = parent.materialize(write_outputs=False)
-            parent.require_writable(main.state)
         root = _safe_branch_root(parent.root, branch_id, create=False)
         try:
             _require_regular_file(root / "branch.json", "graph branch metadata")

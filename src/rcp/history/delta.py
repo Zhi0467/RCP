@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -42,6 +42,10 @@ from rcp.core.operations import (
 )
 from rcp.core.project_types import project_type_of
 from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
+
+if TYPE_CHECKING:
+    from rcp.history.queries import StepRecord
+
 
 _MAX_TITLE_CHARS = 240
 _GRAPH_ID_RE = re.compile(
@@ -93,10 +97,17 @@ def build_revision_summaries(
     *,
     from_revision: int = 1,
     to_revision: int | None = None,
+    steps: Iterable[StepRecord] | None = None,
 ) -> list[RevisionSummary]:
     """Render accepted append-only history without exposing graph implementation labels."""
 
     end = to_revision if to_revision is not None else 10**12
+    if steps is not None:
+        return [
+            render_revision_summary(step.before_state, step.patch, step.after_state)
+            for step in steps
+            if step.accepted and from_revision <= step.patch.revision <= end
+        ]
     state = GraphState()
     summaries: list[RevisionSummary] = []
 
@@ -208,6 +219,8 @@ class RefreshDelta(BaseModel):
 def build_refresh_delta(
     patches: Iterable[Patch],
     materialization: MaterializationResult,
+    *,
+    steps: Iterable[StepRecord] | None = None,
 ) -> RefreshDelta:
     """Build refresh routing data from already-loaded canonical history.
 
@@ -217,13 +230,17 @@ def build_refresh_delta(
     bounded space.
     """
 
-    ordered = sorted(patches, key=lambda item: item.revision)
-    accepted = [
-        patch
-        for patch in ordered
-        if patch.revision in materialization.reports
-        and not materialization.reports[patch.revision].rejected
-    ]
+    accepted = (
+        [step.patch for step in steps if step.accepted]
+        if steps is not None
+        else [
+            patch
+            for patch in patches
+            if patch.revision in materialization.reports
+            and not materialization.reports[patch.revision].rejected
+        ]
+    )
+    accepted.sort(key=lambda item: item.revision)
     baseline = max(
         (patch.revision for patch in accepted if patch.kind in {"seed", "refresh"}),
         default=0,
@@ -1140,6 +1157,8 @@ def _typed_collection_delta(
     for identity in sorted(set(before) | set(after)):
         old = before.get(identity)
         new = after.get(identity)
+        if old is new:
+            continue
         if old is None:
             result.append(
                 model.model_validate({"change": "created", id_field: identity, "after": new})

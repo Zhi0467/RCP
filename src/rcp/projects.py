@@ -3186,7 +3186,8 @@ def _validate_project_cache_roots(data_dir: Path, project_id: str) -> Path | Non
     if not os.path.lexists(project_root):
         return None
     _validate_optional_directory(project_root, "project cache boundary")
-    allowed_children = {source_root, slice_root}
+    history_root = project_root / "graph-history"
+    allowed_children = {source_root, slice_root, history_root}
     try:
         unexpected = [child for child in project_root.iterdir() if child not in allowed_children]
     except OSError as exc:
@@ -3195,6 +3196,7 @@ def _validate_project_cache_roots(data_dir: Path, project_id: str) -> Path | Non
         raise ValueError(f"Refusing to clear unknown project cache entry: {unexpected[0]}")
     _validate_cache_tree(source_root, "remote-source cache")
     _validate_cache_tree(slice_root, "session-slice cache")
+    _validate_cache_tree(history_root, "graph-history cache")
     return project_root
 
 

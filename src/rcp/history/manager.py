@@ -62,9 +62,8 @@ from rcp.core.validation import ValidationReport, build_validation_context, vali
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history.delta import (
     RefreshDelta,
-    RevisionSummary,
     build_refresh_delta,
-    render_revision_summary,
+    build_revision_summaries,
 )
 from rcp.limits import (
     PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
@@ -81,6 +80,7 @@ from rcp.transport import (
 
 if TYPE_CHECKING:
     from rcp.history.branches import BranchHistoryManager, BranchReadSnapshot
+    from rcp.history.engine import ProjectHistoryEngine
 
 
 @dataclass(frozen=True)
@@ -433,6 +433,16 @@ class HistoryManager:
         self.on_accepted_transition = on_accepted_transition
         self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
+        self._history_engine: ProjectHistoryEngine | None = None
+
+    @property
+    def history_engine(self) -> ProjectHistoryEngine:
+        from rcp.history.engine import ProjectHistoryEngine
+
+        with self._process_lock:
+            if self._history_engine is None:
+                self._history_engine = ProjectHistoryEngine(self)
+            return self._history_engine
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -1521,26 +1531,12 @@ class HistoryManager:
     def accepted_patch_boundaries(
         self,
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
-        """Replay canonical history with each accepted Patch and its exact pre/post state."""
+        """Read each accepted Patch and its exact pre/post state from the shared engine."""
 
-        boundaries: list[tuple[GraphState, Patch, GraphState]] = []
-
-        def collect(previous: GraphState, patch: Patch, state: GraphState) -> None:
-            boundaries.append((previous, patch, state))
-
-        with self._process_lock:
-            # Graph-condition transitions require a proven current canonical
-            # snapshot. Unlike display-oriented reads, stale remote state must
-            # fail closed and be retried rather than evaluated as current.
-            if not self.workspace.refresh_if_stale():
-                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-            self._reload_manifest()
-            result = self.materialize(
-                write_outputs=False,
-                accepted_patch_observer=collect,
-            )
-            self._remember_accepted_revision(result)
-            return result, boundaries
+        result, steps = self.history_engine.projection(self.graph_target)
+        return result, [
+            (step.before_state, step.patch, step.after_state) for step in steps if step.accepted
+        ]
 
     def _coherent_materialization(self) -> MaterializationResult | None:
         """Return replayed state only when every cached derived output already matches."""
@@ -1699,27 +1695,25 @@ class HistoryManager:
     ) -> RefreshDelta:
         """Return the bounded delta without coupling context assembly to history I/O."""
 
-        with self._process_lock:
-            result = materialization or self.materialize(write_outputs=False)
-            return build_refresh_delta(result.patches, result)
+        if materialization is not None:
+            return build_refresh_delta(materialization.patches, materialization)
+        result, steps = self.history_engine.projection(self.graph_target)
+        return build_refresh_delta(result.patches, result, steps=steps)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
-        with self._process_lock:
-            with suppress(StateUnavailable):
-                self.workspace.refresh_if_stale()
-            end = to_revision if to_revision is not None else 10**12
-            materialization = self.materialize(write_outputs=False)
-            return [
-                {
-                    "revision": patch.revision,
-                    "kind": patch.kind,
-                    "created_at": patch.created_at.isoformat(),
-                    "summary": patch.summary,
-                    "change_summary": patch.change_summary,
-                }
-                for patch in materialization.patches
-                if from_revision <= patch.revision <= end
-            ]
+        end = to_revision if to_revision is not None else 10**12
+        _result, steps = self.history_engine.projection(self.graph_target)
+        return [
+            {
+                "revision": step.patch.revision,
+                "kind": step.patch.kind,
+                "created_at": step.patch.created_at.isoformat(),
+                "summary": step.patch.summary,
+                "change_summary": step.patch.change_summary,
+            }
+            for step in steps
+            if from_revision <= step.patch.revision <= end
+        ]
 
     def revision_summaries(
         self,
@@ -1728,21 +1722,17 @@ class HistoryManager:
     ) -> list[dict[str, object]]:
         """Return a reader-facing projection without changing the raw history contract."""
 
-        with self._process_lock:
-            with suppress(StateUnavailable):
-                self.workspace.refresh_if_stale()
-            end = to_revision if to_revision is not None else 10**12
-            summaries: list[RevisionSummary] = []
-
-            def collect(previous_state: GraphState, patch: Patch, state: GraphState) -> None:
-                if from_revision <= patch.revision <= end:
-                    summaries.append(render_revision_summary(previous_state, patch, state))
-
-            self.materialize(
-                write_outputs=False,
-                accepted_patch_observer=collect,
+        result, steps = self.history_engine.projection(self.graph_target)
+        return [
+            item.model_dump(mode="json")
+            for item in build_revision_summaries(
+                result.patches,
+                result,
+                from_revision=from_revision,
+                to_revision=to_revision,
+                steps=steps,
             )
-            return [item.model_dump(mode="json") for item in summaries]
+        ]
 
     def _next_revision(self) -> int:
         paths = self._patch_paths()
