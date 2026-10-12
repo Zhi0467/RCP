@@ -1419,25 +1419,30 @@ def test_unusable_child_stop_settles_without_resume_and_allows_fresh_kickoff(
     assert store.auto_research_experiment_allowance(parent_id).used == 2
 
 
-def test_a_provider_only_pick_runs_when_its_catalog_is_unknown(
+@pytest.mark.parametrize("catalog", [[], [ModelChoice(id="head", label="Head", reasoning=["max"])]])
+def test_a_provider_switch_never_inherits_the_settings_effort(
     manifest: Manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    catalog: list[ModelChoice],
 ) -> None:
     from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
 
     service = _setup(manifest, tmp_path)[0]
-    monkeypatch.setattr(
-        service.launcher,
-        "readiness",
-        lambda provider, **_: ProviderReadiness(
-            provider=provider, installed=True, authenticated=True, models=[]
-        ),
+    other = next(
+        p for p in ("claude", "codex") if p != manifest.agent_profile("node_chat").provider
     )
-    # The Settings effort belongs to another provider; the CLI picks its own.
-    pick = require_auto_research_child_profile_pick
-    assert pick(service, provider="codex", model=None, reasoning=None) == ""
-    with pytest.raises(AutoResearchChildProfileInvalid):
-        require_auto_research_child_profile_pick(
-            service, provider="codex", model=None, reasoning="high"
+
+    def ready(provider, **_):
+        return ProviderReadiness(
+            provider=provider, installed=True, authenticated=True, models=catalog
         )
+
+    monkeypatch.setattr(service.launcher, "readiness", ready)
+    monkeypatch.setattr(service.launcher, "cached_readiness", ready)
+    pick = require_auto_research_child_profile_pick
+    # The Settings effort belongs to another provider: the switch starts from none,
+    # which resolves to the head's default, or to the CLI's own with no catalog.
+    assert pick(service, provider=other, model=None, reasoning=None) == ""
+    with pytest.raises(AutoResearchChildProfileInvalid):
+        pick(service, provider=other, model=None, reasoning="unlisted")

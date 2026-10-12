@@ -1979,21 +1979,27 @@ def require_auto_research_child_profile_pick(
             "model_unknown",
             f"Model {model!r} is not in the {picked} catalog; no child was started.",
         )
-    if not models and model is None and reasoning is None:
-        # An unknown catalog: the CLI picks its own model and, with no effort
-        # inherited from another provider's Settings profile, its own effort.
-        return ""
+    if provider is not None and model is None and reasoning is None:
+        # A provider-only pick never inherits another provider's Settings effort:
+        # resolution fills the catalog head's default, or, with an unknown catalog,
+        # leaves the CLI to pick its own. The Settings provider keeps its profile.
+        if provider != service.manifest.agent_profile("node_chat").provider:
+            reasoning = ""
+        if not models:
+            return reasoning
     # Check the effort the child will actually run with, including one kept from
-    # Settings when only a provider or model was named.
+    # Settings when only a model was named.
     resolved = service.resolve_agent_profile(
         "node_chat", provider=provider, model=model, reasoning=reasoning
     )
     efforts = models.get(resolved.model, [])
-    # A model without effort choices runs with none.
-    if resolved.reasoning not in efforts and (efforts or resolved.reasoning):
+    # A named effort is checked as named, since resolution may swap one the head
+    # lacks for its default. A model without effort choices runs with none.
+    effort = reasoning or resolved.reasoning
+    if effort not in efforts and (efforts or effort):
         raise AutoResearchChildProfileInvalid(
             "effort_unknown",
-            f"Effort {resolved.reasoning!r} is not offered by {picked} model "
+            f"Effort {effort!r} is not offered by {picked} model "
             f"{resolved.model!r}; name one with --effort. No child was started.",
         )
     return reasoning
