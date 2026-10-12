@@ -415,6 +415,42 @@ the in-memory adapter introduces while retiring a value. Update
 rule together. Rejecting either shape halts canonical replay and leaves the
 graph read-only; historical Patch bytes remain unchanged.
 
+## History reads
+
+Every history view reads one engine. A head reference names its graph:
+`main@R`, `branch:<id>@R`, or `@head` of either. A resolved head carries its
+transition id. A nonexistent, out-of-range, or pre-base branch revision is
+refused, never clamped. A retained rejected receipt is a valid head with the
+previous accepted semantics.
+
+One replay per graph produces step records: before and after heads and states,
+the original decoded Patch with its operations, the semantic delta, and the
+changed node and edge ids. The branch Changes view, branch merge context,
+ingestion `RefreshDelta`, revision summaries, digest events, consolidation
+coverage, and agent history queries are projections over these records. Each
+projection keeps its own policy: merge keeps its human-authorship proof from
+initiating operations, refresh keeps its routing categories and bounds, and the
+raw `/history` list keeps rejected receipts. None of them replays history on its
+own.
+
+`diff(A, B)` is the net semantic change from state A to state B, whatever their
+ancestry; it is not a merge plan. "What a branch did" is the diff from its
+immutable base to its head. A branch log lists main's accepted steps through the
+base, marked inherited with their original `main@R` heads, then the branch's own
+steps. A main reader never sees branch content through merge provenance.
+
+The engine is shared by every caller of a project graph, including per-request
+branch wrappers. It holds step records in bounded memory and extends them one
+appended Patch at a time. Rebuildable checkpoints every K revisions and a
+per-step changed-id index live under `project-caches/<project-hash>/graph-history/`,
+outside canonical history, the SSH state mirror, backups, and transfers. Their
+key is a digest of every retained Patch through the head, rejected receipts
+included, plus the replay context and an engine version. A missing, corrupt, or
+mismatched entry is a cache miss that rebuilds from canonical history; nothing
+in the store is canonical, and a canonical append never waits on it. A query
+pins one verified generation for every page.
+[Decision](../decisions/2026-10-12-graph-history-is-addressable-like-git.md).
+
 ## Canonical publication
 
 Local and remote publication is atomic and owned by the state workspace. Remote
