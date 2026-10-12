@@ -64,6 +64,8 @@ import {
 } from "./artifacts/artifactViewerModel";
 import {
   chatIndicator,
+  conversationHasUnread,
+  listedAgentConversations,
   unreadChatIdsFromReads,
   conversationHref,
   chatEntryConversationId,
@@ -2895,11 +2897,20 @@ function MemberApp({
     () => unreadChatIdsFromReads(projectTasks, chatReads),
     [chatReads, projectTasks],
   );
-  const unreadChatIds = useMemo(() => {
-    const listed = new Set(inventoryConversations.map((conversation) => conversation.chatId));
-    return new Set([...readUnreadChatIds].filter((chatId) => listed.has(chatId)));
-  }, [inventoryConversations, readUnreadChatIds]);
-  const chatsIndicator = chatIndicator(projectTasks, unreadChatIds);
+  const listedConversations = useMemo(
+    () => listedAgentConversations(inventoryConversations, graphTarget),
+    [inventoryConversations, graphTarget],
+  );
+  const unreadChatIds = useMemo(
+    () =>
+      new Set(
+        listedConversations
+          .filter((conversation) => conversationHasUnread(conversation, readUnreadChatIds))
+          .map((conversation) => conversation.chatId),
+      ),
+    [listedConversations, readUnreadChatIds],
+  );
+  const chatsIndicator = chatIndicator(listedConversations, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
