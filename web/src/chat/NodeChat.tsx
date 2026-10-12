@@ -227,6 +227,8 @@ interface Props {
   fixedConversation?: boolean;
   readOnly?: boolean;
   readOnlyNotice?: ReactNode;
+  /** Questions belong to this episode rather than the chat, as an orchestrator's do. */
+  questionEpisodeId?: string;
   allowArtifactComments?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
@@ -338,6 +340,7 @@ export function NodeChat({
   readOnly = false,
   allowArtifactComments = false,
   readOnlyNotice,
+  questionEpisodeId,
   reviewPending = false,
   graphChangesDisabled = false,
   onStartTask,
@@ -368,7 +371,12 @@ export function NodeChat({
     .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
     .sort()
     .join("\0");
-  const questionState = useQuestions(questionApiBase, "chat", chatId, questionFreshness);
+  const questionState = useQuestions(
+    questionApiBase,
+    questionEpisodeId ? "episode" : "chat",
+    questionEpisodeId ?? chatId,
+    questionFreshness,
+  );
   const [steeringMessages, setSteeringMessages] = useState<{
     chatId: string;
     messages: ChatMessage[];
@@ -2735,7 +2743,7 @@ export function NodeChat({
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueChat={question.state === "parked" && !relatedActive}
+              continueChat={!questionEpisodeId && question.state === "parked" && !relatedActive}
             />
           ))}
         {submitError && <div className="node-chat-line error">{submitError}</div>}

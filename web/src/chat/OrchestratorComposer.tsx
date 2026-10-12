@@ -2,7 +2,6 @@ import { LoaderCircle, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../core/api";
 import type { Episode } from "../core/types";
-import { EpisodeQuestions } from "../experiments/EpisodeQuestions";
 
 export type SendOrchestratorMessage = (
   episodeId: string,
@@ -79,11 +78,6 @@ export function OrchestratorComposer({
 
   return (
     <div className="chat-composer orchestrator-composer">
-      <EpisodeQuestions
-        apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
-        episodeId={episode.episode_id}
-        freshness={`${episode.updated_at}:${episode.status}`}
-      />
       {(episode.can_message || continues || episode.message_refusal) && (
         <form
           className="campaign-message-composer"

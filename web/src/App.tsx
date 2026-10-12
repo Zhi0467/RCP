@@ -308,6 +308,7 @@ import {
   episodeNotificationHash,
   graphNotificationHash,
   initialNotificationLink,
+  isNotificationLinkHash,
   parseNotificationLink,
   type NotificationLink,
 } from "./core/notificationLinks";
@@ -1969,6 +1970,9 @@ function MemberApp({
 
   useEffect(() => {
     const handleHashChange = () => {
+      // A notification link is not a project route; the resolver below replaces it
+      // with one, so the open project stays mounted meanwhile.
+      if (isNotificationLinkHash(window.location.hash)) return;
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
@@ -2412,7 +2416,7 @@ function MemberApp({
     error: projectDigestError,
     catchingUp: projectDigestCatchingUp,
     catchUp: catchUpProjectDigest,
-  } = useProjectDigest(projectId, String(graph.revision), refreshProjectIndexQuietly);
+  } = useProjectDigest(projectId, graphTarget, String(graph.revision), refreshProjectIndexQuietly);
   const digestChangedNodes = useMemo(
     () => digestChangedNodeIds(projectDigest, graphTarget),
     [projectDigest, graphTarget],
@@ -5450,6 +5454,7 @@ function MemberApp({
               onNavigate={changeView}
               digest={{
                 digest: projectDigest,
+                targetName: branchName(projectGraphRefs, graphTarget),
                 error: projectDigestError,
                 catchingUp: projectDigestCatchingUp,
                 onCatchUp: () => void catchUpProjectDigest(),

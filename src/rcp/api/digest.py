@@ -31,7 +31,7 @@ class DigestMark(BaseModel):
 
 
 class DigestAttention(BaseModel):
-    kind: Literal["proposal", "decision", "question", "episode"]
+    kind: Literal["proposal", "decision", "question", "episode", "auto_research"]
     item_id: str
     title: str
     target: str
@@ -47,29 +47,24 @@ class DigestChange(BaseModel):
     label: str
     edits: int
     node_ids: list[str]
-    report_artifact_id: str | None
     deep_link: str | None
 
 
 class DigestBranch(BaseModel):
-    episode_id: str
+    """One Auto-research run, shown on main: its branch's unmerged edits and whether it needs you."""
+
+    branch_id: str
     title: str
     edits: int
-    deep_link: str | None
+    needs_you: bool
+    deep_link: str
 
 
-class DigestRun(BaseModel):
-    kind: Literal[
-        "episode_ended",
-        "job_ended",
-        "task_failed",
-        "consolidation_report",
-        "consolidation_failed",
-        "episode_report",
-    ]
+class DigestReport(BaseModel):
+    kind: Literal["consolidation_report", "episode_report"]
     item_id: str
     title: str
-    status: str
+    report_artifact_id: str | None
     deep_link: str | None
     created_at: str
 
@@ -77,10 +72,11 @@ class DigestRun(BaseModel):
 class DigestResponse(BaseModel):
     cursor: int
     mark: DigestMark | None
+    target: str
     needs_you: list[DigestAttention]
     changed: list[DigestChange]
     branches: list[DigestBranch]
-    ran: list[DigestRun]
+    reports: list[DigestReport]
     changed_node_ids: list[str]
     count: int
 
@@ -98,15 +94,21 @@ class CaughtUpResponse(BaseModel):
 def digest(
     project_id: str,
     request: Request,
+    branch_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity: IdentityDependency,
 ) -> dict[str, object]:
+    """The digest of the open graph target: main, or one branch named by `branch_id`."""
     project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
+    if branch_id is not None and branch_id not in store.branch_names(project_id):
+        raise HTTPException(status_code=404, detail="Branch not found")
     try:
-        result = read_digest(store, catalog, project_id, identity.acting_user(request).user_id)
+        result = read_digest(
+            store, catalog, project_id, identity.acting_user(request).user_id, branch_id
+        )
         if result["mark"] is None:
             request.app.state.digest_projector.signal(project_id)
         return result

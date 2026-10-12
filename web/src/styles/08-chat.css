@@ -2123,7 +2123,7 @@
   flex-basis: 100%;
   order: 10;
 }
-/* The orchestrator card stacks its open questions above a full-width mail form. */
+/* The orchestrator card's mail form spans the composer: Add turns, message, Send. */
 .chat-composer.orchestrator-composer {
   align-items: stretch;
   flex-direction: column;

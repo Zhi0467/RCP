@@ -61,7 +61,9 @@ import type {
   VoiceSavedSession,
   VoiceSessionPage,
   VoiceSettings,
+  GraphTargetRef,
 } from "./types";
+import { graphTargetUrl } from "./graphTarget";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
@@ -728,8 +730,12 @@ export function markChatRead(path: string, readThrough: string): Promise<ChatRea
   return api(path, { method: "POST", body: JSON.stringify({ read_through: readThrough }) });
 }
 
-export function loadProjectDigest(projectId: string): Promise<ProjectDigest> {
-  return api(`/api/projects/${encodeURIComponent(projectId)}/digest`);
+/** The digest of the open graph target; one Caught up mark still covers every target. */
+export function loadProjectDigest(
+  projectId: string,
+  target: GraphTargetRef,
+): Promise<ProjectDigest> {
+  return api(graphTargetUrl(`/api/projects/${encodeURIComponent(projectId)}/digest`, target));
 }
 
 /** `seq` is the cursor of the digest on screen, never "now"; the mark never moves back. */

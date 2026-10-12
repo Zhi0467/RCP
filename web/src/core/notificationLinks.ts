@@ -47,6 +47,11 @@ export function parseNotificationLink(hash: string): NotificationLink | null {
   }
 }
 
+/** A notification link is resolved in place; it never names a project route of its own. */
+export function isNotificationLinkHash(hash: string): boolean {
+  return parseNotificationLink(hash) !== null;
+}
+
 /**
  * Graph items and consolidation rows open in the Inbox; App then opens a graph
  * node itself, resolved or not.
@@ -55,12 +60,20 @@ export function graphNotificationHash(link: NotificationLink): string {
   return projectViewHash(link.projectId, MAIN_GRAPH, "attention");
 }
 
-/** An episode opens its exact run when it is still listed, else the Runs view. */
+/**
+ * An episode opens its exact run when it is still listed, else the Runs view.
+ * An Auto-research run opens on its own branch, so the reader lands where it writes.
+ */
 export function episodeNotificationHash(
   link: NotificationLink,
   episode: Episode | null,
   experimentEntries: ExperimentLoopIndexEntry[],
 ): string {
+  if (episode?.mode === "auto_research" && episode.graph_target?.kind === "branch") {
+    return projectViewHash(link.projectId, episode.graph_target, "execution", {
+      autoResearchEpisodeId: episode.episode_id,
+    });
+  }
   return episodeRunHash(link.projectId, link.itemId, episode, experimentEntries);
 }
 

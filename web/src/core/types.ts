@@ -3778,7 +3778,8 @@ export interface ProjectDigestMark {
 }
 
 export interface ProjectDigestNeedsYou {
-  kind: "proposal" | "decision" | "question" | "episode";
+  /** `auto_research` is one whole run, named by its branch; its children are never listed. */
+  kind: "proposal" | "decision" | "question" | "episode" | "auto_research";
   item_id: string;
   title: string;
   target: string;
@@ -3800,40 +3801,37 @@ export interface ProjectDigestChange {
   label: string;
   edits: number;
   node_ids: string[];
-  report_artifact_id: string | null;
   deep_link: string | null;
 }
 
-export interface ProjectDigestBranch {
-  episode_id: string;
+/** One Auto-research run on main's digest: its branch's unmerged edits and whether it needs you. */
+export interface ProjectDigestRun {
+  branch_id: string;
   title: string;
   edits: number;
-  deep_link: string | null;
+  needs_you: boolean;
+  deep_link: string;
 }
 
-export interface ProjectDigestRan {
-  kind:
-    | "episode_ended"
-    | "job_ended"
-    | "task_failed"
-    | "consolidation_report"
-    | "consolidation_failed"
-    | "episode_report";
+export interface ProjectDigestReport {
+  kind: "consolidation_report" | "episode_report";
   item_id: string;
   title: string;
-  status: string | null;
+  report_artifact_id: string | null;
   deep_link: string | null;
   created_at: string;
 }
 
-/** `GET /api/projects/{id}/digest`: events after the viewer's mark, up to `cursor`. */
+/** `GET /api/projects/{id}/digest[?branch_id=]`: the open target's events after the viewer's mark, up to `cursor`. */
 export interface ProjectDigest {
   cursor: number;
   mark: ProjectDigestMark | null;
+  /** `main` or `branch:{id}`. */
+  target: string;
   needs_you: ProjectDigestNeedsYou[];
   changed: ProjectDigestChange[];
-  branches: ProjectDigestBranch[];
-  ran: ProjectDigestRan[];
+  branches: ProjectDigestRun[];
+  reports: ProjectDigestReport[];
   changed_node_ids: string[];
   count: number;
 }

@@ -194,10 +194,13 @@ session expiry and metadata are owned by
 
 ## Since you last looked
 
-The pull-only digest is per member and project. `GET /api/projects/{id}/digest`
-returns `cursor`, `mark`, `needs_you`, `changed`, `branches`, `ran`,
-`changed_node_ids`, and `count`. The count is the number of rendered lines across
-those four groups. Opening a project or reading its digest never advances an
+The pull-only digest is per member and project, and follows the open graph
+target. `GET /api/projects/{id}/digest` reads main; `?branch_id=` reads one
+branch and is 404 for an unknown branch. It returns `cursor`, `mark`, `target`,
+`needs_you`, `changed`, `branches`, `reports`, `changed_node_ids`, and `count`.
+The count is the number of rendered lines across those four groups. The mark is
+one per member, not per target, so Caught up on any target acknowledges the
+whole displayed cursor. Opening a project or reading its digest never advances an
 existing mark. A member without a mark starts at the event log's current cursor
 and sees an empty digest; listing project cards does not create marks. The initial
 main projector checkpoint is persisted, after existing branches and episodes are
@@ -218,20 +221,34 @@ The Overview card labels `marked_at` as the time the member last caught up, show
 in the browser's time zone; for a new mark it is when the member first opened
 the digest.
 
-Needs you contains new, still-open Proposals, ready/revisit Decisions, open ask
-questions, and episodes needing human action. Changed on main groups accepted
-semantic changes by their attributed source. Each touched node belongs to its
-latest eligible source; the viewer's direct human edits, and the Work turns the
-viewer asked for in a chat once the viewer's chat read marker reaches them, are
-excluded before that assignment, so an earlier agent touch remains visible. A
-turn that finished after the viewer left stays in their digest until they read
-that chat. Excluding a Work turn is a visibility rule only: the provider agent
-remains its author. Removed nodes and
-changed edge endpoints participate in grouping, while `changed_node_ids`
-contains only nodes still present on main. Branch revisions aggregate into one
-line per episode. Ran contains ended episodes and compute jobs, failed
-non-conversation tasks, and consolidation and episode reports. Lessons and chat
-messages or turns as such are excluded.
+Needs you contains the open target's new, still-open Proposals, ready/revisit
+Decisions, open ask questions, and episodes needing human action. An
+Auto-research run is one item, named by its branch name, while the run or any
+of its children needs the human; child Experiments and workers are never items.
+On the run's branch its open questions are listed too; on main they fold into
+the run. A standalone Experiment is named by its Experiment node.
+
+Changed on the open target groups accepted semantic changes by their attributed
+source; a merged Auto-research branch is named by its branch. Each touched node
+belongs to its latest eligible source; the viewer's direct human edits, and the
+Work turns the viewer asked for in a chat once the viewer's chat read marker
+reaches them, are excluded before that assignment, so an earlier agent touch
+remains visible. A turn that finished after the viewer left stays in their
+digest until they read that chat. Excluding a Work turn is a visibility rule
+only: the provider agent remains its author. Removed nodes and changed edge
+endpoints participate in grouping, while `changed_node_ids` contains only nodes
+still present on main and is empty on a branch. On main, `branches` has one line
+per Auto-research run with unmerged edits or needing the human: its branch name,
+edit count, and whether it needs you. Other branches appear only on their own
+target. Reports lists the target's episode and consolidation reports by their
+report titles and opens the report artifact; ended episodes, jobs, and failed
+tasks are stored but not shown. Lessons and chat messages or turns as such are
+excluded.
+
+Digest links are in-app routes: a run opens its orchestrator card on its branch,
+and an Experiment its Runs entry. Proposal, Decision, and consolidation items
+keep the notification link format; App resolves it without closing the open
+project.
 
 Attribution is fixed when graph events are projected: episode merge,
 consolidation, identified human, ingestion, captured conversation Work, other
@@ -251,7 +268,7 @@ It shares semantic comparison with branch changes and does not consume
 notification sender state.
 
 `GET /api/projects` includes `digest_count` on each visible project card. It uses
-the same grouping and live operational filters as the digest, reading at most
+the same grouping and live operational filters as main's digest, reading at most
 `DIGEST_LANDING_EVENT_LIMIT` latest events per project. The integer count is a
 floor when that window truncates the backlog; the full digest remains exact.
 Neither landing counts nor digest requests replay graph history. Unmarked

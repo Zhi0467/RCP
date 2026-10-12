@@ -5,7 +5,7 @@ import type {
   GraphTargetRef,
   ProjectDigest,
   ProjectDigestNeedsYou,
-  ProjectDigestRan,
+  ProjectDigestReport,
 } from "../core/types";
 
 export function projectDigestIsEmpty(digest: ProjectDigest | null): boolean {
@@ -14,7 +14,7 @@ export function projectDigestIsEmpty(digest: ProjectDigest | null): boolean {
     (digest.needs_you.length === 0 &&
       digest.changed.length === 0 &&
       digest.branches.length === 0 &&
-      digest.ran.length === 0)
+      digest.reports.length === 0)
   );
 }
 
@@ -86,24 +86,37 @@ const NEEDS_YOU_LABELS: Record<ProjectDigestNeedsYou["kind"], string> = {
   proposal: "Proposal",
   decision: "Decision",
   question: "Question",
-  episode: "Episode",
+  episode: "Experiment",
+  auto_research: "Auto-research",
 };
 
-const RAN_LABELS: Record<ProjectDigestRan["kind"], string> = {
-  episode_ended: "Episode ended",
-  job_ended: "Job ended",
-  task_failed: "Task failed",
-  consolidation_report: "Consolidation report",
-  consolidation_failed: "Consolidation failed",
-  episode_report: "Episode report",
+const REPORT_LABELS: Record<ProjectDigestReport["kind"], string> = {
+  consolidation_report: "Consolidation",
+  episode_report: "Run",
 };
 
 export function needsYouKindLabel(item: ProjectDigestNeedsYou): string {
   return NEEDS_YOU_LABELS[item.kind] ?? item.kind;
 }
 
-export function ranKindLabel(item: ProjectDigestRan): string {
-  return RAN_LABELS[item.kind] ?? item.kind;
+export function reportKindLabel(item: ProjectDigestReport): string {
+  return REPORT_LABELS[item.kind] ?? item.kind;
+}
+
+/** The header line: what needs you, how many edits, how many reports. */
+export function digestSummary(digest: ProjectDigest): string {
+  const edits =
+    digest.changed.reduce((total, change) => total + change.edits, 0) +
+    digest.branches.reduce((total, run) => total + run.edits, 0);
+  const needs = digest.needs_you.length;
+  const reports = digest.reports.length;
+  return [
+    needs > 0 && `${needs} need${needs === 1 ? "s" : ""} you`,
+    edits > 0 && editCountLabel(edits),
+    reports > 0 && `${reports} report${reports === 1 ? "" : "s"}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export function editCountLabel(edits: number): string {

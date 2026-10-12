@@ -1109,6 +1109,7 @@ export function ChatsWorkspace({
             chatId={selected.chatId}
             presentation="workspace"
             readOnly
+            questionEpisodeId={selectedChainEpisode?.episode_id}
             readOnlyNotice={
               selectedChainEpisode && onSendOrchestratorMessage ? (
                 <OrchestratorComposer

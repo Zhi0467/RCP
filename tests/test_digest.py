@@ -9,7 +9,7 @@ from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.digest import digest_event
 
-from .helpers import authorized_human
+from .helpers import authorized_human, signed_in_client
 
 
 def _project_store(tmp_path):
@@ -266,16 +266,79 @@ def test_branch_reset_drops_replaced_history_but_keeps_operational_attention(tmp
     store = AppStore(tmp_path / "app.db")
     live = GraphState(nodes={"d/one": _decision()})
     branch = graph_event(store, "p", "branch:b", GraphState(), _patch(), live)
-    branch.update(seq=1, item_id="1", payload=dict(episode_id="e", title="E", edits=1))
+    branch.update(seq=1, item_id="1", payload=dict(episode_id="b", title="E", edits=1))
     waiting = dict(
         branch, seq=2, kind="episode_attention", item_id="e", payload=dict(active=True, title="E")
     )
     reset = dict(branch, seq=3, kind="reset", payload={})
     mark = {"seq": 0, "marked_at": "now"}
-    assert len(assemble_digest("p", "me", [branch], mark, 1, live)["branches"]) == 1
-    result = assemble_digest("p", "me", [branch, waiting, reset], mark, 3, live)
-    assert result["branches"] == []
-    assert [item["item_id"] for item in result["needs_you"]] == ["e"]
+    runs = {"branch:b": "research-b"}
+    first = assemble_digest("p", "me", [branch], mark, 1, live, runs=runs)
+    assert [line["edits"] for line in first["branches"]] == [1]
+    result = assemble_digest("p", "me", [branch, waiting, reset], mark, 3, live, runs=runs)
+    assert [(line["edits"], line["needs_you"]) for line in result["branches"]] == [(0, True)]
+    assert [item["item_id"] for item in result["needs_you"]] == ["b"]
+
+
+def _event(seq, kind, item_id, target="main", **payload):
+    return dict(
+        seq=seq,
+        kind=kind,
+        item_id=item_id,
+        target=target,
+        source_key="",
+        source_label="",
+        actor_user_id=None,
+        node_ids=[],
+        payload=payload,
+        created_at=f"2026-10-11T00:00:{seq:02d}+00:00",
+    )
+
+
+def test_a_run_folds_its_children_and_each_target_shows_only_its_own_items():
+    run, other = "branch:run", "branch:exp"
+    events = [
+        _event(1, "episode_attention", "child-1", run, active=True, title="Episode"),
+        _event(2, "episode_attention", "child-2", run, active=True, title="Episode"),
+        _event(3, "question_attention", "q-run", run, active=True, title="Which seed?"),
+        _event(4, "episode_attention", "exp", other, active=True, title="Episode"),
+        _event(5, "question_attention", "q-main", active=True, title="Ship it?"),
+        _event(6, "episode_report", "report-run", run, title="Run report"),
+        _event(7, "consolidation_report", "night", title="Nightly", report_artifact_id="a"),
+        *(
+            _event(8 + index, kind, kind, title=kind, status="failed")
+            for index, kind in enumerate(
+                ["episode_ended", "task_failed", "job_ended", "consolidation_failed"]
+            )
+        ),
+    ]
+    mark, runs = {"seq": 0, "marked_at": "now"}, {run: "research-oct-11"}
+
+    def lines(target):
+        result = assemble_digest("p", "me", events, mark, 11, runs=runs, target=target)
+        return (
+            [(item["kind"], item["item_id"]) for item in result["needs_you"]],
+            [(line["branch_id"], line["needs_you"]) for line in result["branches"]],
+            [item["item_id"] for item in result["reports"]],
+            result["count"],
+        )
+
+    # Main: its own question and report, and the whole run as one line.
+    assert lines("main") == (
+        [("question", "q-main"), ("auto_research", "run")],
+        [("run", True)],
+        ["night"],
+        4,
+    )
+    # The run's branch: the run once, its question, and its report.
+    assert lines(run) == (
+        [("question", "q-run"), ("auto_research", "run")],
+        [],
+        ["report-run"],
+        3,
+    )
+    # A standalone Experiment's branch shows only that Experiment.
+    assert lines(other) == ([("episode", "exp")], [], [], 1)
 
 
 def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
@@ -302,7 +365,10 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     result = read_digest(store, app.state.catalog, episode.project_id, user_id)
     assert main.history.current_accepted_revision() == main_revision
     assert len(result["branches"]) == 1
-    assert result["branches"][0]["episode_id"] == episode.episode_id
+    assert result["branches"][0]["branch_id"] == episode.episode_id
+    assert (
+        result["branches"][0]["title"] == store.branch_names(episode.project_id)[episode.episode_id]
+    )
     assert result["branches"][0]["edits"] == 1
     store.catch_up_digest(episode.project_id, user_id, result["cursor"])
     projector.run_pass()
@@ -367,7 +433,44 @@ def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
     needs["value"] = True
     projector.run_pass()
     result = digest.read_digest(store, app.state.catalog, episode.project_id, user_id)
-    assert [item["item_id"] for item in result["needs_you"]] == [episode.episode_id]
+    [item] = result["needs_you"]
+    name = store.branch_names(episode.project_id)[episode.episode_id]
+    assert (item["kind"], item["item_id"], item["title"]) == (
+        "auto_research",
+        episode.episode_id,
+        name,
+    )
+    assert "view=chats" in item["deep_link"] and "branch_id=" in item["deep_link"]
+
+
+def test_a_standalone_experiment_is_named_by_its_node_on_its_own_branch(
+    manifest, tmp_path, monkeypatch
+):
+    import rcp.digest as digest
+
+    from .test_branch_chats import _app_branch
+
+    app, _, episode, _ = _app_branch(manifest, tmp_path, owner_mode="experiment_loop")
+    real = digest._episode_attention
+    needs = {"value": False}
+
+    def attention(store, project_id, episode_ids=None):
+        episodes, active = real(store, project_id, episode_ids)
+        return episodes, dict.fromkeys(active, needs["value"])
+
+    monkeypatch.setattr(digest, "_episode_attention", attention)
+    app.state.digest_projector.run_pass()
+    client = signed_in_client(app)
+    url = f"/api/projects/{episode.project_id}/digest"
+    assert client.get(url).json()["count"] == 0
+    needs["value"] = True
+    app.state.digest_projector.run_pass()
+    branch = client.get(url, params={"branch_id": episode.graph_target.branch_id}).json()
+    [item] = branch["needs_you"]
+    assert (item["kind"], item["title"]) == ("episode", "Bounded loop")
+    assert item["deep_link"].startswith(f"#/projects/{episode.project_id}?view=runs&experiment=")
+    assert client.get(url).json()["needs_you"] == []
+    assert client.get(url, params={"branch_id": "missing"}).status_code == 404
 
 
 def test_viewer_does_not_see_their_own_chat_agent_edits_once_read(tmp_path):
