@@ -831,9 +831,12 @@ def test_a_fresh_session_edit_writes_its_artifact_for_one_turn(manifest, tmp_pat
     assert _finalize(app, plain, execution, workspace / "turns" / "later" / "artifacts") == []
 
 
-def test_a_failed_fresh_session_publish_settles_its_comment_as_failed(
-    manifest, tmp_path, monkeypatch
+@pytest.mark.parametrize("phase", ["publish", "receipt"])
+def test_a_failed_fresh_session_turn_end_settles_by_what_was_published(
+    manifest, tmp_path, monkeypatch, phase
 ):
+    import rcp.runs.session_artifacts as module
+
     app, request, execution, _source, _workspace = _setup(manifest, tmp_path)
     store = execution.store
     store.fail_agent_task("edit", "Fixture replaced with a fresh-session edit")
@@ -846,15 +849,28 @@ def test_a_failed_fresh_session_publish_settles_its_comment_as_failed(
     )
     directory, staged = _stage(app, fresh, execution, workspace)
     _tracked_file(staged).write_bytes(b"<p>edited</p>")
+    owner, method = (
+        (store, "publish_artifact_version") if phase == "publish" else (module, "_record")
+    )
+    original = getattr(owner, method)
 
     def fail(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(store, "publish_artifact_version", fail)
+    monkeypatch.setattr(owner, method, fail)
+    if phase == "publish":
+        _finalize(app, fresh, execution, directory)
+        # No later turn end tracks this file, so the comment cannot stay unsettled.
+        [receipt] = store.agent_task_artifact_edit_outcomes(["fresh-edit"])["fresh-edit"]
+        assert receipt.payload["status"] == "failed"
+        return
     _finalize(app, fresh, execution, directory)
-    # No later turn end tracks this file, so the comment cannot stay unsettled.
+    # Published before the failure: the replayed turn end records it as published.
+    assert not store.agent_task_artifact_edit_outcomes(["fresh-edit"])
+    monkeypatch.setattr(owner, method, original)
+    _finalize(app, fresh, execution, directory)
     [receipt] = store.agent_task_artifact_edit_outcomes(["fresh-edit"])["fresh-edit"]
-    assert receipt.payload["status"] == "failed"
+    assert receipt.payload["status"] == "published"
 
 
 def test_a_fresh_comment_whose_file_changes_while_restored_is_refused(

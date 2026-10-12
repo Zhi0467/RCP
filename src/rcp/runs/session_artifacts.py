@@ -308,6 +308,9 @@ def _settle_one_turn_edit(
         for receipt in store.agent_task_receipts_by_category(execution.operation_id, category)
     ):
         return
+    # Published before the failure: a replayed turn end finishes its receipt.
+    if store.artifact_operation_version(edit.artifact_id, execution.operation_id) is not None:
+        return
     try:
         tracked = _tracked(execution, request, _parts(directory)[1])
     except ValueError:
