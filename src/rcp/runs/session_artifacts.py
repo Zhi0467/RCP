@@ -101,8 +101,9 @@ def _tracked(execution: AgentTaskExecution, request: RunRequest, scope_id: str) 
             and origin.stage_root == execution.stage_root
             and (origin.stage_host or "") == (execution.stage_host or "")
         )
-        if not own and not edit.fresh_session:
-            raise ValueError("The commented artifact's file is on another stage.")
+        # Otherwise this turn runs elsewhere: a fresh-session edit, or a standalone
+        # recovery that moved the chat to another machine. The file is written for
+        # this turn alone and publishes at its end; no later turn tracks it.
         found.append(_Tracked(artifact, durable=own))
     return found
 

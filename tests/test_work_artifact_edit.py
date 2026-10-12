@@ -11,7 +11,7 @@ from .test_artifact_edit_runtime import _setup
 
 
 @pytest.mark.asyncio
-async def test_work_comment_never_copies_an_artifact_from_another_stage(manifest, tmp_path):
+async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp_path):
     app, request, previous, source, _ = _setup(manifest, tmp_path)
     append_fixture_patch(app.state.service, seed_patch())
     previous.store.fail_agent_task(previous.operation_id, "Replaced with composer Work")
@@ -26,17 +26,18 @@ async def test_work_comment_never_copies_an_artifact_from_another_stage(manifest
         }
     )
     execution = _chat_task_execution(app, request, "work-edit")
-    # This turn runs on its chat's own stage, not the origin's.
-    launcher = ScriptedLauncher([{}], message="Updated the chart.")
+    # A recovered chat can run on another machine than the artifact's origin.
+    launcher = ScriptedLauncher(
+        [{"turns/origin/artifacts/chart.html": "<p>updated</p>"}], message="Updated the chart."
+    )
     events = [
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in stream_work_run(
             app.state.service, launcher, request, tmp_path / "data", execution
         )
     ]
-    assert any(event.event == "error" for event in events)
-    assert not launcher.workspaces
-    assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
+    assert not any(event.event == "error" for event in events)
+    assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>updated</p>"
 
 
 async def _turn(app, launcher, request, operation_id, tmp_path):

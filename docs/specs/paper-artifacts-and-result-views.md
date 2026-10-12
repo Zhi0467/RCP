@@ -469,9 +469,10 @@ rewrites that file to the version the comment was drawn on, even when an earlier
 failed turn left it changed, and restores it if it is gone. Only a retry of the
 same comment keeps the agent's changes; a missing file then gets the current
 version, so a retry never needs its pruned base. A turn never tracks a file on
-another stage. The one exception is an edit in a new session: its fresh stage
-gets the commented artifact at its turn-relative path for that turn, which
-publishes from it at turn end; nothing later tracks that file. Read-only crops
+another stage. When a comment runs on a stage other than its artifact's, as an
+edit in a new session or a standalone recovery moved to another machine does,
+that stage gets the commented artifact at its turn-relative path for that turn,
+which publishes from it at turn end; nothing later tracks that file. Read-only crops
 of the commented version are still staged beside the turn's inputs.
 
 When the turn settles, RCP digests every session artifact file, in one SSH call
