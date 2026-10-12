@@ -81,8 +81,8 @@ export function RunDialog({
       ? project.agent_profiles[kind].runtime
       : readiness?.default_runtime;
   const providerReady = launchProviderReady(project, config);
-  // Switching the orchestrator rebinds one turn. Children it spawns resolve
-  // their own binding from the project's node_chat profile, so a human moving
+  // Switching the orchestrator rebinds one turn. Children it spawns without a
+  // pick of their own resolve from the project's node_chat profile, so a human moving
   // off an exhausted provider or model has to move that profile too, in
   // Settings, and has to do it before the orchestrator spawns again. Reasoning
   // is not a capacity axis, so a reasoning-only switch strands nothing and says
@@ -184,10 +184,11 @@ export function RunDialog({
             <TriangleAlert size={16} />
             <span>
               <strong>
-                Children this orchestrator spawns stay on {childProfile.provider}
+                Children this orchestrator spawns default to {childProfile.provider}
                 {childProfile.effective_model ? ` · ${childProfile.effective_model}` : ""}.
               </strong>
-              {" They take the project's Node chat profile, which this switch does not change." +
+              {" Unless the orchestrator picks another ready provider, they take the project's" +
+                " Node chat profile, which this switch does not change." +
                 " Change it in Settings first if that provider is also unavailable."}
             </span>
           </div>

@@ -455,37 +455,9 @@ async def test_apply_accepts_only_this_workspace_patch_json(tmp_path) -> None:
     "arguments",
     [
         ("retry", "worker-1", "--key", "retry-once"),
-        (
-            "spawn",
-            "--key",
-            "spawn-once",
-            "--seat-node",
-            "exp-1",
-            "--instruction-file",
-            "task.md",
-            "--provider",
-            "codex",
-        ),
-        (
-            "episode",
-            "--kick-off-experiment",
-            "--key",
-            "episode-once",
-            "--node",
-            "exp-1",
-            "--model",
-            "gpt-5",
-        ),
-        (
-            "episode",
-            "--kick-off-experiment",
-            "--key",
-            "episode-once",
-            "--node",
-            "exp-1",
-            "--effort",
-            "high",
-        ),
+        ("episode", "--key", "episode-once", "--stop", "episode-1", "--provider", "codex"),
+        ("episode", "--key", "episode-once", "--resume", "episode-1", "--effort", "high"),
+        ("resume", "--key", "resume-once", "worker-1", "--model", "gpt-5"),
         (
             "episode",
             "--kick-off-experiment",
@@ -1033,6 +1005,12 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             "exp/run",
             "--instruction-file",
             str(instruction),
+            "--provider",
+            "codex",
+            "--model",
+            "gpt-5",
+            "--effort",
+            "high",
             "--key",
             "k-spawn",
         ),
@@ -1050,6 +1028,8 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             str(goal),
             "--invocation-limit",
             "3",
+            "--provider",
+            "claude",
             "--key",
             "k-episode-start",
         ),
@@ -1102,6 +1082,9 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
     assert spawned == {
         "seat_node_id": "exp/run",
         "instruction_file": "worker-task.md",
+        "provider": "codex",
+        "model": "gpt-5",
+        "reasoning": "high",
     }
     watched = next(arguments for verb, arguments in seen if verb == "watch_graph")
     # RCP still normalizes for its own use; only the signature stops depending on it.
@@ -1116,6 +1099,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "node_id": "exp/run",
         "goal_file": "experiment-goal.md",
         "invocation_limit": 3,
+        "provider": "claude",
     }
 
 

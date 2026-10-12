@@ -210,6 +210,7 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
             session_name="browser-test-session",
             invocation_dir="/browser-test-invocation",
         ),
+        child_profiles={},
     )
     contract_path, prompt, _, values = _orchestrator_prompt(
         _execution(store, root), turn, **arguments

@@ -39,6 +39,7 @@ from rcp.runs.auto_research import (
     validate_auto_research_worker_request,
 )
 from rcp.runs.auto_research_admission import (
+    AutoResearchChildProfileInvalid,
     ensure_auto_research_child_work_spawned,
     pause_auto_research_child_work,
     resume_auto_research_child_work,
@@ -277,6 +278,9 @@ def auto_research_command_effects(
                 instruction_sha256=snapshot.sha256,
                 admission_id=planned_worker_id,
             )
+        except AutoResearchChildProfileInvalid as exc:
+            # The dispatcher cancels the accepted admission on an invalid result.
+            return exc.refusal()
         except ValueError:
             if store.auto_research_child_work(planned_worker_id) is None:
                 with suppress(KeyError, ValueError):
@@ -479,7 +483,12 @@ def auto_research_command_effects(
                     goal_sha256=goal_sha256,
                     invocation_limit=arguments.invocation_limit,
                     admission_id=planned_episode_effect_id,
+                    provider=arguments.provider,
+                    model=arguments.model,
+                    reasoning=arguments.reasoning,
                 )
+            except AutoResearchChildProfileInvalid as exc:
+                return exc.refusal()
             except AutoResearchExperimentLimitInvalid as exc:
                 return AutoResearchCommandEffectResult(
                     status="invalid",

@@ -17,6 +17,7 @@ from rcp.limits import (
     COMMAND_ASK_POLL_SECONDS,
     LESSON_TEXT_MAX_CHARS,
 )
+from rcp.providers import ProviderId
 from rcp.storage import GraphCondition
 
 COMMAND_PROTOCOL_VERSION = 1
@@ -138,6 +139,16 @@ class SpawnArguments(BaseModel):
         max_length=255,
         pattern=_SAFE_WORKSPACE_FILENAME,
     )
+    # An optional orchestrator pick of the child's provider profile. Omitted fields
+    # resolve from the Settings node Work profile; absent ones stay out of the dump
+    # so a record admitted before these fields existed replays unchanged.
+    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    reasoning: str | None = Field(
+        default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None
+    )
 
     @field_validator("seat_node_id")
     @classmethod
@@ -196,6 +207,14 @@ class ExperimentKickoffArguments(BaseModel):
         pattern=_SAFE_WORKSPACE_FILENAME,
     )
     invocation_limit: int | None = Field(default=None, gt=0)
+    # The same optional provider-profile pick as Spawn.
+    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    reasoning: str | None = Field(
+        default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None
+    )
 
     @field_validator("node_id")
     @classmethod

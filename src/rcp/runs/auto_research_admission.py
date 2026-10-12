@@ -22,7 +22,9 @@ from rcp.agents.launcher import work_like_launch_problem
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.providers import PROVIDER_IDS
 from rcp.runs.auto_research import (
+    AutoResearchCommandEffectResult,
     AutoResearchRunRequest,
     AutoResearchStartRequest,
     AutoResearchWakeAdmission,
@@ -1352,6 +1354,24 @@ def resume_auto_research_child_work(
     )
 
 
+_CHILD_PROFILE_PICK_FIELDS = ("provider", "model", "reasoning")
+
+
+def _request_keeps_child_profile_pick(
+    request: RunRequest, route: AutoResearchChildExperimentRecord
+) -> bool:
+    """Whether a child request runs the provider profile its durable intent names.
+
+    A route admitted without a pick names none, so it keeps the Settings profile.
+    """
+
+    return all(
+        getattr(request, field) == route.request[field]
+        for field in _CHILD_PROFILE_PICK_FIELDS
+        if field in route.request
+    )
+
+
 def start_auto_research_child_experiment(
     tasks: BackgroundAgentTasks,
     route: AutoResearchChildExperimentRecord,
@@ -1362,7 +1382,8 @@ def start_auto_research_child_experiment(
     """Launch invocation one through the ordinary Experiment task stream."""
 
     parent = _auto_research_parent_episode(tasks, route.auto_research_episode_id)
-    if set(route.request) != {"goal", "invocation_limit"}:
+    intent_keys = set(route.request) - set(_CHILD_PROFILE_PICK_FIELDS)
+    if intent_keys != {"goal", "invocation_limit"}:
         raise ValueError("The child Experiment route has an invalid launch intent.")
     goal = route.request["goal"]
     invocation_limit = route.request["invocation_limit"]
@@ -1390,6 +1411,7 @@ def start_auto_research_child_experiment(
         or request.control_invocation != 1
         or request.message != experiment_start_message(goal, route.control_node_id)
         or (invocation_limit is not None and request.control_invocation_ceiling != invocation_limit)
+        or not _request_keeps_child_profile_pick(request, route)
         or request.session_id is not None
         or request.watcher_ids
     ):
@@ -1880,6 +1902,97 @@ def _require_auto_research_retry_target_ready(
     raise ValueError(detail)
 
 
+ChildProfileRefusal = Literal["provider_unready", "model_unknown", "effort_unknown"]
+ChildProfileChoices = dict[str, dict[str, list[str]]]
+
+
+class AutoResearchChildProfileInvalid(ValueError):
+    """An explicit child provider pick that the child's machine cannot run."""
+
+    def __init__(self, reason: ChildProfileRefusal, message: str) -> None:
+        self.reason = reason
+        super().__init__(message)
+
+    def refusal(self) -> AutoResearchCommandEffectResult:
+        return AutoResearchCommandEffectResult(
+            status="invalid",
+            message=str(self),
+            result={"disposition": "child_profile_refused", "reason": self.reason},
+        )
+
+
+def auto_research_child_profile_choices(
+    service: ProjectService,
+    providers: tuple[str, ...] = PROVIDER_IDS,
+) -> ChildProfileChoices:
+    """The provider profiles an orchestrator may name for a child, by provider.
+
+    A child runs on the node Work profile's machine. A provider is listed when its
+    readiness there is installed, authenticated, and Work-launchable, with each
+    catalog model id and that model's effort choices. Readiness not yet cached is
+    probed once, so a provider never checked on this machine is still offered.
+    """
+
+    machine = service.manifest.machine_map.get(service.manifest.agent_profile("node_chat").run_on)
+    if machine is None:
+        return {}
+    choices: ChildProfileChoices = {}
+    for provider in providers:
+        binary = machine.provider_paths.get(provider)
+        readiness = service.launcher.readiness(provider, host=machine.host, binary=binary)
+        if (
+            readiness is None
+            or not readiness.installed
+            or not readiness.authenticated
+            or work_like_launch_problem(readiness) is not None
+        ):
+            continue
+        choices[provider] = {model.id: list(model.reasoning) for model in readiness.models}
+    return choices
+
+
+def require_auto_research_child_profile_pick(
+    service: ProjectService,
+    *,
+    provider: str | None,
+    model: str | None,
+    reasoning: str | None,
+) -> None:
+    """Refuse an orchestrator's explicit child pick the child's machine cannot run.
+
+    An omitted pick keeps the Settings node Work profile and is not checked here.
+    """
+
+    if provider is None and model is None and reasoning is None:
+        return
+    picked = provider or service.manifest.agent_profile("node_chat").provider
+    models = auto_research_child_profile_choices(service, (picked,)).get(picked)
+    if models is None:
+        raise AutoResearchChildProfileInvalid(
+            "provider_unready",
+            f"Provider {picked} is not ready for a child on its execution machine; "
+            "no child was started.",
+        )
+    if model is not None and model not in models:
+        raise AutoResearchChildProfileInvalid(
+            "model_unknown",
+            f"Model {model!r} is not in the {picked} catalog; no child was started.",
+        )
+    # Check the effort the child will actually run with, including one kept from
+    # Settings when only a provider or model was named.
+    resolved = service.resolve_agent_profile(
+        "node_chat", provider=provider, model=model, reasoning=reasoning
+    )
+    efforts = models.get(resolved.model, [])
+    # A model without effort choices runs with none.
+    if resolved.reasoning not in efforts and (efforts or resolved.reasoning):
+        raise AutoResearchChildProfileInvalid(
+            "effort_unknown",
+            f"Effort {resolved.reasoning!r} is not offered by {picked} model "
+            f"{resolved.model!r}; name one with --effort. No child was started.",
+        )
+
+
 def preflight_auto_research_task_resume(
     tasks: BackgroundAgentTasks,
     previous: AgentTaskRecord,
@@ -2141,6 +2254,7 @@ def _validate_existing_child_experiment_fresh(
         or request.message != experiment_start_message(goal, route.control_node_id)
         or (invocation_limit is not None and request.control_invocation_ceiling != invocation_limit)
         or route.goal_sha256 != expected_goal_sha256
+        or not _request_keeps_child_profile_pick(request, route)
         or request.session_id is not None
     ):
         raise ValueError("The deterministic Experiment operation belongs to another fresh launch.")

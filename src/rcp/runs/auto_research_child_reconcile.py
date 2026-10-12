@@ -18,6 +18,7 @@ from rcp.runs.auto_research import (
     validate_auto_research_worker_request,
 )
 from rcp.runs.auto_research_admission import (
+    AutoResearchChildProfileInvalid,
     start_auto_research_child_work,
 )
 from rcp.runs.auto_research_experiments import (
@@ -354,6 +355,9 @@ def _reconcile_experiment(
         goal_sha256=goal_sha256,
         invocation_limit=arguments.invocation_limit,
         admission_id=admission.admission_id,
+        provider=arguments.provider,
+        model=arguments.model,
+        reasoning=arguments.reasoning,
     )
     return _experiment_outcome(action)
 
@@ -429,6 +433,8 @@ def _diagnostic(exc: Exception) -> str:
 
 
 def _failed_outcome(exc: Exception) -> AutoResearchCommandEffectResult:
+    if isinstance(exc, AutoResearchChildProfileInvalid):
+        return exc.refusal()
     if isinstance(exc, AutoResearchExperimentLimitInvalid):
         return AutoResearchCommandEffectResult(
             status="invalid",

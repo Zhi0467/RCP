@@ -6,11 +6,12 @@ import uuid
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from pathlib import Path
 
 import pytest
 
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.agents.command_protocol import (
     EpisodeCommandRequest,
     EpisodeControlArguments,
@@ -25,6 +26,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.loop_status import other_branch_loops
 from rcp.paper import PaperService
+from rcp.providers import ModelChoice
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -33,6 +35,7 @@ from rcp.runs.auto_research import (
     AutoResearchStartRequest,
 )
 from rcp.runs.auto_research_admission import (
+    AutoResearchChildProfileInvalid,
     start_auto_research,
     start_auto_research_child_experiment,
 )
@@ -419,6 +422,100 @@ def test_explicit_invocation_limit_over_total_allowance_is_pre_admission(
     assert store.auto_research_child_experiment(CHILD_OVER_LIMIT) is None
     admission = store.auto_research_child_admission("admission-over-limit")
     assert admission is not None and admission.state == "accepted"
+
+
+def _ready_except_claude(provider, *, host="", binary=None, refresh=False):
+    return ProviderReadiness(
+        provider=provider,
+        installed=True,
+        authenticated=provider != "claude",
+        models=[ModelChoice(id="reviewer", label="Reviewer", reasoning=["medium", "xhigh"])],
+    )
+
+
+def test_kickoff_pick_is_pinned_and_part_of_the_replay_identity(
+    manifest: Manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, store, _, coordinator, parent_id, root_id = _setup(manifest, tmp_path)
+    monkeypatch.setattr(service.launcher, "readiness", _ready_except_claude)
+    _admit(
+        store,
+        parent_episode_id=parent_id,
+        child_episode_id=CHILD_EXPLICIT,
+        admission_id="admission-pick",
+    )
+    kick_off = partial(
+        coordinator.kick_off,
+        auto_research_episode_id=parent_id,
+        parent_operation_id=root_id,
+        child_episode_id=CHILD_EXPLICIT,
+        node_id=EXPERIMENT_ID,
+        goal=None,
+        goal_sha256=None,
+        invocation_limit=None,
+        admission_id="admission-pick",
+        provider="codex",
+    )
+
+    action = kick_off(model="reviewer", reasoning="xhigh")
+
+    task = store.agent_task(action.operation_id or "")
+    assert task is not None
+    assert (task.request["provider"], task.request["model"], task.request["reasoning"]) == (
+        "codex",
+        "reviewer",
+        "xhigh",
+    )
+    assert kick_off(model="reviewer", reasoning="xhigh").disposition == "existing"
+    with pytest.raises(ValueError, match="another durable intent"):
+        kick_off(model="reviewer", reasoning="medium")
+
+
+@pytest.mark.parametrize(
+    ("pick", "reason"),
+    [
+        ({"provider": "claude"}, "provider_unready"),
+        ({"provider": "codex", "model": "unlisted"}, "model_unknown"),
+        ({"provider": "codex", "model": "reviewer", "reasoning": "low"}, "effort_unknown"),
+    ],
+)
+def test_kickoff_refuses_an_unrunnable_pick_before_starting_a_child(
+    manifest: Manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pick: dict[str, str],
+    reason: str,
+) -> None:
+    service, store, _, coordinator, parent_id, root_id = _setup(manifest, tmp_path)
+    monkeypatch.setattr(service.launcher, "readiness", _ready_except_claude)
+    _admit(
+        store,
+        parent_episode_id=parent_id,
+        child_episode_id=CHILD_EXPLICIT,
+        admission_id="admission-refused",
+    )
+
+    with pytest.raises(AutoResearchChildProfileInvalid) as caught:
+        coordinator.kick_off(
+            auto_research_episode_id=parent_id,
+            parent_operation_id=root_id,
+            child_episode_id=CHILD_EXPLICIT,
+            node_id=EXPERIMENT_ID,
+            goal=None,
+            goal_sha256=None,
+            invocation_limit=None,
+            admission_id="admission-refused",
+            **pick,
+        )
+
+    assert caught.value.reason == reason
+    assert store.auto_research_child_experiment(CHILD_EXPLICIT) is None
+    assert store.episode(CHILD_EXPLICIT) is None
+    admission = store.auto_research_child_admission("admission-refused")
+    assert admission is not None and admission.state == "cancelled"
+    assert store.auto_research_experiment_allowance(parent_id).used == 0
 
 
 def test_exhausted_allowance_does_not_reserve_or_stop_an_active_predecessor(

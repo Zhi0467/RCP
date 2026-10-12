@@ -11,6 +11,7 @@ from rcp.core.models import Experiment
 from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_experiment_spawned,
+    require_auto_research_child_profile_pick,
     resume_auto_research_child_experiment,
     start_auto_research_child_experiment,
 )
@@ -87,6 +88,9 @@ class AutoResearchExperimentCoordinator:
         goal_sha256: str | None,
         invocation_limit: int | None,
         admission_id: str,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning: str | None = None,
     ) -> AutoResearchExperimentAction:
         parent = self._parent(auto_research_episode_id, parent_operation_id)
         allowance = self.store.auto_research_experiment_allowance(auto_research_episode_id)
@@ -101,9 +105,17 @@ class AutoResearchExperimentCoordinator:
 
         service = self.project_service(parent.project_id, auto_research_episode_id)
         now = self.store.now()
-        intent = {
+        pick = {
+            field: value
+            for field, value in (("provider", provider), ("model", model), ("reasoning", reasoning))
+            if value is not None
+        }
+        # The pick joins the intent only when named, so a route admitted before
+        # picks existed still equals a pick-less replay and keeps Settings.
+        intent: dict[str, object] = {
             "goal": goal,
             "invocation_limit": invocation_limit,
+            **pick,
         }
         existing = self.store.auto_research_child_experiment(child_episode_id)
         if existing is not None:
@@ -164,6 +176,10 @@ class AutoResearchExperimentCoordinator:
         ):
             raise ValueError("Experiment kickoff has no matching durable command admission.")
         try:
+            # Checked outside the lock: an uncached pick probes its provider CLI.
+            require_auto_research_child_profile_pick(
+                service, provider=provider, model=model, reasoning=reasoning
+            )
             with self.operation_lock(parent.project_id):
                 locked_allowance = self.store.auto_research_experiment_allowance(
                     auto_research_episode_id
@@ -176,6 +192,9 @@ class AutoResearchExperimentCoordinator:
                     node_id=node_id,
                     goal=goal,
                     invocation_limit=invocation_limit,
+                    provider=provider,
+                    model=model,
+                    reasoning=reasoning,
                 )
                 route = AutoResearchChildExperimentRecord(
                     child_episode_id=child_episode_id,
@@ -294,6 +313,9 @@ class AutoResearchExperimentCoordinator:
         node_id: str,
         goal: str | None,
         invocation_limit: int | None,
+        provider: str | None,
+        model: str | None,
+        reasoning: str | None,
     ) -> RunRequest:
         state = service.history.state()
         node = state.nodes.get(node_id)
@@ -310,6 +332,9 @@ class AutoResearchExperimentCoordinator:
             mode="work",
             trigger="orchestrator",
             patch_kind="experiment_loop",
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
         )
         return fresh_experiment_run_request(
             service,

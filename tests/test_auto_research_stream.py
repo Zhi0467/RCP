@@ -3074,7 +3074,7 @@ def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
     from rcp.agents.auto_research_prompt import _auto_research_commands
     from rcp.storage import AutoResearchLifecycleNoticeRecord
 
-    prompt = _auto_research_commands("/stage/rcp-agent")
+    prompt = _auto_research_commands("/stage/rcp-agent", {})
     assert "inbox --harvest" in prompt
     assert "inbox --clear" in prompt
     assert "wake_suppressed" in prompt
@@ -3269,6 +3269,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             skill_pointers=[],
             write_scope=scope,
             browser_grant=BrowserGrant(),
+            child_profiles={},
         )
         overlap_blocks = [
             json.loads(line) for line in prompt.splitlines() if line.startswith('{"rows":')

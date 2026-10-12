@@ -27,7 +27,8 @@ def resolve_experiment_node_work_request(
     """Resolve one Experiment turn from the node-Work profile and the human's pick.
 
     A human start may name provider, model, and reasoning; the machine stays the
-    profile's. An orchestrator child names none, so it keeps the Settings profile.
+    profile's. An orchestrator child carries the orchestrator's pick, or none, so it
+    keeps the Settings profile.
     """
 
     profile = service.resolve_agent_profile(

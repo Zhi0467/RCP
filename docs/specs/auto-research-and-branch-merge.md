@@ -11,7 +11,11 @@ one project-owned orchestrator profile and one live Auto-research episode exist
 per project. The optional human instruction guides the first paid invocation but
 grants no authority. The human start may pick the orchestrator's provider,
 model, and reasoning, defaulting to that profile; the pick holds for the
-episode, and the children it spawns still take the Settings node_chat profile.
+episode. A child the orchestrator spawns or kicks off takes the orchestrator's
+provider, model, and effort pick when it names one, otherwise the Settings
+node_chat profile, and always runs on that profile's machine. RCP refuses a pick
+the child's machine cannot run before admitting the child, and the orchestrator
+prompt lists the ready choices from the same readiness answer.
 
 Human start and reauthorization resolve the execution machine without gating
 on compute readiness. The helper probes when invoked, and Settings shows the
@@ -277,9 +281,11 @@ surface supports:
 
 - Patch validation and keyed Apply;
 - status inspection;
-- keyed ordinary-worker spawn and child pause/resume/stop;
+- keyed ordinary-worker spawn, with an optional provider, model, and effort
+  pick, and child pause/resume/stop;
 - keyed star mail and graph-condition registration;
-- keyed child-Experiment kickoff/stop/exact-resume;
+- keyed child-Experiment kickoff, with the same optional pick, and
+  stop/exact-resume;
 - keyed inbox harvest or clear; and
 - keyed guarded finish.
 
