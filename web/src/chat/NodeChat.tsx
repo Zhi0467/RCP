@@ -2033,7 +2033,16 @@ export function NodeChat({
       // The request may never have reached the server, so the turn stays where it
       // was sent, with Resend under the same key: at most one turn is admitted.
       // The composer gets the text back too, so it survives leaving this chat.
-      const reason = error instanceof Error ? error.message : String(error);
+      // fetch rejects a lost connection with a TypeError and the start timeout
+      // with a TimeoutError; neither message tells the reader anything.
+      const lost =
+        error instanceof TypeError ||
+        (error instanceof DOMException && error.name === "TimeoutError");
+      const reason = lost
+        ? "Not sent: the connection to RCP dropped."
+        : error instanceof Error
+          ? error.message
+          : String(error);
       setPendingTurn((current) =>
         current?.clientId === turn.clientId ? { ...pending, error: reason } : current,
       );
