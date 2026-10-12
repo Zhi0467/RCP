@@ -116,13 +116,34 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
     assert binding["continuation"] == "message_wake"
 
 
-def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path):
+@pytest.mark.parametrize("expired", [False, True])
+def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, expired):
     # A change the answer turn makes still publishes: every turn end versions
     # its session's changed artifacts, so the answer needs no edit binding.
+    # An expired artifact is untracked, so its answer is refused instead.
+    from datetime import UTC, datetime, timedelta
+
     from rcp.service import ArtifactContextRequest, ArtifactEditAdmission
+    from rcp.storage import Artifact
 
     store = AppStore(tmp_path / "store.sqlite3")
     question = _answered(store)
+    now = datetime.fromisoformat(store.now())
+    store.create_artifact(
+        Artifact(
+            artifact_id="a" * 24,
+            project_id="project",
+            supplier="turn",
+            supplier_id="origin",
+            source_name="page.html",
+            media_type="text/html",
+            created_at=store.now(),
+            expires_at=(now + timedelta(days=-1 if expired else 1)).astimezone(UTC).isoformat(),
+            origin_operation_id="origin",
+            chat_id="chat",
+        ),
+        data=b"<p>v1</p>",
+    )
     context = ArtifactContextRequest(operation_id="origin", artifact_id="a" * 24)
     edit = ArtifactEditAdmission(
         artifact_id="a" * 24,
@@ -141,6 +162,10 @@ def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path):
             "WHERE operation_id = 'origin'",
             (context.model_dump_json(), edit.model_dump_json()),
         )
+    if expired:
+        with pytest.raises(ValueError, match="question_origin_artifact_unavailable"):
+            store.admit_chat_question_followup(question.question_id)
+        return
     carried = RunRequest.model_validate(
         store.admit_chat_question_followup(question.question_id).request
     )
