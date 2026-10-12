@@ -220,8 +220,8 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
     assert not (workspace / "patch.json").exists()
     assert store.agent_task_contract("edit", "session_master") is None
     artifacts = [event.artifact for event in events if event.event == "artifact"]
-    assert {artifact.name for artifact in artifacts} == {"extra.txt", "chart.html"}
-    edited = next(artifact for artifact in artifacts if artifact.name == "chart.html")
+    assert len(artifacts) == 2
+    edited = next(artifact for artifact in artifacts if artifact.name != "extra.txt")
     assert (edited.artifact_id == source.artifact_id) is not undo
     assert store.read_artifact_bytes(source.artifact_id) == (
         b"<p>original</p>" if undo else b"<p>edited</p>"
@@ -736,8 +736,14 @@ def test_a_change_from_an_unretained_version_forks_into_its_own_tracked_file(man
     # The version the tracked file last held is no longer retained.
     store.record_artifact_sync(source.artifact_id, "0" * 64)
     _tracked_file(staged).write_bytes(b"<p>edited</p>")
-    [fork] = _finalize(app, request, execution, directory)
+    # This turn also made its own file under the same name.
+    (directory / source.name).write_bytes(b"<p>own</p>")
+    forks = [
+        item for item in _finalize(app, request, execution, directory) if item.name != source.name
+    ]
+    [fork] = forks
     assert fork.artifact_id != source.artifact_id
+    assert (directory / source.name).read_bytes() == b"<p>own</p>"
     assert store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
     assert (directory / fork.name).read_bytes() == b"<p>edited</p>"
     assert (

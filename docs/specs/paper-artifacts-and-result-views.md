@@ -483,7 +483,8 @@ next version, based on the version that digest belongs to, under the artifact
 lock. If the current version moved since (Undo, another edit), or no retained
 version has that digest any more, the bytes become a separate artifact of this
 turn instead, written to its own tracked file in this turn's folder so later
-turns track it. A changed file type, an oversized file, or an unreadable file
+turns track it. The fork's name adds the original's id prefix to its stem, so it
+never collides with a file the turn made itself. A changed file type, an oversized file, or an unreadable file
 records a failure with its reason code; a missing file records nothing. Digests
 read no more than one byte past the size limit. A commented artifact that ends
 unchanged records `unchanged`, and one whose file is gone records a `missing`

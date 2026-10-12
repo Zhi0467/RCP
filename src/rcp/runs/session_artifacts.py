@@ -474,9 +474,11 @@ def _fork(
     task = store.agent_task(execution.operation_id)
     if task is None:
         raise ValueError("The turn's task is unavailable.")
-    descriptor = descriptor_for(
-        scope_id, artifact.source_name, media_type=media_type, size_bytes=len(data) or None
-    )
+    # The turn may have made its own file under the original name; the original's
+    # id keeps the fork's name distinct and stable across a replayed turn end.
+    original = PurePosixPath(artifact.source_name)
+    name = f"{original.stem}-{artifact.artifact_id[:8]}{original.suffix}"
+    descriptor = descriptor_for(scope_id, name, media_type=media_type, size_bytes=len(data) or None)
     now = store.now()
     chat_id = task.request.get("chat_id")
     try:
@@ -486,7 +488,7 @@ def _fork(
                 project_id=task.project_id,
                 supplier="turn",
                 supplier_id=scope_id,
-                source_name=artifact.source_name,
+                source_name=name,
                 media_type=descriptor.media_type,
                 created_at=now,
                 expires_at=(
@@ -499,7 +501,7 @@ def _fork(
             data=data,
         )
     except ArtifactVersionConflict:
-        return None  # This turn wrote a different file under the same name.
+        return None  # A replay found different bytes already forked.
     # Later turns track the fork at its own path in this turn's folder.
     if _write(workspace, remote, forked, "", data):
         store.record_artifact_sync(forked.artifact_id, hashlib.sha256(data).hexdigest())
