@@ -33,8 +33,8 @@ from rcp.browser import readiness as browser_readiness
 from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
-from rcp.core.transition_models import GraphMutationAvailability
 from rcp.history.branches import BranchHistoryManager
+from rcp.history.queries import HeadSpec, HistoryEngine
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, experiment_signal
 from rcp.providers import profile_for
@@ -118,7 +118,7 @@ def _branch_snapshot(
 ) -> dict[str, object]:
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     assert isinstance(service.history, BranchHistoryManager)
-    materialization, changes = branch_changes(service.history)
+    materialization, changes = branch_changes(service)
     snapshot = project_display_cache.complete_snapshot(
         project_id,
         service.project_snapshot(materialization=materialization, head=changes.head),
@@ -132,15 +132,6 @@ def _branch_snapshot(
         materialization.state,
     ).model_dump(mode="json")
     return snapshot
-
-
-# Branch tabs poll this every second and branches have no display cache, so the
-# replay result is remembered per branch until its exact inputs change. One
-# process owns one data directory, so (project, branch) identifies the branch.
-_BRANCH_HEARTBEATS: dict[
-    tuple[str, str],
-    tuple[tuple[object, ...], int, GraphMutationAvailability, dict[str, object]],
-] = {}
 
 
 def _branch_revision(
@@ -163,28 +154,23 @@ def _branch_revision(
     with history.workspace.snapshot_lock:
         if not history.workspace.refresh_if_stale(REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS):
             raise StateUnavailable("The episode graph could not confirm a current snapshot.")
-        signature = history.retained_patch_signature()
-        remembered = _BRANCH_HEARTBEATS.get((canonical_project_id, branch_id))
-        if remembered is None or remembered[0] != signature:
-            state = history.materialize(write_outputs=False).state
-            remembered = (
-                signature,
-                state.revision,
-                project_graph_mutation_availability(state),
-                state.model_dump(mode="json"),
-            )
-            _BRANCH_HEARTBEATS[(canonical_project_id, branch_id)] = remembered
-        _signature, revision, availability, graph = remembered
+        engine: HistoryEngine = service.history_engine
+        head = engine.resolve(HeadSpec(revision="head"), default_target=history.graph_target)
+        state = engine.state_at(head)
+        availability = project_graph_mutation_availability(state)
         if active_merge(store, canonical_project_id, history.graph_target):
             availability = merge_fenced_mutation_availability()
         # Experiment controls are operational, so a teammate's start or stop on
         # this branch moves no revision; the branch snapshot carries the same digest.
         controls = project_display_cache.complete_transition_control(
             canonical_project_id,
-            {"graph": graph, "graph_target": history.graph_target.model_dump(mode="json")},
+            {
+                "graph": state.model_dump(mode="json"),
+                "graph_target": history.graph_target.model_dump(mode="json"),
+            },
         )["experiment_control"]
         return {
-            "revision": revision,
+            "revision": head.revision,
             "snapshot_freshness": "fresh",
             "last_remote_sync_at": None,
             "graph_mutation": availability.model_dump(mode="json"),
@@ -382,7 +368,7 @@ def graph_changes(
 ) -> dict[str, object]:
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     assert isinstance(service.history, BranchHistoryManager)
-    _, changes = branch_changes(service.history)
+    _, changes = branch_changes(service)
     return changes.model_dump(mode="json")
 
 

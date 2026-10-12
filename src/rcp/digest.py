@@ -11,8 +11,10 @@ from urllib.parse import quote, urlencode
 
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import GraphBranchMetadata, GraphState, Patch
+from rcp.core.transition_models import GraphTargetRef
 from rcp.episode_health import episode_needs_action, load_episode_health
-from rcp.history.delta import semantic_delta
+from rcp.history.delta import SemanticDelta, semantic_delta
+from rcp.history.queries import HeadSpec, HistoryEngine
 from rcp.limits import DIGEST_RECHECK_SECONDS, DIGEST_STOP_TIMEOUT_SECONDS
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.storage.branch_names import resolve_branch_names
@@ -137,9 +139,17 @@ def _episode_title(store, episode_id: str) -> str:
 
 
 def graph_event(
-    store, project_id: str, target: str, before: GraphState, patch: Patch, after: GraphState
+    store,
+    project_id: str,
+    target: str,
+    before: GraphState,
+    patch: Patch,
+    after: GraphState,
+    *,
+    delta: SemanticDelta | None = None,
 ) -> dict:
-    delta = semantic_delta(before, after)
+    if delta is None:
+        delta = semantic_delta(before, after)
     nodes = {item.node_id for item in delta.nodes}
     for item in delta.edges:
         for edge in (item.before, item.after):
@@ -397,7 +407,9 @@ def _branch_state(catalog, project_id: str, branch_id: str) -> GraphState | None
     service = catalog.loaded_service(project_id)
     if service is None:
         return None
-    return service.history.branch(branch_id, initialize=False).state()
+    target = GraphTargetRef(kind="branch", branch_id=branch_id)
+    engine: HistoryEngine = service.history_engine
+    return engine.state_at(engine.resolve(HeadSpec(revision="head"), default_target=target))
 
 
 def read_digest(
@@ -707,7 +719,9 @@ class DigestProjector:
 
     def reconcile_project(self, project_id, targets=None):
         with self._lock:
-            history = self.catalog.open(project_id).history
+            service = self.catalog.open(project_id)
+            history = service.history
+            engine: HistoryEngine = service.history_engine
             with self.store.connection() as conn:
                 initial = (
                     conn.execute(
@@ -720,7 +734,7 @@ class DigestProjector:
             # pass the main checkpoint comes last: existing branches are
             # baselined before any member can start counting.
             if not initial and (targets is None or "main" in targets):
-                self._project_history(project_id, "main", history)
+                self._project_history(project_id, "main", engine)
             branches = (
                 self._branch_targets(project_id)
                 if targets is None or initial
@@ -732,29 +746,35 @@ class DigestProjector:
                 try:
                     if not (history.root / "branches" / branch_id / "branch.json").exists():
                         continue
-                    self._project_history(
-                        project_id, target, history.branch(branch_id, initialize=False)
-                    )
+                    self._project_history(project_id, target, engine)
                 except Exception:
                     _LOG.exception("Digest branch projection failed for %s/%s", project_id, target)
             if initial and (targets is None or "main" in targets):
                 # Episodes too: a mark made before their baseline would hide
                 # an episode that starts needing the human in that gap.
                 self._observe_episodes(project_id)
-                self._project_history(project_id, "main", history)
+                self._project_history(project_id, "main", engine)
 
-    def _project_history(self, project_id, target, history):
+    def _project_history(self, project_id, target, engine: HistoryEngine):
         with self.store.connection() as conn:
             head = conn.execute(
                 "SELECT revision,patch_id FROM digest_heads WHERE project_id=? AND target=?",
                 (project_id, target),
             ).fetchone()
-        replay, boundaries = history.accepted_patch_boundaries()
-        if replay.state.replay_status != "complete":
+        graph_target = (
+            GraphTargetRef()
+            if target == "main"
+            else GraphTargetRef(kind="branch", branch_id=target.removeprefix("branch:"))
+        )
+        resolved = engine.resolve(HeadSpec(revision="head"), default_target=graph_target)
+        steps = engine.steps(resolved)
+        if engine.state_at(resolved).replay_status != "complete":
             raise ValueError("digest requires a complete accepted history")
         identities = {}
         prefix = hashlib.sha256()
-        for _, patch, _ in boundaries:
+        accepted = [step for step in steps if step.accepted]
+        for step in accepted:
+            patch = step.patch
             prefix.update(patch.model_dump_json().encode())
             identities[patch.revision] = prefix.hexdigest()
         current_revision = max(identities, default=0)
@@ -779,11 +799,19 @@ class DigestProjector:
             []
             if reset
             else [
-                graph_event(self.store, project_id, target, before, patch, after)
-                for before, patch, after in boundaries
-                if patch.revision > merged_revision
+                graph_event(
+                    self.store,
+                    project_id,
+                    target,
+                    step.before_state,
+                    step.patch,
+                    step.after_state,
+                    delta=step.delta,
+                )
+                for step in accepted
+                if step.patch.revision > merged_revision
                 and (
-                    (head is not None and patch.revision > head["revision"])
+                    (head is not None and step.patch.revision > head["revision"])
                     or (head is None and discovered_branch)
                 )
             ]

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -122,6 +122,7 @@ from rcp.history.delta import (
     ProposalSemanticDelta,
     semantic_delta,
 )
+from rcp.history.queries import StepRecord
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
@@ -504,12 +505,13 @@ def build_semantic_delta(
 
 
 def branch_human_review_changes(
-    patches: list[Patch], base: GraphState, branch: GraphState
+    patches: Sequence[StepRecord | Patch], base: GraphState, branch: GraphState
 ) -> list[BranchHumanReviewChange]:
     """Retain exact human initiating writes, never generated actions or summary claims."""
 
     latest: dict[tuple[str, str], BranchHumanReviewChange] = {}
-    for patch in patches:
+    for step in patches:
+        patch = step.patch if isinstance(step, StepRecord) else step
         if patch.admission != "accepted":
             continue
         if patch.author != "human":

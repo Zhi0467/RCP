@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +13,8 @@ from rcp.core.models import Edge, GraphState, ProjectNode
 from rcp.core.transition_models import GraphHeadRef, GraphMutationAvailability, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.delta import semantic_delta
+from rcp.history.queries import HeadSpec, HistoryEngine
+from rcp.service import ProjectService
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore
 
 
@@ -55,19 +57,23 @@ class GraphBranchChanges(BaseModel):
 
 
 def branch_changes(
-    history: BranchHistoryManager,
+    service: ProjectService,
 ) -> tuple[MaterializationResult, GraphBranchChanges]:
-    """Project one coherent branch replay, including actual per-change authorship."""
+    """Project one branch head, including actual per-change authorship."""
+
+    assert isinstance(service.history, BranchHistoryManager)
+    history = cast(BranchHistoryManager, service.history)
+    engine: HistoryEngine = service.history_engine
 
     with history.workspace.snapshot_lock:
         metadata = history.branch_metadata()
         # The immutable base, not the first accepted boundary: a retained rejected
         # Patch advances the revision the next boundary's before-state carries.
-        base = history.base_state()
-        result, boundaries = history.accepted_patch_boundaries()
-        head = history.head_ref(result)
+        base = engine.state_at(metadata.base_head)
+        head = engine.resolve(HeadSpec(revision="head"), default_target=history.graph_target)
+        result = MaterializationResult(state=engine.state_at(head))
         delta = semantic_delta(base, result.state)
-        sources = [(semantic_delta(before, after), patch) for before, patch, after in boundaries]
+        sources = [(step.delta, step.patch) for step in engine.steps(head) if step.accepted]
         nodes = [
             NodeChange(
                 **item.model_dump(mode="python"),
