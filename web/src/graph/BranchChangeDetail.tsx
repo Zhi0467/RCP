@@ -33,6 +33,16 @@ export function BranchChangeDetail({
   );
 }
 
+const INTERNAL_FIELDS = new Set([
+  "id",
+  "created_rev",
+  "updated_rev",
+  "draft_touched",
+  "extension_type",
+  "source_refs",
+  "type",
+]);
+
 /** Each changed field as main before, branch, and main now beside a conflict. */
 export function ChangedFields({
   before,
@@ -46,18 +56,11 @@ export function ChangedFields({
   const beforeFields: Record<string, unknown> = Object.fromEntries(Object.entries(before ?? {}));
   const afterFields: Record<string, unknown> = Object.fromEntries(Object.entries(after ?? {}));
   const fields = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])]
+    // Internal fields stay out unless the merge names one, so a mark always shows its values.
     .filter(
       (key) =>
-        ![
-          "id",
-          "created_rev",
-          "updated_rev",
-          "draft_touched",
-          "extension_type",
-          "extension_fields",
-          "source_refs",
-          "type",
-        ].includes(key),
+        !INTERNAL_FIELDS.has(key) ||
+        mergePaths.some((path) => path.field_path === key || path.field_path.startsWith(`${key}.`)),
     )
     .filter((key) => !(emptyValue(beforeFields[key]) && emptyValue(afterFields[key])))
     .filter((key) => JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key]));
