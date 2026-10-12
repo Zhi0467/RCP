@@ -50,6 +50,7 @@ from rcp.storage import AppStore
 from rcp.transport import SSHStateWorkspace, StateUnavailable
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError, inspect_checkout
 from rcp.transport.remote_backup_inventory import inspect_direct_root
+from tests.helpers import unchecked_write_authority
 
 SOURCE_COMMIT = "a" * 40
 WEB_BUILD_ID = "sha256:" + ("b" * 64)
@@ -159,7 +160,7 @@ def _project_inventory(
     )
     manifest = load_manifest(manifest_path)
     if not host:
-        HistoryManager(manifest).initialize()
+        HistoryManager(manifest, write_authority=unchecked_write_authority()).initialize()
     configuration = BackupManifestConfiguration.from_manifest(manifest)
     recovery = BackupCheckoutRecoveryDescriptor(
         request_id=str(uuid.uuid4()),

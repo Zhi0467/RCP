@@ -28,6 +28,7 @@ from rcp.core.transitions import (
     transition_trigger_manifest,
     validate_transition_trace,
 )
+from rcp.core.validation import ValidationContext
 
 
 def _gated_state(*, experiments: int = 1) -> GraphState:
@@ -647,20 +648,14 @@ def test_status_event_survives_later_node_removal() -> None:
 
 def test_recorded_expanded_actions_replay_without_rerunning_rules() -> None:
     setup = _setup_patch()
-    base = materialize_patches(
-        [setup],
-        initial_truth_scope=["repo"],
-        repository_aliases=["repo"],
-    )
+    base = materialize_patches([setup], ValidationContext(["repo"], repository_aliases=["repo"]))
     assert base.state.replay_status == "complete"
     prepared = GraphTransitionManager().prepare_validated(
         base.state,
         [_resolve_patch(revision=2)],
     )
     replay = materialize_patches(
-        [setup, prepared.patch],
-        initial_truth_scope=["repo"],
-        repository_aliases=["repo"],
+        [setup, prepared.patch], ValidationContext(["repo"], repository_aliases=["repo"])
     )
 
     assert replay.state.replay_status == "complete"
@@ -672,11 +667,7 @@ def test_recorded_expanded_actions_replay_without_rerunning_rules() -> None:
 
 def test_tampered_expanded_operation_fails_closed() -> None:
     setup = _setup_patch()
-    base = materialize_patches(
-        [setup],
-        initial_truth_scope=["repo"],
-        repository_aliases=["repo"],
-    )
+    base = materialize_patches([setup], ValidationContext(["repo"], repository_aliases=["repo"]))
     prepared = GraphTransitionManager().prepare_validated(
         base.state,
         [_resolve_patch(revision=2)],
@@ -684,9 +675,7 @@ def test_tampered_expanded_operation_fails_closed() -> None:
     tampered = prepared.patch.model_copy(update={"ops": prepared.patch.ops[:-1]})
 
     replay = materialize_patches(
-        [setup, tampered],
-        initial_truth_scope=["repo"],
-        repository_aliases=["repo"],
+        [setup, tampered], ValidationContext(["repo"], repository_aliases=["repo"])
     )
 
     assert replay.state.replay_status == "degraded"

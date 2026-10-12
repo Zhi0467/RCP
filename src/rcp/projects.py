@@ -44,6 +44,7 @@ from rcp.core.attention import (
     project_graph_attention,
     project_graph_mutation_availability,
 )
+from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import GraphState, upgrade_graph_projection
 from rcp.core.project_types import project_type_of
@@ -477,9 +478,10 @@ def restored_project_owners(
         workspace,
         expected_space_id=store.space_id,
         project_id=record.project_id,
-        require_attribution=True,
-        agent_authority_resolver=store.agent_task_authority,
-        project_membership_check=store.is_project_member,
+        write_authority=WriteAuthority(
+            agent_authority_resolver=store.agent_task_authority,
+            project_membership_check=store.is_project_member,
+        ),
     )
     paper = PaperService(manifest, store, workspace, project_id=record.project_id)
     service = ProjectService(
@@ -1288,13 +1290,6 @@ class ProjectCatalog:
             workspace,
             expected_space_id=self.store.space_id,
             project_id=project_id,
-            require_attribution=True,
-            agent_authority_resolver=(
-                self.store.agent_task_authority if project_id is not None else None
-            ),
-            project_membership_check=(
-                self.store.is_project_member if project_id is not None else None
-            ),
             on_accepted_branch_transition=(
                 (
                     lambda target, revision: self._notify_accepted_branch_transition(
@@ -1308,6 +1303,14 @@ class ProjectCatalog:
                 (lambda revision: self._notify_accepted_transition(project_id, revision))
                 if project_id is not None
                 else None
+            ),
+            write_authority=WriteAuthority(
+                agent_authority_resolver=(
+                    self.store.agent_task_authority if project_id is not None else None
+                ),
+                project_membership_check=(
+                    self.store.is_project_member if project_id is not None else None
+                ),
             ),
         )
 
@@ -1579,9 +1582,10 @@ class ProjectCatalog:
             workspace,
             expected_space_id=transfer.target_space_id,
             project_id=transfer.project_id,
-            require_attribution=True,
-            agent_authority_resolver=self.store.agent_task_authority,
-            project_membership_check=self.store.is_project_member,
+            write_authority=WriteAuthority(
+                agent_authority_resolver=self.store.agent_task_authority,
+                project_membership_check=self.store.is_project_member,
+            ),
         )
         try:
             initialized = history.initialize()

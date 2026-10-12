@@ -9,6 +9,7 @@ from rcp.core.authority import (
     CREATE_EDGE,
     UPDATE_PROTECTED_EPISTEMIC,
     AgentProfile,
+    WriteAuthority,
     operation_actions,
     permits,
 )
@@ -35,9 +36,14 @@ from rcp.core.operations import (
     UpdateNodesOperation,
 )
 from rcp.core.research_md import render_research_md
-from rcp.core.validation import ValidationReport, validate_patch
+from rcp.core.validation import ValidationContext, ValidationReport, validate_patch
 from rcp.history import HistoryManager
-from tests.helpers import create_named_app, fabricated_authorizer, signed_in_client
+from tests.helpers import (
+    create_named_app,
+    fabricated_authorizer,
+    signed_in_client,
+    unchecked_write_authority,
+)
 
 EVIDENCE_ID = "ev/transfer-result"
 HYPOTHESIS_A_ID = "hyp/transfer-persists"
@@ -263,7 +269,7 @@ def test_current_evidence_fields_and_legacy_rejection() -> None:
             nodes=[_evidence(legacy_strength="supporting")],
         )
     )
-    legacy_report = validate_patch(GraphState(), live_legacy, ["repo-a"])
+    legacy_report = validate_patch(GraphState(), live_legacy, ValidationContext(["repo-a"]))
     assert "live-legacy-evidence-strength" in _codes(legacy_report)
 
     state = _state()
@@ -273,7 +279,9 @@ def test_current_evidence_fields_and_legacy_rejection() -> None:
             nodes=[NodeUpdate(id=EVIDENCE_ID, changes={"strength": "supporting"})],
         )
     )
-    assert "invalid-node-update" in _codes(validate_patch(state, strength_update, ["repo-a"]))
+    assert "invalid-node-update" in _codes(
+        validate_patch(state, strength_update, ValidationContext(["repo-a"]))
+    )
     legacy_update = _agent_patch(
         UpdateNodesOperation(
             op="update_nodes",
@@ -281,7 +289,7 @@ def test_current_evidence_fields_and_legacy_rejection() -> None:
         )
     )
     assert "live-legacy-evidence-strength" in _codes(
-        validate_patch(state, legacy_update, ["repo-a"])
+        validate_patch(state, legacy_update, ValidationContext(["repo-a"]))
     )
 
     current = _agent_patch(
@@ -297,7 +305,7 @@ def test_current_evidence_fields_and_legacy_rejection() -> None:
         ),
         revision=1,
     )
-    report = validate_patch(GraphState(), current, ["repo-a"])
+    report = validate_patch(GraphState(), current, ValidationContext(["repo-a"]))
     assert not report.rejected
     evidence = apply_valid_patch(GraphState(), current).nodes[EVIDENCE_ID]
     assert isinstance(evidence, Evidence)
@@ -325,7 +333,7 @@ def test_history_decoder_preserves_legacy_strength_without_rewriting_bytes(
     expected_legacy: str,
     expected_role: str,
 ) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.ensure_layout()
     patch_path = manifest.research_dir / "patches" / "000001.json"
     source_bytes = json.dumps(
@@ -368,7 +376,9 @@ def test_new_evidence_hypothesis_relations_require_assessment(relation: str) -> 
             edges=[_edge(relation=relation)],
         )
     )
-    assert "missing-evidence-assessment" in _codes(validate_patch(state, missing, ["repo-a"]))
+    assert "missing-evidence-assessment" in _codes(
+        validate_patch(state, missing, ValidationContext(["repo-a"]))
+    )
 
     assessed = _agent_patch(
         CreateEdgesOperation(
@@ -376,7 +386,7 @@ def test_new_evidence_hypothesis_relations_require_assessment(relation: str) -> 
             edges=[_edge(relation=relation, assessment=_assessment())],
         )
     )
-    assert not validate_patch(state, assessed, ["repo-a"]).rejected
+    assert not validate_patch(state, assessed, ValidationContext(["repo-a"])).rejected
 
 
 def test_assessment_applicability_is_endpoint_and_relation_sensitive() -> None:
@@ -387,7 +397,7 @@ def test_assessment_applicability_is_endpoint_and_relation_sensitive() -> None:
             edges=[_edge(relation="contradicts", assessment=_assessment())],
         )
     )
-    assert not validate_patch(state, evidence_contradiction, ["repo-a"]).rejected
+    assert not validate_patch(state, evidence_contradiction, ValidationContext(["repo-a"])).rejected
 
     hypothesis_contradiction = _agent_patch(
         CreateEdgesOperation(
@@ -403,7 +413,7 @@ def test_assessment_applicability_is_endpoint_and_relation_sensitive() -> None:
         )
     )
     assert "inapplicable-evidence-assessment" in _codes(
-        validate_patch(state, hypothesis_contradiction, ["repo-a"])
+        validate_patch(state, hypothesis_contradiction, ValidationContext(["repo-a"]))
     )
 
     evidence_to_decision = _agent_patch(
@@ -419,7 +429,7 @@ def test_assessment_applicability_is_endpoint_and_relation_sensitive() -> None:
         )
     )
     assert "inapplicable-evidence-assessment" in _codes(
-        validate_patch(state, evidence_to_decision, ["repo-a"])
+        validate_patch(state, evidence_to_decision, ValidationContext(["repo-a"]))
     )
 
     wrong_unassessed_endpoint = _agent_patch(
@@ -428,7 +438,7 @@ def test_assessment_applicability_is_endpoint_and_relation_sensitive() -> None:
             edges=[_edge(target=DECISION_ID, relation="supports")],
         )
     )
-    wrong_report = validate_patch(state, wrong_unassessed_endpoint, ["repo-a"])
+    wrong_report = validate_patch(state, wrong_unassessed_endpoint, ValidationContext(["repo-a"]))
     assert "invalid-evidence-relation-endpoints" in _codes(wrong_report)
     assert wrong_report.rejected
 
@@ -567,7 +577,7 @@ def test_one_evidence_node_can_hold_distinct_assessments_for_two_hypotheses() ->
         revision=1,
     )
     state = _state()
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
     assert not report.rejected
 
     updated = apply_valid_patch(state, patch)
@@ -611,7 +621,9 @@ def test_historical_unassessed_evidence_relation_replays_and_renders_as_legacy()
         HistoryManager._decode_persisted_patch(json.dumps(accept)),
     ]
 
-    result = materialize_patches(patches, ["repo-a"], repository_aliases=["repo-a"])
+    result = materialize_patches(
+        patches, ValidationContext(["repo-a"], repository_aliases=["repo-a"])
+    )
 
     assert result.state.replay_status == "complete"
     assert not any(report.rejected for report in result.reports.values())
@@ -635,7 +647,7 @@ def test_evidence_edge_authority_stays_direct_while_hypothesis_edits_stay_protec
     edge_action = operation_actions(state, edge_patch, edge_patch.ops[0])
     assert edge_action == frozenset({CREATE_EDGE})
     assert all(permits(edge_patch, action) for action in edge_action)
-    edge_report = validate_patch(state, edge_patch, ["repo-a"])
+    edge_report = validate_patch(state, edge_patch, ValidationContext(["repo-a"]))
     assert not edge_report.rejected
 
     hypothesis_patch = _agent_patch(
@@ -657,13 +669,13 @@ def test_evidence_edge_authority_stays_direct_while_hypothesis_edits_stay_protec
     )
     assert protected_action == frozenset({UPDATE_PROTECTED_EPISTEMIC})
     assert not any(permits(hypothesis_patch, action) for action in protected_action)
-    protected_report = validate_patch(state, hypothesis_patch, ["repo-a"])
+    protected_report = WriteAuthority().validate_permissions(state, hypothesis_patch)
     assert "graph-action-refused" in _codes(protected_report)
     assert "invalid-agent-attribution" not in _codes(protected_report)
 
 
 def test_remove_and_create_replaces_assessment_without_rewriting_prior_patch(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(
         _agent_patch(
             _create_nodes_operation(),
@@ -762,7 +774,7 @@ def test_research_markdown_and_graph_dump_place_assessment_on_edges() -> None:
 
 
 def test_graph_api_serializes_assessment_on_the_relation(manifest, tmp_path) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.ensure_layout()
     legacy_create = _legacy_document(
         strength="confirmatory",

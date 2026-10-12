@@ -28,6 +28,7 @@ from rcp.transport.remote_backup_checkout import (
     inspect_checkout,
     restore_server_only,
 )
+from tests.helpers import unchecked_write_authority
 from tests.test_backup_capture import _git, _initialize_git_repository, _metadata
 from tests.test_backup_manifest import _completed_registration
 
@@ -121,7 +122,9 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
         )
     )
     manifest = load_manifest(manifest_path)
-    history = HistoryManager(manifest, expected_space_id=store.space_id)
+    history = HistoryManager(
+        manifest, expected_space_id=store.space_id, write_authority=unchecked_write_authority()
+    )
     history.claim_project_identity("created", project_id=record.project_id)
     record = record.model_copy(
         update=dict(

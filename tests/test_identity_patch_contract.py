@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from rcp.agents.schema import AgentPatch
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 
 from .helpers import NON_UUID4
 
@@ -46,8 +46,7 @@ def test_system_identity_revision_is_valid_without_graph_scope(action: str, mode
     report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         patch,
-        ["repo"],
-        mode=mode,  # type: ignore[arg-type]
+        ValidationContext(["repo"], mode=mode),  # type: ignore[arg-type]
     )
 
     assert not report.rejected
@@ -90,8 +89,7 @@ def test_identity_revision_rejects_non_identity_metadata(
     report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         patch,
-        ["repo"],
-        mode=mode,  # type: ignore[arg-type]
+        ValidationContext(["repo"], mode=mode),  # type: ignore[arg-type]
     )
 
     assert report.rejected
@@ -114,12 +112,11 @@ def test_identity_payload_is_required_and_reserved_for_identity_revisions(mode: 
         ),
     )
 
-    missing_report = validate_patch(GraphState(), missing, [], mode=mode)  # type: ignore[arg-type]
+    missing_report = validate_patch(GraphState(), missing, ValidationContext([], mode=mode))  # type: ignore[arg-type]
     ordinary_report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         ordinary,
-        ["repo"],
-        mode=mode,  # type: ignore[arg-type]
+        ValidationContext(["repo"], mode=mode),  # type: ignore[arg-type]
     )
 
     assert "missing-project-identity" in {message.code for message in missing_report.messages}
@@ -140,9 +137,8 @@ def test_system_producer_is_reserved_and_identity_has_no_legacy_author(mode: str
     human_identity = _identity_patch().model_copy(update={"producer": "human"})
 
     reports = [
-        validate_patch(GraphState(), system_refresh, ["repo"], mode=mode),  # type: ignore[arg-type]
-        validate_patch(GraphState(), authored_identity, [], mode=mode),  # type: ignore[arg-type]
-        validate_patch(GraphState(), human_identity, [], mode=mode),  # type: ignore[arg-type]
+        validate_patch(GraphState(), patch, ValidationContext(["repo"], mode=mode))  # type: ignore[arg-type]
+        for patch in (system_refresh, authored_identity, human_identity)
     ]
 
     assert "system-producer-forbidden" in {message.code for message in reports[0].messages}
@@ -167,7 +163,7 @@ def test_legacy_patch_json_infers_producer_without_changing_author_semantics() -
     assert patch.profile is None
     assert patch.task_id is None
     assert not validate_patch(
-        GraphState(project_truth_scope=["repo"]), patch, ["repo"], mode="replay"
+        GraphState(project_truth_scope=["repo"]), patch, ValidationContext(["repo"], mode="replay")
     ).rejected
 
 
@@ -240,8 +236,7 @@ def test_agent_attribution_is_atomic(attribution: dict[str, object], mode: str) 
     report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         patch,
-        ["repo"],
-        mode=mode,  # type: ignore[arg-type]
+        ValidationContext(["repo"], mode=mode),  # type: ignore[arg-type]
     )
 
     assert "invalid-agent-attribution" in {message.code for message in report.messages}
@@ -263,8 +258,7 @@ def test_complete_agent_attribution_is_structurally_valid(mode: str) -> None:
     report = validate_patch(
         GraphState(project_truth_scope=["repo"]),
         patch,
-        ["repo"],
-        mode=mode,  # type: ignore[arg-type]
+        ValidationContext(["repo"], mode=mode),  # type: ignore[arg-type]
     )
 
     assert "invalid-agent-attribution" not in {message.code for message in report.messages}
@@ -295,7 +289,7 @@ def test_human_attribution_forbids_agent_metadata(
         ops=[],
     ).model_copy(update=attribution)
 
-    report = validate_patch(GraphState(), patch, [], mode=mode)  # type: ignore[arg-type]
+    report = validate_patch(GraphState(), patch, ValidationContext([], mode=mode))  # type: ignore[arg-type]
 
     assert "invalid-human-attribution" in {message.code for message in report.messages}
 
@@ -310,7 +304,7 @@ def test_authorized_by_alone_is_valid_human_attribution(mode: str) -> None:
         authorized_by=_authorized_human(),
     )
 
-    report = validate_patch(GraphState(), patch, [], mode=mode)  # type: ignore[arg-type]
+    report = validate_patch(GraphState(), patch, ValidationContext([], mode=mode))  # type: ignore[arg-type]
 
     assert "invalid-human-attribution" not in {message.code for message in report.messages}
 
@@ -353,3 +347,29 @@ def test_agent_deliverable_schema_cannot_claim_identity_or_attribution() -> None
                 },
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("operation", "code"),
+    [
+        ({"op": "set_ontology", "ontology": {}}, "agent-set-ontology"),
+        (
+            {"op": "set_project_truth_scope", "truth_scope": ["repo"]},
+            "agent-set-project-scope",
+        ),
+    ],
+)
+def test_replay_rejects_a_stored_agent_patch_with_human_only_operations(
+    operation: dict[str, object], code: str
+) -> None:
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="A tampered agent Patch.",
+        ops=[operation],
+        run_truth_scope=["repo"],
+    )
+
+    report = validate_patch(GraphState(), patch, ValidationContext(["repo"], mode="replay"))
+
+    assert code in {message.code for message in report.messages if message.level == "reject"}

@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Graph writes pass two core gates](2026-10-11-graph-writes-pass-two-core-gates.md)
+  records why permission and validation are separate core gates, why some
+  permission rules stay in the staging loop, why the 17 operations stay, and
+  why graph well-formedness is a test rather than a runtime gate.
+
 - [Backup never blocks an update](2026-10-07-backup-never-blocks-an-update.md)
   records why side modules warn instead of refusing an update, why readers
   check only safety, and what a project backup cannot read gives up.

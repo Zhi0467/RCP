@@ -17,6 +17,7 @@ from rcp.core.validation.context import OpContext, OpRule
 from rcp.core.validation.patch import validate_patch
 from rcp.core.validation.registry import OP_RULES, proposal_dependencies
 from rcp.core.validation.report import ValidationReport
+from rcp.core.validation.settings import ValidationContext, build_validation_context
 
 __all__ = [
     "IDENTIFIER_RE",
@@ -27,7 +28,9 @@ __all__ = [
     "OpContext",
     "OpRule",
     "SLUG_RE",
+    "ValidationContext",
     "ValidationReport",
+    "build_validation_context",
     "proposal_dependencies",
     "validate_patch",
 ]

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.core.validation.report import ValidationReport
+
+if TYPE_CHECKING:
+    from rcp.core.authority import Writer
 
 
 @dataclass
@@ -23,6 +26,7 @@ class OpContext:
     state: GraphState
     initial_state: GraphState
     patch: Patch
+    writer: Writer
     report: ValidationReport
     revision: int | None
     project_truth_scope: set[str]

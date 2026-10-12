@@ -12,7 +12,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from tests.helpers import signed_in_client
+from tests.helpers import signed_in_client, unchecked_write_authority
 
 from .helpers import seed_patch
 
@@ -188,7 +188,9 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     client = signed_in_client(app)
     project_id = app.state.default_project_id
     service = app.state.service
-    fixture_history = HistoryManager(service.manifest, service.history.workspace)
+    fixture_history = HistoryManager(
+        service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
+    )
     fixture_history.append(seed_patch())
     fixture_history.append(_experiment_patch())
     store = app.state.background_tasks.store
@@ -489,7 +491,9 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
     client = signed_in_client(app)
     project_id = app.state.default_project_id
     service = app.state.service
-    fixture_history = HistoryManager(service.manifest, service.history.workspace)
+    fixture_history = HistoryManager(
+        service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
+    )
     fixture_history.append(seed_patch())
     assert client.patch("/api/identity", json={"display_name": "First name"}).status_code == 200
 
@@ -573,7 +577,9 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     client = signed_in_client(app)
     project_id = app.state.default_project_id
     service = app.state.service
-    fixture_history = HistoryManager(service.manifest, service.history.workspace)
+    fixture_history = HistoryManager(
+        service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
+    )
     fixture_history.append(seed_patch())
 
     node = service.history.state().nodes["rq/learning-after-shift"]

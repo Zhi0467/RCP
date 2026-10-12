@@ -21,6 +21,7 @@ from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordina
 from rcp.setup import render_prepared_team_manifest
 from rcp.storage import AppStore, ProjectProvisioningRequestRecord
 from rcp.storage.provisioning import project_provisioning_review_digest
+from tests.helpers import unchecked_write_authority
 from tests.test_backup_capture import _initialize_git_repository, _metadata
 from tests.test_backup_manifest import _completed_registration
 
@@ -73,7 +74,9 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     manifest_path.parent.mkdir()
     manifest_path.write_text(render_prepared_team_manifest(request))
     manifest = load_manifest(manifest_path)
-    history = HistoryManager(manifest, expected_space_id=store.space_id)
+    history = HistoryManager(
+        manifest, expected_space_id=store.space_id, write_authority=unchecked_write_authority()
+    )
     history.claim_project_identity("created", project_id=record.project_id)
     if added_after_setup:
         # Project Settings' Add machine: the provisioning record never saw it.

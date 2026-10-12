@@ -17,6 +17,7 @@ from rcp.sources import ImportedProviderSourceStore
 from rcp.sources import imported as imported_module
 from rcp.storage import AppStore
 from rcp.transfer import TransferArchiveEntry
+from tests.helpers import unchecked_write_authority
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
 
@@ -198,7 +199,7 @@ def test_remote_seed_inventory_is_available_for_task_staging(
     ImportedProviderSourceStore(data_dir, PROJECT_ID).publish(capture_root, entries)
     service = ProjectService(
         manifest,
-        HistoryManager(manifest),
+        HistoryManager(manifest, write_authority=unchecked_write_authority()),
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
         data_dir=data_dir,
         project_id=PROJECT_ID,
@@ -219,7 +220,7 @@ def test_legacy_project_service_has_no_imported_provider_source_owner(
 ) -> None:
     service = ProjectService(
         manifest,
-        HistoryManager(manifest),
+        HistoryManager(manifest, write_authority=unchecked_write_authority()),
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
         data_dir=tmp_path / "data",
         project_id="legacy-project",
@@ -246,7 +247,7 @@ def test_seed_context_keeps_imported_sources_separate_from_native_provider_homes
     imported.publish(capture_root, entries)
     service = ProjectService(
         manifest,
-        HistoryManager(manifest),
+        HistoryManager(manifest, write_authority=unchecked_write_authority()),
         PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
         data_dir=data_dir,
         project_id=PROJECT_ID,

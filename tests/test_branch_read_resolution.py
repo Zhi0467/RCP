@@ -13,13 +13,13 @@ from rcp.paper import PaperService
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.transport import StateUnavailable
-from tests.helpers import seed_patch
+from tests.helpers import seed_patch, unchecked_write_authority
 from tests.test_branch_history import _branch_metadata, _branch_patch
 
 
 @pytest.fixture
 def branch_service(manifest, tmp_path):
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)

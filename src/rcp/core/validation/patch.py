@@ -7,9 +7,9 @@ only through :data:`rcp.core.validation.registry.OP_RULES`.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Literal
+from dataclasses import replace
 
-from rcp.core.authority import operation_actions, permits
+from rcp.core.authority import Writer, validate_authorship, validate_writer_actions
 from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import (
     CreateEdgesOperation,
@@ -33,42 +33,26 @@ from rcp.core.validation.experiment_loop import validate_experiment_loop_authori
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.core.validation.registry import OP_RULES
 from rcp.core.validation.report import ValidationReport
+from rcp.core.validation.settings import ValidationContext
 
 
 def validate_patch(
     state: GraphState,
     patch: Patch,
-    project_truth_scope: Iterable[str],
-    repository_aliases: Iterable[str] | None = None,
-    machine_aliases: Iterable[str] | None = None,
-    default_run_truth_scope: Iterable[str] | None = None,
-    state_repository: str | None = None,
-    mode: Literal["admission", "replay"] = "admission",
+    context: ValidationContext,
     *,
+    writer: Writer | None = None,
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
     if patch.transition is not None:
-        return _validate_transition_patch(
-            state,
-            patch,
-            project_truth_scope,
-            repository_aliases=repository_aliases,
-            machine_aliases=machine_aliases,
-            default_run_truth_scope=default_run_truth_scope,
-            state_repository=state_repository,
-            mode=mode,
-        )
+        return _validate_transition_patch(state, patch, context)
     try:
         return _validate_patch(
             state,
             patch,
-            project_truth_scope,
-            repository_aliases=repository_aliases,
-            machine_aliases=machine_aliases,
-            default_run_truth_scope=default_run_truth_scope,
-            state_repository=state_repository,
-            mode=mode,
+            context,
+            writer=writer or Writer.from_patch(patch),
             experiment_control_node_id=experiment_control_node_id,
             experiment_decision_bundle=experiment_decision_bundle,
         )
@@ -85,16 +69,10 @@ def validate_patch(
 def _validate_transition_patch(
     state: GraphState,
     patch: Patch,
-    project_truth_scope: Iterable[str],
-    *,
-    repository_aliases: Iterable[str] | None,
-    machine_aliases: Iterable[str] | None,
-    default_run_truth_scope: Iterable[str] | None,
-    state_repository: str | None,
-    mode: Literal["admission", "replay"],
+    context: ValidationContext,
 ) -> ValidationReport:
     report = ValidationReport()
-    if mode != "replay":
+    if context.mode != "replay":
         report.reject(
             "reserved-transition-trace",
             "A committed transition trace is backend-owned and cannot be supplied for admission.",
@@ -112,12 +90,7 @@ def _validate_transition_patch(
             source_report = validate_patch(
                 validation_state,
                 source_patch,
-                validation_state.project_truth_scope,
-                repository_aliases=repository_aliases,
-                machine_aliases=machine_aliases,
-                default_run_truth_scope=default_run_truth_scope,
-                state_repository=state_repository,
-                mode="replay",
+                replace(context, project_truth_scope=validation_state.project_truth_scope),
             )
             report.messages.extend(source_report.messages)
             if source_report.rejected:
@@ -137,18 +110,14 @@ def _validate_transition_patch(
 def _validate_patch(
     state: GraphState,
     patch: Patch,
-    project_truth_scope: Iterable[str],
-    repository_aliases: Iterable[str] | None = None,
-    machine_aliases: Iterable[str] | None = None,
-    default_run_truth_scope: Iterable[str] | None = None,
-    state_repository: str | None = None,
-    mode: Literal["admission", "replay"] = "admission",
+    context: ValidationContext,
     *,
+    writer: Writer,
     experiment_control_node_id: str | None = None,
     experiment_decision_bundle: Iterable[ExperimentDecisionPin] | None = None,
 ) -> ValidationReport:
     report = ValidationReport()
-    scope = set(project_truth_scope)
+    scope = set(context.project_truth_scope)
     control_node_id = experiment_control_node_id or patch.experiment_control_node_id
     decision_bundle = tuple(
         experiment_decision_bundle
@@ -159,18 +128,19 @@ def _validate_patch(
         state=state,
         initial_state=state,
         patch=patch,
+        writer=writer,
         report=report,
         revision=patch.revision or None,
         project_truth_scope=scope,
-        repositories=set(repository_aliases or scope),
-        machines=set(machine_aliases) if machine_aliases is not None else None,
-        default_run_truth_scope=set(default_run_truth_scope or ()),
-        state_repository=state_repository,
-        mode=mode,
+        repositories=set(context.repository_aliases or scope),
+        machines=set(context.machine_aliases) if context.machine_aliases is not None else None,
+        default_run_truth_scope=set(context.default_run_truth_scope or ()),
+        state_repository=context.state_repository,
+        mode=context.mode,
         experiment_control_node_id=control_node_id,
     )
 
-    if mode == "admission" and patch.schema_generation != 2:
+    if context.mode == "admission" and patch.schema_generation != 2:
         report.reject(
             "legacy-schema-write",
             "New graph writes must use the current schema generation.",
@@ -183,7 +153,9 @@ def _validate_patch(
             f"Patch revision {patch.revision} must follow graph revision {state.revision}.",
             ctx.revision,
         )
-    _validate_authorship(ctx)
+    # Persisted role checks run in replay too, so corrupted history degrades.
+    validate_authorship(patch, report)
+    validate_writer_actions(state, patch, report, replay=context.mode == "replay")
     _validate_identity_shape(ctx)
     _validate_attribution_shape(ctx)
     _validate_declared_agent_action(ctx)
@@ -196,7 +168,7 @@ def _validate_patch(
             report,
             control_node_id=control_node_id,
             decision_bundle=decision_bundle,
-            mode=mode,
+            mode=context.mode,
         )
     elif control_node_id or decision_bundle:
         report.reject(
@@ -210,7 +182,7 @@ def _validate_patch(
         report.reject("delete-forbidden", "Graph objects are never deleted.", ctx.revision)
 
     if patch.kind == "approval":
-        validate_approval_shape(state, patch, report, mode=mode)
+        validate_approval_shape(state, patch, report, writer=ctx.writer, mode=context.mode)
 
     _validate_operations(ctx)
     _validate_queued_decision_options(ctx)
@@ -388,43 +360,6 @@ def _validate_queued_decision_options(ctx: OpContext) -> None:
         reject_incomplete_decision_ballot(ctx.state.nodes.get(node_id), ctx.report, ctx.revision)
 
 
-def _validate_authorship(ctx: OpContext) -> None:
-    if ctx.patch.kind == "identity":
-        if ctx.patch.producer != "system":
-            ctx.report.reject(
-                "wrong-producer",
-                "Identity patches must be produced by RCP's system producer.",
-                ctx.revision,
-            )
-        if ctx.patch.author is not None:
-            ctx.report.reject(
-                "wrong-author",
-                "Identity patches have no human or agent author.",
-                ctx.revision,
-            )
-        return
-
-    expected_author = "human" if ctx.patch.kind == "approval" else "agent"
-    if ctx.patch.author != expected_author:
-        ctx.report.reject(
-            "wrong-author",
-            f"{ctx.patch.kind} patches must be authored by {expected_author}.",
-            ctx.revision,
-        )
-    if ctx.patch.producer == "system":
-        ctx.report.reject(
-            "system-producer-forbidden",
-            "The system producer is reserved for identity patches.",
-            ctx.revision,
-        )
-    elif ctx.patch.producer != ctx.patch.author:
-        ctx.report.reject(
-            "producer-author-mismatch",
-            "Human and agent patches must retain the same producer and legacy author role.",
-            ctx.revision,
-        )
-
-
 def _validate_identity_shape(ctx: OpContext) -> None:
     patch = ctx.patch
     if patch.kind != "identity":
@@ -556,40 +491,26 @@ def _validate_attribution_shape(ctx: OpContext) -> None:
 
 
 def _validate_declared_agent_action(ctx: OpContext) -> None:
-    patch = ctx.patch
     has_decision_outcome = _has_declared_decision_outcome(ctx)
-    if patch.human_action is not None and patch.agent_action is not None:
+    if ctx.writer.human_action is not None and ctx.writer.agent_action is not None:
         ctx.report.reject(
             "conflicting-authority-actions",
             "A Patch cannot declare both a human and an agent authority action.",
             ctx.revision,
         )
         return
-    if patch.human_action is not None and (patch.kind != "approval" or patch.author != "human"):
-        ctx.report.reject(
-            "invalid-human-action",
-            "Only a human approval Patch may declare a human authority action.",
-            ctx.revision,
-        )
     if (
-        patch.author == "agent"
-        and patch.profile == "orchestrator"
+        ctx.writer.author == "agent"
+        and ctx.writer.profile == "orchestrator"
         and has_decision_outcome
-        and patch.agent_action != "decision_choice"
+        and ctx.writer.agent_action != "decision_choice"
     ):
         ctx.report.reject(
             "missing-decision-action",
             "An orchestrator Decision outcome requires agent_action='decision_choice'.",
             ctx.revision,
         )
-    if patch.agent_action is None:
-        return
-    if patch.author != "agent" or patch.profile != "orchestrator":
-        ctx.report.reject(
-            "invalid-agent-action",
-            "Only the orchestrator profile may declare an agent authority action.",
-            ctx.revision,
-        )
+    if ctx.writer.agent_action is None:
         return
     if not has_decision_outcome:
         ctx.report.reject(
@@ -669,7 +590,6 @@ def _validate_operations(ctx: OpContext) -> None:
             )
             continue
         rejects_before = sum(message.level == "reject" for message in ctx.report.messages)
-        _validate_operation_authority(ctx, op)
         if rule.structural_validate is not None:
             rule.structural_validate(op, ctx)
         if ctx.mode == "admission" and rule.authoring_validate is not None:
@@ -686,24 +606,5 @@ def _validate_operations(ctx: OpContext) -> None:
             ctx.report.reject(
                 "malformed-operation",
                 f"Operation {name!r} could not be staged: {exc}.",
-                ctx.revision,
-            )
-
-
-def _validate_operation_authority(ctx: OpContext, operation: GraphOperation) -> None:
-    """Check live producer permission once, before an operation is staged."""
-
-    if ctx.mode != "admission":
-        return
-    try:
-        actions = operation_actions(ctx.initial_state, ctx.patch, operation)
-    except ValueError:
-        # The operation registry reports missing and unknown operation names.
-        return
-    for action in sorted(actions):
-        if not permits(ctx.patch, action):
-            ctx.report.reject(
-                "graph-action-refused",
-                f"Action {action!r} is not permitted for this Patch producer.",
                 ctx.revision,
             )

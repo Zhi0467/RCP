@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.core.authority import refused_authorizer
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
@@ -38,7 +39,7 @@ from rcp.core.transitions import (
     accepted_transition_head_chain_failure,
     project_transition_projection,
 )
-from rcp.core.validation import ValidationReport
+from rcp.core.validation import ValidationReport, build_validation_context
 from rcp.history.delta import RevisionSummary, render_revision_summary
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.transport import BatchPublishFailed, StateUnavailable
@@ -250,7 +251,7 @@ class BranchHistoryManager:
             apply_target=self.graph_target,
         )
         self._require_prepared_branch_patch(prepared)
-        if discard_on_reject and report.rejected:
+        if report.rejected and (discard_on_reject or refused_authorizer(report)):
             raise PatchRejected(report)
         prepared = prepared.model_copy(
             update={
@@ -794,11 +795,9 @@ class BranchHistoryManager:
         replayable = [] if scope_failure is not None else [*base_patches, *branch_patches]
         result = materialize_patches(
             replayable,
-            initial_truth_scope=initial_scope,
-            repository_aliases=sorted(self.manifest.repository_map),
-            machine_aliases=sorted(self.manifest.machine_map),
-            default_run_truth_scope=list(self.manifest.agent.default_run_truth_scope),
-            state_repository=self.manifest.state.repository,
+            context=build_validation_context(
+                self.manifest, GraphState(project_truth_scope=initial_scope), mode="replay"
+            ),
             accepted_patch_observer=accepted_patch_observer,
         )
         if failure is not None:
@@ -826,11 +825,9 @@ class BranchHistoryManager:
             )
         base_result = materialize_patches(
             [] if scope_failure is not None else base_patches,
-            initial_truth_scope=initial_scope,
-            repository_aliases=sorted(self.manifest.repository_map),
-            machine_aliases=sorted(self.manifest.machine_map),
-            default_run_truth_scope=list(self.manifest.agent.default_run_truth_scope),
-            state_repository=self.manifest.state.repository,
+            context=build_validation_context(
+                self.manifest, GraphState(project_truth_scope=initial_scope), mode="replay"
+            ),
         )
         if failure is None and base_result.state.replay_status == "complete":
             actual_base = _head_for_patches(
@@ -924,12 +921,6 @@ class BranchHistoryManager:
     def _require_prepared_branch_patch(self, patch: Patch) -> None:
         if patch.transition is not None and patch.transition.pre_head.target != self.graph_target:
             raise ValueError("prepared branch Patch names a different graph target")
-        if (
-            self.parent.require_attribution
-            and patch.kind == "experiment_loop"
-            and patch.episode_id is None
-        ):
-            raise ValueError("Experiment-loop patches require canonical episode attribution")
         # Human Sync and ordinary Work also write branches. Admission supplies
         # their human/task attribution and exact target; an operational episode
         # id belongs only to work actually owned by that episode.
@@ -1328,11 +1319,9 @@ def _main_states_by_revision(
         scope = list(parent.manifest.project.truth_scope)
     initial = materialize_patches(
         [],
-        initial_truth_scope=scope,
-        repository_aliases=sorted(parent.manifest.repository_map),
-        machine_aliases=sorted(parent.manifest.machine_map),
-        default_run_truth_scope=list(parent.manifest.agent.default_run_truth_scope),
-        state_repository=parent.manifest.state.repository,
+        context=build_validation_context(
+            parent.manifest, GraphState(project_truth_scope=scope), mode="replay"
+        ),
     ).state
     states = {0: initial}
     current = initial
@@ -1361,10 +1350,7 @@ def _replay_branch_tail(
     return materialize_patches_from_state(
         patches,
         initial_state=base_state,
-        repository_aliases=sorted(branch.manifest.repository_map),
-        machine_aliases=sorted(branch.manifest.machine_map),
-        default_run_truth_scope=list(branch.manifest.agent.default_run_truth_scope),
-        state_repository=branch.manifest.state.repository,
+        context=build_validation_context(branch.manifest, base_state, mode="replay"),
     )
 
 

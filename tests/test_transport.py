@@ -52,6 +52,7 @@ from rcp.transport.state import (
     _remote_advisory_lock_command,
     fence_canonical_lock_waits,
 )
+from tests.helpers import unchecked_write_authority
 
 from .helpers import seed_patch, wait_until
 
@@ -181,7 +182,7 @@ def _accept_question_patch() -> Patch:
 
 def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_path) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.initialize()
     history.append(seed_patch())
     paper = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"), workspace)
@@ -207,11 +208,13 @@ def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_p
 def test_coherent_remote_initialization_reuses_refreshed_snapshot_without_publish(
     manifest,
 ) -> None:
-    HistoryManager(manifest).initialize()
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).initialize()
     workspace = RecordingWorkspace(manifest.research_dir)
     workspace.refresh()
 
-    result = HistoryManager(load_manifest(manifest.path), workspace).initialize()
+    result = HistoryManager(
+        load_manifest(manifest.path), workspace, write_authority=unchecked_write_authority()
+    ).initialize()
 
     assert result.state.revision == 0
     assert workspace.refreshes == 1
@@ -220,12 +223,14 @@ def test_coherent_remote_initialization_reuses_refreshed_snapshot_without_publis
 
 
 def test_remote_initialization_repairs_and_publishes_mismatched_outputs(manifest) -> None:
-    HistoryManager(manifest).initialize()
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).initialize()
     (manifest.research_dir / "graph.json").write_text("{}\n", encoding="utf-8")
     workspace = RecordingWorkspace(manifest.research_dir)
     workspace.refresh()
 
-    result = HistoryManager(load_manifest(manifest.path), workspace).initialize()
+    result = HistoryManager(
+        load_manifest(manifest.path), workspace, write_authority=unchecked_write_authority()
+    ).initialize()
 
     assert result.state.revision == 0
     assert workspace.refreshes == 1
@@ -248,7 +253,7 @@ def test_remote_initialization_repairs_and_publishes_mismatched_outputs(manifest
 def test_shared_snapshot_lock_keeps_refresh_behind_single_patch_publication(
     manifest, monkeypatch
 ) -> None:
-    HistoryManager(manifest).append(seed_patch())
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).append(seed_patch())
     root = manifest.research_dir
     writer_workspace = StateWorkspace(root, "test-host:/canonical/.research")
     reader_workspace = StateWorkspace(root, "test-host:/canonical/.research")
@@ -290,8 +295,12 @@ def test_shared_snapshot_lock_keeps_refresh_behind_single_patch_publication(
     monkeypatch.setattr(writer_workspace, "publish_committed_patch", publish_patch)
     monkeypatch.setattr(reader_workspace, "_refresh_snapshot", mirror_remote_patches)
     monkeypatch.setattr(reader_workspace, "refresh", refresh_like_chat_read)
-    writer = HistoryManager(load_manifest(manifest.path), writer_workspace)
-    reader = HistoryManager(load_manifest(manifest.path), reader_workspace)
+    writer = HistoryManager(
+        load_manifest(manifest.path), writer_workspace, write_authority=unchecked_write_authority()
+    )
+    reader = HistoryManager(
+        load_manifest(manifest.path), reader_workspace, write_authority=unchecked_write_authority()
+    )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         append_future = pool.submit(
@@ -318,14 +327,18 @@ def test_shared_snapshot_lock_keeps_refresh_behind_single_patch_publication(
 def test_shared_snapshot_lock_keeps_atomic_transition_out_of_refresh_and_replay(
     manifest, monkeypatch
 ) -> None:
-    HistoryManager(manifest).append(seed_patch())
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).append(seed_patch())
     root = manifest.research_dir
     reader_workspace = StateWorkspace(root, "test-host:/canonical/.research")
     writer_workspace = StateWorkspace(root, "test-host:/canonical/.research")
     reader_workspace.remote = True
     writer_workspace.remote = True
-    reader = HistoryManager(load_manifest(manifest.path), reader_workspace)
-    writer = HistoryManager(load_manifest(manifest.path), writer_workspace)
+    reader = HistoryManager(
+        load_manifest(manifest.path), reader_workspace, write_authority=unchecked_write_authority()
+    )
+    writer = HistoryManager(
+        load_manifest(manifest.path), writer_workspace, write_authority=unchecked_write_authority()
+    )
 
     refresh_entered = threading.Barrier(2)
     refresh_release = threading.Barrier(2)
@@ -1854,7 +1867,7 @@ def test_ordinary_publish_channel_loss_requires_full_restage(tmp_path, monkeypat
 
 def test_failed_remote_single_patch_before_commit_rolls_back_local_mirror(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     graph_before = (manifest.research_dir / "graph.json").read_bytes()
 
@@ -1875,7 +1888,7 @@ def test_failed_remote_single_patch_before_commit_rolls_back_local_mirror(manife
 
 def test_confirmed_remote_single_patch_is_success_and_schedules_output_repair(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
 
     def fail_after_commit(_relative_paths, _patch_path):
@@ -1893,7 +1906,7 @@ def test_confirmed_remote_single_patch_is_success_and_schedules_output_repair(ma
 
 def test_unknown_remote_single_patch_is_quarantined_from_local_replay(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
 
     def lose_commit_probe(_relative_paths, _patch_path):
@@ -1913,7 +1926,7 @@ def test_unknown_remote_single_patch_is_quarantined_from_local_replay(manifest) 
 
 def test_rejected_remote_single_patch_remains_in_committed_history(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     rejected = Patch(
         kind="refresh",
@@ -1943,7 +1956,7 @@ def test_rejected_remote_single_patch_remains_in_committed_history(manifest) -> 
 
 def test_failed_remote_transition_publish_rolls_the_local_mirror_back(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     graph_before = (manifest.research_dir / "graph.json").read_bytes()
 
@@ -1967,7 +1980,7 @@ def test_failed_remote_transition_publish_rolls_the_local_mirror_back(manifest) 
 
 def test_confirmed_remote_transition_commit_is_not_rolled_back(manifest) -> None:
     workspace = RecordingWorkspace(manifest.research_dir)
-    history = HistoryManager(manifest, workspace)
+    history = HistoryManager(manifest, workspace, write_authority=unchecked_write_authority())
     history.append(seed_patch())
 
     def fail_after_commit(_relative_paths, _patch_path):

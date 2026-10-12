@@ -6,7 +6,7 @@ import uuid
 import pytest
 
 from rcp.core.models import Patch
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
 
@@ -190,7 +190,7 @@ def test_merge_provenance_uses_current_project_membership(
     report = validate_patch(
         harness.branch.base_state(),
         branch_patch.model_copy(update={"run_truth_scope": ["repo-a"]}),
-        ["repo-a", "repo-b"],
+        ValidationContext(["repo-a", "repo-b"]),
     )
     assert "source-outside-run-scope" in {message.code for message in report.messages}
 

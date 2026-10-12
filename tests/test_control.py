@@ -24,7 +24,7 @@ from rcp.core.models import (
     Proposal,
 )
 from rcp.core.operations import adapt_persisted_patch_document
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 
 EXPERIMENT_ID = "exp/control-loop"
 DECISION_ID = "dec/resource-shape"
@@ -364,12 +364,14 @@ def _belief_patch_ops(
 
 def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
     state = _state()
-    assert not validate_patch(state, _patch(_belief_patch_ops()), ["repo"]).rejected
+    assert not validate_patch(
+        state, _patch(_belief_patch_ops()), ValidationContext(["repo"])
+    ).rejected
 
     # The status move is the only thing the human is being asked to accept.
     wider = _belief_patch_ops(changes={"status": "rejected", "scope": "Narrower."})
     assert "experiment-loop-belief-proposal-operations" in _codes(
-        validate_patch(state, _patch(wider), ["repo"])
+        validate_patch(state, _patch(wider), ValidationContext(["repo"]))
     )
 
     # Approval authorizes the move, while the scientific cause remains the
@@ -378,14 +380,14 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
         cause={"kind": "proposal_resolution", "ref_id": "proposal/belief"}
     )
     assert "experiment-loop-belief-cause" in _codes(
-        validate_patch(state, _patch(approval_as_cause), ["repo"])
+        validate_patch(state, _patch(approval_as_cause), ValidationContext(["repo"]))
     )
 
     borrowed = _belief_patch_ops(
         cause={"kind": "evidence_edge", "ref_id": "ev/other::weakens::hyp/target"}
     )
     assert "experiment-loop-belief-cause" in _codes(
-        validate_patch(state, _patch(borrowed), ["repo"])
+        validate_patch(state, _patch(borrowed), ValidationContext(["repo"]))
     )
 
     # And the same patch must actually point evidence at that hypothesis.
@@ -394,14 +396,14 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
         {"source": EXPERIMENT_ID, "target": "ev/result", "relation": "produces"}
     ]
     assert "experiment-loop-belief-grounding" in _codes(
-        validate_patch(state, _patch(ungrounded), ["repo"])
+        validate_patch(state, _patch(ungrounded), ValidationContext(["repo"]))
     )
 
     # A hypothesis this experiment does not test is neither a belief target nor a
     # governing decision, so its semantic update target is refused.
     foreign = _belief_patch_ops(target="hyp/unrelated")
     assert "experiment-loop-proposal-operations" in _codes(
-        validate_patch(state, _patch(foreign), ["repo"])
+        validate_patch(state, _patch(foreign), ValidationContext(["repo"]))
     )
 
 
@@ -501,7 +503,7 @@ def test_loop_patch_can_append_and_close_its_own_attempt() -> None:
             }
         ]
     )
-    assert not validate_patch(state, append, ["repo"]).rejected
+    assert not validate_patch(state, append, ValidationContext(["repo"])).rejected
 
     state = _state(attempts=[_attempt()])
     closed = _attempt(status="completed").model_copy(update={"outcome": "Finished."})
@@ -513,7 +515,7 @@ def test_loop_patch_can_append_and_close_its_own_attempt() -> None:
             }
         ]
     )
-    assert not validate_patch(state, close, ["repo"]).rejected
+    assert not validate_patch(state, close, ValidationContext(["repo"])).rejected
 
     # Lowering the human-owned ceiling stops new attempts; it must not prevent
     # the watcher turn from closing work that was already launched.
@@ -534,7 +536,7 @@ def test_loop_patch_can_append_and_close_its_own_attempt() -> None:
             }
         ]
     )
-    assert not validate_patch(state, close_after_lowering, ["repo"]).rejected
+    assert not validate_patch(state, close_after_lowering, ValidationContext(["repo"])).rejected
 
 
 def test_loop_patch_may_append_multiple_semantically_meaningful_attempts() -> None:
@@ -555,7 +557,9 @@ def test_loop_patch_may_append_multiple_semantically_meaningful_attempts() -> No
         ]
     )
 
-    assert "experiment-loop-multiple-attempts" not in _codes(validate_patch(state, patch, ["repo"]))
+    assert "experiment-loop-multiple-attempts" not in _codes(
+        validate_patch(state, patch, ValidationContext(["repo"]))
+    )
 
 
 def test_loop_patch_may_refresh_summary_and_next_action_on_its_experiment() -> None:
@@ -580,7 +584,7 @@ def test_loop_patch_may_refresh_summary_and_next_action_on_its_experiment() -> N
         ]
     )
 
-    report = validate_patch(state, patch, ["repo"])
+    report = validate_patch(state, patch, ValidationContext(["repo"]))
     assert not report.rejected
     updated = apply_valid_patch(state, patch).nodes[EXPERIMENT_ID]
     assert isinstance(updated, Experiment)
@@ -624,10 +628,10 @@ def test_replaying_a_legacy_loop_patch_accepts_the_fields_its_own_migration_adde
     assert changes["next_action_stale"] is True
 
     state = _state()
-    assert not _codes(validate_patch(state, adapted, ["repo"], mode="replay"))
+    assert not _codes(validate_patch(state, adapted, ValidationContext(["repo"], mode="replay")))
     # A live write still may not set them.
     assert "experiment-loop-experiment-field" in _codes(
-        validate_patch(state, adapted, ["repo"], mode="admission")
+        validate_patch(state, adapted, ValidationContext(["repo"], mode="admission"))
     )
 
 
@@ -644,7 +648,7 @@ def test_loop_summary_authority_does_not_allow_other_fields_or_foreign_nodes() -
         ]
     )
 
-    codes = _codes(validate_patch(_state(), patch, ["repo"]))
+    codes = _codes(validate_patch(_state(), patch, ValidationContext(["repo"])))
     assert "experiment-loop-experiment-field" in codes
     assert "experiment-loop-foreign-update" in codes
 
@@ -662,7 +666,7 @@ def test_loop_patch_cannot_edit_the_pinned_bundle_or_other_graph_authority() -> 
         },
         {"op": "set_standing", "node_id": EXPERIMENT_ID, "standing": "accepted"},
     ]
-    codes = _codes(validate_patch(state, _patch(operations), ["repo"]))
+    codes = _codes(validate_patch(state, _patch(operations), ValidationContext(["repo"])))
     assert "experiment-loop-attempt-mutation" in codes
     assert "experiment-loop-foreign-update" in codes
     assert "experiment-loop-operation" in codes
@@ -679,7 +683,7 @@ def test_loop_patch_can_queue_a_pinned_decision_but_cannot_decide_it() -> None:
                 }
             ]
         )
-        assert not validate_patch(state, patch, ["repo"]).rejected
+        assert not validate_patch(state, patch, ValidationContext(["repo"])).rejected
 
     decide = _patch(
         [
@@ -694,7 +698,7 @@ def test_loop_patch_can_queue_a_pinned_decision_but_cannot_decide_it() -> None:
             }
         ]
     )
-    codes = _codes(validate_patch(state, decide, ["repo"]))
+    codes = _codes(validate_patch(state, decide, ValidationContext(["repo"])))
     assert "experiment-loop-decision-action" in codes
     assert "decision-action-refused" in codes
 
@@ -723,7 +727,7 @@ def test_loop_patch_cannot_mutate_completion_criteria_but_attempts_do_not_spend_
             }
         ]
     )
-    codes = _codes(validate_patch(state, patch, ["repo"]))
+    codes = _codes(validate_patch(state, patch, ValidationContext(["repo"])))
     assert "experiment-loop-experiment-field" in codes
     assert "experiment-loop-attempt-ceiling" not in codes
 
@@ -756,7 +760,7 @@ def test_loop_patch_may_create_evidence_blockers_and_scoped_evidence_edges() -> 
         },
     ]
     valid = _patch(valid_ops)
-    assert not validate_patch(state, valid, ["repo"]).rejected
+    assert not validate_patch(state, valid, ValidationContext(["repo"])).rejected
 
     invalid = deepcopy(valid_ops)
     invalid[0]["nodes"] = [
@@ -774,7 +778,7 @@ def test_loop_patch_may_create_evidence_blockers_and_scoped_evidence_edges() -> 
             "relation": "tests",
         }
     ]
-    codes = _codes(validate_patch(state, _patch(invalid), ["repo"]))
+    codes = _codes(validate_patch(state, _patch(invalid), ValidationContext(["repo"])))
     assert "experiment-loop-created-node" in codes
     assert "experiment-loop-edge-layer" in codes
 
@@ -804,7 +808,7 @@ def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None
         },
     ]
     handoffs = _patch(handoff_ops)
-    assert not validate_patch(state, handoffs, ["repo"]).rejected
+    assert not validate_patch(state, handoffs, ValidationContext(["repo"])).rejected
 
     wrong_source = deepcopy(handoff_ops)
     wrong_source[1]["edges"][1] = {
@@ -813,7 +817,7 @@ def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None
         "relation": "informs",
     }
     assert "experiment-loop-evidence-handoff" in _codes(
-        validate_patch(state, _patch(wrong_source), ["repo"])
+        validate_patch(state, _patch(wrong_source), ValidationContext(["repo"]))
     )
 
     wrong_target = deepcopy(handoff_ops)
@@ -823,7 +827,7 @@ def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None
         "relation": "addresses",
     }
     assert "experiment-loop-evidence-handoff" in _codes(
-        validate_patch(state, _patch(wrong_target), ["repo"])
+        validate_patch(state, _patch(wrong_target), ValidationContext(["repo"]))
     )
 
 
@@ -853,7 +857,7 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
         },
     ]
     attached = _patch(attached_ops)
-    assert not validate_patch(state, attached, ["repo"]).rejected
+    assert not validate_patch(state, attached, ValidationContext(["repo"])).rejected
 
     # Attaching a node the patch did not create would let the loop claim
     # someone else's evidence or block itself on an unrelated blocker.
@@ -862,7 +866,7 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
         {"source": EXPERIMENT_ID, "target": "blk/capacity", "relation": "blocked_by"}
     ]
     assert "experiment-loop-self-attachment" in _codes(
-        validate_patch(state, _patch(foreign), ["repo"])
+        validate_patch(state, _patch(foreign), ValidationContext(["repo"]))
     )
 
     # And it may only attach to its own experiment.
@@ -871,7 +875,7 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
         {"source": "exp/other", "target": "ev/result", "relation": "produces"}
     ]
     assert "experiment-loop-self-attachment" in _codes(
-        validate_patch(state, _patch(foreign_source), ["repo"])
+        validate_patch(state, _patch(foreign_source), ValidationContext(["repo"]))
     )
 
 
@@ -947,7 +951,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
             {"op": "create_proposals", "proposals": [proposal]},
         ]
     )
-    assert not validate_patch(state, valid, ["repo"]).rejected
+    assert not validate_patch(state, valid, ValidationContext(["repo"])).rejected
 
     running_state = _state(attempts=[_attempt()])
     closed_attempt = _attempt(status="completed").model_copy(update={"outcome": "Needs change."})
@@ -961,7 +965,9 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
             {"op": "create_proposals", "proposals": [proposal]},
         ]
     )
-    assert not validate_patch(running_state, close_and_propose, ["repo"]).rejected
+    assert not validate_patch(
+        running_state, close_and_propose, ValidationContext(["repo"])
+    ).rejected
 
     # Proposal dependencies are RCP bookkeeping, not an agent declaration or
     # an experiment-loop authority input. The semantic target controls scope.
@@ -971,7 +977,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
         validate_patch(
             state,
             _patch([*evidence_ops, {"op": "create_proposals", "proposals": [stale_bookkeeping]}]),
-            ["repo"],
+            ValidationContext(["repo"]),
         )
     )
     assert "experiment-loop-proposal-scope" not in codes
@@ -1004,7 +1010,7 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
                     {"op": "create_proposals", "proposals": [hidden_foreign_update]},
                 ]
             ),
-            ["repo"],
+            ValidationContext(["repo"]),
         )
     )
     assert "experiment-loop-proposal-operations" in codes
@@ -1022,7 +1028,9 @@ def test_proposal_only_attempt_requires_a_proposal_in_the_same_patch() -> None:
             }
         ]
     )
-    assert "experiment-loop-proposal-attempt" in _codes(validate_patch(_state(), patch, ["repo"]))
+    assert "experiment-loop-proposal-attempt" in _codes(
+        validate_patch(_state(), patch, ValidationContext(["repo"]))
+    )
 
     launched_proposal_attempt = _attempt(attempt_kind="proposal_only", status="completed")
     launched_ops = [
@@ -1056,19 +1064,21 @@ def test_proposal_only_attempt_requires_a_proposal_in_the_same_patch() -> None:
         },
     ]
     launched = _patch(launched_ops)
-    assert "experiment-loop-proposal-job" in _codes(validate_patch(_state(), launched, ["repo"]))
+    assert "experiment-loop-proposal-job" in _codes(
+        validate_patch(_state(), launched, ValidationContext(["repo"]))
+    )
 
     nonterminal_attempt = attempt.model_copy(update={"status": "running"})
     nonterminal_ops = deepcopy(launched_ops)
     nonterminal_ops[0]["nodes"][0]["changes"]["attempts"] = [nonterminal_attempt]
     nonterminal = _patch(nonterminal_ops)
     assert "experiment-loop-proposal-status" in _codes(
-        validate_patch(_state(), nonterminal, ["repo"])
+        validate_patch(_state(), nonterminal, ValidationContext(["repo"]))
     )
 
 
 def test_loop_patch_requires_persisted_rcp_control_binding() -> None:
-    report = validate_patch(_state(), _patch([], stamp=False), ["repo"])
+    report = validate_patch(_state(), _patch([], stamp=False), ValidationContext(["repo"]))
     assert "experiment-loop-control-node" in _codes(report)
 
 
@@ -1091,13 +1101,15 @@ def test_experiment_loop_may_queue_its_pinned_decision_but_never_decide_it() -> 
             [{"op": "update_nodes", "nodes": [{"id": DECISION_ID, "changes": {"status": queued}}]}]
         )
         assert "experiment-loop-decision-action" not in _codes(
-            validate_patch(state, allowed, ["repo"])
+            validate_patch(state, allowed, ValidationContext(["repo"]))
         )
 
     decided = _patch(
         [{"op": "update_nodes", "nodes": [{"id": DECISION_ID, "changes": {"status": "decided"}}]}]
     )
-    assert "experiment-loop-decision-action" in _codes(validate_patch(state, decided, ["repo"]))
+    assert "experiment-loop-decision-action" in _codes(
+        validate_patch(state, decided, ValidationContext(["repo"]))
+    )
 
 
 def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quietly() -> None:
@@ -1127,7 +1139,7 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
             }
         ]
     )
-    assert not validate_patch(state, restated, ["repo"]).rejected
+    assert not validate_patch(state, restated, ValidationContext(["repo"])).rejected
 
     smuggled = _patch(
         [
@@ -1142,7 +1154,9 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
             }
         ]
     )
-    assert "experiment-loop-decision-action" in _codes(validate_patch(state, smuggled, ["repo"]))
+    assert "experiment-loop-decision-action" in _codes(
+        validate_patch(state, smuggled, ValidationContext(["repo"]))
+    )
 
     unqueued = _patch(
         [
@@ -1152,7 +1166,9 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
             }
         ]
     )
-    assert "experiment-loop-decision-action" in _codes(validate_patch(state, unqueued, ["repo"]))
+    assert "experiment-loop-decision-action" in _codes(
+        validate_patch(state, unqueued, ValidationContext(["repo"]))
+    )
 
     # An agent may reword an option but may never write `selected_option`, so a
     # restatement that replaces the chosen wording is the ordinary shape of
@@ -1174,7 +1190,7 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
             }
         ]
     )
-    assert not validate_patch(state, reworded, ["repo"]).rejected
+    assert not validate_patch(state, reworded, ValidationContext(["repo"])).rejected
 
     # The queued status licenses the restatement, not the transition into it. A
     # loop that queued a Decision in an earlier turn still has to be able to add
@@ -1197,7 +1213,7 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
             }
         ]
     )
-    assert not validate_patch(queued, later_option, ["repo"]).rejected
+    assert not validate_patch(queued, later_option, ValidationContext(["repo"])).rejected
 
 
 def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
@@ -1221,7 +1237,7 @@ def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
         ]
     )
 
-    codes = _codes(validate_patch(state, patch, ["repo"]))
+    codes = _codes(validate_patch(state, patch, ValidationContext(["repo"])))
     assert "experiment-loop-attempt-close" in codes
     assert "experiment-loop-attempt-mutation" not in codes
 

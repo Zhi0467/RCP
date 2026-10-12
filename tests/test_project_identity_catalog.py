@@ -14,6 +14,7 @@ from rcp.history import HistoryManager
 from rcp.history.manager import ProjectIdentityConflict
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore, ProjectRecord
+from tests.helpers import unchecked_write_authority
 
 
 def _legacy_record(manifest, store: AppStore, project_id: str) -> ProjectRecord:
@@ -143,7 +144,9 @@ def test_registered_legacy_project_auto_adopts_actual_id_once_and_rekeys_caches(
     assert adopted.home_space_id == store.space_id
     assert store.resolve_project_id(old_project_id) == adopted.project_id
     assert store.project_aliases() == {old_project_id: adopted.project_id}
-    patches = HistoryManager(load_manifest(manifest.path)).load_patches()
+    patches = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).load_patches()
     assert len(patches) == 1
     assert patches[0].project_identity is not None
     assert patches[0].project_identity.action == "adopted"
@@ -217,7 +220,9 @@ def test_registration_retry_finishes_database_migration_without_second_identity(
     with pytest.raises(RuntimeError, match="simulated catalog migration failure"):
         catalog.register(str(manifest.path))
 
-    patches_after_failure = HistoryManager(load_manifest(manifest.path)).load_patches()
+    patches_after_failure = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).load_patches()
     assert len(patches_after_failure) == 1
     assert store.project_by_locator(str(manifest.path)).project_id == old_project_id
 
@@ -225,7 +230,14 @@ def test_registration_retry_finishes_database_migration_without_second_identity(
 
     assert recovered.project_id == patches_after_failure[0].project_identity.project_id
     assert store.resolve_project_id(old_project_id) == recovered.project_id
-    assert len(HistoryManager(load_manifest(manifest.path)).load_patches()) == 1
+    assert (
+        len(
+            HistoryManager(
+                load_manifest(manifest.path), write_authority=unchecked_write_authority()
+            ).load_patches()
+        )
+        == 1
+    )
 
 
 def test_registered_legacy_project_rekeys_unsent_attachment_metadata(
@@ -287,7 +299,9 @@ def test_registration_retry_finishes_display_cleanup_after_publish_crash(
     with pytest.raises(OSError, match="simulated interruption"):
         catalog.register(str(manifest.path))
 
-    identity = HistoryManager(load_manifest(manifest.path)).project_identity()
+    identity = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).project_identity()
     assert identity is not None
     destination = catalog._cached_snapshot_path_for_id(identity.project_id)
     assert source.exists()
@@ -301,7 +315,14 @@ def test_registration_retry_finishes_display_cleanup_after_publish_crash(
     assert not source.exists()
     assert destination.exists()
     assert catalog.cached_snapshot(recovered.project_id) is not None
-    assert len(HistoryManager(load_manifest(manifest.path)).load_patches()) == 1
+    assert (
+        len(
+            HistoryManager(
+                load_manifest(manifest.path), write_authority=unchecked_write_authority()
+            ).load_patches()
+        )
+        == 1
+    )
 
 
 def test_foreign_tagged_project_refuses_before_catalog_or_cache_creation(
@@ -344,7 +365,14 @@ def test_renamed_and_relocated_project_keeps_canonical_id(manifest, tmp_path) ->
     assert registered.home_space_id == store.space_id
     assert registered.name == "Renamed paper"
     assert registered.locator == str(relocated_manifest)
-    assert len(HistoryManager(load_manifest(relocated_manifest)).load_patches()) == 1
+    assert (
+        len(
+            HistoryManager(
+                load_manifest(relocated_manifest), write_authority=unchecked_write_authority()
+            ).load_patches()
+        )
+        == 1
+    )
 
 
 def test_cache_destination_conflict_prevents_database_migration_and_overwrite(
@@ -357,8 +385,7 @@ def test_cache_destination_conflict_prevents_database_migration_and_overwrite(
     old_project_id = "legacy-cache-conflict"
     _legacy_record(manifest, store, old_project_id)
     identity = HistoryManager(
-        manifest,
-        expected_space_id=store.space_id,
+        manifest, expected_space_id=store.space_id, write_authority=unchecked_write_authority()
     ).claim_project_identity("adopted")
     source = catalog._cached_snapshot_path_for_id(old_project_id)
     destination = catalog._cached_snapshot_path_for_id(identity.project_id)

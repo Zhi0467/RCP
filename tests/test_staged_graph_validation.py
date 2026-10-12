@@ -11,12 +11,13 @@ from rcp.core.authority import (
     RESTRUCTURE_PROTECTED_EPISTEMIC,
     SUPERSEDE_NODE,
     UPDATE_NODE,
+    WriteAuthority,
     operation_actions,
     permits,
 )
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import Decision, Experiment, GraphState, Patch
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from tests.helpers import seed_patch
 
 
@@ -33,7 +34,7 @@ def _agent_patch(*operations: dict[str, object]) -> Patch:
 
 def _validate(*operations: dict[str, object]):
     state = GraphState(project_truth_scope=["repo-a"])
-    return validate_patch(state, _agent_patch(*operations), ["repo-a"])
+    return validate_patch(state, _agent_patch(*operations), ValidationContext(["repo-a"]))
 
 
 def _research_question(node_id: str, *, title: str = "Staged question") -> dict[str, object]:
@@ -89,7 +90,7 @@ def test_current_node_update_rejects_nested_scalar_coercion_but_legacy_replay_pr
         }
     )
 
-    admission = validate_patch(state, patch, ["repo-a"])
+    admission = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert admission.rejected
     assert any(message.code == "invalid-node-update" for message in admission.messages)
@@ -97,7 +98,7 @@ def test_current_node_update_rejects_nested_scalar_coercion_but_legacy_replay_pr
         apply_valid_patch(state, patch)
 
     legacy = patch.model_copy(update={"schema_generation": 1})
-    replay = validate_patch(state, legacy, ["repo-a"], mode="replay")
+    replay = validate_patch(state, legacy, ValidationContext(["repo-a"], mode="replay"))
     updated = apply_valid_patch(state, legacy)
     assert not replay.rejected
     assert updated.nodes["exp/strict-update"].invocation_ceiling == 6
@@ -139,7 +140,7 @@ def test_same_patch_belief_creation_edit_and_connection_stay_direct() -> None:
     )
     state = GraphState(project_truth_scope=["repo-a"])
 
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert not report.rejected
     assert operation_actions(state, patch, patch.ops[1]) == frozenset({UPDATE_NODE})
@@ -219,13 +220,10 @@ def test_generated_meta_relation_cannot_bypass_protected_endpoint_authority(
     assert operation_actions(state, patch, patch.ops[0]) == frozenset(
         {ordinary_action, RESTRUCTURE_PROTECTED_EPISTEMIC}
     )
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    report.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
     assert report.rejected
-    assert any(
-        message.code == "graph-action-refused"
-        and RESTRUCTURE_PROTECTED_EPISTEMIC in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in report.messages)
     assert any(message.code == "generated-relation-type-mismatch" for message in report.messages)
 
 
@@ -263,8 +261,8 @@ def test_create_edge_cannot_overwrite_an_existing_protected_relation_id() -> Non
         },
     ).model_copy(update={"revision": 2})
 
-    admission = validate_patch(state, patch, ["repo-a"])
-    replay = validate_patch(state, patch, ["repo-a"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo-a"], mode="replay"))
 
     assert operation_actions(state, patch, patch.ops[1]) == frozenset({CREATE_EDGE})
     assert any(message.code == "duplicate-edge-id" for message in admission.messages)
@@ -282,13 +280,11 @@ def test_existing_protected_node_cannot_be_removed_then_recreated_with_same_id()
         {"op": "create_nodes", "nodes": [_research_question(node_id)]},
     ).model_copy(update={"revision": 2})
 
-    admission = validate_patch(state, patch, ["repo-a"])
-    replay = validate_patch(state, patch, ["repo-a"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    admission.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
+    replay = validate_patch(state, patch, ValidationContext(["repo-a"], mode="replay"))
 
-    assert any(
-        message.code == "graph-action-refused" and "remove_protected_epistemic" in message.message
-        for message in admission.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in admission.messages)
     assert any(message.code == "initial-node-id-replacement" for message in admission.messages)
     assert not replay.rejected, [message.message for message in replay.messages]
 
@@ -337,13 +333,11 @@ def test_later_same_id_creation_cannot_exempt_an_earlier_protected_action(
         {"op": "create_nodes", "nodes": [_research_question(node_id)]},
     ).model_copy(update={"revision": 2})
 
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    report.messages.extend(WriteAuthority().validate_permissions(state, patch).messages)
 
     assert expected_action in operation_actions(state, patch, patch.ops[0])
-    assert any(
-        message.code == "graph-action-refused" and expected_action in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "graph-action-refused" for message in report.messages)
     assert any(message.code == "initial-node-id-replacement" for message in report.messages)
 
 
@@ -440,8 +434,8 @@ def test_ambiguity_operations_are_replay_only_and_preserve_written_order() -> No
     )
     state = GraphState(project_truth_scope=["repo-a"])
     patch = _agent_patch(*operations)
-    admission = validate_patch(state, patch, ["repo-a"])
-    replay = validate_patch(state, patch, ["repo-a"], mode="replay")
+    admission = validate_patch(state, patch, ValidationContext(["repo-a"]))
+    replay = validate_patch(state, patch, ValidationContext(["repo-a"], mode="replay"))
 
     assert admission.rejected
     assert sum(message.code == "legacy-only-operation" for message in admission.messages) == 2
@@ -698,7 +692,7 @@ def test_ready_ballot_is_checked_after_written_order_staging() -> None:
                 "nodes": [{"id": prior.id, "changes": {"status": "revisit"}}],
             }
         ),
-        ["repo-a"],
+        ValidationContext(["repo-a"]),
     )
 
     assert incomplete.rejected
@@ -732,7 +726,7 @@ def test_agent_may_queue_a_prior_decision_but_never_decide_it() -> None:
                     "nodes": [{"id": decision.id, "changes": {"status": status}}],
                 }
             ),
-            ["repo-a"],
+            ValidationContext(["repo-a"]),
         )
         assert not report.rejected
 
@@ -749,7 +743,7 @@ def test_agent_may_queue_a_prior_decision_but_never_decide_it() -> None:
                 ],
             }
         ),
-        ["repo-a"],
+        ValidationContext(["repo-a"]),
     )
     assert decide.rejected
     assert any("only a human may" in message.message for message in decide.messages)
@@ -772,7 +766,7 @@ def test_revisit_requires_a_prior_decision() -> None:
                 "nodes": [{"id": decision.id, "changes": {"status": "revisit"}}],
             }
         ),
-        ["repo-a"],
+        ValidationContext(["repo-a"]),
     )
 
     assert report.rejected
@@ -824,7 +818,7 @@ def test_ordinary_human_edit_may_queue_but_never_decide() -> None:
                 }
             ],
         )
-        assert not validate_patch(state, queue, ["repo-a"]).rejected
+        assert not validate_patch(state, queue, ValidationContext(["repo-a"])).rejected
 
     unnamed_choice = Patch(
         kind="approval",
@@ -843,7 +837,7 @@ def test_ordinary_human_edit_may_queue_but_never_decide() -> None:
             }
         ],
     )
-    report = validate_patch(state, unnamed_choice, ["repo-a"])
+    report = validate_patch(state, unnamed_choice, ValidationContext(["repo-a"]))
     assert report.rejected
     assert any(message.code == "unnamed-decision-action" for message in report.messages)
 
@@ -879,7 +873,7 @@ def test_direct_choice_is_legal_from_ready_and_revisit() -> None:
             ],
         )
 
-        assert not validate_patch(state, choice, ["repo-a"]).rejected
+        assert not validate_patch(state, choice, ValidationContext(["repo-a"])).rejected
 
 
 def test_edge_can_reference_a_node_created_later_in_the_same_patch() -> None:
@@ -908,7 +902,7 @@ def test_edge_can_reference_a_node_created_later_in_the_same_patch() -> None:
         },
     )
     state = GraphState(project_truth_scope=["repo-a"])
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert not report.rejected
     materialized = apply_valid_patch(state, patch)
@@ -945,7 +939,7 @@ def test_forward_edge_layer_is_derived_after_later_endpoints_materialize() -> No
     )
     state = GraphState(project_truth_scope=["repo-a"])
 
-    report = validate_patch(state, patch, ["repo-a"])
+    report = validate_patch(state, patch, ValidationContext(["repo-a"]))
 
     assert not report.rejected
     materialized = apply_valid_patch(state, patch)

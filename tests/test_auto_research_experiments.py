@@ -51,6 +51,7 @@ from rcp.storage import (
     AutoResearchExperimentAllowanceReached,
     ProjectRecord,
 )
+from tests.helpers import unchecked_write_authority
 
 from .helpers import (
     async_wait_until,
@@ -141,7 +142,7 @@ def _blocking_patch() -> Patch:
 
 
 def _service(manifest: Manifest, tmp_path: Path) -> ProjectService:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(_experiment_patch())
     paper_store = AppStore(tmp_path / "paper.sqlite3")
     return ProjectService(

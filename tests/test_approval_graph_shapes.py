@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from rcp.core.authority import Writer
 from rcp.core.models import GraphState, Patch
-from rcp.core.validation import validate_patch
+from rcp.core.validation import ValidationContext, validate_patch
 from rcp.core.validation.approval import validate_approval_shape
 from rcp.core.validation.report import ValidationReport
 
@@ -15,7 +16,9 @@ _REMOVE = {"op": "remove_edges", "edge_ids": []}
 def test_direct_connection_edit_has_one_named_source_patch(ops) -> None:
     patch = Patch(kind="approval", author="human", summary="Edited connections.", ops=ops)
     report = ValidationReport()
-    validate_approval_shape(GraphState(), patch, report, mode="admission")
+    validate_approval_shape(
+        GraphState(), patch, report, mode="admission", writer=Writer.from_patch(patch)
+    )
     assert not report.rejected
 
 
@@ -37,11 +40,13 @@ def test_direct_connection_edit_has_one_named_source_patch(ops) -> None:
 def test_connection_edit_does_not_allow_unrelated_or_ambiguous_approval_shapes(ops) -> None:
     patch = Patch(kind="approval", author="human", summary="Mixed changes.", ops=ops)
     report = ValidationReport()
-    validate_approval_shape(GraphState(), patch, report, mode="admission")
+    validate_approval_shape(
+        GraphState(), patch, report, mode="admission", writer=Writer.from_patch(patch)
+    )
     assert report.rejected
 
 
 def test_edge_approval_still_requires_human_authorship() -> None:
     patch = Patch(kind="approval", author="agent", summary="Claimed human action.", ops=[_CREATE])
-    report = validate_patch(GraphState(), patch, [])
+    report = validate_patch(GraphState(), patch, ValidationContext([]))
     assert "wrong-author" in {message.code for message in report.messages}

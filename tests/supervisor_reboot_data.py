@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import os
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Any
 
 from rcp.api import create_app
 from rcp.attachments import ChatAttachmentStore
@@ -29,6 +31,14 @@ from rcp.storage import (
     ProjectProvisioningProviderIntent,
     ProjectProvisioningRepositoryIntent,
 )
+
+# The same fixture runs against prior releases without the required authority argument.
+# Import the candidate test policy only when that constructor supports it.
+_HISTORY_AUTHORITY: dict[str, Any] = {}
+if "write_authority" in inspect.signature(HistoryManager).parameters:
+    from tests.helpers import unchecked_write_authority
+
+    _HISTORY_AUTHORITY["write_authority"] = unchecked_write_authority()
 
 
 def prepare_data(
@@ -226,7 +236,7 @@ def _prepare_data(
     )
     verify_checkout_identities(registration.recovery)
     assert registration.workspace.backup_canonical_source_plan().complete
-    history = HistoryManager(registration.manifest)
+    history = HistoryManager(registration.manifest, **_HISTORY_AUTHORITY)
     history.append(
         Patch(
             kind="refresh",

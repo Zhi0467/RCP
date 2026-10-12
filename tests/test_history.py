@@ -19,13 +19,14 @@ from rcp.core.operations import operation_dict
 from rcp.core.research_md import render_research_md
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import GraphTransitionManager
+from rcp.core.validation import build_validation_context, validate_patch
 from rcp.history import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
 from rcp.history.manager import ProjectIdentityConflict
-from tests.helpers import refresh_patch, seed_patch, shape_invalid_patch
+from tests.helpers import refresh_patch, seed_patch, shape_invalid_patch, unchecked_write_authority
 
 
 def _seeded_history(manifest) -> HistoryManager:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     return history
 
@@ -99,10 +100,14 @@ def _record_experiment(history: HistoryManager, attempt_status: str | None = Non
 def test_manifest_writes_share_the_append_lock_across_manager_instances(
     manifest, monkeypatch
 ) -> None:
-    initial = HistoryManager(manifest)
+    initial = HistoryManager(manifest, write_authority=unchecked_write_authority())
     initial.append(seed_patch())
-    settings_history = HistoryManager(load_manifest(manifest.path))
-    scope_history = HistoryManager(load_manifest(manifest.path))
+    settings_history = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    )
+    scope_history = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    )
     assert settings_history._process_lock is scope_history._process_lock
 
     real_atomic_write = config_module._atomic_write
@@ -141,7 +146,7 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
 
 
 def test_seed_is_asserted_and_accepted_core_starts_empty(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     forged = seed_patch().model_copy(
         update={
             "admission": "rejected",
@@ -165,7 +170,7 @@ def test_seed_is_asserted_and_accepted_core_starts_empty(manifest) -> None:
 
 
 def test_successful_patch_materializes_processed_cursors(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     session_key = "repo-a/laptop/codex/session-1"
 
     history.append(seed_patch().model_copy(update={"processed_cursors": {session_key: "record-2"}}))
@@ -257,10 +262,15 @@ def test_accepted_target_rejects_the_entire_remove_nodes_operation(manifest) -> 
         _approval_patch([{"op": "set_standing", "node_id": accepted_id, "standing": "accepted"}])
     )
 
-    with pytest.raises(PatchRejected) as caught:
-        history.append(_remove_nodes_patch("rq/learning-after-shift", accepted_id))
+    patch = _remove_nodes_patch("rq/learning-after-shift", accepted_id)
+    state = history.state()
+    rules = validate_patch(state, patch, build_validation_context(manifest, state))
+    assert any(message.code == "accepted-node-removal" for message in rules.messages)
 
-    assert any(message.code == "accepted-node-removal" for message in caught.value.report.messages)
+    with pytest.raises(PatchRejected) as caught:
+        history.append(patch)
+
+    assert any(message.code == "graph-action-refused" for message in caught.value.report.messages)
     state = history.state()
     assert {"rq/learning-after-shift", accepted_id} <= set(state.nodes)
     assert any(
@@ -577,7 +587,7 @@ def test_agent_updates_blocker_lifecycle_directly_and_resets_accepted_standing(m
 @pytest.mark.parametrize(
     ("changes", "code"),
     [
-        ({"status": "active"}, "graph-action-refused"),
+        ({"status": "active"}, "gated-transition"),
         ({"standing": "accepted"}, "immutable-node-field"),
         ({"id": "hyp/renamed-behind-the-index"}, "immutable-node-field"),
         ({"type": "evidence"}, "immutable-node-field"),
@@ -585,18 +595,21 @@ def test_agent_updates_blocker_lifecycle_directly_and_resets_accepted_standing(m
 )
 def test_agent_cannot_apply_protected_hypothesis_changes(manifest, changes, code) -> None:
     history = _seeded_history(manifest)
+    patch = _agent_patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": "hyp/replanning-restores-plasticity", "changes": changes}],
+            }
+        ]
+    )
+    state = history.state()
+    rules = validate_patch(state, patch, build_validation_context(manifest, state))
+    assert any(message.code == code for message in rules.messages)
+
     with pytest.raises(PatchRejected) as caught:
-        history.append(
-            _agent_patch(
-                [
-                    {
-                        "op": "update_nodes",
-                        "nodes": [{"id": "hyp/replanning-restores-plasticity", "changes": changes}],
-                    }
-                ]
-            )
-        )
-    assert any(message.code == code for message in caught.value.report.messages)
+        history.append(patch)
+    assert any(message.code == "graph-action-refused" for message in caught.value.report.messages)
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 
@@ -798,7 +811,7 @@ def test_agent_can_prune_evidence(manifest, operation) -> None:
     research = render_research_md(state)
     assert "Result ev/canonical" in research
     assert "Result ev/duplicate" not in research
-    replayed = HistoryManager(manifest).state()
+    replayed = HistoryManager(manifest, write_authority=unchecked_write_authority()).state()
     assert replayed.replay_status == "complete"
     assert replayed.nodes == state.nodes
 
@@ -862,7 +875,7 @@ def test_malformed_agent_patch_is_auditable_without_poisoning_replay(manifest) -
 
 
 def test_discarded_rejection_does_not_enter_history_or_consume_revision(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
 
     with pytest.raises(PatchRejected) as caught:
         history.append(shape_invalid_patch(), discard_on_reject=True)
@@ -1005,13 +1018,19 @@ def test_invalid_agent_patch_is_auditable_but_not_materialized(manifest) -> None
             }
         ]
     )
+    state = history.state()
+    rules = validate_patch(state, patch, build_validation_context(manifest, state))
+    assert any(message.code == "gated-transition" for message in rules.messages)
+
     appended, result = history.append(patch, raise_on_reject=False)
 
     assert appended.revision == 2
     assert (manifest.research_dir / "patches" / "000002.json").exists()
     node = result.state.nodes["hyp/replanning-restores-plasticity"]
     assert node.status == "proposed"
-    assert any(message.code == "gated-transition" for message in result.state.validation_messages)
+    assert any(
+        message.code == "graph-action-refused" for message in result.state.validation_messages
+    )
     graph = json.loads((manifest.research_dir / "graph.json").read_text(encoding="utf-8"))
     assert graph["nodes"]["hyp/replanning-restores-plasticity"]["status"] == "proposed"
 
@@ -1042,7 +1061,9 @@ def test_project_identity_claim_is_visible_idempotent_and_semantically_empty(
     action,
 ) -> None:
     space_id = str(uuid.uuid4())
-    history = HistoryManager(manifest, expected_space_id=space_id)
+    history = HistoryManager(
+        manifest, expected_space_id=space_id, write_authority=unchecked_write_authority()
+    )
 
     identity = history.claim_project_identity(action)
     again = history.claim_project_identity(action)
@@ -1072,7 +1093,9 @@ def test_project_identity_claim_can_bind_one_prepared_id_and_refuses_another(
 ) -> None:
     space_id = str(uuid.uuid4())
     reserved_id = str(uuid.uuid4())
-    history = HistoryManager(manifest, expected_space_id=space_id)
+    history = HistoryManager(
+        manifest, expected_space_id=space_id, write_authority=unchecked_write_authority()
+    )
 
     identity = history.claim_project_identity("created", project_id=reserved_id)
     repeated = history.claim_project_identity("created", project_id=reserved_id)
@@ -1087,8 +1110,10 @@ def test_project_identity_claim_can_bind_one_prepared_id_and_refuses_another(
 
 
 def test_prepared_identity_claim_refuses_any_prior_patch_history(manifest) -> None:
-    HistoryManager(manifest).append(seed_patch())
-    history = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    HistoryManager(manifest, write_authority=unchecked_write_authority()).append(seed_patch())
+    history = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
 
     with pytest.raises(ProjectIdentityConflict):
         history.claim_project_identity("created", project_id=str(uuid.uuid4()))
@@ -1105,7 +1130,9 @@ def test_replay_degrades_without_repairing_missing_scope_provenance(
     scope_base = manifest.research_dir / "scope-base.json"
     scope_base.unlink()
 
-    result = HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=write_outputs)
+    result = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).materialize(write_outputs=write_outputs)
 
     assert result.state.replay_status == "degraded"
     assert result.state.revision == 0
@@ -1121,7 +1148,9 @@ def test_empty_history_may_bootstrap_scope_provenance_from_manifest(manifest) ->
     scope_base = manifest.research_dir / "scope-base.json"
     assert not scope_base.exists()
 
-    result = HistoryManager(manifest).materialize(write_outputs=False)
+    result = HistoryManager(manifest, write_authority=unchecked_write_authority()).materialize(
+        write_outputs=False
+    )
 
     assert result.state.project_truth_scope == manifest.project.truth_scope
     assert result.patches == []
@@ -1129,13 +1158,15 @@ def test_empty_history_may_bootstrap_scope_provenance_from_manifest(manifest) ->
 
 
 def test_adopting_identity_never_mutates_prior_patches_or_research_semantics(manifest) -> None:
-    legacy = HistoryManager(manifest)
+    legacy = HistoryManager(manifest, write_authority=unchecked_write_authority())
     legacy.append(seed_patch())
     original_path = manifest.research_dir / "patches" / "000001.json"
     original_bytes = original_path.read_bytes()
     original_state = legacy.state()
 
-    history = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    history = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
     identity = history.claim_project_identity("adopted")
     adopted_state = history.state()
 
@@ -1149,8 +1180,14 @@ def test_adopting_identity_never_mutates_prior_patches_or_research_semantics(man
 
 def test_concurrent_same_home_claim_has_one_identity_revision(manifest) -> None:
     space_id = str(uuid.uuid4())
-    first = HistoryManager(manifest, expected_space_id=space_id)
-    second = HistoryManager(load_manifest(manifest.path), expected_space_id=space_id)
+    first = HistoryManager(
+        manifest, expected_space_id=space_id, write_authority=unchecked_write_authority()
+    )
+    second = HistoryManager(
+        load_manifest(manifest.path),
+        expected_space_id=space_id,
+        write_authority=unchecked_write_authority(),
+    )
     ready = threading.Barrier(3)
 
     def claim(history: HistoryManager):
@@ -1170,7 +1207,12 @@ def test_concurrent_same_home_claim_has_one_identity_revision(manifest) -> None:
 
 def test_competing_home_claims_leave_first_winner_and_refuse_other(manifest) -> None:
     spaces = [str(uuid.uuid4()), str(uuid.uuid4())]
-    managers = [HistoryManager(manifest, expected_space_id=item) for item in spaces]
+    managers = [
+        HistoryManager(
+            manifest, expected_space_id=item, write_authority=unchecked_write_authority()
+        )
+        for item in spaces
+    ]
     ready = threading.Barrier(3)
 
     def claim(history: HistoryManager):
@@ -1196,9 +1238,13 @@ def test_competing_home_claims_leave_first_winner_and_refuse_other(manifest) -> 
 
 
 def test_foreign_home_refuses_single_batch_and_settings_writes(manifest) -> None:
-    home = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    home = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
     identity = home.claim_project_identity("created")
-    foreign = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    foreign = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
     manifest_before = manifest.path.read_bytes()
 
     with pytest.raises(ProjectIdentityConflict):
@@ -1214,16 +1260,22 @@ def test_foreign_home_refuses_single_batch_and_settings_writes(manifest) -> None
 
 
 def test_foreign_home_refuses_coherent_initialization(manifest) -> None:
-    home = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    home = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
     home.claim_project_identity("created")
-    foreign = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    foreign = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
 
     with pytest.raises(ProjectIdentityConflict):
         foreign.initialize()
 
 
 def test_foreign_home_forensic_replay_is_read_only(manifest) -> None:
-    home = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    home = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
     home.claim_project_identity("created")
     for name in HistoryManager._materialized_paths():
         if name.name == "scope-base.json":
@@ -1236,7 +1288,9 @@ def test_foreign_home_forensic_replay_is_read_only(manifest) -> None:
         for path in manifest.research_dir.rglob("*")
         if path.is_file()
     )
-    foreign = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    foreign = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
 
     result = foreign.materialize(write_outputs=False)
 
@@ -1261,7 +1315,7 @@ def test_foreign_home_forensic_replay_is_read_only(manifest) -> None:
 
 
 def test_conflicting_identity_revisions_degrade_identity_and_refuse_writes(manifest) -> None:
-    low_level = HistoryManager(manifest)
+    low_level = HistoryManager(manifest, write_authority=unchecked_write_authority())
     for action in ("created", "adopted"):
         low_level.append(
             Patch.model_validate(
@@ -1279,7 +1333,9 @@ def test_conflicting_identity_revisions_degrade_identity_and_refuse_writes(manif
                 }
             )
         )
-    guarded = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+    guarded = HistoryManager(
+        manifest, expected_space_id=str(uuid.uuid4()), write_authority=unchecked_write_authority()
+    )
 
     with pytest.raises(ProjectIdentityConflict):
         guarded.project_identity()
@@ -1296,7 +1352,11 @@ def test_legacy_patch_without_producer_replays_without_rewriting_history(manifes
     path.write_text(json.dumps(raw), encoding="utf-8")
     legacy_bytes = path.read_bytes()
 
-    state = HistoryManager(load_manifest(manifest.path)).materialize(write_outputs=False).state
+    state = (
+        HistoryManager(load_manifest(manifest.path), write_authority=unchecked_write_authority())
+        .materialize(write_outputs=False)
+        .state
+    )
 
     assert state.revision == 1
     assert "rq/learning-after-shift" in state.nodes
@@ -1342,7 +1402,7 @@ def test_main_replay_rejects_a_divergent_transition_history_splice(manifest) -> 
             transition_id=alternate_first.patch.transition.transition_id,
         ),
     )
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     accepted_first, _result = history.append(_transition_question_patch("rq/accepted-first"))
     assert accepted_first.transition is not None
     assert (
@@ -1367,7 +1427,7 @@ def test_main_replay_rejects_a_divergent_transition_history_splice(manifest) -> 
 
 
 def test_main_replay_rejects_a_transition_for_a_different_target(manifest) -> None:
-    history = HistoryManager(manifest)
+    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     appended, _result = history.append(_transition_question_patch("rq/main-target"))
     assert appended.transition is not None
     forged_trace = appended.transition.model_copy(

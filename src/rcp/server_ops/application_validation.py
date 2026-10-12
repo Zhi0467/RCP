@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, 
 from rcp.api import create_app
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
 from rcp.config import AGENT_EXECUTION_PROFILES, Manifest, load_manifest
+from rcp.core.authority import WriteAuthority
 from rcp.history import HistoryManager
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
@@ -501,6 +502,7 @@ def _prepare_overlay_project(
         expected_graph = HistoryManager(
             load_manifest(manifest_path),
             expected_space_id=str(row["home_space_id"]),
+            write_authority=WriteAuthority(),
         ).state()
         if expected_graph.revision != expected_revision:
             raise CandidateRehearsalRefused(

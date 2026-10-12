@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import tomlkit
 
 from rcp.config import Manifest
+from rcp.core.authority import WriteAuthority
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.limits import PROJECT_TRANSFER_COPY_BUFFER_BYTES
@@ -260,6 +261,7 @@ def _target_owners(
         workspace,
         expected_space_id=archive.target_space_id,
         project_id=archive.project_id,
+        write_authority=WriteAuthority(),
     )
     paper = PaperService(manifest, catalog.store, workspace, project_id=archive.project_id)
     service = ProjectService(

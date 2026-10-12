@@ -6,6 +6,7 @@ the captured update with the candidate, as a real server update does.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pwd
@@ -13,6 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -26,6 +28,14 @@ from rcp.server_ops.backup_capture import BackupCaptureCoordinator  # noqa: E402
 from rcp.server_runtime import ServerMetadata  # noqa: E402
 from rcp.storage import AppStore  # noqa: E402
 from tests.supervisor_reboot_data import prepare_data  # noqa: E402
+
+# The same fixture runs against prior releases without the required authority argument.
+# Import the candidate test policy only when that constructor supports it.
+_HISTORY_AUTHORITY: dict[str, Any] = {}
+if "write_authority" in inspect.signature(HistoryManager).parameters:
+    from tests.helpers import unchecked_write_authority
+
+    _HISTORY_AUTHORITY["write_authority"] = unchecked_write_authority()
 
 
 def main(root: Path, *, stale_cache: bool) -> None:
@@ -71,7 +81,7 @@ def main(root: Path, *, stale_cache: bool) -> None:
 def _append_patch_without_cache_refresh(app, project_id: str) -> None:
     """Leave the display cache valid but stale, as a failed refresh does."""
     service, _snapshot = app.state.catalog.open_snapshot(project_id)
-    HistoryManager(service.manifest).append(
+    HistoryManager(service.manifest, **_HISTORY_AUTHORITY).append(
         Patch(
             kind="refresh",
             author="agent",
