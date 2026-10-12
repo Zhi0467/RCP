@@ -407,6 +407,10 @@ export function conversationAgentStatus(
   const latest = conversation.tasks.at(-1) ?? null;
   const unread = conversationHasUnread(conversation, unreadChatIds);
   const result = { latest, unread };
+  if (conversation.conversationKind === "auto_research_child") {
+    const state = latest?.active ? "working" : "done";
+    return { ...result, state, group: state };
+  }
   if (latest?.failed) return { ...result, state: "failed", group: "failed" };
   // After failures, the backend attention flag covers paused and interrupted turns.
   if (latest?.paused || latest?.awaiting_human || conversation.needsHuman) {
@@ -533,11 +537,29 @@ export function latestConversation(
   );
 }
 
+export function listedAgentConversations(
+  conversations: ChatConversation[],
+  graphTarget: GraphTargetRef,
+): ChatConversation[] {
+  return conversations.filter(
+    (conversation) =>
+      conversation.conversationKind === "auto_research" ||
+      sameGraphTarget(conversation.graphTarget, graphTarget),
+  );
+}
+
 export function chatIndicator(
-  tasks: AgentTask[],
+  conversations: ChatConversation[],
   unreadChatIds: ReadonlySet<string>,
 ): "active" | "unread" | null {
-  if (tasks.some((task) => chatIdForTask(task) && chatTaskNeedsAttention(task))) return "active";
+  if (
+    conversations.some(
+      (conversation) =>
+        conversation.conversationKind !== "auto_research_child" &&
+        conversation.tasks.some(chatTaskNeedsAttention),
+    )
+  )
+    return "active";
   return unreadChatIds.size > 0 ? "unread" : null;
 }
 
@@ -651,7 +673,10 @@ export function conversationHasUnread(
   conversation: ChatConversation,
   unreadChatIds: ReadonlySet<string>,
 ): boolean {
-  return unreadChatIds.has(conversation.chatId);
+  return (
+    conversation.conversationKind !== "auto_research_child" &&
+    unreadChatIds.has(conversation.chatId)
+  );
 }
 
 function comparableTime(value: string): number {

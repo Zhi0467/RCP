@@ -15,6 +15,7 @@ import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
   conversationAgentStatus,
+  listedAgentConversations,
   groupConversationAgents,
   type ChatConversation,
   type AgentListSection,
@@ -415,10 +416,7 @@ export function ChatsWorkspace({
       }),
     [storedConversations, display.titles, orchestratorEpisode],
   );
-  // Agents follows the selected branch; another target's chats are not listed.
-  const filteredConversations = conversations.filter((conversation) =>
-    sameGraphTarget(conversation.graphTarget ?? MAIN_GRAPH, graphTarget),
-  );
+  const filteredConversations = listedAgentConversations(conversations, graphTarget);
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
