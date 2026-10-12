@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-No implementation handoff is active.
+- [Branch node panel and orchestrator-child attention](branch-node-panel-and-child-attention.md) — designed, awaiting start.
 
 Unfinished agent-link work is tracked in issue #280.
 
