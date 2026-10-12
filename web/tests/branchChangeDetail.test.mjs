@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import { after, test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const { BranchChangeDetail, ChangedFields } = await server.ssrLoadModule(
+  "/src/graph/BranchChangeDetail.tsx",
+);
+after(() => server.close());
+const render = (component, props) => renderToStaticMarkup(React.createElement(component, props));
+
+test("created nodes have one tag and retain history without a field list", () => {
+  const html = render(BranchChangeDetail, {
+    change: {
+      before: null,
+      after: { id: "node/new", title: "example" },
+      change: "created",
+      history: [{ revision: 2, producer: "agent", summary: "entity change", task_id: "task/1" }],
+    },
+    onInspectTask() {},
+  });
+  assert.equal((html.match(/class="eyebrow"/g) ?? []).length, 1);
+  assert.ok(!html.includes('class="branch-change-fields"'));
+  assert.equal((html.match(/<li>/g) ?? []).length, 1);
+  assert.equal((html.match(/<button/g) ?? []).length, 1);
+});
+
+test("edited fields omit internals and empty pairs while retaining merge annotations", () => {
+  const before = {
+    title: "old",
+    type: "a",
+    id: "node/1",
+    extension_fields: {},
+    source_refs: [],
+    a: null,
+    b: "",
+    c: [],
+    d: {},
+  };
+  const after = {
+    title: "new",
+    type: "b",
+    id: "node/2",
+    extension_fields: { x: 1 },
+    source_refs: ["x"],
+    a: [],
+    b: {},
+    c: null,
+  };
+  const html = render(ChangedFields, {
+    before,
+    after,
+    mergePaths: [{ field_path: "title", conflict: { main: "current" } }],
+  });
+  assert.equal((html.match(/class="branch-change-field"/g) ?? []).length, 1);
+  assert.ok(html.includes('class="branch-change-value main-now"'));
+});
+
+test("created edges and removed entities retain field values", () => {
+  for (const props of [
+    { before: null, after: { relation: "supports" } },
+    { before: { title: "old" }, after: null },
+  ]) {
+    const html = render(ChangedFields, props);
+    assert.equal((html.match(/class="branch-change-field"/g) ?? []).length, 1);
+    assert.ok(html.includes('class="branch-change-value branch"'));
+  }
+});
