@@ -1993,13 +1993,16 @@ def require_auto_research_child_profile_pick(
         "node_chat", provider=provider, model=model, reasoning=reasoning
     )
     efforts = models.get(resolved.model, [])
+    if not reasoning:
+        # No effort was named: an inherited one the model does not offer, or any
+        # for a model that takes none, is dropped so the CLI uses its own default.
+        return reasoning if resolved.reasoning in efforts else ""
     # A named effort is checked as named, since resolution may swap one the head
-    # lacks for its default. A model without effort choices runs with none.
-    effort = reasoning or resolved.reasoning
-    if effort not in efforts and (efforts or effort):
+    # lacks for its default.
+    if reasoning not in efforts:
         raise AutoResearchChildProfileInvalid(
             "effort_unknown",
-            f"Effort {effort!r} is not offered by {picked} model "
+            f"Effort {reasoning!r} is not offered by {picked} model "
             f"{resolved.model!r}; name one with --effort. No child was started.",
         )
     return reasoning

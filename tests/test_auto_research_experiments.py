@@ -1446,3 +1446,28 @@ def test_a_provider_switch_never_inherits_the_settings_effort(
     assert pick(service, provider=other, model=None, reasoning=None) == ""
     with pytest.raises(AutoResearchChildProfileInvalid):
         pick(service, provider=other, model=None, reasoning="unlisted")
+
+
+def test_a_model_that_takes_no_effort_drops_the_settings_effort(
+    manifest: Manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
+
+    service = _setup(manifest, tmp_path)[0]
+    provider = manifest.agent_profile("node_chat").provider
+    catalog = [
+        ModelChoice(id="head", label="Head", reasoning=["max"]),
+        ModelChoice(id="plain", label="Plain", reasoning=[]),
+    ]
+
+    def ready(name, **_):
+        return ProviderReadiness(provider=name, installed=True, authenticated=True, models=catalog)
+
+    monkeypatch.setattr(service.launcher, "readiness", ready)
+    monkeypatch.setattr(service.launcher, "cached_readiness", ready)
+    pick = require_auto_research_child_profile_pick
+    assert pick(service, provider=provider, model="plain", reasoning=None) == ""
+    with pytest.raises(AutoResearchChildProfileInvalid):
+        pick(service, provider=provider, model="plain", reasoning="max")
