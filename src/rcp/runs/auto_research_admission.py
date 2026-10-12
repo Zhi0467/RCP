@@ -1957,14 +1957,15 @@ def require_auto_research_child_profile_pick(
     provider: str | None,
     model: str | None,
     reasoning: str | None,
-) -> None:
+) -> str | None:
     """Refuse an orchestrator's explicit child pick the child's machine cannot run.
 
-    An omitted pick keeps the Settings node Work profile and is not checked here.
+    Returns the effort to launch with. An omitted pick keeps the Settings node Work
+    profile and is not checked here.
     """
 
     if provider is None and model is None and reasoning is None:
-        return
+        return reasoning
     picked = provider or service.manifest.agent_profile("node_chat").provider
     models = auto_research_child_profile_choices(service, (picked,)).get(picked)
     if models is None:
@@ -1979,7 +1980,9 @@ def require_auto_research_child_profile_pick(
             f"Model {model!r} is not in the {picked} catalog; no child was started.",
         )
     if not models and model is None and reasoning is None:
-        return  # An unknown catalog: the CLI picks its own model and effort.
+        # An unknown catalog: the CLI picks its own model and, with no effort
+        # inherited from another provider's Settings profile, its own effort.
+        return ""
     # Check the effort the child will actually run with, including one kept from
     # Settings when only a provider or model was named.
     resolved = service.resolve_agent_profile(
@@ -1993,6 +1996,7 @@ def require_auto_research_child_profile_pick(
             f"Effort {resolved.reasoning!r} is not offered by {picked} model "
             f"{resolved.model!r}; name one with --effort. No child was started.",
         )
+    return reasoning
 
 
 def preflight_auto_research_task_resume(

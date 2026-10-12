@@ -2491,7 +2491,7 @@ def _auto_research_worker_request(
 ) -> RunRequest:
     """Resolve a spawned child through the node-Work profile and the orchestrator's pick."""
 
-    require_auto_research_child_profile_pick(
+    reasoning = require_auto_research_child_profile_pick(
         service,
         provider=arguments.provider,
         model=arguments.model,
@@ -2510,7 +2510,7 @@ def _auto_research_worker_request(
             patch_kind="work",
             provider=arguments.provider,
             model=arguments.model,
-            reasoning=arguments.reasoning,
+            reasoning=reasoning,
         ),
     )
 

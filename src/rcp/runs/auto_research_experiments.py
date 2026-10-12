@@ -177,7 +177,7 @@ class AutoResearchExperimentCoordinator:
             raise ValueError("Experiment kickoff has no matching durable command admission.")
         try:
             # Checked outside the lock: an uncached pick probes its provider CLI.
-            require_auto_research_child_profile_pick(
+            launch_reasoning = require_auto_research_child_profile_pick(
                 service, provider=provider, model=model, reasoning=reasoning
             )
             with self.operation_lock(parent.project_id):
@@ -194,7 +194,7 @@ class AutoResearchExperimentCoordinator:
                     invocation_limit=invocation_limit,
                     provider=provider,
                     model=model,
-                    reasoning=reasoning,
+                    reasoning=launch_reasoning,
                 )
                 route = AutoResearchChildExperimentRecord(
                     child_episode_id=child_episode_id,
