@@ -152,6 +152,13 @@ def _tracked_path(workspace: Path | PurePosixPath, artifact: Artifact) -> str:
     return str(workspace / "turns" / artifact.supplier_id / "artifacts" / artifact.source_name)
 
 
+# A fresh comment's file changed between its digest and its rewrite; the agent
+# would read bytes the comment was not drawn on.
+_CHANGED_WHILE_PREPARED = (
+    "The commented artifact changed while it was prepared. Send the comment again."
+)
+
+
 def sync_session_artifacts(
     execution: AgentTaskExecution,
     request: RunRequest,
@@ -216,7 +223,9 @@ def sync_session_artifacts(
                 continue
             if not item.durable:
                 if fresh_comment or found is None:
-                    _write(workspace, remote, artifact, found[0] if found else "", data)
+                    written = _write(workspace, remote, artifact, found[0] if found else "", data)
+                    if fresh_comment and not written:
+                        raise ValueError(_CHANGED_WHILE_PREPARED)
                 continue
             synced = store.synced_artifact_digest(artifact)
             if (
@@ -241,6 +250,8 @@ def sync_session_artifacts(
                 continue
             if written:
                 store.record_artifact_sync(artifact.artifact_id, target_sha)
+            elif fresh_comment:
+                raise ValueError(_CHANGED_WHILE_PREPARED)
     return path
 
 
@@ -477,7 +488,10 @@ def _fork(
     # The turn may have made its own file under the original name; the original's
     # id keeps the fork's name distinct and stable across a replayed turn end.
     original = PurePosixPath(artifact.source_name)
-    name = f"{original.stem}-{artifact.artifact_id[:8]}{original.suffix}"
+    tag = f"-{artifact.artifact_id[:8]}{original.suffix}".encode()
+    # Trim the stem by encoded bytes so the name stays within a 255-byte component.
+    stem = original.stem.encode()[: 255 - len(tag)].decode(errors="ignore")
+    name = f"{stem}{tag.decode()}"
     descriptor = descriptor_for(scope_id, name, media_type=media_type, size_bytes=len(data) or None)
     now = store.now()
     chat_id = task.request.get("chat_id")

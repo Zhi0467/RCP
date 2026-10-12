@@ -829,3 +829,13 @@ def test_a_fresh_session_edit_writes_its_artifact_for_one_turn(manifest, tmp_pat
     tracked.write_bytes(b"<p>later</p>")
     plain = fresh.model_copy(update={"artifact_context": None, "artifact_edit": None})
     assert _finalize(app, plain, execution, workspace / "turns" / "later" / "artifacts") == []
+
+
+def test_a_fresh_comment_whose_file_changes_while_restored_is_refused(
+    manifest, tmp_path, monkeypatch
+):
+    app, request, execution, _source, workspace = _setup(manifest, tmp_path)
+    # The compare-and-swap lost: the file changed after its digest was read.
+    monkeypatch.setattr("rcp.runs.session_artifacts._write", lambda *_args: False)
+    with pytest.raises(ValueError):
+        _stage(app, request, execution, workspace)
