@@ -2684,15 +2684,18 @@ export function NodeChat({
                         .join("; ")}`}
                 </p>
               )}
-              {line.artifactEditOutcomes?.map((outcome) => (
-                <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
-                  {artifactEditOutcomeText(
-                    outcome,
-                    line.artifactEditOutcomes ?? [],
-                    line.artifacts ?? [],
-                  )}
-                </p>
-              ))}
+              {/* A published version shows itself; every outcome still tells new from updated. */}
+              {line.artifactEditOutcomes
+                ?.filter((outcome) => outcome.status !== "published")
+                .map((outcome) => (
+                  <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
+                    {artifactEditOutcomeText(
+                      outcome,
+                      line.artifactEditOutcomes ?? [],
+                      line.artifacts ?? [],
+                    )}
+                  </p>
+                ))}
               {line.role === "agent" && line.graphUpdate && (
                 <GraphUpdateReceipt
                   update={line.graphUpdate}

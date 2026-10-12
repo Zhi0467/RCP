@@ -453,7 +453,7 @@ export function taskArtifactEditOutcomes(task: AgentTask): ArtifactEditOutcome[]
         (value) =>
           !!value &&
           typeof value === "object" &&
-          (value.status === "unchanged" || value.status === "failed" || value.status === "forked"),
+          ["published", "unchanged", "failed", "forked"].includes(value.status),
       )
     : [];
 }

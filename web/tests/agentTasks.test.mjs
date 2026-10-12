@@ -751,7 +751,7 @@ test("omissions retain only known nonnegative integer counts and a boolean failu
   }
 });
 
-test("artifact outcomes reach the reply only when no new version shows them", () => {
+test("artifact outcomes reach the reply, published ones included for classification", () => {
   const outcome = (status, artifact_id = "a1") => ({ status, artifact_id });
   const lines = reconstructTaskTranscript([
     task({
@@ -770,9 +770,9 @@ test("artifact outcomes reach the reply only when no new version shows them", ()
   ]);
   assert.deepEqual(
     lines.at(-1).artifactEditOutcomes.map((item) => item.artifact_id),
-    ["a1", "a2", "a3"],
+    ["a0", "a1", "a2", "a3"],
   );
-  for (const value of [[outcome("published")], [outcome("other")], null, outcome("failed")]) {
+  for (const value of [[outcome("other")], null, outcome("failed")]) {
     assert.deepEqual(
       taskArtifactEditOutcomes(task({ result: { artifact_edit_outcomes: value } })),
       [],
