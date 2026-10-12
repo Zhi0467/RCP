@@ -307,13 +307,15 @@ async def terminal_socket(websocket: WebSocket, project_id: str, session_id: str
                 )
                 return
             if data is None:
+                # Only an unexpected end carries a reason; an ordinary one
+                # speaks for itself when the session leaves the rail.
                 await websocket.send_json(
                     {
                         "type": "ended",
                         "reason": (
                             "SSH link dropped; terminal session ended."
                             if session.termination_reason == "link_dropped"
-                            else "Terminal session ended."
+                            else None
                         ),
                     }
                 )

@@ -153,11 +153,9 @@ async function fixture(t, { failLaunch = false, cooperative = false, mac = false
       sessions = [];
     },
     send: (text) => latestSocket.send(Buffer.from(text)),
-    dropLink: () => {
+    dropLink: (reason = "SSH link dropped; terminal session ended.") => {
       sessions = [];
-      latestSocket.send(
-        JSON.stringify({ type: "ended", reason: "SSH link dropped; terminal session ended." }),
-      );
+      latestSocket.send(JSON.stringify({ type: "ended", reason }));
       latestSocket.close();
     },
     setRepositories: (value) => {
@@ -427,6 +425,15 @@ test("SSH link loss removes the session and retains the reason without reconnect
   assert.ok(await page.getByRole("status").filter({ hasText: "SSH link dropped" }).isVisible());
   assert.equal(opens(), 1);
   assert.equal(connections(), 1);
+});
+
+test("an ordinary end leaves no banner behind", async (t) => {
+  const { page, dropLink } = await fixture(t);
+  await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
+  await page.locator(".xterm-rows").getByText("repository $").waitFor();
+  dropLink(null);
+  await page.locator(".xterm-screen").waitFor({ state: "detached" });
+  assert.equal(await page.getByRole("status").count(), 0);
 });
 
 test("a pending remote probe refreshes the tab without a project refresh", async (t) => {
