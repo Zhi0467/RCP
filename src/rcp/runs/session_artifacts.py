@@ -338,6 +338,16 @@ def _publish(
             except KeyError:
                 synced = None  # A pruned base: any change is a conflict.
         found = digests.get((artifact.supplier_id, artifact.source_name))
+        if (
+            not item.durable
+            and found is not None
+            and edit is not None
+            and execution.operation_id != edit.operation_id
+            and found[0] == _version_sha(store, artifact.artifact_id, artifact.current_version)
+        ):
+            # A retry that lost its one-turn file restored the current version;
+            # left untouched, it is unchanged rather than a conflict.
+            synced = found[0]
         if found is None or found[0] == synced:
             if commented:
                 _record(

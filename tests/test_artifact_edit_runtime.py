@@ -839,3 +839,24 @@ def test_a_fresh_comment_whose_file_changes_while_restored_is_refused(
     monkeypatch.setattr("rcp.runs.session_artifacts._write", lambda *_args: False)
     with pytest.raises(ValueError):
         _stage(app, request, execution, workspace)
+
+
+def test_an_untouched_fresh_session_retry_after_the_artifact_moved_is_unchanged(manifest, tmp_path):
+    app, request, execution, source, _workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    store.fail_agent_task("edit", "Fixture replaced with a fresh-session retry")
+    workspace = tmp_path / "data" / "run-stage" / "fresh" / "workspace"
+    workspace.mkdir(parents=True)
+    fresh = _edit_request(request, operation_id="fresh-edit", fresh_session=True, stage_root=None)
+    retry = _edit_execution(
+        execution, fresh, "fresh-retry", status="running", stage_root=str(workspace.parent)
+    )
+    # The one-turn file is gone and the artifact moved off the comment's base.
+    store.undo_artifact(source.artifact_id)
+    directory, staged = _stage(app, fresh, retry, workspace)
+    assert _tracked_file(staged).read_bytes() == b"<p>original</p>"
+    _finalize(app, fresh, retry, directory)
+    [receipt] = store.agent_task_artifact_edit_outcomes(["fresh-retry"])["fresh-retry"]
+    assert receipt.payload["status"] == "unchanged"
+    project_id = store.artifact(source.artifact_id).project_id
+    assert [item.artifact_id for item in store.artifacts(project_id)] == [source.artifact_id]
