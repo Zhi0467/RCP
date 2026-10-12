@@ -20,6 +20,7 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     _command_client_rule,
@@ -27,6 +28,7 @@ from rcp.agents.prompts import (
     invoked_package_pointers,
     live_ask_contract,
     render_chat_read_context,
+    render_graph_history,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
@@ -90,6 +92,9 @@ from rcp.runs.recorded_settlement import (
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
+    commit_prepared_graph_observation,
+    prepare_graph_observation,
+    prepared_graph_observation_delta,
     record_inline_prompt,
     record_session_master,
     stage_session_master,
@@ -126,7 +131,7 @@ def _discuss_execution_instructions(
 ) -> str:
     if "ask" not in handler.allowed_verbs:
         return ""
-    return "Only `ask` is available in Discuss.\n" + live_ask_contract(wait_seconds)
+    return live_ask_contract(wait_seconds)
 
 
 def resume_discuss_command_mailbox(
@@ -471,6 +476,10 @@ def _settle_discuss_outcome(
         return
 
     _commit_chat_prompt_state(execution, request, outcome.session_id)
+    if request.artifact_edit is None or not request.artifact_edit.origin_bound:
+        commit_prepared_graph_observation(
+            execution, context.service, native_session_id=outcome.session_id
+        )
 
     try:
         artifacts = _discover_chat_artifacts(
@@ -823,6 +832,26 @@ async def stream_discuss_run(
                 for item in context.repositories
             ]
             compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
+            project_id = service.history.project_id
+            if project_id is None:
+                raise ValueError("Graph history reads require a canonical project identity.")
+            graph_read_scope = (
+                GraphReadScope(
+                    project_id=project_id,
+                    target=service.history.graph_target,
+                )
+                if request.artifact_edit is None or not request.artifact_edit.origin_bound
+                else None
+            )
+            if graph_read_scope is not None:
+                prepare_graph_observation(
+                    execution,
+                    service,
+                    owner_id=f"chat:{request.chat_id}",
+                    target=graph_read_scope.target,
+                    revision=context.graph_revision,
+                    native_session_id=request.session_id,
+                )
             discuss_values = chat_prompt_values(
                 context,
                 request,
@@ -943,6 +972,10 @@ async def stream_discuss_run(
                             else ""
                         ),
                     )
+                    if graph_read_scope is not None and patch_inputs is not None:
+                        contract += "\n\n" + render_graph_history(
+                            graph_read_scope, patch_inputs.command_client
+                        )
                     return contract + "\n\n" + browser_prompt_line(browser_grant)
 
                 if resuming or retrying:
@@ -979,6 +1012,7 @@ async def stream_discuss_run(
                         master=master,
                         delta={
                             **(changed_since_master(master, current) or {}),
+                            **prepared_graph_observation_delta(execution, request.session_id),
                             "browser": browser_prompt_line(browser_grant),
                         },
                     )
@@ -1046,6 +1080,7 @@ async def stream_discuss_run(
                     skill_pointers=skill_pointers,
                     compute_connections=compute_profiles,
                     discuss_execution_instructions=instructions,
+                    graph_read_scope=graph_read_scope,
                 )
                 prompt, contract_path = _prepare_discuss_chat_prompt(
                     execution,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncGenerator, Callable
@@ -15,18 +16,30 @@ from rcp.agents.continuation_prompt import (
     changed_since_master,
     classify,
     compose,
+    graph_head_delta,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import (
     _invoked_package_section,
     invoked_package_pointers,
     invoked_provider_skill_section,
+    render_graph_history,
 )
 from rcp.background import AgentTaskExecution
+from rcp.core.transition_models import GraphTargetRef
+from rcp.limits import COMMAND_MAILBOX_TIMEOUT_SECONDS
 from rcp.paper import PaperService, WritingSession
 from rcp.providers import ProviderSkillReference, configured_runtime_id
+from rcp.runs.patch_validator import (
+    cleanup_patch_validation_mailbox,
+    serve_patch_validation_mailbox,
+    stage_patch_validation_mailbox,
+)
 from rcp.runs.session_master import (
+    commit_prepared_graph_observation,
     continuation_session_master,
+    prepare_graph_observation,
     record_inline_prompt,
     record_session_master,
     session_master_label,
@@ -186,6 +199,7 @@ async def stream_coach(
                 snapshot.content,
             )
         )
+    history_staged = None
     try:
         skill_pointers = stage_skill_selection(
             service.resolve_skill_selection(request),
@@ -233,17 +247,49 @@ async def stream_coach(
             skill_ids=request.invoked_skill_ids,
         )
 
+        graph_read_scope = GraphReadScope(project_id=paper.project_id, target=GraphTargetRef())
+        staged_head = prepare_graph_observation(
+            execution,
+            service,
+            owner_id="paper",
+            target=graph_read_scope.target,
+            revision=service.history.state().revision,
+            native_session_id=request.session_id,
+        )
+        seen_head = (
+            execution.store.graph_seen_head(
+                paper.project_id,
+                "paper",
+                request.session_id,
+                graph_read_scope.target,
+            )
+            if execution is not None and request.session_id
+            else None
+        )
+        history_staged = stage_patch_validation_mailbox(
+            local_stage=local_stage,
+            remote_stage=None,
+            task_id=token,
+            turn_id=f"{token}:paper",
+            authority="broker",
+            timeout_seconds=COMMAND_MAILBOX_TIMEOUT_SECONDS,
+        )
+
         def render_contract() -> str:
-            return PromptFactory.paper_coach_task_contract(
-                introduction_path=str(pointers["introduction"]),
-                graph_path=str(pointers["graph"]),
-                research_path=str(pointers["research_md"]),
-                repositories=repositories,
-                human_request_path=human_request_path,
-                retry_diagnostics_path=retry_diagnostics_path,
-                skill_pointers=skill_pointers,
-                invoked_skill_pointers=invoked_skill_pointers,
-                invoked_provider_skills=request.resolved_provider_skills,
+            return (
+                PromptFactory.paper_coach_task_contract(
+                    introduction_path=str(pointers["introduction"]),
+                    graph_path=str(pointers["graph"]),
+                    research_path=str(pointers["research_md"]),
+                    repositories=repositories,
+                    human_request_path=human_request_path,
+                    retry_diagnostics_path=retry_diagnostics_path,
+                    skill_pointers=skill_pointers,
+                    invoked_skill_pointers=invoked_skill_pointers,
+                    invoked_provider_skills=request.resolved_provider_skills,
+                )
+                + "\n\n"
+                + render_graph_history(graph_read_scope, history_staged.client_command())
             )
 
         node = classify(
@@ -259,6 +305,7 @@ async def stream_coach(
             repositories=repositories,
             skill_pointers=skill_pointers,
         )
+        master_values["history_client"] = history_staged.client_command()
         # The coach reads the graph under the base rules only, whatever the ontology.
         key = master_key(PromptFactory.PAPER_COACH_POLICY_VERSION, ontology_extensions=False)
         if node == "session_start":
@@ -297,7 +344,10 @@ async def stream_coach(
                     invoked_provider_skills=request.resolved_provider_skills,
                 ),
                 master=master,
-                delta=changed_since_master(master, master_values),
+                delta={
+                    **(changed_since_master(master, master_values) or {}),
+                    **graph_head_delta(seen_head, staged_head),
+                },
             )
             recovery_mode = "resume" if resuming else "retry" if retrying else None
             contract_path = record_inline_prompt(
@@ -310,6 +360,8 @@ async def stream_coach(
             )
         read_dirs.extend([service.manifest.research_dir, local_stage / "inputs"])
     except (StateUnavailable, ValueError) as exc:
+        if history_staged is not None:
+            history_staged.cleanup()
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
     model = (
@@ -325,6 +377,7 @@ async def stream_coach(
         else configured_runtime_id(profile.provider, profile.runtime)
     )
     completed = False
+    provider_failed = False
     provider_outcome = _ProviderOutcome(session_id=native_session_id)
     _record_agent_launch_receipt(
         execution,
@@ -353,49 +406,78 @@ async def stream_coach(
         data_dir=data_dir,
         local_stage=local_stage,
     )
-    async with aclosing(
-        launcher.stream(
-            request.provider,
-            prompt,
-            cwd=workspace,
-            model=model,
-            reasoning=reasoning,
-            session_id=request.session_id,
-            read_dirs=read_dirs,
-            capability="paper_readonly",
-            hidden_read_scope=hidden_read_scope,
-            control=execution.control if execution is not None else None,
-            binary=provider_binary,
-            runtime_id=(execution.runtime_id or None) if execution is not None else None,
-            operation_id=execution.operation_id if execution is not None else None,
-            git_access=execution.git_access if execution is not None else None,
+    from rcp.runs.graph_history_queries import handle_graph_history_command
+
+    history_stop = asyncio.Event()
+    history_task = asyncio.create_task(
+        serve_patch_validation_mailbox(
+            staged=history_staged,
+            execution=execution,
+            validate=None,
+            budget=None,
+            stop=history_stop,
+            command_handler=lambda command, _identity: handle_graph_history_command(
+                service,
+                graph_read_scope,
+                command,
+            ),
         )
-    ) as stream:
-        async for event in stream:
-            if event.event == "provider_exit":
-                try:
-                    evidence: object = json.loads(event.text)
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    evidence = None
-                exit_evidence: dict[str, object] = (
-                    evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
-                )
-                provider_outcome.exit_evidence = exit_evidence
-                _record_provider_exit(
-                    execution,
-                    provider_outcome,
-                    workspace=local_stage,
-                    remote_stage=None,
-                )
-                continue
-            if event.event == "runtime":
-                actual_runtime_id = event.text
-            if event.event == "session" and event.session_id:
-                native_session_id = event.session_id
-            if event.event == "done":
-                completed = True
-            yield _sse(event)
-    if completed and native_session_id:
+    )
+    try:
+        async with aclosing(
+            launcher.stream(
+                profile.provider,
+                prompt,
+                cwd=workspace,
+                model=model,
+                reasoning=reasoning,
+                session_id=request.session_id,
+                read_dirs=read_dirs,
+                capability="paper_readonly",
+                invocation_gate=history_staged.invocation_gate,
+                hidden_read_scope=hidden_read_scope,
+                control=execution.control if execution is not None else None,
+                binary=provider_binary,
+                runtime_id=(execution.runtime_id or None) if execution is not None else None,
+                operation_id=execution.operation_id if execution is not None else None,
+                git_access=execution.git_access if execution is not None else None,
+            )
+        ) as stream:
+            async for event in stream:
+                if event.event == "provider_exit":
+                    try:
+                        evidence: object = json.loads(event.text)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        evidence = None
+                    exit_evidence: dict[str, object] = (
+                        evidence if isinstance(evidence, dict) else {"unparsed": event.text[:400]}
+                    )
+                    provider_outcome.exit_evidence = exit_evidence
+                    _record_provider_exit(
+                        execution,
+                        provider_outcome,
+                        workspace=local_stage,
+                        remote_stage=None,
+                    )
+                    continue
+                if event.event == "runtime":
+                    actual_runtime_id = event.text
+                if event.event == "session" and event.session_id:
+                    native_session_id = event.session_id
+                if event.event == "error":
+                    provider_failed = True
+                if event.event == "done":
+                    completed = True
+                yield _sse(event)
+    finally:
+        history_stop.set()
+        await history_task
+        await asyncio.to_thread(
+            cleanup_patch_validation_mailbox,
+            staged=history_staged,
+            execution=execution,
+        )
+    if completed and not provider_failed and native_session_id:
         intro_hash, graph_revision, research_hash = service.pointer_hashes()
         now = datetime.now(UTC)
         paper.record_session(
@@ -414,6 +496,12 @@ async def stream_coach(
                 graph_revision_examined=graph_revision,
                 research_md_hash_examined=research_hash,
             )
+        )
+
+        commit_prepared_graph_observation(
+            execution,
+            service,
+            native_session_id=native_session_id,
         )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -608,3 +609,30 @@ def test_keyed_apply_failure_requires_canonical_commit_before_success(
     assert outcome.kind == expected_kind
     assert outcome.revisions_verified
     assert outcome.error_code == ("keyed_apply_unavailable" if expected_kind == "failure" else None)
+
+
+def test_consolidation_query_baseline_is_coverage_not_session_observation():
+    from rcp.background import AgentTaskExecution
+    from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+    from rcp.runs.consolidation import consolidation_covered_head
+    from rcp.service import ProjectService
+
+    expected = GraphHeadRef(revision=7, transition_id="a" * 64)
+    calls = []
+
+    class Engine:
+        def resolve(self, spec, *, default_target):
+            calls.append((spec.revision, spec.target, default_target))
+            return expected
+
+    store = SimpleNamespace(
+        consolidation_run_for_operation=lambda operation: SimpleNamespace(project_id="project"),
+        consolidation_schedule=lambda project: SimpleNamespace(covered_head=7),
+    )
+    execution = cast(AgentTaskExecution, SimpleNamespace(operation_id="night", store=store))
+    service = cast(ProjectService, SimpleNamespace(history_engine=Engine()))
+    assert consolidation_covered_head(service, execution) == expected
+    assert calls == [(7, GraphTargetRef(), GraphTargetRef())]
+    store.consolidation_schedule = lambda project: SimpleNamespace(covered_head=None)
+    assert consolidation_covered_head(service, execution) is None
+    assert len(calls) == 1

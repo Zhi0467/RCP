@@ -1249,6 +1249,15 @@ class AppStoreBase:
                 ON chat_session_contexts(project_id);
             CREATE INDEX IF NOT EXISTS chat_session_contexts_native_session
                 ON chat_session_contexts(native_session_id);
+            CREATE TABLE IF NOT EXISTS graph_seen_heads (
+                project_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                native_session_id TEXT NOT NULL,
+                graph_target TEXT NOT NULL,
+                head_json TEXT NOT NULL,
+                committed_operation_id TEXT NOT NULL,
+                PRIMARY KEY(project_id, owner_id, native_session_id, graph_target)
+            );
             CREATE TABLE IF NOT EXISTS result_views (
                 view_id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
