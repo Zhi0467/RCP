@@ -21,7 +21,9 @@ import {
   type ConversationAgentRow,
   type ConversationAgentStatus,
   orchestratorCanUnlock,
+  orchestratorChatTurns,
 } from "./chatWorkspace";
+import { OrchestratorComposer, type SendOrchestratorMessage } from "./OrchestratorComposer";
 import {
   AGENT_BOARD_COLUMNS,
   agentBoardColumn,
@@ -47,6 +49,7 @@ import type {
   AgentTask,
   ChatDisplay,
   ChatTranscript,
+  Episode,
   GraphNode,
   GraphTargetRef,
   GraphUpdateRecovery,
@@ -94,6 +97,10 @@ interface Props {
   onRemoveDraft: (chatId: string) => void;
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
+  /** The newest Auto-research episode owning the viewed branch, for its orchestrator card. */
+  orchestratorEpisode?: Episode | null;
+  episodeAction?: string | null;
+  onSendOrchestratorMessage?: SendOrchestratorMessage;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -169,13 +176,13 @@ function sinceLabel(timestamp: string | null | undefined, now: number): string {
 
 /** Everything after the provider, which renders as its own mark: model, effort,
  *  task type, then what the latest turn needs. */
-function agentMeta(status: ConversationAgentStatus, kind: ChatConversation["kind"]): string {
+function agentMeta(status: ConversationAgentStatus, conversation: ChatConversation): string {
   const latest = status.latest;
   if (!latest) return "";
   const parts: (string | null | undefined)[] = [
     latest.request.model,
     latest.request.reasoning,
-    kind === "project_chat" ? "Project chat" : "Node chat",
+    agentTypeLabel(conversation),
   ];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
@@ -189,10 +196,23 @@ function agentMeta(status: ConversationAgentStatus, kind: ChatConversation["kind
   return parts.filter(Boolean).join(" · ");
 }
 
+/** The orchestrator card's episode comes from the server's projection, not its tasks. */
+function chainEpisode(conversation: ChatConversation, episode: Episode | null): Episode | null {
+  return conversation.conversationKind === "auto_research" &&
+    episode?.graph_target.branch_id === conversation.chatId
+    ? episode
+    : null;
+}
+
+function agentTypeLabel(conversation: ChatConversation): string {
+  if (conversation.conversationKind === "auto_research") return "Orchestrator";
+  return conversation.kind === "project_chat" ? "Project chat" : "Node chat";
+}
+
 /** A board card's provider line: provider, model, effort, task type. */
 function agentCardMeta(
   status: ConversationAgentStatus,
-  kind: ChatConversation["kind"],
+  conversation: ChatConversation,
   fallbackProvider: string | undefined,
 ): string {
   const latest = status.latest;
@@ -200,7 +220,7 @@ function agentCardMeta(
     latest?.provider_label ?? fallbackProvider,
     latest?.request.model,
     latest?.request.reasoning,
-    kind === "project_chat" ? "Project chat" : "Node chat",
+    agentTypeLabel(conversation),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -359,6 +379,9 @@ export function ChatsWorkspace({
   onStopWatcher,
   onNewSession,
   onRemoveDraft,
+  orchestratorEpisode = null,
+  episodeAction = null,
+  onSendOrchestratorMessage,
 }: Props) {
   const narrow = useNarrowViewport();
   const [mobileListOpen, setMobileListOpen] = useState(false);
@@ -382,12 +405,15 @@ export function ChatsWorkspace({
   // A human-given name replaces the derived one everywhere in this workspace.
   const conversations = useMemo(
     () =>
-      storedConversations.map((conversation) =>
-        display.titles[conversation.chatId]
+      storedConversations.map((conversation) => {
+        const named = display.titles[conversation.chatId]
           ? { ...conversation, title: display.titles[conversation.chatId] }
-          : conversation,
-      ),
-    [storedConversations, display.titles],
+          : conversation;
+        return chainEpisode(named, orchestratorEpisode)?.health === "needs_action"
+          ? { ...named, needsHuman: true }
+          : named;
+      }),
+    [storedConversations, display.titles, orchestratorEpisode],
   );
   // Agents follows the selected branch; another target's chats are not listed.
   const filteredConversations = conversations.filter((conversation) =>
@@ -647,7 +673,22 @@ export function ChatsWorkspace({
   }, [project.id, narrow, board]);
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
+  const selectedChainEpisode = selected ? chainEpisode(selected, orchestratorEpisode) : null;
+  const selectedHistory = selected ? chatTranscripts.get(selected.chatId)?.messages : undefined;
+  const selectedOrchestratorTurns = useMemo(
+    () =>
+      selected?.conversationKind === "auto_research"
+        ? orchestratorChatTurns(selected, selectedHistory ?? [])
+        : null,
+    [selected, selectedHistory],
+  );
   const selectedLatest = selectedStatus?.latest ?? null;
+  // An orchestrator's open question shows as its question card, not as a turn banner.
+  const turnBanner =
+    !selected?.humanTurnRefusal &&
+    selectedStatus !== null &&
+    needsHuman(selectedStatus) &&
+    Boolean(selectedLatest?.failed || selectedLatest?.paused || selectedLatest?.awaiting_human);
   // An Auto-research child lives on its orchestrator's branch; its links stay there.
   const orchestratorHref = projectViewHash(
     project.id,
@@ -672,7 +713,7 @@ export function ChatsWorkspace({
             Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
           </span>
         )}
-        {!selected.humanTurnRefusal && needsHuman(selectedStatus) && selectedLatest && (
+        {turnBanner && selectedLatest && (
           <div className="conversation-header-banner" role="status">
             <span>{selectedLatest.status_label}</span>
             {selectedLatest.can_resume && (
@@ -753,7 +794,7 @@ export function ChatsWorkspace({
           {!renaming && agentMenu(conversation, status, card.column === "archived")}
         </div>
         <span className="agent-card-meta">
-          {agentCardMeta(status, conversation.kind, providerLabel)}
+          {agentCardMeta(status, conversation, providerLabel)}
         </span>
         <div className="agent-card-foot">
           <span className="agent-card-state" data-state={status.state}>
@@ -962,8 +1003,8 @@ export function ChatsWorkspace({
                                     provider={latest.request.provider ?? ""}
                                     label={latest.provider_label}
                                   />
-                                  {agentMeta(status, conversation.kind) &&
-                                    `${latest.provider_label || latest.request.provider ? " · " : ""}${agentMeta(status, conversation.kind)}`}
+                                  {agentMeta(status, conversation) &&
+                                    `${latest.provider_label || latest.request.provider ? " · " : ""}${agentMeta(status, conversation)}`}
                                 </>
                               ) : (
                                 "\u00a0"
@@ -1049,7 +1090,47 @@ export function ChatsWorkspace({
             <PanelLeft size={16} />
           </button>
         )}
-        {selected && sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) ? (
+        {selected &&
+        sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) &&
+        selected.conversationKind === "auto_research" ? (
+          <NodeChat
+            key={selected.chatId}
+            project={project}
+            actorId={actorId}
+            graphTarget={graphTarget}
+            node={null}
+            nodes={nodes}
+            glossaryIndex={glossaryIndex}
+            header={conversationHeading}
+            headerState={selectedStatus?.state}
+            runScope={runScope}
+            tasks={selectedOrchestratorTurns?.tasks ?? []}
+            historyMessages={selectedOrchestratorTurns?.history}
+            chatId={selected.chatId}
+            presentation="workspace"
+            readOnly
+            readOnlyNotice={
+              selectedChainEpisode && onSendOrchestratorMessage ? (
+                <OrchestratorComposer
+                  episode={selectedChainEpisode}
+                  busyAction={episodeAction}
+                  onSendMessage={onSendOrchestratorMessage}
+                />
+              ) : undefined
+            }
+            graphChangesDisabled={graphChangesDisabled}
+            onStartTask={onStartTask}
+            onResumeTask={onResumeTask}
+            onRetryTask={onRetryTask}
+            onRefreshTask={onRefreshTask}
+            onInspectTask={onInspectTask}
+            onOpenInbox={onOpenInbox}
+            onRepairGraphUpdate={onRepairGraphUpdate}
+            onOpenNode={onOpenNode}
+            onNewSession={() => undefined}
+            onClose={() => undefined}
+          />
+        ) : selected && sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) ? (
           <NodeChat
             key={selected.chatId}
             project={project}

@@ -423,7 +423,9 @@ function conversationMode(value: unknown): ConversationMode | null {
 }
 
 function taskTrigger(value: unknown): TaskTrigger {
-  return value === "experiment_run" || value === "watcher" ? value : "human";
+  return value === "experiment_run" || value === "watcher" || value === "orchestrator"
+    ? value
+    : "human";
 }
 
 export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {

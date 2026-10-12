@@ -362,7 +362,7 @@ class ChatSummary(BaseModel):
     updated_at: str
     message_count: int = Field(ge=0)
     last_message_preview: str
-    conversation_kind: Literal["chat", "episode", "auto_research_child"] = "chat"
+    conversation_kind: Literal["chat", "episode", "auto_research_child", "auto_research"] = "chat"
     orchestrator_episode_id: str | None = None
     human_turn_refusal: dict[str, str] | None = None
     graph_title: str = "Main"

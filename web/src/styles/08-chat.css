@@ -2123,3 +2123,13 @@
   flex-basis: 100%;
   order: 10;
 }
+/* The orchestrator card stacks its open questions above a full-width mail form. */
+.chat-composer.orchestrator-composer {
+  align-items: stretch;
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+.orchestrator-composer .campaign-message-composer {
+  margin-top: 0;
+  width: 100%;
+}

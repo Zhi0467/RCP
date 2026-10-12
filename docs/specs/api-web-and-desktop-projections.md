@@ -1708,13 +1708,13 @@ while unrelated background tasks run. A running watcher wake or episode turn has
 no human message, so it holds an Activity row in its chat until its first output.
 
 Agents lists every conversation in the project: chats on main and on every graph
-branch, Experiment episode conversations, Auto-research children, and
-conversations whose first turn has no transcript yet.
+branch, Experiment episode conversations, Auto-research orchestrators and their
+children, and conversations whose first turn has no transcript yet.
 `GET /api/projects/{project_id}/chats?inventory=true` returns that whole inventory
 as one snapshot from the retained main service's cached scan, so a conversation
 updated between requests is never skipped; each summary carries its graph
-target, a graph title, and a `conversation_kind` of `chat`, `episode`, or
-`auto_research_child`. Rows show those tags. A filter beside the search picks
+target, a graph title, and a `conversation_kind` of `chat`, `episode`,
+`auto_research_child`, or `auto_research`. Rows show those tags. A filter beside the search picks
 all, main, or one branch, and applies to the whole inventory. The Archived
 column starts folded. Read markers and unread finishes cover the whole project.
 
@@ -1726,7 +1726,18 @@ its composer stays closed and the inventory is fetched again. Posting
 follows the ordinary chat rules on that target. An Auto-research child's chat
 is read-only: it shows its transcript and a link to the orchestrator in Runs,
 and task admission refuses a human turn on it with
-`auto_research_child_read_only`. The composer explains
+`auto_research_child_read_only`.
+
+An Auto-research continuation chain is one `auto_research` conversation on its
+branch, identified by the chain root's episode id (the branch id) and named by
+the branch. Its transcript is projected from the chain's orchestrator-role
+turns: each turn's starting instruction or the human mail it delivered, then its
+answers; worker turns keep their own cards. Loaded turns supply live status and
+progress, and the episode's `needs_action` health (an open question) files the
+card under needs-you. The card has no chat composer: its composer, with the
+episode's open questions, sends **Message orchestrator** to the newest chain
+member, gated by that member's `can_message`, `message_refusal`, and
+`message_requires_continuation` exactly as Runs is. The composer explains
 `episode_merge_reserved` and `episode_isolation_unavailable` refusals.
 
 The composer shows **Work in a worktree** before the first Work turn. The backend

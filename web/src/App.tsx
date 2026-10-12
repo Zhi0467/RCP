@@ -5730,6 +5730,11 @@ function MemberApp({
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
+              orchestratorEpisode={
+                activeBranchEpisode?.mode === "auto_research" ? activeBranchEpisode : null
+              }
+              episodeAction={episodeAction}
+              onSendOrchestratorMessage={messageEpisodeOrchestrator}
               onArchiveChange={() =>
                 void refreshChatReads().catch((error) =>
                   reportErrorNotice(

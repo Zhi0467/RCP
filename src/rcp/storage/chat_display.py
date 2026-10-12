@@ -14,6 +14,7 @@ from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import CHAT_TITLE_MAX_CHARS
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
+from rcp.storage.branch_names import resolve_branch_names
 from rcp.storage.mixin_base import StoreMixinBase
 
 if TYPE_CHECKING:
@@ -95,7 +96,120 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         ),
                     }
                 )
+            summaries.extend(self._orchestrator_chat_summaries(connection, project_id, chat_id))
         return summaries
+
+    def _orchestrator_chat_summaries(
+        self, connection: Any, project_id: str, chat_id: str | None
+    ) -> list[dict[str, Any]]:
+        """One conversation per Auto-research chain, named by its root, which is its branch."""
+        roots = connection.execute(
+            "SELECT episode_id, graph_target_json FROM episodes "
+            "WHERE project_id = ? AND mode = 'auto_research' "
+            "AND json_extract(graph_target_json, '$.branch_id') = episode_id "
+            "AND (? IS NULL OR episode_id = ?)",
+            (project_id, chat_id, chat_id),
+        ).fetchall()
+        names = resolve_branch_names(connection, project_id) if roots else {}
+        summaries = []
+        for root in roots:
+            updated_at, messages = self._orchestrator_chat_turns(
+                connection, project_id, root["episode_id"]
+            )
+            if updated_at is None:
+                continue
+            target = json.loads(root["graph_target_json"])
+            summaries.append(
+                {
+                    "chat_id": root["episode_id"],
+                    "graph_target": target,
+                    "graph_title": target["branch_id"][:8],
+                    "kind": "project_chat",
+                    "node_id": None,
+                    "title": names.get(root["episode_id"]) or "Orchestrator",
+                    "updated_at": updated_at,
+                    "message_count": len(messages),
+                    "last_message_preview": "",
+                    "conversation_kind": "auto_research",
+                    "orchestrator_episode_id": root["episode_id"],
+                    "human_turn_refusal": None,
+                }
+            )
+        return summaries
+
+    def orchestrator_chat_messages(
+        self, project_id: str, root_episode_id: str
+    ) -> list[dict[str, Any]]:
+        """The chain's orchestrator turns as chat messages; empty when it is no chain root."""
+        with self.connection() as connection:
+            return self._orchestrator_chat_turns(connection, project_id, root_episode_id)[1]
+
+    def _orchestrator_chat_turns(
+        self, connection: Any, project_id: str, root_episode_id: str
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """The chain's newest turn update, and each orchestrator turn's human input and answers.
+
+        Every chain member writes the root's branch, so the branch names the chain.
+        The human input is the starting instruction or the human mail the turn
+        delivered; a wake with neither has no human line.
+        """
+        runs = connection.execute(
+            "SELECT run.operation_id, run.request_json, run.result_json, run.created_at, "
+            "run.updated_at, run.finished_at FROM episodes AS root "
+            "JOIN graph_runs AS run ON run.project_id = root.project_id "
+            "AND run.graph_target_json = root.graph_target_json "
+            "WHERE root.project_id = ? AND root.episode_id = ? AND root.mode = 'auto_research' "
+            "AND json_extract(root.graph_target_json, '$.branch_id') = root.episode_id "
+            "AND run.kind = 'auto_research' AND run.visible = 1 "
+            "AND json_extract(run.request_json, '$.role') = 'orchestrator' "
+            "ORDER BY run.created_at, run.operation_id",
+            (project_id, root_episode_id),
+        ).fetchall()
+        mail: dict[str, list[str]] = {}
+        for row in connection.execute(
+            "SELECT mail.delivery_operation_id, mail.body FROM auto_research_messages AS mail "
+            "JOIN episodes AS member ON member.episode_id = mail.episode_id "
+            "JOIN episodes AS root ON root.project_id = member.project_id "
+            "AND root.graph_target_json = member.graph_target_json "
+            "WHERE root.project_id = ? AND root.episode_id = ? AND mail.sender_role = 'human' "
+            "AND mail.delivery_operation_id IS NOT NULL ORDER BY mail.created_at, mail.message_id",
+            (project_id, root_episode_id),
+        ):
+            mail.setdefault(row["delivery_operation_id"], []).append(row["body"])
+        messages: list[dict[str, Any]] = []
+        for run in runs:
+            request = json.loads(run["request_json"])
+            result = json.loads(run["result_json"]) if run["result_json"] else {}
+            human = [request["instruction"]] if request.get("instruction") else []
+            human += mail.get(run["operation_id"], [])
+            answers = [
+                text
+                for text in (result.get("messages") or [])
+                if isinstance(text, str) and text.strip()
+            ]
+            common = {
+                "operation_id": run["operation_id"],
+                "provider": request.get("provider"),
+                "model": request.get("model"),
+                "reasoning": request.get("reasoning"),
+                "execution_machine": request.get("run_on"),
+                "trigger": "human" if human else "orchestrator",
+            }
+            lines = [("user", "\n\n".join(human), run["created_at"])] if human else []
+            lines += [
+                ("assistant", text, run["finished_at"] or run["updated_at"]) for text in answers
+            ]
+            messages += [
+                {
+                    **common,
+                    "message_id": f"{run['operation_id']}:{index}",
+                    "role": role,
+                    "text": text,
+                    "timestamp": timestamp,
+                }
+                for index, (role, text, timestamp) in enumerate(lines)
+            ]
+        return max((run["updated_at"] for run in runs), default=None), messages
 
     def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
         with self.connection() as connection:

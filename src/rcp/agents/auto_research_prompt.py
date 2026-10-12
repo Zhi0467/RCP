@@ -233,8 +233,9 @@ def _auto_research_commands(
   key is refused before its file is read, so finish the turn before applying again.
 - `spawn` starts ordinary node Work, not another Auto-research actor. A worker or child Experiment
   runs the human-configured node Work profile unless you name `--provider`, `--model`, or
-  `--effort`; an omitted flag keeps that profile's value, and a provider alone takes its catalog
-  default model and effort. Pick a different provider when it helps, such as an independent
+  `--effort`; an omitted flag keeps that profile's value. Naming only a different provider takes
+  that provider's default model and effort; naming only the profile's own provider keeps the
+  profile unchanged. Pick a different provider when it helps, such as an independent
   reviewer. The child stays on the profile's machine, where these `child_profiles` are ready
   (provider: model (efforts)); RCP refuses any other pick:
 {render_child_profile_choices(child_profiles)}
