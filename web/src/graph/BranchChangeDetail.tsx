@@ -23,7 +23,11 @@ export function BranchChangeDetail({
 }) {
   return (
     <section className="branch-change-detail" aria-label="Branch changes">
-      <ChangedFields before={change.before} after={change.after} mergePaths={mergePaths} />
+      {change.before === null || change.change === "created" ? (
+        <span className="eyebrow">New on this branch</span>
+      ) : (
+        <ChangedFields before={change.before} after={change.after} mergePaths={mergePaths} />
+      )}
       <ChangeHistory history={change.history} onInspectTask={onInspectTask} />
     </section>
   );
@@ -42,7 +46,20 @@ export function ChangedFields({
   const beforeFields: Record<string, unknown> = Object.fromEntries(Object.entries(before ?? {}));
   const afterFields: Record<string, unknown> = Object.fromEntries(Object.entries(after ?? {}));
   const fields = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])]
-    .filter((key) => !["id", "created_rev", "updated_rev", "draft_touched"].includes(key))
+    .filter(
+      (key) =>
+        ![
+          "id",
+          "created_rev",
+          "updated_rev",
+          "draft_touched",
+          "extension_type",
+          "extension_fields",
+          "source_refs",
+          "type",
+        ].includes(key),
+    )
+    .filter((key) => !(emptyValue(beforeFields[key]) && emptyValue(afterFields[key])))
     .filter((key) => JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key]));
   return (
     <div className="branch-change-fields">
@@ -130,4 +147,10 @@ function readableValue(value: unknown): string {
       .map(([key, item]) => `${humanize(key)}: ${readableValue(item)}`)
       .join("\n");
   return String(value);
+}
+
+function emptyValue(value: unknown): boolean {
+  return (
+    value == null || value === "" || (typeof value === "object" && Object.keys(value).length === 0)
+  );
 }
