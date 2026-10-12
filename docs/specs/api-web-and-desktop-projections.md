@@ -1704,8 +1704,12 @@ button opens **Continue <name>** instead: a message to the running orchestrator,
 or added turns with a message once it has ended. On a branch, each DAG node shows its title and one
 word: how Merge will treat it (Conflict, Needs agent, Proposal, Already merged),
 else how the branch changed it (Added, Changed, Removed). Standing, status, and
-the connect handle appear on hover. Node detail lists each changed field as
-main before, branch, and main now beside a conflict, each with its own color.
+the connect handle appear on hover. Node detail on a node added on the branch
+shows a New on this branch tag and no field list, since the body shows every
+field. On an edited node it lists each changed field the body shows as main
+before, branch, and main now beside a conflict, each with its own color. Its
+change history has one line per accepted change naming what that change did to
+this node (created, removed, or the edited fields), with View task.
 **Open graph** selects the branch workspace explicitly. An exact branch
 Experiment route may show its historical transcript through Runs without exposing an ordinary
 composer for that episode-owned session. Ordinary chats started in the branch

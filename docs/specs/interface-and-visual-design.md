@@ -284,8 +284,13 @@ Chips filter to All or Working. Above the conversation, the two-row header
 described above names the title and holds the agent picker; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
-The Agents tab shows the selected branch's agents only, with no graph filter
-and no branch or role tags on cards; the user tag stays. It opens on a **board**; a link that names a chat (Ask, a source-chat
+The Agents tab shows the selected branch's agents plus every branch's
+Auto-research orchestrator, so the Agents count always has a card to open;
+opening an orchestrator from another graph switches to its branch. It has no
+graph filter and no branch or role tags on cards; the user tag stays. An
+orchestrator's children never count as unread and never sit in Needs you: they
+show as Working or Done, and the orchestrator's own card carries any attention
+the chain needs. It opens on a **board**; a link that names a chat (Ask, a source-chat
 link, or a chat route) opens that chat instead, and the list's board icon returns
 to the board. The board has four columns: **Needs you** (New reply, Failed,
 Stopped), **Working**, **Done**, and **Archived**. Each card shows the provider
