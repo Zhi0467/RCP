@@ -180,7 +180,7 @@ def run_session(settings: dict[str, Any]) -> int:
                     "--noprofile",
                     "--norc",
                     "-c",
-                    "printf '\\036rcp-terminal-ready\\037'; exec /bin/bash --login -i",
+                    "printf '\\036rcp-terminal-ready\\037'; exec /bin/bash --noprofile --norc -i",
                 ]
             child = subprocess.Popen(
                 command,

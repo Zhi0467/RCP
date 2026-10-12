@@ -761,15 +761,10 @@ async def test_remote_linux_probe_failure_cannot_launch_cooperative(manifest, ma
 
 @pytest.mark.asyncio
 async def test_cooperative_pty_reports_missing_protection_and_scrubs_environment(
-    manifest, manager, monkeypatch, tmp_path
+    manifest, manager, monkeypatch
 ):
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
     monkeypatch.setenv("RCP_TEST_SECRET", "must-not-inherit")
-    # The shell is a login shell: it reads the account's profile, as `sudo -i` does.
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / ".bash_profile").write_text("export RCP_LOGIN_PROFILE=read\n")
-    monkeypatch.setenv("HOME", str(home))
 
     def unexpected(*args, **kwargs):
         pytest.fail("A cooperative PTY must not probe or stop systemd")
@@ -785,14 +780,13 @@ async def test_cooperative_pty_reports_missing_protection_and_scrubs_environment
     await manager.write(
         "project",
         session.session_id,
-        b'printf \'cwd=%s profile=%s secret=%s job=%s\\n\' "$PWD" "${RCP_LOGIN_PROFILE-unset}" '
-        b'"${RCP_TEST_SECRET-unset}" "$-"\n',
+        b'printf \'cwd=%s secret=%s job=%s\\n\' "$PWD" "${RCP_TEST_SECRET-unset}" "$-"\n',
     )
     output = bytearray()
     async with asyncio.timeout(5):
         while b"secret=unset job=" not in output:
             output.extend(await queue.get())
-    assert f"cwd={session.path} profile=read secret=unset".encode() in output
+    assert f"cwd={session.path} secret=unset".encode() in output
     # Bash's monitor flag proves the shell has working interactive job control.
     assert b"m" in output.split(b"secret=unset job=")[-1].splitlines()[0]
     process = manager.sessions[session.session_id].process

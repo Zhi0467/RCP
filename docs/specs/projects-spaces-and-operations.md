@@ -226,9 +226,7 @@ A viewer that cannot keep up with its own output is detached, not ended: the
 shell keeps running and the view offers a reconnect. Reusing the session-end
 signal there would report a live shell as terminated.
 
-The shell is a login shell, so it reads the account's profile and finds the same
-programs that account's own login finds; its starting environment is still the
-scrubbed one above. While a full-screen program such as Codex reports the mouse, a drag goes to
+While a full-screen program such as Codex reports the mouse, a drag goes to
 that program; Option-drag on a Mac, or Shift-drag elsewhere, still selects text
 to copy.
 
