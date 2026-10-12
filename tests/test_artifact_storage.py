@@ -342,3 +342,19 @@ def test_orphan_report_migration_refuses_without_dropping_html(tmp_path):
     with pytest.raises(ValueError):
         migrate_artifacts(connection, tmp_path)
     assert connection.execute("SELECT html FROM episode_reports").fetchone()[0] == "<p>retained</p>"
+
+
+def test_a_retried_interrupted_edit_releases_its_base(store, monkeypatch):
+    import rcp.storage.artifacts as module
+
+    monkeypatch.setattr(module, "ARTIFACT_MAX_VERSION_BYTES", 16)
+    artifact = _artifact(store)
+    base = _publish(store, "base", base=artifact.current_version)
+    _edit(store, status="interrupted", base=base.version_id)
+    # Its retry edits the current version, so the interrupted attempt pins nothing.
+    retry = store.agent_task("edit").model_copy(
+        update={"operation_id": "retry", "status": "succeeded"}
+    )
+    store.create_agent_task(retry)
+    _publish(store, "next", base=base.version_id, data=b"next-one")
+    assert base.version_id not in {v.version_id for v in store.artifact_versions("one")}

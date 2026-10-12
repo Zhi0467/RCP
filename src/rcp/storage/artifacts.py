@@ -447,10 +447,19 @@ class ArtifactStoreMixin(StoreMixinBase):
             ancestors = [v for v in lineage if v.sequence > 0]
             statuses = _EDIT_RETENTION_STATUSES
             with self.connection() as connection:
+                # Only a comment's own first attempt edits its base; a retry or a
+                # continuation edits the current version, so once one exists the
+                # interrupted attempt no longer needs the base retained.
                 pending = connection.execute(
-                    "SELECT json_extract(request_json, '$.artifact_edit.base_version') FROM graph_runs "
-                    "WHERE json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
-                    f"AND status IN ({','.join('?' for _ in statuses)})",
+                    "SELECT json_extract(g.request_json, '$.artifact_edit.base_version') "
+                    "FROM graph_runs g "
+                    "WHERE json_extract(g.request_json, '$.artifact_edit.artifact_id') = ? "
+                    f"AND g.status IN ({','.join('?' for _ in statuses)}) "
+                    "AND g.operation_id = json_extract(g.request_json, '$.artifact_edit.operation_id') "
+                    "AND NOT EXISTS (SELECT 1 FROM graph_runs later "
+                    "WHERE later.operation_id != g.operation_id "
+                    "AND json_extract(later.request_json, '$.artifact_edit.operation_id') = "
+                    "g.operation_id)",
                     (artifact_id, *statuses),
                 ).fetchall()
             pinned = {row[0] for row in pending}
