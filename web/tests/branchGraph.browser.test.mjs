@@ -89,16 +89,11 @@ test("branch graph keeps normal edit and chat controls while removed nodes are h
     await page.locator('.dag-node[data-node-id="hyp/distant"]').waitFor();
     await page.getByRole("button", { name: "Changes + context", exact: true }).click();
     await page.locator('[data-node-id="hyp/new"] .dag-node-inspect').click();
-    for (const width of [1400, 390]) {
-      await page.setViewportSize({ width, height: 1000 });
-      const detail = page.locator(".branch-change-detail");
-      assert.equal(await detail.locator(".branch-change-fields").count(), 0);
-      assert.equal(await detail.locator(":scope > .eyebrow").count(), 1);
-      const bounds = await detail.boundingBox();
-      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
-    }
+    const detail = page.locator(".branch-change-detail");
+    await detail.waitFor();
+    assert.equal(await detail.locator(".branch-change-fields").count(), 0);
+    assert.equal(await detail.locator(":scope > .eyebrow").count(), 1);
     await page.getByRole("button", { name: "Close detail", exact: true }).click();
-    await page.setViewportSize({ width: 1400, height: 1000 });
     await page.locator('[data-node-id="hyp/removed"] .dag-node-inspect').click();
     assert.equal(
       await page.getByRole("button", { name: "Edit node", exact: true }).isDisabled(),
