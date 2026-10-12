@@ -2495,9 +2495,25 @@ export function NodeChat({
           return (
             <div className={`node-chat-line ${line.role}`} key={line.lineId}>
               <BrowserTurnNotice status={line.browserStatus} />
-              {line.role === "human" && line.mode && (
-                <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
-              )}
+              {line.role === "human" &&
+                line.mode &&
+                (failedTurn ? (
+                  // An unsent turn says so with its one action, beside its mode.
+                  <div className="chat-turn-head">
+                    <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+                    <button
+                      type="button"
+                      className="button compact chat-turn-resend"
+                      title={failedTurn.error}
+                      disabled={submitting}
+                      onClick={() => void submitTurn(failedTurn)}
+                    >
+                      <RotateCcw size={12} /> Resend
+                    </button>
+                  </div>
+                ) : (
+                  <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+                ))}
               {line.trigger === "watcher" && (
                 <span className="chat-turn-trigger watcher">Watcher</span>
               )}
@@ -2620,19 +2636,7 @@ export function NodeChat({
                     />
                   ) : activeLineTask ? (
                     <InlineTaskProgress task={activeLineTask} />
-                  ) : failedTurn ? (
-                    <div className="chat-task-inline paused" role="alert">
-                      <span>{failedTurn.error}</span>
-                      <button
-                        type="button"
-                        className="button compact primary"
-                        disabled={submitting}
-                        onClick={() => void submitTurn(failedTurn)}
-                      >
-                        <RotateCcw size={12} /> Resend
-                      </button>
-                    </div>
-                  ) : pendingLine ? (
+                  ) : failedTurn ? null : pendingLine ? (
                     <InlineTaskProgress task={null} />
                   ) : null}
                 </>

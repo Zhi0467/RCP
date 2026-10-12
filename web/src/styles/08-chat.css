@@ -480,6 +480,20 @@
   text-transform: uppercase;
   width: fit-content;
 }
+.chat-turn-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 0 0 6px;
+}
+.chat-turn-head .chat-turn-mode {
+  margin: 0;
+}
+.chat-turn-resend {
+  min-height: 0;
+  padding: 2px 8px;
+}
 .chat-turn-mode.discuss {
   background: transparent;
   color: var(--plum);

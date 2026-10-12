@@ -71,7 +71,9 @@ failures, shared-contract changes, or integration uncertainty warrant it.
   network, console, and server logs; report the exact gap if it cannot be driven.
 - Every UI change is also checked at phone width (390px) against the "Phone
   layout" and "No commentary lines" rules in
-  `docs/specs/interface-and-visual-design.md`.
+  `docs/specs/interface-and-visual-design.md`. No explanatory or error caption
+  goes under or beside a control, and no state stacks a box under an item; a
+  recoverable failure is its one compact action in the item's existing row.
 - Remote behavior needs a reachable host. Migration or recovery checks that
   depend on existing records use a copy of real data. Never test against the
   human's live data directory.
