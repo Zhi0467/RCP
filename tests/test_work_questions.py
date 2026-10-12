@@ -17,7 +17,7 @@ from rcp.runs.questions import (
     work_command_handler,
 )
 from rcp.runs.tasks.work import _work_execution_instructions
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.question_activity import QuestionActivity
 from tests.helpers import signed_in_client
@@ -437,3 +437,40 @@ def test_episode_stop_racing_question_creation_leaves_readonly_card(tmp_path, mo
     )
     assert response.status == "invalid"
     assert all(q.withdrawn_readonly for q in store.list_questions(owner_id=episode_id))
+
+
+def test_discuss_history_reads_keep_apply_revoked(tmp_path, monkeypatch):
+    from rcp.agents.command_protocol import (
+        ApplyCommandRequest,
+        CommandResponse,
+        GraphDiffCommandRequest,
+    )
+    from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.core.transition_models import GraphTargetRef
+
+    execution, _ = work_execution(tmp_path, mode="discuss")
+    scope = GraphReadScope(project_id="project", target=GraphTargetRef())
+    service = cast(ProjectService, object())
+    calls = []
+
+    def history(actual_service, actual_scope, request):
+        calls.append((actual_service, actual_scope, request.verb))
+        return CommandResponse(request_id=request.request_id, status="ok", result={"changes": []})
+
+    monkeypatch.setattr("rcp.runs.questions.handle_graph_history_command", history)
+    handler = discuss_command_handler(execution, service=service, graph_read_scope=scope)
+    request = GraphDiffCommandRequest(
+        **{
+            **ask_request().model_dump(exclude={"call_id", "receipt_token"}),
+            "verb": "graph_diff",
+            "arguments": {"from": "@0", "to": "@head"},
+        }
+    )
+    assert handler.allowed_verbs == {"ask", "graph_diff", "graph_log"}
+    assert handler(request, identity()).result == {"changes": []}
+    apply_request = ApplyCommandRequest.model_validate(
+        {**request.model_dump(), "verb": "apply", "arguments": {"patch_file": "patch.json"}}
+    )
+    assert handler(apply_request, identity()).status == "invalid"
+    assert handler(request, identity(task_id="other")).status == "invalid"
+    assert calls == [(service, scope, "graph_diff")]
