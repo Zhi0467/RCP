@@ -5,6 +5,10 @@ in the workspace of the stage its origin task ran on. RCP records the digest it 
 knows is there (`Artifact.synced_sha256`). Turn start rewrites a tracked file the
 agent has not changed to the version the human sees; turn end publishes a changed
 one as the next version. Versions are artifact storage, never graph authority.
+
+A turn never tracks a file on another stage. An edit in a new session runs on a
+fresh stage: it writes the commented artifact there for that one turn and publishes
+from it at turn end; nothing later tracks that file.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, RUN_STAGE_RETENTION_DAYS
 from rcp.regular_file_reader import RegularFileTooLargeError
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskReceiptRecord, AppStore, Artifact, ArtifactVersionConflict
-from rcp.storage.artifact_models import ArtifactOperationConflict
+from rcp.storage.artifact_models import ArtifactOperationConflict, ArtifactVersion
 from rcp.storage.artifacts import ArtifactByteLimitError
 from rcp.transport import RemoteRunStage
 from rcp.transport.remote_stage_root import artifact_digests, sync_artifact
@@ -39,15 +43,27 @@ OUTCOME_CATEGORIES = {
     "unchanged": "artifact_edit_unchanged",
 }
 _FAILURE_REASONS = {"missing", "type_changed", "too_large", "unverified"}
-_SAFE_PART = re.compile(r"[A-Za-z0-9._-]+")
+_SAFE_SCOPE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 @dataclass(frozen=True)
 class _Tracked:
     artifact: Artifact
-    # The artifact's own tracked file, whose synced digest RCP stores. A commented
-    # artifact from another stage is copied to the same relative path here instead.
+    # The artifact's own tracked file, whose synced digest RCP stores. False only
+    # for the commented artifact written into a fresh edit stage for one turn.
     durable: bool
+
+
+def _trackable(artifact: Artifact) -> bool:
+    """A folder name RCP makes and the plain base name discovery accepts."""
+    scope, name = artifact.supplier_id, artifact.source_name
+    return (
+        bool(_SAFE_SCOPE.fullmatch(scope))
+        and scope not in {".", ".."}
+        and "\0" not in name
+        and PurePosixPath(name).name == name
+        and name not in {"", ".", ".."}
+    )
 
 
 def _parts(directory: Path | PurePosixPath) -> tuple[Path | PurePosixPath, str]:
@@ -70,16 +86,24 @@ def _tracked(execution: AgentTaskExecution, request: RunRequest, scope_id: str) 
             else []
         )
         # This turn's own folder belongs to discovery.
-        if artifact.supplier_id != scope_id
-        and _SAFE_PART.fullmatch(artifact.supplier_id)
-        and _SAFE_PART.fullmatch(artifact.source_name)
+        if artifact.supplier_id != scope_id and _trackable(artifact)
     ]
     edit = request.artifact_edit
     if edit is not None and all(item.artifact.artifact_id != edit.artifact_id for item in found):
         artifact = store.artifact(edit.artifact_id)
-        if artifact is None or not _SAFE_PART.fullmatch(artifact.supplier_id):
+        if artifact is None or not _trackable(artifact):
             raise ValueError("The commented artifact is unavailable.")
-        found.append(_Tracked(artifact, durable=False))
+        origin = store.agent_task(artifact.origin_operation_id or "")
+        # A kept or reported artifact of this very stage is still its own file.
+        own = (
+            origin is not None
+            and bool(execution.stage_root)
+            and origin.stage_root == execution.stage_root
+            and (origin.stage_host or "") == (execution.stage_host or "")
+        )
+        if not own and not edit.fresh_session:
+            raise ValueError("The commented artifact's file is on another stage.")
+        found.append(_Tracked(artifact, durable=own))
     return found
 
 
@@ -136,7 +160,8 @@ def sync_session_artifacts(
     """At turn start, give every untouched tracked file the version the human sees.
 
     A comment's artifact gets the version the comment was drawn on, written back
-    even when its file is gone. Returns that file's path for the turn's prompt.
+    even when its file is gone or dirty; a retry keeps its failed attempt's bytes and
+    otherwise gets the current version. Returns that file's path for the turn's prompt.
     """
     workspace, scope_id = _parts(directory)
     store = execution.store
@@ -158,6 +183,14 @@ def sync_session_artifacts(
     path = None
     for item in tracked:
         commented = edit is not None and item.artifact.artifact_id == edit.artifact_id
+        # A fresh comment edits the version it was drawn on; only a retry of the
+        # same comment keeps the bytes its failed attempt left.
+        base = (
+            edit.base_version
+            if edit is not None and commented and execution.operation_id == edit.operation_id
+            else None
+        )
+        fresh_comment = base is not None
         if commented:
             path = _tracked_path(workspace, item.artifact)
         found = digests.get((item.artifact.supplier_id, item.artifact.source_name))
@@ -169,15 +202,7 @@ def sync_session_artifacts(
                 if commented:
                     raise ValueError("The commented artifact is unavailable.")
                 continue
-            # The admitted turn edits the version its comment was drawn on; a
-            # retry edits the current one, which may be its own earlier publish.
-            target = (
-                edit.base_version
-                if edit is not None
-                and commented
-                and (not item.durable or execution.operation_id == edit.operation_id)
-                else artifact.current_version
-            )
+            target = base or artifact.current_version
             try:
                 target_sha = _version_sha(store, artifact.artifact_id, target)
                 data = store.read_artifact_bytes(artifact.artifact_id, target)
@@ -189,16 +214,31 @@ def sync_session_artifacts(
                     ) from exc
                 continue
             if not item.durable:
-                # A copy here is written once; a retry keeps the agent's changes.
-                if found is None:
-                    _write(workspace, remote, artifact, "", data)
+                if fresh_comment or found is None:
+                    _write(workspace, remote, artifact, found[0] if found else "", data)
                 continue
             synced = store.synced_artifact_digest(artifact)
-            if found is not None and found[0] != synced:
-                continue  # The agent changed or replaced it; turn end settles it.
-            if found is not None and target_sha == synced:
+            if (
+                found is not None
+                and not fresh_comment
+                and (found[0] != synced or target_sha == synced)
+            ):
+                continue  # The agent's change, which turn end settles; or already current.
+            if found is not None and found[0] == target_sha:
+                store.record_artifact_sync(artifact.artifact_id, target_sha)
                 continue
-            if _write(workspace, remote, artifact, found[0] if found else "", data):
+            try:
+                written = _write(workspace, remote, artifact, found[0] if found else "", data)
+            except Exception:
+                if commented:
+                    raise
+                store.record_agent_task_event(
+                    execution.operation_id,
+                    f"{artifact.source_name} could not be restored before the turn.",
+                    level="warning",
+                )
+                continue
+            if written:
                 store.record_artifact_sync(artifact.artifact_id, target_sha)
     return path
 
@@ -247,8 +287,6 @@ def _publish(
     remote: RemoteRunStage | None,
     service: ProjectService,
 ) -> list[AgentArtifactDescriptor]:
-    from rcp.live_artifact_runtime import resolve_artifact_live_version
-
     workspace, scope_id = _parts(directory)
     store = execution.store
     edit = request.artifact_edit
@@ -274,11 +312,19 @@ def _publish(
             if descriptor:
                 listed.append(AgentArtifactDescriptor.model_validate(descriptor))
             continue
+        published = store.artifact_operation_version(artifact.artifact_id, execution.operation_id)
+        if published is not None:
+            # A turn end that stopped between publishing and its receipt finishes here.
+            listed.append(_published(execution, service, item, published, artifact.media_type))
+            continue
         if item.durable:
-            synced = store.synced_artifact_digest(artifact)
+            synced: str | None = store.synced_artifact_digest(artifact)
         else:
             assert edit is not None
-            synced = _version_sha(store, artifact.artifact_id, edit.base_version)
+            try:
+                synced = _version_sha(store, artifact.artifact_id, edit.base_version)
+            except KeyError:
+                synced = None  # A pruned base: any change is a conflict.
         found = digests.get((artifact.supplier_id, artifact.source_name))
         if found is None or found[0] == synced:
             if commented:
@@ -321,14 +367,18 @@ def _publish(
             continue
         if reason is not None:
             _record(execution, "failed", artifact.artifact_id, reason=reason)
+            # What the digest saw, so the next turn start restores the current version.
             _settle(store, item, found[0])
             continue
         assert media_type is not None
         digest = hashlib.sha256(data).hexdigest()
+        base = _base_version(store, artifact.artifact_id, synced)
         try:
+            if base is None:
+                raise ArtifactVersionConflict("the tracked file's version is unavailable")
             version = store.publish_artifact_version(
                 artifact.artifact_id,
-                base_version=_base_version(store, artifact.artifact_id, synced),
+                base_version=base,
                 operation_id=execution.operation_id,
                 data=data,
             )
@@ -339,7 +389,9 @@ def _publish(
         except ArtifactOperationConflict:
             raise
         except ArtifactVersionConflict:
-            fork = _fork(execution, service, artifact, scope_id, media_type, data)
+            fork = _fork(
+                execution, service, workspace, remote, artifact, scope_id, media_type, data
+            )
             if fork is None:
                 _record(execution, "failed", artifact.artifact_id, reason="unverified")
             else:
@@ -353,45 +405,62 @@ def _publish(
                 listed.append(fork)
             _settle(store, item, digest)
             continue
-        resolve_artifact_live_version(store, service, artifact.artifact_id, version.version_id)
-        descriptor = AgentArtifactDescriptor(
-            artifact_id=artifact.artifact_id,
-            name=artifact.source_name,
-            media_type=media_type,
-            size_bytes=len(data) or None,
-        )
-        _settle(store, item, digest)
-        _record(
-            execution,
-            "published",
-            artifact.artifact_id,
-            version_id=version.version_id,
-            descriptor=descriptor.model_dump(mode="json"),
-        )
-        listed.append(descriptor)
+        listed.append(_published(execution, service, item, version, media_type))
     return listed
+
+
+def _published(
+    execution: AgentTaskExecution,
+    service: ProjectService,
+    item: _Tracked,
+    version: ArtifactVersion,
+    media_type: ArtifactMediaType,
+) -> AgentArtifactDescriptor:
+    from rcp.live_artifact_runtime import resolve_artifact_live_version
+
+    artifact = item.artifact
+    resolve_artifact_live_version(
+        execution.store, service, artifact.artifact_id, version.version_id
+    )
+    descriptor = AgentArtifactDescriptor(
+        artifact_id=artifact.artifact_id,
+        name=artifact.source_name,
+        media_type=media_type,
+        size_bytes=version.size_bytes or None,
+    )
+    _settle(execution.store, item, version.sha256)
+    _record(
+        execution,
+        "published",
+        artifact.artifact_id,
+        version_id=version.version_id,
+        descriptor=descriptor.model_dump(mode="json"),
+    )
+    return descriptor
 
 
 def _settle(store: AppStore, item: _Tracked, digest: str) -> None:
     """Every outcome records what the tracked file holds, so the next turn start
-    rewrites a rejected or forked file. An unreadable file has no digest to keep."""
-    if item.durable and digest:
+    rewrites a rejected or forked file."""
+    if item.durable:
         store.record_artifact_sync(item.artifact.artifact_id, digest)
 
 
-def _base_version(store: AppStore, artifact_id: str, synced: str) -> str:
-    """The version the tracked file last held; the current one when it is gone."""
+def _base_version(store: AppStore, artifact_id: str, synced: str | None) -> str | None:
+    """The version the tracked file last held; None, a conflict, when it is gone."""
     artifact = store.artifact(artifact_id)
     assert artifact is not None
     matches = [v.version_id for v in store.artifact_versions(artifact_id) if v.sha256 == synced]
-    if artifact.current_version in matches or not matches:
+    if artifact.current_version in matches:
         return artifact.current_version
-    return matches[-1]
+    return matches[-1] if matches else None
 
 
 def _fork(
     execution: AgentTaskExecution,
     service: ProjectService,
+    workspace: Path | PurePosixPath,
+    remote: RemoteRunStage | None,
     artifact: Artifact,
     scope_id: str,
     media_type: ArtifactMediaType,
@@ -425,12 +494,14 @@ def _fork(
                 origin_operation_id=task.operation_id,
                 episode_id=artifact.episode_id or task.episode_id,
                 chat_id=chat_id if isinstance(chat_id, str) else None,
-                synced_sha256=hashlib.sha256(data).hexdigest(),
             ),
             data=data,
         )
     except ArtifactVersionConflict:
         return None  # This turn wrote a different file under the same name.
+    # Later turns track the fork at its own path in this turn's folder.
+    if _write(workspace, remote, forked, "", data):
+        store.record_artifact_sync(forked.artifact_id, hashlib.sha256(data).hexdigest())
     resolve_artifact_live_version(store, service, forked.artifact_id, forked.current_version)
     return descriptor
 

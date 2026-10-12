@@ -181,7 +181,11 @@ def _checked_artifact(
     origin, reply_episode_id = artifact_reply_origin(store, artifact)
     if origin.graph_target != service.history.graph_target:
         raise ValueError("The artifact belongs to another graph target.")
-    if context.operation_id not in {artifact.origin_operation_id, origin.operation_id}:
+    # A later turn's card carries the artifact when that turn published a version of it.
+    if context.operation_id not in {
+        artifact.origin_operation_id,
+        origin.operation_id,
+    } and (store.artifact_operation_version(artifact.artifact_id, context.operation_id) is None):
         raise ValueError("The artifact does not belong to this origin task.")
     if context.source == "episode_report" and context.episode_id != artifact.episode_id:
         raise ValueError("The report belongs to another episode.")
@@ -373,7 +377,8 @@ def start_artifact_edit(
     )
     with tasks.store.artifact_lock(edit.artifact_id):
         try:
-            tasks.store.read_artifact_bytes(edit.artifact_id, edit.base_version)
+            # A retry or resume edits the current version; only a fresh comment needs its base.
+            tasks.store.read_artifact_bytes(edit.artifact_id, None if parent else edit.base_version)
         except (KeyError, OSError, ValueError) as exc:
             raise AgentTaskAdmissionConflict(
                 "The selected artifact version is no longer available. Send the comment again."

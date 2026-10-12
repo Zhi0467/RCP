@@ -219,7 +219,7 @@ def _turn_artifact_folder(workspace: str, scope: str, name: str, *, create: bool
     """Open `turns/<scope>/artifacts` without following links; the last descriptor is it."""
     if not _SCOPE.fullmatch(scope) or scope in {".", ".."}:
         raise ValueError("artifact scope is unsafe")
-    if os.path.basename(name) != name or name in {"", ".", ".."}:
+    if os.path.basename(name) != name or name in {"", ".", ".."} or "\0" in name:
         raise ValueError("artifact name is unsafe")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptors = [os.open(workspace, flags)]
@@ -236,30 +236,40 @@ def _turn_artifact_folder(workspace: str, scope: str, name: str, *, create: bool
     return descriptors
 
 
+#: What a tracked path that is not a regular file (a symlink, say) reports.
+IRREGULAR_ARTIFACT = ("irregular", -1)
+
+
 def _artifact_digest(folder: int, name: str, max_bytes: int) -> tuple[str, int] | None:
+    """The file's sha256 and size. One over `max_bytes` reports `oversized:<size>`,
+    read no further than one byte past the limit, even when it grew after fstat."""
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=folder)
     except FileNotFoundError:
         return None
+    except OSError:
+        return IRREGULAR_ARTIFACT
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
-            raise ValueError("turn artifact is not a regular file")
+            return IRREGULAR_ARTIFACT
         if info.st_size > max_bytes:
-            # Never hash an oversized file; its size alone settles it.
-            return "", info.st_size
+            return f"oversized:{info.st_size}", info.st_size
         digest = hashlib.sha256()
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        size = 0
+        while chunk := stream.read(min(1024 * 1024, max_bytes + 1 - size)):
+            size += len(chunk)
+            if size > max_bytes:
+                return f"oversized:{size}", size
             digest.update(chunk)
-        return digest.hexdigest(), info.st_size
+        return digest.hexdigest(), size
 
 
 def artifact_digests(
     workspace: str, entries: list[list[str]], max_bytes: int
 ) -> list[tuple[str, str, str, int]]:
-    """Each named turn artifact's sha256 and size. A missing file is left out; one
-    that is not a regular file (a symlink, say) has an empty digest and size -1,
-    and one over `max_bytes` has an empty digest and its size, unread."""
+    """Each named turn artifact's digest and size, as `_artifact_digest` reports them.
+    A missing file is left out; an unreadable one reports as irregular."""
     found: list[tuple[str, str, str, int]] = []
     for scope, name in entries:
         try:
@@ -269,7 +279,7 @@ def artifact_digests(
         try:
             digest = _artifact_digest(descriptors[-1], name, max_bytes)
         except (OSError, ValueError):
-            digest = ("", -1)
+            digest = IRREGULAR_ARTIFACT
         finally:
             for descriptor in reversed(descriptors):
                 os.close(descriptor)
@@ -281,7 +291,8 @@ def artifact_digests(
 def sync_artifact(
     workspace: str, scope: str, name: str, expected: str, data: bytes, max_bytes: int
 ) -> bool:
-    """Replace a turn artifact with `data` only while it holds `expected` (empty: absent)."""
+    """Replace a turn artifact with `data` only while it holds `expected` (empty: absent),
+    as `_artifact_digest` reports it."""
     descriptors = _turn_artifact_folder(workspace, scope, name, create=True)
     folder = descriptors[-1]
     temporary = ""

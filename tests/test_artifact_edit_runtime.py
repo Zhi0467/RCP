@@ -277,6 +277,42 @@ async def test_failed_edit_keeps_the_tracked_file_and_retry_continues_it(
     assert retry.before == [b"<p>edited</p>"]
     assert events[-1].event == "done"
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
+    # The pre-upgrade binding's staged scope does not hide the retry's own outputs.
+    from rcp.api.tasks import _read_agent_artifact_bytes
+
+    artifacts = [event.artifact for event in events if event.event == "artifact"]
+    store.complete_agent_task(
+        record.operation_id,
+        applied_revision=None,
+        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
+    )
+    extra = next(artifact for artifact in artifacts if artifact.name == "extra.txt")
+    _, data = _read_agent_artifact_bytes(
+        store, app.state.default_project_id, record.operation_id, extra.artifact_id, "download"
+    )
+    assert data == b"additional artifact"
+
+
+def test_a_retry_is_admitted_and_staged_after_its_base_was_pruned(manifest, tmp_path):
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    _publish_artifact(store, source.artifact_id, b"<p>newer</p>", "newer")
+    with store.connection() as connection:
+        connection.execute(
+            "DELETE FROM artifact_versions WHERE artifact_id = ? AND version_id = ?",
+            (source.artifact_id, request.artifact_edit.base_version),
+        )
+    store.fail_agent_task("edit", "Provider failed")
+    record = app.state.background_tasks.retry("edit")
+    retry = AgentTaskExecution(
+        operation_id=record.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=record.stage_root,
+        continuation="retry",
+    )
+    _directory, staged = _stage(app, request, retry, workspace)
+    assert _tracked_file(staged).read_bytes() == b"<p>newer</p>"
 
 
 def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest, tmp_path):
@@ -683,3 +719,107 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
             assert detail.json()["result"]["artifact_edit_outcomes"] == [expected]
             listed = next(record for record in records if record["operation_id"] == operation_id)
             assert listed["result"]["artifact_edit_outcomes"] == [expected]
+
+
+def test_a_new_comment_restores_its_base_over_a_dirty_file(manifest, tmp_path):
+    app, request, execution, _source, workspace = _setup(manifest, tmp_path)
+    tracked = workspace / "turns" / "origin" / "artifacts" / "chart.html"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_bytes(b"<p>left by a failed turn</p>")
+    _stage(app, request, execution, workspace)
+    assert tracked.read_bytes() == b"<p>base</p>"
+
+
+def test_a_change_from_an_unretained_version_forks_into_its_own_tracked_file(manifest, tmp_path):
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    store = execution.store
+    # The version the tracked file last held is no longer retained.
+    store.record_artifact_sync(source.artifact_id, "0" * 64)
+    _tracked_file(staged).write_bytes(b"<p>edited</p>")
+    [fork] = _finalize(app, request, execution, directory)
+    assert fork.artifact_id != source.artifact_id
+    assert store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
+    assert (directory / fork.name).read_bytes() == b"<p>edited</p>"
+    assert (
+        store.artifact(fork.artifact_id).synced_sha256
+        == hashlib.sha256(b"<p>edited</p>").hexdigest()
+    )
+
+
+@pytest.mark.parametrize("name", ["my chart.html", "图表.html"])
+def test_a_spaced_or_unicode_name_is_tracked(manifest, tmp_path, name):
+    app, request, execution, _source, workspace = _setup(manifest, tmp_path)
+    other = _stored_artifact(app, "origin", name, b"<p>v1</p>")
+    tracked = workspace / "turns" / "origin" / "artifacts" / name
+    tracked.parent.mkdir(parents=True)
+    tracked.write_bytes(b"<p>v2</p>")
+    plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
+    directory = workspace / "turns" / "next" / "artifacts"
+    directory.mkdir(parents=True)
+    assert [item.artifact_id for item in _finalize(app, plain, execution, directory)] == [
+        other.artifact_id
+    ]
+    assert execution.store.read_artifact_bytes(other.artifact_id) == b"<p>v2</p>"
+
+
+def test_a_rejected_oversized_file_is_restored_at_the_next_turn_start(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.runs.session_artifacts import sync_session_artifacts
+
+    app, request, execution, _source, workspace, directory, staged = _staged_edit(
+        manifest, tmp_path
+    )
+    _tracked_file(staged).write_bytes(b"<p>far too large</p>")
+    monkeypatch.setattr("rcp.runs.session_artifacts.CHAT_ARTIFACT_MAX_FILE_BYTES", 4)
+    _finalize(app, request, execution, directory)
+    [receipt] = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    assert receipt.payload["reason"] == "too_large"
+    plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
+    sync_session_artifacts(execution, plain, workspace / "turns" / "next" / "artifacts", None)
+    assert _tracked_file(staged).read_bytes() == b"<p>base</p>"
+
+
+def test_a_turn_end_stopped_after_publishing_replays_as_published(manifest, tmp_path, monkeypatch):
+    import rcp.runs.session_artifacts as module
+
+    app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
+    _tracked_file(staged).write_bytes(b"<p>edited</p>")
+    record = module._record
+
+    def stop(*_args, **_kwargs):
+        raise OSError("stopped before the receipt")
+
+    monkeypatch.setattr(module, "_record", stop)
+    assert _finalize(app, request, execution, directory) == []
+    monkeypatch.setattr(module, "_record", record)
+    assert [item.artifact_id for item in _finalize(app, request, execution, directory)] == [
+        source.artifact_id
+    ]
+    [receipt] = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
+    assert receipt.payload["status"] == "published"
+
+
+def test_a_fresh_session_edit_writes_its_artifact_for_one_turn(manifest, tmp_path):
+    app, request, execution, source, _workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    store.fail_agent_task("edit", "Fixture replaced with a fresh-session edit")
+    stage = tmp_path / "data" / "run-stage" / "fresh"
+    workspace = stage / "workspace"
+    workspace.mkdir(parents=True)
+    fresh = _edit_request(request, operation_id="fresh-edit", fresh_session=True, stage_root=None)
+    execution = _edit_execution(
+        execution, fresh, "fresh-edit", status="running", stage_root=str(stage)
+    )
+    directory, staged = _stage(app, fresh, execution, workspace)
+    tracked = _tracked_file(staged)
+    assert tracked == workspace / "turns" / "origin" / "artifacts" / "chart.html"
+    assert tracked.read_bytes() == b"<p>base</p>"
+    tracked.write_bytes(b"<p>edited</p>")
+    _finalize(app, fresh, execution, directory)
+    assert store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
+    # Nothing later tracks the fresh stage's file.
+    assert store.artifact(source.artifact_id).synced_sha256 is None
+    tracked.write_bytes(b"<p>later</p>")
+    plain = fresh.model_copy(update={"artifact_context": None, "artifact_edit": None})
+    assert _finalize(app, plain, execution, workspace / "turns" / "later" / "artifacts") == []

@@ -2326,6 +2326,8 @@ export interface AgentArtifactDescriptor {
   can_download: boolean;
   can_keep: boolean;
   can_discuss: boolean;
+  /** The turn folder holding this artifact's tracked file. */
+  turn_folder?: string | null;
 }
 
 /** `GET /api/projects/{project_id}/artifacts/{artifact_id}/state`: the in-app

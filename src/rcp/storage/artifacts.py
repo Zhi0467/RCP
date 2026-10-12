@@ -399,6 +399,20 @@ class ArtifactStoreMixin(StoreMixinBase):
                 )
             return artifact
 
+    def artifact_operation_version(
+        self, artifact_id: str, operation_id: str
+    ) -> ArtifactVersion | None:
+        """The version `operation_id` published of this artifact, if it published one."""
+        with self.connection() as connection:
+            receipt = connection.execute(
+                "SELECT metadata FROM artifact_operations WHERE artifact_id = ? AND operation_id = ?",
+                (artifact_id, operation_id),
+            ).fetchone()
+        if receipt is None:
+            return None
+        outcome = json.loads(receipt[0])
+        return ArtifactVersion.model_validate({**outcome, "file_id": outcome["sha256"]})
+
     def publish_artifact_version(
         self, artifact_id: str, *, base_version: str, operation_id: str, data: bytes
     ) -> ArtifactVersion:
@@ -407,18 +421,13 @@ class ArtifactStoreMixin(StoreMixinBase):
             if artifact is None:
                 raise KeyError(artifact_id)
             versions = self.artifact_versions(artifact_id)
-            with self.connection() as connection:
-                receipt = connection.execute(
-                    "SELECT metadata FROM artifact_operations WHERE artifact_id = ? AND operation_id = ?",
-                    (artifact_id, operation_id),
-                ).fetchone()
-            if receipt:
-                outcome = json.loads(receipt[0])
-                if outcome["sha256"] != hashlib.sha256(data).hexdigest():
+            published = self.artifact_operation_version(artifact_id, operation_id)
+            if published is not None:
+                if published.sha256 != hashlib.sha256(data).hexdigest():
                     raise ArtifactOperationConflict(
                         "operation was already published with different bytes"
                     )
-                return ArtifactVersion.model_validate({**outcome, "file_id": outcome["sha256"]})
+                return published
             if artifact.current_version != base_version:
                 raise ArtifactVersionConflict("artifact changed since the operation started")
             digest = hashlib.sha256(data).hexdigest()

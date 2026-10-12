@@ -464,25 +464,33 @@ Before a turn starts, RCP rewrites each session artifact whose file still holds
 the recorded digest to the artifact's current version, so after Undo or another
 edit the agent changes what the human sees. A file the agent changed is left
 alone; a missing one is skipped. A comment, from either route, names its
-artifact's tracked file in the prompt instead of staging a copy. That file is
-rewritten to the version the comment was drawn on, restored if it is gone; a
-retry rewrites it to the current version and otherwise keeps the agent's
-changes. A comment on an artifact whose stage is not this turn's, such as a
-fresh-session edit or a retry on another machine, gets a copy at the same
-turn-relative path in this turn's workspace; only that turn publishes it. Read-
-only crops of the commented version are still staged beside the turn's inputs.
+artifact's tracked file in the prompt instead of staging a copy. A new comment
+rewrites that file to the version the comment was drawn on, even when an earlier
+failed turn left it changed, and restores it if it is gone. Only a retry of the
+same comment keeps the agent's changes; a missing file then gets the current
+version, so a retry never needs its pruned base. A turn never tracks a file on
+another stage. The one exception is an edit in a new session: its fresh stage
+gets the commented artifact at its turn-relative path for that turn, which
+publishes from it at turn end; nothing later tracks that file. Read-only crops
+of the commented version are still staged beside the turn's inputs.
 
 When the turn settles, RCP digests every session artifact file, in one SSH call
 for a remote stage. A file that differs from its recorded digest publishes as the
 next version, based on the version that digest belongs to, under the artifact
-lock. If the current version moved since (Undo, another edit), the bytes become
-a separate artifact of this turn instead. A changed file type, an oversized
-file, or an unreadable file records a failure with its reason code; a missing
-file records nothing. A commented artifact that ends unchanged records
-`unchanged`, and one whose file is gone records a `missing` failure. Every
-recorded outcome resets the digest to the file, so the next turn start
+lock. If the current version moved since (Undo, another edit), or no retained
+version has that digest any more, the bytes become a separate artifact of this
+turn instead, written to its own tracked file in this turn's folder so later
+turns track it. A changed file type, an oversized file, or an unreadable file
+records a failure with its reason code; a missing file records nothing. Digests
+read no more than one byte past the size limit. A commented artifact that ends
+unchanged records `unchanged`, and one whose file is gone records a `missing`
+failure. Every recorded outcome resets the digest to what the file holds,
+including a marker for an oversized or irregular file, so the next turn start
 rewrites a rejected or forked file to the current version. A replayed settlement
-keeps its recorded outcomes. A publication that cannot run, for example because
+keeps its recorded outcomes, and one that stopped after publishing finds the
+version its operation published instead of calling the file unchanged. A later
+turn's card for a version it published accepts comments, and a reply citing the
+tracked file opens that card. A publication that cannot run, for example because
 the stage is unreachable, never fails the answer; the change stays on the file
 and a later turn end publishes it. Each outcome is a receipt on the turn, and the
 task projects `result.artifact_edit_outcomes` as a list of published, unchanged,

@@ -1067,8 +1067,12 @@ def stage_artifact_context(
     artifact = execution.store.artifact(edit.artifact_id if edit else context.artifact_id)
     if artifact is None or artifact.project_id != current.project_id:
         raise ValueError("The artifact context is unavailable.")
+    # A retry edits the current version, so a pruned base never refuses it.
     data = execution.store.read_artifact_bytes(
-        artifact.artifact_id, edit.base_version if edit else artifact.current_version
+        artifact.artifact_id,
+        edit.base_version
+        if edit and execution.operation_id == edit.operation_id
+        else artifact.current_version,
     )
     descriptor = AgentArtifactDescriptor(
         artifact_id=artifact.artifact_id,

@@ -171,7 +171,7 @@ import {
   startDesktopDictation,
   stopDesktopDictation,
 } from "../core/desktopRuntime";
-import { resolveRepositoryFileHref, turnArtifactName } from "../core/repositoryFileLinks";
+import { resolveRepositoryFileHref, turnArtifactLocation } from "../core/repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
   ArtifactEditOutcome,
@@ -2131,13 +2131,19 @@ export function NodeChat({
       // repository, so the artifact the task already registered owns the preview.
       // Only when no root claims the path. Several matching roots stay a visible
       // error, because the reader must not be handed a guess about which one won.
-      const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
-      if (name) {
+      const location = resolution.reason === "no-match" ? turnArtifactLocation(href) : null;
+      if (location) {
         const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
         // An older answer's task has aged out of the recent list, so fetch the exact
         // task rather than refusing a citation the transcript still displays.
         const task = known ?? (await onRefreshTask(taskId).catch(() => null));
-        const artifact = task?.result?.artifacts?.find((candidate) => candidate.name === name);
+        // The turn's own folder, or the tracked file of an earlier artifact this turn
+        // published a version of.
+        const artifact = task?.result?.artifacts?.find(
+          (candidate) =>
+            candidate.name === location.name &&
+            (location.folder === taskId || candidate.turn_folder === location.folder),
+        );
         if (artifact) {
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
           if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
@@ -2680,7 +2686,11 @@ export function NodeChat({
               )}
               {line.artifactEditOutcomes?.map((outcome) => (
                 <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
-                  {artifactEditOutcomeText(outcome, line.artifacts ?? [])}
+                  {artifactEditOutcomeText(
+                    outcome,
+                    line.artifactEditOutcomes ?? [],
+                    line.artifacts ?? [],
+                  )}
                 </p>
               ))}
               {line.role === "agent" && line.graphUpdate && (
@@ -3570,13 +3580,17 @@ const ARTIFACT_EDIT_FAILURES: Record<NonNullable<ArtifactEditOutcome["reason"]>,
 /** Say why an artifact of this session has no new version under this reply. */
 function artifactEditOutcomeText(
   outcome: ArtifactEditOutcome,
+  outcomes: ArtifactEditOutcome[],
   artifacts: AgentArtifactDescriptor[],
 ): string {
   if (outcome.status === "forked")
     return "The artifact changed during this turn, so the edit was saved as a separate artifact.";
   if (outcome.status === "failed")
     return `Edit not published: ${outcome.reason ? ARTIFACT_EDIT_FAILURES[outcome.reason] : "it could not be read"}. The current version is kept.`;
-  const separate = artifacts.filter((item) => item.artifact_id !== outcome.artifact_id);
+  // Only artifacts this turn created; one it updated in place has its own outcome.
+  const separate = artifacts.filter(
+    (item) => !outcomes.some((other) => other.artifact_id === item.artifact_id),
+  );
   return separate.length
     ? `Not edited in place; the current version is kept. ${separate.map((item) => item.name).join(", ")} is a separate artifact.`
     : "Not edited in place; the current version is kept.";

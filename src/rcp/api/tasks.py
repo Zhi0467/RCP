@@ -130,6 +130,9 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_download: bool
     can_keep: bool
     can_discuss: bool
+    # The turn folder holding the artifact's tracked file, so a later turn's
+    # citation of that path resolves to the card it published.
+    turn_folder: str | None = None
 
 
 def _agent_artifact_response(
@@ -176,6 +179,9 @@ def _agent_artifact_response(
         can_download=available,
         can_keep=available and not kept and not record.history_only,
         can_discuss=can_discuss,
+        turn_folder=stored.supplier_id
+        if stored is not None and stored.supplier == "turn"
+        else None,
     )
 
 
@@ -1186,13 +1192,24 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    # Mirrors the turn's staging; an older edit binding fixed the scope, even across a Retry.
-    scope_id = (
-        edit["staged_scope_id"]
-        if isinstance(edit, dict) and isinstance(edit.get("staged_scope_id"), str)
-        else _logical_chat_turn_operation_id(store, record.operation_id)
-    )
-    if not edited and scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
+    # Mirrors the turn's staging: a revoking edit's folder is its own operation. An
+    # older edit binding staged its copy under a fixed scope, even across a Retry,
+    # whose own outputs still use the turn's scope.
+    legacy_scope = edit.get("staged_scope_id") if isinstance(edit, dict) else None
+    if (
+        not edited
+        and not (
+            isinstance(legacy_scope, str)
+            and scoped_artifact_id(legacy_scope, descriptor.name) == descriptor.artifact_id
+        )
+        and scoped_artifact_id(
+            record.operation_id
+            if record.kind == "artifact_edit"
+            else _logical_chat_turn_operation_id(store, record.operation_id),
+            descriptor.name,
+        )
+        != descriptor.artifact_id
+    ):
         raise ValueError("artifact descriptor does not match its task scope")
     stored = store.artifact(artifact_id)
     if stored is None or stored.project_id != project_id:
@@ -1232,7 +1249,17 @@ def _admit_artifact_context_request(
 
     admitted = admit_chat_artifact_edit(store, service, project_id, request)
     if admitted.artifact_edit is not None and admitted.artifact_edit.origin_bound:
-        return admitted
+        # The viewer's origin-bound edit carries no skills; client-supplied ones
+        # would reach the prompt unresolved.
+        return admitted.model_copy(
+            update={
+                "invoked_workflow_ids": [],
+                "invoked_skill_ids": [],
+                "invoked_provider_skill_names": [],
+                "resolved_provider_skills": [],
+                "resolved_skill_packages": None,
+            }
+        )
     # A composer comment is an ordinary turn, resolved like one.
     return _resolved_graph_request(service, kind, admitted)
 

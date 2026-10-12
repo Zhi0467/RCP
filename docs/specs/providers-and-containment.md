@@ -817,8 +817,8 @@ call or end the turn. Transport failures retain their separate `delivery`
 semantics. Human-started Discuss and Work chats, human-started Experiment episodes,
 and the Auto-research orchestrator authorize `ask`, each from its handler's
 resolved allowed verbs. Discuss chat turns use the same handler and broker
-with exactly `ask`; artifact-edit Discuss turns, workers, and child Work or
-Experiments refuse it. The prompt reads the handler's same resolved verb set.
+with exactly `ask`; origin-bound viewer artifact edits, workers, and child Work
+or Experiments refuse it. The prompt reads the handler's same resolved verb set.
 For a live Discuss, Work, or Experiment answer, the response carries a server-generated
 receipt token persisted against that turn, question, and answer revision. Only
 after parsing the complete `answered` response does the client echo that token

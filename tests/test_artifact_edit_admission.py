@@ -518,7 +518,26 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
 
     monkeypatch.setattr(app.state.background_tasks, "start", capture)
     client = signed_in_client(app)
-    body = {**_request(task, artifact).model_dump(mode="json"), "chat_id": task.request["chat_id"]}
+    body = {
+        **_request(task, artifact).model_dump(mode="json"),
+        "chat_id": task.request["chat_id"],
+        # Client skill fields never reach an origin-bound edit's prompt.
+        "invoked_workflow_ids": ["stale-workflow"],
+        "invoked_skill_ids": ["stale-skill"],
+        "invoked_provider_skill_names": ["stale"],
+        "resolved_provider_skills": [
+            {
+                "provider": "codex",
+                "machine": "laptop",
+                "provider_version": "1",
+                "inventory_hash": "h",
+                "name": "stale",
+                "label": "Stale",
+                "description": "",
+            }
+        ],
+        "resolved_skill_packages": [{"id": "stale-skill", "kind": "skill", "version": "1"}],
+    }
     url = f"/api/projects/{task.project_id}/tasks/project_chat"
     assert client.post(url, json={**body, "mode": "work"}).status_code == 422
     response = client.post(url, json={**body, "mode": "discuss"})
@@ -527,6 +546,13 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
     assert admitted.mode == "discuss"
     assert admitted.artifact_edit.origin_bound
     assert admitted.session_id == task.native_session_id
+    assert not (
+        admitted.invoked_workflow_ids
+        or admitted.invoked_skill_ids
+        or admitted.invoked_provider_skill_names
+        or admitted.resolved_provider_skills
+        or admitted.resolved_skill_packages
+    )
 
 
 def test_composer_work_edit_runs_graph_admission(edit_origin, monkeypatch):
