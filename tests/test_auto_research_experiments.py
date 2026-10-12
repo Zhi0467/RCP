@@ -1434,7 +1434,9 @@ def test_a_provider_only_pick_runs_when_its_catalog_is_unknown(
             provider=provider, installed=True, authenticated=True, models=[]
         ),
     )
-    require_auto_research_child_profile_pick(service, provider="codex", model=None, reasoning=None)
+    # The Settings effort belongs to another provider; the CLI picks its own.
+    pick = require_auto_research_child_profile_pick
+    assert pick(service, provider="codex", model=None, reasoning=None) == ""
     with pytest.raises(AutoResearchChildProfileInvalid):
         require_auto_research_child_profile_pick(
             service, provider="codex", model=None, reasoning="high"
