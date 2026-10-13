@@ -639,6 +639,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     selected = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
     old_python = str(Path(selected["release_directory"]) / ".venv/bin/python")
     service([old_python, "-I", str(SCRIPT), "seed"])
+    run(["systemctl", "restart", "rcp.service"])
     wait_health()
     fixture = json.loads((ROOT / "state/fixture.json").read_text())
     cookie = session(fixture)
