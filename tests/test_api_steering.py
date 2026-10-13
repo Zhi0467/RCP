@@ -602,7 +602,9 @@ time.sleep(120)
         client.close()
 
 
-@pytest.mark.parametrize("delivery", ["delivered", "refused", "unrecorded", "ask_waiting"])
+@pytest.mark.parametrize(
+    "delivery", ["delivered", "refused", "unrecorded", "ask_waiting", "ask_returned"]
+)
 def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     running_chat, monkeypatch, delivery
 ):
@@ -650,6 +652,9 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     if delivery == "ask_waiting":
         # A later turn repeated the ask and is still polling it.
         store.question_activity.pending(question.question_id, "later-call")
+    if delivery == "ask_returned":
+        # Its ask call has just handed back the answer; the receipt is still coming.
+        store.question_activity.returned(question.question_id)
     if delivery == "unrecorded":
         # The provider took the answer, then the transcript write failed.
         def fail(*_args, **_kwargs):
@@ -664,7 +669,7 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
 
     assert response.status_code == 200, response.text
     steered = [(turn, text) for turn, _id, text in run.receipts]
-    assert steered == ([] if delivery == "ask_waiting" else [("owned-turn", "Use route A")])
+    assert steered == ([] if delivery.startswith("ask_") else [("owned-turn", "Use route A")])
     monkeypatch.undo()
     run.finish()
     # Settlement records receipt or claims the follow-up just after the turn settles.

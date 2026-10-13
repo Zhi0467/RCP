@@ -12,6 +12,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.command_protocol import (
     ApplyArguments,
+    CommandResponse,
     EpisodeCommandRequest,
     ExperimentKickoffArguments,
     FinishCommandRequest,
@@ -2321,6 +2322,17 @@ def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path
         body="An answer arrived mid-turn.",
     )
     assert status("2").result["inbox_pending"] == {"notices": 0, "mail": 1}
+    # A reply served outside dispatch, such as a graph-history read, gets the same note.
+    read = CommandResponse(request_id="5" * 32, status="ok", result={"entries": []})
+    request = StatusCommandRequest(
+        mailbox_id=MAILBOX_ID,
+        request_id="5" * 32,
+        credential=CREDENTIAL,
+        verb="status",
+        arguments={},
+    )
+    noted = dispatcher.with_inbox_pending(root.operation_id, request, read)
+    assert noted.result["inbox_pending"] == {"notices": 0, "mail": 1}
     harvested = dispatcher.dispatch(
         root.operation_id,
         InboxCommandRequest(

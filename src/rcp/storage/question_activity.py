@@ -15,6 +15,7 @@ class _QuestionActivity:
     calls: dict[str, int] = field(default_factory=dict)
     total: int = 0
     last_pending: float = 0
+    last_returned: float = 0
 
 
 class QuestionActivity:
@@ -36,6 +37,24 @@ class QuestionActivity:
                 if len(activity.calls) > ASK_TRACKED_CALLS:
                     del activity.calls[next(iter(activity.calls))]
             return activity.calls[call_id]
+
+    def returned(self, question_id: str) -> None:
+        """An ask call is handing back the answer; its receipt comes later."""
+        with self._lock:
+            self._questions.setdefault(
+                question_id, _QuestionActivity()
+            ).last_returned = self._clock()
+
+    def ask_holds_answer(self, question_id: str) -> bool:
+        """An ask call is waiting on, or has just returned, this question's answer."""
+        with self._lock:
+            activity = self._questions.get(question_id)
+            now = self._clock()
+            return bool(
+                activity is not None
+                and now - max(activity.last_pending, activity.last_returned)
+                < ASK_WAITING_FRESH_SECONDS
+            )
 
     def forget(self, question_id: str) -> None:
         """Drop a resolved question so the record holds only open ones."""

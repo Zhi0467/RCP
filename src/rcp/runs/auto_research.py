@@ -907,7 +907,22 @@ class AutoResearchCommandDispatcher:
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
         context = self._context(operation_id)
-        response = self._dispatch(context, operation_id, request)
+        return self._with_inbox_pending(
+            context, request, self._dispatch(context, operation_id, request)
+        )
+
+    def with_inbox_pending(
+        self, operation_id: str, request: CommandRequest, response: CommandResponse
+    ) -> CommandResponse:
+        """Add the pending-inbox note to a reply served outside `dispatch`."""
+        return self._with_inbox_pending(self._context(operation_id), request, response)
+
+    def _with_inbox_pending(
+        self,
+        context: AutoResearchCommandContext,
+        request: CommandRequest,
+        response: CommandResponse,
+    ) -> CommandResponse:
         # An inbox reply is the inbox itself, already bounded to its response size.
         if context.request.role != "orchestrator" or request.verb == "inbox":
             return response

@@ -1892,8 +1892,12 @@ async def _serve_auto_research_commands(
             from rcp.runs.graph_history_queries import handle_graph_history_command
 
             assert service is not None
-            return await asyncio.to_thread(
+            response = await asyncio.to_thread(
                 handle_graph_history_command, service, graph_read_scope, request
+            )
+            # Graph reads are commands too, so they carry the pending-inbox note.
+            return await asyncio.to_thread(
+                dispatcher.with_inbox_pending, execution.operation_id, request, response
             )
         return await asyncio.to_thread(dispatcher.dispatch, execution.operation_id, request)
 

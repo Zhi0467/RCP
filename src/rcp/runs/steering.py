@@ -326,9 +326,10 @@ def steer_question_answer(
             return "in_flight"
         _ANSWER_STEERS_IN_FLIGHT.add(question.question_id)
     try:
-        # An ask call still polling this question returns the answer itself,
-        # whichever turn made it; a steer as well would deliver it twice.
-        if store.question_activity.is_waiting(question.question_id):
+        # An ask call still polling this question, or just handing back its
+        # answer, delivers it itself, whichever turn made it; a steer as well
+        # would deliver it twice.
+        if store.question_activity.ask_holds_answer(question.question_id):
             return "not_steered"
         target = store.running_chat_task(origin.project_id, origin.owner_id)
         if (
