@@ -29,6 +29,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { SpaceSettings } = await server.ssrLoadModule("/src/projects/SpaceSettings.tsx");
 const { ProjectSettings } = await server.ssrLoadModule("/src/projects/ProjectSettings.tsx");
 const { MachineCard } = await server.ssrLoadModule("/src/projects/MachineCard.tsx");
@@ -162,7 +169,7 @@ test("a project machine finds its space record by project and alias", () => {
 
 test("both Settings levels render the same machine card with one remove per path", () => {
   const render = (level) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(MachineCard, {
         title: "gpu",
         hostLabel: gpu.host,
@@ -252,7 +259,7 @@ const sectionClasses = (html) =>
 
 test("space-wide sections render on space Settings and project sections on project Settings", () => {
   const space = (spaceKind) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(SpaceSettings, {
         spaceKind,
         cacheProjectId: projectId,
@@ -278,7 +285,7 @@ test("space-wide sections render on space Settings and project sections on proje
   ]);
 
   for (const spaceKind of ["personal", "team"]) {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(ProjectSettings, {
         apiBase: `/api/projects/${projectId}`,
         project: settingsProject(),
@@ -319,7 +326,7 @@ test("the identity menu holds Display, and Space settings sits beside it", () =>
       updated_at: "2026-09-27T00:00:00Z",
     },
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(LandingIdentityMenu, {
       identity,
       identityError: null,
@@ -451,7 +458,7 @@ for (const status of ["unhidden", "enforced", null]) {
               },
       },
     };
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(MachineCard, {
         title: "GPU",
         hostLabel: "GPU",

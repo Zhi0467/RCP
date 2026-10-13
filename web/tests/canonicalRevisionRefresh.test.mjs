@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -11,7 +13,11 @@ const server = await createServer({
 after(() => server.close());
 const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
 const { graphResourceKey } = await server.ssrLoadModule("/src/graph/graphResources.ts");
-const { cacheProjectTabState, projectReturnHash } = await server.ssrLoadModule(
+const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
+const { experimentIndexProfile } = await server.ssrLoadModule(
+  "/src/experiments/episodeResources.ts",
+);
+const { cacheProjectTabState, projectReturnHash, useProjectTabs } = await server.ssrLoadModule(
   "/src/projects/useProjectTabs.ts",
 );
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -65,4 +71,40 @@ test("open tab UI has no retention count cap", () => {
     projectReturnHash(new Map([["p", { kind: "branch", branch_id: "b" }]]), "p"),
     "/projects/p?branch_id=b",
   );
+});
+
+test("refreshing a project's Runs waits for the read it asked for", async () => {
+  const store = new ResourceStore();
+  let resolveRead;
+  store.register("p", {
+    ...experimentIndexProfile("p"),
+    fetch: () => new Promise((resolve) => (resolveRead = resolve)),
+  });
+  let tabs;
+  function Harness() {
+    tabs = useProjectTabs({
+      initialProjectId: null,
+      initialSetupOpen: false,
+      projectIndexReady: false,
+      project: null,
+      reportError() {},
+    });
+    return null;
+  }
+  renderToStaticMarkup(
+    React.createElement(
+      RefreshRuntimeContext.Provider,
+      { value: { store } },
+      React.createElement(Harness),
+    ),
+  );
+  resolveRead({ entries: ["old"], unavailable: [] });
+  await settle();
+  let refreshed;
+  void tabs.refreshProjectExperimentLoops("p").then((entries) => (refreshed = entries));
+  await settle();
+  assert.equal(refreshed, undefined, "the refresh settles with its read");
+  resolveRead({ entries: ["new"], unavailable: [] });
+  await settle();
+  assert.deepEqual(refreshed, ["new"]);
 });

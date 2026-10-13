@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isActiveTask, projectActivityTask } from "./agentTasks";
-import { useResource } from "../core/useResource";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime, useResource } from "../core/useResource";
 import {
   selectTasks,
   taskProgressProfile,
@@ -35,9 +36,17 @@ export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): {
 }
 
 export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
+  const { store } = useRefreshRuntime();
   const owner = `${projectId}:task-view`;
   const status = useResource(owner, projectId ? taskStatusProfile(projectId) : null);
   const progress = useResource(owner, projectId ? taskProgressProfile(projectId) : null);
+  // A failed list read must not pass for "no tasks" or keep stale rows silently.
+  const tasksUnavailable = Boolean(status.error || progress.error);
+  const retryTasks = useCallback(() => {
+    if (!projectId) return;
+    store.invalidate(resourceKeyId(taskStatusProfile(projectId).key));
+    store.invalidate(resourceKeyId(taskProgressProfile(projectId).key));
+  }, [projectId, store]);
   const tasks = useMemo(
     () => selectTasks(status.value, progress.value),
     [status.value, progress.value],
@@ -158,6 +167,8 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
 
   return {
     snapshot,
+    tasksUnavailable,
+    retryTasks,
     taskStarting,
     taskActionId,
     taskInspectorLoading,

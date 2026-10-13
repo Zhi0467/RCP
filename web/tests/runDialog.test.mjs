@@ -11,6 +11,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { RunDialog, agentSelectionChanged } = await server.ssrLoadModule(
   "/src/experiments/RunDialog.tsx",
 );
@@ -91,7 +98,7 @@ const project = {
 };
 
 test("seed and refresh runs offer one empty, labelled additional-message field", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(RunDialog, {
       open: true,
       kind: "seed",
@@ -109,7 +116,7 @@ test("seed and refresh runs offer one empty, labelled additional-message field",
 });
 
 test("a closed run dialog renders no message field", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(RunDialog, {
       open: false,
       kind: "seed",
@@ -154,7 +161,7 @@ test("experiment detail hides attempt history, shows the exact gate, and keeps A
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   let html;
   try {
-    html = renderToStaticMarkup(
+    html = renderMarkup(
       React.createElement(DetailDrawer, {
         node,
         edges: [],
@@ -230,7 +237,7 @@ test("a never-run Experiment shows only its next episode limit", () => {
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   const render = (extra = {}) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(DetailDrawer, {
         ...extra,
         node,
@@ -374,7 +381,7 @@ test("an invocation-limited episode offers a new episode for its pending watcher
       onExploreRelations() {},
       onSelectNode() {},
     };
-    html = renderToStaticMarkup(React.createElement(DetailDrawer, props));
+    html = renderMarkup(React.createElement(DetailDrawer, props));
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
@@ -396,7 +403,7 @@ test("node standing presents Contest and Agree as independent three-state toggle
     extension_fields: {},
   };
   const renderNode = (standing, props = {}) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(DetailDrawer, {
         node: { ...baseNode, standing },
         edges: [],
@@ -471,7 +478,7 @@ test("proposal decisions present Reject and Approve as independent three-state t
     },
   };
   const renderProposal = (decision) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(ProposalJudgmentSection, {
         proposals: [proposal],
         graph: { proposals: { [proposal.id]: proposal } },
@@ -524,7 +531,7 @@ test("node removal is separate, guarded by canonical truth and active loops, and
     extension_fields: {},
   };
   const renderNode = (props = {}) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(DetailDrawer, {
         node,
         edges: [{ id: "edge/1", source: node.id, target: "hyp/other" }],
@@ -640,7 +647,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
     onStopWatcher() {},
     onClose() {},
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(NodeChat, {
       ...props,
       watchers: [
@@ -654,7 +661,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
       ],
     }),
   );
-  const experimentHtml = renderToStaticMarkup(
+  const experimentHtml = renderMarkup(
     React.createElement(NodeChat, {
       ...props,
       watchers: [{ ...watcher, continuation: { patch_kind: "experiment_loop" } }],
@@ -714,7 +721,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     onResumeTask() {},
     onRetryTask() {},
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(NodeChat, {
       ...props,
       watchers: [
@@ -744,7 +751,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
       ],
     }),
   );
-  const projectChatHtml = renderToStaticMarkup(
+  const projectChatHtml = renderMarkup(
     React.createElement(NodeChat, {
       ...props,
       node: null,
@@ -759,7 +766,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
 
 test("long human chat messages render a bounded preview control", () => {
   const longMessage = "Please compare each of these constraints carefully. ".repeat(8);
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(NodeChat, {
       project,
       node: null,
@@ -854,7 +861,7 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
     finished: false,
     status_label: "Running",
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(NodeChat, {
       project,
       node: null,
@@ -918,7 +925,7 @@ test("a running watcher wake or episode turn shows its Activity row before any a
       finished: false,
       status_label: "Running",
     };
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(NodeChat, {
         project,
         node: null,
@@ -943,7 +950,7 @@ test("a running watcher wake or episode turn shows its Activity row before any a
 });
 
 test("retry keeps the original task boundary and exposes provider configuration", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(RunDialog, {
       open: true,
       kind: "seed",
@@ -966,7 +973,7 @@ test("retry keeps the original task boundary and exposes provider configuration"
 });
 
 test("Experiment provider switch exposes provider controls but locks the execution machine", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(RunDialog, {
       open: true,
       kind: "node_chat",
@@ -994,7 +1001,7 @@ test("every switch dialog holds its submit until the binding actually changes", 
   // gets here through a switch control, where an unchanged selection is a no-op.
   const initialConfig = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
   const render = (kind, config) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(RunDialog, {
         open: true,
         kind,
@@ -1023,7 +1030,7 @@ test("a standalone retry may move machines while an episode-bound one stays pinn
   // Only the caller knows whether anything is anchored to the machine, so the
   // dialog locks by default and the standalone retry is the one that opts out.
   const render = (props) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(RunDialog, {
         open: true,
         kind: "node_chat",
@@ -1128,7 +1135,7 @@ test("task inspector names every provider launch by its continuation cause", () 
     ],
     events: [],
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(AgentTaskInspector, {
       tasks: [task],
       task,
@@ -1199,7 +1206,7 @@ test("an isolated closed experiment stays disabled with its server reason", () =
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   try {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(DetailDrawer, {
         node,
         edges: [],
@@ -1251,7 +1258,7 @@ test("isolation choices live in the agent picker, not beside it", () => {
     invocation_ceiling: 3,
   };
   const toggles = (graphTarget, inheritedIsolation) => {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(DetailDrawer, {
         node,
         edges: [],
@@ -1313,7 +1320,7 @@ test("Run presents other-target live episodes before submission without disablin
   const previousWindow = globalThis.window;
   globalThis.window = { innerWidth: 1440, innerHeight: 900 };
   try {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(DetailDrawer, {
         node,
         projectId: "project-one",
@@ -1406,7 +1413,7 @@ test("A locked Auto-research child keeps its transcript and Runs route without a
       assert.fail("child cannot start a human turn");
     },
   };
-  const child = renderToStaticMarkup(React.createElement(ChatsWorkspace, common));
+  const child = renderMarkup(React.createElement(ChatsWorkspace, common));
   assert.doesNotMatch(child, /<textarea/);
   assert.match(child, /class="node-chat-line agent"/);
   const link = [...child.matchAll(/href="([^"]+)"/g)].map((match) =>
@@ -1446,7 +1453,7 @@ test("a selected inventory row cannot mount the composer on another target", () 
     chatTranscripts: new Map(),
   };
   const render = (graphTarget) =>
-    renderToStaticMarkup(React.createElement(ChatsWorkspace, { ...common, graphTarget }));
+    renderMarkup(React.createElement(ChatsWorkspace, { ...common, graphTarget }));
   assert.doesNotMatch(render({ kind: "main" }), /class="chat-composer/);
   assert.match(render({ kind: "branch", branch_id: "b" }), /class="chat-composer/);
 });

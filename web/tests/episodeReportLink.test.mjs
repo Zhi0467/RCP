@@ -12,8 +12,13 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { EpisodeReportLink } = await server.ssrLoadModule("/src/experiments/EpisodeReportLink.tsx");
+// The report lookup reads through the shared store this fixture binds.
+const { runtime } = await server.ssrLoadModule("/tests/fixtures/resourceRuntime.ts");
 
-after(() => server.close());
+after(() => {
+  runtime.scheduler.stop();
+  return server.close();
+});
 
 const props = {
   projectId: "project one",

@@ -12,6 +12,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const {
   experimentBoardHref,
   experimentBoardRouteToken,
@@ -405,7 +412,7 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
     run_section: "running",
     tasks: [parentAfter, parentBefore],
   });
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: {
         revision: 3,
@@ -602,7 +609,7 @@ test("an explicit main route becomes history when the Experiment advances concur
   );
 
   assert.deepEqual(projection.staleMainRoute, route);
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: {
         revision: 5,
@@ -777,7 +784,7 @@ test("a stale main index entry cannot duplicate the current Experiment card", ()
     project_id: "project-one",
     episode: previousEpisode,
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: {
         revision: 5,
@@ -870,7 +877,7 @@ test("a stale main index entry cannot replace a fresher project run", () => {
     },
     episode: staleEpisode,
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: {
         revision: 5,
@@ -988,7 +995,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
   const route = parseProjectHash(
     experimentBoardHref(indexed.project_id, experimentBoardRouteToken(indexed)),
   ).experimentRoute;
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: {
         revision: 5,
@@ -1063,7 +1070,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
     ),
     episode: stoppedEpisode,
   };
-  const terminalHtml = renderToStaticMarkup(
+  const terminalHtml = renderMarkup(
     React.createElement(ExecutionView, {
       graph: {
         revision: 5,
@@ -1156,7 +1163,7 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
 
   branchNodes.forEach((branchNode, index) => {
     const transcriptText = `Branch transcript ${index + 1} remains visible.`;
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(NodeChat, {
         project,
         graphTarget: { kind: "branch", branch_id: "parent-episode" },
@@ -1256,10 +1263,8 @@ test("a branch chat uses its explicit target before it has any tasks", () => {
     status: "active",
     continuation: { control_node_id: experiment.id, patch_kind: "experiment_loop" },
   };
-  const ownTarget = renderToStaticMarkup(
-    React.createElement(NodeChat, { ...props, watchers: [watcher] }),
-  );
-  const otherTarget = renderToStaticMarkup(
+  const ownTarget = renderMarkup(React.createElement(NodeChat, { ...props, watchers: [watcher] }));
+  const otherTarget = renderMarkup(
     React.createElement(NodeChat, {
       ...props,
       watchers: [{ ...watcher, graph_target: { kind: "main" } }],
@@ -1302,7 +1307,7 @@ test("the rendered board keeps finished work folded and unavailable work explici
       control({ health: "completed", recommendation: "none", run_section: "completed" }),
     ),
   ];
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExperimentBoard, { entries, onOpen: () => undefined }),
   );
 
@@ -1338,7 +1343,7 @@ test("a final report error never becomes the board's episode health", () => {
       run_section: "completed",
     }),
   );
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
   );
 
@@ -1357,7 +1362,7 @@ test("the board shows the shared report wrap-up as in-progress", () => {
       run_section: "running",
     }),
   );
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
   );
 
@@ -1437,7 +1442,7 @@ test("every target view keeps all same-node cards and scopes selection and busy 
         renderedView = ExecutionView(props);
         return renderedView;
       }
-      const html = renderToStaticMarkup(
+      const html = renderMarkup(
         React.createElement(CaptureView, {
           graph: { nodes: { [experiment.id]: experiment }, edges: {} },
           episodes: entries.map((item) => item.episode),
@@ -1498,7 +1503,7 @@ test("every target view keeps all same-node cards and scopes selection and busy 
         });
         return renderedCard;
       }
-      renderToStaticMarkup(React.createElement(CaptureCard));
+      renderMarkup(React.createElement(CaptureCard));
       const toggle = findElement(
         renderedCard,
         (element) => element.props.className === "campaign-run-toggle",
@@ -1586,7 +1591,7 @@ test("a branch view waits for the loop index before classifying a main route as 
     [true, [mainEntry]],
     [true, []],
   ]) {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(ExecutionView, {
         graph: { nodes: { [experiment.id]: experiment }, edges: {} },
         graphTarget: branchEpisode.graph_target,
@@ -1636,7 +1641,7 @@ test("Runs retains healthy cards and names each unavailable branch once", () => 
     episode_id: "episode-unavailable",
     detail: "Branch unavailable",
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: { nodes: { [healthy.node.id]: healthy.node }, edges: {} },
       episodes: [],
@@ -1671,7 +1676,7 @@ test("embedded Experiment conversation links to its exact chat target", async ()
         [],
         [],
       );
-      const html = renderToStaticMarkup(
+      const html = renderMarkup(
         React.createElement(ExperimentRunDetail, {
           apiBase: "/api/projects/project",
           run,
