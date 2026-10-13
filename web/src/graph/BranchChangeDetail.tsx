@@ -61,20 +61,25 @@ export function ChangedFields({
 }) {
   const beforeFields: Record<string, unknown> = Object.fromEntries(Object.entries(before ?? {}));
   const afterFields: Record<string, unknown> = Object.fromEntries(Object.entries(after ?? {}));
+  // A whole-entity conflict shows any field where main's competing value differs.
+  const mainDiffers = (key: string) =>
+    mergePaths.some(
+      (path) =>
+        path.field_path === "" &&
+        path.conflict &&
+        JSON.stringify(fieldOf(path.main, key)) !== JSON.stringify(afterFields[key]),
+    );
   const fields = [...new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])]
     // Internal fields stay out unless the merge names one, so a mark always shows its values.
     .filter(
       (key) =>
         !INTERNAL_FIELDS.has(key) ||
-        mergePaths.some((path) =>
-          // A whole-entity conflict reveals an internal field only where main differs.
-          path.field_path === ""
-            ? path.conflict &&
-              JSON.stringify(fieldOf(path.main, key)) !== JSON.stringify(afterFields[key])
-            : pathCovers(path, key),
-        ),
+        mainDiffers(key) ||
+        mergePaths.some((path) => path.field_path !== "" && pathCovers(path, key)),
     )
-    .filter((key) => !(emptyValue(beforeFields[key]) && emptyValue(afterFields[key])))
+    .filter(
+      (key) => mainDiffers(key) || !(emptyValue(beforeFields[key]) && emptyValue(afterFields[key])),
+    )
     .filter((key) => JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key]));
   return (
     <div className="branch-change-fields">

@@ -86,15 +86,21 @@ test("a created node the merge must decide shows the competing main values", () 
   const html = render(BranchChangeDetail, {
     change: {
       before: null,
-      after: { id: "n", title: "branch", type: "b" },
+      after: { id: "n", title: "branch", type: "b", source_refs: [] },
       change: "created",
       history: [],
     },
-    mergePaths: [{ field_path: "", main: { id: "n", title: "main", type: "t" }, conflict: true }],
+    mergePaths: [
+      {
+        field_path: "",
+        main: { id: "n", title: "main", type: "t", source_refs: ["ref"] },
+        conflict: true,
+      },
+    ],
   });
   assert.ok(html.includes('class="branch-change-fields"'));
-  // Title and the differing internal type show; the shared id stays hidden.
-  assert.equal((html.match(/class="branch-change-field"/g) ?? []).length, 2);
+  // Title, type, and an empty branch value against main's show; the shared id stays hidden.
+  assert.equal((html.match(/class="branch-change-field"/g) ?? []).length, 3);
   assert.ok(html.includes("Main now</span> main"));
 });
 
