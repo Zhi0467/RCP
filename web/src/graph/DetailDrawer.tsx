@@ -727,7 +727,8 @@ export function DetailDrawer({
                         workLike={launchProfile?.work_like_capable}
                         optionCount={
                           Number(browserRequested) +
-                          Number((inheritedIsolation ?? isolation).code_worktree)
+                          Number((inheritedIsolation ?? isolation).code_worktree) +
+                          Number(graphTarget.kind === "main" && isolation.graph_isolation)
                         }
                         onToggle={() => setLaunchOpen((open) => !open)}
                       />
@@ -768,56 +769,61 @@ export function DetailDrawer({
                           : "Start episode"}
                     </button>
                   </div>
-                  {/* On a branch the Experiment runs there; there is no branch from a branch. */}
-                  {graphTarget.kind === "main" && (
-                    <div className="experiment-isolation" role="group" aria-label="Isolation">
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={isolation.graph_isolation}
-                          onChange={(event) =>
-                            setIsolation({ ...isolation, graph_isolation: event.target.checked })
-                          }
-                        />
-                        On a new branch
-                      </label>
-                      {isolation.graph_isolation && (
-                        <BranchNameField
-                          mode="experiment_loop"
-                          value={experimentBranch}
-                          disabled={nodeMutationDisabled || experimentRunBusy}
-                          refusal={experimentBranchNameRefusal}
-                          namesInUse={graphRefs?.map((ref) => ref.name)}
-                          onChange={setExperimentBranch}
-                        />
-                      )}
-                    </div>
-                  )}
-                  {launchOpen && project && launchProfile && launchConfig && (
-                    <AgentConfigControls
-                      project={project}
-                      value={launchConfig}
-                      onChange={setLaunchConfig}
-                      effectiveModel={launchEffectiveModel}
-                      workLikeCapable={launchProfile.work_like_capable}
-                      locked={nodeMutationDisabled || experimentRunBusy}
-                      showRunOn={false}
-                      compact
-                    >
-                      <div
-                        className="agent-config-options"
-                        role="group"
-                        aria-label="Launch options"
+                  {/* A refused branch name reopens the picker so its warning shows. */}
+                  {(launchOpen || Boolean(experimentBranchNameRefusal)) &&
+                    project &&
+                    launchProfile &&
+                    launchConfig && (
+                      <AgentConfigControls
+                        project={project}
+                        value={launchConfig}
+                        onChange={setLaunchConfig}
+                        effectiveModel={launchEffectiveModel}
+                        workLikeCapable={launchProfile.work_like_capable}
+                        locked={nodeMutationDisabled || experimentRunBusy}
+                        showRunOn={false}
+                        compact
                       >
-                        <BrowserToggle
-                          checked={browserRequested}
-                          disabled={nodeMutationDisabled || experimentRunBusy}
-                          onChange={setBrowserRequested}
-                        />
-                        {codeWorktreeToggle}
-                      </div>
-                    </AgentConfigControls>
-                  )}
+                        <div
+                          className="agent-config-options"
+                          role="group"
+                          aria-label="Launch options"
+                        >
+                          {/* On a branch the Experiment runs there; there is no branch from a branch. */}
+                          {graphTarget.kind === "main" && (
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={isolation.graph_isolation}
+                                onChange={(event) =>
+                                  setIsolation({
+                                    ...isolation,
+                                    graph_isolation: event.target.checked,
+                                  })
+                                }
+                              />
+                              On a new branch
+                            </label>
+                          )}
+                          {codeWorktreeToggle}
+                          <BrowserToggle
+                            checked={browserRequested}
+                            disabled={nodeMutationDisabled || experimentRunBusy}
+                            onChange={setBrowserRequested}
+                          />
+                        </div>
+                        {graphTarget.kind === "main" && isolation.graph_isolation && (
+                          <BranchNameField
+                            mode="experiment_loop"
+                            value={experimentBranch}
+                            disabled={nodeMutationDisabled || experimentRunBusy}
+                            refusal={experimentBranchNameRefusal}
+                            namesInUse={graphRefs?.map((ref) => ref.name)}
+                            onChange={setExperimentBranch}
+                          />
+                        )}
+                      </AgentConfigControls>
+                    )}
                   {startReasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
                       {startReasons.map((reason) => (

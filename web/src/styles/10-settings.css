@@ -747,6 +747,35 @@ details[open] > .view-disclosure-summary > svg:last-child {
   width: auto;
 }
 /* On a full-width chip the count sits beside the chevron, not mid-row. */
+/* A branch name inside the picker reads like its other fields, on one row. */
+.agent-config-options + .branch-name-field {
+  margin-top: 9px;
+}
+.agent-config .branch-name-label {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex: 1 1 auto;
+  font-size: var(--type-4xs);
+  font-weight: 750;
+  gap: 6px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.agent-config .branch-name-label input {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink);
+  flex: 1 1 auto;
+  font: 600 var(--type-2xs) var(--mono);
+  height: 31px;
+  letter-spacing: 0;
+  max-width: 20rem;
+  min-width: 0;
+  padding: 0 7px;
+  text-transform: none;
+}
 .agent-config-chip-count {
   align-items: center;
   margin-left: auto;
@@ -3894,9 +3923,11 @@ button.agent-provider-label {
   align-self: stretch;
   margin-right: auto;
 }
+/* Beside a compact Start button the chip matches its height. */
 .experiment-control-heading > .agent-config-chip,
 .experiment-run-actions > .agent-config-chip {
   margin-left: auto;
+  min-height: 28px;
 }
 .agent-config-chip + .experiment-run-button {
   margin-left: 0;
