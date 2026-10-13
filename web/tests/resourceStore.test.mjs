@@ -168,6 +168,21 @@ test("an older command's late response never replaces a newer one's", async () =
   assert.equal(store.view(id).value, "resumed");
 });
 
+test("a read accepted during a command outranks its late response", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("tasks.status");
+  const id = store.register("tab", profile);
+  reads[0].resolve("v0");
+  await settle();
+  const command = store.beginMutation("retry", new Map([[id, (value) => value]]));
+  store.observe("p", [{ name: "tasks.status", version: "2" }]);
+  reads.at(-1).resolve("v2");
+  await settle();
+  command.settle(new Map([[id, "response"]]));
+  await settle();
+  assert.equal(store.view(id).value, "v2");
+});
+
 test("releasing the last owner forgets the resource", () => {
   const store = new ResourceStore();
   const { profile } = manualProfile("questions");

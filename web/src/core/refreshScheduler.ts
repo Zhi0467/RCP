@@ -187,6 +187,7 @@ export class RefreshScheduler {
       return;
     }
     const active = this.options.activeProjectId();
+    store.setActiveProject(active);
     const due = this.due(open, active);
     const activated = this.activated;
     this.activated = null;

@@ -68,6 +68,8 @@ interface ResourceState {
   pending: PendingOperation[];
   /** Start order of the newest command whose response replaced the value. */
   settledMutation: number;
+  /** Accepted payload reads, so a command can tell if a read overtook it. */
+  acceptedReads: number;
   view: ResourceView<unknown> | null;
 }
 
@@ -152,6 +154,7 @@ export class ResourceStore {
         retryAt: 0,
         pending: [],
         settledMutation: 0,
+        acceptedReads: 0,
         view: null,
       };
       this.states.set(id, state);
@@ -305,6 +308,7 @@ export class ResourceStore {
           : value;
         state.hasValue = true;
         state.committed = version;
+        state.acceptedReads += 1;
         state.owed = false;
         state.error = undefined;
         state.failures = 0;
@@ -351,10 +355,12 @@ export class ResourceStore {
     effects: ReadonlyMap<string, (value: unknown) => unknown>,
   ): { settle(values?: ReadonlyMap<string, unknown>): void; fail(): void } {
     const order = ++this.mutations;
+    const readsAtStart = new Map<string, number>();
     for (const [id, apply] of effects) {
       const state = this.states.get(id);
       if (!state) continue;
       this.fence(state);
+      readsAtStart.set(id, state.acceptedReads);
       state.pending.push({ id: operationId, apply });
       state.view = null;
     }
@@ -366,9 +372,13 @@ export class ResourceStore {
         state.pending = state.pending.filter((operation) => operation.id !== operationId);
         if (ok) {
           this.fence(state);
-          // An older command's response never replaces a newer one's; it
-          // only owes a read.
-          if (values?.has(id) && order > state.settledMutation) {
+          // A response never replaces a newer command's response or a read
+          // accepted after this command started; it only owes a read.
+          if (
+            values?.has(id) &&
+            order > state.settledMutation &&
+            state.acceptedReads === readsAtStart.get(id)
+          ) {
             state.settledMutation = order;
             const value = values.get(id);
             state.value = state.profile.reconcile
