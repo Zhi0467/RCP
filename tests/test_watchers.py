@@ -45,7 +45,7 @@ from rcp.watchers import (
 )
 
 from .helpers import wait_until
-from .storage_helpers import downgrade_artifacts
+from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 
 
 @pytest.fixture
@@ -603,6 +603,7 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
     episode_id = str(uuid.uuid4())
     store.create_watchers([_record("legacy-loop", continuation=_loop_continuation(episode_id))])
     with sqlite3.connect(path) as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP INDEX watchers_episode")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
         downgrade_artifacts(connection)
@@ -627,6 +628,7 @@ def test_graph_condition_column_migrates_before_its_index_is_created(tmp_path) -
     path = tmp_path / "legacy-graph-watcher.sqlite3"
     AppStore(path)
     with sqlite3.connect(path) as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP INDEX watchers_graph_conditions")
         connection.execute("ALTER TABLE watchers DROP COLUMN graph_condition_json")
         connection.execute("ALTER TABLE watchers DROP COLUMN armed_revision")

@@ -7,7 +7,6 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 
 from rcp.limits import (
@@ -24,7 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 class _Capture:
     project_ids: set[str]
     workspace: SSHStateWorkspace
-    task: asyncio.Task[None] | None = None
+    worker: threading.Thread | None = None
+    running: bool = False
     last_started: float | None = None
     follow_up: bool = False
 
@@ -45,9 +45,8 @@ class SyncCoordinator:
         self._activated: set[str] = set()
         self._requested: set[str] = set()
         self._captures: dict[str, _Capture] = {}
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._wake = asyncio.Event()
-        self._runner: asyncio.Task[None] | None = None
+        self._wake = threading.Event()
+        self._runner: threading.Thread | None = None
         self._stopping = False
         catalog.request_sync = self.request
 
@@ -88,9 +87,7 @@ class SyncCoordinator:
         self._notify()
 
     def _notify(self) -> None:
-        loop = self._loop
-        if loop is not None and not loop.is_closed():
-            loop.call_soon_threadsafe(self._wake.set)
+        self._wake.set()
 
     def sync_health(self, project_id: str) -> dict[str, object]:
         workspace = self._catalog.workspace_for_display(project_id)
@@ -99,35 +96,44 @@ class SyncCoordinator:
         return {"last_completed_at": None, "status": "local", "error": None}
 
     def start(self) -> None:
-        if self._runner is not None and not self._runner.done():
-            return
-        self._loop = asyncio.get_running_loop()
-        self._stopping = False
-        self._runner = asyncio.create_task(self._run())
+        with self._lock:
+            if self._runner is not None and self._runner.is_alive():
+                return
+            self._stopping = False
+            self._runner = threading.Thread(target=self._run, name="remote-sync", daemon=True)
+            self._runner.start()
 
     async def stop(self) -> None:
         """Stop admission, then drain real transfer workers before releasing ownership."""
         with self._lock:
             self._stopping = True
+            runner = self._runner
         self._wake.set()
-        if self._runner is not None:
-            await self._runner
-            self._runner = None
-        pending = [capture.task for capture in self._captures.values() if capture.task is not None]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        self._loop = None
+        if runner is not None:
+            # Transfers belong to the process, not the caller's event loop.
+            await asyncio.to_thread(runner.join)
 
-    async def _run(self) -> None:
-        while not self._stopping:
-            self._wake.clear()
-            delay = self._schedule()
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self._wake.wait(), timeout=delay)
+    def _run(self) -> None:
+        try:
+            while True:
+                self._wake.clear()
+                with self._lock:
+                    if self._stopping:
+                        return
+                delay = self._schedule()
+                self._wake.wait(delay)
+        finally:
+            with self._lock:
+                workers = [capture.worker for capture in self._captures.values()]
+            for worker in workers:
+                if worker is not None:
+                    worker.join()
 
     def _schedule(self) -> float:
         now = self._clock()
         with self._lock:
+            if self._stopping:
+                return 0
             self._leases = {
                 client: lease for client, lease in self._leases.items() if lease[0] > now
             }
@@ -135,51 +141,54 @@ class SyncCoordinator:
             activated, self._activated = self._activated, set()
             requested, self._requested = self._requested, set()
             delays = [expiry - now for expiry, _projects in self._leases.values()]
-        grouped: dict[str, tuple[SSHStateWorkspace, set[str]]] = {}
-        for project_id in demanded | activated | requested:
-            workspace = self._catalog.workspace_for_display(project_id)
-            if not isinstance(workspace, SSHStateWorkspace):
-                continue
-            key = str(workspace.root.resolve())
-            if key not in grouped:
-                grouped[key] = (workspace, set())
-            grouped[key][1].add(project_id)
-        for key, (workspace, project_ids) in grouped.items():
-            capture = self._captures.setdefault(key, _Capture(set(), workspace))
-            capture.project_ids.update(project_ids)
-            forced = bool(project_ids & activated)
-            if capture.task is not None and not capture.task.done():
-                capture.follow_up |= forced
-                continue
-            due = (
-                capture.last_started is None
-                or now - capture.last_started >= REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
-            )
-            if forced or capture.follow_up or due:
-                capture.follow_up = False
-                capture.last_started = now
-                capture.task = asyncio.create_task(self._capture(capture))
-            elif capture.last_started is not None:
-                with self._lock:
-                    self._requested.update(project_ids & requested)
-                delays.append(
-                    capture.last_started + REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS - now
+            grouped: dict[str, tuple[SSHStateWorkspace, set[str]]] = {}
+            for project_id in demanded | activated | requested:
+                workspace = self._catalog.workspace_for_display(project_id)
+                if not isinstance(workspace, SSHStateWorkspace):
+                    continue
+                key = str(workspace.root.resolve())
+                if key not in grouped:
+                    grouped[key] = (workspace, set())
+                grouped[key][1].add(project_id)
+            for key, (workspace, project_ids) in grouped.items():
+                capture = self._captures.setdefault(key, _Capture(set(), workspace))
+                capture.project_ids.update(project_ids)
+                forced = bool(project_ids & activated)
+                if capture.running:
+                    capture.follow_up |= forced
+                    continue
+                due = (
+                    capture.last_started is None
+                    or now - capture.last_started >= REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
                 )
-        return min(delays, default=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS)
+                if forced or capture.follow_up or due:
+                    capture.follow_up = False
+                    capture.last_started = now
+                    capture.running = True
+                    capture.worker = threading.Thread(
+                        target=self._capture, args=(capture,), name="remote-capture", daemon=True
+                    )
+                    capture.worker.start()
+                elif capture.last_started is not None:
+                    self._requested.update(project_ids & requested)
+                    delays.append(
+                        capture.last_started + REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS - now
+                    )
+            return min(delays, default=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS)
 
-    async def _capture(self, capture: _Capture) -> None:
-        def transfer() -> None:
-            try:
-                changed = capture.workspace.capture()
-                if changed and self._on_capture is not None:
-                    for project_id in tuple(capture.project_ids):
-                        self._on_capture(project_id)
-            except Exception:
-                _LOGGER.warning("Remote state capture failed", exc_info=True)
-
-        # Never cancel the to_thread task: cancelling its await does not stop rsync.
-        await asyncio.to_thread(transfer)
-        if capture.follow_up and not self._stopping:
+    def _capture(self, capture: _Capture) -> None:
+        try:
+            changed = capture.workspace.capture()
+            if changed and self._on_capture is not None:
+                with self._lock:
+                    project_ids = tuple(capture.project_ids)
+                for project_id in project_ids:
+                    self._on_capture(project_id)
+        except Exception:
+            _LOGGER.warning("Remote state capture failed", exc_info=True)
+        finally:
             with self._lock:
-                self._requested.update(capture.project_ids)
-        self._wake.set()
+                capture.running = False
+                if capture.follow_up and not self._stopping:
+                    self._requested.update(capture.project_ids)
+            self._wake.set()

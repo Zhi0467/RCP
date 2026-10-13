@@ -2,19 +2,55 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from typing import cast
 
+from rcp.projects import ProjectCatalog
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.transport import LocalStateWorkspace, SSHStateWorkspace
 from tests.helpers import async_wait_until
 
 
 def _catalog(workspaces):
-    return SimpleNamespace(
-        workspace_for_display=workspaces.get,
-        resolve_project_id=lambda project_id: project_id,
-        request_sync=None,
+    return cast(
+        ProjectCatalog,
+        SimpleNamespace(
+            workspace_for_display=workspaces.get,
+            resolve_project_id=lambda project_id: project_id,
+            request_sync=None,
+        ),
     )
+
+
+def test_coordinator_serves_different_event_loops_and_threads(tmp_path, monkeypatch):
+    workspace = SSHStateWorkspace(tmp_path / "remote", "fixture", "/project")
+    calls = []
+    monkeypatch.setattr(workspace, "capture", lambda: calls.append(True))
+    coordinator = SyncCoordinator(_catalog({"p": workspace}))
+
+    async def first_loop():
+        coordinator.start()
+        coordinator.request("p")
+        await async_wait_until(lambda: len(calls) == 1)
+
+    async def second_loop():
+        coordinator.start()
+        coordinator.note_demand("tab", {"p"}, "p")
+        await async_wait_until(lambda: len(calls) == 2)
+        await coordinator.stop()
+        # A new lifespan can restart the same process-owned coordinator.
+        coordinator.start()
+        coordinator.note_demand("tab", {"p"}, "p")
+        await async_wait_until(lambda: len(calls) == 3)
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(asyncio.run, first_loop()).result(timeout=10)
+        asyncio.run(second_loop())
+    finally:
+        asyncio.run(coordinator.stop())
+    assert calls == [True, True, True]
 
 
 def test_client_lease_union_expiry_and_local_bypass(tmp_path, monkeypatch):

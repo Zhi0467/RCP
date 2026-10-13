@@ -394,9 +394,9 @@ def test_saved_origins_use_exact_main_and_branch_chats_in_one_scan_per_target(
     scans = []
     original = type(main)._canonical_chat_files
 
-    def counted(service):
+    def counted(service, root):
         scans.append(service.history.graph_target.key)
-        return original(service)
+        return original(service, root)
 
     monkeypatch.setattr(type(main), "_canonical_chat_files", counted)
     client = signed_in_client(app)

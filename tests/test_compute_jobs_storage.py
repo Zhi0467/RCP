@@ -13,7 +13,7 @@ from rcp.server_ops.application_validation import (
 )
 from rcp.storage import AppStore
 
-from .storage_helpers import downgrade_artifacts
+from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 
 
 def job_record(job_id: str = "job-1", **updates) -> ComputeJobRecord:
@@ -64,6 +64,7 @@ def test_compute_jobs_migration_upgrades_version_eight_without_changing_records(
     previous = AppStore(path)
     identity = previous.space_id
     with previous.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE compute_jobs")
         downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 9")
@@ -113,6 +114,7 @@ def test_compute_job_label_migration_preserves_existing_rows(tmp_path) -> None:
     store = AppStore(path)
     store.create_compute_job(job_record())
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("ALTER TABLE compute_jobs DROP COLUMN label")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 12")
     upgraded = AppStore(path)
@@ -144,6 +146,7 @@ def test_probe_route_migration_retains_backend_readiness(tmp_path, backend_id, r
         status_tone="ready",
     )
     with previous.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE compute_backend_probes")
         connection.execute(
             "CREATE TABLE compute_backend_probes ("

@@ -8,6 +8,7 @@ import pytest
 
 from rcp.attachments import NodeReferenceSelector, PaperReferenceSelector
 from rcp.project_references import resolve_project_references
+from rcp.transport import SSHStateWorkspace
 from tests.test_branch_context import branch_services as branch_services
 
 
@@ -48,32 +49,28 @@ def test_node_snapshot_keeps_source_branch_and_coherent_head(branch_services, mo
         _resolve(branch_services, [selector])
 
 
-def test_paper_reference_reads_saved_canonical_after_confirmed_refresh(
-    branch_services, monkeypatch
+def test_paper_reference_reads_saved_canonical_from_completed_generation(
+    branch_services, monkeypatch, tmp_path
 ):
     paper = branch_services[0].paper
     paper.create()
     paper._save_draft("unsaved draft", None, None)
-    paper.workspace.remote = True
-    refreshes = []
-
-    def refresh():
-        refreshes.append(True)
-        paper.canonical_path.write_bytes(b"Fresh canonical paper\r\n")
-        return True
-
-    monkeypatch.setattr(paper.workspace, "refresh", refresh)
+    paper.canonical_path.write_bytes(b"Published canonical paper\r\n")
+    paper.workspace = SSHStateWorkspace(paper.workspace.root, "fixture", "/project")
+    paper.workspace._generations.copy(paper.workspace.root)
+    paper.canonical_path.write_bytes(b"Not yet published\r\n")
+    monkeypatch.setattr(paper.workspace, "refresh", lambda: pytest.fail("reference refreshed"))
     item = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])[0]
-    assert refreshes == [True]
-    assert item.content == b"Fresh canonical paper\r\n"
+    assert item.content == b"Published canonical paper\r\n"
     assert item.reference.version == hashlib.sha256(item.content).hexdigest()
-    monkeypatch.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
-    monkeypatch.setattr(paper.canonical_path.__class__, "read_bytes", lambda _: pytest.fail("read"))
-    with pytest.raises(ValueError):
-        _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
-    monkeypatch.undo()
-    monkeypatch.setattr(paper.workspace, "remote", True)
-    monkeypatch.setattr(paper.workspace, "refresh", lambda: False)
+    with monkeypatch.context() as oversized:
+        oversized.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
+        oversized.setattr(
+            paper.canonical_path.__class__, "read_bytes", lambda _: pytest.fail("read")
+        )
+        with pytest.raises(ValueError):
+            _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
+    paper.workspace = SSHStateWorkspace(tmp_path / "cold-mirror", "fixture", "/cold-project")
     with pytest.raises(ValueError):
         _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
 
