@@ -1164,7 +1164,7 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
     assert unavailable.reason == "the saved provider workspace is unavailable"
 
 
-def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None:
+def test_limited_child_resume_continues_its_saved_session(tmp_path: Path) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "limited-work-stage"
     stage.mkdir()
@@ -1192,10 +1192,9 @@ def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None
 
     outcome = resume_auto_research_child_work(background, episode.episode_id, worker_id)
 
-    assert outcome.disposition == "resume_unavailable"
-    assert outcome.task is None
-    assert outcome.replacement_command == "spawn"
-    assert outcome.reason == "the saved provider session reached its limit"
+    # A reached limit of any kind keeps the session: Resume rechecks it in place.
+    assert outcome.task is not None
+    assert outcome.task.request["session_id"] == "limited-session"
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before
 
 

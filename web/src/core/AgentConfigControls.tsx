@@ -80,6 +80,7 @@ export function AgentConfigChip({
   disabled = false,
   label,
   workLike = false,
+  optionCount = 0,
   onToggle,
 }: {
   project: ProjectSnapshot;
@@ -90,6 +91,8 @@ export function AgentConfigChip({
   label: string;
   /** The launch needs a Work-like capability, so its probe counts too. */
   workLike?: boolean;
+  /** Launch options switched on inside the picker, counted so a grant stays visible. */
+  optionCount?: number;
   onToggle: () => void;
 }) {
   const readiness = project.provider_readiness[value.run_on]?.[value.provider];
@@ -107,6 +110,7 @@ export function AgentConfigChip({
       <span className="agent-config-chip-text">
         {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
       </span>
+      {optionCount ? <strong className="agent-config-chip-count">{optionCount}</strong> : null}
       {readiness === undefined ? (
         <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
       ) : !launchProviderReady(project, value, workLike) ? (

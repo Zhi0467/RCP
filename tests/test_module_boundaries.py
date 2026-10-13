@@ -645,12 +645,14 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
 
     # Anywhere in the task runtime, the transcript path is obtained only to
     # append to it. A function that resolves that path must not read any file.
-    # Identity-only reads: the append helper dedupes by message UUID, and the
-    # steer entry point looks up the stored human message it addresses. Neither
-    # feeds transcript text to a provider.
+    # Identity-only reads: the append helper dedupes by message UUID, the
+    # steer entry point looks up the stored human message it addresses, and the
+    # steer recorder checks whether the turn's prompt is recorded. None feeds
+    # transcript text to a provider.
     identity_only = {
         ("runs/chat.py", "_append_chat_records"),
         ("runs/steering.py", "begin_chat_steer"),
+        ("runs/steering.py", "_record_steer"),
     }
     parsed: list[tuple[Path, ast.AST, dict[str, str]]] = []
     for package in TASK_RUNTIME:

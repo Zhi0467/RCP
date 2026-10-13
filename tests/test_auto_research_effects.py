@@ -12,6 +12,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.command_protocol import (
     ApplyArguments,
+    CommandResponse,
     EpisodeCommandRequest,
     ExperimentKickoffArguments,
     FinishCommandRequest,
@@ -24,6 +25,7 @@ from rcp.agents.command_protocol import (
     SpawnArguments,
     SpawnCommandRequest,
     StatusArguments,
+    StatusCommandRequest,
     StopCommandRequest,
     WatchGraphArguments,
     WatchGraphCommandRequest,
@@ -1550,7 +1552,10 @@ def test_finish_returns_complete_large_blocker_snapshot_with_compact_durable_exi
 
     assert first.status == replay.status == "invalid"
     assert len(first.result["blockers"]) == 500
-    assert replay.result == original_result
+    # The live inbox count is not part of the replayed snapshot.
+    assert {k: v for k, v in replay.result.items() if k != "inbox_pending"} == {
+        k: v for k, v in original_result.items() if k != "inbox_pending"
+    }
     assert len(first.model_dump_json().encode("utf-8")) > 64 * 1024
     assert (
         len(
@@ -2286,3 +2291,59 @@ def test_inbox_receipt_failure_rolls_back_notices_and_mail(tmp_path) -> None:
     assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == [notice]
     assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == [message]
     assert store.auto_research_inbox_receipt("atomic-harvest") is None
+
+
+def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path) -> None:
+    store, episode, root = _setup_auto_research(tmp_path)
+    dispatcher = AutoResearchCommandDispatcher(
+        store, _effects(store, BackgroundAgentTasks(store, _successful_stream))
+    )
+
+    def status(request_id: str):
+        return dispatcher.dispatch(
+            root.operation_id,
+            StatusCommandRequest(
+                mailbox_id=MAILBOX_ID,
+                request_id=request_id * 32,
+                credential=CREDENTIAL,
+                verb="status",
+                arguments={},
+            ),
+        )
+
+    assert "inbox_pending" not in status("1").result
+    record_auto_research_message(
+        store,
+        episode_id=episode.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=fabricated_authorizer(),
+        recipient_task_id=root.operation_id,
+        body="An answer arrived mid-turn.",
+    )
+    assert status("2").result["inbox_pending"] == {"notices": 0, "mail": 1}
+    # A reply served outside dispatch, such as a graph-history read, gets the same note.
+    read = CommandResponse(request_id="5" * 32, status="ok", result={"entries": []})
+    request = StatusCommandRequest(
+        mailbox_id=MAILBOX_ID,
+        request_id="5" * 32,
+        credential=CREDENTIAL,
+        verb="status",
+        arguments={},
+    )
+    noted = dispatcher.with_inbox_pending(root.operation_id, request, read)
+    assert noted.result["inbox_pending"] == {"notices": 0, "mail": 1}
+    harvested = dispatcher.dispatch(
+        root.operation_id,
+        InboxCommandRequest(
+            mailbox_id=MAILBOX_ID,
+            request_id="3" * 32,
+            credential=CREDENTIAL,
+            verb="inbox",
+            idempotency_key="harvest-answer",
+            arguments=InboxHarvestArguments(action="harvest"),
+        ),
+    )
+    # The inbox reply is the inbox itself and stays within its own size bound.
+    assert "inbox_pending" not in harvested.result
+    assert "inbox_pending" not in status("4").result

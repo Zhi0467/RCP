@@ -67,7 +67,7 @@ test("the Auto-research dialog meters only operational invocations", () => {
   assert.doesNotMatch(html, /<button[^>]*type="submit"[^>]*disabled/);
 });
 
-test("the Auto-research dialog names its branch beside Code worktree", () => {
+test("the Auto-research dialog names its branch and keeps launch options in the agent picker", () => {
   const render = (props = {}) =>
     renderToStaticMarkup(
       React.createElement(AutoResearchDialog, {
@@ -83,7 +83,8 @@ test("the Auto-research dialog names its branch beside Code worktree", () => {
   const html = render();
   const row = html.match(/<div class="branch-name-row">(.*?)<\/div>/s)?.[1] ?? "";
   assert.match(row, /placeholder="research-[a-z]{3}-\d{2}"/);
-  assert.equal((row.match(/type="checkbox"/g) ?? []).length, 1);
+  // Code worktree and Browser use live in the agent picker, not beside the branch.
+  assert.doesNotMatch(row, /type="checkbox"/);
   assert.doesNotMatch(html, /type="checkbox" checked="" disabled=""/);
   assert.doesNotMatch(html, /role="alert"/);
   assert.match(render({ branchNameRefusal: "branch_name_taken" }), /class="branch-name-warning"/);

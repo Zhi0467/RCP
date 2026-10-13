@@ -237,7 +237,8 @@ def _recoverable_failure(
         None,
     )
     if terminal == "session_limit":
-        return "session_limit", "clean" if request.role == "orchestrator" else "exact"
+        # A reached limit keeps its session; the recovery resumes it exactly.
+        return "session_limit", "exact"
     if terminal == "stale_session":
         # The provider no longer has this thread, so an exact resume fails the
         # same way every time whichever role asked for it.

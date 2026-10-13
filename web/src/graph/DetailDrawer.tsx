@@ -725,6 +725,11 @@ export function DetailDrawer({
                         disabled={nodeMutationDisabled || experimentRunBusy}
                         label="Experiment agent"
                         workLike={launchProfile?.work_like_capable}
+                        optionCount={
+                          Number(browserRequested) +
+                          Number((inheritedIsolation ?? isolation).code_worktree) +
+                          Number(graphTarget.kind === "main" && isolation.graph_isolation)
+                        }
                         onToggle={() => setLaunchOpen((open) => !open)}
                       />
                     )}
@@ -764,52 +769,61 @@ export function DetailDrawer({
                           : "Start episode"}
                     </button>
                   </div>
-                  <div className="experiment-isolation" role="group" aria-label="Isolation">
-                    {/* On a branch the Experiment runs there; there is no branch from a branch. */}
-                    {graphTarget.kind === "main" && (
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={isolation.graph_isolation}
-                          onChange={(event) =>
-                            setIsolation({ ...isolation, graph_isolation: event.target.checked })
-                          }
-                        />
-                        On a new branch
-                      </label>
-                    )}
-                    {graphTarget.kind === "main" && isolation.graph_isolation ? (
-                      <BranchNameField
-                        mode="experiment_loop"
-                        value={experimentBranch}
-                        disabled={nodeMutationDisabled || experimentRunBusy}
-                        refusal={experimentBranchNameRefusal}
-                        namesInUse={graphRefs?.map((ref) => ref.name)}
-                        onChange={setExperimentBranch}
+                  {/* A refused branch name reopens the picker so its warning shows. */}
+                  {(launchOpen || Boolean(experimentBranchNameRefusal)) &&
+                    project &&
+                    launchProfile &&
+                    launchConfig && (
+                      <AgentConfigControls
+                        project={project}
+                        value={launchConfig}
+                        onChange={setLaunchConfig}
+                        effectiveModel={launchEffectiveModel}
+                        workLikeCapable={launchProfile.work_like_capable}
+                        locked={nodeMutationDisabled || experimentRunBusy}
+                        showRunOn={false}
+                        compact
                       >
-                        {codeWorktreeToggle}
-                      </BranchNameField>
-                    ) : (
-                      codeWorktreeToggle
+                        <div
+                          className="agent-config-options"
+                          role="group"
+                          aria-label="Launch options"
+                        >
+                          {/* On a branch the Experiment runs there; there is no branch from a branch. */}
+                          {graphTarget.kind === "main" && (
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={isolation.graph_isolation}
+                                onChange={(event) =>
+                                  setIsolation({
+                                    ...isolation,
+                                    graph_isolation: event.target.checked,
+                                  })
+                                }
+                              />
+                              On a new branch
+                            </label>
+                          )}
+                          {codeWorktreeToggle}
+                          <BrowserToggle
+                            checked={browserRequested}
+                            disabled={nodeMutationDisabled || experimentRunBusy}
+                            onChange={setBrowserRequested}
+                          />
+                        </div>
+                        {graphTarget.kind === "main" && isolation.graph_isolation && (
+                          <BranchNameField
+                            mode="experiment_loop"
+                            value={experimentBranch}
+                            disabled={nodeMutationDisabled || experimentRunBusy}
+                            refusal={experimentBranchNameRefusal}
+                            namesInUse={graphRefs?.map((ref) => ref.name)}
+                            onChange={setExperimentBranch}
+                          />
+                        )}
+                      </AgentConfigControls>
                     )}
-                  </div>
-                  <BrowserToggle
-                    checked={browserRequested}
-                    disabled={nodeMutationDisabled || experimentRunBusy}
-                    onChange={setBrowserRequested}
-                  />
-                  {launchOpen && project && launchProfile && launchConfig && (
-                    <AgentConfigControls
-                      project={project}
-                      value={launchConfig}
-                      onChange={setLaunchConfig}
-                      effectiveModel={launchEffectiveModel}
-                      workLikeCapable={launchProfile.work_like_capable}
-                      locked={nodeMutationDisabled || experimentRunBusy}
-                      showRunOn={false}
-                      compact
-                    />
-                  )}
                   {startReasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">
                       {startReasons.map((reason) => (

@@ -64,9 +64,7 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
                 continue
             problem = tasks.store.experiment_episode_recovery_context_problem(previous.operation_id)
             if problem is None:
-                if tasks._failure_is_session_limit(previous):
-                    problem = "the saved provider session reached its limit"
-                elif tasks._failure_is_stale_session(previous):
+                if tasks._failure_is_stale_session(previous):
                     problem = "the provider no longer has the saved session"
                 elif tasks._continuation_context_is_unavailable(previous):
                     problem = "the saved continuation context is unavailable"

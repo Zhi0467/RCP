@@ -333,11 +333,6 @@ export function AutoResearchDialog({
                   onChange={(event) => setInstruction(event.target.value)}
                 />
               </label>
-              <BrowserToggle
-                checked={browserRequested}
-                disabled={busy}
-                onChange={setBrowserRequested}
-              />
               <div className="campaign-isolation" role="group" aria-label="Isolation">
                 <BranchNameField
                   mode="auto_research"
@@ -346,17 +341,7 @@ export function AutoResearchDialog({
                   refusal={branchNameRefusal}
                   namesInUse={branchNamesInUse}
                   onChange={setBranch}
-                >
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={codeWorktree}
-                      disabled={busy}
-                      onChange={(event) => setCodeWorktree(event.target.checked)}
-                    />
-                    Code worktree
-                  </label>
-                </BranchNameField>
+                />
               </div>
             </>
           )}
@@ -374,6 +359,22 @@ export function AutoResearchDialog({
               <p className="agent-config-note">
                 Experiments it spawns use the Settings Node chat profile.
               </p>
+              <div className="agent-config-options" role="group" aria-label="Launch options">
+                <BrowserToggle
+                  checked={browserRequested}
+                  disabled={busy}
+                  onChange={setBrowserRequested}
+                />
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={codeWorktree}
+                    disabled={busy}
+                    onChange={(event) => setCodeWorktree(event.target.checked)}
+                  />
+                  Code worktree
+                </label>
+              </div>
             </AgentConfigControls>
           )}
         </div>
@@ -393,6 +394,7 @@ export function AutoResearchDialog({
               disabled={busy}
               label="Orchestrator agent"
               workLike={launchProfile?.work_like_capable}
+              optionCount={Number(browserRequested) + Number(codeWorktree)}
               onToggle={() => setLaunchOpen((current) => !current)}
             />
           )}

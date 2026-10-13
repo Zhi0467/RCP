@@ -37,7 +37,6 @@ from rcp.agents.prompts import (
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.history import ReplayHalted
 from rcp.limits import (
-    AUTO_RESEARCH_MAIL_MAX_BYTES,
     COMPUTE_COMMAND_TIMEOUT_SECONDS,
     PATCH_SELF_CHECK_MAX_COUNT,
     PATCH_SELF_CHECK_POLL_SECONDS,
@@ -45,7 +44,6 @@ from rcp.limits import (
 from rcp.runs.auto_research_mail import (
     AUTO_RESEARCH_MAIL_HANDOFF_FILE,
     auto_research_mail_delivery,
-    parse_auto_research_mail_delivery,
     stage_auto_research_mail_delivery,
 )
 from rcp.runs.chat import (
@@ -197,17 +195,8 @@ def _stage_auto_research_child_work_mail(
         delivery_operation_id=delivery_operation_id,
         messages=claimed,
     )
-    if AUTO_RESEARCH_MAIL_HANDOFF_FILE in mailbox.entry_names():
-        retained = parse_auto_research_mail_delivery(
-            mailbox.read_text(
-                AUTO_RESEARCH_MAIL_HANDOFF_FILE,
-                max_bytes=AUTO_RESEARCH_MAIL_MAX_BYTES,
-            )
-        )
-        if retained != delivery:
-            raise ValueError("Retained child Work mail differs from its durable claimed batch.")
-    else:
-        stage_auto_research_mail_delivery(mailbox, delivery)
+    # The durable claim is the record; restage it over any earlier copy.
+    stage_auto_research_mail_delivery(mailbox, delivery)
     return str(mailbox.workspace / AUTO_RESEARCH_MAIL_HANDOFF_FILE)
 
 

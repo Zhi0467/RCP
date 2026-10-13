@@ -145,6 +145,7 @@ def answer_question(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Retry delivery even when the answer was already committed: an earlier
         # owner call may have failed. Owner delivery is independently idempotent.
+        reconcile = False
         try:
             episode = (
                 store.episode(question.origin.owner_id)
@@ -160,7 +161,14 @@ def answer_question(
                         recipient_task_id=mail.recipient_task_id,
                     )
             else:
-                request.app.state.reconcile_question_answers(project_id)
+                reconcile = True
+        except Exception:
+            logger.exception("Question %s committed; immediate delivery failed", question_id)
+    if reconcile:
+        # Outside the admission fence: a steered answer waits for the provider's
+        # acknowledgment, as the steer route does.
+        try:
+            request.app.state.reconcile_question_answers(project_id)
         except Exception:
             logger.exception("Question %s committed; immediate delivery failed", question_id)
     return _serialize(store, store.get_question(question_id) or question)

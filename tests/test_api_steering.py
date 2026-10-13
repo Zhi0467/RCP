@@ -598,3 +598,110 @@ time.sleep(120)
             assert len(capture.read_text().splitlines()) == 2
     finally:
         client.close()
+
+
+@pytest.mark.parametrize(
+    "delivery", ["delivered", "refused", "unrecorded", "ask_waiting", "ask_returned"]
+)
+def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
+    running_chat, monkeypatch, delivery
+):
+    from rcp.runs import steering
+    from rcp.storage.question_models import QuestionOrigin
+
+    run = running_chat
+    store = run.background.store
+    task = store.agent_task(run.operation_id)
+    store.checkpoint_agent_task(
+        run.operation_id, native_session_id="live-session", stage_root=task.stage_root or "/stage"
+    )
+    task = store.agent_task(run.operation_id)
+    # An earlier, finished turn in this chat asked; the running turn has its binding.
+    with store.connection() as connection:
+        row = dict(
+            connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (run.operation_id,)
+            ).fetchone()
+        )
+        row.update(operation_id="earlier-turn", status="succeeded")
+        connection.execute(
+            f"INSERT INTO graph_runs ({','.join(row)}) VALUES ({','.join('?' * len(row))})",
+            tuple(row.values()),
+        )
+    asker = store.agent_task("earlier-turn")
+    question = store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="chat",
+            project_id=run.project_id,
+            owner_id=run.chat_id,
+            operation_id=asker.operation_id,
+            provider="codex",
+            native_session_id="live-session",
+            stage_root=task.stage_root,
+            stage_host=task.stage_host,
+            capability=task.dispatch_authority.task_contract,
+            graph_target=task.graph_target,
+        ),
+        key="route",
+        question="Which route?",
+    )
+    if delivery == "refused":
+        run.defer().set_result(ProviderSteerReceipt("refused", "Turn ended."))
+    if delivery == "ask_waiting":
+        # A later turn repeated the ask and is still polling it.
+        store.question_activity.pending(question.question_id, "later-call")
+    if delivery == "ask_returned":
+        # Its ask call has just handed back the answer; the receipt is still coming.
+        store.question_activity.returned(question.question_id)
+    if delivery == "unrecorded":
+        # The provider took the answer, then the transcript write failed.
+        def fail(*_args, **_kwargs):
+            raise OSError("transcript unavailable")
+
+        monkeypatch.setattr(steering, "_record_steer", fail)
+
+    response = run.client.post(
+        f"/api/projects/{run.project_id}/questions/{question.question_id}/answer",
+        json={"answer": "Use route A", "choices": []},
+    )
+
+    assert response.status_code == 200, response.text
+    steered = [(turn, text) for turn, _id, text in run.receipts]
+    assert steered == ([] if delivery.startswith("ask_") else [("owned-turn", "Use route A")])
+    monkeypatch.undo()
+    run.finish()
+    # Settlement records receipt or claims the follow-up just after the turn settles.
+    settled = wait_until(
+        lambda: (
+            (
+                (current := store.get_question(question.question_id)).client_receipt_operation_id
+                or current.followup_operation_id
+            )
+            and current
+        ),
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="the answer was neither received nor given a follow-up",
+    )
+    answers = wait_until(
+        lambda: [
+            item
+            for item in run.app.state.service.chat_transcript(run.chat_id).messages
+            if item.text == "Use route A"
+        ],
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="the answer never reached the transcript",
+    )
+    assert len(answers) == 1
+    answer = answers[0]
+    if delivery in {"delivered", "unrecorded"}:
+        # An unrecorded steer is never redelivered by a follow-up, and its record
+        # is repaired onto the turn that received it.
+        assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
+            run.operation_id,
+            None,
+        )
+        assert (answer.operation_id, answer.steering.status) == (run.operation_id, "delivered")
+    else:
+        # The chat shows the answer once, on the turn that actually receives it.
+        assert settled.client_receipt_revision is None
+        assert (answer.operation_id, answer.steering) == (settled.followup_operation_id, None)

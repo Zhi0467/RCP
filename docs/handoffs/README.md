@@ -1,5 +1,6 @@
 # Active implementation handoffs
 
+- [Provider account monitor](provider-account-monitor.md): design only; waits for an explicit start.
 - [Unified tab refresh](unified-tab-refresh.md): all slices implemented; remaining: live SSH-host measurement and review fixes.
 
 Unfinished agent-link work is tracked in issue #280.

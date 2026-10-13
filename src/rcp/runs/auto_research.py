@@ -907,6 +907,39 @@ class AutoResearchCommandDispatcher:
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
         context = self._context(operation_id)
+        return self._with_inbox_pending(
+            context, request, self._dispatch(context, operation_id, request)
+        )
+
+    def with_inbox_pending(
+        self, operation_id: str, request: CommandRequest, response: CommandResponse
+    ) -> CommandResponse:
+        """Add the pending-inbox note to a reply served outside `dispatch`."""
+        return self._with_inbox_pending(self._context(operation_id), request, response)
+
+    def _with_inbox_pending(
+        self,
+        context: AutoResearchCommandContext,
+        request: CommandRequest,
+        response: CommandResponse,
+    ) -> CommandResponse:
+        # An inbox reply is the inbox itself, already bounded to its response size.
+        if context.request.role != "orchestrator" or request.verb == "inbox":
+            return response
+        # Nothing is injected into a live turn, so every reply says what is pending
+        # now; the orchestrator need not poll to learn of new input. A Harvest
+        # takes a bounded batch, so large counts may take several.
+        pending = self.store.auto_research_inbox_pending_counts(context.episode.episode_id)
+        if not any(pending.values()):
+            return response
+        return response.model_copy(update={"result": {**response.result, "inbox_pending": pending}})
+
+    def _dispatch(
+        self,
+        context: AutoResearchCommandContext,
+        operation_id: str,
+        request: CommandRequest,
+    ) -> CommandResponse:
         if request.mailbox_id == "":  # already schema-validated; keeps the binding explicit here
             raise AutoResearchCommandInvalid("The Auto-research command mailbox is missing.")
 

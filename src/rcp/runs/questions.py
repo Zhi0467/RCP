@@ -63,7 +63,11 @@ def handle_ask(
         attempt = store.question_activity.pending(question.question_id, request.call_id)
     else:
         attempt = None
-        if question.state != "pending":
+        if question.state == "answered":
+            # The answer is in flight to the client until its receipt; keep that
+            # visible so no steer delivers it a second time.
+            store.question_activity.returned(question.question_id)
+        elif question.state != "pending":
             store.question_activity.forget(question.question_id)
     result = AskResult(
         attempt=attempt,

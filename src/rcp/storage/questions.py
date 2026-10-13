@@ -11,6 +11,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import ASK_ANSWER_MAX_LENGTH
 from rcp.storage.digest import append_question_attention
 from rcp.storage.mixin_base import StoreMixinBase
+from rcp.storage.models import AgentTaskRecord
 from rcp.storage.question_models import (
     QuestionArgumentConflict,
     QuestionOrigin,
@@ -28,6 +29,33 @@ _EPISODE_ANCESTORS = """
          AND episode.project_id=ancestors.project_id
     )
 """
+
+
+def question_receiver_binds(origin: QuestionOrigin, task: AgentTaskRecord) -> bool:
+    """Whether a turn runs under the asking turn's exact binding.
+
+    Continuation receipt and a live steer of the answer share this rule, so a
+    steered answer can only land where its receipt will later be accepted.
+    """
+    if (
+        task.project_id != origin.project_id
+        or task.request.get("provider") != origin.provider
+        or task.request.get("mode") != ("discuss" if origin.capability == "discuss" else "work")
+        or task.native_session_id != origin.native_session_id
+        or task.stage_root != origin.stage_root
+        or (task.stage_host or "") != (origin.stage_host or "")
+        or task.write_scope_fingerprint != origin.write_scope_fingerprint
+        or task.graph_target != origin.graph_target
+        or task.dispatch_authority is None
+        or task.dispatch_authority.profile != "ordinary"
+        or task.dispatch_authority.task_contract != origin.capability
+    ):
+        return False
+    return origin.owner_kind != "chat" or (
+        task.kind in {"node_chat", "project_chat"}
+        and task.episode_id is None
+        and task.request.get("chat_id") == origin.owner_id
+    )
 
 
 def migrate_questions(connection: sqlite3.Connection) -> None:
@@ -368,28 +396,10 @@ class QuestionStoreMixin(StoreMixinBase):
                 or question.client_receipt_revision is not None
                 or question.followup_operation_id is not None
                 or task.status != "succeeded"
-                or task.project_id != origin.project_id
-                or task.request.get("provider") != origin.provider
-                or task.request.get("mode")
-                != ("discuss" if origin.capability == "discuss" else "work")
-                or task.native_session_id != origin.native_session_id
-                or task.stage_root != origin.stage_root
-                or (task.stage_host or "") != (origin.stage_host or "")
-                or task.write_scope_fingerprint != origin.write_scope_fingerprint
-                or task.graph_target != origin.graph_target
-                or task.dispatch_authority is None
-                or task.dispatch_authority.profile != "ordinary"
-                or task.dispatch_authority.task_contract != origin.capability
+                or not question_receiver_binds(origin, task)
             ):
                 return False
-            if origin.owner_kind == "chat":
-                if (
-                    task.kind not in {"node_chat", "project_chat"}
-                    or task.episode_id is not None
-                    or task.request.get("chat_id") != origin.owner_id
-                ):
-                    return False
-            else:
+            if origin.owner_kind != "chat":
                 episode_id = task.episode_id
                 seen: set[str] = set()
                 while episode_id and episode_id not in seen:

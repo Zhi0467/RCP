@@ -14,7 +14,6 @@ from rcp.limits import (
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
 )
-from rcp.providers import classify_terminal_error
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -37,6 +36,27 @@ from rcp.storage.models import (
     EpisodeReportConflict,
     _required_timestamp,
 )
+
+# The one selection a Harvest consumes and the pending counts report.
+_PENDING_NOTICES = """FROM auto_research_lifecycle_notices
+    WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL"""
+_PENDING_MAIL = """FROM auto_research_messages
+    WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL"""
+
+
+def _pending_inbox_rows(
+    connection: sqlite3.Connection, episode_id: str, root_operation_id: str | None
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    """Pending notices and root-addressed mail, oldest first."""
+
+    notices = connection.execute(
+        f"SELECT * {_PENDING_NOTICES} ORDER BY created_at, notice_id", (episode_id,)
+    ).fetchall()
+    mail = connection.execute(
+        f"SELECT * {_PENDING_MAIL} ORDER BY created_at, message_id",
+        (episode_id, root_operation_id),
+    ).fetchall()
+    return notices, mail
 
 
 class AutoResearchInboxClearTooLarge(ValueError):
@@ -1324,9 +1344,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         if diagnostic:
             payload["diagnostic"] = diagnostic
         if status in {"paused", "failed", "interrupted"}:
-            unavailable = (
-                status != "paused" and classify_terminal_error(diagnostic or "") == "session_limit"
-            )
+            unavailable = False
             receipt_rows = connection.execute(
                 """
                 SELECT category, payload_json FROM graph_run_receipts
@@ -1344,9 +1362,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 except (TypeError, json.JSONDecodeError):
                     continue
                 if (
-                    receipt["category"] == "provider_terminal_error"
-                    and receipt_payload.get("classification") == "session_limit"
-                ) or (
                     receipt["category"] == "continuation_context_unavailable"
                     and receipt_payload.get("retry_required") is True
                 ):
@@ -1668,6 +1683,22 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             )
         return [notice.notice_id for notice in notices]
 
+    def auto_research_inbox_pending_counts(self, episode_id: str) -> dict[str, int]:
+        """Count everything pending through the Harvest selection, before its batch bound."""
+
+        with self.connection() as connection:
+            root = connection.execute(
+                "SELECT root_operation_id FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            # Counts only: never load the bodies a routine command does not show.
+            notices = connection.execute(
+                f"SELECT COUNT(*) {_PENDING_NOTICES}", (episode_id,)
+            ).fetchone()[0]
+            mail = connection.execute(
+                f"SELECT COUNT(*) {_PENDING_MAIL}", (episode_id, root[0] if root else None)
+            ).fetchone()[0]
+        return {"notices": notices, "mail": mail}
+
     def process_auto_research_lifecycle_inbox(
         self,
         episode_id: str,
@@ -1703,23 +1734,8 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     raise ValueError("the lifecycle inbox effect id already names another command")
                 return stored
             episode = self._load_auto_research_episode(connection, episode_id)
-            rows = connection.execute(
-                """
-                SELECT * FROM auto_research_lifecycle_notices
-                WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
-                ORDER BY created_at, notice_id
-                """,
-                (episode_id,),
-            ).fetchall()
+            rows, mail_rows = _pending_inbox_rows(connection, episode_id, episode.root_operation_id)
             pending = [self._lifecycle_notice_record(row) for row in rows]
-            mail_rows = connection.execute(
-                """
-                SELECT * FROM auto_research_messages
-                WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
-                ORDER BY created_at, message_id
-                """,
-                (episode_id, episode.root_operation_id),
-            ).fetchall()
             mail = [self._auto_research_message_record(row) for row in mail_rows]
             if mail and (not delivery_operation_id or not delivery_operation_id.strip()):
                 raise ValueError("mail harvest requires the consuming turn operation id")
