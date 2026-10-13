@@ -123,6 +123,8 @@ class _Source:
     scope: list[str]
     inventory: tuple[_PatchFile, ...]
     metadata: GraphBranchMetadata | None = None
+    # Retained history without scope provenance reads as a degraded, empty prefix.
+    scope_failure: ReplayFailure | None = None
 
 
 @dataclass
@@ -211,10 +213,21 @@ class ProjectHistoryEngine:
             scope = json.loads(scope_path.read_bytes())["truth_scope"]
             if not isinstance(scope, list) or any(not isinstance(item, str) for item in scope):
                 raise ValueError("invalid canonical scope provenance")
-        elif main_inventory:
-            raise ValueError("canonical scope provenance is missing")
         else:
             scope = list(manifest.project.truth_scope)
+        scope_failure = None
+        if not scope_path.exists() and main_inventory:
+            from rcp.history.manager import _patch_failure_created_at
+
+            scope_failure = ReplayFailure(
+                revision=main_inventory[0].revision,
+                created_at=_patch_failure_created_at(Path(main_inventory[0].path)),
+                code="scope-provenance-missing",
+                message=(
+                    f"Canonical scope provenance {scope_path} is absent while Patch history "
+                    "exists; replay is refused rather than substituting the current manifest scope."
+                ),
+            )
         context = build_validation_context(
             manifest, GraphState(project_truth_scope=scope), mode="replay"
         )
@@ -239,6 +252,7 @@ class ProjectHistoryEngine:
                 key,
                 scope,
                 main_inventory,
+                scope_failure=scope_failure,
             )
         }
         for target in targets:
@@ -333,9 +347,11 @@ class ProjectHistoryEngine:
             states = OrderedDict(old.states) if reusable and old else OrderedDict()
             state_costs = dict(old.state_costs) if reusable and old else {}
         patches: list[Patch] = []
-        structural_failure: ReplayFailure | None = None
+        structural_failure: ReplayFailure | None = source.scope_failure
         for entry, (_, content) in zip(
-            source.inventory[start:], contents[start - verified :], strict=True
+            [] if source.scope_failure else source.inventory[start:],
+            contents[start - verified :],
+            strict=False,
         ):
             try:
                 patches.append(self.manager._decode_persisted_patch(content.decode()))
@@ -360,7 +376,9 @@ class ProjectHistoryEngine:
             patches, target=source.target, initial_transition_id=before_head.transition_id
         )
         if failure is not None:
-            raise ValueError(f"invalid retained transition chain: {failure.code}")
+            # A broken transition chain keeps the coherent prefix before it, read-only.
+            patches = [patch for patch in patches if patch.revision < failure.revision]
+            structural_failure = failure
         all_patches = [*previous.patches, *patches]
         stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
         stored_index = (

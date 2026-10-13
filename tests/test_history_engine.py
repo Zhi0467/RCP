@@ -570,3 +570,25 @@ def test_replay_validation_halt_keeps_a_readable_prefix(history):
     assert [step.patch.revision for step in steps] == [1, 2]
     assert "ev/later" in engine.state_at(head(engine, "main@2")).nodes
     assert engine.log("ev/later", head(engine, "main@2")).entries
+
+
+def test_broken_chain_and_missing_scope_read_as_degraded_prefixes(history):
+    engine = history.history_engine
+    history.append(_branch_patch("ev/later"))
+    history.append(_branch_patch("ev/third"))
+    path = history._patch_paths()[-1]
+    original = path.read_text()
+    document = json.loads(original)
+    document["transition"]["pre_head"]["transition_id"] = "diverged"
+    path.write_text(json.dumps(document))
+    result, steps = engine.projection(GraphTargetRef())
+    assert result.state.replay_status == "degraded"
+    assert result.state.replay_failure.revision == 3
+    assert [step.patch.revision for step in steps] == [1, 2]
+
+    path.write_text(original)
+    (history.root / "scope-base.json").unlink()
+    result, steps = engine.projection(GraphTargetRef())
+    assert result.state.replay_status == "degraded"
+    assert result.state.replay_failure.code == "scope-provenance-missing"
+    assert not steps
