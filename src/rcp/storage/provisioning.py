@@ -300,6 +300,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 (self.now(), canonical_request_id, current.project_id),
             )
             for table in (
+                "research_view_pins",
                 "notification_preferences",
                 "notification_outbox",
                 "notification_graph_markers",
