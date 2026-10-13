@@ -78,6 +78,8 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   // read applies, and it never drops a record made after it was requested.
   const taskSequence = useRef(0);
   const appliedTaskRead = useRef(0);
+  // The mark a project restore or reset left; no read has applied while it stands.
+  const restoredTaskRead = useRef(0);
   const localTaskWrites = useRef(new Map<string, number>());
 
   const rememberActiveTasks = useCallback((nextTasks: AgentTask[]) => {
@@ -227,8 +229,18 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   // Reads requested for the previous project state never apply to the new one.
   const discardPendingTaskReads = useCallback(() => {
     appliedTaskRead.current = ++taskSequence.current;
+    restoredTaskRead.current = appliedTaskRead.current;
     localTaskWrites.current.clear();
   }, []);
+
+  /** Apply a list read that began before this project's tab state was restored,
+   *  unless a read started after the restore already applied; false when dropped. */
+  const replaceTasksReadBeforeRestore = useCallback(
+    (nextTasks: AgentTask[]): boolean =>
+      appliedTaskRead.current === restoredTaskRead.current &&
+      replaceTasks(nextTasks, appliedTaskRead.current),
+    [replaceTasks],
+  );
 
   const resetProjectTasks = useCallback(() => {
     discardPendingTaskReads();
@@ -274,6 +286,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     activityTask,
     beginTasksRead,
     replaceTasks,
+    replaceTasksReadBeforeRestore,
     consumeTerminalTasks,
     upsertTask,
     recordStartedTask,

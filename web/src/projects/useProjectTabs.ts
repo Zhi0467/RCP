@@ -114,6 +114,26 @@ export function inactiveProjectTabState<T>(
   return cache.get(requestedProjectId) ?? null;
 }
 
+/** Rewrites every retained ref of an open, inactive project: main and each visited branch. */
+export function updateInactiveProjectTabStates<T>(
+  cache: Map<string, { state: T | null }>,
+  tabs: ProjectTab[],
+  activeProjectId: string | null,
+  requestedProjectId: string,
+  update: (state: T) => T,
+): boolean {
+  if (activeProjectId === requestedProjectId || !tabs.some((tab) => tab.id === requestedProjectId))
+    return false;
+  let updated = false;
+  for (const [key, entry] of cache) {
+    if (!entry.state) continue;
+    if (key !== requestedProjectId && !key.startsWith(`${requestedProjectId}:branch:`)) continue;
+    entry.state = update(entry.state);
+    updated = true;
+  }
+  return updated;
+}
+
 export function startProjectCachePolling(
   clock: ProjectCachePollingClock,
   visibility: ProjectCachePollingVisibility,
@@ -452,6 +472,17 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       )?.state ?? null,
     [],
   );
+  const updateInactiveProjectStates = useCallback(
+    (id: string, update: (state: T) => T) =>
+      updateInactiveProjectTabStates(
+        projectTabStatesRef.current,
+        openProjectTabsRef.current,
+        activeProjectId.current,
+        id,
+        update,
+      ),
+    [],
+  );
   const isProjectTabOpen = useCallback(
     (id: string) => openProjectTabsRef.current.some((tab) => tab.id === id),
     [],
@@ -564,6 +595,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
+    updateInactiveProjectStates,
     isProjectTabOpen,
     projectIdsForHeartbeat,
     adjacentProjectId,

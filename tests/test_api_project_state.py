@@ -301,7 +301,9 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
     response = asyncio.run(drive())
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert isinstance(body.pop("task_status_signal"), str)
+    assert body == {
         "revision": initial["revision"],
         "snapshot_freshness": "fresh",
         "last_remote_sync_at": None,
@@ -313,6 +315,39 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "steer_epoch": 0,
     }
     assert probes == 1
+
+
+def test_heartbeat_task_status_signal_moves_on_finish_not_progress(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    store = app.state.background_tasks.store
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="background-task",
+            project_id=project_id,
+            kind="project_chat",
+            status="running",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+        )
+    )
+    client.get(f"/api/projects/{project_id}")  # warms the display cache, as a page does
+
+    def signal() -> str:
+        return client.get(f"/api/projects/{project_id}/cached/revision").json()[
+            "task_status_signal"
+        ]
+
+    running = signal()
+    store.update_agent_task_message("background-task", "still working")
+    # Progress moves neither the newest task id nor this signal.
+    assert signal() == running
+    store.complete_agent_task("background-task", applied_revision=None, result={})
+    assert signal() != running
 
 
 def test_heartbeat_signals_a_settings_save_the_page_has_not_rendered(manifest, tmp_path) -> None:
