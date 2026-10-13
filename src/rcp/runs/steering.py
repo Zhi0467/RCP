@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from concurrent.futures import Future
 from datetime import UTC, datetime
+from pathlib import Path
 
 from rcp.background import BackgroundAgentTasks
 from rcp.limits import PROVIDER_STEER_ACK_TIMEOUT_SECONDS
@@ -100,6 +101,79 @@ def _message(record: _StoredChatRecord) -> ChatMessage:
     )
 
 
+def _chat_records(path: Path) -> list[_StoredChatRecord]:
+    if not path.exists():
+        return []
+    return _fold_chat_receipts(
+        [
+            _StoredChatRecord.model_validate_json(line)
+            for line in path.read_text().split("\n")
+            if line
+        ]
+    )
+
+
+def _record_steer(
+    service: ProjectService,
+    request: RunRequest,
+    record: AgentTaskRecord,
+    *,
+    message_id: str,
+    text: str,
+    receipt: SteeringReceipt,
+) -> _StoredChatRecord:
+    """Append one steer to the transcript inside the caller's transaction.
+
+    Reads the transcript for identity only: whether the turn's prompt is recorded.
+    """
+    path = _chat_path(service, request)
+    records = _chat_records(path)
+    timestamp = datetime.now(UTC).isoformat()
+    common = {
+        "sessionId": request.chat_id,
+        "nativeSessionId": record.native_session_id,
+        "nodeId": request.node_id,
+        "chatScope": request.chat_scope,
+        "provider": request.provider,
+        "model": request.model or "provider-default",
+        "reasoning": request.reasoning,
+        "executionMachine": request.run_on,
+        "cwd": str(service.manifest.research_dir.parent),
+        "timestamp": timestamp,
+        "operationId": record.operation_id,
+        "mode": request.mode,
+        "trigger": "human",
+        "activeComputeIds": request.active_compute_ids,
+        "type": "user",
+        "role": "user",
+    }
+    stored = _StoredChatRecord.model_validate(
+        {**common, "uuid": message_id, "text": text, "steering": receipt.model_dump()}
+    )
+    # The normal exchange arrives only on completion. Reserve its prompt first
+    # so a steer cannot become the conversation title or precede its own turn.
+    if not any(
+        item.operation_id == record.operation_id and item.role == "user" and item.steering is None
+        for item in records
+    ):
+        _append_chat_records(
+            service,
+            path,
+            [
+                {
+                    **common,
+                    "uuid": str(uuid.uuid4()),
+                    "text": request.message,
+                    "timestamp": record.created_at,
+                    "attachments": [item.model_dump(mode="json") for item in request.attachments],
+                }
+            ],
+            reserve_prompt=True,
+        )
+    _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
+    return stored
+
+
 def begin_chat_steer(
     service: ProjectService,
     background: BackgroundAgentTasks,
@@ -116,17 +190,7 @@ def begin_chat_steer(
     request = load_stored_request(RunRequest, record.request, operation_id=record.operation_id)
     path = _chat_path(service, request)
     with service.history.workspace.transaction():
-        records = (
-            _fold_chat_receipts(
-                [
-                    _StoredChatRecord.model_validate_json(line)
-                    for line in path.read_text().split("\n")
-                    if line
-                ]
-            )
-            if path.exists()
-            else []
-        )
+        records = _chat_records(path)
         existing = next((item for item in records if item.uuid == message_id), None)
         if existing is not None:
             if (
@@ -159,53 +223,14 @@ def begin_chat_steer(
             refusal
             or "Provider acknowledgment has not been recorded; this message will not be resent.",
         )
-        timestamp = datetime.now(UTC).isoformat()
-        common = {
-            "sessionId": request.chat_id,
-            "nativeSessionId": current.native_session_id,
-            "nodeId": request.node_id,
-            "chatScope": request.chat_scope,
-            "provider": request.provider,
-            "model": request.model or "provider-default",
-            "reasoning": request.reasoning,
-            "executionMachine": request.run_on,
-            "cwd": str(service.manifest.research_dir.parent),
-            "timestamp": timestamp,
-            "operationId": record.operation_id,
-            "mode": request.mode,
-            "trigger": "human",
-            "activeComputeIds": request.active_compute_ids,
-            "type": "user",
-            "role": "user",
-        }
-        stored = _StoredChatRecord.model_validate(
-            {**common, "uuid": message_id, "text": text, "steering": receipt.model_dump()}
+        stored = _record_steer(
+            service,
+            request,
+            current,
+            message_id=message_id,
+            text=text,
+            receipt=receipt,
         )
-        # The normal exchange arrives only on completion. Reserve its prompt first
-        # so a steer cannot become the conversation title or precede its own turn.
-        if not any(
-            item.operation_id == record.operation_id
-            and item.role == "user"
-            and item.steering is None
-            for item in records
-        ):
-            _append_chat_records(
-                service,
-                path,
-                [
-                    {
-                        **common,
-                        "uuid": str(uuid.uuid4()),
-                        "text": request.message,
-                        "timestamp": record.created_at,
-                        "attachments": [
-                            item.model_dump(mode="json") for item in request.attachments
-                        ],
-                    }
-                ],
-                reserve_prompt=True,
-            )
-        _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
     # Recorded before delivery, so other members see a queued steer too.
     background.bump_steer_revision(record.operation_id, record.project_id)
     if refusal:
@@ -272,10 +297,11 @@ def steer_question_answer(
     """Deliver a chat answer into the chat's running turn instead of queueing a new one.
 
     Only a turn bound exactly like the asker can receive it, so the receipt rule that
-    retires the follow-up accepts it. A provider acknowledgment becomes that turn's
-    answer acknowledgment; its successful settlement records receipt. Refused or
-    unknown delivery leaves the answer eligible for its ordinary follow-up turn.
-    Returns whether the answer was recorded in the transcript as a steer.
+    retires the follow-up accepts it. Unlike a composer steer, the transcript records
+    the answer only after the provider acknowledges it, as that turn's steer; refused
+    or unknown delivery leaves the answer to its ordinary projection and follow-up
+    turn, so the chat never shows a refusal for an answer that still arrives.
+    Returns whether the answer was delivered and recorded as a steer.
     """
     origin = question.origin
     if origin.owner_kind != "chat" or question.state != "answered":
@@ -292,32 +318,41 @@ def steer_question_answer(
     ):
         return False
     state = chat_steering_state(background, target)
-    if not state.can_steer or state.turn_id is None:
+    control = background.live_control(target.operation_id)
+    if not state.can_steer or state.turn_id is None or control is None:
         return False
     message_id = question_answer_message_id(question)
-    message = finish_chat_steer(
-        service,
-        background,
-        target,
-        begin_chat_steer(
+    text = question_answer_text(question)
+    try:
+        delivered = (
+            control.steer(state.turn_id, message_id, text)
+            .result(timeout=PROVIDER_STEER_ACK_TIMEOUT_SECONDS)
+            .status
+            == "delivered"
+        )
+    except Exception:
+        delivered = False
+    if not delivered:
+        return False
+    request = load_stored_request(RunRequest, target.request, operation_id=target.operation_id)
+    with service.history.workspace.transaction():
+        _record_steer(
             service,
-            background,
+            request,
             target,
             message_id=message_id,
-            attempt=target.attempt,
-            expected_turn_id=state.turn_id,
-            text=question_answer_text(question),
-        ),
-    )
-    if message.steering is not None and message.steering.status == "delivered":
-        store.record_agent_task_receipt(
-            target.operation_id,
-            "question_answer_acknowledged",
-            {
-                "question_id": question.question_id,
-                "answer_revision": question.answer_revision,
-                "request_id": message_id,
-            },
-            tier="diagnostic",
+            text=text,
+            receipt=_receipt(target.attempt, state.turn_id, "delivered", None),
         )
+    background.bump_steer_revision(target.operation_id, target.project_id)
+    store.record_agent_task_receipt(
+        target.operation_id,
+        "question_answer_acknowledged",
+        {
+            "question_id": question.question_id,
+            "answer_revision": question.answer_revision,
+            "request_id": message_id,
+        },
+        tier="diagnostic",
+    )
     return True

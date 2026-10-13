@@ -640,16 +640,20 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_cha
 
     assert response.status_code == 200, response.text
     assert [(turn, text) for turn, _id, text in run.receipts] == [("owned-turn", "Use route A")]
-    answer = run.app.state.service.chat_transcript(run.chat_id).messages[-1]
-    assert (answer.text, answer.operation_id) == ("Use route A", run.operation_id)
-    assert answer.steering.status == delivery
     run.finish()
     settled = store.get_question(question.question_id)
+    answer = next(
+        item
+        for item in run.app.state.service.chat_transcript(run.chat_id).messages
+        if item.text == "Use route A"
+    )
     if delivery == "delivered":
         assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
             run.operation_id,
             None,
         )
+        assert (answer.operation_id, answer.steering.status) == (run.operation_id, "delivered")
     else:
+        # The chat shows the answer once, on the turn that actually receives it.
         assert settled.client_receipt_revision is None
-        assert settled.followup_operation_id is not None
+        assert (answer.operation_id, answer.steering) == (settled.followup_operation_id, None)

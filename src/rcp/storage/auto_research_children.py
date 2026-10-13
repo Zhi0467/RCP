@@ -39,6 +39,30 @@ from rcp.storage.models import (
 )
 
 
+def _pending_inbox_rows(
+    connection: sqlite3.Connection, episode_id: str, root_operation_id: str | None
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
+    """The one selection a Harvest consumes: pending notices and root-addressed mail."""
+
+    notices = connection.execute(
+        """
+        SELECT * FROM auto_research_lifecycle_notices
+        WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
+        ORDER BY created_at, notice_id
+        """,
+        (episode_id,),
+    ).fetchall()
+    mail = connection.execute(
+        """
+        SELECT * FROM auto_research_messages
+        WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
+        ORDER BY created_at, message_id
+        """,
+        (episode_id, root_operation_id),
+    ).fetchall()
+    return notices, mail
+
+
 class AutoResearchInboxClearTooLarge(ValueError):
     """The all-or-nothing Clear snapshot cannot fit its command response."""
 
@@ -1669,27 +1693,14 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         return [notice.notice_id for notice in notices]
 
     def auto_research_inbox_pending_counts(self, episode_id: str) -> dict[str, int]:
-        """Count what a Harvest would consume now, by the same selection."""
+        """Count what a Harvest would consume now, through its own selection."""
 
         with self.connection() as connection:
             root = connection.execute(
                 "SELECT root_operation_id FROM episodes WHERE episode_id = ?", (episode_id,)
             ).fetchone()
-            notices = connection.execute(
-                """
-                SELECT COUNT(*) FROM auto_research_lifecycle_notices
-                WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
-                """,
-                (episode_id,),
-            ).fetchone()[0]
-            mail = connection.execute(
-                """
-                SELECT COUNT(*) FROM auto_research_messages
-                WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
-                """,
-                (episode_id, root[0] if root else None),
-            ).fetchone()[0]
-        return {"notices": int(notices), "mail": int(mail)}
+            notices, mail = _pending_inbox_rows(connection, episode_id, root[0] if root else None)
+        return {"notices": len(notices), "mail": len(mail)}
 
     def process_auto_research_lifecycle_inbox(
         self,
@@ -1726,23 +1737,8 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     raise ValueError("the lifecycle inbox effect id already names another command")
                 return stored
             episode = self._load_auto_research_episode(connection, episode_id)
-            rows = connection.execute(
-                """
-                SELECT * FROM auto_research_lifecycle_notices
-                WHERE episode_id = ? AND delivered_at IS NULL AND acknowledged_at IS NULL
-                ORDER BY created_at, notice_id
-                """,
-                (episode_id,),
-            ).fetchall()
+            rows, mail_rows = _pending_inbox_rows(connection, episode_id, episode.root_operation_id)
             pending = [self._lifecycle_notice_record(row) for row in rows]
-            mail_rows = connection.execute(
-                """
-                SELECT * FROM auto_research_messages
-                WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
-                ORDER BY created_at, message_id
-                """,
-                (episode_id, episode.root_operation_id),
-            ).fetchall()
             mail = [self._auto_research_message_record(row) for row in mail_rows]
             if mail and (not delivery_operation_id or not delivery_operation_id.strip()):
                 raise ValueError("mail harvest requires the consuming turn operation id")
