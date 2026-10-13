@@ -284,9 +284,10 @@ Chips filter to All or Working. Above the conversation, the two-row header
 described above names the title and holds the agent picker; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
-The Agents tab shows the selected branch's agents plus every branch's
-Auto-research orchestrator, so the Agents count always has a card to open;
-opening an orchestrator from another graph switches to its branch. It has no
+The Agents tab shows the selected graph's agents. On main it also lists every
+branch's Auto-research orchestrator with its attention state, so the Agents
+count always has a card to open; an orchestrator opens in place, like any other
+agent, without switching the graph. A branch lists only its own agents. It has no
 graph filter and no branch or role tags on cards; the user tag stays. An
 orchestrator's children never count as unread and never sit in Needs you: they
 show as Working or Done, and the orchestrator's own card carries any attention

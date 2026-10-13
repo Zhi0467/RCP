@@ -5757,7 +5757,12 @@ function MemberApp({
               chatTranscripts={chatTranscripts}
               onSelect={(chatId) => {
                 const conversation = inventoryConversations.find((item) => item.chatId === chatId);
-                if (conversation && !sameGraphTarget(conversation.graphTarget, graphTarget)) {
+                // An orchestrator opens in place from main; other chats open on their own graph.
+                if (
+                  conversation &&
+                  conversation.conversationKind !== "auto_research" &&
+                  !sameGraphTarget(conversation.graphTarget, graphTarget)
+                ) {
                   window.location.hash = conversationHref(project.id, conversation);
                   return;
                 }

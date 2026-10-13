@@ -130,7 +130,8 @@ function Fixture() {
         board={false}
         onBoardChange={() => {}}
         nodes={{}}
-        graphTarget={branch}
+        // Viewed from main: a branch orchestrator opens in place, like any agent.
+        graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({})}
         runScope={[]}
         tasks={tasks}

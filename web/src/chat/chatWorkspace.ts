@@ -541,10 +541,11 @@ export function listedAgentConversations(
   conversations: ChatConversation[],
   graphTarget: GraphTargetRef,
 ): ChatConversation[] {
+  // Main also lists every branch's orchestrator; a branch lists only its own agents.
   return conversations.filter(
     (conversation) =>
-      conversation.conversationKind === "auto_research" ||
-      sameGraphTarget(conversation.graphTarget, graphTarget),
+      sameGraphTarget(conversation.graphTarget, graphTarget) ||
+      (graphTarget.kind === "main" && conversation.conversationKind === "auto_research"),
   );
 }
 

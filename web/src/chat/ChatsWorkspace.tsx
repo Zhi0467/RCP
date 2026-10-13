@@ -1092,14 +1092,12 @@ export function ChatsWorkspace({
             <PanelLeft size={16} />
           </button>
         )}
-        {selected &&
-        sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) &&
-        selected.conversationKind === "auto_research" ? (
+        {selected && selected.conversationKind === "auto_research" ? (
           <NodeChat
             key={selected.chatId}
             project={project}
             actorId={actorId}
-            graphTarget={graphTarget}
+            graphTarget={selected.graphTarget ?? graphTarget}
             node={null}
             nodes={nodes}
             glossaryIndex={glossaryIndex}
