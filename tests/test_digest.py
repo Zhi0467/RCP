@@ -362,6 +362,25 @@ def test_a_run_surfaces_only_for_what_waits_on_its_branch_never_its_children():
     assert ("auto_research", "quiet") in lines("main")[0]
 
 
+def test_an_archived_branch_needs_nothing_on_main_or_itself():
+    run = "branch:run"
+    events = [
+        _event(1, "question_attention", "q-run", run, active=True, title="Which seed?"),
+        _event(2, "question_attention", "q-main", active=True, title="Ship it?"),
+    ]
+    mark = {"seq": 0, "marked_at": "now"}
+
+    def needs(target, archived):
+        result = assemble_digest(
+            "p", "me", events, mark, 2, runs={run: "r"}, target=target, archived=archived
+        )
+        return [(item["kind"], item["item_id"]) for item in result["needs_you"]]
+
+    assert needs("main", frozenset()) == [("question", "q-main"), ("auto_research", "run")]
+    assert needs("main", frozenset({run})) == [("question", "q-main")]
+    assert needs(run, frozenset({run})) == []
+
+
 def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     from rcp.digest import read_digest
 
