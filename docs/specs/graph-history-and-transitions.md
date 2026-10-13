@@ -431,7 +431,11 @@ coverage, and agent history queries are projections over these records. Each
 projection keeps its own policy: merge keeps its human-authorship proof from
 initiating operations, refresh keeps its routing categories and bounds, and the
 raw `/history` list keeps rejected receipts. None of them replays history on its
-own.
+own, and neither does the write side: canonical materialization, output repair,
+and branch Apply read the same engine, so a degraded history (missing or invalid
+scope provenance, an undecodable or out-of-sequence Patch, a broken transition
+chain, a replay halt) reads the same coherent prefix everywhere, and only a
+mutation refuses it.
 
 `diff(A, B)` is the net semantic change from state A to state B, whatever their
 ancestry; it is not a merge plan. "What a branch did" is the diff from its

@@ -765,7 +765,10 @@ Each owner resolves one read scope at launch: project, readable targets, and the
 allowed verb set. The command handler checks every request and cursor against
 that same object, and the prompt renders it. Discuss, whose broker otherwise
 allows exactly `ask`, gains the two verbs the same way; a report or artifact
-edit keeps its command revocation.
+edit keeps its command revocation. One prompt helper renders the query section
+from the launch's read scope; a session master or shared prompt finalizer that
+receives a scope appends it, so an owner passes its scope rather than writing
+the section itself.
 
 **Seen head.** RCP records, per conversation or episode lineage, provider
 session, and graph target, the head of the last graph snapshot a turn received.
