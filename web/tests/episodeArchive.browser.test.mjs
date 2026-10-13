@@ -171,10 +171,11 @@ test("active and unresolved episodes archive without stopping work and restore a
       if (message.type() === "error") errors.push(message.text());
     });
     page.on("requestfailed", (request) => {
-      // An archive fences the run reads it supersedes; that abort is deliberate.
+      // An archive fences the run reads it supersedes, and a card it removes
+      // releases its episode reads; those aborts are deliberate.
       const path = new URL(request.url()).pathname;
       if (
-        /\/(episodes|experiment-episodes)$/.test(path) &&
+        /\/(episodes|experiment-episodes|episodes\/[^/]+\/(messages|timeline))$/.test(path) &&
         request.failure()?.errorText === "net::ERR_ABORTED"
       )
         return;

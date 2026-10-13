@@ -1,4 +1,4 @@
-import { ResourceRuntime } from "./resourceRuntime";
+import { ResourceRuntime, activateProject } from "./resourceRuntime";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, archiveEpisode } from "../../src/core/api";
@@ -17,6 +17,7 @@ const apiBase = `/api/projects/${projectId}`;
 const noop = () => undefined;
 const resolved = () => Promise.resolve();
 const initialRoute = parseProjectHash(window.location.hash);
+activateProject(projectId);
 
 function Fixture() {
   const { palette } = useTheme();
