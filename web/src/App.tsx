@@ -1,3 +1,6 @@
+import { errorMessage } from "./core/errors";
+import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
+import { researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
 import { beginTaskMutation, beginTaskPublication } from "./agents/taskActions";
 import { beginChatSend } from "./agents/chatSendMutation";
@@ -810,6 +813,17 @@ function MemberApp({
     project: sessionProject,
     reportError: reportErrorNotice,
   });
+  const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
+  const pinScope = JSON.stringify([projectId, pinBranchId]);
+  const [pinSelection, setPinSelection] = useState<{ scope: string; id: string } | null>(null);
+  const pinsProfile =
+    backendSessionReady && projectId ? researchViewsProfile(projectId, pinBranchId) : null;
+  const pinsResource = useResource("research-view-pins", pinsProfile);
+  const pins = pinsResource.value?.pins ?? [];
+  const activePin =
+    pinSelection?.scope === pinScope
+      ? pins.find((pin) => pin.artifact_id === pinSelection.id)
+      : undefined;
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
@@ -1058,6 +1072,13 @@ function MemberApp({
     [dispatchProjectSession, getProjectSessionState],
   );
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  useEffect(() => setPinSelection(null), [pinScope, view]);
+  useEffect(() => {
+    if (pinSelection?.scope === pinScope && pinsResource.value && !activePin) {
+      setPinSelection(null);
+      changeView("scientific");
+    }
+  }, [pinSelection, pinScope, pinsResource.value, activePin, changeView]);
   const graphPath = useCallback((path: string) => graphTargetUrl(path, graphTarget), [graphTarget]);
   const isActiveGraph = useCallback(
     (id: string) =>
@@ -4699,25 +4720,60 @@ function MemberApp({
           }
         >
           {(view === "scientific" || view === "dag") && (
-            <div className="research-subpanel" role="tablist" aria-label="Research panels">
+            <div
+              className={`research-subpanel${pinsResource.error ? " failed" : ""}`}
+              role="tablist"
+              aria-label="Research panels"
+            >
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === "scientific"}
-                className={view === "scientific" ? "active" : ""}
-                onClick={() => changeView("scientific")}
+                aria-selected={view === "scientific" && !activePin}
+                className={view === "scientific" && !activePin ? "active" : ""}
+                onClick={() => {
+                  setPinSelection(null);
+                  changeView("scientific");
+                }}
               >
                 <GitBranch size={14} /> Research
               </button>
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === "dag"}
-                className={view === "dag" ? "active" : ""}
-                onClick={() => changeView("dag")}
+                aria-selected={view === "dag" && !activePin}
+                className={view === "dag" && !activePin ? "active" : ""}
+                onClick={() => {
+                  setPinSelection(null);
+                  changeView("dag");
+                }}
               >
                 <Network size={14} /> DAG
               </button>
+              {pins.map((pin) => (
+                <PinnedViewTab
+                  key={`${pinScope}:${pin.artifact_id}`}
+                  projectId={project.id}
+                  branchId={pinBranchId}
+                  pin={pin}
+                  active={activePin?.artifact_id === pin.artifact_id}
+                  onSelect={() => setPinSelection({ scope: pinScope, id: pin.artifact_id })}
+                  onUnpin={() => {
+                    if (activePin?.artifact_id === pin.artifact_id) {
+                      setPinSelection(null);
+                      changeView("scientific");
+                    }
+                  }}
+                />
+              ))}
+              {Boolean(pinsResource.error) && (
+                <button
+                  aria-label="Retry pinned views"
+                  title={errorMessage(pinsResource.error)}
+                  onClick={() => pinsProfile && store.invalidate(resourceKeyId(pinsProfile.key))}
+                >
+                  <RefreshCw size={14} />
+                </button>
+              )}
             </div>
           )}
           {view === "overview" && (
@@ -4799,7 +4855,22 @@ function MemberApp({
               />
             </div>
           )}
-          {view === "scientific" && (
+          {(view === "scientific" || view === "dag") && activePin && (
+            <PinnedView
+              key={`${pinScope}:${activePin.artifact_id}`}
+              projectId={project.id}
+              branchId={pinBranchId}
+              pin={activePin}
+              nodes={presentedGraph.nodes}
+              ready={
+                projectReconciliation === "authoritative" &&
+                project.id === projectId &&
+                sameGraphTarget(project.graph_target, graphTarget)
+              }
+              onOpenNode={openNodeById}
+            />
+          )}
+          {view === "scientific" && !activePin && (
             <ScientificView
               {...graphEditingProps}
               graph={presentedGraph}
@@ -4808,7 +4879,7 @@ function MemberApp({
               onSelectNode={openNode}
             />
           )}
-          {view === "dag" && (
+          {view === "dag" && !activePin && (
             <DagView
               key={graphSessionKey(project.id, graphTarget)}
               graphTarget={graphTarget}
