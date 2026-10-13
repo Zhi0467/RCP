@@ -416,8 +416,9 @@ def _steer_answer(
         },
         tier="diagnostic",
     )
-    _record_answer_steer(service, background, question, target, turn_id)
     # The turn may have settled while the steer awaited acknowledgment; its
-    # settlement then saw no receipt, so replay the receipt rule now.
+    # settlement then saw no receipt, so replay the receipt rule now, before
+    # the fallible transcript write.
     reconcile_question_receipt(store, question.question_id)
+    _record_answer_steer(service, background, question, target, turn_id)
     return "steered"

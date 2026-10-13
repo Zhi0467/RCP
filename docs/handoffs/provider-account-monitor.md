@@ -1,7 +1,7 @@
 # Provider account monitor
 
 Status: design, not started. Nothing below is implemented. Implementation waits
-for an explicit start and for the open decisions at the end.
+for an explicit start.
 
 ## Problem
 
@@ -85,27 +85,21 @@ in process.
   captured availability revision and a conditional update, so a stale probe
   never clears a newer limit or a sign-out.
 - `docs/specs/providers-and-containment.md` says limit scope is not modeled and
-  repeated failure stops automatic attempts. Update it in the same change.
+  repeated failure stops automatic attempts. Update it in the same change: a
+  limit is account-level.
 
-## Open decisions
+## Settled decisions
 
-- **Launch options scope.** The worktree option allocates a resource (a branch
-  and a directory, kept or removed at Merge); browser and auto-recover are
-  plain consents. Unify the choice and its storage for all three, or keep the
-  worktree on `EpisodeIsolation` and unify only the two consents.
-
-- **Limit scope.** Review found `session_limit` groups signatures without
-  knowing their scope. Some may be per session or per context, not per account.
-  Parking the whole account on any of them could stall unrelated work, and a
-  passing probe does not prove a big saved session can continue. Options: park
-  the account on every limit (simple, matches the umbrella term), or let each
-  profile mark which signatures are account-wide and keep the rest scoped to
-  the affected work.
-- **Shared accounts.** `(provider, host)` is an execution endpoint, not a
-  billing account. One subscription on two hosts gets two rows and two probes.
-  Accept that, or add an account identity to the profile.
-- **Success while limited.** Recommendation: a turn that succeeds does not clear
-  `limited`. It may predate the limit or use another model.
+- **Worktree is a launch option.** All three (browser, worktree, auto-recover)
+  live on `LaunchOptions`. The worktree's allocation and Merge cleanup stay with
+  `EpisodeIsolation`; only the choice moves.
+- **A limit is account-level.** `session_limit` means the provider's 5-hour or
+  weekly usage limit, so any limit parks the whole account. No per-signature
+  scope. Rename `session_limit` to `limit` as part of the work.
+- **Accounts are per `(provider, host)`.** One subscription on two hosts gets
+  two rows and two probes; accepted for now.
+- **Success does not clear `limited`.** A turn that succeeds may predate the
+  limit or use another model; only a probe clears it.
 
 ## Checks when implemented
 
