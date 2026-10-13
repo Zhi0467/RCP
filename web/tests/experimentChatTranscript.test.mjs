@@ -43,6 +43,21 @@ test("every other visible chat keeps the viewed graph", () => {
   );
 });
 
+test("a branch orchestrator opened from main reads its own branch", () => {
+  const summaries = [
+    { chat_id: "orchestrator", graph_target: BRANCH, conversation_kind: "auto_research" },
+    { chat_id: "branch-chat", graph_target: BRANCH, conversation_kind: "chat" },
+  ];
+  assert.deepEqual(
+    visibleChatTranscriptTarget("orchestrator", null, MAIN_GRAPH, MAIN_GRAPH, summaries),
+    BRANCH,
+  );
+  assert.deepEqual(
+    visibleChatTranscriptTarget("branch-chat", null, MAIN_GRAPH, MAIN_GRAPH, summaries),
+    MAIN_GRAPH,
+  );
+});
+
 test("a chat selected while viewing a branch keeps that branch", () => {
   // Without an exact route the chat id comes from the viewed graph's own
   // project projection, so the viewed target is the correct one; defaulting to

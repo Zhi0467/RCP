@@ -410,7 +410,7 @@ Add N turns continuation carrying that message. The composer defaults N to 3,
 editable before sending, and always sends it; the API has no default N, and a
 send without N is ordinary mail only. The composer shows an **Add turns** field
 beside Send and no caption; the derived E = 5N child-Experiment invocations are
-not restated there. The orchestrator is also a card in Agents on its branch,
+not restated there. The orchestrator is also a card in Agents, on its branch and on main,
 whose composer sends the same **Message orchestrator** request. This remains an
 orchestrator with branch authority, not an ordinary chat.
 An ordinary-mail-only send that races with the episode ending refuses and asks

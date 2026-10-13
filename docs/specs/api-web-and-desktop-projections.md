@@ -556,7 +556,9 @@ three cleanup choices and `confirm_discard`. Unmerged removal or graph archive
 requires that confirmation. Each step is recorded and retryable. Graph archive
 only hides the branch from the default episode list. The list query
 `include_archived_branches=true` includes it again. Explicit episode and branch
-reads remain available, and Patch history is unchanged.
+reads remain available, and Patch history is unchanged. The default episode
+list is the 50 most recent plus retained archives and the current member of
+every Auto-research chain, so each orchestrator card in Agents has its episode.
 
 ## Compute setup and job APIs
 
@@ -1709,8 +1711,14 @@ button opens **Continue <name>** instead: a message to the running orchestrator,
 or added turns with a message once it has ended. On a branch, each DAG node shows its title and one
 word: how Merge will treat it (Conflict, Needs agent, Proposal, Already merged),
 else how the branch changed it (Added, Changed, Removed). Standing, status, and
-the connect handle appear on hover. Node detail lists each changed field as
-main before, branch, and main now beside a conflict, each with its own color.
+the connect handle appear on hover. Node detail on a node added on the branch
+shows a New on this branch tag and no field list, since the body shows every
+field, unless Merge must decide it (Conflict, Needs agent, Proposal); then it
+lists the fields like an edited node, with main's competing values. On an edited node it lists each changed field the body shows, plus any
+internal field a merge mark names, as main before, branch, and main now beside a
+conflict, each with its own color. Its
+change history has one line per accepted change naming what that change did to
+this node (created, removed, or the edited fields), with View task.
 **Open graph** selects the branch workspace explicitly. An exact branch
 Experiment route may show its historical transcript through Runs without exposing an ordinary
 composer for that episode-owned session. Ordinary chats started in the branch
@@ -1738,17 +1746,21 @@ children, and conversations whose first turn has no transcript yet.
 as one snapshot from the retained main service's cached scan, so a conversation
 updated between requests is never skipped; each summary carries its graph
 target, a graph title, and a `conversation_kind` of `chat`, `episode`,
-`auto_research_child`, or `auto_research`. Rows show those tags. A filter beside the search picks
-all, main, or one branch, and applies to the whole inventory. The Archived
+`auto_research_child`, or `auto_research`. The Agents tab shows only the
+selected graph's conversations, plus, on main, each listed Auto-research chain's
+orchestrator ([interface](interface-and-visual-design.md)). The Archived
 column starts folded. Read markers and unread finishes cover the whole project.
 
-Selection stays exact-target. Opening a row on another graph switches the
+Selection stays exact-target. A link to a conversation on another graph switches the
 workspace through `#/projects/P?view=chats&chat=C&branch_id=B` before the
-composer mounts; node actions select only within the viewed graph. A
+composer mounts. An orchestrator selected from main's Agents opens in place
+against its own branch target without switching the workspace. Node actions select only within the viewed graph. A
 conversation a task names before the inventory lists it has unknown ownership:
 its composer stays closed and the inventory is fetched again. Posting
-follows the ordinary chat rules on that target. An Auto-research child's chat
-is read-only: it shows its transcript and a link to the orchestrator in Runs,
+follows the ordinary chat rules on that target. While its orchestrator lineage
+runs, an Auto-research child's chat is read-only and its attention belongs to the
+orchestrator; once the lineage ends, the human may continue it as an ordinary
+chat with ordinary attention. A read-only child shows its transcript and a link to the orchestrator in Runs,
 and task admission refuses a human turn on it with
 `auto_research_child_read_only`.
 

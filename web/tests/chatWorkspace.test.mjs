@@ -6,8 +6,11 @@ import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
   conversationHref,
+  listedAgentConversations,
+  conversationAgentStatus,
   chatIdForTask,
   chatIndicator,
+  withEpisodeAttention,
   chatEntryConversationId,
   chatReadThrough,
   chatModeStorageKey,
@@ -30,6 +33,7 @@ import {
   unsentConversation,
   orchestratorCanUnlock,
 } from "../src/chat/chatWorkspace.ts";
+import { agentBoardColumn } from "../src/chat/agentBoardModel.ts";
 import { graphTargetFromHash } from "../src/core/graphTarget.ts";
 import { parseProjectHash } from "../src/experiments/experimentBoardModel.ts";
 
@@ -130,9 +134,10 @@ test("draft conversations survive without tasks and indicators distinguish activ
     request: { chat_id: "live", node_id: "node/a" },
   });
   const done = task({ operation_id: "done", request: { chat_id: "done", node_id: "node/a" } });
-  assert.equal(chatIndicator([done, running], new Set(["done"])), "active");
-  assert.equal(chatIndicator([done], new Set(["done"])), "unread");
-  assert.equal(chatIndicator([done], new Set()), null);
+  const chats = (tasks) => groupChatConversations([], tasks, {}, "Project");
+  assert.equal(chatIndicator(chats([done, running]), new Set(["done"])), "active");
+  assert.equal(chatIndicator(chats([done]), new Set(["done"])), "unread");
+  assert.equal(chatIndicator(chats([done]), new Set()), null);
 });
 
 test("a terminal task stays reachable when durable transcript persistence failed", () => {
@@ -593,12 +598,35 @@ test("inventory retains every target while latest selection cannot reuse another
       summary("child", main, "auto_research_child", "2026-10-08T03:00:00Z"),
       summary("branch-chat", branch, "experiment", "2026-10-08T02:00:00Z"),
       summary("main-chat", main, "chat", "2026-10-08T01:00:00Z"),
+      summary("orchestrator", branch, "auto_research", "2026-10-08T00:00:00Z"),
+      summary(
+        "other-orchestrator",
+        { kind: "branch", branch_id: "other" },
+        "auto_research",
+        "2026-10-07T00:00:00Z",
+      ),
     ],
     [],
     { "node/a": "Main node" },
     "Project",
   );
-  assert.equal(conversations.length, 3);
+  assert.deepEqual(
+    listedAgentConversations(
+      conversations,
+      main,
+      new Set(["orchestrator", "other-orchestrator"]),
+    ).map((c) => c.chatId),
+    ["child", "main-chat", "orchestrator", "other-orchestrator"],
+  );
+  // An orchestrator without a known current episode (e.g. an archived branch) stays off main.
+  assert.deepEqual(
+    listedAgentConversations(conversations, main, new Set(["orchestrator"])).map((c) => c.chatId),
+    ["child", "main-chat", "orchestrator"],
+  );
+  assert.deepEqual(
+    listedAgentConversations(conversations, branch).map((c) => c.chatId),
+    ["branch-chat", "orchestrator"],
+  );
   assert.equal(latestConversation(conversations, "node_chat", "node/a", main).chatId, "main-chat");
   assert.equal(
     latestConversation(conversations, "node_chat", "node/a", branch).chatId,
@@ -663,4 +691,46 @@ test("only a running-lineage lock offers messaging the orchestrator", () => {
     assert.equal(orchestratorCanUnlock({ code, detail: "" }), false);
   }
   assert.equal(orchestratorCanUnlock(null), false);
+});
+
+test("locked children stay visible without human attention across turn states", () => {
+  for (const status of ["succeeded", "failed", "paused", "interrupted", "running"]) {
+    const child = {
+      chatId: "child",
+      conversationKind: "auto_research_child",
+      humanTurnRefusal: { code: "auto_research_child_read_only", detail: "" },
+      tasks: [task({ operation_id: status, status })],
+    };
+    const unread = new Set(["child"]);
+    assert.equal(conversationHasUnread(child, unread), false);
+    assert.equal(
+      conversationAgentStatus(child, unread).group,
+      status === "running" ? "working" : "done",
+    );
+    const group = conversationAgentStatus(child, unread).group;
+    assert.notEqual(agentBoardColumn(group), "needs_you");
+    assert.equal(groupConversationAgents([child], unread)[group].length, 1);
+    assert.equal(chatIndicator([child], new Set()), null);
+    assert.deepEqual(listedAgentConversations([child], { kind: "main" }), [child]);
+    // Once the lineage ends, the human's own follow-up turns get ordinary attention.
+    const unlocked = { ...child, humanTurnRefusal: null };
+    assert.equal(conversationHasUnread(unlocked, unread), true);
+    assert.notEqual(conversationAgentStatus(unlocked, unread).group, "done");
+    // A merge reservation is not lineage ownership.
+    const reserved = { ...child, humanTurnRefusal: { code: "episode_merge_reserved", detail: "" } };
+    assert.equal(conversationHasUnread(reserved, unread), true);
+  }
+});
+
+test("an orchestrator whose chain needs action lights the Agents indicator", () => {
+  const orchestrator = { chatId: "b", conversationKind: "auto_research", tasks: [] };
+  const episode = (health) => ({ graph_target: { kind: "branch", branch_id: "b" }, health });
+  assert.equal(
+    chatIndicator(withEpisodeAttention([orchestrator], [episode("ok")]), new Set()),
+    null,
+  );
+  assert.equal(
+    chatIndicator(withEpisodeAttention([orchestrator], [episode("needs_action")]), new Set()),
+    "active",
+  );
 });

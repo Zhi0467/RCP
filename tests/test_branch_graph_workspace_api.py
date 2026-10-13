@@ -41,7 +41,12 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
                 "base_updated_rev": main_before.nodes[QUESTION].updated_rev,
                 "changes": {"question": "Can adaptation remain effective after repeated shifts?"},
                 "standing": "accepted",
-            }
+            },
+            {
+                "node_id": HYPOTHESIS,
+                "base_updated_rev": main_before.nodes[HYPOTHESIS].updated_rev,
+                "changes": {"title": "A distinct hypothesis edit"},
+            },
         ],
     }
     preview = client.post(f"{base}/sync/preview", params=params, json=draft)
@@ -53,7 +58,16 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     assert synced.json()["head"]["target"] == snapshot["graph_target"]
     assert main.history.state() == main_before
     after = client.get(base, params=params).json()
-    change = after["graph_changes"]["nodes"][0]
+    node_changes = {item["node_id"]: item for item in after["graph_changes"]["nodes"]}
+    change = node_changes[QUESTION]
+    question_source = change["history"][0]
+    hypothesis_source = node_changes[HYPOTHESIS]["history"][0]
+    assert question_source["revision"] == hypothesis_source["revision"]
+    assert question_source["summary"] != hypothesis_source["summary"]
+    for node_change in node_changes.values():
+        summary = node_change["history"][0]["summary"]
+        assert node_change["after"]["title"] not in summary
+        assert node_change["node_id"] not in summary
     assert change["node_id"] == QUESTION
     assert change["before"]["question"] == main_before.nodes[QUESTION].question
     assert change["after"]["standing"] == "accepted"
@@ -87,6 +101,9 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     assert deleted["change"] == "removed"
     assert deleted["before"]["id"] == HYPOTHESIS and deleted["after"] is None
     assert changes["edges"][0]["change"] == "removed"
+    assert deleted["history"][-1]["summary"] == changes["edges"][0]["history"][-1]["summary"]
+    assert deleted["history"][0]["summary"] == hypothesis_source["summary"]
+    assert deleted["history"][-1]["summary"] != hypothesis_source["summary"]
     assert main.history.state() == main_before
 
 
