@@ -5,7 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
-from rcp.api.dependencies import get_identity_access, get_store, require_project_membership
+from rcp.api.dependencies import (
+    get_identity_access,
+    get_store,
+    require_project_membership,
+    require_project_write_admission,
+)
 from rcp.api.identity import IdentityAccess
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import AppStore
@@ -46,7 +51,10 @@ def research_views(
         raise HTTPException(exc.status, detail={"code": exc.code}) from exc
 
 
-@router.post("/api/projects/{project_id}/research-views")
+@router.post(
+    "/api/projects/{project_id}/research-views",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def pin_research_view(
     body: PinRequest,
     request: Request,
@@ -73,7 +81,10 @@ def pin_research_view(
         raise HTTPException(exc.status, detail={"code": exc.code}) from exc
 
 
-@router.delete("/api/projects/{project_id}/research-views/{artifact_id}")
+@router.delete(
+    "/api/projects/{project_id}/research-views/{artifact_id}",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def unpin_research_view(
     artifact_id: str,
     request: Request,

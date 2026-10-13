@@ -143,3 +143,10 @@ test("content wrapper forwards only its own page and ids from delivered graph da
   send(child, payload);
   assert.equal(forwarded.length, 1);
 });
+
+test("a read failure marks only a page that has cached graph data stale", async () => {
+  const s = shell();
+  s.context.fetch = async () => ({ ok: false });
+  await s.refresh(null);
+  assert.notEqual(s.frame.dataset.graphStale, "true");
+});

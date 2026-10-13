@@ -48,7 +48,7 @@ async function refreshLive() {
       liveNotice.textContent = value.reason || (value.complete ? "" : "Live data incomplete");
     if (lastLive) liveFrame.contentWindow?.postMessage(lastLive, "*");
   } catch (error) {
-    markGraphStale(true);
+    if (graphCache) markGraphStale(true);
     if (liveNotice) liveNotice.textContent = error.message;
   } finally {
     liveBusy = false;
