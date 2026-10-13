@@ -40,8 +40,8 @@ remote-state projects.
    app removes its tab and store data at once, as the heartbeat does today.
 3. **Cadence.** The active project is in every beat (1 s); hidden open
    projects in every third beat (3 s). One request in flight; the next is
-   scheduled after the previous completes. Each attempt has a deadline from `limits.py`;
-   a timeout aborts it. Failures back off 3, 6, 12, 30 s.
+   scheduled after the previous completes. Each attempt has a browser-side deadline
+   (`WATERMARK_REQUEST_TIMEOUT_MS`); a timeout aborts it. Failures back off 3, 6, 12, 30 s.
    The app keeps its last good data with a visible stale marker. The server
    never waits on a remote sync to answer.
 4. **Remote canonical state.** The backend syncs open remote-state projects in

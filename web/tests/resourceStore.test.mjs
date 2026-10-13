@@ -125,6 +125,36 @@ test("hidden projects use one background slot", async () => {
   assert.equal(active.reads.length, 1);
 });
 
+test("one owner's second registration survives the first release", () => {
+  const store = new ResourceStore();
+  const { profile } = manualProfile("questions");
+  const id = store.register("tab", profile);
+  store.register("tab", profile);
+  store.release("tab", [id]);
+  assert.equal(store.requests("p").length, 1);
+});
+
+test("a mutation response does not acknowledge a token that moved meanwhile", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("tasks.status");
+  const id = store.register("tab", profile);
+  reads[0].resolve("v0");
+  await settle();
+  store.observe("p", [{ name: "tasks.status", version: "1" }]);
+  reads[1].resolve("v1");
+  await settle();
+  const mutation = store.beginMutation("op", new Map([[id, (value) => value]]));
+  store.observe("p", [{ name: "tasks.status", version: "2" }]);
+  const before = reads.length;
+  mutation.settle(new Map([[id, "response"]]));
+  await settle();
+  assert.equal(store.view(id).value, "response");
+  assert.equal(reads.length, before + 1);
+  reads.at(-1).resolve("fresh");
+  await settle();
+  assert.equal(store.view(id).value, "fresh");
+});
+
 test("releasing the last owner forgets the resource", () => {
   const store = new ResourceStore();
   const { profile } = manualProfile("questions");
@@ -202,6 +232,47 @@ test("hidden projects are due every third beat and failures back off", async () 
     [1000, 4000, 10_000],
   );
   scheduler.stop();
+});
+
+test("valid_until is anchored to the server's as_of, not the browser clock", async () => {
+  const time = fakeClock();
+  const requests = [];
+  const scheduler = new RefreshScheduler({
+    store: new ResourceStore(() => time.clock.now()),
+    clientId: "c",
+    openProjects: () => [
+      { projectId: "active", currentRef: "main" },
+      { projectId: "hidden", currentRef: "main" },
+    ],
+    activeProjectId: () => "active",
+    send: async (request) => {
+      requests.push(request.due);
+      // The server clock runs an hour ahead; the deadline is 1.5 s after its now.
+      return {
+        epoch: "e",
+        as_of: new Date(Date.parse("2026-01-01T01:00:00.000Z") + time.clock.now()).toISOString(),
+        projects: [
+          {
+            requested_id: "hidden",
+            project_id: "hidden",
+            resources: [
+              { name: "questions", version: "1", valid_until: "2026-01-01T01:00:01.500Z" },
+            ],
+            sync: { last_completed_at: null, status: "local", error: null },
+          },
+        ],
+        unavailable: [],
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.start();
+  await time.advance(2500);
+  scheduler.stop();
+  // Beats at 0 (all), 1000 (active), 2000 (hidden due: deadline 1500 passed).
+  assert.deepEqual(requests[2], ["active", "hidden"]);
 });
 
 test("an unavailable project loses its data and its tab", async () => {

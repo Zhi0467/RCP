@@ -51,7 +51,8 @@ export interface ResourceView<T> {
 
 interface ResourceState {
   profile: ResourceProfile<unknown>;
-  owners: Set<string>;
+  /** Registrations per owner; one owner may register a key more than once. */
+  owners: Map<string, number>;
   value: unknown;
   hasValue: boolean;
   committed: string | undefined;
@@ -134,7 +135,7 @@ export class ResourceStore {
     if (!state) {
       state = {
         profile: profile as ResourceProfile<unknown>,
-        owners: new Set(),
+        owners: new Map(),
         value: undefined,
         hasValue: false,
         committed: undefined,
@@ -154,18 +155,25 @@ export class ResourceStore {
       // The newest profile owns fetch; its key is the same by construction.
       state.profile = profile as ResourceProfile<unknown>;
     }
-    state.owners.add(owner);
+    state.owners.set(owner, (state.owners.get(owner) ?? 0) + 1);
     this.pump();
     return id;
   }
 
-  /** Drops `owner`'s interest in `ids` (all of its interests when omitted). */
+  /**
+   * Drops one of `owner`'s registrations of each id in `ids`, or every
+   * registration of `owner` when omitted (a closed tab).
+   */
   release(owner: string, ids?: Iterable<string>): void {
     const targets = ids ? [...ids] : [...this.states.keys()];
     let removed = false;
     for (const id of targets) {
       const state = this.states.get(id);
-      if (!state || !state.owners.delete(owner) || state.owners.size > 0) continue;
+      const count = state?.owners.get(owner);
+      if (!state || count === undefined) continue;
+      if (ids && count > 1) state.owners.set(owner, count - 1);
+      else state.owners.delete(owner);
+      if (state.owners.size > 0) continue;
       state.inFlight?.abort();
       this.states.delete(id);
       removed = true;
@@ -359,7 +367,9 @@ export class ResourceStore {
               ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)
               : value;
             state.hasValue = true;
-            state.committed = state.observed;
+            // The response's own version is unknown, so the version of the
+            // data it replaces stays committed: a token that moved meanwhile
+            // still owes a read.
             state.error = undefined;
           } else {
             state.owed = true;
@@ -385,7 +395,6 @@ export class ResourceStore {
       ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)
       : value;
     state.hasValue = true;
-    state.committed = state.observed;
     state.error = undefined;
     this.changed(state);
     this.pump();

@@ -11,6 +11,8 @@ import { retryBackoffMs, type ResourceStore, type ResourceWatermark } from "./re
 
 export const REFRESH_BEAT_MS = 1000;
 export const HIDDEN_PROJECT_BEAT_EVERY = 3;
+// A browser-side attempt budget, like IDEMPOTENT_TASK_START_TIMEOUT_MS; the
+// server answers from counters and never approaches it.
 export const WATERMARK_REQUEST_TIMEOUT_MS = 5000;
 
 export interface OpenProject {
@@ -208,9 +210,14 @@ export class RefreshScheduler {
       this.failures = 0;
       store.observeEpoch(response.epoch);
       const sync = new Map(this.health.sync);
+      // Deadlines are server times; anchor them to local receipt via `as_of`.
+      const serverNow = Date.parse(response.as_of);
+      const receivedAt = this.clock.now();
       for (const project of response.projects) {
         const deadlines = project.resources
-          .map((entry) => (entry.valid_until ? Date.parse(entry.valid_until) : Number.NaN))
+          .map((entry) =>
+            entry.valid_until ? receivedAt + Date.parse(entry.valid_until) - serverNow : Number.NaN,
+          )
           .filter((value) => Number.isFinite(value));
         if (deadlines.length) this.validUntil.set(project.requested_id, Math.min(...deadlines));
         else this.validUntil.delete(project.requested_id);
