@@ -101,6 +101,7 @@ export class RefreshScheduler {
   private readonly visibility: RefreshVisibility;
   private readonly listeners = new Set<() => void>();
   private timer: unknown = null;
+  private retryTimer: unknown = null;
   private inFlight: AbortController | null = null;
   private beat = 0;
   private failures = 0;
@@ -128,6 +129,8 @@ export class RefreshScheduler {
     this.stopVisibility = null;
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
     this.timer = null;
+    if (this.retryTimer !== null) this.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.inFlight?.abort();
     this.inFlight = null;
   }
@@ -261,8 +264,17 @@ export class RefreshScheduler {
           : this.activated || this.newlyAwaiting(open, due)
             ? 0
             : REFRESH_BEAT_MS;
-        const untilRetry = retry === null ? beatMs : Math.max(0, retry - this.clock.now());
-        this.schedule(Math.min(beatMs, untilRetry));
+        const untilRetry = retry === null ? null : Math.max(0, retry - this.clock.now());
+        if (this.retryTimer !== null) this.clock.clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        if (this.failures && untilRetry !== null) {
+          // A failing watermark keeps its backoff; payload retries only pump.
+          this.retryTimer = this.clock.setTimeout(() => {
+            this.retryTimer = null;
+            store.pump();
+          }, untilRetry);
+        }
+        this.schedule(this.failures || untilRetry === null ? beatMs : Math.min(beatMs, untilRetry));
       }
     }
   }

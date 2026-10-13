@@ -89,6 +89,9 @@ class ResourceKey(BaseModel):
             return f"chat:{self.entity}"
         if self.name == "terminals":
             return "settings"
+        # Episode views summarize their branch head and merge eligibility.
+        if self.name in {"episodes", "episode"}:
+            return "refs"
         if self.name in {"chats", "paper", "settings", "refs"}:
             return self.name
         return None

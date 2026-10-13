@@ -288,7 +288,11 @@ def test_registered_route_uses_identity_and_published_content(manifest, tmp_path
         "open": [
             {
                 "project_id": project,
-                "resources": [{"name": "graph", "ref": "main"}, {"name": "terminals"}],
+                "resources": [
+                    {"name": "graph", "ref": "main"},
+                    {"name": "terminals"},
+                    {"name": "episodes"},
+                ],
             }
         ],
         "due": [project],

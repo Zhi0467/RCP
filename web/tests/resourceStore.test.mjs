@@ -380,6 +380,57 @@ test("hidden projects are due every third beat and failures back off", async () 
   scheduler.stop();
 });
 
+test("payload read retries do not shorten the watermark backoff", async () => {
+  const time = fakeClock();
+  const store = new ResourceStore(() => time.clock.now());
+  const requests = [];
+  let reads = 0;
+  let fail = false;
+  const scheduler = new RefreshScheduler({
+    store,
+    clientId: "c",
+    openProjects: () => [{ projectId: "active", currentRef: "main" }],
+    activeProjectId: () => "active",
+    send: async (request) => {
+      requests.push(time.clock.now());
+      if (fail) throw new Error("down");
+      const resources = request.open[0].resources.map((resource) => ({
+        ...resource,
+        version: "1",
+        valid_until: null,
+      }));
+      return {
+        epoch: "e",
+        as_of: "",
+        projects: [{ requested_id: "active", project_id: "active", resources, sync: null }],
+        unavailable: [],
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  store.register("tab", {
+    key: { project: "active", name: "questions" },
+    fetch: async () => {
+      reads += 1;
+      throw new Error("read failed");
+    },
+  });
+  scheduler.start();
+  await time.advance(10);
+  assert.ok(reads >= 1);
+  fail = true;
+  const before = requests.length;
+  await time.advance(1000 + 3000 + 6000);
+  assert.deepEqual(
+    requests.slice(before).map((at) => at - requests[before - 1]),
+    [1000, 4000, 10_000],
+  );
+  assert.ok(reads > 2, "read retries still run while the watermark backs off");
+  scheduler.stop();
+});
+
 test("valid_until is anchored to the server's as_of, not the browser clock", async () => {
   const time = fakeClock();
   const requests = [];
