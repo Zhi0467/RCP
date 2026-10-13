@@ -39,6 +39,7 @@ from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, GraphSt
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
+from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS, SPACE_RUNS_COMPLETED_TTL
 from rcp.loop_status import (
@@ -1038,6 +1039,7 @@ def clear_all_rebuildable_caches(
             SESSION_SLICE_CACHE_LIMITS,
             layout="directories",
         ).clear()
+        graph_history_cache(source_root.parent / GRAPH_HISTORY_DIRECTORY).clear()
     for record in store.projects():
         service = catalog.loaded_service(record.project_id)
         if service is not None:

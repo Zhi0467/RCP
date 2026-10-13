@@ -131,8 +131,25 @@ class _Envelope(BaseModel):
     payload: str
 
 
+GRAPH_HISTORY_DIRECTORY = "graph-history"
+
+
 def graph_history_cache_root(data_dir: Path, project_id: str) -> Path:
-    return project_cache_roots(data_dir, project_id)[0].parent / "graph-history"
+    return project_cache_roots(data_dir, project_id)[0].parent / GRAPH_HISTORY_DIRECTORY
+
+
+def graph_history_cache(root: Path) -> RebuildableCache:
+    """The bounded cache under one project's ``graph-history`` root."""
+
+    return RebuildableCache(
+        root,
+        CacheLimits(
+            ttl_seconds=GRAPH_HISTORY_STORE_TTL_SECONDS,
+            max_count=GRAPH_HISTORY_STORE_MAX_COUNT,
+            max_bytes=GRAPH_HISTORY_STORE_MAX_BYTES,
+        ),
+        layout="files",
+    )
 
 
 class GraphHistoryStore:
@@ -140,15 +157,7 @@ class GraphHistoryStore:
 
     def __init__(self, data_dir: Path, project_id: str) -> None:
         self.root = graph_history_cache_root(data_dir, project_id)
-        self.cache = RebuildableCache(
-            self.root,
-            CacheLimits(
-                ttl_seconds=GRAPH_HISTORY_STORE_TTL_SECONDS,
-                max_count=GRAPH_HISTORY_STORE_MAX_COUNT,
-                max_bytes=GRAPH_HISTORY_STORE_MAX_BYTES,
-            ),
-            layout="files",
-        )
+        self.cache = graph_history_cache(self.root)
 
     def load_checkpoint(self, prefix_digest: str) -> Checkpoint | None:
         payload = self._load(prefix_digest, "checkpoint")

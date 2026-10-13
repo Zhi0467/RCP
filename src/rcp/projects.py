@@ -51,6 +51,7 @@ from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphAttentionProjection, GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
+from rcp.history.store import GRAPH_HISTORY_DIRECTORY
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
     REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
@@ -3186,7 +3187,7 @@ def _validate_project_cache_roots(data_dir: Path, project_id: str) -> Path | Non
     if not os.path.lexists(project_root):
         return None
     _validate_optional_directory(project_root, "project cache boundary")
-    history_root = project_root / "graph-history"
+    history_root = project_root / GRAPH_HISTORY_DIRECTORY
     allowed_children = {source_root, slice_root, history_root}
     try:
         unexpected = [child for child in project_root.iterdir() if child not in allowed_children]

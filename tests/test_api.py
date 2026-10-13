@@ -1436,6 +1436,9 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     b_cached_slice.parent.mkdir(parents=True)
     b_cached.write_text("project-b-source", encoding="utf-8")
     b_cached_slice.write_text("project-b-slice", encoding="utf-8")
+    b_history = b_source_root.parent / "graph-history" / "checkpoint.json"
+    b_history.parent.mkdir(parents=True)
+    b_history.write_text("project-b-history", encoding="utf-8")
 
     legacy_cached = data_dir / "source-cache" / "remote" / "legacy.jsonl"
     legacy_slice = data_dir / "session-slices" / "legacy" / "records.jsonl"
@@ -1517,6 +1520,7 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     assert not cached.exists()
     assert not b_cached.exists()
     assert not b_cached_slice.exists()
+    assert not b_history.exists()
     assert not legacy_cached.exists()
     assert not legacy_slice.exists()
     assert original.read_text(encoding="utf-8") == "provider-original"

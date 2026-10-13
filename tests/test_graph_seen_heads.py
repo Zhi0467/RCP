@@ -225,3 +225,30 @@ def test_added_experiment_turns_keep_lineage_separate_from_shared_chat(tmp_path,
     assert loop_seen is not None and loop_seen.revision == 3
     assert chat_seen is not None and chat_seen.revision == 2
     assert store.graph_seen_head("project", "experiment:added", "session", target) is None
+
+
+def test_recovery_credits_an_apply_made_by_its_origin(tmp_path):
+    from rcp.storage.models import AgentTaskRecord
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    _project(store)
+    origin = cast(AgentTaskExecution, _task(store, "start", tmp_path))
+    service = cast(ProjectService, SimpleNamespace(history_engine=_Engine(["old", "start"])))
+    target = GraphTargetRef()
+    prepare_graph_observation(
+        origin, service, owner_id="chat:c", target=target, revision=1, native_session_id="session"
+    )
+    parent = store.agent_task("start")
+    assert parent is not None
+    store.create_agent_task(
+        AgentTaskRecord.model_validate(
+            {**parent.model_dump(), "operation_id": "retry", "parent_operation_id": "start"}
+        ),
+        continuation_cause="resume",
+    )
+    retry = cast(AgentTaskExecution, SimpleNamespace(store=store, operation_id="retry"))
+    commit_prepared_graph_observation(
+        retry, service, native_session_id="session", applied_revision=2
+    )
+    seen = store.graph_seen_head("project", "chat:c", "session", target)
+    assert seen is not None and seen.revision == 2

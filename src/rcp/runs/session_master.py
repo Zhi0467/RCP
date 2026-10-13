@@ -301,7 +301,7 @@ def _own_applied_head(
     service: ProjectService,
     staged_head: GraphHeadRef,
     applied_head: GraphHeadRef | None,
-    operation_id: str,
+    operation_ids: frozenset[str],
 ) -> GraphHeadRef:
     if applied_head is None or applied_head.target != staged_head.target:
         return staged_head
@@ -311,7 +311,7 @@ def _own_applied_head(
         if step.accepted and step.after_head.revision > staged_head.revision
     ]
     if steps and all(
-        step.patch.source_operation_id == operation_id or step.patch.task_id == operation_id
+        step.patch.source_operation_id in operation_ids or step.patch.task_id in operation_ids
         for step in steps
     ):
         return applied_head
@@ -368,7 +368,9 @@ def commit_prepared_graph_observation(
         except (KeyError, ValueError):
             # An unprovable Apply is not absorbed: the next turn is told about it again.
             applied = None
-    head = _own_applied_head(service, head, applied, execution.operation_id)
+    # An Apply by any validated attempt of this lineage, up to its origin, is its own.
+    lineage = frozenset({execution.operation_id, operation_id, *visited})
+    head = _own_applied_head(service, head, applied, lineage)
     execution.store.commit_graph_seen_head(
         project_id=candidate["project_id"],
         owner_id=candidate["owner_id"],
