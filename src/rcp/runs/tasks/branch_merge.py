@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.write_scope import resolve_project_write_scope
 from rcp.core.models import BranchMergeReceipt
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS
 from rcp.runs.branch_merge import (
     BranchMergeCandidateProblem,
@@ -31,6 +33,7 @@ from rcp.runs.episodes.merge import (
     episode_code_merge,
     verify_episode_merge_code,
 )
+from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -38,6 +41,7 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.session_master import commit_prepared_graph_observation
 from rcp.runs.shared import (
     _prepare_hidden_read_scope,
     _protected_run_stage_roots,
@@ -242,12 +246,14 @@ async def stream_branch_merge_task(
             code_block = code.landed_section(write_scope)
             code_landed = True
 
+        graph_read_scope = GraphReadScope(project_id=task.project_id, target=GraphTargetRef())
         staged_validator = stage_patch_validation_mailbox(
             local_stage=workspace if remote_stage is None else None,
             remote_stage=remote_stage,
             task_id=task.operation_id,
             turn_id=f"{task.operation_id}:branch-merge",
             timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            authority="broker",
         )
         validator_stop = asyncio.Event()
         validator_budget = PatchValidationBudget()
@@ -258,6 +264,9 @@ async def stream_branch_merge_task(
                 validate=lambda text: _validate_candidate(service, load_context, text),
                 stop=validator_stop,
                 budget=validator_budget,
+                command_handler=lambda command, _identity: handle_graph_history_command(
+                    service, graph_read_scope, command
+                ),
             )
         )
         outcome = BranchMergeRunOutcome()
@@ -277,6 +286,10 @@ async def stream_branch_merge_task(
                         str(workspace / "patch.json"),
                     ),
                     outcome=outcome,
+                    graph_read_scope=graph_read_scope,
+                    history_client=staged_validator.client_command(),
+                    invocation_gate=staged_validator.invocation_gate,
+                    service=service,
                     execution=execution,
                     binary=machine.provider_paths.get(request.provider),
                     code_block=code_block,
@@ -307,6 +320,12 @@ async def stream_branch_merge_task(
             receipt.model_dump(mode="json"),
         )
         complete_graph_merge(service, execution.store, episode)
+        commit_prepared_graph_observation(
+            execution,
+            service,
+            native_session_id=outcome.native_session_id,
+            applied_revision=execution.applied_revision,
+        )
         completed = True
         if receipt.outcome == "committed":
             yield _applied_revision_event(receipt.result_main_head.revision)

@@ -160,7 +160,6 @@ from rcp.runs.tasks.work import (
     _DeliverableRead,
     _DeliverableStep,
     _finalize_work_turn,
-    _HistoryWorkCommandHandler,
     _lead_with_retained_answer,
     _load_work_finalization_context,
     _record_work_finalization_context,
@@ -3156,11 +3155,9 @@ def _start_work_validator_mailbox(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
-    command_handler = _work_command_handler(execution, compute_commands)
-    if graph_read_scope is not None:
-        command_handler = _HistoryWorkCommandHandler(
-            command_handler, lambda: service, graph_read_scope
-        )
+    command_handler = _work_command_handler(
+        execution, compute_commands, service=service, graph_read_scope=graph_read_scope
+    )
     return start_work_validator_mailbox(
         staged,
         execution=execution,

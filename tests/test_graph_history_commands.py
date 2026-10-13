@@ -100,7 +100,7 @@ def setup():
     engine = Engine()
     service = cast(
         ProjectService,
-        SimpleNamespace(history=SimpleNamespace(project_id="p"), history_engine=engine),
+        SimpleNamespace(_project_id="p", history_engine=engine),
     )
     scope = GraphReadScope(project_id="p", target=GraphTargetRef(kind="branch", branch_id="b"))
     return engine, service, scope

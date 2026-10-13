@@ -7,7 +7,7 @@ import shlex
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -23,10 +23,8 @@ from rcp.agents import (
     validate_work_patch,
 )
 from rcp.agents.command_mailbox import (
-    CommandTurnIdentity,
     StagedCommandMailbox,
 )
-from rcp.agents.command_protocol import CommandRequest, CommandResponse
 from rcp.agents.context import ChatContext
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
@@ -340,37 +338,21 @@ def _prepare_work_chat_prompt(
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
-@dataclass(frozen=True)
-class _HistoryWorkCommandHandler:
-    handler: WorkCommandHandler
-    service: Callable[[], ProjectService]
-    scope: GraphReadScope
-
-    @property
-    def allowed_verbs(self) -> frozenset[str]:
-        return self.handler.allowed_verbs | self.scope.verbs
-
-    def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
-        if request.verb in self.scope.verbs:
-            from rcp.runs.graph_history_queries import handle_graph_history_command
-
-            return handle_graph_history_command(self.service(), self.scope, request)
-        return self.handler(request, identity)
-
-
 def _work_turn_command_handler(
     turn: WorkTurn,
-) -> WorkCommandHandler | _HistoryWorkCommandHandler:
+) -> WorkCommandHandler:
     """Render the very handler resolved for this launch, including its verb set."""
     lifecycle = getattr(turn, "validator_lifecycle", None)
     handler = getattr(lifecycle, "command_handler", None)
-    if isinstance(handler, (WorkCommandHandler, _HistoryWorkCommandHandler)):
+    if isinstance(handler, WorkCommandHandler):
         return handler
     # Child owners retain their separate dispatcher; this resolves no ask for them.
-    handler = _work_command_handler(turn.execution, turn.compute_commands)
-    if turn.graph_read_scope is not None:
-        return _HistoryWorkCommandHandler(handler, lambda: turn.service, turn.graph_read_scope)
-    return handler
+    return _work_command_handler(
+        turn.execution,
+        turn.compute_commands,
+        service=turn.service,
+        graph_read_scope=turn.graph_read_scope,
+    )
 
 
 def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> str:
@@ -482,7 +464,6 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
     )
-
 
 
 def _resolve_work_execution(
@@ -2975,16 +2956,14 @@ def _start_work_validator_mailbox(
     command_handler = _work_command_handler(
         execution,
         compute_commands,
+        service=service,
+        graph_read_scope=graph_read_scope,
         consolidation_apply=(
             consolidation_apply_handler(lambda: service, execution, staged.mailbox, run_truth_scope)
             if is_consolidation(execution)
             else None
         ),
     )
-    if graph_read_scope is not None:
-        command_handler = _HistoryWorkCommandHandler(
-            command_handler, lambda: service, graph_read_scope
-        )
     return start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -3079,16 +3058,21 @@ def _resume_work_command_handler(
         handler = _work_command_handler(
             execution,
             None,
+            service=service(),
+            graph_read_scope=context.graph_read_scope,
             consolidation_apply=consolidation_apply_handler(
                 service, execution, mailbox, context.run_truth_scope
             ),
         )
     else:
-        handler = _work_command_handler(execution, compute_commands)
+        handler = _work_command_handler(
+            execution,
+            compute_commands,
+            service=service(),
+            graph_read_scope=context.graph_read_scope,
+        )
     if not context.ask_allowed:
         handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})
-    if context.graph_read_scope is not None:
-        return _HistoryWorkCommandHandler(handler, service, context.graph_read_scope)
     return handler if handler.allowed_verbs != {"validate"} else None
 
 

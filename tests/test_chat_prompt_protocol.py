@@ -6,7 +6,6 @@ import json
 import shlex
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -22,11 +21,10 @@ from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
 from rcp.core.models import AuthorizedHuman
-from rcp.core.transition_models import GraphHeadRef
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
-from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore
 from tests.helpers import signed_in_client
@@ -42,31 +40,6 @@ from .helpers import (
     wait_for_task_response,
 )
 from .helpers import create_named_app as create_app
-
-
-@pytest.fixture(autouse=True)
-def _history_engine_contract(monkeypatch):
-    """Exercise owner integration against the shared Protocol before slice A lands."""
-
-    class Engine:
-        def __init__(self, service):
-            self.service = service
-
-        def resolve(self, spec, *, default_target):
-            return GraphHeadRef(target=spec.target or default_target, revision=spec.revision)
-
-        def steps(self, head):
-            return [
-                SimpleNamespace(
-                    after_head=GraphHeadRef(target=head.target, revision=patch.revision),
-                    patch=patch,
-                    accepted=patch.admission == "accepted",
-                )
-                for patch in self.service.history.current_materialization().patches
-                if patch.revision <= head.revision
-            ]
-
-    monkeypatch.setattr(ProjectService, "history_engine", property(Engine), raising=False)
 
 
 class _RecordingLauncher:

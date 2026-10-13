@@ -1,116 +1,266 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 from typing import cast
+from uuid import uuid4
 
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.core.transition_models import GraphHeadRef
+from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.prompts import render_graph_history
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.tasks.coach import stream_coach
+from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.graph import stream_graph_run
-from rcp.service import ProjectService
+from rcp.runs.tasks.work import stream_work_run
 
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
+    async_wait_until,
+    changed_values,
     create_named_app,
+    launch_contract_path,
     refresh_patch,
     seed_patch,
     signed_in_client,
     wait_for_task_response,
 )
+from .test_consolidation_work import _apply_request
+from .test_experiment_loop_agent_io import _LoopLauncher
+from .test_graph_history_commands import request as history_request
 
 
-@pytest.mark.parametrize("kind", ["seed", "refresh", "paper_coach"])
+@pytest.fixture
+def history_handlers(monkeypatch):
+    from rcp.runs import patch_validator
+    from rcp.runs.tasks import auto_research_child_work, auto_research_stream
+
+    handlers = {}
+    original = patch_validator.serve_command_mailbox
+
+    async def capture(*, staged, handler, **kwargs):
+        handlers[staged.credential.mailbox_id] = (staged.credential.identity, handler)
+        await original(staged=staged, handler=handler, **kwargs)
+
+    for module in (patch_validator, auto_research_stream, auto_research_child_work):
+        monkeypatch.setattr(module, "serve_command_mailbox", capture)
+    return handlers
+
+
+class _HistoryLauncher:
+    def __init__(self, service, handlers, *, kind, succeed=True):
+        self.service = service
+        self.handlers = handlers
+        self.kind = kind
+        self.succeed = succeed
+        self.calls = 0
+        self.masters = []
+        self.prompts = []
+
+    async def stream(self, provider, prompt, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        gate = kwargs["invocation_gate"]
+        root = Path(gate.workspace)
+        master = launch_contract_path(prompt).read_text()
+        self.masters.append(master)
+        command = next(
+            code.split(" graph_diff ")[0]
+            for code in master.split("`")[1::2]
+            if " graph_diff " in code
+        )
+        scope = GraphReadScope(
+            project_id=self.service._project_id,
+            target=self.service.history.graph_target,
+        )
+        assert render_graph_history(scope, command) in master
+        await async_wait_until(lambda: gate.mailbox_id in self.handlers)
+        identity, handler = self.handlers[gate.mailbox_id]
+
+        response = await handler(history_request(**{"from": "main@0", "to": "@head"}), identity)
+        assert response.status == "ok", response
+        assert response.result["to_head"] == (
+            f"{scope.target.key}@{self.service.history.state().revision}"
+        )
+        if self.kind in {"discuss", "paper_coach"}:
+            response = await handler(_apply_request("forbidden"), identity)
+            assert response.status == "invalid", response
+        yield AgentEvent(event="session", session_id="reader-session")
+        if not self.succeed:
+            yield AgentEvent(event="error", text="provider failed")
+            return
+        if self.kind in {"seed", "refresh"}:
+            patch = seed_patch() if self.kind == "seed" else refresh_patch()
+            (root / "patch.json").write_text(agent_patch_json(patch))
+        if self.kind == "experiment":
+            launcher = _LoopLauncher("reader-session", root, write_handoff=True)
+            async for event in launcher.stream(provider, prompt, **kwargs):
+                yield event
+            return
+        yield AgentEvent(event="answer", text="Read the graph history.")
+        yield AgentEvent(event="done")
+
+
+@pytest.mark.parametrize("kind", ["seed", "refresh", "paper_coach", "discuss", "work"])
 @pytest.mark.parametrize("succeed", [True, False])
-def test_graph_reader_master_and_committed_observation(
-    manifest, tmp_path, monkeypatch, kind, succeed
+def test_graph_reader_master_commands_and_committed_observation(
+    manifest, tmp_path, history_handlers, kind, succeed
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.paper.create()
-    if kind == "refresh":
+    if kind != "seed":
         append_fixture_patch(service, seed_patch())
     input_revision = service.history.state().revision
-
-    class Engine:
-        def resolve(self, spec, *, default_target):
-            return GraphHeadRef(target=spec.target or default_target, revision=spec.revision)
-
-        def steps(self, head, *, include_inherited=False):
-            return [
-                SimpleNamespace(
-                    accepted=True, after_head=GraphHeadRef(revision=patch.revision), patch=patch
-                )
-                for patch in service.history.current_materialization().patches
-                if patch.admission == "accepted" and patch.revision <= head.revision
-            ]
-
-    monkeypatch.setattr(
-        ProjectService, "history_engine", property(lambda self: Engine()), raising=False
-    )
-    # Slice D owns dispatch; this launch test never sends a history command.
-    history_commands = ModuleType("rcp.runs.graph_history_queries")
-    monkeypatch.setattr(
-        history_commands,
-        "handle_graph_history_command",
-        lambda *args: pytest.fail("unexpected command"),
-        raising=False,
-    )
-    monkeypatch.setitem(sys.modules, history_commands.__name__, history_commands)
-    masters = []
-
-    class Launcher:
-        async def stream(self, provider, prompt, **kwargs):
-            root = Path(kwargs["cwd"])
-            if kind == "paper_coach":
-                root = root.parent
-            masters.extend(path.read_text() for path in (root / "inputs").glob("*.md"))
-            yield AgentEvent(event="session", session_id="reader-session")
-            if not succeed:
-                yield AgentEvent(event="error", text="provider failed")
-                return
-            if kind != "paper_coach":
-                patch = seed_patch() if kind == "seed" else refresh_patch()
-                (root / "patch.json").write_text(agent_patch_json(patch))
-            yield AgentEvent(event="done")
+    launcher = _HistoryLauncher(service, history_handlers, kind=kind, succeed=succeed)
 
     async def stream(project_id, task_kind, request, execution):
-        launcher = cast(AgentLauncher, Launcher())
-        frames = (
-            stream_coach(service, launcher, service.paper, request, tmp_path / "data", execution)
-            if kind == "paper_coach"
-            else stream_graph_run(service, launcher, kind, request, tmp_path / "data", execution)
-        )
+        agent = cast(AgentLauncher, launcher)
+        if kind == "paper_coach":
+            frames = stream_coach(
+                service, agent, service.paper, request, tmp_path / "data", execution
+            )
+        elif kind in {"discuss", "work"}:
+            run = stream_discuss_run if kind == "discuss" else stream_work_run
+            frames = run(service, agent, request, tmp_path / "data", execution=execution)
+        else:
+            frames = stream_graph_run(service, agent, kind, request, tmp_path / "data", execution)
         async for frame in frames:
             yield frame
 
     app.state.background_tasks.stream = stream
     project_id = app.state.default_project_id
+    chat_id = str(uuid4())
+    continue_session = succeed and kind in {"discuss", "work", "paper_coach"}
+    task_kind = "project_chat" if kind in {"discuss", "work"} else kind
+    payload = (
+        {"message": "Read the graph."} if kind == "paper_coach" else {"run_truth_scope": ["repo-a"]}
+    )
+    if kind in {"discuss", "work"}:
+        payload.update(chat_id=chat_id, mode=kind, message="Read the graph.")
     with signed_in_client(app) as client:
-        started = client.post(
-            f"/api/projects/{project_id}/tasks/{kind}",
-            json={"message": "Read the graph."}
-            if kind == "paper_coach"
-            else {"run_truth_scope": ["repo-a"]},
-        )
-        assert started.status_code == 202
+        started = client.post(f"/api/projects/{project_id}/tasks/{task_kind}", json=payload)
+        assert started.status_code == 202, started.text
         task = wait_for_task_response(client, project_id, started.json()["operation_id"])
-    assert task["status"] == ("succeeded" if succeed else "failed")
-    assert any("graph_diff" in master and "graph_log" in master for master in masters)
+        if continue_session:
+            assert task["status"] == "succeeded", task.get("error")
+            append_fixture_patch(service, refresh_patch())
+            payload["session_id"] = "reader-session"
+            started = client.post(f"/api/projects/{project_id}/tasks/{task_kind}", json=payload)
+            assert started.status_code == 202, started.text
+            task = wait_for_task_response(client, project_id, started.json()["operation_id"])
+            assert (
+                changed_values(launcher.prompts[-1])["current.graph_changed_since"]
+                == f"main@{input_revision}"
+            )
+    assert task["status"] == ("succeeded" if succeed else "failed"), task.get("error")
+    assert launcher.calls == (2 if continue_session else 1)
     if kind == "refresh":
         assert any(
-            f"current.graph_changed_since: main@{input_revision}" in master for master in masters
+            f"current.graph_changed_since: main@{input_revision}" in master
+            for master in launcher.masters
         )
-    from rcp.core.transition_models import GraphTargetRef
-
+    owner = (
+        f"chat:{chat_id}"
+        if kind in {"discuss", "work"}
+        else "paper"
+        if kind == "paper_coach"
+        else "graph"
+    )
     seen = app.state.background_tasks.store.graph_seen_head(
-        project_id,
-        "paper" if kind == "paper_coach" else "graph",
-        "reader-session",
-        GraphTargetRef(),
+        project_id, owner, "reader-session", GraphTargetRef()
     )
     assert (seen is not None) == succeed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["consolidation", "experiment", "auto_actor", "auto_child"])
+async def test_episode_and_consolidation_history_launches(
+    manifest, tmp_path, history_handlers, kind
+):
+    from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
+    from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
+    from rcp.service import RunRequest, resolve_dispatch_authority
+
+    from .test_auto_research_children_storage import _work_pair
+    from .test_auto_research_stream import (
+        _execution as auto_execution,
+    )
+    from .test_auto_research_stream import (
+        _orchestrator_events,
+        _service,
+        _setup_branch_auto_research,
+    )
+    from .test_consolidation_work import _admit
+    from .test_experiment_loop_agent_io import _execution, _experiment_patch, _loop_request
+
+    if kind.startswith("auto_"):
+        service, store, episode, actor, _child = _setup_branch_auto_research(
+            _service(manifest, tmp_path), tmp_path / "store"
+        )
+        launcher = _HistoryLauncher(service, history_handlers, kind=kind)
+        if kind == "auto_actor":
+            events = await _orchestrator_events(service, launcher, store, actor, tmp_path / "data")
+        else:
+            route, task = _work_pair(store, episode, actor, worker_id=str(uuid4()))
+            request = RunRequest.model_validate(
+                {
+                    **task.request,
+                    "run_on": "laptop",
+                    "run_truth_scope": ["repo-a"],
+                    "node_id": "blk/check-result",
+                    "chat_id": route.worker_id,
+                    "isolation_owner_episode_id": episode.episode_id,
+                }
+            )
+            route = route.model_copy(update={"control_node_id": request.node_id})
+            task = task.model_copy(
+                update={
+                    "request": request.model_dump(mode="json"),
+                    "dispatch_authority": resolve_dispatch_authority("node_chat", request),
+                }
+            )
+            store.create_auto_research_child_work(route, task)
+            events = [
+                AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+                async for frame in stream_auto_research_child_work_run(
+                    service,
+                    launcher,
+                    request,
+                    tmp_path / "data",
+                    auto_execution(store, task),
+                    route=route,
+                )
+            ]
+    else:
+        app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+        service = app.state.service
+        append_fixture_patch(service, seed_patch())
+        if kind == "consolidation":
+            request, execution = _admit(app)
+            run = stream_work_run
+        else:
+            append_fixture_patch(service, _experiment_patch())
+            request = _loop_request(str(uuid4()), str(uuid4()), invocation=1)
+            execution = _execution(
+                app.state.background_tasks.store,
+                app.state.default_project_id,
+                "history-experiment",
+                request,
+            )
+            run = stream_experiment_loop_task
+        launcher = _HistoryLauncher(service, history_handlers, kind=kind)
+        events = [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in run(
+                service,
+                cast(AgentLauncher, launcher),
+                request,
+                tmp_path / "data",
+                execution=execution,
+            )
+        ]
+    assert launcher.calls == 1
+    assert not [event.text for event in events if event.event == "error"]

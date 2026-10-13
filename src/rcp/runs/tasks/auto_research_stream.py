@@ -250,7 +250,12 @@ async def stream_auto_research_orchestrator_run(
             local_stage=stage.local,
             remote_stage=stage.remote,
         )
+        graph_read_scope = GraphReadScope(
+            project_id=turn.task.project_id, target=turn.task.graph_target
+        )
         command_dispatcher = command_dispatcher.with_command_files(
+            service=service,
+            graph_read_scope=graph_read_scope,
             reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
             consumer=command_files.remove_if_sha256,
             refresher=lambda: _refreshed_orchestrator_state_paths(
@@ -291,9 +296,6 @@ async def stream_auto_research_orchestrator_run(
             remote_stage=stage.remote,
             label=skill_bundle_label(orchestrator_selection),
             reuse_existing=True,
-        )
-        graph_read_scope = GraphReadScope(
-            project_id=turn.task.project_id, target=turn.task.graph_target
         )
         staged_head = prepare_graph_observation(
             execution,
@@ -1557,7 +1559,9 @@ def _orchestrator_prompt(
         command_client=command_client,
         write_scope=write_scope,
         skill_pointers=skill_pointers,
-        allowed_verbs=auto_research_allowed_verbs("orchestrator"),
+        allowed_verbs=auto_research_allowed_verbs(
+            "orchestrator", graph_read_scope=graph_read_scope
+        ),
         child_profiles=child_profiles,
     )
 
@@ -1735,7 +1739,7 @@ def _worker_prompt(
         command_client=command_client,
         write_scope=write_scope,
         reply_key=reply_key,
-        allowed_verbs=auto_research_allowed_verbs("worker"),
+        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
     )
 
     def render_master() -> str:
@@ -1862,6 +1866,8 @@ class _ValidateOnlyAutoResearchCommandDispatcher(AutoResearchCommandDispatcher):
     """Keep dispatcher ledger semantics while denying every correction side effect."""
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
+        if self.graph_read_scope is not None and request.verb in self.graph_read_scope.verbs:
+            return super().dispatch(operation_id, request)
         if not isinstance(request, ValidateCommandRequest):
             context = self._context(operation_id)
             invocation = self.store.start_agent_command(
@@ -2196,6 +2202,8 @@ async def _settle_worker_patch(
                     dispatcher=_ValidateOnlyAutoResearchCommandDispatcher(
                         command_dispatcher.store,
                         command_dispatcher.effects,
+                        service=service,
+                        graph_read_scope=scope,
                     ),
                     service=service,
                     graph_read_scope=scope,
