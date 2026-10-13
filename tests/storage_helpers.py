@@ -5,10 +5,23 @@ import sqlite3
 from rcp.storage import AppStore
 
 
+def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
+    """Reconstruct older schema eras without retaining the later owner triggers."""
+    triggers = connection.execute(
+        "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'resource_%'"
+    ).fetchall()
+    for (name,) in triggers:
+        connection.execute(f'DROP TRIGGER "{name}"')
+    for table in ("resource_versions", "resource_deadlines", "resource_watermark_epoch"):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=48")
+
+
 def downgrade_artifacts(
     connection: sqlite3.Connection, *, report_html: dict[str, str] | None = None
 ) -> None:
     """Restore pre-artifact storage before a test replays older migrations."""
+    downgrade_resource_watermarks(connection)
     if not any(
         row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
     ):

@@ -39,6 +39,8 @@ from rcp.storage.models import (
 from rcp.storage.notifications import migrate_notifications, migrate_question_notifications
 from rcp.storage.question_activity import QuestionActivity
 from rcp.storage.questions import migrate_questions
+from rcp.storage.resource_deadlines import record_question_activity
+from rcp.storage.resource_versions import migrate_resource_versions
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -95,6 +97,7 @@ class AppStoreBase:
         (45, "client_requests_v1"),
         (46, "repository_provisioning_contracts_v1"),
         (47, "branch_names_v1"),
+        (48, "resource_watermarks_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -139,7 +142,7 @@ class AppStoreBase:
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
         if space_kind is not None and space_kind not in ("personal", "team"):
             raise ValueError("space kind must be 'personal' or 'team'")
-        self.question_activity = QuestionActivity()
+        self.question_activity = QuestionActivity(changed=self._question_activity_changed)
         self.path = path
         self._read_only_snapshot = False
         self._immutable_read_only = False
@@ -150,7 +153,7 @@ class AppStoreBase:
     def initialize_team_space(cls, path: Path, name: str) -> tuple[AppStore, str]:
         database_existed = path.exists()
         store = cls.__new__(cls)
-        store.question_activity = QuestionActivity()
+        store.question_activity = QuestionActivity(changed=store._question_activity_changed)
         store.path = path
         store._read_only_snapshot = False
         store._immutable_read_only = False
@@ -505,10 +508,17 @@ class AppStoreBase:
                     "INSERT INTO storage_schema_migrations VALUES (?, ?, ?)",
                     [(version, name, now) for version, name in self._STORAGE_SCHEMA_MIGRATIONS],
                 )
+                connection.execute(
+                    "INSERT INTO resource_watermark_epoch VALUES(1,?)", (str(uuid.uuid4()),)
+                )
                 kind = requested_space_kind or "personal"
                 self._insert_space_identity(connection, initial_space_id, kind, initial_space_name)
                 if kind == "personal":
                     self._insert_local_owner(connection)
+                # The raw migration chain installs watermarks after identity
+                # seeds. Match its empty counters only in this new-store path,
+                # before any reader can observe the first committed database.
+                connection.execute("DELETE FROM resource_versions")
                 return self._open_current_storage(
                     connection,
                     kind,
@@ -824,6 +834,12 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=47, name="branch_names_v1", migration=migrate_branch_names
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=48,
+            name="resource_watermarks_v1",
+            migration=migrate_resource_versions,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3811,6 +3827,12 @@ class AppStoreBase:
             """,
             (now,),
         )
+
+    def _question_activity_changed(self, question_id: str, waiting: bool) -> None:
+        with self.connection() as connection:
+            record_question_activity(
+                connection, question_id, waiting, now=datetime.fromisoformat(self.now()).timestamp()
+            )
 
     @staticmethod
     def now() -> str:

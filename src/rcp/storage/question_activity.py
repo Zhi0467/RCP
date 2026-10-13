@@ -18,16 +18,25 @@ class _QuestionActivity:
 
 
 class QuestionActivity:
-    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        changed: Callable[[str, bool], None] | None = None,
+    ) -> None:
         self._clock = clock
+        self._changed = changed
         self._lock = threading.Lock()
         self._questions: dict[str, _QuestionActivity] = {}
 
     def pending(self, question_id: str, call_id: str | None) -> int | None:
         """Count an invocation once; old clients refresh liveness without a count."""
         with self._lock:
+            pending_at = self._clock()
+            if self._changed is not None:
+                self._changed(question_id, True)
             activity = self._questions.setdefault(question_id, _QuestionActivity())
-            activity.last_pending = self._clock()
+            activity.last_pending = pending_at
             if call_id is None:
                 return None
             if call_id not in activity.calls:
@@ -40,7 +49,10 @@ class QuestionActivity:
     def forget(self, question_id: str) -> None:
         """Drop a resolved question so the record holds only open ones."""
         with self._lock:
-            self._questions.pop(question_id, None)
+            if question_id in self._questions:
+                if self._changed is not None:
+                    self._changed(question_id, False)
+                self._questions.pop(question_id)
 
     def is_waiting(self, question_id: str) -> bool:
         with self._lock:

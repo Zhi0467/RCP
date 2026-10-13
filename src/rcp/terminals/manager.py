@@ -119,6 +119,7 @@ class TerminalManager:
         self.directory = data_dir / "terminals"
         self.membership_check = membership_check
         self.sessions: dict[str, TerminalRuntime] = {}
+        self._resource_generations: dict[str, int] = {}
         self._opening: set[tuple[str, str]] = set()
         self._opening_trees: set[tuple[str, str]] = set()
         # Records left unfinished because a unit could not be confirmed gone,
@@ -134,6 +135,13 @@ class TerminalManager:
         self._unit_prefix = (
             "rcp-terminal-" + hashlib.sha256(str(data_dir.resolve()).encode()).hexdigest()[:12]
         )
+
+    def resource_generation(self, project_id: str) -> str:
+        """Read the runtime projection watermark without scanning sessions."""
+        return str(self._resource_generations.get(project_id, 0))
+
+    def _bump_resource_generation(self, project_id: str) -> None:
+        self._resource_generations[project_id] = self._resource_generations.get(project_id, 0) + 1
 
     async def _settle_registration(
         self, project_id: str, manifest: Manifest, repository_alias: str
@@ -731,7 +739,8 @@ class TerminalManager:
             try:
                 async with self._lock:
                     self.sessions[session_id] = runtime
-                    asyncio.get_running_loop().add_reader(master_fd, read_ready, runtime)
+                    self._bump_resource_generation(project_id)
+                    asyncio.get_running_loop().add_reader(master_fd, read_ready, self, runtime)
                     if not self.membership_check(project_id, member_id):
                         await end_runtime(self, runtime, "membership_lost")
                         raise PermissionError(
@@ -838,15 +847,18 @@ class TerminalManager:
         if runtime.replay:
             queue.put_nowait(bytes(runtime.replay))
         runtime.subscribers.add(queue)
-        runtime.session.state = "live"
+        if runtime.session.state != "live":
+            runtime.session.state = "live"
+            self._bump_resource_generation(project_id)
         return queue
 
     def detach(self, project_id: str, session_id: str, queue: asyncio.Queue[TerminalFrame]) -> None:
         runtime = self.sessions.get(session_id)
         if runtime and runtime.session.project_id == project_id:
             runtime.subscribers.discard(queue)
-            if not runtime.subscribers:
+            if not runtime.subscribers and runtime.session.state != "idle":
                 runtime.session.state = "idle"
+                self._bump_resource_generation(project_id)
 
     async def write(self, project_id: str, session_id: str, data: bytes) -> None:
         runtime = get_runtime(self, project_id, session_id)
@@ -856,6 +868,7 @@ class TerminalManager:
         # read the older time and expire a session being typed into.
         runtime.last_activity = time.monotonic()
         runtime.session.last_activity_at = timestamp()
+        self._bump_resource_generation(project_id)
         view = memoryview(data)
         while view:
             try:
@@ -890,7 +903,7 @@ class TerminalManager:
             return "membership_lost"
         if runtime.process.poll() is not None:
             # Drain completion evidence before classifying SSH's ambiguous 255.
-            while read_ready(runtime):
+            while read_ready(self, runtime):
                 pass
             return (
                 "link_dropped"

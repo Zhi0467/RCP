@@ -1760,7 +1760,8 @@ ordinary startup path runs. Completed history remains readable, but the
 replacement must prove that startup schedules no pre-restore provider turn,
 watcher check/delivery, report retry, child admission, or automatic graph
 mutation. A database snapshot is not treated as safe merely because its task
-rows were interrupted.
+rows were interrupted. The same detachment transaction rotates the resource
+watermark epoch so connected clients discard pre-restore display versions.
 
 Snapshotted in-progress provisioning and machine-operation leases are also
 invalid on the replacement. Completed receipts remain history, while unfinished

@@ -21,6 +21,8 @@ from rcp.storage import (
     ProjectProvisioningRepositoryIntent,
 )
 
+from .storage_helpers import downgrade_resource_watermarks
+
 CAPTURED_AT = datetime(2026, 8, 29, 12, tzinfo=UTC)
 
 
@@ -195,6 +197,7 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
     previous = re.sub(r",\s*\n\s*failure_kind TEXT", "", created)
     assert "failure_kind" not in previous
     with AppStore(database).connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE graph_runs")
         connection.execute(previous)
         for statement in indexes:
@@ -262,6 +265,7 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
             "AND sql IS NOT NULL ORDER BY type DESC"
         ).fetchall()
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE project_provisioning_requests")
         for (statement,) in statements:
             connection.execute(statement)
