@@ -59,6 +59,7 @@ export function ArtifactViewer() {
   const resource = useResource("artifact-viewer", profile);
   const state = resource.value;
   const [error, setError] = useState("");
+  const [pinFailed, setPinFailed] = useState(false);
   const [editing, setEditing] = useState(false);
   const [pinning, setPinning] = useState(false);
   const [undoing, setUndoing] = useState(false);
@@ -193,9 +194,9 @@ export function ArtifactViewer() {
       store.invalidate(
         resourceKeyId(artifactStateProfile(target.projectId, target.artifactId).key),
       );
-      if (generation === requestGeneration.current) setError("");
-    } catch (failure) {
-      if (generation === requestGeneration.current) setError(errorMessage(failure));
+      if (generation === requestGeneration.current) setPinFailed(false);
+    } catch {
+      if (generation === requestGeneration.current) setPinFailed(true);
     } finally {
       if (generation === requestGeneration.current) setPinning(false);
     }
@@ -259,6 +260,7 @@ export function ArtifactViewer() {
             aria-label="Pin in Research"
             title="Pin in Research"
             aria-pressed={state.pinned}
+            style={pinFailed ? { borderColor: "var(--danger, #b42318)" } : undefined}
             disabled={pinning || state.pinned}
             onClick={() => void pin()}
           >

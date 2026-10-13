@@ -4757,12 +4757,6 @@ function MemberApp({
                   pin={pin}
                   active={activePin?.artifact_id === pin.artifact_id}
                   onSelect={() => setPinSelection({ scope: pinScope, id: pin.artifact_id })}
-                  onUnpin={() => {
-                    if (activePin?.artifact_id === pin.artifact_id) {
-                      setPinSelection(null);
-                      changeView("scientific");
-                    }
-                  }}
                 />
               ))}
               {Boolean(pinsResource.error) && (

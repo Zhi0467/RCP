@@ -98,7 +98,7 @@ test("pins share refresh, mount only the active version, open native nodes, and 
         (response) =>
           response.request().method() === "POST" && response.url().endsWith("/research-views"),
       ),
-      page.getByRole("button", { name: "Pin in Research", exact: true }).click(),
+      page.locator(".research-pin-action").click(),
     ]);
     assert.deepEqual(errors, []);
   } finally {

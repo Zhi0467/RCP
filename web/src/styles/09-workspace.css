@@ -599,7 +599,8 @@
   max-width: 1180px;
   padding: 0 42px;
 }
-.research-subpanel > button {
+.research-subpanel > button,
+.research-pinned-tab button {
   align-items: center;
   background: transparent;
   border: 1px solid transparent;
@@ -612,11 +613,13 @@
   min-height: 29px;
   padding: 0 9px;
 }
-.research-subpanel > button:hover {
+.research-subpanel > button:hover,
+.research-pinned-tab button:hover {
   background: var(--surface);
   color: var(--ink);
 }
-.research-subpanel > button.active {
+.research-subpanel > button.active,
+.research-pinned-tab button.active {
   background: var(--surface);
   border-color: var(--line-strong);
   color: var(--cobalt-dark);
@@ -1592,19 +1595,6 @@ a.digest-title:hover {
   display: flex;
   align-items: center;
 }
-.research-pinned-tab button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 29px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  color: var(--muted);
-  font-size: var(--type-2xs);
-  font-weight: 700;
-  padding: 0 9px;
-}
 .research-pinned-tab [role="tab"] {
   max-width: 200px;
 }
@@ -1612,15 +1602,6 @@ a.digest-title:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.research-pinned-tab button.active {
-  background: var(--surface);
-  border-color: var(--line-strong);
-  color: var(--cobalt-dark);
-}
-.research-pinned-tab button:hover {
-  background: var(--surface);
-  color: var(--ink);
 }
 .research-subpanel.failed,
 .research-pinned-tab.failed,

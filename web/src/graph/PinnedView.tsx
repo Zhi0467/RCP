@@ -81,28 +81,16 @@ export function PinnedViewTab({
   pin,
   active,
   onSelect,
-  onUnpin,
 }: {
   projectId: string;
   branchId: string | null;
   pin: ResearchViewPin;
   active: boolean;
   onSelect: () => void;
-  onUnpin: () => void;
 }) {
   const { store } = useRefreshRuntime();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const onUnpinRef = useRef(onUnpin);
-  onUnpinRef.current = onUnpin;
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
   const unpin = async () => {
     setBusy(true);
     try {
@@ -113,7 +101,6 @@ export function PinnedViewTab({
       store.invalidate(resourceKeyId(researchViewsProfile(projectId, branchId).key));
       store.invalidate(resourceKeyId(artifactStateProfile(projectId, pin.artifact_id).key));
       setError("");
-      if (mounted.current) onUnpinRef.current();
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
