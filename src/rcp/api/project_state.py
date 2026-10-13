@@ -323,7 +323,14 @@ async def cached_project_revision(
         branch = await asyncio.to_thread(
             _branch_revision, project_id, branch_id, project_display_cache, catalog, store
         )
-        return {**branch, "steer_epoch": background_tasks.steer_epoch(project_id)}
+        return {
+            **branch,
+            # Tasks are project-wide, so a branch view watches the same signal.
+            "task_status_signal": await asyncio.to_thread(
+                store.agent_task_status_signal, project_id
+            ),
+            "steer_epoch": background_tasks.steer_epoch(project_id),
+        }
     snapshot = await asyncio.to_thread(
         project_display_cache.cached_project_snapshot,
         project_id,
@@ -342,6 +349,8 @@ async def cached_project_revision(
         "experiment_signal": snapshot["experiment_signal"],
         # A teammate's new task or watcher changes no graph revision; these tell the page.
         "latest_task_id": await asyncio.to_thread(store.latest_agent_task_id, project_id),
+        # A task that finishes or waits on a person moves this, not latest_task_id.
+        "task_status_signal": await asyncio.to_thread(store.agent_task_status_signal, project_id),
         "latest_watcher_id": await asyncio.to_thread(store.latest_watcher_id, project_id),
         # A final steer receipt can land after its task stopped being polled.
         "steer_epoch": background_tasks.steer_epoch(project_id),
