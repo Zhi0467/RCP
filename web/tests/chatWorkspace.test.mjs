@@ -10,6 +10,7 @@ import {
   conversationAgentStatus,
   chatIdForTask,
   chatIndicator,
+  withEpisodeAttention,
   chatEntryConversationId,
   chatReadThrough,
   chatModeStorageKey,
@@ -692,11 +693,12 @@ test("only a running-lineage lock offers messaging the orchestrator", () => {
   assert.equal(orchestratorCanUnlock(null), false);
 });
 
-test("children stay visible without human attention across turn states", () => {
+test("locked children stay visible without human attention across turn states", () => {
   for (const status of ["succeeded", "failed", "paused", "interrupted", "running"]) {
     const child = {
       chatId: "child",
       conversationKind: "auto_research_child",
+      humanTurnRefusal: { code: "auto_research_child_read_only", detail: "" },
       tasks: [task({ operation_id: status, status })],
     };
     const unread = new Set(["child"]);
@@ -710,5 +712,25 @@ test("children stay visible without human attention across turn states", () => {
     assert.equal(groupConversationAgents([child], unread)[group].length, 1);
     assert.equal(chatIndicator([child], new Set()), null);
     assert.deepEqual(listedAgentConversations([child], { kind: "main" }), [child]);
+    // Once the lineage ends, the human's own follow-up turns get ordinary attention.
+    const unlocked = { ...child, humanTurnRefusal: null };
+    assert.equal(conversationHasUnread(unlocked, unread), true);
+    assert.notEqual(conversationAgentStatus(unlocked, unread).group, "done");
+    // A merge reservation is not lineage ownership.
+    const reserved = { ...child, humanTurnRefusal: { code: "episode_merge_reserved", detail: "" } };
+    assert.equal(conversationHasUnread(reserved, unread), true);
   }
+});
+
+test("an orchestrator whose chain needs action lights the Agents indicator", () => {
+  const orchestrator = { chatId: "b", conversationKind: "auto_research", tasks: [] };
+  const episode = (health) => ({ graph_target: { kind: "branch", branch_id: "b" }, health });
+  assert.equal(
+    chatIndicator(withEpisodeAttention([orchestrator], [episode("ok")]), new Set()),
+    null,
+  );
+  assert.equal(
+    chatIndicator(withEpisodeAttention([orchestrator], [episode("needs_action")]), new Set()),
+    "active",
+  );
 });

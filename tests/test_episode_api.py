@@ -1120,12 +1120,24 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     root_id = str(uuid.uuid4())
     branch = json.dumps({"kind": "branch", "branch_id": root_id})
     base = json.dumps({"target": {"kind": "main"}, "revision": 0})
-    rows = [(root_id, "auto_research", branch, base, (as_of - timedelta(hours=2)).isoformat())]
+    current_id = str(uuid.uuid4())
+    rows = [
+        (root_id, "auto_research", branch, base, None, (as_of - timedelta(hours=3)).isoformat()),
+        (
+            current_id,
+            "auto_research",
+            branch,
+            base,
+            root_id,
+            (as_of - timedelta(hours=2)).isoformat(),
+        ),
+    ]
     rows += [
         (
             str(uuid.uuid4()),
             "auto_research",
             '{"kind": "main"}',
+            None,
             None,
             (as_of - timedelta(minutes=i)).isoformat(),
         )
@@ -1136,12 +1148,15 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
             """
             INSERT INTO episodes (
                 episode_id, project_id, mode, control_node_id, status, graph_target_json,
-                graph_base_head_json, invocation_ceiling, created_at, updated_at
-            ) VALUES (?, ?, ?, NULL, 'completed', ?, ?, 1, ?, ?)
+                graph_base_head_json, continues_episode_id, invocation_ceiling,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, 'completed', ?, ?, ?, 1, ?, ?)
             """,
             [(row[0], project_id, *row[1:], row[-1]) for row in rows],
         )
 
     listed = {episode.episode_id for episode in listed_episodes(store, project_id)}
+    # The chain's current member stays listed; its older root does not need to.
     assert len(listed) == 51
-    assert root_id in listed
+    assert current_id in listed
+    assert root_id not in listed

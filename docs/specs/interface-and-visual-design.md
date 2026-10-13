@@ -289,8 +289,8 @@ branch's Auto-research orchestrator whose chain is in the episode list (an
 archived branch's is not), with its attention state, so the Agents count always
 has a card to open; an orchestrator opens in place, like any other agent,
 without switching the graph, and shows node ids without links to main's nodes. A branch lists only its own agents. It has no
-graph filter and no branch or role tags on cards; the user tag stays. An
-orchestrator's children never count as unread and never sit in Needs you: they
+graph filter and no branch or role tags on cards; the user tag stays. While its
+lineage runs, an orchestrator's children never count as unread and never sit in Needs you: they
 show as Working or Done, and the orchestrator's own card carries any attention
 the chain needs. It opens on a **board**; a link that names a chat (Ask, a source-chat
 link, or a chat route) opens that chat instead, and the list's board icon returns

@@ -66,6 +66,7 @@ import {
   chatIndicator,
   conversationHasUnread,
   listedAgentConversations,
+  withEpisodeAttention,
   unreadChatIdsFromReads,
   conversationHref,
   chatEntryConversationId,
@@ -2909,10 +2910,13 @@ function MemberApp({
   );
   const listedConversations = useMemo(
     () =>
-      listedAgentConversations(
-        inventoryConversations,
-        graphTarget,
-        new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
+      withEpisodeAttention(
+        listedAgentConversations(
+          inventoryConversations,
+          graphTarget,
+          new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
+        ),
+        orchestratorEpisodes,
       ),
     [inventoryConversations, graphTarget, orchestratorEpisodes],
   );
@@ -5772,7 +5776,7 @@ function MemberApp({
                   window.location.hash = conversationHref(project.id, conversation);
                   return;
                 }
-                selectListedConversation(chatId);
+                selectListedConversation(chatId, conversation?.graphTarget);
               }}
               onOpenNode={openNodeById}
               onStartTask={startAgentTask}
