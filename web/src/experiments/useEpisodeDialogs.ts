@@ -48,7 +48,8 @@ export function useEpisodeDialogs({
     episodes.find((episode) => episode.mode === "auto_research" && isLiveEpisode(episode)) ?? null;
   const refreshEpisodes = useCallback(async () => {
     if (!projectId) return false;
-    store.invalidate(resourceKeyId(episodesProfile(projectId).key));
+    // Callers hold their action lock until this read settles or fails.
+    await store.refresh(resourceKeyId(episodesProfile(projectId).key));
     return true;
   }, [projectId, store]);
   const refreshEpisodeMessages = useCallback(
