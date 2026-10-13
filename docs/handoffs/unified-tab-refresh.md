@@ -1,23 +1,14 @@
 # Unified tab refresh
 
-Status: implementation started 2026-10-12, all slices in this PR at
-v0.4.19. Implemented: the Web store and scheduler core
-(`web/src/core/resourceStore.ts`, `refreshScheduler.ts`, `useResource.ts`).
-W3 and W4 Web slices are integrated: one runtime and resource read owner, UI-only
-tab retention, task overlays, graph/chat/episode/history/Paper profiles, and no
-legacy heartbeat or open/reload read bundle. Remaining: end-to-end qualification
-(including phone-width journeys and disposable local/remote data measurements)
-and confirmation of the other server slices below. S1 review repairs are implemented:
-nonfatal display publication, incremental generation reuse, generation-scoped
-snapshot caching, bounded reader registries, durable generation publication,
-requesting-member retry receipts, and accepted Stop responses despite display
-failure. The legacy revision endpoint is retired; its branch, probe, steer, and
-alias checks now use watermarks or the owning payload. The task-status accessor
-remains while its resource-version tests are owned by the parallel server slice.
-Local HTTP sign-in, activation watermarks, project/chat reads, stable tokens,
-and the retired endpoint's 404 were verified on disposable data. Live provider
-readiness was blocked by sandbox credential-lock access; live SSH transfer and
-browser/phone qualification remain open.
+Status: all five slices are implemented in this PR at v0.4.19.
+Verified on a disposable served app (local state, fake provider): a hidden
+tab refetches tasks, chats, and refs about 2.4 s after its agent finishes;
+switching to it paints in under 0.3 s with no awaited read; a failed card
+shows Retry at once and the Retry POST answers in about 50 ms; each resource
+is read once on open; a reopened view renders in about 20 ms; phone width
+390 px is fine. Remaining: a live SSH-host remote-state measurement, and
+`/tasks` is fetched twice when status and progress move together (both
+profiles share the route).
 
 ## Goal
 
