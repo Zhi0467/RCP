@@ -1682,6 +1682,16 @@ graph target are checked for each read. The returned `rcp-live-data` envelope
 contains ordered snapshots, completeness, final/static state, a diagnostic when
 applicable, and the refresh interval. Saved final bytes are authoritative for
 that version. Invalid declarations expose their stored reason as static data.
+A `graph_head` query parameter names the head of the shell's cached complete
+graph; a matching head returns that snapshot as unchanged after rechecking
+bindings.
+
+`/api/projects/{project_id}/research-views` lists (`GET ?branch_id=`), pins
+(`POST {artifact_id, branch_id}`), and unpins (`DELETE /{artifact_id}?branch_id=`)
+the acting member's pinned views for one graph target. Writes are idempotent and
+recheck membership; pin eligibility, the limit, and Keep commit together. Artifact
+state reports `pin_branch_id`, `can_pin`, and `pinned` for the acting member.
+Pin lists refresh through the `artifacts` watermark family.
 
 The authenticated artifact shell pins both HTML and live reads to one version,
 polls while visible, and relays through the existing private artifact channel.

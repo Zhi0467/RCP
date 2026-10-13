@@ -87,7 +87,7 @@ answers; `can_open` always means an RCP viewer, not system PDF handling.
 
 ## Live HTML pages
 
-Live HTML watches changing job, sweep, episode, node, or file data. Reports are
+Live HTML watches changing job, sweep, episode, node, graph, or file data. Reports are
 static: their creation/import owner records `live_data_allowed: false`, enforced
 by shared code. One JSON script `id="rcp-live"` declares version 1 and `needs`;
 `rcp.live_artifacts` owns schemas and `rcp-live-data` messages.
@@ -119,8 +119,41 @@ Server reconciliation independently captures final data once all watched jobs/
 episodes end. Failures retry with bounded backoff/attempts, preserving exhausted
 errors. Expired unkept artifacts skip; invalid ownership/lineage/history-only
 sources terminate. Reads happen outside the artifact lock; save rechecks under it.
-Only complete snapshots become immutable and survive source loss. Node/file/folder-
-only pages never finalize. Snapshot bytes share version backup/transfer/retention.
+Only complete snapshots become immutable and survive source loss. Node/graph/file/
+folder-only pages never finalize. Snapshot bytes share version backup/transfer/retention.
+
+### Graph views
+
+A `graph` need takes no parameters and delivers a lean projection of the
+artifact's bound graph target: each node's id, type, title, standing, and status,
+and each edge's source, relation, and target. Titles are cut to a schema limit
+with a flag; ids never are. Bodies are never included. The page's own script
+filters and draws it, so no query language exists. A declaration has at most one
+`graph` need and cannot combine it with `job` or `episode` needs.
+
+Each graph snapshot is full, unchanged, or an error. It carries an opaque head
+for its target that also changes across restart and restore. The shell sends the
+head of the last complete graph it cached, and the server omits graph data when
+it is unchanged. Byte caps in `limits.py` bound the graph and the whole message.
+Over a cap, the read is an error: the shell keeps its last complete graph, marks
+it stale, and keeps polling until the graph fits again. Nodes and edges are never
+silently dropped.
+
+A page may post `rcp-open-node` with a node id. Each frame hop accepts it only
+from its exact child, and the shell forwards only ids in the last delivered
+graph. A pinned view opens RCP's own node panel; elsewhere it is ignored. The
+page never receives a reply.
+
+A member may pin an HTML artifact as a Research tab for its own bound graph
+target. Pins are personal, shown only while that target is selected, bounded by
+`RESEARCH_VIEW_PIN_LIMIT`, and always show the current version. Pinning keeps
+the artifact in the same transaction; unpinning deletes only the pin. Pins are
+not carried by cross-space transfer.
+
+**Why:** RCP owns every graph read, so a custom view gains no data path the
+member lacks and no new request channel. Opening a node uses trusted UI, so the
+page cannot style or intercept protected content. Change history is not part of
+this projection; a revision head cannot reconstruct what changed.
 
 **Why:** The authenticated wrapper can relay declared data without giving agent
 HTML an RCP credential. Refresh never executes agent code outside a launch;

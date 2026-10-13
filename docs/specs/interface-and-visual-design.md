@@ -49,7 +49,9 @@ magnifies the page without resizing RCP windows. Verify at 390px.
 
 No wordmark, logo, or revision label sits beside the project name. Group labelled
 Sync/Ask together and icon-only History/Refresh together. Agent tasks are
-icon-only and accessible. Inbox carries a colored count; DAG is under Research.
+icon-only and accessible. Inbox carries a colored count; DAG and the member's pinned views are
+tabs under Research. On phones that tab strip scrolls within its own width; pin
+titles truncate and unpin is its own icon button.
 Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
 unsynced badge on Artifacts. Destination order ends Terminals, Agents, Settings.
 
