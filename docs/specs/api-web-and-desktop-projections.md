@@ -84,13 +84,14 @@ opening screen, the header and view stay mounted, and the previous ref's
 snapshot stays on screen with the panel inert until the new ref's snapshot
 arrives, under a thin progress line. The loading screen appears only for the
 first open of a project that is not on screen; identity re-checks and backend
-changes keep the displayed project inert instead. When a project opens, live
-branch snapshots load one at a time in the background into the per-ref cache,
-which never displaces a visited ref's state or draft, so a first switch usually
-paints at once. A ref visited before restores from its `(project, ref)` tab state. The
-session's target fences still drop responses for a ref already left, and each
-ref keeps its own staged draft. Heartbeat single-flight is keyed by project and
-ref. All project view URLs come from one helper over (project, ref, view) plus
+changes keep the displayed project inert instead. Open tabs retain UI state only:
+ref, selections, panels, drafts, scroll, and editor generations. Backend resources
+live in the shared store; reopening a cached ref paints before validation. The
+current ref remains subscribed while its tab is hidden; other visited refs stay
+dormant until reopened. Closing releases the tab's resources. There is no count
+cap or eager warming of unvisited branches. Immutable resource keys fence late
+responses for a ref already left, and each ref keeps its own staged draft.
+All project view URLs come from one helper over (project, ref, view) plus
 an optional chat or episode; an exact Experiment run route keeps its own
 `experiment`/`target`/`branch` fields.
 
@@ -466,10 +467,9 @@ that task row is unavailable. A backend candidate graph must be synced before
 Start because the run endpoint still authorizes the canonical graph; a
 rule-inert local prose draft does not create that fence.
 
-Concurrent project snapshot requests are fenced per project and graph target by start order,
-including equal-revision responses. Once a newer cache, reload, watcher poll,
-settings save, or Sync starts, an older response cannot overwrite its graph or
-operational controls.
+Concurrent graph resource reads are fenced per project and graph target by
+start order, including equal-revision responses. A newer read, settings save,
+or Sync fences older responses from overwriting the graph or operational controls.
 
 A completed project snapshot publishes whether canonical graph mutation is
 available and the exact unavailable reason. Watcher responses similarly publish
@@ -544,9 +544,9 @@ submission. Free text remains available with either choice format. A parked
 chat answer with no running turn names Discuss or Work continuation on its submit
 control, matching the asking turn's capability.
 Experiment and Auto-research detail show the same cards; withdrawn cards retain
-their history with an **Episode ended** state. Question refresh follows existing
-chat and episode refresh/polling, including turn command/state changes and the
-active project heartbeat. Fresh pending rounds show a cobalt **Agent is waiting**
+their history with an **Episode ended** state. Chat and episode views select
+questions from the shared project resource, refreshed by its watermark and
+invalidated by question commands. Fresh pending rounds show a cobalt **Agent is waiting**
 pill; otherwise the open card shows **Needs you**.
 Question notifications open the corresponding chat or expanded episode view.
 
@@ -638,10 +638,15 @@ second job-list polling lifecycle.
 
 ## Atomic client project snapshots
 
-The Web client stores a bounded project snapshot keyed by project id and exact
-head. A successful mutation atomically replaces graph, control, guidance,
-transition manifest, and derived inputs. The client never overlays a new graph
-on an old control map and never implements transition rules.
+The Web client holds one atomic `graph` resource per project and ref. Graph,
+control, guidance, attention, and head are accepted together, including control
+changes at an equal graph revision. History and the parameterized transition
+manifest use the same graph watermark. The client never overlays a new graph on
+an old control map and never implements transition rules. Human drafts and
+preview coordination remain local per ref and reconcile against accepted data.
+Chats, watchers, episode indexes and entity timelines use their own resources;
+transcripts are keyed by their owning ref. Merge previews remain demand-only,
+keyed by the episode, target, and preview inputs.
 
 Human edits that the backend manifest proves rule-inert may update a local draft
 immediately. A possible trigger, absent manifest, or stale tag previews through
@@ -691,12 +696,10 @@ send retains its pending card and exact idempotency key for Resend. Terminal
 sockets, artifact iframe execution, and viewer-owned live data stay outside the
 resource refresh loop.
 
-A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
-per project. A temporarily unavailable head does not replay or copy the graph.
-An unchanged head also skips that work unless the cached canonical state is
-offline: a successful probe then triggers authoritative reconciliation before
-clearing the offline state. Movement starts the same background reconciliation;
-an older result may not replace a newer cache.
+Watermark requests register remote-sync demand for open projects. Activation
+requests a background sync without delaying display reads, which use the last
+completed generation. A failed sync preserves that generation and reports its
+health separately from backend contact failures.
 
 Reconciliation preserves human drafts. A staged node whose canonical revision
 did not move stays committable. One that moved becomes behind and is excluded

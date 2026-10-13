@@ -1,66 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchQuestions } from "../core/api";
-import type { AgentQuestion } from "../core/types";
+import { useCallback } from "react";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime } from "../core/useResource";
+import {
+  projectIdFromApiBase,
+  questionsProfile,
+  useProjectResource,
+} from "../projects/projectResources";
 
-/** Reuses the owner's refreshed projection and project heartbeat, without another clock. */
+/** Questions share the project's resource owner and scheduler. */
 export function useQuestions(
   apiBase: string,
   kind: "chat" | "episode",
   ownerId: string | undefined,
-  freshness: string,
 ) {
-  const [snapshot, setSnapshot] = useState<{ key: string; items: AgentQuestion[] }>({
-    key: "",
-    items: [],
-  });
-  const [error, setError] = useState<{ key: string; message: string } | null>(null);
-  const reload = useRef<() => void>(() => undefined);
-  const key = `${apiBase}/${kind}/${ownerId}`;
-  useEffect(() => {
-    let cancelled = false;
-    let inFlight = false;
-    let queued = false;
-    const fetch = async () => {
-      if (!ownerId || cancelled) return;
-      if (inFlight) {
-        queued = true;
-        return;
-      }
-      inFlight = true;
-      try {
-        const items = await fetchQuestions(apiBase, kind, ownerId);
-        if (!cancelled) {
-          setSnapshot({ key, items });
-          setError(null);
-        }
-      } catch (reason) {
-        if (!cancelled)
-          setError({ key, message: reason instanceof Error ? reason.message : String(reason) });
-      } finally {
-        inFlight = false;
-        if (queued && !cancelled) {
-          queued = false;
-          void fetch();
-        }
-      }
-    };
-    reload.current = () => void fetch();
-    const heartbeat = (event: Event) => {
-      if ((event as CustomEvent<string>).detail === apiBase) void fetch();
-    };
-    window.addEventListener("rcp:refresh-questions", heartbeat);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("rcp:refresh-questions", heartbeat);
-    };
-  }, [apiBase, kind, ownerId, key]);
-  useEffect(() => {
-    reload.current();
-  }, [key, freshness]);
-  const refresh = useCallback(() => reload.current(), []);
+  const { store } = useRefreshRuntime();
+  const profile = ownerId ? questionsProfile(projectIdFromApiBase(apiBase), kind, ownerId) : null;
+  const view = useProjectResource(profile);
+  const id = profile ? resourceKeyId(profile.key) : null;
+  const refresh = useCallback(() => {
+    if (id) store.invalidate(id);
+  }, [store, id]);
   return {
-    questions: snapshot.key === key ? snapshot.items : [],
-    error: error?.key === key ? error.message : null,
+    questions: view.value ?? [],
+    error: view.error
+      ? view.error instanceof Error
+        ? view.error.message
+        : String(view.error)
+      : null,
     refresh,
   };
 }

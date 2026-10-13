@@ -1,3 +1,5 @@
+import { createElement, type ReactNode } from "react";
+import { RefreshRuntimeContext } from "../../src/core/useResource";
 import { bindArtifactResourceStore } from "../../src/artifacts/artifactViewerModel";
 import { ResourceStore } from "../../src/core/resourceStore";
 import { RefreshScheduler } from "../../src/core/refreshScheduler";
@@ -15,3 +17,7 @@ export const runtime = {
 };
 
 bindArtifactResourceStore(store);
+
+export function ResourceRuntime({ children }: { children: ReactNode }) {
+  return createElement(RefreshRuntimeContext.Provider, { value: runtime }, children);
+}

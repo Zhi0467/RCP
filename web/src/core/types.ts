@@ -2996,6 +2996,7 @@ export interface ProviderReadiness {
 }
 
 export interface PaperSnapshot {
+  draft_version: string | null;
   content: string;
   sync_state: "not_created" | "synced" | "unsynced" | "behind";
   base_hash?: string | null;

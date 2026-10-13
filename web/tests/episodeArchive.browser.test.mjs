@@ -157,7 +157,7 @@ test("active and unresolved episodes archive without stopping work and restore a
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
+    server: { host: "127.0.0.1", port: 8468, strictPort: true },
   });
   let browser;
   try {
@@ -590,6 +590,11 @@ test("active and unresolved episodes archive without stopping work and restore a
       mutationPaths,
       writes.map(([episodeId]) => `/api/projects/project-one/episodes/${episodeId}/archive`),
       "Archive and unarchive never call stop, watcher, or other mutation endpoints",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.getByRole("button", { name: "Refresh runs", exact: true }).isVisible(),
+      true,
     );
     assert.deepEqual(errors, []);
   } finally {

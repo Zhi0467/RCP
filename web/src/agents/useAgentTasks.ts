@@ -24,11 +24,13 @@ interface UseAgentTasksOptions {
   reportError: (message: string) => void;
 }
 
-export function cloneAgentTasksSnapshot(
-  snapshot: AgentTasksSnapshot,
-): Pick<AgentTasksSnapshot, "retryTask" | "taskInspectorId" | "activityTaskId"> {
+export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): {
+  retryTaskId: string | null;
+  taskInspectorId: string | null;
+  activityTaskId: string | null;
+} {
   return {
-    retryTask: snapshot.retryTask,
+    retryTaskId: snapshot.retryTask?.operation_id ?? null,
     taskInspectorId: snapshot.taskInspectorId,
     activityTaskId: snapshot.activityTaskId,
   };
@@ -43,7 +45,8 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
     () => selectTasks(status.value, progress.value),
     [status.value, progress.value],
   );
-  const [retryTask, setRetryTask] = useState<AgentTask | null>(null);
+  const [retryTaskId, setRetryTaskId] = useState<string | null>(null);
+  const retryTask = tasks.find((task) => task.operation_id === retryTaskId) ?? null;
   const [taskStarting, setTaskStarting] = useState(false);
   const [taskActionId, setTaskActionId] = useState<string | null>(null);
   const [taskInspectorId, setTaskInspectorId] = useState<string | null>(null);
@@ -105,11 +108,11 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
   }, []);
 
   const chooseRetryTask = useCallback((task: AgentTask) => {
-    setRetryTask(task);
+    setRetryTaskId(task.operation_id);
   }, []);
 
   const closeRetryTask = useCallback(() => {
-    setRetryTask(null);
+    setRetryTaskId(null);
   }, []);
 
   const beginTaskStart = useCallback(() => {
@@ -150,14 +153,14 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
   );
 
   const resetProjectTasks = useCallback(() => {
-    setRetryTask(null);
+    setRetryTaskId(null);
     setTaskInspectorId(null);
     setActivityTaskId(null);
   }, []);
 
   const restoreProjectTasks = useCallback(
-    (snapshot: Pick<AgentTasksSnapshot, "retryTask" | "taskInspectorId" | "activityTaskId">) => {
-      setRetryTask(snapshot.retryTask);
+    (snapshot: ReturnType<typeof cloneAgentTasksSnapshot>) => {
+      setRetryTaskId(snapshot.retryTaskId);
       setTaskInspectorId(snapshot.taskInspectorId);
       setActivityTaskId(snapshot.activityTaskId);
     },

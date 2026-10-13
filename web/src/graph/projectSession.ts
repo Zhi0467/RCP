@@ -63,9 +63,14 @@ export type ProjectSessionManifestState =
 export interface ProjectSessionTabState {
   projectId: string | null;
   graphTarget: GraphTargetRef;
+  humanDraft: HumanDraft | null;
+  paperEditorGeneration: number;
+  draftReconciliationDiscardedProposalIds: string[];
+}
+
+export interface ProjectSessionState extends ProjectSessionTabState {
   project: ProjectSnapshot | null;
   renderedRevision: number;
-  humanDraft: HumanDraft | null;
   transitionHead: GraphHeadRef;
   transitionRulesetTag: string | null;
   transitionManifestState: ProjectSessionManifestState;
@@ -73,16 +78,11 @@ export interface ProjectSessionTabState {
   transitionManifestExpectedRulesetTag: string | null;
   draftTransitionProjection: BrowserTransitionProjection | null;
   draftPreviewConflict: string | null;
-  draftReconciliationDiscardedProposalIds: string[];
-}
-
-export interface ProjectSessionState extends ProjectSessionTabState {
   draftPreviewPending: boolean;
   snapshotRequestSequence: number;
   latestSnapshotRequests: Record<string, number>;
   transitionCoordinator: ProjectTransitionCoordinatorState;
   syncRequestSequence: number;
-  paperEditorGeneration: number;
 }
 
 export type ProjectSessionAction =
@@ -226,7 +226,10 @@ export function projectSessionReducer(
       const empty = emptyProjectSessionState(action.project_id, action.graph_target);
       return {
         ...state,
-        ...serializeProjectSessionTabState(empty),
+        ...empty,
+        snapshotRequestSequence: state.snapshotRequestSequence,
+        latestSnapshotRequests: state.latestSnapshotRequests,
+        syncRequestSequence: state.syncRequestSequence,
         humanDraft: action.human_draft ?? null,
         draftPreviewPending: false,
         paperEditorGeneration: state.paperEditorGeneration + 1,
@@ -244,22 +247,14 @@ export function projectSessionReducer(
         project_id: action.project_id,
         graph_target: action.state.graphTarget ?? MAIN_GRAPH,
       });
-      if (action.project_id && action.state.project) {
-        transitionCoordinator = reduceProjectTransitionCoordinator(transitionCoordinator, {
-          kind: "observe_head",
-          project_id: action.project_id,
-          head: action.state.transitionHead,
-        });
-      }
-      const restored = cloneProjectSessionTabState(
-        action.state.projectId === action.project_id &&
-          (!action.state.project || action.state.project.id === action.project_id)
-          ? action.state
-          : emptyProjectSessionState(action.project_id),
-      );
+      const restored = cloneProjectSessionTabState(action.state);
       return {
         ...state,
+        ...emptyProjectSessionState(action.project_id, restored.graphTarget),
         ...restored,
+        snapshotRequestSequence: state.snapshotRequestSequence,
+        latestSnapshotRequests: state.latestSnapshotRequests,
+        syncRequestSequence: state.syncRequestSequence,
         projectId: action.project_id,
         draftPreviewPending: false,
         paperEditorGeneration: state.paperEditorGeneration + 1,
@@ -506,117 +501,6 @@ export function cachedSnapshotCanReplace(
   return snapshot.id !== renderedProjectId || snapshot.graph.revision >= renderedRevision;
 }
 
-export function reconcileInactiveProjectSession(
-  state: ProjectSessionTabState,
-  snapshot: ProjectSnapshot,
-): ProjectSessionTabState {
-  const decodedSnapshot = decodeProjectSnapshot(snapshot);
-  if (
-    decodedSnapshot.id !== state.project?.id ||
-    !sameGraphTarget(decodedSnapshot.graph_target, state.graphTarget) ||
-    decodedSnapshot.snapshot_freshness !== "fresh"
-  )
-    return state;
-  const session = {
-    ...emptyProjectSessionState(state.project?.id ?? null),
-    ...cloneProjectSessionTabState(state),
-  };
-  const next = applyProjectSnapshot(session, {
-    kind: "snapshot_applied",
-    snapshot: decodedSnapshot,
-    preserve_readiness: false,
-  });
-  return next === session ? state : serializeProjectSessionTabState(next);
-}
-
-type HeartbeatMetadata = Partial<
-  Pick<
-    ProjectSnapshot,
-    | "snapshot_freshness"
-    | "last_remote_sync_at"
-    | "compute_probes_probed_at"
-    | "settings_signal"
-    | "experiment_signal"
-    | "graph_target"
-  >
->;
-
-export function projectHeartbeatMetadataChanged(
-  observed: HeartbeatMetadata,
-  rendered: HeartbeatMetadata | null,
-  graphTarget: GraphTargetRef = MAIN_GRAPH,
-): boolean {
-  if (!rendered) return false;
-  // Experiment controls are per graph target, so a branch view compares them too,
-  // but only against a snapshot of that same graph. A heartbeat names no target;
-  // it was read for `graphTarget`.
-  if (
-    observed.experiment_signal !== undefined &&
-    sameGraphTarget(observed.graph_target ?? graphTarget, rendered.graph_target ?? graphTarget) &&
-    observed.experiment_signal !== rendered.experiment_signal
-  )
-    return true;
-  return Boolean(
-    graphTarget.kind === "main" &&
-    ((observed.snapshot_freshness !== undefined &&
-      observed.snapshot_freshness !== rendered.snapshot_freshness) ||
-      (observed.last_remote_sync_at !== undefined &&
-        observed.last_remote_sync_at !== rendered.last_remote_sync_at) ||
-      // A background compute probe finished, so the rendered results are stale.
-      (observed.compute_probes_probed_at !== undefined &&
-        observed.compute_probes_probed_at !== (rendered.compute_probes_probed_at ?? null)) ||
-      // A teammate saved the project's settings.
-      (observed.settings_signal !== undefined &&
-        observed.settings_signal !== rendered.settings_signal)),
-  );
-}
-
-/** True when the heartbeat names a record the page has not loaded, such as a teammate's. */
-export function heartbeatNamesUnknownId(
-  latest: string | null | undefined,
-  loadedIds: readonly string[],
-): boolean {
-  return Boolean(latest) && !loadedIds.includes(latest as string);
-}
-
-/** A first observation counts as moved: the list may predate it. */
-export function heartbeatTaskStatusMoved(
-  observed: string | undefined,
-  seen: string | undefined,
-): boolean {
-  return observed !== undefined && observed !== seen;
-}
-
-export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =
-  { kind: "ignore" } | { kind: "reload_active" } | { kind: "reconcile_inactive"; state: T };
-
-export function projectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState>({
-  requestedProjectId,
-  activeProjectId,
-  tabOpen,
-  inactiveState,
-  snapshotRevision,
-  renderedRevision,
-  metadataChanged = false,
-}: {
-  requestedProjectId: string;
-  activeProjectId: string | null;
-  tabOpen: boolean;
-  inactiveState: T | null;
-  snapshotRevision: number;
-  renderedRevision: number;
-  metadataChanged?: boolean;
-}): ProjectHeartbeatSnapshotDisposition<T> {
-  if (!tabOpen) return { kind: "ignore" };
-  if (activeProjectId === requestedProjectId) {
-    return snapshotRevision > renderedRevision ||
-      (snapshotRevision === renderedRevision && metadataChanged)
-      ? { kind: "reload_active" }
-      : { kind: "ignore" };
-  }
-  return inactiveState ? { kind: "reconcile_inactive", state: inactiveState } : { kind: "ignore" };
-}
-
 export function persistProjectHumanDraft(
   storage: Pick<Storage, "setItem" | "removeItem">,
   actorId: string | null,
@@ -650,7 +534,7 @@ function sameProjectSlice(left: unknown, right: unknown): boolean {
  * really did move at an unchanged graph revision still replaces what is
  * rendered, which is the whole point of that poll.
  */
-function preserveUnchangedProjectSlices(
+export function preserveUnchangedProjectSlices(
   previous: ProjectSnapshot,
   next: ProjectSnapshot,
 ): ProjectSnapshot {
@@ -915,16 +799,8 @@ function cloneProjectSessionTabState(state: ProjectSessionTabState): ProjectSess
   return {
     projectId: state.projectId,
     graphTarget: state.graphTarget ?? MAIN_GRAPH,
-    project: state.project,
-    renderedRevision: state.renderedRevision,
     humanDraft: state.humanDraft,
-    transitionHead: state.transitionHead,
-    transitionRulesetTag: state.transitionRulesetTag,
-    transitionManifestState: state.transitionManifestState,
-    transitionManifestRefresh: state.transitionManifestRefresh,
-    transitionManifestExpectedRulesetTag: state.transitionManifestExpectedRulesetTag,
-    draftTransitionProjection: state.draftTransitionProjection,
-    draftPreviewConflict: state.draftPreviewConflict,
+    paperEditorGeneration: state.paperEditorGeneration,
     draftReconciliationDiscardedProposalIds: [...state.draftReconciliationDiscardedProposalIds],
   };
 }

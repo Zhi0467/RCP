@@ -978,12 +978,6 @@ export function uninstallMachinePower(): Promise<MachinePowerStatus> {
   return api("/api/machine-power/uninstall", { method: "POST" });
 }
 
-export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {
-  return api<AgentQuestion[]>(
-    `${apiBase}/${ownerKind === "chat" ? "chats" : "episodes"}/${encodeURIComponent(ownerId)}/questions`,
-  );
-}
-
 export function answerQuestion(apiBase: string, questionId: string, body: AnswerQuestionRequest) {
   return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/answer`, {
     method: "POST",

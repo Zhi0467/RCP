@@ -11,10 +11,13 @@ import {
   MessageCirclePlus,
   Send,
   WifiOff,
+  RotateCcw,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agents/agentTasks";
-import { api } from "../core/api";
+import { useRefreshRuntime, useResource } from "../core/useResource";
+import { resourceKeyId } from "../core/resourceStore";
+import { createPaperDraft, paperProfile, savePaperDraft } from "./paperResources";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { profileRunConfig } from "../core/AgentConfigControls";
 import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
@@ -28,14 +31,36 @@ import type {
   WritingSession,
 } from "../core/types";
 
+export interface PaperEditorState {
+  content: string;
+  draftVersion: string | null;
+  incomingContent: string;
+  incomingCanonicalHash: string | null;
+  saveBaseHash: string | null;
+  dirty: boolean;
+  saveError: string | null;
+  buffersSwapped: boolean;
+  message: string;
+}
+
 interface Props {
   graphTarget?: GraphTargetRef;
   apiBase: string;
   project: ProjectSnapshot;
   initialPaper: PaperSnapshot;
+  owner?: string;
+  editorState?: PaperEditorState;
+  onEditorStateChange?: (state: PaperEditorState) => void;
+  stale?: boolean;
+  sessions?: WritingSession[];
+  onCreate: () => Promise<PaperSnapshot>;
+  onSave: (
+    content: string,
+    baseHash: string | null,
+    version: string | null,
+  ) => Promise<PaperSnapshot>;
   tasks: AgentTask[];
   onStartTask: StartAgentTask;
-  onPaperChange: (paper: PaperSnapshot) => void;
 }
 
 const MIN_EDITOR_SHARE = 35;
@@ -44,7 +69,6 @@ const MIN_EDITOR_WIDTH = 360;
 const MIN_COACH_WIDTH = 320;
 const DIVIDER_WIDTH = 9;
 const PAPER_VIEW_STORAGE_PREFIX = "rcp:paper-view";
-const PAPER_REFRESH_INTERVAL_MS = 5_000;
 
 type PaperView = "write" | "preview" | "incoming";
 
@@ -84,98 +108,94 @@ export function swapPaperBuffers(editor: string, incoming: string): [string, str
   return [incoming, editor];
 }
 
-export function loadPaperSnapshot(
-  load: (path: string) => Promise<PaperSnapshot>,
-  apiBase: string,
-): Promise<PaperSnapshot> {
-  return load(`${apiBase}/paper`);
-}
-
-/**
- * Opens the editor only after one read of the Paper itself. The project
- * snapshot's Paper can be older than the saved file, and the editor never
- * replaces its own buffer from a later read.
- */
-export function LoadedPaperWorkspace(props: Omit<Props, "initialPaper">) {
-  const { apiBase, onPaperChange } = props;
-  const [paper, setPaper] = useState<PaperSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const reportPaper = useRef(onPaperChange);
-  reportPaper.current = onPaperChange;
-
-  useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    loadPaperSnapshot(api, apiBase).then(
-      (next) => {
-        if (cancelled) return;
-        reportPaper.current(next);
-        setPaper(next);
-      },
-      (reason) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, attempt]);
-
-  if (paper) return <PaperWorkspace {...props} initialPaper={paper} />;
-  return (
-    <section className="paper-empty" aria-busy={error === null}>
-      <div className="paper-empty-action">
-        {error ? (
-          <>
-            <div className="paper-inline-error" role="alert">
-              {error}
-            </div>
-            <button className="button" onClick={() => setAttempt((value) => value + 1)}>
-              Try again
-            </button>
-          </>
+/** Paper uses the same resource lifetime and refresh rules as every other view. */
+export function LoadedPaperWorkspace(props: Omit<Props, "initialPaper" | "onSave" | "onCreate">) {
+  const { store } = useRefreshRuntime();
+  const profile = paperProfile(props.project.id, props.apiBase);
+  const id = resourceKeyId(profile.key);
+  const view = useResource(props.owner ?? `${props.project.id}:paper-view`, profile);
+  if (!view.value || (view.stale && view.value.paper.sync_state === "not_created")) {
+    return (
+      <section
+        className="paper-empty"
+        aria-busy={view.loading}
+        style={view.error ? { outline: "1px solid var(--danger, #c33)" } : undefined}
+      >
+        {view.error ? (
+          <button
+            className="icon-button"
+            aria-label="Retry Paper"
+            onClick={() => store.invalidate(id)}
+          >
+            <RotateCcw size={16} />
+          </button>
         ) : (
-          <span>
-            <LoaderCircle className="spin" size={16} /> Opening introduction…
-          </span>
+          <LoaderCircle className="spin" size={16} aria-label="Loading Paper" />
         )}
-      </div>
-    </section>
+      </section>
+    );
+  }
+  return (
+    <PaperWorkspace
+      {...props}
+      initialPaper={view.value.paper}
+      sessions={view.value.sessions}
+      stale={view.stale}
+      onCreate={() => createPaperDraft(store, profile)}
+      onSave={(content, baseHash, version) =>
+        savePaperDraft(store, profile, content, baseHash, version)
+      }
+    />
   );
 }
 
 export function PaperWorkspace({
-  apiBase,
   project,
   initialPaper,
   graphTarget = MAIN_GRAPH,
   tasks,
   onStartTask,
-  onPaperChange,
+  editorState,
+  onEditorStateChange,
+  stale = false,
+  sessions = [],
+  onCreate,
+  onSave,
 }: Props) {
-  const [paper, setPaper] = useState(initialPaper);
-  const [content, setContent] = useState(initialPaper.content);
-  const [incomingContent, setIncomingContent] = useState(initialPaper.incoming_content ?? "");
+  const paper = initialPaper;
+  const [draftVersion, setDraftVersion] = useState(
+    editorState ? editorState.draftVersion : initialPaper.draft_version,
+  );
+  const [content, setContent] = useState(editorState?.content ?? initialPaper.content);
+  const [incomingContent, setIncomingContent] = useState(
+    editorState?.incomingContent ?? initialPaper.incoming_content ?? "",
+  );
   // Keep the version paired with the visible Incoming buffer. Canonical may
   // advance again while that buffer temporarily holds the displaced draft.
   const [incomingCanonicalHash, setIncomingCanonicalHash] = useState(
-    initialPaper.sync_state === "behind" ? (initialPaper.canonical_hash ?? null) : null,
+    editorState
+      ? editorState.incomingCanonicalHash
+      : initialPaper.sync_state === "behind"
+        ? (initialPaper.canonical_hash ?? null)
+        : null,
   );
-  const [saveBaseHash, setSaveBaseHash] = useState(initialPaper.base_hash ?? null);
-  const [dirty, setDirty] = useState(false);
+  const [saveBaseHash, setSaveBaseHash] = useState(
+    editorState ? editorState.saveBaseHash : (initialPaper.base_hash ?? null),
+  );
+  const [dirty, setDirty] = useState(editorState?.dirty ?? false);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(editorState?.saveError ?? null);
   const [creating, setCreating] = useState(false);
-  const [sessions, setSessions] = useState<WritingSession[]>([]);
-  const [activeSession, setActiveSession] = useState<WritingSession | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSession =
+    sessions.find((session) => session.native_session_id === activeSessionId) ?? null;
   const [freshSession, setFreshSession] = useState(false);
   const [pendingCoachTaskId, setPendingCoachTaskId] = useState<string | null>(null);
   const [coachSubmitting, setCoachSubmitting] = useState(false);
   const [config, setConfig] = useState<AgentRunConfig>(() =>
     profileRunConfig(project.agent_profiles.paper_coach),
   );
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(editorState?.message ?? "");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [paperView, setPaperView] = useState<PaperView>(() =>
     storedPaperView(project.id, initialPaper.sync_state === "behind"),
@@ -189,55 +209,50 @@ export function PaperWorkspace({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const coachTextarea = useRef<HTMLTextAreaElement>(null);
   const latestContent = useRef(content);
-  const buffersSwapped = useRef(false);
-  const paperPollGeneration = useRef(0);
+  const buffersSwapped = useRef(editorState?.buffersSwapped ?? false);
   const paperSaveGeneration = useRef(0);
-  const handledCoachTask = useRef<string | null>(
-    tasks.find((task) => task.kind === "paper_coach" && task.settled)?.operation_id ?? null,
-  );
+
+  useEffect(() => {
+    onEditorStateChange?.({
+      content,
+      draftVersion,
+      incomingContent,
+      incomingCanonicalHash,
+      saveBaseHash,
+      dirty,
+      saveError,
+      buffersSwapped: buffersSwapped.current,
+      message,
+    });
+  }, [
+    content,
+    draftVersion,
+    incomingContent,
+    incomingCanonicalHash,
+    saveBaseHash,
+    dirty,
+    saveError,
+    message,
+    onEditorStateChange,
+  ]);
 
   useEffect(() => {
     latestContent.current = content;
   }, [content]);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-    const poll = async () => {
-      const generation = ++paperPollGeneration.current;
-      const saveGeneration = paperSaveGeneration.current;
-      try {
-        const next = await loadPaperSnapshot(api, apiBase);
-        if (
-          cancelled ||
-          generation !== paperPollGeneration.current ||
-          saveGeneration !== paperSaveGeneration.current
-        )
-          return;
-        setPaper(next);
-        if (!buffersSwapped.current) {
-          setIncomingContent(next.incoming_content ?? "");
-          setIncomingCanonicalHash(
-            next.sync_state === "behind" ? (next.canonical_hash ?? null) : null,
-          );
-        }
-        if (next.sync_state !== "behind") setSaveBaseHash(next.base_hash ?? null);
-        onPaperChange(next);
-      } catch {
-        // A background freshness check must not turn a usable local editor into an error state.
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void poll(), PAPER_REFRESH_INTERVAL_MS);
-      }
-    };
-    timer = window.setTimeout(() => void poll(), PAPER_REFRESH_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [apiBase, onPaperChange]);
+    if (!buffersSwapped.current) {
+      setIncomingContent(paper.incoming_content ?? "");
+      setIncomingCanonicalHash(
+        paper.sync_state === "behind" ? (paper.canonical_hash ?? null) : null,
+      );
+    }
+    // The editor's draft revision stays paired with its buffer, including after a conflict.
+    if (paper.sync_state !== "behind") setSaveBaseHash(paper.base_hash ?? null);
+  }, [paper]);
 
   const attachSession = (session: WritingSession) => {
-    setActiveSession(session);
+    setActiveSessionId(session.native_session_id);
     setFreshSession(false);
     setPendingCoachTaskId(null);
     setConfig({
@@ -249,29 +264,16 @@ export function PaperWorkspace({
     setSubmitError(null);
   };
 
-  const loadSessions = async (preferredSessionId?: string | null) => {
-    const items = await api<WritingSession[]>(`${apiBase}/paper/sessions`);
-    setSessions(items);
-    if (preferredSessionId) {
-      const preferredSession = items.find((item) => item.native_session_id === preferredSessionId);
-      if (preferredSession) attachSession(preferredSession);
-      else {
-        setActiveSession(null);
-        setFreshSession(false);
-      }
-    }
-    return items;
-  };
-
   useEffect(() => {
-    const latestSessionId = tasks.find(
-      (task) => task.kind === "paper_coach" && task.native_session_id,
-    )?.native_session_id;
-    void loadSessions(freshSession ? null : latestSessionId).catch((error) => {
-      setSubmitError(error instanceof Error ? error.message : String(error));
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load sessions once per paper; later task updates attach through the settled-task effect
-  }, [apiBase]);
+    if (freshSession) return;
+    const sessionId = pendingCoachTaskId
+      ? tasks.find((task) => task.operation_id === pendingCoachTaskId)?.native_session_id
+      : (activeSession?.native_session_id ??
+        tasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
+          ?.native_session_id);
+    const session = sessions.find((item) => item.native_session_id === sessionId);
+    if (session && session !== activeSession) attachSession(session);
+  }, [sessions, tasks, freshSession, pendingCoachTaskId, activeSession]);
 
   const latestCoachTask = tasks.find((task) => task.kind === "paper_coach") ?? null;
   const pendingCoachTask = pendingCoachTaskId
@@ -312,15 +314,6 @@ export function PaperWorkspace({
   useEffect(() => {
     resetSkills();
   }, [project.id, resetSkills]);
-  useEffect(() => {
-    if (!latestCoachTask?.native_session_id || !latestCoachTask.settled) return;
-    if (handledCoachTask.current === latestCoachTask.operation_id) return;
-    handledCoachTask.current = latestCoachTask.operation_id;
-    void loadSessions(latestCoachTask.native_session_id)
-      .catch((error) => setSubmitError(error instanceof Error ? error.message : String(error)))
-      .finally(() => setPendingCoachTaskId(null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- settled derives from status; loadSessions is recreated every render
-  }, [latestCoachTask?.native_session_id, latestCoachTask?.operation_id, latestCoachTask?.status]);
 
   useEffect(() => {
     if (!dirty || saving || saveError || paper.sync_state === "not_created") return;
@@ -329,21 +322,16 @@ export function PaperWorkspace({
       const savedContent = latestContent.current;
       const generation = ++paperSaveGeneration.current;
       try {
-        const next = await api<PaperSnapshot>(`${apiBase}/paper`, {
-          method: "PUT",
-          body: JSON.stringify({ content: savedContent, base_hash: saveBaseHash }),
-        });
+        const next = await onSave(savedContent, saveBaseHash, draftVersion);
         if (generation !== paperSaveGeneration.current) return;
-        // Invalidate a poll that began before or during this successful save.
         paperSaveGeneration.current += 1;
-        setPaper(next);
+        setDraftVersion(next.draft_version);
         setIncomingContent(next.incoming_content ?? "");
         setIncomingCanonicalHash(
           next.sync_state === "behind" ? (next.canonical_hash ?? null) : null,
         );
         if (next.sync_state !== "behind") setSaveBaseHash(next.base_hash ?? null);
         buffersSwapped.current = false;
-        onPaperChange(next);
         setDirty(next.content !== latestContent.current);
         setSaveError(null);
       } catch (error) {
@@ -353,15 +341,15 @@ export function PaperWorkspace({
       }
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [apiBase, dirty, onPaperChange, paper.sync_state, saveBaseHash, saveError, saving]);
+  }, [dirty, paper.sync_state, saveBaseHash, saveError, saving, draftVersion, onSave]);
 
   const create = async () => {
     if (creating) return;
     setCreating(true);
     setSaveError(null);
     try {
-      const next = await api<PaperSnapshot>(`${apiBase}/paper/create`, { method: "POST" });
-      setPaper(next);
+      const next = await onCreate();
+      setDraftVersion(next.draft_version);
       setContent(next.content);
       setIncomingContent(next.incoming_content ?? "");
       setIncomingCanonicalHash(next.sync_state === "behind" ? (next.canonical_hash ?? null) : null);
@@ -369,7 +357,6 @@ export function PaperWorkspace({
       buffersSwapped.current = false;
       latestContent.current = next.content;
       setDirty(next.sync_state === "unsynced");
-      onPaperChange(next);
       requestAnimationFrame(() => textarea.current?.focus());
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
@@ -490,12 +477,13 @@ export function PaperWorkspace({
           <i />
         </div>
         <div className="paper-empty-action">
-          {saveError && (
-            <div className="paper-inline-error" role="alert">
-              {saveError}
-            </div>
-          )}
-          <button className="button primary" disabled={creating} onClick={() => void create()}>
+          <button
+            className="button primary"
+            title={saveError ?? undefined}
+            style={saveError ? { outline: "1px solid var(--danger, #c33)" } : undefined}
+            disabled={creating || stale}
+            onClick={() => void create()}
+          >
             <Pencil size={16} /> {creating ? "Opening editor…" : "Create introduction"}
           </button>
         </div>
@@ -506,6 +494,7 @@ export function PaperWorkspace({
   return (
     <section
       className="paper-workspace"
+      aria-label={stale ? "Paper (stale)" : "Paper"}
       ref={workspace}
       style={{
         gridTemplateColumns: `minmax(${MIN_EDITOR_WIDTH}px, ${editorShare}%) ${DIVIDER_WIDTH}px minmax(${MIN_COACH_WIDTH}px, 1fr)`,
@@ -555,6 +544,7 @@ export function PaperWorkspace({
             )}
           </div>
           <div className="paper-status">
+            {stale && <WifiOff size={14} aria-label="Paper is stale" />}
             <span>{wordCount} words</span>
             <span className={`sync-state ${saveError ? "save-error" : paper.sync_state}`}>
               {!saveError && paper.sync_state === "synced" && <Check size={14} />}
@@ -571,15 +561,18 @@ export function PaperWorkspace({
           </div>
         </header>
         {saveError && (
-          <div className="paper-save-error" role="alert">
-            <TriangleAlert size={16} />
-            <span>
-              <strong>Your text is still in this editor.</strong> {saveError}
-            </span>
-            <button className="button compact secondary" onClick={() => setSaveError(null)}>
-              Retry save
-            </button>
-          </div>
+          <button
+            className="icon-button"
+            aria-label="Retry save"
+            title={saveError}
+            style={{ outline: "1px solid var(--danger, #c33)" }}
+            onClick={() => {
+              setDraftVersion(paper.draft_version);
+              setSaveError(null);
+            }}
+          >
+            <RotateCcw size={16} />
+          </button>
         )}
         {paperView === "write" ? (
           <textarea
@@ -681,7 +674,7 @@ export function PaperWorkspace({
             title="New chat"
             aria-label="New chat"
             onClick={() => {
-              setActiveSession(null);
+              setActiveSessionId(null);
               setFreshSession(true);
               setPendingCoachTaskId(null);
               setConfig(profileRunConfig(project.agent_profiles.paper_coach));

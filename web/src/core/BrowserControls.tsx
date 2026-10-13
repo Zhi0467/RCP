@@ -1,5 +1,8 @@
+import { chatBrowserProfile } from "../chat/chatResources";
+import { resourceKeyId } from "./resourceStore";
+import { useRefreshRuntime, useResource } from "./useResource";
 import { useEffect, useState } from "react";
-import { loadChatBrowser, loadProjectMachineBrowser, setChatBrowser } from "./api";
+import { loadProjectMachineBrowser, setChatBrowser } from "./api";
 import { browserReason } from "./browserStatus";
 import { errorMessage } from "./errors";
 import type { BrowserTurnStatus, MachineBrowserReadiness } from "./types";
@@ -47,25 +50,14 @@ export function ChatBrowserControl({
   disabled?: boolean;
   onRequestedChange?: (requested: boolean) => void;
 }) {
-  const [requested, setRequested] = useState<boolean | null>(null);
-  useEffect(() => onRequestedChange?.(requested ?? false), [requested, onRequestedChange]);
-  const [pending, setPending] = useState(false);
-  const [uncertain, setUncertain] = useState(false);
+  const { store } = useRefreshRuntime();
+  const projectId = decodeURIComponent(apiBase.split("/projects/")[1]?.split("/")[0] ?? "");
+  const profile = chatBrowserProfile(projectId, apiBase, chatId);
+  const preference = useResource(`${projectId}:browser:${chatId}`, profile);
+  const requested = preference.value?.browser_requested ?? null;
+  const pending = preference.pending.length > 0;
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void loadChatBrowser(apiBase, chatId).then(
-      (value) => {
-        if (!cancelled) setRequested(value.browser_requested);
-      },
-      (failure) => {
-        if (!cancelled) setError(errorMessage(failure));
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, chatId]);
+  useEffect(() => onRequestedChange?.(requested ?? false), [requested, onRequestedChange]);
   const [checked, setChecked] = useState<{
     machine: string;
     readiness: MachineBrowserReadiness;
@@ -104,52 +96,58 @@ export function ChatBrowserControl({
     return () => window.clearTimeout(timer);
   }, [requested, warningCode, checked, failedChecks]);
   async function change(value?: boolean) {
-    setPending(true);
+    const id = resourceKeyId(profile.key);
+    if (value === undefined) {
+      store.invalidate(id);
+      return;
+    }
     setError(null);
+    const mutation = store.beginMutation(
+      crypto.randomUUID(),
+      new Map([
+        [
+          id,
+          (current: unknown) => ({
+            ...(current as object),
+            browser_requested: value,
+          }),
+        ],
+      ]),
+    );
     try {
-      const result =
-        value === undefined
-          ? await loadChatBrowser(apiBase, chatId)
-          : await setChatBrowser(apiBase, chatId, value);
-      setRequested(result.browser_requested);
-      setUncertain(false);
+      const result = await setChatBrowser(apiBase, chatId, value);
+      mutation.settle(new Map([[id, result]]));
     } catch (failure) {
+      mutation.fail();
+      store.invalidate(id);
       setError(errorMessage(failure));
-      // A disconnected write may have committed. Reconcile before enabling another change.
-      if (value !== undefined) {
-        try {
-          setRequested((await loadChatBrowser(apiBase, chatId)).browser_requested);
-        } catch {
-          setUncertain(true);
-        }
-      }
-    } finally {
-      setPending(false);
     }
   }
   return (
-    <div className="chat-browser-control">
+    <div
+      className="chat-browser-control"
+      style={error || preference.error ? { outline: "1px solid var(--danger, #c44)" } : undefined}
+    >
       <BrowserToggle
         checked={requested ?? false}
-        disabled={disabled || pending || uncertain || requested === null}
+        disabled={disabled || pending || requested === null}
         onChange={(value) => void change(value)}
       />
-      {pending && <p role="status">Saving Browser preference…</p>}
       {warning && (
-        <p role="status" className="chat-browser-warning">
-          {warning.reason}
-          {warning.fix ? ` ${warning.fix}` : ""}
-        </p>
+        <span role="status" title={warning.reason} aria-label={warning.reason}>
+          ⚠
+        </span>
       )}
-      {error && <p role="alert">{error}</p>}
-      {error && (
+      {Boolean(error || preference.error) && (
         <button
           type="button"
-          className="button secondary compact"
+          className="button icon"
+          aria-label="Retry browser preference"
+          title={error ?? String(preference.error)}
           disabled={pending}
           onClick={() => void change()}
         >
-          Check again
+          ↻
         </button>
       )}
     </div>

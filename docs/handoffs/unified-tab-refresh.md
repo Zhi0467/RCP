@@ -3,7 +3,11 @@
 Status: implementation started 2026-10-12, all slices in this PR at
 v0.4.19. Implemented: the Web store and scheduler core
 (`web/src/core/resourceStore.ts`, `refreshScheduler.ts`, `useResource.ts`).
-Remaining: every slice below.
+W3 and W4 Web slices are integrated: one runtime and resource read owner, UI-only
+tab retention, task overlays, graph/chat/episode/history/Paper profiles, and no
+legacy heartbeat or open/reload read bundle. Remaining: end-to-end qualification
+(including phone-width journeys and disposable local/remote data measurements)
+and confirmation of the other server slices below.
 
 ## Goal
 
@@ -64,9 +68,9 @@ remote-state projects.
 8. **Paper is a plain profile.** No scheduler or store special case; its
    mandatory entry read goes. The one addition is a draft-version guard on
    save: today `save` overwrites the stored draft before any check. The Paper
-   snapshot carries a `draft_revision`; a save from a stale copy gets 409
-   `paper_draft_moved` instead of replacing a newer draft. The existing
-   canonical `base_hash` conflict path is unchanged.
+   snapshot carries a `draft_version`; a save from a stale copy gets 409
+   with detail `The Paper draft changed since it was loaded.` instead of
+   replacing a newer draft. The existing canonical `base_hash` conflict path is unchanged.
 
 ## Design
 

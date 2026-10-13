@@ -1,16 +1,8 @@
 import { useQuestions } from "../chat/useQuestions";
 import { QuestionCard } from "../chat/QuestionCard";
 
-export function EpisodeQuestions({
-  apiBase,
-  episodeId,
-  freshness,
-}: {
-  apiBase: string;
-  episodeId: string;
-  freshness: string;
-}) {
-  const { questions, error, refresh } = useQuestions(apiBase, "episode", episodeId, freshness);
+export function EpisodeQuestions({ apiBase, episodeId }: { apiBase: string; episodeId: string }) {
+  const { questions, error, refresh } = useQuestions(apiBase, "episode", episodeId);
   return (
     <div className="episode-questions">
       {error && <div role="alert">{error}</div>}

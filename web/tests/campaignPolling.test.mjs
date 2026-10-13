@@ -9,176 +9,52 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const {
-  LIVE_EPISODE_POLL_INTERVAL_MS,
-  applyEpisodeRefreshResponse,
-  startLiveEpisodePolling,
-  episodePollingTarget,
-  mergeExactEpisode,
-  restoreEpisodeState,
-  trackEpisodeRequest,
-} = await server.ssrLoadModule("/src/experiments/useEpisodeDialogs.ts");
-
+const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+const { watcherResourceKey, episodeResourceKey } = await server.ssrLoadModule(
+  "/src/experiments/episodeResources.ts",
+);
 after(() => server.close());
 
-function episode(episodeId, createdAt = "2026-09-02T12:00:00Z") {
-  return { episode_id: episodeId, created_at: createdAt };
-}
-
-test("episode polling follows active work and an ended episode's running branch merge", () => {
-  const live = { episode_id: "live", status: "running", live: true, graph_branch: null };
-  const merging = {
-    episode_id: "merging",
-    status: "completed",
-    live: false,
-    graph_branch: { merge_state: "running" },
-  };
-  const merged = {
-    ...merging,
-    graph_branch: { merge_state: "merged" },
-  };
-
-  assert.equal(episodePollingTarget([merging])?.episode_id, "merging");
-  assert.equal(episodePollingTarget([merging, live])?.episode_id, "live");
-  assert.equal(episodePollingTarget([merged]), null);
-});
-
-test("an exact routed episode merges beyond the bounded project list", () => {
-  const bounded = Array.from({ length: 50 }, (_, index) => episode(`bounded-${index}`));
-  const exact = episode("exact-older");
-
-  const merged = mergeExactEpisode(bounded, [exact]);
-
-  assert.equal(merged.length, 51);
-  assert.equal(merged.filter((item) => item.episode_id === exact.episode_id).length, 1);
-});
-
-test("an older exact episode response cannot replace a newer row selection", () => {
-  const initial = { projectId: "project", episodes: [], messages: {} };
-  const secondResponse = applyEpisodeRefreshResponse(initial, "project", 2, 2, [episode("second")]);
-  const staleFirstResponse = applyEpisodeRefreshResponse(secondResponse, "project", 1, 2, [
-    episode("first"),
-  ]);
-
-  assert.strictEqual(staleFirstResponse, secondResponse);
-  assert.deepEqual(staleFirstResponse.episodes, [episode("second")]);
-});
-
-test("a returning project shows its kept episodes, and an unseen one starts empty", () => {
-  const keptA = { projectId: "a", episodes: [episode("a-run")], messages: {} };
-  const currentB = { projectId: "b", episodes: [episode("b-run")], messages: {} };
-  const kept = new Map([["a", keptA]]);
-
-  assert.strictEqual(restoreEpisodeState(currentB, kept, "b"), currentB);
-  assert.strictEqual(restoreEpisodeState(currentB, kept, "a"), keptA);
-  assert.deepEqual(restoreEpisodeState(currentB, kept, "c"), {
-    projectId: "c",
-    episodes: [],
-    messages: {},
+test("a late watcher read cannot publish into the newly selected branch", async () => {
+  const store = new ResourceStore();
+  store.setActiveProject("p");
+  const main = watcherResourceKey("p", { kind: "main" });
+  const branch = watcherResourceKey("p", { kind: "branch", branch_id: "b" });
+  let finishMain;
+  const mainId = store.register("tab", {
+    key: main,
+    fetch: () =>
+      new Promise((resolve) => {
+        finishMain = resolve;
+      }),
   });
+  store.release("tab", [mainId]);
+  const branchId = store.register("tab", { key: branch, fetch: async () => ["branch watcher"] });
+  await new Promise(setImmediate);
+  finishMain(["main watcher"]);
+  await new Promise(setImmediate);
+  assert.deepEqual(store.view(branchId).value, ["branch watcher"]);
+  assert.equal(store.view(mainId).value, undefined);
+  assert.notEqual(resourceKeyId(main), resourceKeyId(branch));
 });
 
-test("an episode request stays joinable until it settles, per project", async () => {
-  const slot = { current: null };
+test("an episode mutation fences an older timeline read", async () => {
+  const store = new ResourceStore();
   let finish;
-  const first = trackEpisodeRequest(
-    slot,
-    "a",
-    new Promise((resolve) => {
-      finish = resolve;
-    }),
-  );
-  assert.equal(slot.current?.projectId, "a");
-  assert.strictEqual(slot.current?.request, first);
-
-  let finishSecond;
-  const second = trackEpisodeRequest(
-    slot,
-    "b",
-    new Promise((resolve) => {
-      finishSecond = resolve;
-    }),
-  );
-  finish(true);
-  await first;
-  assert.equal(slot.current?.projectId, "b", "an older request must not clear a newer one");
-  finishSecond(true);
-  await second;
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(slot.current, null);
-});
-
-test("live episode polling is single-flight and keeps failures visible until recovery", async () => {
-  const timers = new Map();
-  const cleared = [];
-  let nextTimerId = 1;
-  const clock = {
-    setTimeout(callback, delay) {
-      const timerId = nextTimerId++;
-      timers.set(timerId, { callback, delay });
-      return timerId;
-    },
-    clearTimeout(timerId) {
-      cleared.push(timerId);
-      timers.delete(timerId);
-    },
+  const id = store.register("tab", {
+    key: episodeResourceKey("p", "e"),
+    fetch: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  const value = {
+    episode: { episode_id: "e", status: "stopped" },
+    messages: ["saved"],
+    timeline: {},
   };
-  const nextTimer = () => {
-    assert.equal(timers.size, 1);
-    const [timerId, timer] = timers.entries().next().value;
-    timers.delete(timerId);
-    return timer;
-  };
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-  let firstRefreshDone;
-  let refreshCount = 0;
-  let visibleError = null;
-  const stop = startLiveEpisodePolling(
-    clock,
-    () => {
-      refreshCount += 1;
-      if (refreshCount === 1) {
-        return new Promise((resolve) => {
-          firstRefreshDone = resolve;
-        });
-      }
-      if (refreshCount === 2) return Promise.reject(new Error("backend unavailable"));
-      return Promise.resolve();
-    },
-    (error) => {
-      visibleError = error.message;
-    },
-    () => {
-      visibleError = null;
-    },
-  );
-
-  const firstTimer = nextTimer();
-  assert.equal(firstTimer.delay, LIVE_EPISODE_POLL_INTERVAL_MS);
-  firstTimer.callback();
-  await settle();
-  assert.equal(refreshCount, 1);
-  assert.equal(timers.size, 0, "an unresolved refresh must not schedule an overlapping poll");
-
-  firstRefreshDone();
-  await settle();
-  assert.equal(visibleError, null);
-
-  nextTimer().callback();
-  await settle();
-  assert.equal(refreshCount, 2);
-  assert.equal(visibleError, "backend unavailable");
-
-  await settle();
-  assert.equal(visibleError, "backend unavailable", "the error remains visible between polls");
-  nextTimer().callback();
-  await settle();
-  assert.equal(refreshCount, 3);
-  assert.equal(visibleError, null, "a successful episode refresh clears the failure");
-
-  const scheduledTimerId = timers.keys().next().value;
-  stop();
-  assert.deepEqual(cleared, [scheduledTimerId]);
-  assert.equal(timers.size, 0);
+  store.write(id, value);
+  finish({ episode: { status: "running" }, messages: [], timeline: {} });
+  await new Promise(setImmediate);
+  assert.strictEqual(store.view(id).value, value);
 });

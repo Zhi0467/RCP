@@ -14,7 +14,6 @@ const {
   projectDraftPreviewEffectInputs,
   projectSessionReducer,
   projectSettingsSavedProject,
-  reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
   trustedProjectTransitionManifest,
 } = await server.ssrLoadModule("/src/graph/projectSession.ts");
@@ -575,6 +574,11 @@ for (const navigation of ["another project", "another view"]) {
         state: alphaTab,
       });
       assert.strictEqual(projectSessionReducer(state, olderSave), state);
+      state = projectSessionReducer(state, {
+        kind: "snapshot_applied",
+        snapshot: snapshot(1, { paper: { content: "Initial introduction" } }),
+        preserve_readiness: false,
+      });
     } else {
       // Merely leaving Paper allows its save to finish in the other view.
       assert.deepEqual(projectSessionReducer(state, olderSave).project.paper, olderSave.paper);
@@ -668,93 +672,24 @@ test("a provider resolve keeps the rendered compute matrix and takes fresh provi
   assert.deepEqual(applied.provider_readiness.laptop.codex, readiness);
 });
 
-test("a populated project session survives tab serialization and restoration", () => {
-  let populated = projectSessionReducer(emptyProjectSessionState("alpha"), {
+test("tab serialization retains only human UI and drafts", () => {
+  const state = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",
-    snapshot: snapshot(1),
+    snapshot: snapshot(2),
     preserve_readiness: false,
   });
-  populated = projectSessionReducer(populated, {
-    kind: "human_draft_loaded",
-    draft: {
-      version: 1,
-      base_revision: 1,
-      nodes: {},
-      removed_node_ids: [],
-      proposals: { "proposal/one": { decision: "rejected" } },
-      ontology: null,
-      custom_nodes: {},
-      added_edges: [],
-      removed_edge_ids: [],
-      edge_base_revision: null,
-    },
-  });
-  populated = projectSessionReducer(populated, {
-    kind: "manifest_valid",
-    project_id: "alpha",
-    manifest: { ruleset_tag: "rcp.lifecycle.v1", triggers: [] },
-  });
-  populated = projectSessionReducer(populated, {
-    kind: "draft_preview_changed",
-    projection: projection(2),
-    conflict: "last valid preview retained",
-    pending: true,
-  });
-
-  const serialized = serializeProjectSessionTabState(populated);
-  const restored = projectSessionReducer(emptyProjectSessionState(), {
-    kind: "restore_tab",
-    project_id: "alpha",
-    state: serialized,
-  });
-
-  assert.equal("draftPreviewPending" in serialized, false);
-  assert.equal(restored.draftPreviewPending, false);
-  assert.deepEqual(serializeProjectSessionTabState(restored), serialized);
-});
-
-test("tab restoration replaces project identity and draft in one reducer transition", () => {
-  let projectY = projectSessionReducer(emptyProjectSessionState("project-y"), {
-    kind: "snapshot_applied",
-    snapshot: snapshot(7, { id: "project-y", name: "Project Y" }),
-    preserve_readiness: false,
-  });
-  projectY = projectSessionReducer(projectY, {
-    kind: "human_draft_loaded",
-    draft: humanDraft(7, "Project Y draft"),
-  });
-  const projectX = projectSessionReducer(emptyProjectSessionState("project-x"), {
-    kind: "snapshot_applied",
-    snapshot: snapshot(0, { id: "project-x", name: "Project X" }),
-    preserve_readiness: false,
-  });
-
-  const restored = projectSessionReducer(projectY, {
-    kind: "restore_tab",
-    project_id: "project-x",
-    state: serializeProjectSessionTabState(projectX),
-  });
-
-  assert.equal(restored.projectId, "project-x");
-  assert.equal(restored.project.id, "project-x");
-  assert.equal(restored.humanDraft, null);
-  assert.deepEqual(projectDraftPreviewEffectInputs(projectY, "project-x"), {
-    project: null,
-    humanDraft: null,
-  });
-  assert.deepEqual(projectDraftPreviewEffectInputs(restored, "project-x"), {
-    project: restored.project,
-    humanDraft: null,
-  });
-
-  const mismatchedCache = projectSessionReducer(projectY, {
-    kind: "restore_tab",
-    project_id: "project-x",
-    state: serializeProjectSessionTabState(projectY),
-  });
-  assert.equal(mismatchedCache.projectId, "project-x");
-  assert.equal(mismatchedCache.project, null);
-  assert.equal(mismatchedCache.humanDraft, null);
+  const saved = serializeProjectSessionTabState(state);
+  assert.deepEqual(
+    Object.keys(saved).sort(),
+    [
+      "projectId",
+      "graphTarget",
+      "humanDraft",
+      "paperEditorGeneration",
+      "draftReconciliationDiscardedProposalIds",
+    ].sort(),
+  );
+  assert.equal(saved.project, undefined);
 });
 
 test("reset replaces project identity and a stored draft in one reducer transition", () => {
@@ -820,7 +755,10 @@ test("an empty project session survives tab serialization and restoration", () =
     state: serialized,
   });
 
-  assert.deepEqual(serializeProjectSessionTabState(restored), serialized);
+  assert.deepEqual(serializeProjectSessionTabState(restored), {
+    ...serialized,
+    paperEditorGeneration: serialized.paperEditorGeneration + 1,
+  });
 });
 
 test("a replacement backend accepts its own revision and invalidates old Sync fences", () => {

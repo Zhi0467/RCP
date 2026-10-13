@@ -28,6 +28,24 @@ function manual(project = "p", name = "tasks.status") {
 }
 const task = (status) => ({ operation_id: "task", status, updated_at: "1" });
 
+test("retained task tab state copies selections without task payloads", async () => {
+  const { cloneAgentTasksSnapshot } = await server.ssrLoadModule("/src/agents/useAgentTasks.ts");
+  const selected = task("failed");
+  const snapshot = {
+    tasks: [selected],
+    retryTask: selected,
+    inspectedTask: selected,
+    taskInspectorId: "inspected",
+    activityTaskId: "activity",
+  };
+  assert.deepEqual(cloneAgentTasksSnapshot(snapshot), {
+    retryTaskId: "task",
+    taskInspectorId: "inspected",
+    activityTaskId: "activity",
+  });
+  assert.equal(cloneAgentTasksSnapshot({ ...snapshot, retryTask: null }).retryTaskId, null);
+});
+
 test("branch-retained views share project task state and one completion reader", async () => {
   const store = new ResourceStore();
   const { profile, reads } = manual();

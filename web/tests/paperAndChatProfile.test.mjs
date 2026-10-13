@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -13,9 +13,20 @@ const server = await createServer({
 });
 const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 const { chatDraftStorageKey } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
-const { loadPaperSnapshot, PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
+const { PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
   "/src/paper/PaperWorkspace.tsx",
 );
+
+const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
+const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+const renderToStaticMarkup = (element) =>
+  renderMarkup(
+    React.createElement(
+      RefreshRuntimeContext.Provider,
+      { value: { store: new ResourceStore() } },
+      element,
+    ),
+  );
 
 after(() => server.close());
 
@@ -226,18 +237,6 @@ test("behind paper exposes one reversible Incoming swap without destructive cont
   const first = swapPaperBuffers("local", "canonical");
   assert.deepEqual(first, ["canonical", "local"]);
   assert.deepEqual(swapPaperBuffers(...first), ["local", "canonical"]);
-});
-
-test("paper freshness checks use the paper snapshot endpoint", async () => {
-  const requested = [];
-  const expected = { content: "draft", sync_state: "synced", canonical_available: true };
-  const snapshot = await loadPaperSnapshot(async (path) => {
-    requested.push(path);
-    return expected;
-  }, "/api/projects/project");
-
-  assert.strictEqual(snapshot, expected);
-  assert.deepEqual(requested, ["/api/projects/project/paper"]);
 });
 
 test("chat run scope preserves valid choices, prunes removed repositories, and resets", () => {

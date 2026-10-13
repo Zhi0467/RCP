@@ -386,15 +386,10 @@ export function NodeChat({
     [chatId, node?.id, surface, tasks],
   );
   const questionApiBase = `/api/projects/${encodeURIComponent(project.id)}`;
-  const questionFreshness = relatedTasks
-    .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
-    .sort()
-    .join("\0");
   const questionState = useQuestions(
     questionApiBase,
     questionEpisodeId ? "episode" : "chat",
     questionEpisodeId ?? chatId,
-    questionFreshness,
   );
   const [steeringMessages, setSteeringMessages] = useState<{
     chatId: string;

@@ -333,6 +333,8 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
       const { NodeChat } = await import("/src/chat/NodeChat.tsx");
       const { ArtifactViewer } = await import("/src/artifacts/ArtifactViewer.tsx");
+      const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
+      const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
       const profile = {
         provider: "codex",
         model: null,
@@ -392,8 +394,8 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
           };
         window.cardRoot.render(
           React.createElement(
-            React.Fragment,
-            null,
+            RefreshRuntimeContext.Provider,
+            { value: runtime },
             React.createElement(NodeChat, {
               key: String(desktop),
               project: {

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createServer } from "vite";
-
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
   configFile: false,
@@ -9,478 +8,61 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const {
-  cachedSnapshotCanReplace,
-  canonicalRevisionNeedsReload,
-  humanSyncSuccessNotice,
-  latestSnapshotRequestCanApply,
-  openProjectSequence,
-  persistProjectHumanDraft,
-  proposalChoicesClearedNotice,
-  projectIsStillReadable,
-  reconcileInactiveProjectTabState,
-} = await server.ssrLoadModule("/src/App.tsx");
-const {
-  cacheProjectTabState,
-  experimentLoopRefreshIsCurrent,
-  inactiveProjectTabState,
-  mergeProjectExperimentLoops,
-  projectReturnHash,
-  projectTabStateForOpen,
-} = await server.ssrLoadModule("/src/projects/useProjectTabs.ts");
-const { emptyProjectSessionState, serializeProjectSessionTabState } = await server.ssrLoadModule(
-  "/src/graph/projectSession.ts",
-);
-
 after(() => server.close());
+const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+const { graphResourceKey } = await server.ssrLoadModule("/src/graph/graphResources.ts");
+const { cacheProjectTabState, projectReturnHash } = await server.ssrLoadModule(
+  "/src/projects/useProjectTabs.ts",
+);
+const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-function projectSessionCacheFields(project, humanDraft = null) {
-  return {
-    ...serializeProjectSessionTabState(emptyProjectSessionState(project.id)),
-    project,
-    renderedRevision: project.graph.revision,
-    humanDraft,
-    transitionHead: {
-      target: { kind: "main" },
-      revision: project.graph.revision,
-      transition_id: null,
-    },
-  };
-}
-
-test("retained project views have no count cap", () => {
-  const cache = new Map();
-  cacheProjectTabState(cache, "alpha", { revision: 1 });
-  cacheProjectTabState(cache, "beta", { revision: 2 });
-  cacheProjectTabState(cache, "alpha", { revision: 3 });
-  cacheProjectTabState(cache, "gamma", { revision: 4 });
-
-  assert.deepEqual([...cache.keys()], ["beta", "alpha", "gamma"]);
-  assert.deepEqual(cache.get("alpha"), { revision: 3 });
-});
-
-test("a project reopens on the graph target it was last left on", () => {
-  const left = new Map([
-    ["alpha", { kind: "branch", branch_id: "episode-1" }],
-    ["beta", { kind: "main" }],
-  ]);
-  assert.equal(projectReturnHash(left, "alpha"), "/projects/alpha?branch_id=episode-1");
-  assert.equal(projectReturnHash(left, "beta"), "/projects/beta");
-  assert.equal(projectReturnHash(left, "never-opened"), "/projects/never-opened");
-});
-
-test("a scoped Experiment refresh replaces only that project's entries", () => {
-  const alphaOld = { project_id: "alpha", episode: { episode_id: "alpha-old" } };
-  const beta = { project_id: "beta", episode: { episode_id: "beta-current" } };
-  const alphaNew = { project_id: "alpha", episode: { episode_id: "alpha-new" } };
-
-  assert.deepEqual(mergeProjectExperimentLoops([alphaOld, beta], "alpha", [alphaNew]), [
-    beta,
-    alphaNew,
-  ]);
-});
-
-test("an older scoped Experiment poll cannot overwrite a newer global refresh", async () => {
-  const active = [{ project_id: "alpha", episode: { episode_id: "active" } }];
-  const stopped = [{ project_id: "alpha", episode: { episode_id: "stopped" } }];
-  let experimentLoops = [];
-  let refreshGeneration = 0;
-  let resolveScoped;
-  const refresh = async (loadEntries, projectId = null) => {
-    const responseGeneration = ++refreshGeneration;
-    const nextEntries = await loadEntries();
-    if (experimentLoopRefreshIsCurrent(responseGeneration, refreshGeneration)) {
-      experimentLoops = projectId
-        ? mergeProjectExperimentLoops(experimentLoops, projectId, nextEntries)
-        : nextEntries;
-    }
-    return nextEntries;
-  };
-
-  const scopedRefresh = refresh(
-    () =>
-      new Promise((resolve) => {
-        resolveScoped = () => resolve(active);
+test("opening a retained resource paints synchronously without waiting for a read", async () => {
+  const store = new ResourceStore();
+  const profile = { key: graphResourceKey("p"), fetch: async () => ({ revision: 3 }) };
+  const id = store.register("p", profile);
+  await settle();
+  store.suspend("p", [id]);
+  let resolve;
+  store.register("p", {
+    ...profile,
+    fetch: () =>
+      new Promise((done) => {
+        resolve = done;
       }),
-    "alpha",
-  );
-  await Promise.resolve();
-  assert.deepEqual(await refresh(async () => stopped), stopped);
-
-  resolveScoped();
-  assert.deepEqual(await scopedRefresh, active);
-  assert.deepEqual(experimentLoops, stopped);
-});
-
-test("a cached response cannot move the rendered project backwards", () => {
-  const snapshot = (id, revision) => ({ id, graph: { revision } });
-  assert.equal(cachedSnapshotCanReplace("alpha", 8, snapshot("alpha", 7)), false);
-  assert.equal(cachedSnapshotCanReplace("alpha", 8, snapshot("alpha", 8)), true);
-  assert.equal(cachedSnapshotCanReplace("alpha", 8, snapshot("beta", 2)), true);
-});
-
-test("only the latest started snapshot request may update one project", () => {
-  assert.equal(latestSnapshotRequestCanApply(12, 12), true);
-  assert.equal(latestSnapshotRequestCanApply(12, 11), false);
-  assert.equal(latestSnapshotRequestCanApply(undefined, 1), false);
-});
-
-test("returning to a cached tab restores its complete render state without an empty loading frame", () => {
-  const retained = {
-    project: { id: "alpha", graph: { revision: 8 }, paper: { content: "draft" } },
-    tasks: [{ operation_id: "task-1" }],
-    watchers: [{ watcher_id: "watcher-1" }],
-    chatSummaries: [{ chat_id: "chat-1" }],
-    chatTranscripts: new Map([["chat-1", { chat_id: "chat-1", messages: [] }]]),
-    historyRevisionSummaries: [{ to_revision: 8 }],
-    viewState: {
-      view: "chats",
-      panelScroll: [["chats", 420]],
-      researchSubview: "dag",
-      dagViewport: { zoom: 1.2, scrollLeft: 10, scrollTop: 20 },
-    },
-  };
-  const cache = new Map([
-    ["alpha", retained],
-    ["beta", { project: { id: "beta" } }],
-  ]);
-
-  const open = projectTabStateForOpen(cache, "alpha");
-  assert.equal(open.loading, false);
-  assert.strictEqual(open.state, retained);
-  assert.equal(open.state.project.graph.revision, 8);
-  assert.equal(open.state.tasks[0].operation_id, "task-1");
-  assert.equal(open.state.watchers[0].watcher_id, "watcher-1");
-  assert.equal(open.state.chatSummaries[0].chat_id, "chat-1");
-  assert.equal(open.state.chatTranscripts.get("chat-1").chat_id, "chat-1");
-  assert.equal(open.state.historyRevisionSummaries[0].to_revision, 8);
-  assert.deepEqual(open.state.viewState.panelScroll, [["chats", 420]]);
-  assert.deepEqual([...cache.keys()], ["beta", "alpha"]);
-  assert.equal(projectTabStateForOpen(cache, "missing"), null);
-});
-
-test("a declined cached snapshot still reaches the authoritative reload and settles the open", async () => {
-  // The active-tab heartbeat can start a newer snapshot request while the cached
-  // open response is in flight; the session then declines the cached snapshot.
-  // The open must still reload and clear its loading state instead of ending early.
-  const calls = [];
-  await openProjectSequence({
-    applyCachedSnapshot: async () => {
-      calls.push("cached declined");
-    },
-    reloadAuthoritative: async () => {
-      calls.push("reload");
-    },
-    stillOpening: () => true,
-    settle: () => calls.push("settle"),
   });
-  assert.deepEqual(calls, ["cached declined", "reload", "settle"]);
+  store.invalidate(id);
+  assert.deepEqual(store.view(id).value, { revision: 3 });
+  assert.equal(store.view(id).stale, false, "pending validation is not a failed read");
+  resolve({ revision: 4 });
+  await settle();
+  assert.deepEqual(store.view(id).value, { revision: 4 });
 });
 
-test("an open that lost its project after the cached step neither reloads nor settles", async () => {
-  const calls = [];
-  let opening = true;
-  await openProjectSequence({
-    applyCachedSnapshot: async () => {
-      opening = false;
-    },
-    reloadAuthoritative: async () => {
-      calls.push("reload");
-    },
-    stillOpening: () => opening,
-    settle: () => calls.push("settle"),
-  });
-  assert.deepEqual(calls, []);
+test("visited refs remain cached but only the current ref asks for watermarks", async () => {
+  const store = new ResourceStore();
+  const main = { key: graphResourceKey("p"), fetch: async () => "main" };
+  const branch = {
+    key: graphResourceKey("p", { kind: "branch", branch_id: "b" }),
+    fetch: async () => "branch",
+  };
+  const mainId = store.register("p", main);
+  await settle();
+  store.suspend("p", [mainId]);
+  store.register("p", branch);
+  await settle();
+  assert.deepEqual(store.requests("p"), [{ name: "graph", ref: "branch:b" }]);
+  assert.equal(store.view(mainId).value, "main");
+  store.release("p");
+  assert.equal(store.view(mainId).value, undefined);
+  assert.equal(store.view(resourceKeyId(branch.key)).value, undefined);
 });
 
-test("a failing authoritative reload still settles the open", async () => {
-  const calls = [];
-  await assert.rejects(
-    openProjectSequence({
-      applyCachedSnapshot: async () => {},
-      reloadAuthoritative: async () => {
-        throw new Error("state unavailable");
-      },
-      stillOpening: () => true,
-      settle: () => calls.push("settle"),
-    }),
-    /state unavailable/,
-  );
-  assert.deepEqual(calls, ["settle"]);
-});
-
-test("canonical state reloads only after the accepted revision advances", () => {
-  assert.equal(canonicalRevisionNeedsReload(8, 7), true);
-  assert.equal(canonicalRevisionNeedsReload(7, 7), false);
-  assert.equal(canonicalRevisionNeedsReload(6, 7), false);
-});
-
-test("inactive advancement rebases only snapshot and draft while retaining the tab workspace", () => {
-  const node = {
-    id: "hyp/example",
-    type: "hypothesis",
-    title: "Canonical before",
-    statement: "Statement",
-    standing: "accepted",
-    created_rev: 2,
-    updated_rev: 4,
-    source_refs: [],
-    extension_fields: {},
-  };
-  const graph = {
-    revision: 4,
-    nodes: { [node.id]: node },
-    edges: {},
-    proposals: {},
-    ambiguities: {},
-    glossary: {},
-    ontology: { types: [], fields: [], relations: [] },
-    validation_messages: [],
-    belief_transitions: [],
-    replay_status: "complete",
-    replay_failure: null,
-  };
-  const draft = {
-    version: 1,
-    base_revision: 4,
-    nodes: {
-      [node.id]: {
-        base_updated_rev: 4,
-        changes: { title: "My staged title" },
-        standing: "asserted",
-        standing_origin: "edit",
-      },
-    },
-    removed_node_ids: [],
-    proposals: {},
-    ontology: null,
-    custom_nodes: {},
-    added_edges: [],
-    removed_edge_ids: [],
-    edge_base_revision: null,
-  };
-  const retained = {
-    ...projectSessionCacheFields({ id: "alpha", graph }, draft),
-    tasks: [{ operation_id: "task-1" }],
-    watchers: [{ watcher_id: "watcher-1" }],
-    chatSummaries: [{ chat_id: "chat-1" }],
-    chatTranscripts: new Map([["chat-1", { chat_id: "chat-1" }]]),
-    historyRevisionSummaries: [{ to_revision: 4 }],
-    viewState: { view: "chats", panelScroll: [["chats", 420]] },
-  };
-  const movedNode = {
-    ...node,
-    title: "Incoming canonical title",
-    updated_rev: 5,
-  };
-  const snapshot = {
-    id: "alpha",
-    snapshot_freshness: "fresh",
-    attention: {
-      pending_proposal_ids: [],
-      decisions_awaiting_choice_ids: [],
-      open_blocker_ids: [],
-      proposal_actions: {},
-      decision_prior_choices: {},
-    },
-    graph: { ...graph, revision: 5, nodes: { [node.id]: movedNode } },
-  };
-
-  const next = reconcileInactiveProjectTabState(retained, snapshot);
-  assert.notStrictEqual(next, retained);
-  assert.strictEqual(next.tasks, retained.tasks);
-  assert.strictEqual(next.watchers, retained.watchers);
-  assert.strictEqual(next.chatSummaries, retained.chatSummaries);
-  assert.strictEqual(next.chatTranscripts, retained.chatTranscripts);
-  assert.strictEqual(next.historyRevisionSummaries, retained.historyRevisionSummaries);
-  assert.strictEqual(next.viewState, retained.viewState);
-  assert.equal(next.project.graph.revision, 5);
-  assert.equal(next.humanDraft.base_revision, 5);
-  assert.equal(next.humanDraft.nodes[node.id].base_updated_rev, 4);
-  assert.strictEqual(
-    reconcileInactiveProjectTabState(next, { ...snapshot, graph }),
-    next,
-    "a lower cached revision must never replace retained state",
-  );
-
-  const stored = new Map();
-  const storage = {
-    setItem(key, value) {
-      stored.set(key, value);
-    },
-    removeItem(key) {
-      stored.delete(key);
-    },
-  };
-  persistProjectHumanDraft(storage, "member", "alpha", next.humanDraft);
+test("open tab UI has no retention count cap", () => {
+  const cache = new Map();
+  for (let i = 0; i < 20; i++) cacheProjectTabState(cache, String(i), { selected: i });
+  assert.equal(cache.size, 20);
   assert.equal(
-    JSON.parse(stored.get("rcp:member-draft:member:human-draft:alpha")).base_revision,
-    5,
+    projectReturnHash(new Map([["p", { kind: "branch", branch_id: "b" }]]), "p"),
+    "/projects/p?branch_id=b",
   );
-  persistProjectHumanDraft(storage, "member", "alpha", null);
-  assert.equal(stored.has("rcp:member-draft:member:human-draft:alpha"), false);
-});
-
-test("authoritative inactive snapshots prune resolved choices and clear missing node targets", () => {
-  const node = {
-    id: "hyp/retained",
-    type: "hypothesis",
-    title: "Retained node",
-    statement: "Retained statement",
-    standing: "asserted",
-    created_rev: 1,
-    updated_rev: 4,
-    source_refs: [],
-    extension_fields: {},
-  };
-  const removedNode = { ...node, id: "hyp/removed", title: "Removed node" };
-  const proposal = (id, status) => ({
-    id,
-    title: id,
-    card: { situation_cold: "", why_human_now: "", consequences: "", decision_needed: "" },
-    ops: [],
-    related_node_ids: [node.id],
-    related_edge_ids: [],
-    related_config_keys: [],
-    base_rev: 4,
-    raised_rev: 4,
-    resolved_rev: status === "pending" ? null : 5,
-    status,
-  });
-  const pending = proposal("proposal/pending", "pending");
-  const withdrawn = proposal("proposal/withdrawn", "withdrawn");
-  const oldGraph = {
-    revision: 4,
-    nodes: { [node.id]: node, [removedNode.id]: removedNode },
-    edges: {},
-    proposals: { [pending.id]: pending, [withdrawn.id]: { ...withdrawn, status: "pending" } },
-    ambiguities: {},
-    glossary: {},
-    ontology: { types: [], fields: [], relations: [] },
-    validation_messages: [],
-    belief_transitions: [],
-    replay_status: "complete",
-    replay_failure: null,
-  };
-  const draft = {
-    version: 1,
-    base_revision: 4,
-    nodes: {
-      [node.id]: {
-        base_updated_rev: 4,
-        changes: { title: "Retained staged title" },
-        standing: "asserted",
-        standing_origin: "edit",
-      },
-    },
-    removed_node_ids: [],
-    proposals: {
-      [pending.id]: { decision: "rejected" },
-      [withdrawn.id]: { decision: "approved" },
-      "proposal/missing": { decision: "rejected" },
-    },
-    ontology: null,
-    custom_nodes: {},
-    added_edges: [],
-    removed_edge_ids: [],
-    edge_base_revision: null,
-  };
-  const retained = {
-    ...projectSessionCacheFields({ id: "alpha", graph: oldGraph }, draft),
-    selectedNodeId: removedNode.id,
-    companionNodeId: node.id,
-    floatingChat: { chatId: "chat/removed", nodeId: removedNode.id },
-  };
-  const snapshot = {
-    id: "alpha",
-    snapshot_freshness: "fresh",
-    attention: {
-      pending_proposal_ids: [pending.id],
-      decisions_awaiting_choice_ids: [],
-      open_blocker_ids: [],
-      proposal_actions: { [pending.id]: [{ text: "Review the pending Proposal." }] },
-      decision_prior_choices: {},
-    },
-    graph: {
-      ...oldGraph,
-      revision: 5,
-      nodes: { [node.id]: node },
-      proposals: { [pending.id]: pending, [withdrawn.id]: withdrawn },
-    },
-  };
-
-  const next = reconcileInactiveProjectTabState(retained, snapshot);
-
-  assert.equal(next.selectedNodeId, null);
-  assert.equal(next.companionNodeId, node.id);
-  assert.equal(next.floatingChat, null);
-  assert.deepEqual(next.humanDraft.proposals, {
-    [pending.id]: { decision: "rejected" },
-  });
-  assert.deepEqual(next.humanDraft.nodes[node.id].changes, { title: "Retained staged title" });
-  assert.deepEqual(next.draftReconciliationDiscardedProposalIds, [
-    "proposal/missing",
-    "proposal/withdrawn",
-  ]);
-
-  const stored = new Map();
-  persistProjectHumanDraft(
-    {
-      setItem(key, value) {
-        stored.set(key, value);
-      },
-      removeItem(key) {
-        stored.delete(key);
-      },
-    },
-    "member",
-    "alpha",
-    next.humanDraft,
-  );
-  assert.deepEqual(
-    Object.keys(JSON.parse(stored.get("rcp:member-draft:member:human-draft:alpha")).proposals),
-    [pending.id],
-  );
-
-  const stale = reconcileInactiveProjectTabState(retained, {
-    ...snapshot,
-    snapshot_freshness: "stale",
-  });
-  assert.strictEqual(stale, retained);
-});
-
-test("a project still on the filtered index keeps its tab open", async () => {
-  const readable = await projectIsStillReadable(
-    async () => [{ id: "alpha" }, { id: "beta" }],
-    "alpha",
-  );
-
-  assert.equal(readable, true);
-});
-
-test("a project absent from the filtered index is no longer readable", async () => {
-  const requested = [];
-  const readable = await projectIsStillReadable(async (path) => {
-    requested.push(path);
-    return [{ id: "beta" }];
-  }, "alpha");
-
-  assert.equal(readable, false);
-  assert.deepEqual(requested, ["/api/projects"]);
-});
-
-test("an index that cannot be reached is not evidence that a project is gone", async () => {
-  const readable = await projectIsStillReadable(async () => {
-    throw new Error("offline");
-  }, "alpha");
-
-  assert.equal(readable, true);
-});
-
-test("branch mutation availability refreshes even when revision is unchanged", () => {
-  const available = { available: true, reason: null };
-  const merging = { available: false, reason: "Branch merge in progress" };
-  assert.equal(canonicalRevisionNeedsReload(7, 7, merging, available), true);
-  assert.equal(canonicalRevisionNeedsReload(7, 7, available, merging), true);
-  assert.equal(canonicalRevisionNeedsReload(7, 7, available, available), false);
 });

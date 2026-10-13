@@ -21,12 +21,17 @@ toggle exposes incoming canonical content in the preview pane, and one reversibl
 Apply action swaps it with the editor content. Only a later human edit re-pins
 the draft and resumes canonical save.
 
-Paper uses the shared resource refresh profile without a mandatory entry read.
-Every snapshot includes `draft_version`; save requires the version the editor
-loaded (null when no stored draft existed). A changed stored draft refuses the
-save with HTTP 409 before writing either draft or canonical introduction. The
-canonical `base_hash` conflict behavior above is unchanged. Create and save also
-refresh the project snapshot's copy.
+Paper uses the ordinary project-scoped resource profile for its snapshot and
+coach sessions, without a mandatory entry read. Opening it paints accepted cached
+data immediately; unknown or failed-read absence never offers Create introduction.
+Resource updates preserve editor buffers. Every snapshot includes `draft_version`;
+each save sends the version the editor loaded (null when no stored draft existed).
+A changed stored draft refuses the save with HTTP 409 and detail
+`The Paper draft changed since it was loaded.` before writing either draft or
+canonical introduction. The editor keeps typed text, refreshes the resource, and
+requires an explicit retry against the refreshed version. Canonical `base_hash`
+conflict handling remains unchanged. Create and save also refresh the project
+snapshot's copy.
 
 No conflict strategy may discard either whole version or silently overwrite the
 human draft.
