@@ -36,7 +36,7 @@ import {
   type AgentBoardColumn,
   type AgentBoardDrop,
 } from "./agentBoardModel";
-import type { GlossaryIndex } from "../graph/glossary";
+import { buildGlossaryIndex, type GlossaryIndex } from "../graph/glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,
   CHAT_LIST_COLLAPSED_WIDTH,
@@ -199,6 +199,8 @@ function agentMeta(status: ConversationAgentStatus, conversation: ChatConversati
 }
 
 const NO_EPISODES: readonly Episode[] = [];
+const NO_NODES: Record<string, GraphNode> = {};
+const NO_GLOSSARY = buildGlossaryIndex({});
 
 /** The orchestrator card's episode comes from the server's projection, not its tasks. */
 function chainEpisode(
@@ -420,7 +422,11 @@ export function ChatsWorkspace({
       }),
     [storedConversations, display.titles, orchestratorEpisodes],
   );
-  const filteredConversations = listedAgentConversations(conversations, graphTarget);
+  const filteredConversations = listedAgentConversations(
+    conversations,
+    graphTarget,
+    new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
+  );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
@@ -677,6 +683,8 @@ export function ChatsWorkspace({
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedChainEpisode = selected ? chainEpisode(selected, orchestratorEpisodes) : null;
   const selectedHistory = selected ? chatTranscripts.get(selected.chatId)?.messages : undefined;
+  const selectedOffGraph =
+    selected !== null && !sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget);
   const selectedOrchestratorTurns = useMemo(
     () =>
       selected?.conversationKind === "auto_research"
@@ -1099,8 +1107,9 @@ export function ChatsWorkspace({
             actorId={actorId}
             graphTarget={selected.graphTarget ?? graphTarget}
             node={null}
-            nodes={nodes}
-            glossaryIndex={glossaryIndex}
+            // From another graph, main's nodes would link the wrong version.
+            nodes={selectedOffGraph ? NO_NODES : nodes}
+            glossaryIndex={selectedOffGraph ? NO_GLOSSARY : glossaryIndex}
             header={conversationHeading}
             headerState={selectedStatus?.state}
             runScope={runScope}

@@ -2908,8 +2908,13 @@ function MemberApp({
     [chatReads, projectTasks],
   );
   const listedConversations = useMemo(
-    () => listedAgentConversations(inventoryConversations, graphTarget),
-    [inventoryConversations, graphTarget],
+    () =>
+      listedAgentConversations(
+        inventoryConversations,
+        graphTarget,
+        new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
+      ),
+    [inventoryConversations, graphTarget, orchestratorEpisodes],
   );
   const unreadChatIds = useMemo(
     () =>

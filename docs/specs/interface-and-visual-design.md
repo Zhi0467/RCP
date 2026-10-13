@@ -285,9 +285,10 @@ described above names the title and holds the agent picker; a failed or stopped 
 with the backend label and Resume or Retry when the task offers it.
 
 The Agents tab shows the selected graph's agents. On main it also lists every
-branch's Auto-research orchestrator with its attention state, so the Agents
-count always has a card to open; an orchestrator opens in place, like any other
-agent, without switching the graph. A branch lists only its own agents. It has no
+branch's Auto-research orchestrator whose chain is in the episode list (an
+archived branch's is not), with its attention state, so the Agents count always
+has a card to open; an orchestrator opens in place, like any other agent,
+without switching the graph, and shows node ids without links to main's nodes. A branch lists only its own agents. It has no
 graph filter and no branch or role tags on cards; the user tag stays. An
 orchestrator's children never count as unread and never sit in Needs you: they
 show as Working or Done, and the orchestrator's own card carries any attention

@@ -540,12 +540,16 @@ export function latestConversation(
 export function listedAgentConversations(
   conversations: ChatConversation[],
   graphTarget: GraphTargetRef,
+  orchestratorBranchIds: ReadonlySet<string> = new Set(),
 ): ChatConversation[] {
-  // Main also lists every branch's orchestrator; a branch lists only its own agents.
+  // Main also lists each branch orchestrator whose current episode is known, so its
+  // card keeps attention and a composer; a branch lists only its own agents.
   return conversations.filter(
     (conversation) =>
       sameGraphTarget(conversation.graphTarget, graphTarget) ||
-      (graphTarget.kind === "main" && conversation.conversationKind === "auto_research"),
+      (graphTarget.kind === "main" &&
+        conversation.conversationKind === "auto_research" &&
+        orchestratorBranchIds.has(conversation.chatId)),
   );
 }
 
