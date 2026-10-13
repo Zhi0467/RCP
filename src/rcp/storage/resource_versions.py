@@ -14,6 +14,9 @@ from rcp.storage.resource_deadlines import migrate_resource_deadlines
 
 # Explicit owners, rather than a naming convention that silently acquires new
 # tables. Related entity tables are resolved through their retained parent.
+# Migrations that rebuild an owner table or add a column touched only by their
+# own writes must reinstall its triggers: UPDATE comparisons capture the schema
+# at installation time.
 _PROJECT_TABLES = {
     "agent_usage": ("usage",),
     "watchers": ("watchers", "episodes", "graph"),
@@ -22,7 +25,9 @@ _PROJECT_TABLES = {
     "chat_display": ("chats",),
     "chat_browser_preferences": ("chats",),
     "chat_session_contexts": ("chats",),
-    "questions": ("questions", "graph", "refs"),
+    # The ref inventory marks branches with open questions.
+    "questions": ("questions", "refs"),
+    "notification_preferences": ("settings",),
     "consolidation_schedules": ("consolidation",),
     "consolidation_runs": ("consolidation",),
     "consolidation_apply_receipts": ("consolidation",),
@@ -76,6 +81,7 @@ _TASK_TABLES = (
     "browser_turn_status",
 )
 _GLOBAL_TABLES = {
+    "notification_devices": ("settings", "members"),
     "provider_login_states": ("settings",),
     "provider_readiness_snapshots": ("settings",),
     "provider_skill_inventories": ("settings",),
@@ -162,6 +168,8 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
         _install(connection, table, [_bump("ROW.project_id", "chats", "'member:' || ROW.user_id")])
     for table, resources in _GLOBAL_TABLES.items():
         _install(connection, table, [_bump("''", resource) for resource in resources])
+    # Graph completion embeds Experiment episode details, including archive and
+    # wrapup health. Allocation and Auto-research ledgers are not graph inputs.
     for table in _EPISODE_TABLES:
         scope = "(SELECT project_id FROM episodes WHERE episode_id=ROW.episode_id)"
         _install(
@@ -169,7 +177,24 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
             table,
             [
                 _bump(scope, "episodes"),
-                _bump(scope, "graph"),
+                *(
+                    [
+                        _bump(
+                            scope,
+                            "graph",
+                            predicate="EXISTS(SELECT 1 FROM episodes "
+                            "WHERE episode_id=ROW.episode_id AND mode='experiment_loop')",
+                        )
+                    ]
+                    if table
+                    in {
+                        "episode_archives",
+                        "episode_reports",
+                        "episode_wrapups",
+                        "experiment_episode_state",
+                    }
+                    else []
+                ),
                 _bump(scope, "episode", "ROW.episode_id"),
             ],
         )
@@ -215,7 +240,6 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
                 _bump(scope, "tasks.progress", predicate=visible),
                 _bump(scope, "episode", episode, f"{episode} IS NOT NULL"),
                 _bump(scope, "chat", chat, f"{chat} IS NOT NULL"),
-                _bump(scope, "chats", predicate=f"{chat} IS NOT NULL"),
             ],
         )
     _install(
@@ -224,7 +248,19 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
         [
             _bump("ROW.project_id", "tasks.status", predicate="ROW.visible=1"),
             _bump("ROW.project_id", "refs", predicate="ROW.visible=1"),
-            _bump("ROW.project_id", "graph", predicate="ROW.visible=1"),
+            _bump(
+                "ROW.project_id",
+                "graph",
+                predicate="ROW.visible=1 AND (json_extract(ROW.request_json,'$.patch_kind')='experiment_loop' "
+                "OR EXISTS(SELECT 1 FROM episodes WHERE episode_id=ROW.episode_id AND mode='experiment_loop'))",
+            ),
+            _bump("ROW.project_id", "terminals"),
+            _bump("ROW.project_id", "episodes", predicate="ROW.episode_id IS NOT NULL"),
+            _bump(
+                "ROW.project_id",
+                "chats",
+                predicate="json_extract(ROW.request_json,'$.chat_id') IS NOT NULL",
+            ),
         ],
         columns=("project_id", "operation_id", "status", "finished_at", "visible", "history_only"),
         suffix="_status",
@@ -234,15 +270,8 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
         "graph_runs",
         [
             _bump("ROW.project_id", "tasks.progress", predicate="ROW.visible=1"),
-            _bump("ROW.project_id", "terminals"),
             _bump("ROW.project_id", "task", "ROW.operation_id"),
-            _bump("ROW.project_id", "episodes", predicate="ROW.episode_id IS NOT NULL"),
             _bump("ROW.project_id", "episode", "ROW.episode_id", "ROW.episode_id IS NOT NULL"),
-            _bump(
-                "ROW.project_id",
-                "chats",
-                predicate="json_extract(ROW.request_json,'$.chat_id') IS NOT NULL",
-            ),
             _bump(
                 "ROW.project_id",
                 "chat",

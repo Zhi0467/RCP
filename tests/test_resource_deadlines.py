@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from rcp.limits import AGENT_TASK_LIST_FINISHED_CHAT_SECONDS, HIDDEN_READ_READINESS_TTL_SECONDS
 from rcp.storage import AppStore
 from rcp.storage.question_activity import QuestionActivity
+from rcp.storage.resource_deadlines import record_question_activity
 
 
 @pytest.mark.parametrize("family", ["task", "artifact", "consolidation", "readiness"])
@@ -132,6 +134,28 @@ def test_question_pending_deadline_and_counter_share_callback_transaction(tmp_pa
             ).fetchone()[0]
             == deadline
         )
+    with store.connection() as connection:
+        generation = connection.execute(
+            "SELECT generation FROM resource_versions WHERE scope='p' AND resource='questions'"
+        ).fetchone()[0]
+        record_question_activity(connection, "q", True, now=deadline - 1)
+        assert (
+            connection.execute(
+                "SELECT generation FROM resource_versions WHERE scope='p' AND resource='questions'"
+            ).fetchone()[0]
+            == generation
+        )
+        renewed = connection.execute(
+            "SELECT deadline FROM resource_deadlines WHERE resource='questions'"
+        ).fetchone()[0]
+        assert renewed > deadline
+        record_question_activity(connection, "q", True, now=renewed)
+        assert (
+            connection.execute(
+                "SELECT generation FROM resource_versions WHERE scope='p' AND resource='questions'"
+            ).fetchone()[0]
+            == generation + 1
+        )
     store.question_activity.forget("q")
     with store.connection() as connection:
         assert (
@@ -142,23 +166,23 @@ def test_question_pending_deadline_and_counter_share_callback_transaction(tmp_pa
         )
 
 
-def test_question_activity_publication_failure_preserves_visible_liveness():
-    fail = [True]
-
+def test_question_activity_publication_failure_preserves_visible_liveness(caplog):
     def changed(question_id: str, waiting: bool) -> None:
-        if fail[0]:
-            raise RuntimeError("storage unavailable")
+        # Publication can read liveness: SQLite work does not hold its lock.
+        assert activity.is_waiting(question_id) == waiting
+        raise sqlite3.OperationalError("database is locked")
 
     activity = QuestionActivity(changed=changed)
-    with pytest.raises(RuntimeError):
-        activity.pending("q", "call")
-    assert not activity.is_waiting("q")
-    fail[0] = False
     assert activity.pending("q", "call") == 1
-    fail[0] = True
-    with pytest.raises(RuntimeError):
-        activity.forget("q")
     assert activity.is_waiting("q")
+    assert activity.pending("q", "call") == 1
+    activity.forget("q")
+    assert not activity.is_waiting("q")
+    assert len(caplog.records) == 3
+    assert all(
+        record.exc_info is not None and record.exc_info[0] is sqlite3.OperationalError
+        for record in caplog.records
+    )
 
 
 def test_slow_activity_publication_does_not_extend_liveness_past_its_deadline():
