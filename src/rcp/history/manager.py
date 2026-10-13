@@ -424,6 +424,7 @@ class HistoryManager:
             manifest.research_dir, str(manifest.research_dir)
         )
         self.root = self.workspace.root
+        self._read_project_root: Path | None = None
         self.patches_dir = self.root / "patches"
         self._process_lock = self.workspace.snapshot_lock
         self._accepted_revision: int | None = None
@@ -433,6 +434,25 @@ class HistoryManager:
         self.on_accepted_transition = on_accepted_transition
         self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
+
+    @contextmanager
+    def read_view(self) -> Iterator[HistoryManager]:
+        """Pin all inputs for a display operation without refreshing canonical state."""
+        if not self.workspace.remote:
+            with self._process_lock:
+                yield self
+            return
+        with self.workspace.read_snapshot() as root:
+            reader = HistoryManager(
+                self.manifest,
+                LocalStateWorkspace(root, str(root)),
+                expected_space_id=self.expected_space_id,
+                project_id=self.project_id,
+                write_authority=self.write_authority,
+            )
+            reader._read_project_root = self.manifest.path.parent.parent
+            reader._reload_manifest()
+            yield reader
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -623,6 +643,9 @@ class HistoryManager:
             self._atomic_text(research_md, "")
 
     def load_patches(self) -> list[Patch]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.load_patches()
         with self._process_lock:
             return [
                 self._decode_persisted_patch(path.read_text(encoding="utf-8"))
@@ -646,6 +669,9 @@ class HistoryManager:
 
         if materialization is not None:
             return self._project_identity_from_replay(materialization)
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.project_identity()
         with self._process_lock:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()
@@ -810,6 +836,9 @@ class HistoryManager:
     def current_accepted_revision(self) -> int:
         """Return the cached accepted revision without reading canonical patch bodies."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.current_accepted_revision()
         with self._process_lock:
             if self._accepted_revision is None:
                 # Project services call ``initialize`` before exposure. This fallback
@@ -894,7 +923,7 @@ class HistoryManager:
         *,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, BranchReadSnapshot | None]:
-        """Read several episode branches from one refreshed, read-only snapshot."""
+        """Read several episode branches from one pinned, read-only snapshot."""
 
         from rcp.history.branches import read_branch_snapshots
 
@@ -927,6 +956,9 @@ class HistoryManager:
     def current_materialization(self) -> MaterializationResult:
         """Replay current canonical history once and return state plus reports."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.current_materialization()
         with self._process_lock:
             self._repair_materializations_if_needed()
             with suppress(StateUnavailable):
@@ -1177,6 +1209,9 @@ class HistoryManager:
     def transition_trace_at_revision(self, revision: int) -> TransitionTrace | None:
         """Read one accepted transition trace without replaying rule code."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.transition_trace_at_revision(revision)
         for path in self._patch_paths():
             if int(path.stem) != revision:
                 continue
@@ -1523,6 +1558,9 @@ class HistoryManager:
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
         """Replay canonical history with each accepted Patch and its exact pre/post state."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.accepted_patch_boundaries()
         boundaries: list[tuple[GraphState, Patch, GraphState]] = []
 
         def collect(previous: GraphState, patch: Patch, state: GraphState) -> None:
@@ -1699,11 +1737,19 @@ class HistoryManager:
     ) -> RefreshDelta:
         """Return the bounded delta without coupling context assembly to history I/O."""
 
+        if materialization is not None:
+            return build_refresh_delta(materialization.patches, materialization)
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.refresh_delta()
         with self._process_lock:
-            result = materialization or self.materialize(write_outputs=False)
+            result = self.materialize(write_outputs=False)
             return build_refresh_delta(result.patches, result)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.slice(from_revision, to_revision)
         with self._process_lock:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()
@@ -1728,6 +1774,9 @@ class HistoryManager:
     ) -> list[dict[str, object]]:
         """Return a reader-facing projection without changing the raw history contract."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.revision_summaries(from_revision, to_revision)
         with self._process_lock:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()
@@ -1957,7 +2006,7 @@ class HistoryManager:
     def _reload_manifest(self) -> None:
         path = self.root / "manifest.toml"
         if path.is_file():
-            self.manifest = load_manifest(path)
+            self.manifest = load_manifest(path, project_root=self._read_project_root)
 
     @staticmethod
     def _materialized_paths(*, include_manifest: bool = False) -> list[Path]:

@@ -103,6 +103,34 @@ per execution-machine alias, with the active engine and versions after the first
 transfer; it does not initiate probes merely to display diagnostics. Fallback
 itself never blocks work.
 
+## Remote display state
+
+Remote canonical state has immutable local read generations. A background capture
+holds the remote `.refresh.lock`, downloads into private staging, validates the
+capture, and atomically publishes its descriptor. Display reads pin one generation
+for their whole operation and never wait for a transfer or initialize state. A
+cold read reports unavailable and queues a capture. Retired generations are removed
+after their last reader exits. Failed captures retain the last good copy and report
+the error and last completion time separately from content versions.
+
+The application lifespan owns the sync coordinator. Watermark callers supply
+membership-filtered open sets under independent 60-second client leases; their
+union drives one capture every 10 seconds per canonical remote workspace. Tab
+activation bypasses the cadence and coalesces one follow-up during a capture.
+Shutdown drains transfer workers. Graph, branch, chat, Paper, and settings tokens
+advance from changed paths, including deletions; an unchanged capture changes only
+sync health. Local state retains its direct read path and publication counters,
+without background sync or copied generations.
+
+Captures and authoritative write publications share one sequencing owner. Graph
+commits, merges, settings, Paper base-hash checks, and chat appends still use their
+canonical transactions. Retry, Resume, and chat request preparation resolve branch
+state without initialization and pin display inputs; execution reloads authoritative
+configuration before its capability and scope checks. Pause needs no graph read.
+Stop persists its SQLite episode/target
+fence before attempting to rebuild display controls. Retry and Resume record their
+idempotency receipt in the task admission transaction, as chat send does.
+
 ## Confirmed first team-server target
 
 The first supported team deployment is deliberately narrow: one lab, one Linux

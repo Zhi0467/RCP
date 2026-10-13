@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -41,6 +42,7 @@ from rcp.config import (
     ResolvedComputeContext,
     ResolvedComputeProfile,
     launches_work_like,
+    load_manifest,
 )
 from rcp.control import derive_experiment_control_state, released_attempts
 from rcp.core.attention import (
@@ -1368,8 +1370,8 @@ class ProjectService:
             return {}
         suffixes = tuple(f"-{chat_id}.jsonl" for chat_id in requested)
         transcripts: dict[str, ChatTranscript | None] = {}
-        with self.history.workspace.snapshot_lock:
-            for path, _ in self._canonical_chat_files():
+        with self.history.workspace.read_snapshot() as root:
+            for path, _ in self._canonical_chat_files(root):
                 if (
                     path.name.endswith(suffixes)
                     and (transcript := self._read_chat_transcript(path)) is not None
@@ -1383,8 +1385,8 @@ class ProjectService:
         return {chat_id: transcript for chat_id, transcript in transcripts.items() if transcript}
 
     def _canonical_chat_summaries(self) -> list[ChatSummary]:
-        with self.history.workspace.snapshot_lock:
-            files = self._canonical_chat_files()
+        with self.history.workspace.read_snapshot() as root:
+            files = self._canonical_chat_files(root)
             live_paths = {path for path, _ in files}
             summaries: dict[str, ChatSummary | None] = {}
             with self._chat_summary_lock:
@@ -1414,13 +1416,11 @@ class ProjectService:
 
     def _canonical_chat_files(
         self,
+        root: Path,
     ) -> list[tuple[Path, tuple[int, int, int, int, int]]]:
-        """Reconcile a stale mirror, then return safe canonical file candidates."""
+        """Return safe canonical file candidates from the pinned read root."""
 
-        workspace = self.history.workspace
-        if workspace.remote:
-            workspace.refresh_if_stale()
-        chat_dir = workspace.root / "chat"
+        chat_dir = root / "chat"
         try:
             directory_stat = chat_dir.lstat()
         except OSError:
@@ -1572,6 +1572,24 @@ class ProjectService:
         materialization: MaterializationResult | None = None,
         paper: PaperSnapshot | None = None,
         head: GraphHeadRef | None = None,
+    ) -> _ProjectSnapshotDraft:
+        with self.history.workspace.read_snapshot() as root:
+            reader = self
+            if self.history.workspace.remote:
+                reader = copy.copy(self)
+                reader.history = copy.copy(self.history)
+                reader.history.manifest = load_manifest(
+                    root / "manifest.toml", project_root=self.manifest.path.parent.parent
+                )
+                reader.history.manifest._path = self.manifest.path
+            return reader._project_snapshot(materialization=materialization, paper=paper, head=head)
+
+    def _project_snapshot(
+        self,
+        *,
+        materialization: MaterializationResult | None,
+        paper: PaperSnapshot | None,
+        head: GraphHeadRef | None,
     ) -> _ProjectSnapshotDraft:
         if materialization is None:
             materialization = self.history.current_materialization()

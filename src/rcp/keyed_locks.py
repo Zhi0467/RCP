@@ -5,15 +5,17 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Protocol
 
+from rcp.core.models import GraphState
 from rcp.core.project_types import project_type_of
 
 
 class _History(Protocol):
-    def state(self): ...
+    def state(self) -> GraphState: ...
 
 
 class _ProjectService(Protocol):
-    history: _History
+    @property
+    def history(self) -> _History: ...
 
 
 class KeyedLocks:

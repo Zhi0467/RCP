@@ -8,8 +8,8 @@ import re
 import shutil
 import stat
 import uuid
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,6 +85,15 @@ class BranchHistoryManager:
         self._metadata = metadata
         self._identity_metadata = metadata
 
+    @contextmanager
+    def read_view(self) -> Iterator[BranchHistoryManager]:
+        """Keep this branch and its main prefix in the same pinned generation."""
+        with self.parent.read_view() as parent:
+            if parent is self.parent:
+                yield self
+            else:
+                yield open_branch(parent, self.branch_id, initialize=False)
+
     @property
     def graph_target(self) -> GraphTargetRef:
         return GraphTargetRef(kind="branch", branch_id=self._metadata.branch_id)
@@ -125,6 +134,9 @@ class BranchHistoryManager:
                 path.mkdir(mode=0o700)
 
     def branch_metadata(self) -> GraphBranchMetadata:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.branch_metadata()
         with self._process_lock:
             self._metadata = self._read_metadata()
             result = self.materialize(write_outputs=False)
@@ -161,6 +173,9 @@ class BranchHistoryManager:
     def base_state(self) -> GraphState:
         """Replay and return the immutable accepted main prefix for this branch."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.base_state()
         with self._process_lock:
             if not self.workspace.refresh_if_stale():
                 raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
@@ -176,6 +191,9 @@ class BranchHistoryManager:
         *,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> MaterializationResult:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.current_materialization()
         with self._process_lock:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale(refresh_max_age_seconds)
@@ -193,6 +211,9 @@ class BranchHistoryManager:
         return current
 
     def load_patches(self) -> list[Patch]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.load_patches()
         with self._process_lock:
             return [
                 self.parent._decode_persisted_patch(path.read_text(encoding="utf-8"))
@@ -484,6 +505,9 @@ class BranchHistoryManager:
         return events
 
     def transition_trace_at_revision(self, revision: int) -> TransitionTrace | None:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.transition_trace_at_revision(revision)
         if revision <= self._metadata.base_head.revision:
             return None
         path = self.patches_dir / f"{revision:06d}.json"
@@ -499,6 +523,9 @@ class BranchHistoryManager:
     def accepted_patch_boundaries(
         self,
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.accepted_patch_boundaries()
         boundaries: list[tuple[GraphState, Patch, GraphState]] = []
 
         def collect(previous: GraphState, patch: Patch, state: GraphState) -> None:
@@ -517,6 +544,9 @@ class BranchHistoryManager:
         from_revision: int = 1,
         to_revision: int | None = None,
     ) -> list[dict[str, object]]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.revision_summaries(from_revision, to_revision)
         end = to_revision if to_revision is not None else 10**12
         summaries: list[RevisionSummary] = []
 
@@ -545,6 +575,9 @@ class BranchHistoryManager:
         ]
 
     def merge_receipts(self) -> list[BranchMergeReceipt]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.merge_receipts()
         with self._process_lock:
             receipts: list[BranchMergeReceipt] = []
             for path in self._merge_paths():
@@ -561,6 +594,9 @@ class BranchHistoryManager:
     def validated_merge_receipts(self) -> list[BranchMergeReceipt]:
         """Read every retained receipt and verify it against branch and main replay."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.validated_merge_receipts()
         with self._process_lock:
             branch = self.materialize(write_outputs=False)
             main = self.parent.materialize(write_outputs=False)
@@ -726,6 +762,9 @@ class BranchHistoryManager:
         branch Patch files, that head, and the manifest are the whole input.
         """
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.retained_patch_signature()
         with self._process_lock:
             self._metadata = self._read_metadata()
             manifest_path = self.parent.root / "manifest.toml"
@@ -748,6 +787,9 @@ class BranchHistoryManager:
         rely on accepted boundaries alone.
         """
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.materialize_at_revision(revision)
         with self._process_lock:
             if not self.workspace.refresh_if_stale():
                 raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
@@ -1151,6 +1193,10 @@ def read_branch_snapshots(
     memory rather than publishing it from a GET.
     """
 
+    if parent.workspace.remote:
+        with parent.read_view() as reader:
+            return read_branch_snapshots(reader, identities)
+
     expected: dict[str, tuple[str, str]] = {}
     for branch_id, episode_id, project_id in identities:
         canonical_branch_id(branch_id)
@@ -1499,6 +1545,16 @@ def open_branch(
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> BranchHistoryManager:
     canonical_branch_id(branch_id)
+    if not initialize and parent.workspace.remote:
+        with parent.read_view() as reader:
+            branch = open_branch(
+                reader,
+                branch_id,
+                expected_episode_id=expected_episode_id,
+                expected_project_id=expected_project_id,
+                initialize=False,
+            )
+            return BranchHistoryManager(parent, branch._metadata)
     with parent._process_lock:
         main = None
         if not initialize:

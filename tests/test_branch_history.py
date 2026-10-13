@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 
@@ -437,6 +438,10 @@ class _RecordingRemoteWorkspace(StateWorkspace):
         self.patch_failure: str | None = None
         self.branch_failure: str | None = None
         self.events: list[str] = []
+
+    @contextmanager
+    def read_snapshot(self):
+        yield self.root
 
     def publish(self, relative_paths) -> None:
         self.events.append("repair")
