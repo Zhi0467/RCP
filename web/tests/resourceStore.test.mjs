@@ -155,6 +155,19 @@ test("a mutation response does not acknowledge a token that moved meanwhile", as
   assert.equal(store.view(id).value, "fresh");
 });
 
+test("an older command's late response never replaces a newer one's", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("tasks.status");
+  const id = store.register("tab", profile);
+  reads[0].resolve("v0");
+  await settle();
+  const older = store.beginMutation("pause", new Map([[id, (value) => value]]));
+  const newer = store.beginMutation("resume", new Map([[id, (value) => value]]));
+  newer.settle(new Map([[id, "resumed"]]));
+  older.settle(new Map([[id, "paused"]]));
+  assert.equal(store.view(id).value, "resumed");
+});
+
 test("releasing the last owner forgets the resource", () => {
   const store = new ResourceStore();
   const { profile } = manualProfile("questions");

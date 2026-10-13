@@ -66,6 +66,8 @@ interface ResourceState {
   failures: number;
   retryAt: number;
   pending: PendingOperation[];
+  /** Start order of the newest command whose response replaced the value. */
+  settledMutation: number;
   view: ResourceView<unknown> | null;
 }
 
@@ -108,6 +110,7 @@ export class ResourceStore {
   private running = 0;
   private runningBackground = 0;
   private epoch: string | null = null;
+  private mutations = 0;
   private readonly now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -148,6 +151,7 @@ export class ResourceStore {
         failures: 0,
         retryAt: 0,
         pending: [],
+        settledMutation: 0,
         view: null,
       };
       this.states.set(id, state);
@@ -346,6 +350,7 @@ export class ResourceStore {
     operationId: string,
     effects: ReadonlyMap<string, (value: unknown) => unknown>,
   ): { settle(values?: ReadonlyMap<string, unknown>): void; fail(): void } {
+    const order = ++this.mutations;
     for (const [id, apply] of effects) {
       const state = this.states.get(id);
       if (!state) continue;
@@ -361,7 +366,10 @@ export class ResourceStore {
         state.pending = state.pending.filter((operation) => operation.id !== operationId);
         if (ok) {
           this.fence(state);
-          if (values?.has(id)) {
+          // An older command's response never replaces a newer one's; it
+          // only owes a read.
+          if (values?.has(id) && order > state.settledMutation) {
+            state.settledMutation = order;
             const value = values.get(id);
             state.value = state.profile.reconcile
               ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)

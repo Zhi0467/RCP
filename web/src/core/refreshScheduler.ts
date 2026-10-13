@@ -234,7 +234,8 @@ export class RefreshScheduler {
     } catch {
       if (this.inFlight !== controller) return;
       this.failures += 1;
-      if (activated) this.activated = activated;
+      // A newer activation made during the request wins over the retried one.
+      if (activated && this.activated === null) this.activated = activated;
       this.setHealth({ ...this.health, failing: true });
     } finally {
       this.clock.clearTimeout(timeout);

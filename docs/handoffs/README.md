@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-- [Unified tab refresh](unified-tab-refresh.md): design only; waits for an explicit start.
+- [Unified tab refresh](unified-tab-refresh.md): implementation in progress (store and scheduler core done).
 
 Unfinished agent-link work is tracked in issue #280.
 
