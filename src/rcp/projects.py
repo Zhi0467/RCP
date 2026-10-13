@@ -894,6 +894,8 @@ class ProjectCatalog:
         project_id = self.resolve_project_id(project_id)
         workspace = self.workspace_for_display(project_id)
         if workspace is None:
+            if self.store.project(project_id) is not None:
+                raise StateUnavailable("Project state is unavailable.")
             raise KeyError(project_id)
         if not workspace.remote:
             return self.open(project_id)
@@ -1725,6 +1727,8 @@ class ProjectCatalog:
         project_id = self.resolve_project_id(project_id)
         workspace = self.workspace_for_display(project_id)
         if workspace is None:
+            if self.store.project(project_id) is not None:
+                raise StateUnavailable("Project state is unavailable.")
             raise KeyError(project_id)
         if workspace.remote:
             with workspace.read_snapshot() as root, self._display_lock:

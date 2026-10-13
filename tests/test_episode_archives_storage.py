@@ -7,7 +7,7 @@ import pytest
 
 from rcp.storage import AppStore, EpisodeArchiveState, EpisodeRecord
 
-from .storage_helpers import downgrade_artifacts
+from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 from .test_auto_research_children_storage import (
     _admission,
     _auto_parent,
@@ -264,6 +264,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
     _end(store, "episode")
     before = store.episode("episode")
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE episode_archives")
         downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 13")
@@ -305,6 +306,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "repository_provisioning_contracts_v1",
         "branch_names_v1",
         "graph_seen_heads_v1",
+        "resource_watermarks_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

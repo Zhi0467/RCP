@@ -211,6 +211,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "watcher_poller",
         "artifact_mutation_locks",
         "project_display_cache",
+        "sync_coordinator",
         "watcher_delivery",
         "experiment_operation_lock",
         "background_tasks",
@@ -235,6 +236,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert services.watcher_poller is app.state.watcher_poller
     assert services.artifact_mutation_locks is not None
     assert services.project_display_cache is not None
+    assert services.sync_coordinator is app.state.sync_coordinator
     assert services.watcher_delivery is not None
     assert services.experiment_operation_lock is not None
     assert services.launcher is not None

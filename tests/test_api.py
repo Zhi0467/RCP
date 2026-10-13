@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess
+import shutil
 import threading
 import time
 import uuid
@@ -908,33 +908,33 @@ def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> Non
     assert payload["providers"] == {}
 
 
-def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reconcile(
-    app, manifest, monkeypatch
+def test_remote_display_follows_published_generation_after_interrupted_reconcile(
+    app, tmp_path
 ) -> None:
     project_id = app.state.default_project_id
-    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
+    client = signed_in_client(app)
+    initial = client.get(f"/api/projects/{project_id}").json()
     assert initial["revision"] == 1
 
-    append_fixture_patch(app.state.service, seed_patch())
-    workspace = SSHStateWorkspace(manifest.research_dir, "research.example", "/srv/project")
-    monkeypatch.setattr(
-        workspace,
-        "_ssh",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(
-            arguments,
-            0,
-            "000002.json\n",
-            "",
-        ),
-    )
-    app.state.catalog._services.clear()
-    monkeypatch.setattr(
-        projects_module,
-        "state_workspace_for_probe",
-        lambda _manifest, _data_dir: workspace,
-    )
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    app.state.catalog._display_workspaces[project_id] = workspace
+    stage = workspace._generations.stage()
+    shutil.copytree(app.state.service.history.root, stage, dirs_exist_ok=True)
+    workspace._generations.publish(stage)
+    before = app.state.catalog.content_generations(project_id, ["graph:main"])
 
-    assert app.state.catalog.probe_remote_patch_log_head(project_id) == "moved"
+    append_fixture_patch(app.state.service, seed_patch())
+    stage = workspace._generations.stage()
+    shutil.copytree(app.state.service.history.root, stage, dirs_exist_ok=True)
+    workspace._generations.publish(stage)
+    assert app.state.catalog.content_generations(project_id, before) != before
+    # A capture published before display-cache reconciliation must still be visible.
+    cached = app.state.catalog.cached_snapshot(project_id)
+    assert cached is not None
+    assert cached["revision"] == 1
+    current = client.get(f"/api/projects/{project_id}/cached")
+    assert current.status_code == 200
+    assert current.json()["revision"] == 2
 
 
 def test_cached_project_survives_restart_without_opening_history(
