@@ -756,6 +756,7 @@ function MemberApp({
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
+    updateInactiveProjectStates,
     isProjectTabOpen,
     projectIdsForHeartbeat,
     adjacentProjectId,
@@ -1546,18 +1547,21 @@ function MemberApp({
         // A background tab keeps its saved task list current, so switching back
         // shows each agent's real status at once instead of after the reload.
         const taskStatusSignal = observation.task_status_signal;
+        // Tasks are project-wide, so every retained ref, branches included, takes them.
         if (
           taskStatusSignal !== undefined &&
           heartbeatTaskStatusMoved(
             taskStatusSignal,
             taskStatusSignalsRef.current.get(requestedProjectId),
-          ) &&
-          inactiveCachedProjectState(requestedProjectId)
+          )
         ) {
           const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
-          const current = inactiveCachedProjectState(requestedProjectId);
-          if (!current || !tabIsOpen()) return;
-          cacheProjectState(requestedProjectId, { ...current, tasks: nextTasks });
+          // Became active meanwhile: the active heartbeat owns the list now.
+          if (isActiveProject(requestedProjectId)) return;
+          updateInactiveProjectStates(requestedProjectId, (state) => ({
+            ...state,
+            tasks: nextTasks,
+          }));
           taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
         }
         const retained = inactiveCachedProjectState(requestedProjectId);
@@ -1620,6 +1624,7 @@ function MemberApp({
       beginTasksRead,
       replaceTasks,
       runProjectHeartbeat,
+      updateInactiveProjectStates,
     ],
   );
 

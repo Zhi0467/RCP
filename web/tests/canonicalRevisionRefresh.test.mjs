@@ -33,6 +33,7 @@ const {
   projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
+  updateInactiveProjectTabStates,
 } = await server.ssrLoadModule("/src/projects/useProjectTabs.ts");
 const { emptyProjectSessionState, serializeProjectSessionTabState } = await server.ssrLoadModule(
   "/src/graph/projectSession.ts",
@@ -313,6 +314,32 @@ test("heartbeat targets are unique and stale inactive results cannot update clos
   assert.strictEqual(inactiveProjectTabState(cache, tabs, "alpha", "beta"), beta);
   assert.equal(inactiveProjectTabState(cache, tabs, "alpha", "alpha"), null);
   assert.equal(inactiveProjectTabState(cache, tabs.slice(0, 1), "alpha", "beta"), null);
+});
+
+test("an inactive project's task refresh reaches every retained ref, branches included", () => {
+  const tabs = [
+    { id: "alpha", name: "Alpha" },
+    { id: "beta", name: "Beta" },
+  ];
+  const cache = new Map([
+    ["beta", { state: { tasks: ["old"] } }],
+    ["beta:branch:b1", { state: { tasks: ["old"] } }],
+    ["beta:branch:b2", { state: null }],
+    ["betamax", { state: { tasks: ["old"] } }],
+  ]);
+  const withNew = (state) => ({ ...state, tasks: ["new"] });
+
+  assert.equal(updateInactiveProjectTabStates(cache, tabs, "alpha", "beta", withNew), true);
+  assert.deepEqual(
+    [...cache].map(([key, entry]) => [key, entry.state?.tasks ?? null]),
+    [
+      ["beta", ["new"]],
+      ["beta:branch:b1", ["new"]],
+      ["beta:branch:b2", null],
+      ["betamax", ["old"]],
+    ],
+  );
+  assert.equal(updateInactiveProjectTabStates(cache, tabs, "beta", "beta", withNew), false);
 });
 
 test("overlapping active and all-tab heartbeats are single-flight per project", async () => {
