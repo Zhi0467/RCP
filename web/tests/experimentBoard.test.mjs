@@ -1369,7 +1369,7 @@ test("the board shows the shared report wrap-up as in-progress", () => {
   assert.match(html, /status-pill running/);
 });
 
-test("every target view keeps all same-node cards and scopes selection and busy state to the episode", () => {
+test("every target view keeps same-node parent cards and the opened child, and scopes selection and busy state to the episode", () => {
   const experiment = node("experiment/shared", "active");
   const entries = [
     { id: "main-episode", target: { kind: "main" } },
@@ -1514,9 +1514,11 @@ test("every target view keeps all same-node cards and scopes selection and busy 
       const cards = [
         ...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g),
       ];
+      // Auto-research children live on their orchestrator's card; only the one
+      // a route opens gets a card of its own beside the main run.
       assert.deepEqual(
         new Set(cards.map((match) => match[1])),
-        new Set(entries.map((item) => item.episode.episode_id)),
+        new Set(["main-episode", selected.episode.episode_id]),
       );
       for (const [card, id] of cards) {
         const isSelected = id === selected.episode.episode_id;

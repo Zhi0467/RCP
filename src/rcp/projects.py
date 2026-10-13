@@ -883,6 +883,22 @@ class ProjectCatalog:
         """Resolve cached transport metadata without opening state or touching disk."""
         return self._display_workspaces.get(self.resolve_project_id(project_id))
 
+    def _display_workspace_or_refresh(self, project_id: str) -> StateWorkspace:
+        """The cached workspace, re-reading the catalog once for a project it has not seen.
+
+        Another process (setup, a CLI, an upgrade seed) can register a project
+        while this server runs; without the re-read it stays unreadable until restart.
+        """
+        workspace = self.workspace_for_display(project_id)
+        if workspace is None and self.store.project(project_id) is not None:
+            self._refresh_display_workspaces()
+            workspace = self.workspace_for_display(project_id)
+        if workspace is None:
+            if self.store.project(project_id) is not None:
+                raise StateUnavailable("Project state is unavailable.")
+            raise KeyError(project_id)
+        return workspace
+
     def content_generations(self, project_id: str, families: Iterable[str]) -> dict[str, str]:
         workspace = self.workspace_for_display(project_id)
         if workspace is None:
@@ -892,11 +908,7 @@ class ProjectCatalog:
     def open_display(self, project_id: str) -> ProjectService:
         """Resolve a read/admission owner without initializing or refreshing state."""
         project_id = self.resolve_project_id(project_id)
-        workspace = self.workspace_for_display(project_id)
-        if workspace is None:
-            if self.store.project(project_id) is not None:
-                raise StateUnavailable("Project state is unavailable.")
-            raise KeyError(project_id)
+        workspace = self._display_workspace_or_refresh(project_id)
         if not workspace.remote:
             return self.open(project_id)
         with workspace.read_snapshot() as root, self._display_lock:
@@ -1725,11 +1737,7 @@ class ProjectCatalog:
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
         project_id = self.resolve_project_id(project_id)
-        workspace = self.workspace_for_display(project_id)
-        if workspace is None:
-            if self.store.project(project_id) is not None:
-                raise StateUnavailable("Project state is unavailable.")
-            raise KeyError(project_id)
+        workspace = self._display_workspace_or_refresh(project_id)
         if workspace.remote:
             with workspace.read_snapshot() as root, self._display_lock:
                 service, materialization = self._display_service(project_id, workspace, root)

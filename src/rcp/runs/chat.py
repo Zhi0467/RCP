@@ -1258,12 +1258,10 @@ def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTa
             f"task {record.operation_id!r} has no unique operation-created receipt"
         )
     payload = created[0].payload
-    cause = payload.get("continuation_cause")
     has_parent = payload.get("has_parent")
     attempt = payload.get("attempt")
     if (
-        not isinstance(cause, str)
-        or not isinstance(payload.get("resumed"), bool)
+        not isinstance(payload.get("resumed"), bool)
         or not isinstance(has_parent, bool)
         or isinstance(attempt, bool)
         or not isinstance(attempt, int)
@@ -1276,7 +1274,7 @@ def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTa
         )
     # Only Resume reruns its parent's turn in place. A wake, Retry, or repair
     # reuses the native session but opens a turn of its own, often with no parent.
-    resumed = cause == "resume"
+    resumed = payload.get("continuation_cause") == "resume"
     actual_has_parent = record.parent_operation_id is not None
     if has_parent != actual_has_parent or (resumed and not actual_has_parent):
         raise _resume_lineage_error(
