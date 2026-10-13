@@ -18,6 +18,9 @@ AGENT_TASK_LIST_OPEN_CHAT_LIMIT = 50
 # How long such a chat's turn stays listed after it finishes, so an open client
 # sees the terminal record and marks the result unread.
 AGENT_TASK_LIST_FINISHED_CHAT_SECONDS = 600
+# A running task's elapsed time and heuristic progress are computed from the
+# clock, so its progress token moves on this cadence while any task runs.
+TASK_PROGRESS_REFRESH_SECONDS = 5
 AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT = 200
 AGENT_TASK_EVENT_LIST_MAX_LIMIT = 500
 AGENT_TASK_EVENT_RETENTION_COUNT = 200

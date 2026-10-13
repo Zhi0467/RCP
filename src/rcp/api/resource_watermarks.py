@@ -19,6 +19,7 @@ from rcp.api.dependencies import (
     get_store,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.limits import TASK_PROGRESS_REFRESH_SECONDS
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -51,6 +52,7 @@ _PROJECTION_VERSION = 1
 router = APIRouter()
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
+_TIMED = frozenset({"tasks.progress", "task"})
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 
 
@@ -240,6 +242,21 @@ def resource_watermarks(
             """,
             (encoded, as_of.timestamp(), as_of.timestamp()),
         ).fetchall()
+        # Elapsed time and heuristic progress come from the clock while a task runs.
+        timed = sorted({project_id for _, project_id, key in keys if key.name in _TIMED})
+        running = (
+            {
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT run.project_id FROM json_each(?) AS project "
+                    "JOIN graph_runs AS run ON run.project_id = project.value "
+                    "AND run.status IN ('queued', 'running', 'pausing')",
+                    (json.dumps(timed),),
+                )
+            }
+            if timed
+            else set()
+        )
     generations = {row["id"]: row["generation"] for row in counters}
     boundaries = {row["id"]: (row["elapsed"], row["upcoming"]) for row in deadlines}
     open_ids = {aliases[item.project_id] for item in body.open if item.project_id in aliases}
@@ -253,16 +270,18 @@ def resource_watermarks(
         project_id: catalog.content_generations(project_id, names)
         for project_id, names in families.items()
     }
+    progress_tick = int(as_of.timestamp() // TASK_PROGRESS_REFRESH_SECONDS)
     resources: dict[str, list[ResourceVersion]] = {}
     for index, (requested_id, project_id, key) in enumerate(keys):
         elapsed, upcoming = boundaries[index]
         family = key.content_family()
         file_version = content[project_id][family] if family is not None else ""
-        runtime_version = (
-            _api_services(request).terminals.resource_generation(project_id)
-            if key.name == "terminals"
-            else ""
-        )
+        if key.name == "terminals":
+            runtime_version = _api_services(request).terminals.resource_generation(project_id)
+        elif key.name in _TIMED and project_id in running:
+            runtime_version = progress_tick
+        else:
+            runtime_version = ""
         token = hashlib.sha256(
             json.dumps(
                 [

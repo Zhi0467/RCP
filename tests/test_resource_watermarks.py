@@ -221,7 +221,7 @@ def test_deadline_crossing_and_epoch_fence(endpoint, monkeypatch):
     assert beat(endpoint)["epoch"] != after["epoch"]
 
 
-def test_batched_heartbeat_is_three_reads_without_payload_work(endpoint, monkeypatch):
+def test_batched_heartbeat_is_four_reads_without_payload_work(endpoint, monkeypatch):
     queries = []
     connection_owner = endpoint.store.connection
 
@@ -240,11 +240,12 @@ def test_batched_heartbeat_is_three_reads_without_payload_work(endpoint, monkeyp
     ]
     beat(endpoint, keys)
     reads = [query for query in queries if query.lstrip().upper().startswith(("SELECT", "WITH"))]
-    assert len(reads) == 3
+    # Authorization, counters, deadlines, and running tasks for timed progress.
+    assert len(reads) == 4
     assert endpoint.catalog.calls == [
         (endpoint.project, {"graph:main", "graph:branch:b", "chat:c"})
     ]
-    assert "resource_deadlines" in reads[-1]
+    assert "resource_deadlines" in reads[2]
     with endpoint.store.connection() as connection:
         connection.executemany(
             "INSERT INTO resource_versions(scope,resource,entity,generation) VALUES(?, 'task', ?, 1)",
@@ -261,7 +262,7 @@ def test_batched_heartbeat_is_three_reads_without_payload_work(endpoint, monkeyp
     beat(endpoint, keys)
     assert (
         len([query for query in queries if query.lstrip().upper().startswith(("SELECT", "WITH"))])
-        == 3
+        == 4
     )
 
 
@@ -329,3 +330,29 @@ def test_artifact_expiry_invalidates_task_consumers(endpoint, monkeypatch):
         assert not connection.execute(
             "SELECT 1 FROM resource_deadlines WHERE owner='artifacts:artifact'"
         ).fetchall()
+
+
+def test_running_task_progress_moves_with_the_clock(endpoint, monkeypatch):
+    from rcp.limits import TASK_PROGRESS_REFRESH_SECONDS
+
+    keys = [{"name": "tasks.status"}, {"name": "tasks.progress"}]
+    later = endpoint.now + timedelta(seconds=TASK_PROGRESS_REFRESH_SECONDS)
+
+    def versions(at):
+        monkeypatch.setattr(endpoint.store, "now", lambda: at.isoformat())
+        return [item["version"] for item in beat(endpoint, keys)["projects"][0]["resources"]]
+
+    assert versions(later) == versions(endpoint.now)
+    with endpoint.store.connection() as connection:
+        _insert_running_task(connection, endpoint.project, endpoint.now)
+    running, running_later = versions(endpoint.now), versions(later)
+    assert running_later[0] == running[0]
+    assert running_later[1] != running[1]
+
+
+def _insert_running_task(connection, project_id, at):
+    connection.execute(
+        "INSERT INTO graph_runs(operation_id, project_id, kind, status, request_json, "
+        "created_at, updated_at, status_message) VALUES(?, ?, 'node_chat', 'running', '{}', ?, ?, '')",
+        (str(uuid.uuid4()), project_id, at.isoformat(), at.isoformat()),
+    )
