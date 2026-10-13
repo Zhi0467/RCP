@@ -35,10 +35,12 @@ remote-state projects.
 2. **One batched watermark request** for all open projects. Each resource has
    a cheap token (a database counter or file timestamp), never computed by
    rebuilding a display snapshot. The server returns only projects the member
-   can read.
+   can read; a requested project it does not return is lost access, and the
+   app removes its tab and store data at once, as the heartbeat does today.
 3. **Cadence.** The active project is in every beat (1 s); hidden open
    projects in every third beat (3 s). One request in flight; the next is
-   scheduled after the previous completes. Failures back off 3, 6, 12, 30 s.
+   scheduled after the previous completes. Each attempt has a deadline from `limits.py`;
+   a timeout aborts it. Failures back off 3, 6, 12, 30 s.
    The app keeps its last good data with a visible stale marker. The server
    never waits on a remote sync to answer.
 4. **Remote canonical state.** The backend syncs open remote-state projects in
@@ -48,7 +50,9 @@ remote-state projects.
    projects gain no cost.
 5. **Instant pending state** for every task action (retry, pause, resume,
    stop, send a chat message) through the shared store. The server's answer
-   replaces it; a failure rolls back and shows the error on the card.
+   replaces it; a definite failure rolls back and shows the error on the card.
+   An ambiguous chat send (timeout or lost response) keeps its card and
+   idempotency key for Resend, as today, so it never launches a second turn.
 6. **Kept current:** each open tab's current view (project plus the ref it is
    on; project-wide data once). Other visited branch views stay cached and are
    validated only when reopened. Closing a tab frees its data. No count cap.
@@ -94,7 +98,9 @@ remote-state projects.
   `latest_task_id`, `latest_watcher_id`, and the settings, Experiment, and
   compute signals become registry tokens. Graph revision stays domain data;
   remote freshness stays separate health metadata. `epoch` rotates on
-  restart, restore, and projection-schema change.
+  restart, restore, and projection-schema change. An epoch change is a global fence: the app
+  advances every resource generation and drops observed and committed
+  versions before it accepts another watermark or payload.
 
 ### Remote state sync and non-blocking reads
 
