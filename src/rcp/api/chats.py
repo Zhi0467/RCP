@@ -289,7 +289,7 @@ def mark_chat_read(
     """Record that the acting user has seen this conversation's turns up to a time."""
     chat_id = _canonical_chat_id(chat_id)
     service = get_graph_service(
-        catalog, project_id, None if inventory else branch_id, initialize=False
+        catalog, project_id, None if inventory else branch_id, initialize=False, write=True
     )
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
@@ -514,7 +514,7 @@ def delete_conversation_worktree(
     store: Annotated[AppStore, Depends(get_store)],
     branch_id: str | None = None,
 ) -> ConversationWorktreeResponse:
-    service = get_graph_service(catalog, project_id, branch_id)
+    service = get_graph_service(catalog, project_id, branch_id, write=True)
     try:
         with conversation_worktree_locks(f"{store.path}:{project_id}:{chat_id}"):
             require_chat_graph_target(service, store, project_id, chat_id)

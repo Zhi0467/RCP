@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rcp.api.dependencies import (
     _api_services,
     get_project_service,
+    get_project_writer,
     require_project_membership,
     require_project_write_admission,
 )
@@ -96,7 +97,7 @@ async def repositories(request: Request, project_id: str = _member) -> list[dict
 @router.post("/api/projects/{project_id}/terminals/probe")
 async def refresh_probes(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
-    manifest = get_project_service(services.catalog, project_id).manifest
+    manifest = get_project_writer(services.catalog, project_id).manifest
     for machine in manifest.machines:
         if machine.host:
             services.terminals.probes.invalidate(machine)
@@ -128,7 +129,7 @@ async def open_session(
     body: OpenTerminalRequest, request: Request, project_id: str = _member
 ) -> dict[str, object]:
     services = _api_services(request)
-    manifest = get_project_service(services.catalog, project_id).manifest
+    manifest = get_project_writer(services.catalog, project_id).manifest
     member = services.identity_access.acting_user(request)
     # Before the 404 and before every launch prerequisite: all of them belong
     # to what the alias names now, and any of them answering first would leave

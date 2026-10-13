@@ -132,7 +132,7 @@ def preview_graph_sync(
     project_display_cache: DisplayCacheDependency,
 ):
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False, write=True)
     project_id = catalog.resolve_project_id(project_id)
     require_graph_edit_admission(store, project_id, service.history.graph_target)
     try:

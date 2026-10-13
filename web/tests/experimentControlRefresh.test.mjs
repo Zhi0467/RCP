@@ -117,9 +117,12 @@ test("progress cannot regress status or overwrite a pending action", () => {
   assert.equal(selected.progress, 0);
   assert.equal(selectTasks([status], [{ ...progress, status: "succeeded" }])[0].progress, 1);
   assert.deepEqual(selectTasks([], [progress]), []);
-  // A clock-driven progress read keeps the persisted timestamp.
-  const ticked = { ...task("running"), progress: 0.5, updated_at: "1" };
-  assert.equal(selectTasks([task("running")], [ticked])[0].progress, 0.5);
+  // A clock-driven progress read keeps the persisted timestamp, and live
+  // steering fields move only the progress watermark.
+  const ticked = { ...task("running"), progress: 0.5, can_steer: true, updated_at: "1" };
+  const [live] = selectTasks([{ ...task("running"), can_steer: false }], [ticked]);
+  assert.equal(live.progress, 0.5);
+  assert.equal(live.can_steer, true);
 });
 
 test("task commands paint intent, settle a retry and retain failure on the task", async () => {

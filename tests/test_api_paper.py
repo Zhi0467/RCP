@@ -169,3 +169,34 @@ def test_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monke
         },
     )
     assert saved.status_code == 200
+
+
+def test_mutating_routes_open_the_authoritative_owner() -> None:
+    """A write never waits on, or starts from, a remote display generation."""
+    import ast
+    from pathlib import Path
+
+    import rcp.api
+
+    display = []
+    for path in Path(rcp.api.__file__).parent.glob("*.py"):
+        for route in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(route, ast.FunctionDef | ast.AsyncFunctionDef) or not any(
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr in {"post", "put", "patch", "delete"}
+                for decorator in route.decorator_list
+            ):
+                continue
+            display += [
+                f"{path.name}:{call.lineno}"
+                for call in ast.walk(route)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and (
+                    call.func.id == "get_project_service"
+                    or call.func.id == "get_graph_service"
+                    and not any(keyword.arg == "write" for keyword in call.keywords)
+                )
+            ]
+    assert display == []

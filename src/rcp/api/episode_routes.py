@@ -16,6 +16,7 @@ from rcp.api.dependencies import (
     get_experiment_operation_lock,
     get_identity_access,
     get_project_service,
+    get_project_writer,
     get_store,
     project_write_admission,
     require_project_membership,
@@ -347,7 +348,7 @@ def start_episode(
                 return serialize_episode(
                     store, project_id, episode, branch_summary=_branch_summary(store, catalog)
                 )
-            service = get_project_service(catalog, project_id)
+            service = get_project_writer(catalog, project_id)
             try:
                 body.branch_name = normalize_branch_name(body.branch_name)
                 start_request = _resolved_auto_research_start_request(service, body)
@@ -508,7 +509,7 @@ def merge_episode_branch(
     authorized_by = identity_access.require_patch_capable_identity(request)
     member = _episode_for_http(store, catalog, project_id, episode_id)
     episode = merge_owner(store, member)
-    service = get_project_service(catalog, project_id)
+    service = get_project_writer(catalog, project_id)
     try:
         with project_write_admission(project_id, request):
             service.history.require_writable()
@@ -581,7 +582,7 @@ def cleanup_episode_branch(
     owner = merge_owner(store, member)
     try:
         cleanup_episode(
-            get_project_service(catalog, project_id), store, owner, body, authorized_by=actor
+            get_project_writer(catalog, project_id), store, owner, body, authorized_by=actor
         )
         return serialize_episode(
             store, project_id, member, branch_summary=_branch_summary(store, catalog)
@@ -654,7 +655,7 @@ def continue_episode(
             store, project_id, existing, branch_summary=_branch_summary(store, catalog)
         )
         return JSONResponse(status_code=200, content=replayed.model_dump(mode="json"))
-    service = get_project_service(catalog, project_id)
+    service = get_project_writer(catalog, project_id)
     try:
         service.history.require_writable()
         if source.mode == "auto_research":
@@ -817,7 +818,7 @@ def send_episode_message(
         if episode.status in _ENDED_EPISODE_STATUSES:
             if body.invocation_ceiling is None:
                 raise _message_refusal(store, episode, body.invocation_ceiling, None)
-            get_project_service(catalog, project_id).history.require_writable()
+            get_project_writer(catalog, project_id).history.require_writable()
             episode, _ = continue_auto_research(
                 background_tasks,
                 episode,

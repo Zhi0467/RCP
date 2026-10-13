@@ -44,22 +44,17 @@ export function usageProfile(projectId: string): ResourceProfile<AgentUsageSnaps
 }
 
 /**
- * Status owns list membership and commands; progress can only enrich its current
- * rows. An equal timestamp still enriches: elapsed time and progress move with
- * the clock while the persisted row does not.
+ * Status owns list membership; a progress row at least as new replaces its row.
+ * Live fields such as steering, status message, and session move only the
+ * progress watermark while a task runs. An equal timestamp still replaces:
+ * elapsed time and progress move with the clock while the persisted row does not.
  */
 export function selectTasks(status: AgentTask[] = [], progress: AgentTask[] = []): AgentTask[] {
   const byId = new Map(progress.map((task) => [task.operation_id, task]));
   return status.map((task) => {
     const detail = byId.get(task.operation_id);
     return detail && detail.status === task.status && detail.updated_at >= task.updated_at
-      ? {
-          ...task,
-          phase: detail.phase,
-          progress: detail.progress,
-          elapsed_seconds: detail.elapsed_seconds,
-          last_activity_at: detail.last_activity_at,
-        }
+      ? detail
       : task;
   });
 }

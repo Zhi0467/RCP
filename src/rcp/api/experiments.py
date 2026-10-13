@@ -121,7 +121,7 @@ def run_experiment(
                 assert record is not None
                 return _start_response(store, record, str(record.request.get("node_id", node_id)))
             project_id = catalog.resolve_project_id(project_id)
-            service = get_graph_service(catalog, project_id, branch_id)
+            service = get_graph_service(catalog, project_id, branch_id, write=True)
             target = service.history.graph_target
             require_graph_edit_admission(store, project_id, target)
             try:

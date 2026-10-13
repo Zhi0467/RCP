@@ -352,7 +352,9 @@ def start_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return _agent_task_response(store, record, background_tasks)
-            service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+            service = get_graph_service(
+                catalog, project_id, branch_id, initialize=False, write=True
+            )
             if branch_id is not None and kind not in {"node_chat", "project_chat"}:
                 raise HTTPException(
                     status_code=422,
@@ -597,7 +599,7 @@ def steer_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    service = get_graph_service(catalog, project_id, record.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, record.graph_target.branch_id, write=True)
     try:
         with project_write_admission(project_id, http_request):
             delivery = begin_chat_steer(
@@ -916,7 +918,7 @@ def resume_agent_task(
                 assert record is not None
                 return record.model_dump(mode="json")
             service = get_graph_service(
-                catalog, project_id, previous.graph_target.branch_id, initialize=False
+                catalog, project_id, previous.graph_target.branch_id, initialize=False, write=True
             )
             try:
                 with _task_preparation_service(service) as reader:
@@ -966,7 +968,7 @@ def repair_agent_task_graph_update(
         if task_graph_capable(previous.kind, previous.request)
         else None
     )
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id, write=True)
     try:
         experiment_admission.require_current(service, previous.request)
         with _chat_recovery_admission(service, store, previous):
@@ -1004,7 +1006,7 @@ def apply_agent_task_graph_update_again(
     if not task_graph_capable(previous.kind, previous.request):
         raise HTTPException(status_code=409, detail="This task cannot change the graph.")
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id, write=True)
     target = service.history.graph_target
     require_graph_edit_admission(store, catalog.resolve_project_id(project_id), target)
     try:
@@ -1070,7 +1072,7 @@ def retry_agent_task(
                 assert record is not None
                 return record.model_dump(mode="json")
             service = get_graph_service(
-                catalog, project_id, previous.graph_target.branch_id, initialize=False
+                catalog, project_id, previous.graph_target.branch_id, initialize=False, write=True
             )
             try:
                 overrides = body.model_dump(exclude_none=True) if body is not None else {}

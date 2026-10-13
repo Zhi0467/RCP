@@ -15,6 +15,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_project_display_cache,
     get_project_service,
+    get_project_writer,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -440,7 +441,7 @@ def check_machine_compute(
 ) -> dict[str, object]:
     """Re-check every route of one machine after a human fixed what a notice named."""
     project_id = catalog.resolve_project_id(project_id)
-    manifest = get_project_service(catalog, project_id).manifest
+    manifest = get_project_writer(catalog, project_id).manifest
     if machine_alias not in manifest.machine_map:
         raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
     refresh_compute_probes(
@@ -486,7 +487,7 @@ def clear_rebuildable_caches(
     store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ):
-    service = get_project_service(catalog, project_id)
+    service = get_project_writer(catalog, project_id)
     if store.has_active_agent_task(project_id):
         raise HTTPException(
             status_code=409,
