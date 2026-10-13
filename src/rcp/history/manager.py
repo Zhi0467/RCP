@@ -669,9 +669,8 @@ class HistoryManager:
 
         if materialization is not None:
             return self._project_identity_from_replay(materialization)
-        if self.workspace.remote:
-            with self.read_view() as reader:
-                return reader.project_identity()
+        # Registration asks this before any display generation exists, so it
+        # reads canonical state rather than a pinned display view.
         with self._process_lock:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()

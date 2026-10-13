@@ -1374,7 +1374,7 @@ class ProjectService:
             for path, _ in self._canonical_chat_files(root):
                 if (
                     path.name.endswith(suffixes)
-                    and (transcript := self._read_chat_transcript(path)) is not None
+                    and (transcript := self._read_chat_transcript(path, root)) is not None
                     and transcript.chat_id in requested
                     and transcript.graph_target == self.history.graph_target
                 ):
@@ -1387,22 +1387,24 @@ class ProjectService:
     def _canonical_chat_summaries(self) -> list[ChatSummary]:
         with self.history.workspace.read_snapshot() as root:
             files = self._canonical_chat_files(root)
-            live_paths = {path for path, _ in files}
+            # Keyed inside the root: each display generation is a new directory.
+            live_paths = {path.relative_to(root) for path, _ in files}
             summaries: dict[str, ChatSummary | None] = {}
             with self._chat_summary_lock:
                 for stale in self._chat_summary_cache.keys() - live_paths:
                     del self._chat_summary_cache[stale]
                 for path, fingerprint in files:
-                    cached = self._chat_summary_cache.get(path)
+                    key = path.relative_to(root)
+                    cached = self._chat_summary_cache.get(key)
                     if cached is None or cached.fingerprint != fingerprint:
-                        transcript = self._read_chat_transcript(path)
+                        transcript = self._read_chat_transcript(path, root)
                         summary = (
                             ChatSummary.model_validate(transcript.model_dump(exclude={"messages"}))
                             if transcript is not None
                             else None
                         )
                         cached = _ChatSummaryCacheEntry(fingerprint, summary)
-                        self._chat_summary_cache[path] = cached
+                        self._chat_summary_cache[key] = cached
                     if cached.summary is None:
                         continue
                     chat_id = cached.summary.chat_id
@@ -1456,7 +1458,8 @@ class ProjectService:
             )
         return files
 
-    def _read_chat_transcript(self, path: Path) -> ChatTranscript | None:
+    def _read_chat_transcript(self, path: Path, root: Path) -> ChatTranscript | None:
+        """Read one chat file under `root`, the pinned state root it was listed from."""
         try:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             try:
@@ -1503,7 +1506,7 @@ class ProjectService:
                 _validate_stored_chat_record(
                     record,
                     first=first,
-                    root=self.history.workspace.root,
+                    root=root,
                     path=path,
                 )
         except ValueError:

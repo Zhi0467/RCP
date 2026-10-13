@@ -758,7 +758,9 @@ class ProjectSetupManager:
                 ),
                 seat_member=seat_member,
             )
-            _, snapshot = self.catalog.open_snapshot(record.project_id)
+            # Creation is a write path: read canonical state, not the display
+            # generation, which a new remote project does not have yet.
+            snapshot = self.catalog.open(record.project_id).project_snapshot()
             self.catalog.update_summary(record.project_id, snapshot)
             return self.catalog.card(record.project_id)
         except Exception:
@@ -821,7 +823,8 @@ class ProjectSetupManager:
             project_id=request.proposed_project_id,
             seat_member=seat_member,
         )
-        _, snapshot = self.catalog.open_snapshot(record.project_id)
+        # Registration is a write path; see `create`.
+        snapshot = self.catalog.open(record.project_id).project_snapshot()
         self.catalog.update_summary(record.project_id, snapshot)
         return self.catalog.card(record.project_id)
 

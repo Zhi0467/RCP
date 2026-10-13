@@ -135,9 +135,9 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     original_read = service._read_chat_transcript
     parsed_paths: list[Path] = []
 
-    def counted_read(path: Path):
+    def counted_read(path: Path, root: Path):
         parsed_paths.append(path)
-        return original_read(path)
+        return original_read(path, root)
 
     monkeypatch.setattr(service, "_read_chat_transcript", counted_read)
 
@@ -466,9 +466,9 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
     parsed = []
     original = service._read_chat_transcript
 
-    def counted(path):
+    def counted(path, root):
         parsed.append(path)
-        return original(path)
+        return original(path, root)
 
     monkeypatch.setattr(service, "_read_chat_transcript", counted)
     url = f"/api/projects/{project_id}/chats"
