@@ -578,7 +578,7 @@ def test_local_branch_output_failure_fences_the_committed_patch_until_repair(
     )
 
 
-def test_branch_read_snapshot_semantically_replays_the_tail_and_fails_closed(manifest) -> None:
+def test_branch_read_snapshot_semantically_replays_the_tail_and_reads_degraded(manifest) -> None:
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
@@ -594,10 +594,14 @@ def test_branch_read_snapshot_semantically_replays_the_tail_and_fails_closed(man
     ]
     path.write_text(json.dumps(payload), encoding="utf-8")
 
+    snapshot = history.branch_read_snapshots(
+        [(metadata.branch_id, metadata.episode_id, metadata.project_id)]
+    )[metadata.branch_id]
+    assert snapshot is not None
+    assert snapshot.state.replay_status == "degraded"
+    assert "ev/read-tail" not in snapshot.state.nodes
     with pytest.raises(ReplayHalted):
-        history.branch_read_snapshots(
-            [(metadata.branch_id, metadata.episode_id, metadata.project_id)]
-        )
+        branch.append(_branch_patch("ev/refused"))
 
 
 def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(manifest) -> None:

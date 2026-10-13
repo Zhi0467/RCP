@@ -1080,8 +1080,8 @@ def _read_branch_snapshot(
     branch = BranchHistoryManager(parent, metadata)
     if base_state.revision != metadata.base_head.revision:
         raise ValueError("graph branch snapshot has a different immutable main base")
+    # A read projection: a degraded branch stays readable at its coherent prefix.
     replayed = materialization
-    branch.require_writable(replayed.state)
     exact_metadata = metadata.model_copy(update={"head": branch.head_ref(replayed)})
 
     receipts_by_id: dict[str, BranchMergeReceipt] = {}

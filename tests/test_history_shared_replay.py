@@ -239,6 +239,13 @@ def test_branch_revision_gap_and_zero_head_stay_degraded(history):
     assert result.state.replay_status == "degraded"
     assert result.state.replay_failure.code == "patch-revision-discontinuous"
     assert "ev/two" not in result.state.nodes
+    from rcp.history.branches import read_branch_snapshots
+
+    metadata = branch.branch_metadata()
+    summary = read_branch_snapshots(
+        history, [(metadata.branch_id, metadata.episode_id, metadata.project_id)]
+    )[metadata.branch_id]
+    assert summary is not None and summary.state.replay_status == "degraded"
 
     (history.root / "scope-base.json").unlink()
     engine = history.history_engine
