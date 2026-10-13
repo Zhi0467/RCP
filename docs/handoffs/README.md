@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-- [Unified tab refresh](unified-tab-refresh.md): implementation in progress (store and scheduler core done).
+- [Unified tab refresh](unified-tab-refresh.md): all slices implemented; remaining: live SSH-host measurement and review fixes.
 
 Unfinished agent-link work is tracked in issue #280.
 
