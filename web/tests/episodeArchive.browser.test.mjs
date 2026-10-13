@@ -170,7 +170,16 @@ test("active and unresolved episodes archive without stopping work and restore a
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("requestfailed", (request) => {
+      // An archive fences the run reads it supersedes; that abort is deliberate.
+      const path = new URL(request.url()).pathname;
+      if (
+        /\/(episodes|experiment-episodes)$/.test(path) &&
+        request.failure()?.errorText === "net::ERR_ABORTED"
+      )
+        return;
+      errors.push(request.failure()?.errorText);
+    });
     const nodes = {
       main: node("experiment/main", "Measure transfer"),
       child: node("experiment/child", "Reproduce the baseline"),

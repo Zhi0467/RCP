@@ -119,7 +119,7 @@ union drives one capture every 10 seconds per canonical remote workspace. Tab
 activation bypasses the cadence and coalesces one follow-up during a capture.
 Shutdown drains transfer workers. Graph, branch, chat, Paper, and settings tokens
 advance from changed paths, including deletions; an unchanged capture changes only
-sync health. Local state retains its direct read path and publication counters,
+sync health, which graph tokens fold in as reachability. Local state retains its direct read path and publication counters,
 without background sync or copied generations.
 
 Captures and authoritative write publications share one sequencing owner. Graph

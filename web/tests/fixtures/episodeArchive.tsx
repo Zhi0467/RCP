@@ -27,7 +27,8 @@ function Fixture() {
   const tabs = useProjectTabs({
     initialProjectId: projectId,
     initialSetupOpen: false,
-    projectIndexReady: false,
+    // A ready backend session is what lets the experiment index load.
+    projectIndexReady: true,
     project: null,
     reportError: setError,
   });

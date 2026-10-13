@@ -1,3 +1,4 @@
+import { ResourceRuntime } from "./resourceRuntime";
 import { useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -130,10 +131,18 @@ function Fixture() {
 }
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<Fixture />);
+root.render(
+  <ResourceRuntime>
+    <Fixture />
+  </ResourceRuntime>,
+);
 
 /** Leaves and reopens Agents, as switching project tabs does. */
 export function remountAgents() {
   flushSync(() => root.render(<></>));
-  root.render(<Fixture />);
+  root.render(
+    <ResourceRuntime>
+      <Fixture />
+    </ResourceRuntime>,
+  );
 }

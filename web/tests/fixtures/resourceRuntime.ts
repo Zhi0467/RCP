@@ -4,6 +4,12 @@ import { bindArtifactResourceStore } from "../../src/artifacts/artifactViewerMod
 import { ResourceStore } from "../../src/core/resourceStore";
 import { RefreshScheduler } from "../../src/core/refreshScheduler";
 export const store = new ResourceStore();
+let activeProject: string | null = null;
+/** Marks the fixture's shown project active, as the app does for its routed tab. */
+export function activateProject(projectId: string | null): void {
+  activeProject = projectId;
+  store.setActiveProject(projectId);
+}
 export const runtime = {
   store,
   scheduler: new RefreshScheduler({
@@ -11,7 +17,7 @@ export const runtime = {
     clientId: "fixture",
     openProjects: () =>
       [...store.awaitingWatermark()].map((projectId) => ({ projectId, currentRef: "main" })),
-    activeProjectId: () => null,
+    activeProjectId: () => activeProject,
     onLostAccess: () => {},
     send: async (request) => ({
       epoch: "fixture",

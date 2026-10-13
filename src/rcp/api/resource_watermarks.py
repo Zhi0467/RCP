@@ -253,6 +253,10 @@ def resource_watermarks(
         project_id: catalog.content_generations(project_id, names)
         for project_id, names in families.items()
     }
+    health = {
+        project_id: SyncHealth.model_validate(coordinator.sync_health(project_id))
+        for project_id in {aliases[requested_id] for requested_id in due if requested_id in aliases}
+    }
     resources: dict[str, list[ResourceVersion]] = {}
     for index, (requested_id, project_id, key) in enumerate(keys):
         elapsed, upcoming = boundaries[index]
@@ -263,6 +267,9 @@ def resource_watermarks(
             if key.name == "terminals"
             else ""
         )
+        # The graph snapshot embeds canonical reachability, which moves with
+        # sync errors while the published content generation stays put.
+        reachable = health[project_id].error is None if key.name == "graph" else None
         token = hashlib.sha256(
             json.dumps(
                 [
@@ -276,6 +283,7 @@ def resource_watermarks(
                     elapsed,
                     file_version,
                     runtime_version,
+                    reachable,
                 ]
             ).encode()
         ).hexdigest()
@@ -296,7 +304,7 @@ def resource_watermarks(
                 requested_id=project_id,
                 project_id=aliases[project_id],
                 resources=resources.get(project_id, []),
-                sync=SyncHealth.model_validate(coordinator.sync_health(aliases[project_id])),
+                sync=health[aliases[project_id]],
             )
             for project_id in due
             if project_id in aliases

@@ -363,6 +363,7 @@ import {
   activeBranchMergeTask,
   isExperimentLoopRecovery,
   retryProfileKind,
+  taskActionNeedsAuthoritativeProjectReload,
   taskRetryConfig,
   taskRetryRequestBody,
 } from "./taskRecovery";
@@ -821,6 +822,14 @@ function MemberApp({
   // Activation keeps the previous snapshot on screen, inert, until the target
   // paints. The held copy is never cached or drafted against.
   const [heldRefProject, setHeldRefProject] = useState<ProjectSnapshot | null>(null);
+  const displayedProjectRef = useRef<ProjectSnapshot | null>(null);
+  // A changed backend brings a new, empty store; hold what was on screen
+  // until the new backend paints it, as an activation does.
+  const [displayedStore, setDisplayedStore] = useState(store);
+  if (displayedStore !== store) {
+    setDisplayedStore(store);
+    setHeldRefProject(displayedProjectRef.current);
+  }
   const settingsResource = useProjectResource(
     backendSessionReady && projectId ? settingsProfile(projectId) : null,
   );
@@ -838,7 +847,6 @@ function MemberApp({
         : baseProject,
     [baseProject, settingsResource.value],
   );
-  const displayedProjectRef = useRef(project);
   displayedProjectRef.current = project;
   const graph = project?.graph ?? emptyGraph;
   const paperResource = useResource(
@@ -948,11 +956,14 @@ function MemberApp({
   const tabRefs = useRef(new Map<string, string>());
   const currentRef = graphTarget.kind === "main" ? "main" : `branch:${graphTarget.branch_id}`;
   if (projectId) tabRefs.current.set(projectId, currentRef);
+  // The routed project is open before its first snapshot adds its dock tab.
+  const openProjectIds = new Set(openProjectTabs.map((tab) => tab.id));
+  if (projectId) openProjectIds.add(projectId);
   refreshBindings.current = {
     open: backendSessionReady
-      ? openProjectTabs.map((tab) => ({
-          projectId: tab.id,
-          currentRef: tabRefs.current.get(tab.id) ?? "main",
+      ? [...openProjectIds].map((id) => ({
+          projectId: id,
+          currentRef: tabRefs.current.get(id) ?? "main",
         }))
       : [],
     active: backendSessionReady ? projectId : null,
@@ -3259,9 +3270,17 @@ function MemberApp({
         taskActionRequestIds.current.delete(admissionKey);
       mutation.fail(error);
     } finally {
+      if (taskActionNeedsAuthoritativeProjectReload(task, action)) await refreshRunsAfter();
       finish();
     }
   };
+
+  // Experiment recovery stays busy until Runs shows the server's control state,
+  // so a stale control cannot offer the same recovery again.
+  const refreshRunsAfter = () =>
+    reload().catch((error) =>
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) }),
+    );
 
   const operateEpisodeOrchestratorTask = async (
     task: AgentTask,
@@ -3343,6 +3362,7 @@ function MemberApp({
         taskActionRequestIds.current.delete(admissionKey);
       mutation.fail(error);
     } finally {
+      if (taskActionNeedsAuthoritativeProjectReload(task, "retry")) await refreshRunsAfter();
       finish();
     }
   };

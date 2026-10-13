@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { watermarkResponse } from "./watermarks.mjs";
 
 let server;
 let browser;
@@ -60,6 +61,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     reconnectLoads: 0,
     reconnectObservations: 0,
     reconnectRequested: Promise.withResolvers(),
+    graphVersion: 0,
     graphRefs: options.graphRefs === undefined ? [] : options.graphRefs,
     branchGate: options.branchGate ?? null,
     chats: options.chats ?? [],
@@ -137,7 +139,14 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     state.requests.push(branchId ? `${path}?branch_id=${branchId}` : path);
     const projectId = path.split("/")[3];
     let json = [];
-    if (path === "/api/health" || path === "/api/health/details") {
+    if (path === "/api/resource-watermarks") {
+      if (state.connected) state.reconnectObservations++;
+      // Reachability is part of the graph token, as on the server.
+      json = watermarkResponse(route.request().postDataJSON(), {
+        version: (_id, resource) =>
+          resource.name === "graph" ? `${state.connected}:${state.graphVersion}` : "v1",
+      });
+    } else if (path === "/api/health" || path === "/api/health/details") {
       if (!state.health) return route.abort();
       json = state.health;
     } else if (path === "/api/team/session/exchange") {
@@ -189,8 +198,11 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       if (branchId && state.branchGate) await state.branchGate.promise;
       if (!state.admitted) return route.fulfill({ status: 403, json: { detail: "denied" } });
       json = snapshot;
-    } else if (path.endsWith("/readiness")) json = project(projectId);
-    else if (path.endsWith("/revision")) {
+    } else if (path.endsWith("/readiness")) {
+      const { providers, provider_readiness, provider_skill_inventories, agent_profiles } =
+        project(projectId);
+      json = { providers, provider_readiness, provider_skill_inventories, agent_profiles };
+    } else if (path.endsWith("/revision")) {
       if (state.connected) state.reconnectObservations++;
       json = {
         revision: 1,
@@ -239,6 +251,9 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   const authoritativeLoaded = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/projects/demo",
   );
+  // A test that never reaches these reads must not fail when its page closes.
+  readinessLoaded.catch(() => {});
+  authoritativeLoaded.catch(() => {});
   await page.goto(`${origin}/#/projects/demo?view=overview`);
   return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
@@ -323,18 +338,16 @@ test(
     state.health = HEALTH;
     state.requests = [];
     state.identityGate = Promise.withResolvers();
-    const reconciled = page.waitForResponse((response) =>
-      new URL(response.url()).pathname.endsWith("/api/projects/demo"),
-    );
     await reverify(page);
     assert.equal(await shellStillMounted(page), true);
     assert.equal(await page.getByRole("alertdialog").isVisible(), true);
-    assert.equal(state.requests.filter((path) => path === "/api/projects/demo").length, 0);
     state.identityGate.resolve();
     await page.getByRole("alertdialog").waitFor({ state: "detached" });
-    await reconciled;
-    await page.locator(".project-reconciliation").waitFor({ state: "detached" });
-    assert.equal(state.requests.filter((path) => path === "/api/projects/demo").length, 1);
+    // The same backend's unchanged watermarks need no project reread.
+    await page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/resource-watermarks",
+    );
+    assert.equal(state.requests.filter((path) => path === "/api/projects/demo").length, 0);
     assert.equal(await shellStillMounted(page), true);
     assert.equal(await page.evaluate(() => window.__sawLoadingScreen), false);
     assert.equal(state.requests.filter((path) => path.endsWith("/cached")).length, 0);
@@ -474,8 +487,8 @@ for (const signInAgain of [true, false]) {
           }
         }).observe(document.body, { childList: true, subtree: true, characterData: true });
       });
-      const requested = page.waitForRequest((request) =>
-        new URL(request.url()).pathname.endsWith("/cached"),
+      const requested = page.waitForRequest(
+        (request) => new URL(request.url()).pathname === "/api/projects/demo",
       );
       if (signInAgain) await signIn(page);
       else await reverify(page);
@@ -491,7 +504,7 @@ for (const signInAgain of [true, false]) {
       state.admitted = true;
       state.projectGate = Promise.withResolvers();
       const secondRequested = page.waitForRequest(
-        (request) => new URL(request.url()).pathname === "/api/projects/second/cached",
+        (request) => new URL(request.url()).pathname === "/api/projects/second",
       );
       await page.evaluate(() => {
         window.location.hash = "/projects/second?view=overview";
@@ -519,6 +532,8 @@ test(
     await page.getByRole("alertdialog").waitFor();
     state.projectStatus = 503;
     state.health = HEALTH;
+    // The project changed while the backend was out of reach.
+    state.graphVersion += 1;
     const refused = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/projects/demo",
     );
@@ -534,7 +549,8 @@ test(
     state.projectStatus = 200;
     state.health = HEALTH;
     const recovered = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/projects/demo",
+      (response) =>
+        new URL(response.url()).pathname === "/api/projects/demo" && response.status() === 200,
     );
     await reverify(page);
     await recovered;
@@ -556,33 +572,27 @@ test("browser reload restores the route through fresh admission", { timeout: 200
   assert.equal(await page.locator(".app-shell").count(), 0);
   assert.match(await page.evaluate(() => window.location.hash), /^#\/projects\/demo/);
   assert.ok(state.requests.includes("/api/identity"));
-  assert.ok(state.requests.includes("/api/projects/demo/cached"));
+  assert.ok(state.requests.includes("/api/projects/demo"));
 });
 
 test(
-  "a reconciliation interrupted by another identity check drops its late snapshot",
+  "a read interrupted by a backend change drops its late snapshot",
   { timeout: 20000 },
   async (t) => {
     const { page, state } = await openedShell(t);
-    state.health = null;
-    await reverify(page);
-    await page.getByRole("alertdialog").waitFor();
     state.projectName = "Interrupted response";
     state.projectGate = Promise.withResolvers();
-    state.health = HEALTH;
     const started = page.waitForRequest(
       (request) => new URL(request.url()).pathname === "/api/projects/demo",
     );
-    await reverify(page);
-    await started;
-    state.health = null;
+    state.graphVersion += 1;
+    const request = await started;
+    state.health = { ...HEALTH, instance_id: "replacement" };
     await reverify(page);
     await page.getByRole("alertdialog").waitFor();
-    const lateResponse = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/projects/demo",
-    );
     state.projectGate.resolve();
-    await (await lateResponse).finished();
+    // The late read either lands or was aborted with its backend.
+    await request.response();
     await page.evaluate(() => new Promise(requestAnimationFrame));
     assert.equal(
       await page
@@ -593,8 +603,10 @@ test(
     );
     assert.equal(await shellStillMounted(page), true);
     state.projectName = "Current response";
-    state.health = HEALTH;
-    await reverify(page);
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Reconnect", exact: true })
+      .click();
     await page.locator(".project-dock-select").filter({ hasText: "Current response" }).waitFor();
     assert.equal(await shellStillMounted(page), true);
   },
@@ -895,12 +907,10 @@ test(
 );
 
 test(
-  "branch prefetch is serial, skips archives, and supplies instant first switches",
+  "unvisited branches are never warmed and a revisited branch paints at once",
   { timeout: 25000 },
   async (t) => {
-    const gate = Promise.withResolvers();
     const { page, state } = await openedShell(t, {
-      branchGate: gate,
       graphRefs: [
         mainRef(),
         branchRef("first"),
@@ -908,34 +918,28 @@ test(
         { ...branchRef("archived"), archived: true },
       ],
     });
-    await state.branchRequested.promise;
-    // The first branch request remains pending; no second branch may start yet.
-    await picker(page).click();
+    // Let a few beats pass; none may read an unvisited branch.
+    for (let beat = 0; beat < 2; beat++)
+      await page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/api/resource-watermarks",
+      );
     assert.equal(
-      state.requests.filter((path) => /^\/api\/projects\/demo(?:\/cached)?\?branch_id=/.test(path))
-        .length,
-      1,
-    );
-    await page.keyboard.press("Escape");
-    const second = page.waitForResponse(
-      (response) => new URL(response.url()).searchParams.get("branch_id") === "second",
-    );
-    state.branchGate = null;
-    gate.resolve();
-    await (await second).finished();
-    await page.evaluate(() => new Promise(requestAnimationFrame));
-    assert.equal(
-      state.requests.some((path) => path.includes("branch_id=archived")),
+      state.requests.some((path) => path.includes("branch_id=")),
       false,
     );
-    state.branchGate = Promise.withResolvers();
     await switchBranch(page, "second");
     await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
     await branchShown(page, "second");
     await switchBranch(page, "main");
+    await branchShown(page, "main");
+    state.branchGate = Promise.withResolvers();
     await switchBranch(page, "second");
     assert.equal(await page.locator(".project-panel[inert]").count(), 0);
     assert.equal(await page.evaluate(() => window.__sawLoadingScreen), false);
+    assert.equal(
+      state.requests.some((path) => /branch_id=(first|archived)/.test(path)),
+      false,
+    );
     state.branchGate.resolve();
   },
 );

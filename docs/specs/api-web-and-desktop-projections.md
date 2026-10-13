@@ -24,7 +24,9 @@ lifetime without invalidating its inventory; retirement publishes the change.
 Question liveness renews its deadline without advancing the counter until it
 returns from not waiting to waiting. Publication failures are logged and do not
 fail the ask. Experiment runtime and report changes invalidate the graph
-control payload; unrelated episode ledgers do not.
+control payload; unrelated episode ledgers do not. Graph tokens also fold in
+whether the project's sync health reports an error, because the graph payload
+carries canonical reachability.
 Entity counters are keyed by project, and chat read/pin counters by member.
 
 Each response captures one `as_of`. Tokens fold in the latest elapsed deadline,

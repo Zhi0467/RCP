@@ -3,6 +3,16 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+// The server moves the artifacts token when the list changes.
+const artifactsChanged = (page, version) =>
+  page.evaluate(
+    async (next) =>
+      (await import("/tests/fixtures/resourceRuntime.ts")).store.observe("project", [
+        { name: "artifacts", version: next },
+      ]),
+    version,
+  );
+
 test("Artifacts lists durable entries, refreshes and retries failures", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
@@ -98,7 +108,7 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         graph_branch_name: "main",
       })),
     );
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await artifactsChanged(page, "listed");
     await page.getByRole("link", { name: "Open Validation report" }).waitFor();
     await page.getByRole("link", { name: "Open originating chat for Validation report" }).waitFor();
 
@@ -195,6 +205,13 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       () => document.querySelector(".artifacts-view button")?.title === "Refresh artifacts",
     );
     await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
+    for (const view of ["file", "pdf"]) {
+      const row = page
+        .locator(".artifact-entry")
+        .filter({ has: page.locator(`a[download="${view}.dat"]`) });
+      assert.equal(await row.locator("p").count(), 0);
+      assert.equal(await row.locator("a[download]").count(), 1);
+    }
     await page.evaluate(() => {
       window.previewCalls = [];
       window.__TAURI_INTERNALS__ = {
@@ -246,15 +263,8 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       await page.keyboard.press("Enter");
       assert.equal(new URL(page.url()).hash, entries[1].source_chat_href);
     }
-    for (const view of ["file", "pdf"]) {
-      const row = page
-        .locator(".artifact-entry")
-        .filter({ has: page.locator(`a[download="${view}.dat"]`) });
-      assert.equal(await row.locator("p").count(), 0);
-      assert.equal(await row.locator("a[download]").count(), 1);
-    }
     // A refresh reprojects the existing rows after entering the desktop runtime.
-    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await artifactsChanged(page, "desktop");
     await page.getByRole("button", { name: "Open pdf.dat", exact: true }).click();
     await page.waitForFunction(() => window.previewCalls.length === 1);
     assert.deepEqual(await page.evaluate(() => window.previewCalls[0]), {
@@ -578,6 +588,7 @@ test("viewer persists placement and follows an edit through publication and Undo
       .click();
     await panel.getByRole("status").waitFor();
     state = viewerState("plot", 2);
+    await artifactsChanged(page, "published");
     await page.frameLocator(".artifact-viewer iframe").getByText("2", { exact: true }).waitFor();
     await panel.getByRole("status").waitFor({ state: "detached" });
     await panel.getByRole("button", { name: "Undo" }).click();
@@ -751,6 +762,8 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
       const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
+      const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
       const profile = {
         provider: "codex",
         model: "",
@@ -773,51 +786,55 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       const container = document.createElement("main");
       document.body.prepend(container);
       createRoot(container).render(
-        React.createElement(NodeChat, {
-          project: {
-            id: "project",
-            name: "Project",
-            agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
-            repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
-            project_truth_scope: ["repo"],
-            state_repository: "repo",
-            machines: [{ alias: "local", host: null }],
-            provider_readiness: {
-              local: {
-                codex: { provider: "codex", installed: true, authenticated: true, models: [] },
+        React.createElement(
+          RefreshRuntimeContext.Provider,
+          { value: runtime },
+          React.createElement(NodeChat, {
+            project: {
+              id: "project",
+              name: "Project",
+              agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+              repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
+              project_truth_scope: ["repo"],
+              state_repository: "repo",
+              machines: [{ alias: "local", host: null }],
+              provider_readiness: {
+                local: {
+                  codex: { provider: "codex", installed: true, authenticated: true, models: [] },
+                },
               },
             },
-          },
-          graphTarget: { kind: "main" },
-          node: null,
-          runScope: ["repo"],
-          tasks: [],
-          chatId: "error-chat",
-          presentation: "workspace",
-          historyMessages: [
-            {
-              message_id: "reply",
-              operation_id: "answer-task",
-              role: "assistant",
-              text: "![Page](/stage/chats/c/turns/answer-task/artifacts/page.html)",
-              timestamp: "2026-09-02T12:00:00Z",
-              mode: "discuss",
-              provider: "codex",
-              trigger: "human",
+            graphTarget: { kind: "main" },
+            node: null,
+            runScope: ["repo"],
+            tasks: [],
+            chatId: "error-chat",
+            presentation: "workspace",
+            historyMessages: [
+              {
+                message_id: "reply",
+                operation_id: "answer-task",
+                role: "assistant",
+                text: "![Page](/stage/chats/c/turns/answer-task/artifacts/page.html)",
+                timestamp: "2026-09-02T12:00:00Z",
+                mode: "discuss",
+                provider: "codex",
+                trigger: "human",
+              },
+            ],
+            onRefreshTask: async () => ({ result: { artifacts: [artifact] } }),
+            onStartTask: async () => {
+              window.errorTestSent = true;
             },
-          ],
-          onRefreshTask: async () => ({ result: { artifacts: [artifact] } }),
-          onStartTask: async () => {
-            window.errorTestSent = true;
-          },
-          onInspectTask() {},
-          onOpenInbox() {},
-          onRepairGraphUpdate: async () => {},
-          onNewSession() {},
-          onClose() {},
-          onResumeTask() {},
-          onRetryTask() {},
-        }),
+            onInspectTask() {},
+            onOpenInbox() {},
+            onRepairGraphUpdate: async () => {},
+            onNewSession() {},
+            onClose() {},
+            onResumeTask() {},
+            onRetryTask() {},
+          }),
+        ),
       );
     });
     const embed = page.locator('.chat-inline-artifact[data-artifact-id="plot"]');
