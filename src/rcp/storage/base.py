@@ -95,6 +95,7 @@ class AppStoreBase:
         (45, "client_requests_v1"),
         (46, "repository_provisioning_contracts_v1"),
         (47, "branch_names_v1"),
+        (48, "graph_seen_heads_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -825,6 +826,9 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection, version=47, name="branch_names_v1", migration=migrate_branch_names
         )
+        self._run_storage_schema_migration(
+            connection, version=48, name="graph_seen_heads_v1", migration=_migrate_graph_seen_heads
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
@@ -1249,15 +1253,6 @@ class AppStoreBase:
                 ON chat_session_contexts(project_id);
             CREATE INDEX IF NOT EXISTS chat_session_contexts_native_session
                 ON chat_session_contexts(native_session_id);
-            CREATE TABLE IF NOT EXISTS graph_seen_heads (
-                project_id TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
-                native_session_id TEXT NOT NULL,
-                graph_target TEXT NOT NULL,
-                head_json TEXT NOT NULL,
-                committed_operation_id TEXT NOT NULL,
-                PRIMARY KEY(project_id, owner_id, native_session_id, graph_target)
-            );
             CREATE TABLE IF NOT EXISTS result_views (
                 view_id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -3824,3 +3819,15 @@ class AppStoreBase:
     @staticmethod
     def now() -> str:
         return datetime.now(UTC).isoformat()
+
+
+def _migrate_graph_seen_heads(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE IF NOT EXISTS graph_seen_heads (
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        native_session_id TEXT NOT NULL,
+        graph_target TEXT NOT NULL,
+        head_json TEXT NOT NULL,
+        committed_operation_id TEXT NOT NULL,
+        PRIMARY KEY(project_id, owner_id, native_session_id, graph_target)
+    )""")
