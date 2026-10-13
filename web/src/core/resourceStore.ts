@@ -86,6 +86,8 @@ interface ResourceState {
 
 export const RESOURCE_READ_SLOTS = 3;
 export const RESOURCE_BACKGROUND_READ_SLOTS = 1;
+// A stalled read must free its slot and enter retry backoff.
+export const RESOURCE_READ_TIMEOUT_MS = 30_000;
 export const RESOURCE_RETRY_BACKOFF_MS = [3000, 6000, 12_000, 30_000] as const;
 
 export function resourceKeyId(key: ResourceKey): string {
@@ -393,8 +395,18 @@ export class ResourceStore {
     state.inFlight = controller;
     this.running += 1;
     if (background) this.runningBackground += 1;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error("Resource read timed out");
+        controller.abort(error);
+        reject(error);
+      }, RESOURCE_READ_TIMEOUT_MS);
+      // Node test runs must not wait on an abandoned read's deadline.
+      (timer as { unref?: () => void }).unref?.();
+    });
     try {
-      const value = await state.profile.fetch(controller.signal);
+      const value = await Promise.race([state.profile.fetch(controller.signal), timeout]);
       if (this.accepts(state, generation, sequence)) {
         state.value = state.profile.reconcile
           ? state.profile.reconcile(
@@ -422,6 +434,7 @@ export class ResourceStore {
         this.changed(state);
       }
     } finally {
+      clearTimeout(timer);
       if (state.inFlight === controller) state.inFlight = null;
       this.running -= 1;
       if (background) this.runningBackground -= 1;

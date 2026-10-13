@@ -9,7 +9,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+const { ResourceStore, RESOURCE_READ_TIMEOUT_MS, resourceKeyId } = await server.ssrLoadModule(
+  "/src/core/resourceStore.ts",
+);
 const { RefreshScheduler } = await server.ssrLoadModule("/src/core/refreshScheduler.ts");
 after(() => server.close());
 
@@ -479,4 +481,20 @@ test("an unavailable project loses its data and its tab", async () => {
   assert.equal(active, null);
   assert.equal(viewports.has("gone"), false);
   assert.equal(store.view(id).loading, true);
+});
+
+test("a stalled read times out and frees its slot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = new ResourceStore();
+  store.setActiveProject("p");
+  const stalled = ["a", "b", "c"].map((name) =>
+    store.register("tab", { key: key(name), fetch: () => new Promise(() => {}) }),
+  );
+  const { reads, profile } = manualProfile("d");
+  store.register("tab", profile);
+  assert.equal(reads.length, 0);
+  t.mock.timers.tick(RESOURCE_READ_TIMEOUT_MS);
+  await settle();
+  assert.equal(reads.length, 1);
+  assert.ok(store.view(stalled[0]).stale);
 });
