@@ -2045,7 +2045,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
         staged_mailboxes.append(staged)
         return staged
 
-    original_serve = auto_research_stream_module._serve_worker_commands
+    original_serve = auto_research_stream_module._serve_auto_research_commands
 
     async def tracked_serve(*args, **kwargs):
         turn_id = str(kwargs["expected_turn_id"])
@@ -2059,7 +2059,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
         raise ValueError("prompt failed after command mailbox staging")
 
     monkeypatch.setattr(auto_research_stream_module, "stage_command_mailbox", capture_mailbox)
-    monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", tracked_serve)
+    monkeypatch.setattr(auto_research_stream_module, "_serve_auto_research_commands", tracked_serve)
     monkeypatch.setattr(auto_research_stream_module, "_worker_prompt", fail_prompt)
 
     events = await _worker_events(service, _WorkerLauncher(), store, worker, tmp_path / "data")
@@ -2104,7 +2104,7 @@ async def test_main_mailbox_preserves_prompt_failure_over_server_and_cleanup_fai
         raise ValueError("primary prompt failure")
 
     monkeypatch.setattr(auto_research_stream_module, "stage_command_mailbox", capture_mailbox)
-    monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", fail_serve)
+    monkeypatch.setattr(auto_research_stream_module, "_serve_auto_research_commands", fail_serve)
     monkeypatch.setattr(auto_research_stream_module, "_worker_prompt", fail_prompt)
     monkeypatch.setattr(StagedCommandMailbox, "cleanup", fail_cleanup)
 
@@ -2903,7 +2903,7 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
         staged_mailboxes.append(staged)
         return staged
 
-    original_serve = auto_research_stream_module._serve_worker_commands
+    original_serve = auto_research_stream_module._serve_auto_research_commands
 
     async def tracked_serve(*args, **kwargs):
         turn_id = str(kwargs["expected_turn_id"])
@@ -2927,7 +2927,7 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
         )
 
     monkeypatch.setattr(auto_research_stream_module, "stage_command_mailbox", capture_mailbox)
-    monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", tracked_serve)
+    monkeypatch.setattr(auto_research_stream_module, "_serve_auto_research_commands", tracked_serve)
     monkeypatch.setattr(
         auto_research_stream_module,
         "_record_agent_launch_receipt",

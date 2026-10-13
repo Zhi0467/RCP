@@ -554,3 +554,19 @@ def test_stateful_projection_starts_at_requested_predecessor(history, monkeypatc
     summaries = history.revision_summaries(from_revision=latest.revision)
     assert [item["to_revision"] for item in summaries] == [latest.revision]
     assert calls == [latest.revision - 1]
+
+
+def test_replay_validation_halt_keeps_a_readable_prefix(history):
+    engine = history.history_engine
+    history.append(_branch_patch("ev/later"))
+    history.append(_branch_patch("ev/third"))
+    path = history._patch_paths()[-1]
+    # A decodable Patch that no longer replays: it recreates an existing node.
+    path.write_text(path.read_text().replace("ev/third", "ev/later"))
+
+    result, steps = engine.projection(GraphTargetRef())
+    assert result.state.replay_status == "degraded"
+    assert result.state.revision == 2
+    assert [step.patch.revision for step in steps] == [1, 2]
+    assert "ev/later" in engine.state_at(head(engine, "main@2")).nodes
+    assert engine.log("ev/later", head(engine, "main@2")).entries

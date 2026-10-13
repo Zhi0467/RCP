@@ -431,7 +431,10 @@ class ProjectHistoryEngine:
                 context=build_validation_context(source.manifest, initial, mode="replay"),
                 accepted_patch_observer=observe if stored_index is None else None,
             )
-            self.manager.require_writable(tail.state)
+            # A halted replay keeps its coherent prefix as a read-only generation.
+            halted = tail.state.replay_status == "degraded"
+            if halted:
+                chunk = [patch for patch in chunk if patch.revision <= tail.state.revision]
             current = previous.state
             for patch in chunk:
                 transition = (
@@ -482,6 +485,8 @@ class ProjectHistoryEngine:
                 {**previous.processed_cursors, **tail.processed_cursors},
                 [*previous.patches, *tail.patches],
             )
+            if halted:
+                break
             if tail.state.revision % stride == 0:
                 checkpoints[tail.state.revision] = tail.state
                 if self.store and self.checkpoint_interval:
