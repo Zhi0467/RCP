@@ -95,6 +95,7 @@ from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
+    merge_prepared_graph_observation_delta,
     prepare_graph_observation,
     record_inline_prompt,
     record_session_master,
@@ -614,7 +615,7 @@ async def stream_auto_research_worker_run(
         async with _worker_mailbox_lifecycle(
             staged_commands,
             execution=execution,
-            start=lambda stop: _serve_worker_commands(
+            start=lambda stop: _serve_auto_research_commands(
                 staged_commands,
                 execution=execution,
                 turn=turn,
@@ -1454,7 +1455,6 @@ def _actor_launch_prompt(
     values: dict[str, object],
     ontology_extensions: bool,
     staged_head: GraphHeadRef | None = None,
-    owner_id: str | None = None,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
     fresh_parts: tuple[str, ...] = (),
 ) -> tuple[str, str, MasterRef]:
@@ -1501,13 +1501,8 @@ def _actor_launch_prompt(
     # retires it and sends the agent back to its operational master.
     held = replace(master, after_report=True) if after_report else master
     delta = changed_since_master(master, values) or {}
-    if staged_head is not None and owner_id is not None:
-        task = execution.store.agent_task(execution.operation_id)
-        assert task is not None
-        seen = execution.store.graph_seen_head(
-            task.project_id, owner_id, session_id, staged_head.target
-        )
-        delta.update(graph_head_delta(seen, staged_head))
+    if staged_head is not None:
+        delta = merge_prepared_graph_observation_delta(delta, execution, session_id)
     prompt = compose(node, parts=parts, master=held, delta=delta)
     contract_path = record_inline_prompt(
         execution,
@@ -1658,7 +1653,6 @@ def _orchestrator_prompt(
         browser_grant=browser_grant,
         values=values,
         staged_head=staged_head,
-        owner_id=_actor_seen_owner(turn),
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
@@ -1777,7 +1771,6 @@ def _worker_prompt(
         browser_grant=browser_grant,
         values=values,
         staged_head=staged_head,
-        owner_id=_actor_seen_owner(turn),
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
@@ -1794,29 +1787,6 @@ def _worker_prompt(
         continuation_parts=continuation_parts,
     )
     return contract_path, prompt, master, values
-
-
-async def _serve_worker_commands(
-    staged: StagedCommandMailbox,
-    *,
-    execution: AgentTaskExecution,
-    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
-    dispatcher: AutoResearchCommandDispatcher,
-    stop: asyncio.Event,
-    expected_turn_id: str,
-    service: ProjectService | None = None,
-    graph_read_scope: GraphReadScope | None = None,
-) -> None:
-    await _serve_auto_research_commands(
-        staged,
-        execution=execution,
-        turn=turn,
-        dispatcher=dispatcher,
-        stop=stop,
-        expected_turn_id=expected_turn_id,
-        service=service,
-        graph_read_scope=graph_read_scope,
-    )
 
 
 async def _serve_auto_research_commands(
@@ -2191,11 +2161,7 @@ async def _settle_worker_patch(
             correction_mailbox,
             execution=execution,
             start=lambda stop, mailbox=correction_mailbox, round_number=correction_rounds, scope=graph_read_scope: (
-                (
-                    _serve_worker_commands
-                    if _actor_role == "worker"
-                    else _serve_auto_research_commands
-                )(
+                _serve_auto_research_commands(
                     mailbox,
                     execution=execution,
                     turn=turn,

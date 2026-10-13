@@ -53,6 +53,7 @@ from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
     prepare_graph_observation,
+    prepared_graph_observation_delta,
     record_inline_prompt,
     record_session_master,
 )
@@ -824,16 +825,6 @@ async def stream_graph_run(
                 revision=context.graph_revision,
                 native_session_id=request.session_id,
             )
-            seen_head = (
-                execution.store.graph_seen_head(
-                    graph_read_scope.project_id,
-                    "graph",
-                    request.session_id,
-                    graph_read_scope.target,
-                )
-                if execution is not None and request.session_id
-                else None
-            )
             validator_command = validator_staged.client_command("validate", patch_path)
             read_dirs = _agent_read_dirs(context, remote_stage, service, execution_machine.alias)
             if (
@@ -906,6 +897,11 @@ async def stream_graph_run(
                 ),
                 None,
             )
+            observation_delta = (
+                graph_head_delta(refresh_head, staged_head)
+                if refresh_head is not None
+                else prepared_graph_observation_delta(execution, request.session_id)
+            )
             if refresh_head is not None:
                 base_contract_content += (
                     f"\n\ncurrent.graph_changed_since: {format_head(refresh_head)}"
@@ -958,7 +954,7 @@ async def stream_graph_run(
                     master=master,
                     delta={
                         **(changed_since_master(master, graph_master_values) or {}),
-                        **graph_head_delta(refresh_head or seen_head, staged_head),
+                        **observation_delta,
                     },
                 )
                 contract_path = record_inline_prompt(
@@ -1373,7 +1369,7 @@ async def stream_graph_run(
                 master=master,
                 delta={
                     **(changed_since_master(master, graph_master_values) or {}),
-                    **graph_head_delta(refresh_head or seen_head, staged_head),
+                    **observation_delta,
                 },
             )
             contract_path = record_inline_prompt(

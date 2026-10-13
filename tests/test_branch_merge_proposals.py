@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,13 @@ def review_branch(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, req
 
         monkeypatch.setattr(merge_api, "append_fixture_patch", append_accepted_seed)
     return merge_api._create_branch_harness(manifest, tmp_path, change="none")
+
+
+def _review_steps(harness, patches):
+    record = harness.service.history_engine.steps(harness.branch.head_ref())[-1]
+    return [
+        replace(record, patch=patch, accepted=patch.admission == "accepted") for patch in patches
+    ]
 
 
 def _human_patch(harness, *ops):
@@ -660,7 +668,9 @@ def test_merge_cannot_claim_agent_standing_as_a_human_source_fact(review_branch,
         ops=[{"op": "set_standing", "node_id": "blk/merge-ready", "standing": "accepted"}],
     )
     assert (
-        branch_human_review_changes([rejected], harness.branch.base_state(), harness.branch.state())
+        branch_human_review_changes(
+            _review_steps(harness, [rejected]), harness.branch.base_state(), harness.branch.state()
+        )
         == []
     )
     before = harness.service.history.state()
@@ -905,7 +915,8 @@ def test_human_review_fact_retires_when_an_agent_writes_the_field_last(review_br
     assert branch.nodes["hyp/review"].standing == "accepted"
     assert human.revision > base_revision
     assert [
-        change.operation.standing for change in branch_human_review_changes([human], base, branch)
+        change.operation.standing
+        for change in branch_human_review_changes(_review_steps(harness, [human]), base, branch)
     ] == ["accepted"]
     # A later non-human writer owns the field even when it restores the human's value.
     agent_writes = [
@@ -921,9 +932,14 @@ def test_human_review_fact_retires_when_an_agent_writes_the_field_last(review_br
         )
         for offset, standing in ((1, "asserted"), (2, "accepted"))
     ]
-    assert branch_human_review_changes([human, *agent_writes], base, branch) == []
+    assert (
+        branch_human_review_changes(_review_steps(harness, [human, *agent_writes]), base, branch)
+        == []
+    )
     later_human = human.model_copy(update={"revision": human.revision + 3})
     assert [
         change.operation.standing
-        for change in branch_human_review_changes([human, *agent_writes, later_human], base, branch)
+        for change in branch_human_review_changes(
+            _review_steps(harness, [human, *agent_writes, later_human]), base, branch
+        )
     ] == ["accepted"]

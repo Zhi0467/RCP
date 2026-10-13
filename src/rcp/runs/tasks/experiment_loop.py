@@ -122,8 +122,8 @@ from rcp.runs.session_master import (
     SESSION_MASTER_ROLE,
     commit_prepared_graph_observation,
     continuation_session_master,
+    merge_prepared_graph_observation_delta,
     prepare_graph_observation,
-    prepared_graph_observation_delta,
     record_inline_prompt,
     record_session_master,
     recorded_master_values,
@@ -902,13 +902,7 @@ def _record_continuation_prompt(
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
-    observed = prepared_graph_observation_delta(turn.execution, phase.session_id)
-    if observed:
-        current = (delta or {}).get("current", {})
-        delta = {
-            **(delta or {}),
-            "current": {**(current if isinstance(current, dict) else {}), **observed["current"]},
-        }
+    delta = merge_prepared_graph_observation_delta(delta, turn.execution, phase.session_id)
     prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
     contract_path = record_inline_prompt(
         turn.execution,

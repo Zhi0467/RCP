@@ -129,8 +129,8 @@ from rcp.runs.recorded_turn import (
 from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
+    merge_prepared_graph_observation_delta,
     prepare_graph_observation,
-    prepared_graph_observation_delta,
     record_inline_prompt,
     record_session_master,
     staged_graph_head,
@@ -973,13 +973,7 @@ def _work_continuation(
         force_bootstrap=force_bootstrap,
     )
     delta = changed_since_master(replace(master, bootstrap=False), values)
-    observed = prepared_graph_observation_delta(turn.execution, session_id)
-    if observed:
-        current = (delta or {}).get("current", {})
-        delta = {
-            **(delta or {}),
-            "current": {**(current if isinstance(current, dict) else {}), **observed["current"]},
-        }
+    delta = merge_prepared_graph_observation_delta(delta, turn.execution, session_id)
     question_part = prepare_work_question_snapshot(turn)
     parts = [part, question_part] if question_part else [part]
     if browser_grant is not None and browser_grant.status != "not_requested":
@@ -2084,6 +2078,25 @@ def _maintenance_continuation(
     return continuation
 
 
+def _work_observed_apply_revision(
+    execution: AgentTaskExecution | None, graph_update: GraphUpdateResult
+) -> int | None:
+    """Include keyed Applies whose consumed deliverable is absent at settlement."""
+
+    revisions = [graph_update.applied_revision]
+    if execution is not None:
+        revisions.append(execution.applied_revision)
+        if is_consolidation(execution):
+            for receipt in execution.store.list_consolidation_apply_receipts(
+                execution.operation_id
+            ):
+                result = receipt["result"]
+                if result is not None and result["status"] == "ok":
+                    update = GraphUpdateResult.model_validate(result["result"]["graph_update"])
+                    revisions.append(update.applied_revision)
+    return max((revision for revision in revisions if revision is not None), default=None)
+
+
 def _finalize_work_turn(
     turn: WorkFinalizationContext,
     answer: str,
@@ -2111,7 +2124,7 @@ def _finalize_work_turn(
             turn.execution,
             turn.service,
             native_session_id=turn.outcome.session_id,
-            applied_revision=graph_update.applied_revision,
+            applied_revision=_work_observed_apply_revision(turn.execution, graph_update),
         )
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),
@@ -2932,7 +2945,7 @@ async def _stream_work_graph_repair(
             execution,
             service,
             native_session_id=outcome.session_id,
-            applied_revision=graph_update.applied_revision,
+            applied_revision=_work_observed_apply_revision(execution, graph_update),
         )
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),

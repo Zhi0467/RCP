@@ -394,3 +394,20 @@ def prepared_graph_observation_delta(
     delta = graph_head_delta(seen, head)
     current = delta.get("current")
     return {"current": current} if isinstance(current, dict) else {}
+
+
+def merge_prepared_graph_observation_delta(
+    delta: dict[str, object] | None,
+    execution: AgentTaskExecution | None,
+    native_session_id: str | None,
+) -> dict[str, object] | None:
+    """Overlay the observation hint while retaining the owner's other current values."""
+
+    observed = prepared_graph_observation_delta(execution, native_session_id)
+    if not observed:
+        return delta
+    current = (delta or {}).get("current")
+    return {
+        **(delta or {}),
+        "current": {**(current if isinstance(current, dict) else {}), **observed["current"]},
+    }

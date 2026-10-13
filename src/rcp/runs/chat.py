@@ -63,7 +63,7 @@ from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
     continuation_session_master,
-    prepared_graph_observation_delta,
+    merge_prepared_graph_observation_delta,
     read_legacy_session_master,
     record_session_master,
     recorded_master_values,
@@ -396,16 +396,7 @@ def _prepare_chat_prompt_state(
                 "path": master_context_path,
             },
         }
-    observation_delta = prepared_graph_observation_delta(execution, request.session_id)
-    if observation_delta:
-        current = (delta or {}).get("current")
-        delta = {
-            **(delta or {}),
-            "current": {
-                **(current if isinstance(current, dict) else {}),
-                **observation_delta["current"],
-            },
-        }
+    delta = merge_prepared_graph_observation_delta(delta, execution, request.session_id)
     # The browser grant is also compared with the last committed turn: the human
     # toggles it between turns, so the session hears it only when it changes.
     browser = values.get("browser")

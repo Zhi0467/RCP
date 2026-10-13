@@ -10,6 +10,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
+    merge_prepared_graph_observation_delta,
     prepare_graph_observation,
     prepared_graph_observation_delta,
 )
@@ -128,6 +129,16 @@ def test_prepared_delta_is_turn_relative_and_unknown_is_not_unchanged(tmp_path):
     assert prepared_graph_observation_delta(next_turn, "session") == {
         "current": {"graph_changed_since": "main@1", "graph_head": "main@2"}
     }
+    delta = {"current": {"other": "retained"}, "browser": "unchanged"}
+    assert merge_prepared_graph_observation_delta(delta, next_turn, "session") == {
+        "current": {
+            "other": "retained",
+            "graph_changed_since": "main@1",
+            "graph_head": "main@2",
+        },
+        "browser": "unchanged",
+    }
+    assert delta == {"current": {"other": "retained"}, "browser": "unchanged"}
     seen = store.graph_seen_head("project", "chat:c", "session", target)
     assert seen is not None and seen.revision == 1
 
