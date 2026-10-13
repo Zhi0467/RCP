@@ -648,8 +648,12 @@ cached revision updates more frequently, and visibility resume sweeps all tabs.
 A teammate's action can change state without moving the graph revision, so the
 main heartbeat also carries signals for it. It names the newest visible task
 and the newest watcher; one the active tab has not loaded makes it reload that
-list. It also carries digests of the settings fields and of each Experiment's
-lifecycle fields (not its progress); a changed digest reloads the project.
+list. A task status digest moves when any visible task changes status or
+finishes, not on progress; a moved digest rereads the task list, and an
+inactive tab stores it in its retained state, so returning to the tab shows
+each agent's current status before the reload. It also carries digests of the
+settings fields and of each Experiment's lifecycle fields (not its progress); a
+changed digest reloads the project.
 A steer lives only in the chat history, so each chat task also reports a steer
 revision, bumped when a steer is queued and again when its final receipt is
 written. A changed revision makes other members' pages refresh chat summaries,

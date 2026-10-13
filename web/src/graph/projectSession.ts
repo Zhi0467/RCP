@@ -579,6 +579,14 @@ export function heartbeatNamesUnknownId(
   return Boolean(latest) && !loadedIds.includes(latest as string);
 }
 
+/** A first observation counts as moved: the list may predate it. */
+export function heartbeatTaskStatusMoved(
+  observed: string | undefined,
+  seen: string | undefined,
+): boolean {
+  return observed !== undefined && observed !== seen;
+}
+
 export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =
   { kind: "ignore" } | { kind: "reload_active" } | { kind: "reconcile_inactive"; state: T };
 

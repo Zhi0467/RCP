@@ -12,6 +12,7 @@ const server = await createServer({
 const {
   emptyProjectSessionState,
   heartbeatNamesUnknownId,
+  heartbeatTaskStatusMoved,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   projectHeartbeatMetadataChanged,
@@ -994,6 +995,13 @@ test("a heartbeat naming an unloaded record asks for its list", () => {
   assert.equal(heartbeatNamesUnknownId("mine", ["mine"]), false);
   assert.equal(heartbeatNamesUnknownId(null, ["mine"]), false);
   assert.equal(heartbeatNamesUnknownId(undefined, []), false);
+});
+
+test("a task status signal rereads tasks only when it moved", () => {
+  assert.equal(heartbeatTaskStatusMoved("a", undefined), true);
+  assert.equal(heartbeatTaskStatusMoved("b", "a"), true);
+  assert.equal(heartbeatTaskStatusMoved("a", "a"), false);
+  assert.equal(heartbeatTaskStatusMoved(undefined, "a"), false);
 });
 
 test("a changed settings or Experiment signal reloads the main view", () => {

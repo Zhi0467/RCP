@@ -159,6 +159,7 @@ import {
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   heartbeatNamesUnknownId,
+  heartbeatTaskStatusMoved,
   projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
@@ -948,6 +949,8 @@ function MemberApp({
   const chatRefreshOwedRef = useRef(new Map<string, object>());
   // The last steer epoch each project's heartbeat reported.
   const steerEpochsRef = useRef(new Map<string, number>());
+  // The task status signal each project's task list was last read under.
+  const taskStatusSignalsRef = useRef(new Map<string, string>());
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1465,7 +1468,16 @@ function MemberApp({
           // this page's task load and its first heartbeat.
           const steerMoved =
             observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
-          if (steerMoved || heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)) {
+          // A teammate's task can finish while no task poll runs here.
+          const taskStatusMoved = heartbeatTaskStatusMoved(
+            observation.task_status_signal,
+            taskStatusSignalsRef.current.get(requestedProjectId),
+          );
+          if (
+            steerMoved ||
+            taskStatusMoved ||
+            heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)
+          ) {
             const tasksRead = beginTasksRead();
             const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
             if (!isActiveProject(requestedProjectId)) return;
@@ -1481,6 +1493,8 @@ function MemberApp({
           }
           if (observation.steer_epoch !== undefined)
             steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
+          if (observation.task_status_signal !== undefined)
+            taskStatusSignalsRef.current.set(requestedProjectId, observation.task_status_signal);
           // Owed until it succeeds: the task is already listed, so no later
           // heartbeat would notice it again.
           const owed = chatRefreshOwedRef.current.get(requestedProjectId);
@@ -1529,6 +1543,23 @@ function MemberApp({
           return;
         }
 
+        // A background tab keeps its saved task list current, so switching back
+        // shows each agent's real status at once instead of after the reload.
+        const taskStatusSignal = observation.task_status_signal;
+        if (
+          taskStatusSignal !== undefined &&
+          heartbeatTaskStatusMoved(
+            taskStatusSignal,
+            taskStatusSignalsRef.current.get(requestedProjectId),
+          ) &&
+          inactiveCachedProjectState(requestedProjectId)
+        ) {
+          const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
+          const current = inactiveCachedProjectState(requestedProjectId);
+          if (!current || !tabIsOpen()) return;
+          cacheProjectState(requestedProjectId, { ...current, tasks: nextTasks });
+          taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
+        }
         const retained = inactiveCachedProjectState(requestedProjectId);
         if (
           !retained ||
