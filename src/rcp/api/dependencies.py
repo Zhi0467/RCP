@@ -4,9 +4,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_environment import ProviderCredentialStore
@@ -27,7 +27,9 @@ from rcp.server_runtime import ServerMetadata
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
 from rcp.storage import AppStore, SpaceKind
+from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
+from rcp.transport import StateUnavailable
 from rcp.watchers import WatcherDelivery, WatcherPoller
 
 
@@ -63,6 +65,7 @@ class ApiServices:
     watcher_poller: WatcherPoller
     artifact_mutation_locks: KeyedLocks
     project_display_cache: ProjectDisplayCache
+    sync_coordinator: SyncCoordinator
     watcher_delivery: WatcherDelivery
     experiment_operation_lock: KeyedLocks
     background_tasks: BackgroundAgentTasks
@@ -155,6 +158,13 @@ def get_project_display_cache(request: Request) -> ProjectDisplayCache:
     return _api_services(request).project_display_cache
 
 
+def get_sync_coordinator(request: Request) -> SyncCoordinator:
+    return _api_services(request).sync_coordinator
+
+
+SyncCoordinatorDependency = Annotated[SyncCoordinator, Depends(get_sync_coordinator)]
+
+
 def get_watcher_delivery(request: Request) -> WatcherDelivery:
     return _api_services(request).watcher_delivery
 
@@ -173,10 +183,20 @@ def get_experiment_admission(request: Request) -> ExperimentAdmission:
 
 def get_project_service(catalog: ProjectCatalog, project_id: str) -> ProjectService:
     try:
+        return catalog.open_display(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def get_project_writer(catalog: ProjectCatalog, project_id: str) -> ProjectService:
+    """Open the authoritative owner for a write; it never needs a display generation."""
+    try:
         return catalog.open(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -187,10 +207,11 @@ def get_graph_service(
     *,
     initialize: bool = True,
     refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+    write: bool = False,
 ) -> ProjectService:
     """Resolve the normal graph owner on an exact project-owned branch or main."""
 
-    service = get_project_service(catalog, project_id)
+    service = (get_project_writer if write else get_project_service)(catalog, project_id)
     if branch_id is None:
         return service
     try:
@@ -202,6 +223,8 @@ def get_graph_service(
         )
     except (KeyError, ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="Episode graph not found") from exc
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def require_registered_project(catalog: ProjectCatalog, project_id: str) -> None:
@@ -243,6 +266,8 @@ def require_project_write_admission(project_id: str, request: Request) -> Iterat
 
 
 __all__ = [
+    "SyncCoordinatorDependency",
+    "get_sync_coordinator",
     "ApiServices",
     "HealthComposition",
     "ServerStatusComposition",

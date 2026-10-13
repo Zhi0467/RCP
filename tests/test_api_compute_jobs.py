@@ -4,7 +4,7 @@ import pytest
 
 from rcp.compute_jobs.probe import _result
 from rcp.config import load_manifest
-from tests.helpers import signed_in_client
+from tests.helpers import resource_watermark_tokens, signed_in_client
 
 from .helpers import create_named_app
 
@@ -47,6 +47,9 @@ def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_a
         (None, ["helper"]),
     ):
         calls.clear()
+        before = resource_watermark_tokens(
+            client, app.state.default_project_id, {"name": "settings"}
+        )
         response = client.put(
             f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}}
         )
@@ -56,13 +59,11 @@ def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_a
         assert [route for route, probe in probes.items() if probe] == sorted(
             routes, key=["scheduler", "helper"].index
         )
-        # The heartbeat carries the probe time so an open page reloads the results.
-        heartbeat = client.get(f"{url}/cached/revision").json()
-        assert heartbeat["compute_probes_probed_at"] is not None
         assert (
-            heartbeat["compute_probes_probed_at"]
-            == client.get(url).json()["compute_probes_probed_at"]
+            resource_watermark_tokens(client, app.state.default_project_id, {"name": "settings"})
+            != before
         )
+        assert client.get(url).json()["compute_probes_probed_at"] is not None
 
 
 def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):
@@ -79,7 +80,12 @@ def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch)
     monkeypatch.setattr(
         "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
     )
+    before = resource_watermark_tokens(client, app.state.default_project_id, {"name": "settings"})
     response = client.post(f"{url}/machines/laptop/compute/check", json={})
+    assert (
+        resource_watermark_tokens(client, app.state.default_project_id, {"name": "settings"})
+        != before
+    )
     assert response.status_code == 200, response.text
     assert calls == [("laptop", "helper")]
     assert response.json()["scheduler"] is None and response.json()["helper"]["ready"]

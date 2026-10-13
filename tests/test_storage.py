@@ -39,7 +39,7 @@ from rcp.storage.command_mailbox import CommandMailboxStore
 from rcp.storage.question_models import QuestionOrigin
 
 from .helpers import NON_UUID4
-from .storage_helpers import downgrade_artifacts
+from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 from .test_compute_jobs_storage import job_record
 
 
@@ -211,7 +211,9 @@ def test_new_database_matches_raw_migration_schema_and_all_seed_rows(
             tuple(row) for row in expected.execute(query)
         ]
         for (table,) in expected.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
-            query = f'SELECT * FROM "{table}" ORDER BY rowid'
+            columns = [row[1] for row in expected.execute(f'PRAGMA table_info("{table}")')]
+            ordering = ",".join(f'"{column}"' for column in columns)
+            query = f'SELECT * FROM "{table}" ORDER BY {ordering}'
             assert [tuple(row) for row in actual.execute(query)] == [
                 tuple(row) for row in expected.execute(query)
             ], table
@@ -3870,6 +3872,7 @@ def test_question_projection_migration_preserves_existing_answers(tmp_path):
     store = AppStore(tmp_path / "questions.sqlite3")
     question = _answered(store)
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("ALTER TABLE questions DROP COLUMN answer_projected_revision")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=35")
     reopened = AppStore(store.path)

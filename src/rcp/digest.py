@@ -394,9 +394,13 @@ def assemble_digest(
 
 def _main_state(catalog, project_id: str, *, required: bool) -> GraphState | None:
     service = catalog.loaded_service(project_id)
+    if service is None:
+        workspace = catalog.workspace_for_display(project_id)
+        if workspace is not None and workspace.remote:
+            service = catalog.open_display(project_id)
     if service is not None:
-        with service.history.workspace.snapshot_lock:
-            return GraphState.model_validate_json((service.history.root / "graph.json").read_text())
+        with service.history.workspace.read_snapshot() as root:
+            return GraphState.model_validate_json((root / "graph.json").read_text())
     snapshot = catalog.cached_snapshot(project_id)
     if snapshot is None:
         if not required:
@@ -408,6 +412,10 @@ def _main_state(catalog, project_id: str, *, required: bool) -> GraphState | Non
 def _branch_state(catalog, project_id: str, branch_id: str) -> GraphState | None:
     """The branch's own graph, which names Experiments it created or renamed."""
     service = catalog.loaded_service(project_id)
+    if service is None:
+        workspace = catalog.workspace_for_display(project_id)
+        if workspace is not None and workspace.remote:
+            service = catalog.open_display(project_id)
     if service is None:
         return None
     target = GraphTargetRef(kind="branch", branch_id=branch_id)

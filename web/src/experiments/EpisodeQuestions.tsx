@@ -2,16 +2,8 @@ import { useQuestions } from "../chat/useQuestions";
 import { QuestionCard } from "../chat/QuestionCard";
 import { questionIsOpen } from "../chat/questions";
 
-export function EpisodeQuestions({
-  apiBase,
-  episodeId,
-  freshness,
-}: {
-  apiBase: string;
-  episodeId: string;
-  freshness: string;
-}) {
-  const { questions, error, refresh } = useQuestions(apiBase, "episode", episodeId, freshness);
+export function EpisodeQuestions({ apiBase, episodeId }: { apiBase: string; episodeId: string }) {
+  const { questions, error, refresh } = useQuestions(apiBase, "episode", episodeId);
   const newestFirst = [...questions].sort((a, b) => b.created_at.localeCompare(a.created_at));
   const openCount = questions.filter(
     (question) => questionIsOpen(question) && !question.withdrawn_readonly,

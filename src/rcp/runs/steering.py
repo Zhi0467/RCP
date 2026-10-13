@@ -238,7 +238,7 @@ def begin_chat_steer(
             receipt=receipt,
         )
     # Recorded before delivery, so other members see a queued steer too.
-    background.bump_steer_revision(record.operation_id, record.project_id)
+    background.bump_steer_revision(record.operation_id)
     if refusal:
         return stored, None
 
@@ -290,7 +290,7 @@ def finish_chat_steer(
         )
         _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
     # The final receipt replaces the queued one other members may already show.
-    background.bump_steer_revision(record.operation_id, record.project_id)
+    background.bump_steer_revision(record.operation_id)
     return _message(stored)
 
 
@@ -411,7 +411,7 @@ def _record_answer_steer(
             text=question_answer_text(question),
             receipt=_receipt(target.attempt, turn_id, "delivered", None),
         )
-    background.bump_steer_revision(target.operation_id, target.project_id)
+    background.bump_steer_revision(target.operation_id)
 
 
 def _steer_answer(

@@ -16,6 +16,17 @@ const { ProjectMembers, inviteUnavailableReason } = await server.ssrLoadModule(
   "/src/projects/ProjectMembers.tsx",
 );
 
+const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
+const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+function renderMembers(element) {
+  return renderToStaticMarkup(
+    React.createElement(
+      RefreshRuntimeContext.Provider,
+      { value: { store: new ResourceStore() } },
+      element,
+    ),
+  );
+}
 after(() => server.close());
 
 const ada = { user_id: "11111111-1111-4111-8111-111111111111", display_name: "Ada" };
@@ -49,7 +60,7 @@ function identityIn(spaceKind) {
 }
 
 test("a personal project carries no invite control at all", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMembers(
     React.createElement(ProjectMembers, {
       projectId: "44444444-4444-4444-8444-444444444444",
       identity: identityIn("personal"),
@@ -64,7 +75,7 @@ test("a personal project carries no invite control at all", () => {
 });
 
 test("a team project keeps the invite control the backend supports", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMembers(
     React.createElement(ProjectMembers, {
       projectId: "44444444-4444-4444-8444-444444444444",
       identity: identityIn("team"),

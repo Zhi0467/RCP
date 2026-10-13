@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -41,6 +42,7 @@ from rcp.config import (
     ResolvedComputeContext,
     ResolvedComputeProfile,
     launches_work_like,
+    load_manifest,
 )
 from rcp.control import derive_experiment_control_state, released_attempts
 from rcp.core.attention import (
@@ -1379,11 +1381,11 @@ class ProjectService:
             return {}
         suffixes = tuple(f"-{chat_id}.jsonl" for chat_id in requested)
         transcripts: dict[str, ChatTranscript | None] = {}
-        with self.history.workspace.snapshot_lock:
-            for path, _ in self._canonical_chat_files():
+        with self.history.workspace.read_snapshot() as root:
+            for path, _ in self._canonical_chat_files(root):
                 if (
                     path.name.endswith(suffixes)
-                    and (transcript := self._read_chat_transcript(path)) is not None
+                    and (transcript := self._read_chat_transcript(path, root)) is not None
                     and transcript.chat_id in requested
                     and transcript.graph_target == self.history.graph_target
                 ):
@@ -1394,24 +1396,26 @@ class ProjectService:
         return {chat_id: transcript for chat_id, transcript in transcripts.items() if transcript}
 
     def _canonical_chat_summaries(self) -> list[ChatSummary]:
-        with self.history.workspace.snapshot_lock:
-            files = self._canonical_chat_files()
-            live_paths = {path for path, _ in files}
+        with self.history.workspace.read_snapshot() as root:
+            files = self._canonical_chat_files(root)
+            # Keyed inside the root: each display generation is a new directory.
+            live_paths = {path.relative_to(root) for path, _ in files}
             summaries: dict[str, ChatSummary | None] = {}
             with self._chat_summary_lock:
                 for stale in self._chat_summary_cache.keys() - live_paths:
                     del self._chat_summary_cache[stale]
                 for path, fingerprint in files:
-                    cached = self._chat_summary_cache.get(path)
+                    key = path.relative_to(root)
+                    cached = self._chat_summary_cache.get(key)
                     if cached is None or cached.fingerprint != fingerprint:
-                        transcript = self._read_chat_transcript(path)
+                        transcript = self._read_chat_transcript(path, root)
                         summary = (
                             ChatSummary.model_validate(transcript.model_dump(exclude={"messages"}))
                             if transcript is not None
                             else None
                         )
                         cached = _ChatSummaryCacheEntry(fingerprint, summary)
-                        self._chat_summary_cache[path] = cached
+                        self._chat_summary_cache[key] = cached
                     if cached.summary is None:
                         continue
                     chat_id = cached.summary.chat_id
@@ -1425,13 +1429,11 @@ class ProjectService:
 
     def _canonical_chat_files(
         self,
+        root: Path,
     ) -> list[tuple[Path, tuple[int, int, int, int, int]]]:
-        """Reconcile a stale mirror, then return safe canonical file candidates."""
+        """Return safe canonical file candidates from the pinned read root."""
 
-        workspace = self.history.workspace
-        if workspace.remote:
-            workspace.refresh_if_stale()
-        chat_dir = workspace.root / "chat"
+        chat_dir = root / "chat"
         try:
             directory_stat = chat_dir.lstat()
         except OSError:
@@ -1467,7 +1469,8 @@ class ProjectService:
             )
         return files
 
-    def _read_chat_transcript(self, path: Path) -> ChatTranscript | None:
+    def _read_chat_transcript(self, path: Path, root: Path) -> ChatTranscript | None:
+        """Read one chat file under `root`, the pinned state root it was listed from."""
         try:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             try:
@@ -1514,7 +1517,7 @@ class ProjectService:
                 _validate_stored_chat_record(
                     record,
                     first=first,
-                    root=self.history.workspace.root,
+                    root=root,
                     path=path,
                 )
         except ValueError:
@@ -1583,6 +1586,24 @@ class ProjectService:
         materialization: MaterializationResult | None = None,
         paper: PaperSnapshot | None = None,
         head: GraphHeadRef | None = None,
+    ) -> _ProjectSnapshotDraft:
+        with self.history.workspace.read_snapshot() as root:
+            reader = self
+            if self.history.workspace.remote:
+                reader = copy.copy(self)
+                reader.history = copy.copy(self.history)
+                reader.history.manifest = load_manifest(
+                    root / "manifest.toml", project_root=self.manifest.path.parent.parent
+                )
+                reader.history.manifest._path = self.manifest.path
+            return reader._project_snapshot(materialization=materialization, paper=paper, head=head)
+
+    def _project_snapshot(
+        self,
+        *,
+        materialization: MaterializationResult | None,
+        paper: PaperSnapshot | None,
+        head: GraphHeadRef | None,
     ) -> _ProjectSnapshotDraft:
         if materialization is None:
             materialization = self.history.current_materialization()

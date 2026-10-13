@@ -196,6 +196,7 @@ class ProjectHistoryEngine:
         self.manager = manager
         self._generations: dict[str, _Generation] = {}
         self.store: GraphHistoryStore | None = None
+        self._store_lock = threading.Lock()
         self.checkpoint_interval = limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
         self._branch_identities: dict[str, str] = {}
         self._verified_serial = 0
@@ -205,7 +206,7 @@ class ProjectHistoryEngine:
         self._answers: OrderedDict[str, tuple[str, DiffAnswer | LogAnswer, int]] = OrderedDict()
 
     def configure_store(self, data_dir: Path, project_id: str) -> None:
-        with self.manager.workspace.snapshot_lock:
+        with self._store_lock:
             if self.store is None:
                 try:
                     self.store = GraphHistoryStore(data_dir, project_id)

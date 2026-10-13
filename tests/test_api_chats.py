@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -56,9 +56,9 @@ def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
     scans = []
     original = service._canonical_chat_files
 
-    def counted():
+    def counted(root):
         scans.append(True)
-        return original()
+        return original(root)
 
     monkeypatch.setattr(service, "_canonical_chat_files", counted)
     transcripts = service.chat_transcripts([good, ambiguous, missing, good])
@@ -135,9 +135,9 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     original_read = service._read_chat_transcript
     parsed_paths: list[Path] = []
 
-    def counted_read(path: Path):
+    def counted_read(path: Path, root: Path):
         parsed_paths.append(path)
-        return original_read(path)
+        return original_read(path, root)
 
     monkeypatch.setattr(service, "_read_chat_transcript", counted_read)
 
@@ -174,27 +174,24 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
     assert client.get(f"/api/projects/{project_id}/chats/{uuid.uuid4()}").status_code == 404
 
 
-def test_chat_history_reports_remote_refresh_failure_as_unavailable(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_chat_history_reports_cold_generation_without_refresh(manifest, tmp_path, monkeypatch):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     project_id = app.state.default_project_id
     service.history.workspace.remote = True
-    refresh_threads: list[int] = []
 
-    def fail_refresh() -> bool:
-        refresh_threads.append(threading.get_ident())
-        raise StateUnavailable("remote transcript refresh failed")
+    @contextmanager
+    def cold_snapshot():
+        raise StateUnavailable("remote transcript is loading")
+        yield
 
-    monkeypatch.setattr(service.history.workspace, "refresh", fail_refresh)
-    request_thread = threading.get_ident()
+    def forbidden_refresh():
+        raise AssertionError("a display request must not refresh")
 
+    monkeypatch.setattr(service.history.workspace, "read_snapshot", cold_snapshot)
+    monkeypatch.setattr(service.history.workspace, "refresh", forbidden_refresh)
     response = signed_in_client(app).get(f"/api/projects/{project_id}/chats")
-
     assert response.status_code == 503
-    assert response.json()["detail"] == "remote transcript refresh failed"
-    assert refresh_threads and refresh_threads[0] != request_thread
 
 
 def test_non_main_project_route_does_not_build_project_snapshot(
@@ -469,9 +466,9 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
     parsed = []
     original = service._read_chat_transcript
 
-    def counted(path):
+    def counted(path, root):
         parsed.append(path)
-        return original(path)
+        return original(path, root)
 
     monkeypatch.setattr(service, "_read_chat_transcript", counted)
     url = f"/api/projects/{project_id}/chats"

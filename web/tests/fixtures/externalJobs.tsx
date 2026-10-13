@@ -1,3 +1,4 @@
+import { ResourceRuntime } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ExperimentRunDetail } from "../../src/experiments/ExperimentRunDetail";
@@ -222,5 +223,7 @@ function WatcherFixture() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  new URLSearchParams(location.search).has("watchers") ? <WatcherFixture /> : <Fixture />,
+  <ResourceRuntime>
+    {new URLSearchParams(location.search).has("watchers") ? <WatcherFixture /> : <Fixture />}
+  </ResourceRuntime>,
 );

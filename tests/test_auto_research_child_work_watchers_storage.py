@@ -6,6 +6,7 @@ import pytest
 
 from rcp.storage import AppStore, EpisodeInvocationCeilingReached, EpisodeNotRunning
 from rcp.storage.models import GraphWatcherRecord, WatcherContinuation, WatcherRecord
+from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_auto_research_children_storage import (
     _auto_parent,
     _child_work_mail_wake,
@@ -169,6 +170,7 @@ def test_old_database_with_child_routes_backfills_watcher_worker_and_episode(tmp
     store, parent, route, watcher, _wake = _waiting_child(tmp_path)
     with store.connection() as connection:
         connection.execute("UPDATE watchers SET episode_id = NULL")
+        downgrade_resource_watermarks(connection)
         connection.execute("ALTER TABLE watchers DROP COLUMN worker_id")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 11")
     upgraded = AppStore(tmp_path / "rcp.sqlite3")

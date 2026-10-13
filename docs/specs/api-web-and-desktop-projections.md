@@ -5,91 +5,124 @@ revision reconciliation, navigation and tab state, and desktop-shell lifecycle.
 It does not grant graph authority; mutation routes delegate to the state
 workspace and transition manager.
 
+## Resource watermarks
+
+`POST /api/resource-watermarks` takes `client_id`, the complete `open` project
+set with refs and resource keys, `due` project ids, and optional `activated` id.
+It resolves aliases and membership before reading counters or renewing sync
+demand. Unknown and forbidden ids both appear in `unavailable`; only due projects
+receive tokens. Responses carry `epoch`, one `as_of`, per-resource `key`,
+`version`, `valid_until`, and `state`, plus remote sync health.
+
+Set-based SQLite reads cover authorization/aliases, transactional counters,
+indexed deadlines, and, when progress is watched, which projects have a running
+task. The route never opens a project, replays history, completes a snapshot, or
+waits for snapshot locks or SSH. File families use published catalog
+generations; terminal runtime uses its owner's generation. Graph tokens fold in
+whether sync health reports an error, because the graph payload carries
+canonical reachability. While a task runs, `tasks.progress` and task details
+take a clock tick, because elapsed time and progress are computed from the clock.
+Entity counters are project-scoped; chat read/pin counters are member-scoped.
+
+`tasks.status` and chat, episode, and terminal inventories exclude progress;
+`tasks.progress` and entity details include it. Terminal input renews idle expiry
+without invalidating inventory; retirement does invalidate it. Question liveness
+renews its deadline without advancing the counter until it returns to waiting;
+publication failure is logged without failing the ask. Experiment runtime and
+report changes invalidate graph controls; unrelated episode ledgers do not.
+
+Tokens include the latest elapsed deadline. `valid_until` is the next boundary
+for finished-chat visibility, question liveness, artifact expiry, consolidation
+authorization, or readiness. `epoch` fences restart, restore, and projection
+contract changes. Payload shapes stay independent of watermarks: a read commits
+the token observed before it started, so a change during the read triggers another.
+
+Watermarks alone renew remote-sync demand: membership-filtered client leases last
+60 seconds and are unioned by canonical workspace root. The coordinator captures
+open remote projects every 10 seconds without overlap; activation bypasses cadence
+and coalesces a follow-up when busy. Local projects bypass it. One-shot requests
+inside cadence remain scheduled for its end.
+
+Captures stage privately under the remote refresh lock, reuse unchanged files,
+validate, sync files and descriptors, then atomically publish an immutable
+generation. Reads pin it until finished; capture and write publication share
+sequencing so an older capture cannot replace a newer commit. Invalid display
+inputs retain the last good generation with sync error. A torn trailing chat
+record waits for completion. Unchanged captures update freshness only; a busy
+canonical writer skips a round without reporting outage.
+
+Display services, graph snapshots, readiness, and digest reuse the generation's
+replay; current owners supply operational controls and sync health. Cold reads
+schedule capture and return loading/unavailable, never await transfer. Writes
+still validate canonical state; repository ownership reads the canonical manifest
+under the writer lock. Display publication failure cannot undo a canonical write.
+
 ## Project graph-ref inventory
 
-`GET /api/projects/{project_id}/graph-refs` returns a list of graph refs,
-with main first and one row per unique episode-owned branch, ordered by newest
-chain-member creation time (descending). It reads all project episodes without the recent-50 window or the episode list's archive
-filter; a client needs no separate episode read to discover refs or ownership.
-Existing project membership admission applies.
+`GET /api/projects/{project_id}/graph-refs` returns main first, then one row per
+episode-owned branch, newest chain-member creation first. It reads all episodes,
+including archives, without the recent-50 limit, under project membership.
 
-Each row contains `kind`, `branch_id`, `head`, `base_head`, `episode_id`,
-`current_episode_id`, `archived`, and the existing branch-summary merge fields:
+Rows carry `kind`, `branch_id`, `head`, `base_head`, `episode_id` (chain root),
+`current_episode_id` (newest member), graph-isolation `archived`, and merge fields
 `merge_state`, `merge_eligible`, `merge_blocked_reason`,
 `latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
-For a branch, `episode_id` is the chain-root owner and `current_episode_id`
-is the newest chain member. `archived` is the owner's graph-isolation archive
-state, independent of episode-history archiving. Merge fields reuse the episode
-branch summary, including its reservation and live-writer checks.
-A branch row also carries the chain root's `mode` and `created_at`, its resolved
-`name`, `running` (any task on that target in `ACTIVE_AGENT_TASK_STATUSES`), and
-`needs_you` (the Inbox attention projection has an open Decision or blocker,
-or the branch has an unanswered, answerable agent question). `title` is absent.
-The name comes from the shared SQLite branch-name owner, including deterministic
-date fallbacks for legacy branches. Archived branches remain in this inventory.
-Main has `name: "main"`, `running: false`, `needs_you: false`, `created_at: null`,
-its exact current head, `archived: false`, `merge_eligible: false`,
-and null branch, episode, base, and merge-detail fields. Branch ownership and
-persisted records are unchanged: `branch_id == episode_id` names the root.
+Branches also carry the root's `mode`, `created_at`, resolved `name`, `running`,
+and `needs_you`; there is no `title`. Running means an active task on that target;
+attention means an open Decision/Blocker or answerable question. Names use the
+shared SQLite owner with date fallbacks. `branch_id == episode_id` names the root.
+Main has its exact head, name `main`, false flags, and null branch/episode/base/
+merge details. Merge fields use the episode owner's reservation and writer checks.
 
-`PUT /api/projects/{project_id}/graph-refs/{branch_id}/name` takes
-`{"name": str}`; `PUT /api/projects/{project_id}/graph-refs/{branch_id}/archived`
-takes `{"archived": bool}`. Both return the updated GraphRef and admit any
-project member. Rename returns 422 with `detail.code: branch_name_invalid` or
-409 with `detail.code: branch_name_taken`; unknown branches return 404.
-Main cannot be renamed or archived. Archive and unarchive update the isolation
-state, creating that state for a legacy branch when needed, without changing
-Patch history or episode-history archiving.
+`PUT .../graph-refs/{branch_id}/name` takes `{"name": str}`;
+`PUT .../graph-refs/{branch_id}/archived` takes `{"archived": bool}`.
+Both admit project members and return the GraphRef. Rename returns 422
+`branch_name_invalid` or 409 `branch_name_taken`; unknown branches return 404.
+Main cannot be renamed or archived. Archive creates missing isolation state,
+without changing Patch history or episode-history archive state.
 
-The branch picker is a `⑂ <name>` button at the right end of the view tabs; on
-a phone it is a chip beside the project name. It is hidden on main when the
-project has no live branch. The button shows an amber dot when another unarchived
-branch `needs_you`, and no spinner. Its list puts main first, then running branches,
-then newest first, and hides archived branches except the active one, which
-offers unarchive. Each branch row shows a spinner when `running`, an amber dot
-when `needs_you` and not archived, and always-visible rename and archive icons; the current row
-has a check. Rename edits the name inline and shows one warning for an invalid
-or taken name. Archiving an unmerged branch asks first. When the list cannot be
-read the button is disabled and still names the current ref.
+The `⑂ <name>` picker sits after view tabs, or beside the project name on phones.
+It hides on main with no live branch. An amber dot signals attention on another
+unarchived branch. Rows order main, running, then newest; hide archived branches
+except the active one, which offers Unarchive. Rows show running/attention marks,
+rename/archive icons, and a check for selection. Rename is inline; archiving an
+unmerged branch asks first. A failed list disables the picker but retains its name.
 
-Choosing a ref keeps the view and carries a chat or Auto-research episode
-selection only when it belongs to the destination; a node stays selected only
-when the destination's snapshot has it. A ref switch is not a project open: no
-opening screen, the header and view stay mounted, and the previous ref's
-snapshot stays on screen with the panel inert until the new ref's snapshot
-arrives, under a thin progress line. The loading screen appears only for the
-first open of a project that is not on screen; identity re-checks and backend
-changes keep the displayed project inert instead. When a project opens, live
-branch snapshots load one at a time in the background into the per-ref cache,
-which never displaces a visited ref's state or draft, so a first switch usually
-paints at once. A ref visited before restores from its `(project, ref)` tab state. The
-session's target fences still drop responses for a ref already left, and each
-ref keeps its own staged draft. Heartbeat single-flight is keyed by project and
-ref. All project view URLs come from one helper over (project, ref, view) plus
-an optional chat or episode; an exact Experiment run route keeps its own
-`experiment`/`target`/`branch` fields.
+Switching ref keeps the view, valid destination-owned chat/episode selections,
+and nodes present in the new snapshot. The mounted previous snapshot stays inert
+under a progress line until the new one arrives; only a first project open uses
+an opening screen. Cached refs paint before validation. Each ref retains its draft;
+resource ownership and subscription rules are in [Revision observation and drafts](#revision-observation-and-drafts).
+One URL helper owns project/ref/view plus chat or episode; exact Experiment routes
+retain their separate `experiment`/`target`/`branch` fields.
 
 ## Personal owner admission
 
-Personal API requests and terminal upgrades require an owner session. Public
-personal health exposes adoption identity only. Team public health retains its
-full runtime payload, including the space name and active-agent count required
-by desktop bootstrap. The Web shell, auth exchange and code
-redemption, and OPTIONS remain public. The separate phone listener is unchanged.
-The owner cookie is host-only, HttpOnly, and SameSite=Strict; HTTPS adds Secure.
-Team cookie policy remains separate.
+Personal API requests, API documentation, and terminal upgrades require an owner
+session. Public entrances are the Web shell, GET/HEAD health, owner exchange/code
+redemption, and OPTIONS. Public personal health exposes adoption identity only;
+team health retains runtime bootstrap fields. The separate notify-only phone
+listener grants no owner access. Owner cookies are host-only, HttpOnly,
+SameSite=Strict, and Secure on HTTPS; team cookie policy is separate.
 
-The Web reads identity before protected boot data. A personal 401 opens the
-sign-in boundary; a one-time code can be pasted or supplied in the sign-in URL's
-fragment. Project locator intent stays in the URL across sign-in. The human
-confirms it before registration. Display-name entry remains a separate action.
+The Web reads identity before protected boot data. A 401 opens sign-in, accepting
+a pasted one-time code or URL fragment. Project locator intent survives sign-in
+and needs human confirmation before registration. Display-name entry is separate.
 Authenticated `/api/health/details` supplies runtime and project-creation data.
-The Web keeps public identity separate from authenticated details and reads
-project-creation controls only after authentication.
-During desktop status, an owner-session 401 clears the cached native session and
-returns the verified backend identity with `owner_authenticated=false`, allowing
-the ordinary sign-in boundary. Quit and update still require authenticated
-health details before using active-work counts.
+A native owner-session 401 clears the cached session and returns the verified
+identity with `owner_authenticated=false`; Quit and Update still require
+protected active-work counts.
+
+Personal mutations check Origin. Simple POST content types, including absent
+Content-Type, return 415 `personal_simple_request_refused`; bounded multipart
+chat attachments are the exception. JSON and transfer-proof octet streams remain
+admitted. Session provisioning belongs to
+[personal sign-in](projects-spaces-and-operations.md#personal-sign-in).
+
+**Why:** Loopback is reachable by local agents and web pages; network location
+cannot grant human approval authority. API sessions close accidental and trivial
+access paths, but do not isolate credentials from determined same-account code.
+No agent launch receives an owner credential.
 
 ## Machine hidden folders
 
@@ -131,153 +164,98 @@ server detail in a generic failure notice.
 
 ## Member terminal API
 
-The project-scoped terminal routes are:
+Project terminal routes under `/api/projects/{project_id}/terminals` are:
 
-- `GET /api/projects/{project_id}/terminals/repositories`: repository alias,
-  starting path, per-machine capability, and running Work identities.
-- `GET /api/projects/{project_id}/terminals`: open sessions and live/idle state.
-- `POST /api/projects/{project_id}/terminals/probe`: invalidate this project's
-  machine probes and schedule fresh results.
-- `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
-  the single existing session for that repository and project. With
-  `require_new: true` it returns 409 instead of an existing session, decided
-  under the manager's lock; the voice agent uses it before typing.
-- `DELETE /api/projects/{project_id}/terminals/{session_id}`: end that session.
-- `WS /api/projects/{project_id}/terminals/{session_id}/ws`: binary PTY output,
-  JSON `input` (`data`) and `resize` (`cols`, `rows`) messages, and a JSON `ended`
-  notification.
+| Route | Contract |
+| --- | --- |
+| `GET /repositories` | Repository/start path, machine capability, running Work identities. |
+| `GET` | Open sessions and live/idle state. |
+| `POST /probe` | Invalidate machine probes and schedule fresh results. |
+| `POST` | Open or return the repository's session; `require_new: true` returns 409 if one exists, under the manager lock. |
+| `DELETE /{session_id}` | End the session. |
+| `WS /{session_id}/ws` | Binary PTY output; JSON `input` (`data`), `resize` (`cols`, `rows`), and `ended`. |
 
-Every HTTP route checks project membership. The WebSocket performs its own
-identity, project membership, same-origin, and maintenance admission because
-HTTP middleware does not cover upgrades. It rechecks before every input, on a
-short interval before output, and periodically while connected; cookie
-revocation and loss of membership close the connection. Output is rechecked on
-an interval rather than per frame because the check is a synchronous store read
-and a PTY can produce hundreds of frames a second. Unknown and nonmember projects remain indistinguishable.
+HTTP checks membership. WebSocket upgrades independently check identity,
+membership, origin, and maintenance, then recheck before input, periodically,
+and at a short interval before output. Revocation closes the socket. Unknown
+and nonmember projects are indistinguishable. Output checks are interval-based
+because synchronous store reads per PTY frame would be costly.
 
-Repository rows retain `eligible` and `unavailable_reason` and include
-`machine_id`, `backend_id`, `backend_name`, `containment`, `os_name`,
-`probe_state`, and a `reason` for every outcome. Available machines report `mirrored` or `cooperative`; unavailable
-machines have null `containment`. The reason names the applicable launch
-capability, missing canonical-state protection, or failed prerequisite. Remote
-probe states distinguish `pending`, `reachable`, `incapable`, `unreachable`,
-`authentication_failed`, and `host_key_failed`. A cold projection schedules one
-probe per machine and returns pending immediately; repositories reuse the cached
-result without an SSH round trip per row. The cache lives with the terminal
-manager and is invalidated explicitly by Refresh or by changed machine metadata.
-Space kind does not participate in eligibility. The projection and open guard use the same
-per-machine capability resolution; a later mirrored launch failure remains a
-hard failure with its real diagnostic, never a cooperative session.
+Repository rows expose `eligible`, `unavailable_reason`, machine/backend identity,
+`containment`, `os_name`, `probe_state`, and `reason`. Available machines are
+`mirrored` or `cooperative`; unavailable ones have null containment. Remote states
+are pending, reachable, incapable, unreachable, authentication_failed, and
+host_key_failed. Cold reads schedule one probe per machine and return pending;
+Refresh or changed machine metadata invalidates the cache. Projection and launch
+share capability resolution; mirrored launch failure never downgrades silently.
+Space kind does not decide eligibility.
 
-Session payloads carry `containment` and `protection_notice`. A cooperative
-session explicitly reports that canonical-state protection is unavailable on
-this machine. The Terminals destination appears when any machine can host a
-session, and whenever the project has an open one, because the destination is
-the only way back to a running shell and the only way to end it. Remote pending
-and failed probes also keep the destination visible so members can read the
-reason and refresh it. Empty projects and projects with only unavailable local
-machines and no open session hide it. Repository controls show unavailable rows
-with their reasons. A lost SSH link produces an `ended` reason, removes the
-session from the open list, and leaves the diagnostic visible without offering
-to reconnect into a new shell. That diagnostic belongs to the open destination
-and survives a refresh there, not a departure from it: the session projection
-carries open sessions only, so a link that drops while the member is elsewhere
-leaves the reason in the persisted record rather than on their screen.
+Sessions expose `containment` and `protection_notice`. The destination remains
+visible for capable machines, open sessions, or pending/failed remote probes.
+Empty projects and unavailable-local-only projects without sessions hide it.
+SSH loss ends and removes a session; its diagnostic survives refresh in the open
+view, but not departure. Elsewhere, the reason remains in its persisted record.
+Opening again creates a new shell, never a silent reconnect.
 
-The shell runs as the service account with the Work trust boundary. A mirrored
-session's mount namespace provides accident resistance to mistakes; it does not
-isolate a member from that account.
-Per-machine capability and canonical-path refusal are owned by
-[Providers and containment](providers-and-containment.md#member-terminals);
-session expiry and metadata are owned by
-[Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).
+[Providers and containment](providers-and-containment.md#member-terminals) owns
+machine capability and canonical-path refusal; [terminal lifecycle](projects-spaces-and-operations.md#member-terminal-lifecycle)
+owns expiry and metadata; [Terminals](interface-and-visual-design.md#terminals)
+owns layout and the cooperative-session warning.
 
 ## Since you last looked
 
-The pull-only digest is per member and project, and follows the open graph
-target. `GET /api/projects/{id}/digest` reads main; `?branch_id=` reads one
-branch and is 404 for an unknown branch. It returns `cursor`, `mark`, `target`,
-`needs_you`, `changed`, `reports`, `changed_node_ids`, and `count`.
-The count is the number of rendered lines across those three groups. The mark is
-one per member, not per target, so the Overview offers Caught up on main only;
-a branch's digest cannot acknowledge main lines that are not on screen. Opening a project or reading its digest never advances an
-existing mark. A member without a mark starts at the event log's current cursor
-and sees an empty digest; listing project cards does not create marks. The initial
-main projector checkpoint is persisted, after existing branches and episodes are
-baselined, before a member mark can be inserted.
-Before that checkpoint, GET signals the application projector and returns an
-empty digest with `mark: null` and `cursor: 0`, without creating a mark;
-Caught up returns 409 and landing counts are zero. Requests never project history.
+The pull-only digest follows the open graph target and is private to a member.
+`GET /api/projects/{id}/digest` reads main; `?branch_id=` reads an existing branch
+or returns 404. It returns `cursor`, `mark`, `target`, `needs_you`, `changed`,
+`reports`, `changed_node_ids`, and rendered-line `count`.
 
-`POST /api/projects/{id}/digest/caught-up {"seq": ...}` acknowledges the cursor
-that was displayed. It returns `{"mark": {"seq": ..., "marked_at": ...}}`,
-never decreases the mark, and rejects with 409 a cursor ahead of the committed
-event sequence or a member who has no mark yet. The sequence high-water survives project deletion, so
-deleting another project cannot invalidate a cursor already displayed.
-Events committed after the displayed cursor remain new. The acting member owns
-the mark across devices. This acknowledgment skips project work admission but
-retains global maintenance, membership, and request origin/JSON checks.
-The Overview card labels `marked_at` as the time the member last caught up, shown
-in the browser's time zone; for a new mark it is when the member first opened
-the digest.
+There is one member mark across targets. Only main offers Caught up, so a branch
+cannot acknowledge unseen main lines. Reads never advance a mark. After the
+projector baselines main, existing branches, and episodes, a new member starts
+at the current event cursor with an empty digest; project cards do not create
+marks. Before that checkpoint, GET signals projection and returns `mark: null`,
+`cursor: 0`, and no lines; Caught up is 409 and landing counts are zero.
 
-Needs you contains the open target's new, still-open Proposals, ready/revisit
-Decisions, open ask questions, and episodes needing human action. An
-Auto-research run is one item, named by its branch name, only while something
-on it waits for the human: an open question, Proposal, or ready/revisit Decision
-on its branch, or its orchestrator episode needing action. On the run's branch
-those questions, Proposals, and Decisions are listed themselves, and the run
-item stands for the orchestrator. Its child Experiments and workers are never items and
-never surface the run, on main or on its branch. A standalone Experiment is
-named by its Experiment node. An archived branch contributes no Needs you
-item, on main or on the branch itself.
+`POST .../digest/caught-up {"seq": ...}` acknowledges only the displayed cursor,
+returns `{mark: {seq, marked_at}}`, and never moves backward. Missing marks or
+future cursors return 409. Later events remain new; sequence high-water survives
+project deletion. This action skips project work admission but keeps maintenance,
+membership, origin, and JSON checks. Overview shows `marked_at` in browser time.
 
-Changed on the open target groups accepted semantic changes by their attributed
-source; a merged Auto-research branch is named by its branch. Each touched node
-belongs to its latest eligible source; the viewer's direct human edits, and the
-Work turns the viewer asked for in a chat once the viewer's chat read marker
-reaches them, are excluded before that assignment, so an earlier agent touch
-remains visible. A turn that finished after the viewer left stays in their
-digest until they read that chat. Excluding a Work turn is a visibility rule
-only: the provider agent remains its author. Removed nodes and changed edge
-endpoints participate in grouping, while `changed_node_ids` contains only nodes
-still present on main and is empty on a branch. Main lists only main's own
-changes: unmerged branch edits, an Auto-research run's included, appear only on
-that branch's target. Reports lists the target's episode and consolidation reports by their
-report titles and opens the report artifact; ended episodes, jobs, and failed
-tasks are stored but not shown. Lessons and chat messages or turns as such are
-excluded.
+Needs you contains the target's new, still-open Proposals, ready/revisit Decisions,
+answerable questions, and episodes needing a human. An Auto-research chain is one
+branch-named item on main while it needs attention; on its branch the questions,
+Proposals, and Decisions appear individually and the run stands for its
+orchestrator. Children never become items or surface their parent. Standalone
+Experiments use node names. Archived branches contribute no attention.
 
-Digest links are in-app routes: a run opens its orchestrator card on its branch,
-and an Experiment its Runs entry. Proposal, Decision, and consolidation items
-keep the notification link format; App resolves it without closing the open
-project.
+Changed groups semantic changes by source, assigning each node to its latest
+eligible source. First exclude the viewer's direct edits and requested Work turns
+already reached by their chat read marker; earlier eligible touches remain.
+Unseen completed turns remain until the chat is read. Provider authorship is
+unchanged. Removed nodes and changed edge endpoints participate. Main lists only
+main changes; unmerged work appears on its branch. `changed_node_ids` includes
+only surviving main nodes and is empty on branches. Reports opens the target's
+episode/consolidation artifacts. Jobs, failed tasks, ended episodes, lessons,
+and chat messages alone are not lines.
 
-Attribution is fixed when graph events are projected: episode merge,
-consolidation, identified human, ingestion, captured conversation Work, other
-agent, system, then legacy unattributed human. Source keys are stable; titles
-are display labels. Missing task enrichment does not discard a graph event.
+Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment
+Runs entry, Inbox item, or consolidation report. Attribution precedence is merge,
+consolidation, identified human, ingestion, captured Work, other agent, system,
+then unattributed human. Stable source keys do not depend on display titles or
+optional task enrichment.
 
-SQLite owns a commit-ordered append-only event sequence and member marks.
-Operational writers append events in the same transaction as their source
-writes, so an older external completion timestamp cannot hide a newly recorded
-job. An independent background projector follows accepted main and branch
-history, catches up after missed signals, and never writes canonical state.
-Its persisted per-target head detects non-prefix history after restore/reset;
-that target is rebaselined with one `reset` event in the checkpoint transaction.
-Shared card/count assembly ignores that target's attention entries and
-`graph_change` rows at or before its latest reset; operational events remain.
-It shares semantic comparison with branch changes and does not consume
-notification sender state.
+SQLite owns the append-only commit-ordered events and marks. Operational events
+commit with their source writes. A background projector follows accepted history,
+repairs missed signals, and never writes canonical state. A non-prefix restore
+rebaselines that target with one transactional reset; attention and graph-change
+rows at/before that reset are ignored, while operational events remain. Requests
+never replay or project history, and notification sender state is independent.
 
-`GET /api/projects` includes `digest_count` on each visible project card. It uses
-the same grouping and live operational filters as main's digest, reading at most
-`DIGEST_LANDING_EVENT_LIMIT` latest events per project. The integer count is a
-floor when that window truncates the backlog; the full digest remains exact.
-Neither landing counts nor digest requests replay graph history. Unmarked
-projects have count zero. Digest events, marks,
-and projector heads are excluded from project transfer, removed with project
-control-plane data, and included in application backup/restore.
+Project cards use the same main grouping, bounded by `DIGEST_LANDING_EVENT_LIMIT`;
+counts are floors for truncated backlogs and zero for unmarked projects. Full
+digests are exact. Events, marks, and projector heads are backed up/restored,
+excluded from project transfer, and deleted with project control-plane data.
 
 ## Desktop notification delivery
 
@@ -383,104 +361,53 @@ link. Restore voids every code along with every device.
 
 ## API composition and mutation boundary
 
-One FastAPI backend serves the JSON API and, when built, the React/Vite
-application. The optional Tauri shell starts or reuses that same backend. There
-is no second team protocol or frontend-owned background-worker runtime.
+One FastAPI backend serves JSON and the built React/Vite app; Tauri starts or
+reuses it. `api/app.py` owns composition, dispatch, startup recovery, and watcher
+runtime. Routes resolve identity/membership, validate and stage intent, then
+call the concrete owner. Canonical mutation follows
+[design invariants](../design.md#cross-cutting-invariants).
 
-`api/app.py` owns explicit composition, run dispatch, startup recovery, and
-watcher runtime. Extract another control layer only for measured owner
-collisions or a concrete testing problem, as recorded in the
-[backend structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md).
+Graph mutation responses atomically project target, head, graph, Experiment
+controls, guidance validity, transition/ruleset identity, primary question,
+counts, and causal/attention inputs from one final state. Previews are explicitly
+noncanonical and name their base head/ruleset. Backend-only derivations belong in
+these projections; UI inputs such as the trust lens stay client-side.
+`web/src/core/types.ts` restates shapes, using opaque lifecycle types to prevent
+raw-status branching.
 
-Route handlers resolve identity and membership, validate request shape, stage
-intent, and call the owning service. They never write `.research` files,
-materialized output, branch metadata, or Patch history directly.
+Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids.
+Proposal action lines include removed incident relations and `before`/`text`
+field values. Counts use that membership. Inbox, Overview, and Runs map the
+projection, never reapply predicates. Backend previews carry candidate membership;
+rule-inert drafts retain the current membership. Missing/malformed membership,
+action sets, graph member types, or inconsistent counts invalidate a snapshot.
 
-Every graph mutation response uses one strict transition projection containing
-the graph target, head, graph, Experiment-control map, guidance validity,
-transition/ruleset identity, primary question, graph counts, and any causal or
-attention inputs from the same final state. Preview responses are explicitly
-noncanonical and name their base head and ruleset. The browser renders these
-published values instead of recalculating a second transition result.
+Experiment controls publish budgets, reasons, history, health, recommendation,
+Runs section, liveness, Stop state, exact Start/Resume/Retry/provider-switch/report
+offers, and human-closed node state. Runtime, parent, tasks, budget, and report
+come from one SQLite snapshot. Task polling cannot override it. Recovery binds
+the named operation and disappears if its row is unavailable. A candidate graph
+must be synced before Start; a rule-inert prose draft needs no such fence.
+Snapshots also publish canonical mutation availability; watchers publish Check now.
 
-Any derivation whose inputs are all backend state belongs to the projection:
-for example, `EpisodeResponse.health`, `recommendation`, `live`, `can_*`, and
-`ExperimentControlState.graph_reasons`. Only derivations with a UI-specific
-input, such as the trust-view lens, stay client-side. `web/src/core/types.ts` is the
-single response-shape restatement. Fully projected lifecycles use opaque types,
-including `EpisodeStatus` and `AgentTaskStatus`, so client branching on the raw
-status cannot compile.
+Reads are start-order fenced per project/target even at equal revision. New reads,
+settings saves, and Sync fence older graph/control responses. Every branch route
+proves project and episode ownership; branch id alone grants no lookup. Both
+Experiment and Auto-research branches support lists, targets, indexes, Research,
+Inbox, Chats, and merge eligibility.
 
-Project snapshots and transition projections publish exact graph-attention
-membership as pending Proposal ids, Decisions awaiting choice, and asserted
-open Blocker ids. Pending Proposals additionally publish their ordered action
-lines, including incident relations removed with a node. A field-change line
-carries the node's current value as `before` and the proposed value as `text`;
-the card shows it as branch diffs show a changed field. Counts are lengths of
-that same projection. The browser maps those ids and action lines onto the graph
-it is presenting; Inbox, Overview, and Runs never reapply the membership or
-Proposal-operation predicates. A backend preview supplies both the candidate
-graph and candidate membership, while a rule-inert local draft retains the
-current backend membership until Sync. Cached snapshots are invalid when their
-membership or the three corresponding counts disagree with their graph. The
-browser validates the exact projection shape, exact Proposal-action membership,
-and referenced graph member types; missing or malformed membership fails the
-snapshot instead of becoming an empty attention view.
+Graph, snapshot, history, Sync/preview, and ordinary chat/task routes take optional
+`branch_id`; omission selects main, except project-wide task/watcher lists retain
+their all-target default. Snapshots include `graph_target`, exact `graph_head`,
+and `graph_changes` (null on main). A legacy cache missing the transition id keeps
+the client's known id at that revision. `graph/changes?branch_id=...` returns one
+coherent base-to-head semantic delta, neighbors, values, and Patch/task provenance.
 
-Each Experiment-control entry is also a complete read model. In addition to
-budgets, reasons, episode, and operational history, it publishes health,
-recommended action, Runs section, liveness, Start/Stop/report availability,
-pending Stop, the exact Resume/Retry and provider-switch controls, and whether
-the human has closed the Experiment node itself. The browser may translate those
-closed answers into labels and layout, but a newer task poll or raw episode field
-never overrides them. Runtime, episode parent,
-visible tasks, budget usage, and report are read inside one SQLite snapshot, so
-one response cannot splice lifecycle facts from different instants. Recovery
-controls bind to the exact operation id named by the backend and disappear when
-that task row is unavailable. A backend candidate graph must be synced before
-Start because the run endpoint still authorizes the canonical graph; a
-rule-inert local prose draft does not create that fence.
-
-Concurrent project snapshot requests are fenced per project and graph target by start order,
-including equal-revision responses. Once a newer cache, reload, watcher poll,
-settings save, or Sync starts, an older response cannot overwrite its graph or
-operational controls.
-
-A completed project snapshot publishes whether canonical graph mutation is
-available and the exact unavailable reason. Watcher responses similarly publish
-whether **Check now** is currently available. These are backend decisions, not
-client reconstructions from replay, status, or notification fields.
-
-Every branch route proves the branch belongs to the requested project and
-episode. Branch lists, targets, indexes, Research, Inbox, Chats, and merge
-eligibility reads accept both Experiment and Auto-research owners. A branch id
-alone never grants lookup. Task, watcher, episode, and Experiment detail APIs
-preserve exact `main` versus `branch:<id>` target identity.
-
-Graph, snapshot, history, Sync/preview, and ordinary chat/task routes accept an
-optional `branch_id` query naming an existing episode branch. Omitting it selects
-main; project-wide task and watcher lists retain their project-wide default.
-Snapshots publish `graph_target`, `graph_head`, and `graph_changes` (null on main).
-`graph_head` is the exact head, transition id included, that Sync/preview builds
-on. Display caches written before it named the id carry null there; the Web keeps
-the head it already observed at that revision.
-`graph/changes?branch_id=...` publishes the same canonical base-to-head semantic
-delta, changed and neighboring node ids, before/after values, and Patch/task
-provenance. The backend derives that read model from one coherent branch replay.
-A project tab reopened from the space page or another tab returns to the graph
-target it was last left on, main or branch.
-
-The durable project display cache remains main-only. A branch cached-snapshot
-request returns an explicit cache miss, and the authoritative snapshot endpoint
-opens the exact branch. Target-scoped polling observes its branch revision and
-graph mutation availability, including merge-state changes at the same revision.
-Branch reads validate refreshed state without repairing or publishing graph
-outputs; an unavailable canonical refresh fails explicitly.
-Neither a branch response nor a delayed main response may replace the other
-target's state. Experiment controls and graph-wake evaluation use that same
-target. An active branch merge publishes graph mutation as unavailable and
-rejects manual Sync and new graph writers until it settles. An owner merge
-reservation also fences new Discuss turns on that binding through cleanup.
+Durable display caches are main-only; branch cached-snapshot reads explicitly
+miss. Authoritative branch reads validate without repairing/publishing graph
+outputs and fail if refresh is unavailable. Target resources never replace each
+other. An active merge makes graph mutation unavailable, rejects Sync/new writers,
+and fences new Discuss turns on the reserved binding through cleanup.
 
 ## Human question API and cards
 
@@ -519,9 +446,9 @@ submission. Free text remains available with either choice format. A parked
 chat answer with no running turn names Discuss or Work continuation on its submit
 control, matching the asking turn's capability.
 Experiment and Auto-research detail show the same cards; withdrawn cards retain
-their history with an **Episode ended** state. Question refresh follows existing
-chat and episode refresh/polling, including turn command/state changes and the
-active project heartbeat. Fresh pending rounds show a cobalt **Agent is waiting**
+their history with an **Episode ended** state. Chat and episode views select
+questions from the shared project resource, refreshed by its watermark and
+invalidated by question commands. Fresh pending rounds show a cobalt **Agent is waiting**
 pill; otherwise the open card shows **Needs you**.
 Question notifications open the corresponding chat or expanded episode view.
 
@@ -613,10 +540,15 @@ second job-list polling lifecycle.
 
 ## Atomic client project snapshots
 
-The Web client stores a bounded project snapshot keyed by project id and exact
-head. A successful mutation atomically replaces graph, control, guidance,
-transition manifest, and derived inputs. The client never overlays a new graph
-on an old control map and never implements transition rules.
+The Web client holds one atomic `graph` resource per project and ref. Graph,
+control, guidance, attention, and head are accepted together, including control
+changes at an equal graph revision. History and the parameterized transition
+manifest use the same graph watermark. The client never overlays a new graph on
+an old control map and never implements transition rules. Human drafts and
+preview coordination remain local per ref and reconcile against accepted data.
+Chats, watchers, episode indexes and entity timelines use their own resources;
+transcripts are keyed by their owning ref. Merge previews remain demand-only,
+keyed by the episode, target, and preview inputs.
 
 Human edits that the backend manifest proves rule-inert may update a local draft
 immediately. A possible trigger, absent manifest, or stale tag previews through
@@ -643,465 +575,249 @@ actions are labelled historical and never rendered as current guidance.
 
 ## Revision observation and drafts
 
-Visible clients notice canonical main changes without browser reload or
-repurposing the Seed/Refresh action. Every open project tab sends a cache-only
-heartbeat on the bounded visible cadence; the active tab observes completed
-cached revision updates more frequently, and visibility resume sweeps all tabs.
-A teammate's action can change state without moving the graph revision, so the
-main heartbeat also carries signals for it. It names the newest visible task
-and the newest watcher; one the active tab has not loaded makes it reload that
-list. A task status digest moves when any visible task changes status or
-finishes, not on progress; a moved digest rereads the task list, and an
-inactive tab stores it in its retained state, so returning to the tab shows
-each agent's current status before the reload. It also carries digests of the
-settings fields and of each Experiment's lifecycle fields (not its progress); a
-changed digest reloads the project.
-A steer lives only in the chat history, so each chat task also reports a steer
-revision, bumped when a steer is queued and again when its final receipt is
-written. A changed revision makes other members' pages refresh chat summaries,
-which reloads an open transcript. A composer draft never leaves its page.
+One store per backend/member holds resources keyed by project, resource, and
+applicable ref/entity/query. Feature-owned profiles supply fetch and reconciliation;
+components select from that store. Tabs retain UI state only: selections, panels,
+drafts, scroll, and editor generations. Each open tab subscribes to its current
+ref; other visited refs stay dormant until reopened. There is no count cap or
+unvisited-ref warming. Closing a tab releases its resources.
 
-A heartbeat may schedule one bounded lock-free, single-flight remote-head probe
-per project. A temporarily unavailable head does not replay or copy the graph.
-An unchanged head also skips that work unless the cached canonical state is
-offline: a successful probe then triggers authoritative reconciliation before
-clearing the offline state. Movement starts the same background reconciliation;
-an older result may not replace a newer cache.
+One completion-scheduled watermark request sends the complete open set. Active
+projects are due every second, hidden projects every third beat, and expired
+deadlines immediately. Only one request runs at a time, with a five-second
+browser timeout and failure backoff of 3, 6, 12, then 30 seconds. Hidden pages
+pause; becoming visible coalesces validation. Payload reads use three slots,
+at most one for background work, with active priority and aging to prevent
+starvation. Activation paints cached data and promotes reads without awaiting SSH.
 
-Reconciliation preserves human drafts. A staged node whose canonical revision
-did not move stays committable. One that moved becomes behind and is excluded
-from Sync until the human edits it or reversibly swaps an incoming field into
-the draft. Paper drafts use their own equivalent whole-document rule. Display
-caches never become canonical input or graph authority.
+Every read captures its immutable key, lifecycle generation, and start sequence;
+only a matching read commits. Observed and committed tokens are separate: failed
+or superseded reads keep their refresh debt. Epoch changes fence all resources
+and clear both tokens. Backend/member changes reset the store. Unavailable
+projects lose route, tab, resources, and viewport. Contact failures preserve data
+with an accessible stale marker; remote-sync health has its own marker.
+
+All open tabs watch project-wide task status; only the active tab watches progress
+and displayed task details. Other resources have their own tokens/profiles. Task
+completion does not trigger a reload bundle. Paper is an ordinary profile with
+its own [draft-version guard](paper-artifacts-and-result-views.md#human-paper-authorship).
+
+Commands fence affected reads and install operation-id pending overlays;
+conflicting commands serialize. Success replaces the overlay with the response;
+a definite failure removes only that overlay and offers retry without losing
+newer state or typed text. Ambiguous chat sends retain their card and idempotency
+key for Resend; ambiguous task actions reread the task and retain the key, rather
+than claim failure. Reads cannot regress behind accepted mutation responses.
+
+**Why:** One resource owner and one acceptance rule prevent active/hidden tabs,
+restored UI state, and late target reads from overwriting each other. Status-only
+subscriptions keep progress from causing hidden-tab traffic.
+
+Draft previews are demand-only and input-keyed. PTY sockets, artifact execution
+and viewer live data, voice watches, and the landing Runs ledger stay outside
+this refresh loop. Explicit probes and mutations publish or invalidate resources.
+A staged node stays committable if its canonical revision did not move; otherwise
+it is behind and excluded from Sync until edited or an incoming field is
+reversibly swapped in. Paper uses its whole-document equivalent. Display caches
+are never canonical input.
 
 ## Project index and identity
 
-The project index keeps project cards first and one distinct space-level
-**Runs** ledger below. It aggregates the current Experiment-loop parent selected
-by each Experiment's backend control with Auto-research parents across visible
-projects. **Needs Action** and **In progress** each stay unfolded and mix both
-modes in reverse chronological order, under the same truthful split the project
-ledger uses; **Completed** folds by Experiment loop then Auto-research.
-The backend owns membership, lifecycle placement, health, project identity, and
-the exact Experiment route. The space ledger keeps completed parents for seven
-days, without deleting episode records or changing project Runs or History.
-Auto-research rows carry their exact episode identity into project Runs, so a
-completed or non-leading row opens that parent rather than the default card.
-That exact parent is read independently when it falls outside the project's
-bounded episode list.
+The index leads with project cards, then a space Runs ledger across visible
+projects. Backend projections select Experiment parents and Auto-research chains,
+health/section, project identity, and exact routes. Needs Action/In progress mix
+modes newest first; Completed folds by mode and keeps seven days without deleting
+records. Exact Auto-research parents outside bounded lists are fetched separately.
 
-The index header contains the compact current-human identity control. An unnamed
-personal owner sees **Sign in** as naming the durable local identity, not creating
-an account. The panel shows editable display name and exact read-only copyable
-user id. A team member uses the server login/session boundary and can manage
-their own credential. Pending project invitations appear on the index.
+The header identity panel edits display name and shows a copyable user id.
+An unnamed personal owner's Sign in names their durable identity; authentication
+is separate. Team members manage their credential through the team boundary.
+Pending invitations appear here. Membership-hidden projects never appear locked;
+access loss closes their tabs and returns to index.
 
-The team identity panel includes **Devices**, listing the member's unexpired
-sessions with connection and last-seen times. **Current device** has no Revoke
-control; ending it remains Logout. The panel refreshes on opening and after a
-successful revoke, and offers an explicit Refresh action.
+Team Devices lists the member's unexpired sessions, refreshing on open, revoke,
+or explicit Refresh. Current device uses Logout, never Revoke. `GET
+/api/team/sessions` returns `session_id`, label, creation/last-seen/expiry times,
+`is_current`, and backend `can_revoke`. Public ids are random UUIDs unrelated to
+secrets; listing does not renew other sessions. `POST .../sessions/{id}/revoke`
+returns `{ok: true}`; unknown/expired/foreign ids share 404, current returns 409.
+These routes are 404 in personal spaces and retain auth/origin checks.
 
-**Connect a device** in that panel issues a pairing code through
-`POST /api/team/devices/pairings` and shows it once, with its expiry, until the
-member dismisses it or the code ends. A team may carry an **access address**, the
-https origin members open on their own devices (typically the tailnet front in
-front of the server). It is operator-set in the installed server configuration
-(`access_url` in `/etc/rcp/team.toml`, or `RCP_TEAM_ACCESS_URL` for a
-source-run server) and read-only to members: `GET /api/team/space` returns it
-with the team name, `PATCH /api/team/space` changes only `name`, and doctor
-reports it as `team_access_url`. When the address is set, the issued code carries
-`connect_url = <access_url>/#pair=<code>` and the card draws it as a QR code
-beside the code; a phone that scans it lands on the login screen with the code
-filled in. Without an address the card says how to set one. While the code is
-visible the panel polls
-`GET /api/team/devices/pairings/{pairing_id}`, whose `status` is `waiting`,
-`consumed`, `expired`, `revoked`, or `locked`, and refreshes Devices on
-`consumed`. A code is bound to the session that issued it: when that session is
-revoked, logged out, expired, or removed by credential rotation, the code reads
-`revoked` and cannot be redeemed. A member holds one live code: issuing another
-withdraws the previous unused one. Codes are
-ten characters from an alphabet without I, O, 0, or 1, shown as `ABCD-EFGHJK`,
-expire after ten minutes, are single use, and lock after five wrong secrets like
-enrollment codes; the server stores only the hash of the secret.
+Connect a device POSTs `/api/team/devices/pairings`. One live code per member
+replaces the previous unused one. Codes have ten unambiguous characters, display
+as `ABCD-EFGHJK`, expire in ten minutes, are single use, lock after five failures,
+and store only secret hashes. Ending the issuing session revokes its code.
+The visible card polls `.../pairings/{id}` for waiting/consumed/expired/revoked/locked;
+consumed refreshes Devices.
 
-The unauthenticated team login boundary offers device pairing first: a **Device
-code** field and a required **Name this device** field, submitted to the public
-`POST /api/team/devices/pair`, which creates an ordinary session carrying that
-label and sets the same cookie as exchange. A second mode, **Sign in with a team
-token instead**, keeps the credential slip. The pairing route never sees or
-returns the member token, needs no team-shell protocol declaration, and shares
-the public-body size bound with enrollment and exchange. Its failures map to
-401 (invalid), 409 (used), 410 (expired), and 429 (locked).
+Operator `access_url` in `/etc/rcp/team.toml` (source: `RCP_TEAM_ACCESS_URL`) is a
+read-only HTTPS origin. GET `/api/team/space` returns it; PATCH changes only name;
+doctor reports `team_access_url`. Configured codes include
+`connect_url = <access_url>/#pair=<code>` for QR; otherwise the card names setup.
+See [device pairing](../device-pairing.md) for the operator/member journey.
 
-`POST /api/team/session/exchange` accepts an optional human-authored `label`
-string of at most 80 characters. Omission stores `Unnamed device`; migration 14
-also assigns that literal to existing sessions. The label is stored and rendered
-as untrusted display text, without normalization or inference from request
-fingerprints. Supplying a label remains optional for every supported native
-protocol version. There is no rename route or label-entry screen in this change.
+Public `POST /api/team/devices/pair` accepts Device code and required Name this
+device, creates an ordinary labelled session, and sets the exchange cookie.
+It neither receives nor returns the permanent token or needs shell negotiation.
+Public enrollment/exchange body bounds apply. Failure codes are 401 invalid,
+409 used, 410 expired, 429 locked. Login also offers team-token sign-in.
+Session exchange accepts optional untrusted `label` <=80 characters, defaulting
+to Unnamed device without fingerprint inference. There is no rename route.
 
-`GET /api/team/sessions` returns only the acting member's unexpired sessions.
-Each entry exports `session_id`, `label`, `created_at`, `last_seen_at`, `expires_at`,
-`is_current`, and `can_revoke`. The backend computes both decisions and reports
-the current authenticated session as not revocable. Public identifiers are
-independent random UUIDs, never session tokens, hashes, or derivatives of either.
-Listing does not refresh other sessions' idle expiry.
-The source-built desktop holds one session per saved connection. It keeps the
-exchanged session's secret (the cookie value alone; Apple's Keychain tool keeps
-only 128 prompt characters, so the whole Set-Cookie line does not survive) in
-the Keychain beside the member token, rebuilds the cookie from it, verifies it
-against `/api/identity` at launch, at Reconnect, and before each native request,
-and exchanges a new session only when the server answers 401. One desktop is
-therefore one row in Devices across launches. Forgetting the connection on the
-desktop discards the saved session locally; its server row idles out or is
-revoked from another device.
+The desktop retains one session per saved connection. Keychain stores only its
+cookie secret (not the oversized Set-Cookie line), alongside the member token.
+Native launch, Reconnect, and requests verify identity; only 401 triggers exchange.
+Forgetting discards the local copy; the server session expires or is revoked.
 
-`POST /api/team/sessions/{session_id}/revoke` deletes that member's named session
-and returns `{"ok": true}`. Unknown, expired, and other members' identifiers all
-return the same 404; the current session returns 409 directing the member to
-Logout. Other sessions and the member credential remain usable. Both routes
-inherit team authentication and mutation-origin enforcement, and return 404 in
-a personal space. A personal identity panel's **Devices** section lists
-notification targets instead: **This Mac** and notify-only phones, which have
-Remove rather than Revoke, and **Connect a phone**.
-
-In a team space each session row shows its notification state (on, off, or
-Delivery failed). Only the current device's row has **Turn on**, **Turn off**,
-and **Test**; in the Mac app it drives native notifications, and in a browser it
-subscribes to Web Push, asking for permission only from that tap. A browser
-without Web Push capability is told to add RCP to its Home Screen. Each
-signed-in browser visit re-registers a live subscription, keeping its device,
-and removes a server device whose browser subscription is gone.
-
-Projects hidden by membership never appear as locked cards. Losing access
-closes its open tab and returns to the index.
+Personal Devices instead lists notification targets (This Mac/notify-only phones)
+with Remove and Connect a phone. Team rows show notification on/off/Delivery failed;
+only the current device offers Turn on/off/Test. Native uses macOS notifications,
+browsers Web Push, with permission requested only on tap. Unsupported browsers
+get Home Screen guidance. Visits re-register live subscriptions and remove server
+registrations whose browser subscription is gone.
 
 ## Confirmed team desktop target
 
-The first team client is the source-built desktop app. Its local project
-index groups the personal space and saved team connections without making the
-local backend an authority for any team project. Each connection stores
-nonsecret routing metadata, its expected `space_id`, compatibility information,
-and bounded last-known project cards. The permanent member token stays in the
-operating system credential store and is absent from URLs, page storage, saved
-connection JSON, logs, and Tauri command output.
+The macOS desktop groups personal projects and saved team connections on its
+local index. Each connection holds nonsecret routing, expected `space_id`,
+compatibility metadata, and bounded cached cards. Permanent tokens stay in the OS
+credential store, never URLs, page storage, registry JSON, logs, or command output.
+**Add team space** opens the SSH tunnel, checks identity, then enrolls with a code
+and name or exchanges an existing token. Native storage captures issued tokens;
+the secret field and IPC request are cleared after that operation.
 
-**Add team space** first establishes the SSH tunnel and verifies the nonsecret
-space identity. A new member enters a bootstrap/invitation code and display name;
-an existing member may enter their permanent token. The controlled secret field
-and IPC request are cleared after the one enrollment/storage operation. A newly
-issued permanent token is captured by the native shell and written directly to
-the credential store. No secret becomes local-backend state or cached connection
-metadata.
+Before enrollment, token exchange, project-card reads, or cookie installation,
+the shell negotiates the highest overlap of inclusive integer protocol ranges
+and requires the exact echoed integer. Missing/mismatched negotiation or changed
+`space_id` refuses the connection; diagnostics name both source commits and a
+compatible release/update path. Semantic versions and commit order are not the
+protocol. Personal work remains usable; unavailable team cards remain labelled.
 
-The native shell uses the system SSH configuration and agent to hold a loopback
-tunnel to the team server. Before establishing a browser session it checks
-health and the expected `space_id`, then selects the highest overlap between its
-compiled inclusive team-shell protocol range and the server's advertised range.
-It sends that selected integer on enrollment, permanent-token exchange, and the
-bounded project-card read and requires the server to echo it exactly before it
-installs the HTTP-only cookie. A missing range, no overlap, or a missing or
-different echo refuses the connection. The error names the observed desktop and
-server source commits and tells the member which side to update or rebuild from
-current `origin/main`; Git commit ordering and application semantic versions are
-not compatibility protocols. A changed `space_id` likewise blocks mutations
-until the human explicitly reconnects. An unavailable or incompatible team
-connection leaves personal work usable and shows its cached cards as
-unavailable.
+Desktop supports `[3, 4]`, server `[1, 4]`. Protocol 1 forbids team deletion;
+2 permits deletion only with negotiated support and the exact confirmation;
+3 adds optional reviewed `source_commit` and `rcp-transfer-v2` Git archives,
+while accepting omitted commits/v1 archives; 4 adds optional
+`record_schema_version=2` for episode archives. Archive-free transfers retain
+prior bytes; incompatible peers refuse preparation before source release.
+Breaking contracts get a new immutable version; retirement is explicit.
+The range governs native bootstrap and relay, not server operations, provider
+work, or the server-served Web/API. Negotiation is live, never durable authority.
+Registry version 3 migrates version 2 without changing identity, routing, cards,
+operator metadata, or Keychain references. Unknown versions/fields fail closed,
+except cached cards and extensible sign-in responses. Cards keep id, name, and
+attention count, ignore other fields, and are dropped to fit the size bound;
+server display text cannot fail a connection.
 
-The current desktop range is `[3, 4]` and server range is `[1, 4]`. The desktop
-selects `4` with a current server, keeps protocol-3 connections, and refuses
-servers below protocol 3 before enrollment or transfer. Updated servers still
-accept older protocol-1/2/3 clients.
-Protocol 1 keeps team
-project cards non-deletable. Protocol 2 adds team deletion: cards may advertise
-`can_delete=true` together with the exact `delete_confirmation`, and a team DELETE
-is refused with the protocol-mismatch response unless the caller selected 2 or newer.
-Protocol 3 preserves that contract and adds native transfer relay support for
-optional reviewed `source_commit` fields and `rcp-transfer-v2` Git archives;
-legacy omitted-commit requests and v1 archives remain accepted. Protocol 4 adds
-the optional `record_schema_version=2` source-configuration field so episode
-archives travel with operational history. Archive-free transfers retain the
-previous configuration and record bytes. Older clients or targets that cannot
-decode the extension refuse preparation before source release. A breaking
-change adds a new immutable per-version contract before either end advertises
-it. Narrowing a range is explicit retirement, not an automatic current-plus-
-previous or time-based rule. The native handshake ends after
-health/source/space identity, enrollment or token exchange, returned member
-identity, bounded project cards, and HTTP-only browser-cookie installation. It
-does not include server operations, provisioning policy, provider work, or the
-ordinary server-served Web/API surface. Native transfer relay wire compatibility
-is versioned here because the desktop, not the server-served Web app, sends it;
-this is not an operator-capability or per-feature discovery registry.
+Each space serves its own index. Leaving a project returns there; **Exit team
+space** on the team index reloads the personal backend. Only the personal index
+shows multiple spaces. HTML uses `Cache-Control: no-cache` with ETag validation
+so reload/entry sees updates; hashed assets retain normal caching.
 
-Compatibility is negotiated live and is never durable connection authority.
-Registry version 3 removes the shipped `minimum_shell_version` field through an
-automatic version-2 migration while preserving connection identity, SSH target,
-local origin, expected space, cached cards, operator route, and the independent
-Keychain credential reference. Unknown registry versions or fields still fail
-closed, except inside cached project cards. Cards are display data: the desktop
-keeps each card's id, name, and attention count as the server sent them, ignores
-other card fields, and drops cards to fit the registry size limit. Server text
-never fails a connection. Sign-in responses likewise accept added fields; only
-identities and protocol are checked.
+The shell runs `/usr/bin/ssh` directly with argv, batch authentication, no remote
+command/TTY, exit-on-forward-failure, bounded timers, keepalives, no control
+sharing/backgrounding, and one loopback forward to the configured server port.
+Existing SSH config/agent supplies host and key policy; RCP never prompts for an
+SSH password. A dual-stack loopback TLS listener forwards only to that private
+SSH listener. Healthy tunnels are reused only while origin, target, and port
+match; failed/changed tunnels back off before replacement.
 
-HTML pages from the Web mount carry `Cache-Control: no-cache`, so every load
-revalidates by ETag and a server update reaches the next team-space entry or
-reload. Without it WebKit kept an old page fresh for a tenth of its age, hours
-after an update. Hashed `/assets` files keep default caching.
-
-Each space serves its own project index, so leaving a project returns to the
-index of the space that project is in, by the same control and shortcut in
-both. Leaving the space is a separate explicit action: the team index names the
-active space and carries the one **Exit team space** control, which reloads the
-local backend. The local index is still the only screen that shows more than
-one space at a time; the identity record names the saved team spaces without
-becoming a second way into them.
-
-For a saved connection, the macOS shell launches `/usr/bin/ssh` directly with
-argument-vector execution, batch authentication, no remote command or terminal,
-exit-on-forward-failure, bounded connect/readiness timers, keepalives, disabled
-control sharing/backgrounding, and one explicit
-`127.0.0.1:<ephemeral>:127.0.0.1:<configured-server-port>` forward. It therefore
-uses the member's existing SSH config and agent for host, key, proxy, and host
-verification without accepting an interactive password prompt inside RCP. A
-desktop-owned dual-stack loopback TLS listener presents the desktop identity at
-the saved HTTPS origin and forwards plain bytes only to that private SSH
-listener. One healthy connection is reused only while origin, SSH target, and
-remote port still match; an ended, changed, or failed connection observes a
-short backoff before replacement.
-
-The team backend's mutation-origin check recognizes that one exact boundary: a
-request received over the private HTTP side of the tunnel may carry the matching
-generated `https://rcp-<connection-id>.rcp.localhost:<port>` origin. It does not
-accept any other HTTP-to-HTTPS origin substitution. This keeps browser mutation
-protection aligned with the desktop TLS terminator instead of rejecting the
-desktop's own invitation and team-control requests.
-
-A personal backend listens on a predictable loopback port, so any web page can
-aim requests at it, and its owner cookie is the session those requests would ride. Browsers send a cross-site POST
-without a CORS preflight only when it has no content type or a simple one
-(`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`).
-The personal backend refuses those POSTs with 415
-`personal_simple_request_refused`. The one exception is the multipart chat
-attachment upload, matching the team rule. PUT, PATCH, and DELETE always
-preflight. Every RCP client already sends `application/json`, or
-`application/octet-stream` for transfer proofs.
-
-Tunnel admission owns saved-row lookup and closes before removal, Quit, or
-desktop update drains children. A failed lifecycle operation explicitly reopens
-admission only when the app returns to service. A cleanup failure keeps the
-unconfirmed child record for retry while its supervisor remains live and for
-diagnostics otherwise, instead of forgetting ownership. The personal origin may
-connect any saved row, while a team origin may reconnect only its own exact row.
-A team page whose request never reaches its backend (the SSH tunnel ended, for
-example across sleep) uses that right itself: one recovery at a time calls the
-native Reconnect with a capped backoff until it succeeds, then reverifies,
-never replaces, the accepted backend identity and reloads the active project or
-project index, so the page recovers in place and a changed backend still stops it. None of these operations signal or restart the
-remote RCP service.
-
-A failed backend check never unmounts what the page already shows for that
-backend. While the check fails, and while the identity read that follows
-recovery runs, a blocking reconnect overlay covers the rendered project or
-index, so scroll, open panels, and unsent text survive. Recovery that confirms
-the same backend (version, instance, data-directory identity, and space)
-reconciles the open project with an ordinary reload, never a fresh open. A
-check that observes a changed backend replaces the page with the reconnect
-screen, and the project opens from scratch after the human reconnects.
-
-Every saved space receives a stable, distinct loopback origin. Different ports
-on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
-tunnels would collide on the shared `__Host-` session-cookie name. The shell
-uses
+Each saved connection has a stable origin:
 `https://rcp-<connection-id-without-hyphens>.rcp.localhost:<local-port>`.
-Navigation admits only exact origins derived from its validated saved-connection
-registry. The desktop stores one versioned authenticated-encrypted
-certificate/private-key file and keeps only its 32-byte sealing key in the
-operating-system credential store. Source builds access that key through
-Apple's signed Keychain tool with an ACL pinned to that tool, not an ad-hoc app
-cdhash; the value never enters argv, URLs, page state, logs, or native command
-output. The desktop pins the certificate in the live WKWebView navigation
-delegate and never installs system-wide trust. A malformed, unauthenticated,
-unknown-version, or partial identity/key pair fails startup rather than being
-silently replaced. The current version-4 identity record stores its expiration,
-uses a 365-day explicit non-CA leaf for `*.rcp.localhost` with TLS server-auth
-and key-usage extensions, and rotates atomically during the final seven days.
-Valid earlier identity records are reissued through the authenticated identity
-owner, while the exact previously shipped `rcp-<id>.localhost` registry origin
-migrates without changing the saved team connection or its member credential.
-The macOS bundle makes the narrow ATS exception required for manual server-trust
-evaluation only for `rcp.localhost` and its direct subdomains. This does not
-permit HTTP application navigation: the proxy speaks TLS, navigation still
-requires one exact saved HTTPS origin, and the native handler accepts only the
-pinned leaf after hostname, validity, and server-use evaluation.
-Each team's TLS listener closes any connection whose SNI is not that team's
-alias before opening its upstream, so a shared wildcard leaf never routes one
-team's host-bound cookie to another team's server.
-The tool ACL solves source-rebuild stability; because a same-UID process can
-invoke the same general-purpose Apple tool, it is not same-account read
-isolation. That limitation is accepted under the current cooperative provider
-model for source builds and for the unsigned prebuilt app alike: an unsigned
-app has no stable signing identity to bind access to, and neither kind of build
-is more exposed than the other. App-bound credential access is later work.
-Team tokens use the versioned service
-`app.researchcontrolpanel.rcp.team-member-token.source-v1` and a distinct
-connection account. The immediately preceding D4 checkpoint never created a
-saved team registry or a token in its unversioned pre-live namespace, so this
-source-mode namespace break has no credential to migrate.
-The Tauri capability covers the bounded hostname family, but the saved-origin
-navigation check and certificate pin remain independent fences. The production
-boundary and its real-WKWebView evidence are recorded in the
-[local HTTPS decision](../decisions/2026-08-30-desktop-local-https-origins.md).
+The main window admits the personal backend, applicable Vite origin, and exact
+validated saved HTTPS origins. A bounded Tauri hostname capability is not
+navigation authority. The backend recognizes only the corresponding generated
+HTTPS Origin over its private HTTP tunnel boundary.
 
-The ordinary browser can use the team server UI when transport already exists,
-but it cannot own multi-space routing, credential storage, SSH tunnels, or
-server-command execution, so it does not advertise the native **Add team space**
-action. A saved connection that cannot establish a session stays visible with
-its bounded cached cards, the native failure diagnostic, and a reconnect action;
-it never becomes an apparently empty or local space. Source mode is the
-supported client for this slice; a packaged Linux client is not required.
+One desktop certificate/private-key pair lives in an authenticated encrypted
+0600 file; only its 32-byte AES-256-GCM sealing key is in Keychain. Apple's signed
+Keychain tool carries the key through pipes, never argv, using its stable tool
+ACL. The version-4 record holds expiration; its 365-day non-CA leaf covers
+`*.rcp.localhost`, includes TLS server/key usage, and rotates atomically in its
+last seven days. Valid older records are reissued; malformed, unauthenticated,
+unknown-version, or partial file/key pairs fail startup. New identity is generated
+only when both halves are absent. Exact old `.localhost` registry origins migrate
+without replacing connection identity or credentials.
 
-Project creation and transfer use one visible project wizard. Its three named
-intents are **Use an existing checkout personally**, **Create a shared team
-project**, and **Move an existing personal project to a team**. An entry point
-may preselect an intent, and both the personal project card menu and Project
-Settings deep-link to the move intent, but the user does not encounter separate
-personal, provisioning, and transfer wizards. Each backend exports only its own
-product eligibility, preselection, required fields, and any pinned source
-identity. The desktop-native bridge
-separately exports relay capability and its authenticated saved team targets.
-The wizard offers move only by intersecting explicit permission from the
-personal backend, explicit admission from the selected team backend, and that
-native capability answer. A browser has no native capability answer and cannot
-offer cross-space move. The Web does not infer product authority from
-`space_kind`, paths, saved-connection presence alone, or native-global
-detection.
+WKWebView trusts only the pinned leaf after hostname, validity, and server-use
+checks. ATS has a narrow exception for `rcp.localhost` and its direct subdomains;
+there is no system trust installation or HTTP app navigation. Each TLS listener
+rejects another team's SNI before opening upstream. Team tokens have a versioned
+credential-store service and a distinct account per connection.
 
-The modes retain their separate authority owners behind that shared surface.
-Personal setup calls the ordinary path-based preflight/finalizer. Team creation
-creates a backend-owned durable provisioning request with derived central paths.
-Each repository accepts an optional GitHub `source`; omitted, null, or blank
-means server only. The repository truth choice `count_as_project_truth` defaults
-to true. The response exposes `source_kind` (`github` or `server_only`), a
-nullable repository identity and GitHub URLs, and the truth choice. Request kinds
-also include `add_repository` and `connect_repository`, whose
-`target_project_id` identifies the existing project. Reading those requests
-requires current membership in that project.
-`POST /api/projects/{project_id}/repository-requests` accepts either
-`{"kind":"add_repository","repository":{"alias","source"?,"machine_alias","count_as_project_truth"}}`
-or `{"kind":"connect_repository","alias","source"}` and returns the ordinary
-provisioning response. Placement uses an existing project machine. Setup runs
-through `rcp server project provision <request-id>`. The ordinary completion
-endpoint accepts the review digest; for repository requests only the requesting
-current project member may confirm. Add applies manifest membership and the truth
-choice through a human approval transition, bound to the captured manifest/head.
-Connect preserves the manifest. Server-only setup and both repository request
-kinds expose the same setup and review controls as team creation.
-Native provisioning and transfer parsing preserve nullable sources. The native
-relay sends no GitHub URL for a server-only repository and requires its reviewed
-commit and Git bundle; GitHub repositories keep their optional bundle choice.
-Personal-to-team transfer creates linked requests
-in the two authenticated backends and is available only in the
-source-built desktop because its native shell owns the archive relay. A direct
-team request to `/api/projects`, `/api/project-setup/preflight`,
-`/api/project-setup/ssh-paths`, or `/api/project-setup/create` is refused before
-request-body interpretation,
-filesystem inspection, or catalog mutation. The separately validated
-provisioning finalizer is the only team-project entrance into the existing
-setup/registration owners.
+**Why:** Cookies ignore ports, and WKWebView requires HTTPS for the Secure team
+cookie. Distinct hosts isolate sessions; `*.rcp.localhost` gives a normal one-label
+wildcard. Exact origin, certificate pin, and per-listener SNI checks serve separate
+purposes. The tool ACL survives unsigned rebuilds but gives no same-account read
+isolation, for source or prebuilt apps; app-bound credentials need a stable
+signing identity.
 
-The personal public backend health projection carries adoption identity. Team
-public health keeps the full runtime and project-creation projection for its
-existing bootstrap consumers. The protected health details projection carries
-runtime fields in both spaces. `version` remains the full
-package `__version__` verbatim, and
-`running_commit` keeps its existing meaning as the commit recorded for the
-running installed process. It additionally publishes `build` as the integer
-package build number or null for a source checkout, `commit` as the package
-build's 7-to-40-character hexadecimal commit or null. Protected details expose
-`schema_ledger_head` as the newest applied storage-migration number read from
-the data directory's ledger.
+Tunnel admission closes before removal, Quit, or Update drains children. Failed
+lifecycle work reopens admission only on return to service; unconfirmed cleanup
+retains ownership for retry/diagnostics. Personal pages can connect any saved row;
+a team page can reconnect only its own. Native Reconnect is single-flight with
+capped backoff, then rechecks identity without restarting the remote service.
 
-The protected health details projection also carries one `project_creation`
-control with all three
-intent identities, per-intent eligibility and preselection, primary action
-label, required fields, pinned source identity when one exists, and an explicit
-unavailable reason. The durable provisioning response similarly publishes the
-status and check labels, exact next action, `can_run_setup`, `can_review`,
-`can_cancel`, canonical repository URLs, intended and resolved paths, readiness
-counts, structured operator action, safe CLI argv, and final-review binding. The
-Web seals the complete provisioning and check-status vocabularies and consumes
-those answers instead of rebuilding lifecycle policy from strings.
+Backend contact failure keeps the rendered page beneath a blocking overlay,
+preserving panels, scroll, and text. Same version/instance/data-directory/space
+recovery reconciles normally; changed identity requires explicit reconnect and
+a fresh project open. Ordinary browsers can use a reachable team UI but cannot
+own tunnels, credentials, multi-space routing, or native commands, and do not
+offer Add team space.
 
-A provider-check projection also carries the nonsecret proof read back from the
-server: resolved executable path, provider version, durable runtime id, observed
-execution account, and check time. Those fields are present only for a ready
-check; credentials and provider-home paths are never response fields. The Web
-renders or relays this backend evidence and does not reproduce provider version,
-model, runtime, authentication, or OS-account decisions.
+One project wizard offers **Use an existing checkout personally**, **Create a
+shared team project**, and **Move an existing personal project to a team**.
+Project cards and Settings can preselect Move. Each backend publishes its own
+eligibility, required fields, preselection, and pinned identity. Move requires
+personal permission, target admission, and explicit native relay capability;
+space kind or saved connections alone confer no authority.
 
-The UI renders the backend's status, diagnostic, exact next action, resolved
-paths, and final review. It cannot claim success from a desktop subprocess exit
-code. The new-team wizard leaves the GitHub URL optional: blank means server only.
-The draft ledger and repository review identify server-only repositories, with
-one plain notice that their code is not backed up. Setup announces the empty
-RCP first commit on main, including its push for an empty GitHub repository.
-RCP does not collect GitHub user authentication.
+Personal setup uses path preflight/finalization. Team creation uses durable
+provisioning requests and central paths. Repositories take optional GitHub
+`source` (blank/null means server-only) and `count_as_project_truth` (default true).
+Responses expose `source_kind`, nullable repository/GitHub identity, and truth
+choice. `POST /api/projects/{id}/repository-requests` accepts `add_repository`
+(alias, optional source, machine alias, truth choice) or `connect_repository`
+(alias, source). Existing project membership gates reads and requester confirmation.
+Add commits membership/truth through a human transition bound to the reviewed
+manifest/head; Connect preserves the manifest.
 
-Team Project Settings offers one-repository add and connect requests through
-`POST /api/projects/{project_id}/repository-requests`. Add takes an alias,
-optional GitHub source, machine, and a checked-by-default project-truth choice.
-Connect appears only on a server-only repository with `can_connect` from the
-Settings projection. Both open the existing request-id provisioning view, with
-its server command, polling, and explicit final review; submitting Settings
-never confirms the request. Backend execution and authority remain with their
-provisioning owners.
+All requests use the same setup/review controls and
+`rcp server project provision <request-id>`. Settings submission never confirms.
+Team direct `/api/projects` registration and `/api/project-setup/{preflight,ssh-paths,create}`
+are refused before parsing or filesystem access. Only the validated provisioning
+finalizer reaches registration. Server-only review warns code is not backed up;
+empty setup announces its first main commit and optional GitHub push. RCP collects
+no GitHub user authentication.
 
-Transfer setup does not choose target URLs. A repository with a GitHub origin
-keeps that identity on the team server; one without an origin transfers as
-server only, which the review shows, and its Git bundle is required.
+Transfer links requests in both backends. GitHub repositories retain their origin;
+server-only repositories require the reviewed commit and Git bundle. Native parsing
+preserves nullable sources. Target URLs are not selected during transfer.
 
-A saved member connection and an operator route are distinct capabilities even
-when they use the same SSH host. The source-built desktop stores the latter as
-nonsecret native metadata: either an explicit direct `rcp@host` target or one
-named operator target using `sudo -n -u rcp -H`. The Web derives which from the
-target's login, so the human enters only the SSH target. **Run setup now** appears only
-after a native read-only probe proves that exact route can invoke the fixed `rcp
-server project provision <request-id> --machine-readable` command. The shell
-passes a validated request id as an argument and never executes arbitrary
-command text returned by a server. It bounds the structured events, checks that
-they come from the expected fixed command, and screens them for credentials. The
-server owns their step order and text. Success comes only from an authenticated
-durable request readback from the expected team space. If SSH or `sudo` needs interaction, the
-app shows or opens the same fixed command in Terminal; it never collects a
-private key or privilege password. The browser shows a copyable operator command
-instead, written as `sudo -u rcp -H …` so it runs as pasted from the operator's
-own login on the server.
+Health details publish package `version`, installed-process `running_commit`,
+nullable package `build` and hexadecimal `commit`, and `schema_ledger_head`.
+Their `project_creation` projection names all three intents and exact actions.
+Provisioning projects labels/tones, diagnostics, paths, readiness counts,
+`can_run_setup`, `can_review`, `can_cancel`, safe operator argv, and review binding.
+Ready provider checks include executable/version/runtime/account/time proof,
+never credentials or provider-home paths. The Web renders these answers; native
+subprocess success alone never proves completion.
 
-CLI structured progress is presentation input only. The CLI reports each state
-change to the lock-owning backend through its private local control channel, and
-the Web UI refreshes the durable request. Only the final explicit human review
-may create or re-home the project. For personal-to-team transfer, one desktop
-review action calls both already-authenticated backends in a fixed order: target
-admission first, then source release. Each backend records its own human actor;
-the native relay and remote CLI cannot provide either confirmation. A partial
-first confirmation is durable state that the same request resumes, not evidence
-that the project moved.
+Member connection and operator route are separate. A native operator route is
+explicit direct service-account SSH or a named route using noninteractive sudo.
+The Web derives the route form from the login. **Run setup now** requires a
+read-only probe for the fixed provision command. Native execution takes only a
+validated request id, bounds/screens structured events, and verifies durable
+readback from the expected team space. Interactive SSH/sudo instead opens or
+shows that fixed command in Terminal; browsers offer its copyable operator form.
+No arbitrary server-returned command is executed.
 
-The native coordinator restores the exact saved team tunnel and member session
-before every cold-resume read or transfer operation; Web code never reconstructs
-that credentialed state. A relay command's nonzero exit or incomplete proof and
-cleanup result remains a durable retryable failure and is shown as an error. It
-may expose the explicit protected manual relay, but it never silently selects
-that path or labels the native call successful.
-
-Every machine-readable operator-action event carries the same structured
-responsibility, typed machine or external-service target, ordered safe commands
-or GitHub actions, nonsecret values, success check, and resume command that the
-interactive CLI prints. The wizard renders those fields directly and never
-parses CLI prose. No machine step or recovery instruction exists only in the
-wizard.
+CLI progress is presentation only; the CLI reports state through the backend's
+private control channel. Final human review alone creates/re-homes a project.
+Transfer confirms target admission before source release, each with its own actor;
+a partial confirmation remains resumable. Cold operations restore the exact saved
+tunnel/session. Nonzero relay exit or incomplete proof/cleanup remains a retryable
+error, never silent manual fallback. Operator events carry responsibility, target,
+safe commands/actions, values, success check, and resume command shared with CLI.
 
 ## Project tabs
 
@@ -1133,150 +849,68 @@ to no selected Experiment rather than restoring a cached main-target selection.
 
 ## Browser-agent WebMCP surface
 
-When the browser host supplies `document.modelContext.registerTool`, RCP
-registers a page-scoped WebMCP surface over its existing application owners. A
-ready project index exposes project listing and exact project navigation. A
-loaded project replaces those tools with project overview and node inspection,
-each provider's sign-in state as Settings shows it,
-in-page navigation, artifact/report listing and visual opening, conversation
-listing, inspection, and Send, bounded Experiment inspection and Start,
-Auto-research authorization, and graceful Stop of an Experiment or
-Auto-research episode. In-page navigation opens an exact node, conversation,
-run, or artifact, or a project tab by its visible name. The overview lists the
-configured agent for each role and the ids of stoppable Auto-research
-episodes, which have no Experiment node to inspect. Login, project setup,
-loading, and invalid project states expose no tools; the project surface waits for the same verified backend
-identity, actor, and team-session state as the index, so a reconnect screen
-or overlay retires it.
+When `document.modelContext.registerTool` exists, the verified project index
+exposes listing/navigation; a loaded project exposes overview, nodes, provider
+sign-in status, views, artifacts/reports, conversations/Send, Experiment controls,
+Auto-research authorization, and graceful Stop. Login, setup, loading, invalid
+identity, and reconnect retire tools. Overview supplies role agents and stoppable
+Auto-research ids. Actions exist only while possible or while an accepted call
+returns. Stable proxies update without aborting calls; navigation returns before
+its old surface retires.
 
-The inventory follows current backend and browser state. Experiment Start,
-Auto-research authorization, and Stop are registered only while at least one
-exact action can succeed or while that action's accepted call is returning.
-Changing state updates stable tool proxies without aborting an in-flight call;
-leaving the surface unregisters its tools. Project navigation returns before
-the index registration is retired, so the host does not mistake successful
-navigation for a stale tool failure.
+`web/src/voice/toolCatalog.ts` owns the host-independent catalog, schemas, local
+`confirm(args)`, Responses serialization, and page-state `resolve(name)` refusal.
+Confirmation applies to Work Send, Experiment Start, Auto-research authorization,
+and terminal commands. It is local to voice, not WebMCP host confirmation. The two
+terminal tools are voice-only because WebMCP has no RCP confirmation card.
 
-The registered tools come from one host-independent catalog
-(`web/src/voice/toolCatalog.ts`) that works without a WebMCP host. `catalog()` is a
-fixed list of every tool's name, description, input schema, and `confirm(args)`
-predicate, whatever the page state. `confirm` is true only for a Work Send,
-Experiment Start, Auto-research authorization, and a terminal command; it stays
-local, so WebMCP host agents get no RCP confirmation. `catalogAsFunctionTools()`
-is the one serializer to the Responses function format and leaves `confirm` and
-other local markers out. `resolve(name)` returns the executable definition App
-last published from page state, or a refusal that says why: the wrong surface,
-nothing to stop, or the Start or authorization refusal.
+Calls revalidate exact ids against the current page. Named reads return bounded
+JSON, omit storage locators, and mark shortened node paths. Conversation listing
+includes loaded ids and total; inspection/Send fetch the latest exact task outside
+the list window to retain graph-target/session ownership. Branch chats resume only
+on their target.
 
-The two terminal tools are voice-only. App publishes them for voice, but
-`webMcpHostDefinitions` keeps them out of WebMCP registration. A shell command
-needs the member's tap, and a WebMCP host has no RCP card to show.
+Artifact listing combines task/episode windows (reporting their sizes) with the
+Artifacts inventory. Duplicates gain `in_artifacts_panel`; panel-only records use
+`saved:` ids. Filters use source identity; exact old task/episode ids are fetched
+rather than declared missing. Opening checks availability and uses the existing
+viewer. Desktop PDF opening uses the panel's system-viewer command; browsers and
+download-only files instead say where the member can tap Download. Tools never
+download. Artifact payloads and omissions follow
+[artifact ownership](paper-artifacts-and-result-views.md#answer-and-artifacts-are-independent).
 
-Every call accepts exact ids returned by an RCP read tool and revalidates them
-against the current page snapshot before acting. Named read results are bounded
-JSON, not generated summaries, and omit storage locators. The broad reader
-below returns route responses as the backend sends them, paths included. Node inspection shortens
-oversized saved text, lists, object entry counts, and key names to fit its budget
-and names every shortened path, so exact content is never confused with
-truncated content. Conversation listing
-exposes the saved chat ids the page has loaded together with the backend total.
-When a conversation's turns have aged out of the bounded task window the page
-holds, inspection and Send read the exact task behind its latest transcript
-message, so a conversation can continue only on its original graph target.
-An ordinary branch conversation can use Discuss and Work from that branch's
-workspace; a main workspace cannot resume its branch-bound session.
-Artifact and report listing covers both places an artifact lives: the recent
-task and episode windows the page holds (it reports both window sizes) and the
-Artifacts panel inventory (`GET /api/projects/{id}/artifacts`). A panel entry
-the windows already show marks that record `in_artifacts_panel` instead of
-repeating it; a panel-only entry gets a `saved:` viewer id that resolves
-against the panel inventory, whatever the windows later hold. Node, task, chat,
-and episode filters match panel entries by their source fields, so a target
-whose tasks are older than the window still lists its kept outputs. An exact
-`task_id`, task viewer id, or `episode_id` outside the windows is fetched from
-the existing task or episodes route rather than reported missing. Artifact
-opening uses the existing backend viewer inside the page after confirming
-current availability. A PDF opens in the desktop's system viewer through the
-same command the panel uses. In a browser, a PDF or a download-only file is
-refused with where to tap Download; page agents never download.
+`rcp_get_playbook` returns the plain-language playbook in `webmcp/playbook.ts`;
+voice sends the same text. `rcp_list_read_routes` and `rcp_read` share the broad
+reader in `webmcp/reads.ts`. Its code-owned policy intersects backend OpenAPI for
+discovery and enforcement. It admits open-project GETs except downloads,
+redirect-only routes, and side-effecting reads: terminal/Experiment/digest/project
+reconciliation, merge preview, worktree Git contact, machine browser probes, and
+live artifact file snapshots. `refresh` and chat `inventory` flags are refused.
+Repository reads reject credential path components. Requests use validated route
+templates, remain same-origin/project, refuse redirects/SSE/binary, and cap bytes
+and duration. Identity loss cancels them. Branch-aware routes use the displayed
+branch; history requires a bounded revision window. Results are paged and marked
+untrusted; voice envelopes also name source and arguments. These broad reads
+retain backend paths, unlike named reads.
 
-`rcp_get_playbook` returns RCP's plain-language playbook
-(`web/src/webmcp/playbook.ts`): what RCP is, how a request is routed, where
-artifacts live, and what only the member may do. It names no tools. Voice sends
-the same text with its session request.
+Send launches one asynchronous ordinary Discuss/Work turn with the composer's
+admission, profile, skill, session, and execution owners, returning its task id.
+Attachments, references, and compute choices remain visible-composer controls.
+Start/Stop reuse readiness, Sync, budget, single-start, exact-episode, and graceful
+Stop guards. Auto-research takes integer `invocation_ceiling >= 1`, optional
+`starting_instruction`, and `code_worktree`, through the header's start/refusal
+owner. Stop takes exact episode id, using Experiment Stop when `experiment_id`
+is present or the Auto-research episode route otherwise.
 
-`rcp_list_read_routes` and `rcp_read` (`web/src/webmcp/reads.ts`) give voice and
-WebMCP one broad reader over the open project's GET routes. Reads are broad and
-writes stay named and card-gated. Voice gets no page-driving or browser tool:
-it could press Confirm itself and would send the screen to OpenAI. One code-owned
-policy drives both discovery and enforcement: discovery is the backend OpenAPI
-schema intersected with it. It admits every GET under
-`/api/projects/{open project}`, root included, except downloads, redirect-only
-routes, GETs with side effects (terminal reconciliation, Experiment stop
-settlement, digest marks, project reconciliation, merge-preview Git writes,
-the conversation worktree route's remote Git contact, the machine browser
-readiness probe, and live artifact snapshots, which read remote files over
-SSH), the `refresh`
-query flag, which reruns probes, and the chat `inventory` flag, which would list
-every graph's chats as the displayed one's. Repository file reads refuse any path whose
-component matches the credential denylist (for example `.env*`, `*.pem`, `.git`,
-`.ssh`, `id_rsa*`). Requests are built from admitted templates with validated
-parameters; the normalized URL must stay same-origin and in the open project.
-Redirects, SSE, and binary bodies are refused; bodies are read incrementally to
-a byte cap within one timeout, and identity or space loss cancels the read. A
-route with a `branch_id` parameter gets the displayed branch; `/history` needs
-a bounded revision window. Results are paged to the tool result cap and marked
-untrusted; voice receives them in an untrusted-data envelope that names the
-source tool and arguments.
+`rcp_open_view({kind, id})` opens an exact node, conversation, run, artifact, or
+Inbox within the current project/target. First-turn chats open from their task.
+Run ids resolve through notification routing. Only `rcp_open_project` changes
+project; opening a view never changes branch.
 
-Newly discovered task artifacts read from RCP version storage. `kept_at` marks
-Keep even when `kept_filename` is null; that filename remains legacy metadata.
-Legacy result-view URLs redirect to artifact routes. An artifact's availability
-is independent of its native session and stage; those still gate commenting.
-
-Task artifacts project a `view` (`html`, `image`, `markdown`, `text`, `pdf`, or
-`file`) alongside the independent `can_open`, `can_download`, `can_keep`, and
-`can_discuss` capabilities. `result.artifact_omissions` carries known reason
-counts and `discovery_failed`; transcript reconstruction and history
-reconciliation preserve it even for a turn with no cards or answer. Saved
-artifacts also project `view`, `available`, `can_download`, and a nullable
-`download_url`. `can_open` always means an RCP viewer, including in the desktop
-app; the system PDF action separately requires `view` of `pdf` and
-`can_download`.
-
-Conversation Send starts one asynchronous ordinary Discuss or Work turn through
-the same provider profile, native-session, skill, task-admission, and local or
-SSH execution path as the visible composer; it returns the durable task id rather
-than waiting for provider completion. Attachments, project references, and
-compute selection remain visible-composer controls. Experiment Start and Stop likewise reuse the existing
-backend projections and action owners, including staged-Sync, readiness, budget,
-single-start, exact-episode, and graceful-Stop fences.
-
-Auto-research authorization takes the visible form's inputs: an
-`invocation_ceiling` of any integer of at least 1, an optional
-`starting_instruction`, and `code_worktree`. It calls the same start function
-and refusal check as the header button, so the tool and the button refuse in
-the same states. Stop takes an exact `episode_id`. With `experiment_id` it uses
-the Experiment Stop route; without it the episode must be a stoppable
-Auto-research episode, stopped through `POST .../episodes/{id}/stop`.
-
-`rcp_open_view({kind, id})` shows one exact node, conversation, run, or
-artifact viewer, or the Inbox, through the page's own owners. A run id is an
-episode id, opened through the same exact route as an episode notification: its
-Auto-research route or its Experiment's Runs entry. A conversation whose
-first turn still runs has no saved transcript yet; it opens from its task, as
-the Agents board opens it. The view stays in the
-current project and graph target. It checks that the page still shows them
-before opening and never switches project or branch; only `rcp_open_project`
-changes project.
-
-WebMCP is not a second API or authority plane. Calls run in the current
-authenticated browser session and receive no capability that the corresponding
-RCP surface lacks. There is no WebMCP tool for Proposal judgment, Decision choice,
-graph editing or Sync, artifact retention or version undo, settings,
-membership, or project creation/deletion. Provider answers, artifacts, and tool
-output still cannot become canonical graph truth; only the ordinary typed Patch
-and human-authority paths can do so.
+Calls use the member's authenticated page and existing owners. There are no tools
+for Proposal judgment, Decision choice, graph edits/Sync, Keep/Undo, settings,
+membership, or project creation/deletion. Voice gets no browser/page-driving tool:
+it could press its own Confirm and send the screen to OpenAI.
 
 ## Voice agent
 
@@ -1284,7 +918,15 @@ The voice button opens one GPT-Live session for the member's page; a second
 click ends it. It works in the desktop app, the team browser app, and the team
 phone web app. Audio goes between the page and OpenAI over WebRTC; RCP never
 receives it. RCP keeps the session's text and action receipts as a
-member-private record ([decision](../decisions/2026-10-08-voice-keeps-member-private-text-transcripts.md)).
+member-private record. It survives sign-out and provider disconnection, but
+member removal deletes it. Privacy is enforced between members through RCP;
+the service account can read the files. Records stay outside application backups.
+
+**Why:** Text seeding resumes a dropped conversation without OpenAI-side storage;
+receipts prevent repeating work after a lost response. Resume creates a new
+session with `store: false`, preserving text but losing audio tone/timing.
+Seeded history is context, never write authority or proof of current status;
+`store: false` is not a zero-retention promise.
 
 `POST /api/voice/sessions` takes `{sdp_offer, tools, playbook, resume_id?}`,
 where `tools` is `catalogAsFunctionTools()` with a size cap and `playbook` is
@@ -1446,187 +1088,89 @@ authority. Entering Agents closes node detail.
 
 ### Runs
 
-Episode Run requests expose `code_worktree` and `graph_isolation`.
-Auto-research `code_worktree` is optional and nullable. It resolves an omitted or
-null code choice to true when eligible, otherwise false. It defaults graph
-isolation to true and refuses `graph_isolation: false`. Experiment starts
-default both to false; graph isolation creates an episode branch. An existing
-branch target retains its branch and owner. Explicit ineligible code isolation
-still refuses with its admission code.
-Only the API start route resolves the omitted Auto-research code default.
-Internal start and run requests default code isolation to false and do no
-eligibility work unless enabled. Disabled admission does not read the manifest
-or probe Git.
-The episode response publishes both choices and `isolation_owner_episode_id`.
-The binding is backend-owned; clients cannot supply worktree paths or an owner.
-Resume, Retry, and Add N turns keep the captured choices and owner.
-These fields have no Run-panel controls yet.
+Run requests expose `code_worktree` and `graph_isolation`. Auto-research resolves
+omitted/null code isolation by eligibility and requires graph isolation;
+Experiment defaults both off and retains an existing branch's owner. Explicit
+ineligible isolation refuses. Only the API Auto-research start resolves the
+code default; disabled internal admission does no manifest/Git probe. Responses
+publish both choices and `isolation_owner_episode_id`; Resume, Retry, and Add N
+turns retain them. Clients never supply paths or ownership.
 
-Runs is the episode ledger. Its primary object is the durable Experiment-loop or
-Auto-research episode parent, never an invocation, graph node, or Blocker. It has
-three sections in order: **Needs Action**, **In progress**, then **Completed**.
-A section count must be truthful, so Needs Action holds only runs that have
-stopped advancing and stay stopped until a human acts; a run still moving on its
-own belongs to In progress however slowly it moves, and completed and stopped
-history goes below. Auto-research placement reads the generic episode
-projection. Experiment-loop placement, health, and next step read the existing
-`ExperimentControlState` for the owning Experiment; generic episode lifecycle
-fields never override that specialized backend answer.
+Runs lists durable Experiment-loop and Auto-research parents, using backend
+health, section, recommendation, and control offers. Experiment entries use
+`ExperimentControlState`, never generic episode status. Layout belongs to
+[Projections](interface-and-visual-design.md#projections). Seed/Refresh and other
+tasks remain in History; Blocker judgment stays in Inbox.
 
-Needs Action and In progress are each one unfolded reverse-chronological card
-list containing both episode modes. Completed groups episodes by mode in
-foldable lists, ordered **Experiment loop** then **Auto-research**. Seed/Refresh and ordinary task history
-remain in project History; Blocker judgment remains in Inbox.
+The exhaustive episode projection gives endings precedence over active state,
+then wrap-up. Exhaustion/human pause needs reauthorization; revoked login needs
+sign-in; stopped repeated recovery offers a changed provider/model/reasoning.
+`blocked_reason` identifies the clearing action or is null. The card shows its
+cause and diagnostic before the separately labelled recommendation; controls
+appear only when valid. An ended Experiment whose human-authored node is closed
+is Completed with no fresh Start until reopened. Report selection uses the newest
+report-bearing episode on the exact target: `report_is_current` distinguishes
+Open report from Previous episode report. A newer reportless episode cannot hide it.
 
-Experiment and Auto-research parents each expose one backend-decided health and
-one separately labelled **Recommended next step**. Health, recommendation, and
-`blocked_reason` come from one exhaustive table in the episode projection,
-evaluated in precedence order: an episode with an ending is never `active`; a
-`wrapping_up` status or a pending or running wrap-up reads `wrapping_up`; an
-exhausted or human-pause ending reads `needs_action` with
-`blocked_reason=reauthorize`; a failed control task whose failure kind is a
-revoked login reads `needs_action` with `blocked_reason=sign_in` beside its
-recovery control; an Auto-research recovery that stopped because its reattempt
-failed the same way again reads `needs_action` with
-`blocked_reason=repeated_failure` beside a recovery control that offers a
-changed provider, model, or reasoning. The recovery summary carries the
-`failure_kind` that stopped it, so the projection separates a revoked login from
-every other stopped recovery without re-reading the diagnostic. `blocked_reason` names the one human action that clears a
-block and is `null` otherwise; the card renders it as one lead sentence before
-the recommendation. `continues_episode_id`, `continued_by_episode_id`, and
-`can_continue` publish the continuation chain, and `chain` lists every member
-oldest first with its ceiling, turns used, ending, and report summary, so the
-card never rebuilds a chain from the bounded episode list; the card shows a
-chain as one run with each member's ceiling, ending, and report in sequence,
-offers **Add N turns** only where `can_continue`, and the timeline spans the
-chain with a `continued` boundary. The branch summary names the chain root as `episode_id` and the
-newest member as `current_episode_id`; `merge_requires_end` is gone. A wrap-up state of `not_started` on a settled episode means
-the ending had no report to generate and reads like a skipped report. A
-wrap-up whose report account is signed out reads `wrapping_up` with
-`blocked_reason=sign_in`.
+Continuation fields and ordered `chain` publish every member's ceiling, usage,
+ending, and report. One card represents the chain; Add N turns follows
+`can_continue`, and timeline boundaries mark continuations. The branch root owns
+`episode_id`; its newest member is `current_episode_id`. Settled `not_started`
+wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 
-Provider login state is published at `GET /api/providers/logins` (every
-machine account, with the project machines that use it, a secret-free summary
-of a stored credential, provider-owned labels and supported sign-in methods,
-and any running sign-in) and inside each
-project's readiness snapshot as `provider_logins` (the accounts that project
-uses). While any account is `signed_out`, the project Runs view and the space
-landing render one `ProviderLoginNotice` per account naming the provider,
-machine, time, bounded diagnostic, and a **Verify sign-in** control, and point
-at Settings for the sign-in; the Experiment board's `reauthenticate_provider`
-copy points at it. Space Settings carries a **Provider logins** card
-(`ProviderLogins`) for both space kinds with one row per account: state, who
-changed it and when, **Sign in with device code** when `device_code` is supported
-(the code and link render while `GET .../sign-in/{login_id}` is polled), a token
-field and **Sign in** when `token_entry` is supported (the token is sent once
-and never read back; saving it is the sign-in, because the server verifies it
-with one real request before the account counts as signed in), **Verify
-sign-in**, and **Sign out**. **Verify sign-in** is withheld while a pasted token
-is unsent, and from an account that has saved no credential and offers no
-sign-in method but `token_entry`, because there it can only fail. Unknown
-interactions do not inherit another provider's form. The backend supplies the provider label,
-token instructions, and safe credential metadata; React never selects login
-behavior from a provider name. Generic provider routes reject unsupported
-actions and unknown request fields. Status GET reads status only: verification
-completion resumes eligible parked work through the shared account lifecycle
-and existing recovery owners even when the member leaves Settings or closes
-the page. Durable reconciliation repairs interruption before resumption without
-duplicate launches. Every action is available to any signed-in member
-and records that member. Task
-status, phase, workers, and diagnostics remain supporting history rather than
-competing primary states.
-For a terminal Experiment episode, the owning node's human-authored closed status
-is authoritative: the run is Completed and fresh-start control is absent until
-the node is edited back to a nonterminal status. A control is absent unless
-currently valid, and no recommendation names an unavailable action. A
-recommendation follows the named cause of the latest failure, not only its
-shape: a revoked provider login asks the human to sign in again rather than
-offering a Retry that cannot succeed. A live episode whose latest turn failed
-states that failure on the card face, where an ended episode states its ending
-diagnostic; neither leaves the reason folded away in task details while the card
-recommends acting on it. The card reads the backend's recommendation, never the
-failure kind itself, which the response seals. Report
-availability is separately backend-decided from the newest report-bearing
-episode for that Experiment and exact graph target; a newer no-report episode
-does not hide the durable report or change which episode owns it. The backend
-publishes `report_is_current` alongside its owning episode id. Runs renders
-**Previous episode report** when false and **Open report** when true, so an older
-retrospective is not presented as the current episode's report.
+`GET /api/providers/logins` lists machine accounts, dependent project machines,
+secret-free credential summaries, labels, supported sign-in methods, and active
+sign-ins. Project readiness includes its relevant `provider_logins`. Signed-out
+accounts get one notice on Runs/landing with provider, machine, time, bounded
+reason, Verify sign-in, and a Settings link. Space Settings offers only the
+backend's methods: device-code flow with polling, one-shot token entry verified
+by a real request, Verify, and Sign out. Verify is hidden while a token is unsent
+or a token-only account has none saved. Provider names never select UI behavior.
+Generic routes reject unsupported actions/fields; GET only reads. Successful
+verification reconciles parked work even after leaving the page, with durable
+repair and no duplicate launches. Any signed-in member may act and is attributed.
 
-In a personal space on macOS, Space Settings also carries a **This Mac** card
-(`ThisMac` in `SpaceSettings.tsx`) from `GET /api/machine-power`: one toggle
-for the idle hold and a status line with the demand reasons. `PUT` changes
-`idle_hold`.
-The card also has a **Lid-closed mode** toggle that opens the opt-in dialog and
-install when not installed, **Uninstall**, and extends the status line with the
-mode, last release, latch, external owner, and install problem. The closed lid
-still sleeps the Mac unless lid mode is active. `PUT` also changes `lid_mode`;
-enabling it clears a latch. Install and uninstall are `POST`s; a cancelled
-admin prompt returns 200 with the unchanged status. The space landing shows a
-warning only while lid mode is latched off or a cleanup failed, with the exact
-command and a copy button.
+Personal macOS Space Settings reads `GET /api/machine-power`: idle-hold toggle,
+demand/status, opt-in lid-mode install, and Uninstall. `PUT` changes `idle_hold`
+or `lid_mode`; enabling clears a latch. Install/uninstall are POSTs; cancelled
+admin prompts return unchanged status with 200. Landing warns only for a latch
+or cleanup failure, with the exact recovery command. Power policy belongs to
+[Keeping a Mac awake](server-and-machine-operations.md#keeping-a-mac-awake).
 
-Episode cards lead with the owning Experiment name or Auto-research identity;
-their start time is secondary metadata and is never prefixed with a redundant
-`Episode` label. A completed type group names the mode once rather than repeating
-it on every card. Collapsed cards contain no muted recommendation or report
-commentary. Each Experiment's backend control selects its one current
-`episode_id` per graph target, so repeated work on one target produces one card,
-and live loops on different targets produce one card each in the same flat
-list. Selection, Stop, and busy state follow the exact episode. Older episodes
-remain reachable through project History instead of appearing as sibling Runs
-cards.
+**Why:** The backend knows demand and outlives the window. Lid mode extends idle
+hold with one watchdog executor and revocable generations, avoiding a resumed
+backend re-arming a released flag. The narrow sudo rule supports unattended
+unsigned apps; a boot reset clears the persistent flag. RCP must enforce battery
+and thermal release itself, and closed-lid release explicitly sleeps even with
+an external display. Coarse episode demand favors preserving runs over precise
+battery accounting. The enrolled account can invoke the same sudo commands;
+removing the rule can strand the flag. Install/uninstall or reboot may clear a
+user-set flag, and uninstall has no independent lock if the backend dies.
+These controls do not guarantee network, provider, or remote-host availability.
 
-Each Experiment card shows its graph target (a Main pill or a branch badge), its
-checkout (shared or worktree), and who started it: a member, or Auto-research
-with a link to the parent run. Each episode card and space run row also shows a
-compact initials avatar and the recorded human authorizer's name. This is
-historical episode attribution, including the inherited authorizer on an
-Auto-research child; it does not claim live presence or enumerate contributors.
-Missing legacy attribution never borrows the current viewer's identity. The
-Run dialog lists live loops on that node on other targets before submission,
-as information; it never disables Run. A main loop opened from a branch view
-shows its chat read-only. A chat's watcher strip lists only live watchers (watching, check
-failing, or a job that can still be cancelled) that chat armed or its own
-target's loop owns; ended watchers stay in Runs.
+Each Experiment target contributes only the current episode chosen by its control;
+older episodes stay in History. Cards identify target, checkout, starter, and
+historical human authorizer; missing attribution never borrows the viewer.
+Selection, Stop, and busy state bind the exact episode. Other live target loops
+are informational in Run, not a launch veto. Main-loop chat opened from a branch
+is read-only. Chat watcher strips show only their own/live target rows; ended
+watchers remain in Runs.
 
-Every unarchived episode offers **Archive**; an archived episode offers
-**Unarchive**. The [episode archive](conversations-episodes-and-watchers.md#episode-archive)
-is shared across the project. Archived episodes are absent from default Runs
-cards, section counts, and nested child-Experiment links. **Show archived** adds
-a separate **Archived** section without changing the active section counts.
-An archived older Experiment episode remains available there with its own
-identity, History entrance, and Unarchive control even after a newer episode
-owns the Experiment's operational controls. Archives remain discoverable beyond
-the recent-episode list limit and the space ledger's seven-day completed window.
-Archive metadata on cached controls is refreshed from current storage before
-being published; cached graph state cannot reverse an archive choice.
+[Episode archive](conversations-episodes-and-watchers.md#episode-archive) is shared.
+Archived entries leave default cards/counts/child links; Show archived adds a
+separate section, retaining each episode's identity, History, and Unarchive even
+outside recent/space windows. Storage refreshes archive metadata on cached controls.
 
-The episode index is an explicit typed projection whose current `episode` is
-non-null. Main-target entries consume the completed project snapshot's
-Experiment-control map; branch entries consume the exact branch read model.
-Both `GET /api/episodes?mode=experiment_loop` and the project-scoped index
-return `{entries, unavailable}`. Healthy entries remain visible when a live
-loop's branch or control cannot be read. Each unreadable live loop has an
-`unavailable` row with project identity, graph target, control node id, episode
-id, and diagnostic detail. Historical-only failures are logged and skipped.
-Runs shows a small notice naming the affected branches. A missing or invalid
-required cached project snapshot still returns 503. `/api/space/runs` keeps its
-existing response shape and returns 503 with the first unavailable detail.
-Episode task rows publish durable actor `role` and lineage `depth`, and episode
-cards consume those fields without interpreting persisted task requests.
-The page keeps each project's episode list, so returning to a project tab shows
-that list at once while it refreshes. A poll never overlaps a list request
-already in flight for the same project; it waits for that request instead.
-Project Runs refreshes this index while visible, so an Experiment dispatched on
-an episode graph branch appears as its own episode card even before anyone
-opens its exact route. The project-scoped
-`/api/projects/{project_id}/experiment-episodes` path restricts projection work
-to that visible project. The same child appears once as a linked, subordinate
-child actor on the owning Auto-research card's timeline. That actor is
-navigational provenance, not a second lifecycle or budget: its label and status
-consume the indexed node and control, while the child card retains its own
-episode budget, transcript, and valid controls.
+Both `/api/episodes?mode=experiment_loop` and project
+`/api/projects/{id}/experiment-episodes` return `{entries, unavailable}` with
+non-null current episodes. Main entries use completed controls; branches use
+exact branch read models. Unreadable live loops yield identity/target/node/episode/
+diagnostic rows without hiding healthy loops; historical failures log and skip.
+Required invalid project caches return 503; `/api/space/runs` returns 503 on the
+first unavailable detail. Task rows publish role/depth rather than client parsing.
+Project lists paint cached data, share in-flight reads, and refresh while Runs
+is visible. Child Experiments appear as their own cards plus one subordinate
+navigation actor on the parent timeline, never a second budget/lifecycle.
 
 ### Episode timeline
 
@@ -1669,67 +1213,35 @@ loads immutable full text on demand for `handoff:<command_id>` or
 membership and the requested continuation chain, and returns 404 for records
 outside that chain. The roster response carries only bounded text previews.
 
-The roster replaces the old Turns and Mail lists and keeps the message composer
-beneath it. It links turn and attempt spans to the existing task inspector,
+The message composer sits beneath the roster. It links turn and attempt spans to the existing task inspector,
 excludes reports from that navigation, and resolves child Experiment navigation
 by episode id. Watcher controls remain with their existing owners. Layout,
 selection, and gesture behavior follow the
 [interface specification](interface-and-visual-design.md#auto-research-and-episode-history).
 
-An active child card names its current Experiment turn and links that row to the
-ordinary task inspector. Until the turn finishes, the card labels the durable
-objective separately from retained stale guidance. When the backend finds the
-matching active Auto-research graph condition, the Experiment index publishes
-`parent_watching`; the card explains that the owning episode watches the child
-while the child's own **Watchers** fold contains only detached work handed off
-by that Experiment.
+Experiment detail links active turns to the task inspector, labels durable
+objectives separately from stale guidance, and shows `parent_watching` from the
+backend. Its watcher fold contains only work that child handed off. Starting Run
+opens this detail, separating historical budgets from Next episode limit and
+showing watcher/session/host continuity. An explicit main route must match both
+episode and target; an advanced control shows a History handoff, never the newer
+episode's controls/transcript.
 
-Starting an Experiment navigates to its Runs detail rather than opening floating
-chat. The detail separates historical episode budgets from **Next episode
-limit**, shows watcher/session/host continuity, and omits semantic attempt
-history from the node drawer. Stop, recovery, wrap-up, and report presentation
-follow the episode specification.
+Isolation-owning cards show branch base/head, merge state, and persistent Merge.
+A click checks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
+owns admission. Run offers On a new branch and Code worktree, off by default;
+existing branches hide the former. Shared Branch name accepts blank for the
+server date name. Auto-research on main uses the same name plus server-eligible
+code choice; on its branch Continue sends mail or adds turns with a message.
 
-An explicit main-target Experiment route binds only when both its `episode_id`
-and graph target still match the loaded backend control. If the control advanced,
-the route shows a History handoff without exposing the newer episode's transcript
-or controls.
-
-An Auto-research detail shows compact graph-branch identity, base/head, merge
-state, and a persistent **Merge** panel. Experiment cards that own a graph
-branch or code worktree show the same panel. A deliberate click checks
-current server eligibility and either starts the merge or displays the blocker
-beside the control, following the
-[branch merge projection](auto-research-and-branch-merge.md#runs-projection).
-The Experiment Run control offers "On a new branch" and "Code worktree"
-toggles, off by default; on a branch it hides "On a new branch" and the
-Experiment runs on that branch. Both launches use one shared Branch name field;
-blank takes the server's date name. The Auto-research dialog on main shows that
-field beside Code worktree, whose choice is left to the server's eligibility
-check unless the human opts out. On an Auto-research branch the Auto-research
-button opens **Continue <name>** instead: a message to the running orchestrator,
-or added turns with a message once it has ended. On a branch, each DAG node shows its title and one
-word: how Merge will treat it (Conflict, Needs agent, Proposal, Already merged),
-else how the branch changed it (Added, Changed, Removed). Standing, status, and
-the connect handle appear on hover. Node detail on a node added on the branch
-shows a New on this branch tag and no field list, since the body shows every
-field, unless Merge must decide it (Conflict, Needs agent, Proposal); then it
-lists the fields like an edited node, with main's competing values. On an edited node it lists each changed field the body shows, plus any
-internal field a merge mark names, as main before, branch, and main now beside a
-conflict, each with its own color. Its
-change history has one line per accepted change naming what that change did to
-this node (created, removed, or the edited fields), with View task.
-**Open graph** selects the branch workspace explicitly. An exact branch
-Experiment route may show its historical transcript through Runs without exposing an ordinary
-composer for that episode-owned session. Ordinary chats started in the branch
-workspace have their own sessions and authority. A main workspace cannot reuse
-a branch-bound conversation or native session.
-
-The space project index reuses these same backend lifecycle projections in a
-summary ledger. It does not derive a second status machine from task or episode
-fields. Its seven-day completed window is presentation-only; active and
-actionable parents remain visible regardless of age, and project-scoped Runs and
-History retain their existing complete records.
+Branch DAG nodes show one merge disposition (Conflict, Needs agent, Proposal,
+Already merged), else Added/Changed/Removed. Standing/status/connect appear on
+hover. New nodes show a tag, omitting redundant field lists unless merge needs a
+decision. Edited nodes show visible changed fields plus marked internal fields,
+with main-before, branch, and competing main-now values. History names each
+accepted node change and links its task. Open graph selects the branch workspace.
+Historical branch Experiment routes expose transcript without an ordinary
+composer; independent branch chats retain their own sessions/authority.
 
 ### Agents
 
@@ -1893,7 +1405,7 @@ enumerate the console operations that do: an operator holds machine authority
 already and reads `rcp server --help` on the machine, so restating that
 catalogue in a member-visible panel adds a second place for it to drift. A
 command still appears in the Web surface where one specific request needs it,
-carrying that request's own identifier. D6's separately proved desktop operator
+carrying that request's own identifier. The desktop operator
 bridge remains the only native launcher and accepts only its fixed
 project-provision command.
 
@@ -1909,9 +1421,8 @@ each claim-relative direction, relevance, weight, scope, and qualifications.
 Historical global strength is clearly legacy and never shown as current edge
 weight.
 
-Graph-writing agents add or revise glossary terms through `upsert_glossary`
-Patches. Canonical definitions render inline; there is no standalone Glossary
-view or human glossary editor.
+[Glossary presentation](paper-artifacts-and-result-views.md#glossary-presentation)
+owns inline definitions.
 
 ## Desktop shell
 
@@ -1996,6 +1507,13 @@ uses afterwards under **Dictate with** and **Runs on**. Picking an OpenAI
 connection under **Runs on** adds `voice` and runs the voice check then. The
 API still accepts `voice` at Connect, where a voice-only key skips the clips.
 A custom base URL must be `https`, or `http` to loopback.
+
+**Why:** Dictation billing and voice data belong to the member, unlike a shared
+execution-account provider login. Backend calls keep service keys out of browser
+scripts and provide one path for desktop, browser, and phone. Connections stay
+outside backups and must be reconnected after restore. The service account can
+read them; custom URLs have no internal-address fence because members already
+have that network reach through terminals.
 
 On a macOS or Windows computer, the Connect card opens by naming the keyless
 route: a dictation shortcut set in the ChatGPT desktop app types into the
@@ -2086,6 +1604,19 @@ macOS 26 Speech symbol or Swift library is a strong import.
 
 ### Update notice
 
+Installs follow promoted `vX.Y.Z` releases. The normal macOS install is the
+unsigned prebuilt app in companion `desktop-vX.Y.Z`; source installs follow tags.
+The install script and Tauri updater avoid downloaded-zip quarantine; manual zip
+installation needs macOS approval. Only published prebuilt apps enable the updater.
+
+**Why:** Release alignment avoids desktop/server drift and per-merge notices;
+prebuilt apps remove developer-tool setup. Companion releases preserve the server
+release's fixed asset contract. Updater signatures use a separately backed-up
+minisign key, not Apple signing, with `latest.json` on `mac-latest`. Team servers
+need operator authority and source builds may contain local work, so neither
+self-updates. Procedures belong to [desktop](../desktop.md) and
+[installation](../install.md) guides.
+
 `GET /api/update-notice` returns the release check, looked up again first when
 its cache is older than 10 minutes: space, status
 (`update_available`, `current`, `pinned`, `unchecked`, `failed`, `off`,
@@ -2137,7 +1668,7 @@ them on load instead of restoring them.
 ## Provider sign-in resume response
 
 Verified sign-in, token save, and successful device sign-in retain
-`resumed`, now `{ "checked": N }`. This is a coarse count of episodes inspected
+`resumed: { "checked": N }`. This is a coarse count of episodes inspected
 by the ordinary periodic reconciliation pass, plus queued tasks and completed
 watcher groups checked for the verified account. It is not a launch count:
 already-settled episodes and inputs still waiting on other conditions may be

@@ -2286,38 +2286,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
             assert stored is not None
         return self._agent_task_record(stored)
 
-    def latest_agent_task_id(self, project_id: str) -> str | None:
-        """The newest visible task's id, so a page notices a teammate's new task."""
+    def agent_task_status_signal(self, project_id: str) -> str:
+        """Read the transactional task status counter."""
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT operation_id FROM graph_runs WHERE project_id = ? AND visible = 1"
-                " ORDER BY created_at DESC LIMIT 1",
+                "SELECT generation FROM resource_versions "
+                "WHERE scope=? AND resource='tasks.status' AND entity=''",
                 (project_id,),
             ).fetchone()
-        return None if row is None else row["operation_id"]
-
-    def agent_task_status_signal(self, project_id: str) -> str:
-        """A digest that moves when a visible task changes status or finishes.
-
-        Progress messages leave it alone, so a page holding a project in a
-        background tab rereads tasks only when one of them changed state.
-        """
-        with self.connection() as connection:
-            unfinished = connection.execute(
-                "SELECT operation_id, status FROM graph_runs"
-                " WHERE project_id = ? AND visible = 1 AND finished_at IS NULL"
-                " ORDER BY operation_id",
-                (project_id,),
-            ).fetchall()
-            finished = connection.execute(
-                "SELECT MAX(finished_at) AS latest FROM graph_runs"
-                " WHERE project_id = ? AND visible = 1",
-                (project_id,),
-            ).fetchone()
-        payload = json.dumps(
-            [[[row["operation_id"], row["status"]] for row in unfinished], finished["latest"]]
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        return str(row[0] if row else 0)
 
     def agent_tasks(
         self,

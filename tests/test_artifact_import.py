@@ -13,6 +13,7 @@ from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.storage import AppStore, ArtifactRevisionCandidateRecord
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.state import StateUnavailable, StateWorkspace
+from tests.storage_helpers import downgrade_resource_watermarks
 
 from .legacy_artifacts import create_legacy_artifact as _legacy
 from .legacy_artifacts import insert_legacy_candidate
@@ -255,6 +256,7 @@ def test_schema_30_upgrade_only_adds_import_state(store, tmp_path):
     original = store.artifact(descriptor.artifact_id)
     with store.connection() as connection:
         connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE artifact_imports")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 31")
     reopened = AppStore(store.path)

@@ -448,3 +448,58 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
     assert reconcile_reserved_experiment_branch_roots(restarted, ensure) == [root.operation_id]
     assert spawned == [root.operation_id]
     assert service.history.branch(root.episode_id).head_ref().target.branch_id == root.episode_id
+
+
+def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch):
+    from rcp.history.branches import BranchHistoryManager
+
+    app, _main, episode, _root = _app_branch(manifest, tmp_path)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+
+    async def fail(*_args):
+        yield f"data: {AgentEvent(event='error', text='provider disconnected').model_dump_json()}\n\n"
+
+    app.state.background_tasks.stream = fail
+    with signed_in_client(app) as client:
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            params={"branch_id": episode.episode_id},
+            json={"chat_id": str(uuid.uuid4()), "message": "Explain.", "mode": "discuss"},
+        )
+        assert started.status_code == 202, started.text
+        original = wait_for_task(store, started.json()["operation_id"], expect="failed")
+
+        def refuse_initialization(*_args, **_kwargs):
+            raise AssertionError("Retry must not initialize a branch")
+
+        monkeypatch.setattr(BranchHistoryManager, "initialize", refuse_initialization)
+        retried = client.post(
+            f"/api/projects/{project_id}/tasks/{original.operation_id}/retry", json={}
+        )
+        assert retried.status_code == 202, retried.text
+        wait_for_task(store, retried.json()["operation_id"], expect="failed")
+
+
+def test_stop_persists_exact_target_before_display_failure(manifest, tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from rcp.api import experiments
+
+    app, _main, episode, _root = _app_branch(manifest, tmp_path, owner_mode="experiment_loop")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+
+    def unavailable(*_args, **_kwargs):
+        raise HTTPException(status_code=503, detail="Display generation unavailable")
+
+    monkeypatch.setattr(experiments, "get_project_writer", unavailable)
+    # The accepted Stop is answered even when the display read after it fails.
+    experiments.stop_bound_experiment_episode(
+        project_id, episode, store=store, catalog=app.state.catalog
+    )
+    runtime = store.experiment_loop_runtime(
+        project_id, episode.control_node_id, graph_target=episode.graph_target
+    )
+    assert runtime.episode_id == episode.episode_id
+    assert runtime.stop_requested

@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from rcp.core.models import Patch
-from tests.helpers import signed_in_client
+from tests.helpers import resource_watermark_tokens, signed_in_client
 
 from .test_branch_chats import _app_branch
 from .test_branch_merge_api import _admit_held_merge_task, _create_branch_harness
@@ -76,9 +76,6 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     assert set(after["graph_changes"]["context_node_ids"]) == {QUESTION, HYPOTHESIS}
     assert client.get(f"{base}/graph/changes", params=params).json() == after["graph_changes"]
     assert client.get(f"{base}/revision", params=params).json()["revision"] == after["revision"]
-    assert (
-        client.get(f"{base}/cached/revision", params=params).json()["revision"] == after["revision"]
-    )
     history = client.get(f"{base}/history/summaries", params=params).json()
     assert history[-1]["producer"] == "human"
     assert history[-1]["episode_id"] is None
@@ -216,10 +213,6 @@ def test_branch_merge_fences_manual_sync_and_projects_unavailability(
     params = {"branch_id": harness.episode.episode_id}
     snapshot = harness.client.get(base, params=params).json()
     assert snapshot["graph_mutation"]["available"] is False
-    assert (
-        harness.client.get(f"{base}/cached/revision", params=params).json()["graph_mutation"]
-        == snapshot["graph_mutation"]
-    )
     for route in ("sync", "sync/preview"):
         response = harness.client.post(
             f"{base}/{route}", params=params, json={"base_revision": snapshot["revision"]}
@@ -306,26 +299,35 @@ def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_pa
     assert changes.json()["nodes"][0]["history"][0]["producer"] == "human"
 
 
-def test_branch_revision_heartbeat_tracks_changes_and_live_merge_fence(
-    manifest, tmp_path, monkeypatch
-):
-    from rcp.api import project_state
+def test_branch_watermarks_fence_revisions_without_replaying(manifest, tmp_path, monkeypatch):
+    from rcp.history.branches import BranchHistoryManager
 
     app, main, episode, _root = _app_branch(manifest, tmp_path)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
-    first = client.get(f"{base}/cached/revision", params=params).json()
-    second = client.get(f"{base}/cached/revision", params=params).json()
-    assert first == second
-    assert first["graph_mutation"] == {"available": True, "reason": None}
-    # Tasks are project-wide: a branch view reads the main heartbeat's task signal.
-    client.get(base)  # warms the main display cache, as a page does
-    main_signal = client.get(f"{base}/cached/revision").json()["task_status_signal"]
-    assert first["task_status_signal"] == main_signal
+    keys = (
+        {"name": "graph", "ref": f"branch:{episode.episode_id}"},
+        {"name": "graph", "ref": "main"},
+    )
     snapshot = client.get(base, params=params).json()
-    # The branch page and its heartbeat agree, so an idle branch view never reloads.
-    assert first["experiment_signal"] == snapshot["experiment_signal"]
+    replays = []
+    materialize = BranchHistoryManager.materialize
+
+    def counting(self, **kwargs):
+        replays.append(kwargs)
+        return materialize(self, **kwargs)
+
+    monkeypatch.setattr(BranchHistoryManager, "materialize", counting)
+    first = resource_watermark_tokens(client, episode.project_id, *keys)
+    assert resource_watermark_tokens(client, episode.project_id, *keys) == first
+    assert not replays
+    task_key = {"name": "tasks.status"}
+    assert resource_watermark_tokens(client, episode.project_id, task_key) == (
+        resource_watermark_tokens(
+            client, episode.project_id, task_key, current_ref=f"branch:{episode.episode_id}"
+        )
+    )
     synced = client.post(
         f"{base}/sync",
         params=params,
@@ -335,32 +337,87 @@ def test_branch_revision_heartbeat_tracks_changes_and_live_merge_fence(
                 {
                     "node_id": QUESTION,
                     "base_updated_rev": main.history.state().nodes[QUESTION].updated_rev,
-                    "changes": {"question": "Does the heartbeat notice this?"},
+                    "changes": {"question": "Does the watermark notice this?"},
                 }
             ],
         },
     )
     assert synced.status_code == 200, synced.text
-    third = client.get(f"{base}/cached/revision", params=params).json()
-    assert third["revision"] == synced.json()["head"]["revision"] > first["revision"]
-    client.get(f"{base}/cached/revision", params=params)
-    monkeypatch.setattr(project_state, "active_merge", lambda *args: True)
-    fenced = client.get(f"{base}/cached/revision", params=params).json()
-    assert fenced["revision"] == third["revision"]
-    assert fenced["graph_mutation"]["available"] is False
-    assert "merge" in fenced["graph_mutation"]["reason"]
+    replays.clear()
+    after = resource_watermark_tokens(client, episode.project_id, *keys)
+    assert after[0] != first[0]
+    assert after[1] == first[1]
+    assert not replays
+    assert client.get(base, params=params).json()["revision"] == synced.json()["head"]["revision"]
 
 
-def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, monkeypatch):
+def _remote_display_workspace(app, main):
+    from rcp.transport import SSHStateWorkspace
+
+    workspace = SSHStateWorkspace(main.history.root, "research.example", "/srv/project")
+    workspace._generations.copy(main.history.root)
+    app.state.catalog._display_workspaces[main.history.project_id] = workspace
+    return workspace
+
+
+def test_remote_raw_branch_history_does_not_refresh(manifest, tmp_path, monkeypatch):
+    from tests.test_branch_history import _branch_patch
+
+    app, main, episode, root = _app_branch(manifest, tmp_path)
+    branch = main.for_graph_target(episode.graph_target)
+    patch, _ = branch.history.append(
+        _branch_patch("ev/branch").model_copy(update={"source_operation_id": root.operation_id})
+    )
+    workspace = _remote_display_workspace(app, main)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("display reads must not refresh canonical state")
+
+    monkeypatch.setattr(workspace, "refresh_if_stale", forbidden)
+    response = signed_in_client(app).get(
+        f"/api/projects/{episode.project_id}/history", params={"branch_id": episode.episode_id}
+    )
+    assert response.status_code == 200, response.text
+    assert [row["revision"] for row in response.json()] == [patch.revision]
+
+
+@pytest.mark.parametrize("warm_engine", [False, True])
+def test_service_construction_does_not_wait_for_snapshot_lock(manifest, tmp_path, warm_engine):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rcp.history import HistoryManager
+    from rcp.service import ProjectService
+
+    app, main, episode, _root = _app_branch(manifest, tmp_path)
+    history = HistoryManager(
+        manifest, write_authority=main.history.write_authority, project_id=episode.project_id
+    )
+    if warm_engine:
+        _ = history.history_engine
+    with ThreadPoolExecutor(max_workers=1) as pool, history.workspace.snapshot_lock:
+        future = pool.submit(
+            ProjectService, manifest, history, main.paper, data_dir=app.state.catalog.data_dir
+        )
+        service = future.result(timeout=2)
+    assert service.history.history_engine.store is not None
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, monkeypatch, remote):
     from rcp.core import materialize
     from rcp.core.transition_models import GraphTargetRef
     from rcp.history.queries import HeadSpec
 
     app, main, episode, _root = _app_branch(manifest, tmp_path)
-    engine = main.history_engine
-    main_head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
-    assert engine.state_at(main_head).nodes[QUESTION].id == QUESTION
-    main_patches = {step.patch.model_dump_json() for step in engine.steps(main_head)}
+    if remote:
+        _remote_display_workspace(app, main)
+        main = app.state.catalog.open_display(episode.project_id)
+    with main.history.read_view() as reader:
+        engine = reader.history_engine
+        assert engine.store is main.history_engine.store
+        main_head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+        assert engine.state_at(main_head).nodes[QUESTION].id == QUESTION
+        main_patches = {step.patch.model_dump_json() for step in engine.steps(main_head)}
     assert main_patches
     apply_patch = materialize._apply_patch
 
@@ -374,9 +431,10 @@ def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, mo
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
-    for endpoint in ("/cached/revision", "/graph/changes", ""):
+    for endpoint in ("/graph/changes", ""):
         for _ in range(2):
             response = client.get(base + endpoint, params=params)
             assert response.status_code == 200, response.text
     branch_service = main.for_graph_target(episode.graph_target, initialize=False)
-    assert branch_service.history_engine is engine
+    with branch_service.history.read_view() as branch_reader:
+        assert branch_reader.history_engine is engine

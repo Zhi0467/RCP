@@ -4,8 +4,6 @@ CI builds the RCP and independent supervisor wheels in one prerelease per
 successful merge to `main`. A human can promote that build without rebuilding
 it, and a daily workflow prunes old build prereleases. The installed supervisor
 consumes only promoted release artifacts through [the team server guide](server.md).
-Production adoption of `v0.3.5` is complete; remaining disposable recovery
-qualification is listed in [the open live checks](handoffs/README.md).
 
 ## The two events
 
@@ -32,13 +30,11 @@ so that merging often costs nothing and releasing stays deliberate.
    `src/rcp/__init__.py`. It independently builds `supervisor/` without stamping
    its version, exports locked runtime dependencies with hashes, checks the
    complete asset set, and writes the SHA-256 manifest.
-3. The installed upgrade matrix installs every published stable release's
+3. The installed upgrade matrix installs every supported stable release's
    promoted wheels on a fresh Ubuntu runner and drives supervisor update,
    application rollback, a complete subsequent backup, and successful retry
-   against those candidate bytes. The existing `old-data upgrade` required-check
-   name now aggregates migration tests and the installed matrix, and fails if
-   discovery, packaging, or any source-release journey fails. This preserves the
-   merge gate without requiring a new branch-protection check name.
+   against those candidate bytes. The `old-data upgrade` check aggregates migration
+   and installed tests; discovery, packaging or journey failures fail it.
    See the [qualification boundary](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery)
    for the test-only artifact selection and port substitutions.
 4. On main, `build` downloads and publishes the qualified artifacts as prerelease
@@ -124,14 +120,9 @@ complete historical three-asset build but refuses a partial supervisor pair.
 The supervisor's fetch command refuses historical releases without supervisor
 assets rather than selecting another release.
 
-The package provides preparation, installed operator commands, independent
-self-update and local startup recovery. The durable selection point preserves
-accepted work after admission opens. The remaining Ubuntu reboot qualification
-is listed in
-[the open live checks](handoffs/README.md).
-A supervisor wheel alone is not qualification. The first production deployment
-used the core executed Ubuntu proofs accepted by the human; unexecuted cases
-remain explicit follow-up evidence.
+The [operations spec](specs/server-and-machine-operations.md#selection-and-startup-guard)
+owns startup recovery and durable selection. A wheel alone does not qualify reboot
+recovery; open qualification work belongs in a GitHub issue.
 
 ## What to check before promoting
 
@@ -181,4 +172,4 @@ remain explicit follow-up evidence.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
 - A frozen fixture for each schema change is enforced by CI's old-data job, per
-  [the schema compatibility decision](decisions/2026-08-27-server-schema-compatibility.md).
+  [the persistence compatibility contract](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint).

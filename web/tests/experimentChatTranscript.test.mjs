@@ -193,3 +193,74 @@ test("a task-only inventory row loads no transcript until messages exist", () =>
     );
   }
 });
+
+test("transcript resources retain their owning ref even for equal chat ids", async () => {
+  const { chatResourceKey, chatResourceProfile } = await server.ssrLoadModule(
+    "/src/chat/chatResources.ts",
+  );
+  const { resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+  assert.notEqual(chatResourceKey("p", "main", "c"), chatResourceKey("p", "branch:branch-1", "c"));
+  const profile = chatResourceProfile("p", BRANCH, "c", "/api/projects/p");
+  assert.equal(profile.key.query, "branch:branch-1");
+  assert.equal(profile.key.ref, undefined);
+  assert.equal(resourceKeyId(profile.key), chatResourceKey("p", "branch:branch-1", "c"));
+});
+
+test("tab chat capture retains human UI without server payloads", async () => {
+  const { cloneChatStateSnapshot } = await server.ssrLoadModule("/src/chat/useChatState.ts");
+  const draft = { chatId: "draft", kind: "project", nodeId: null, title: "Unsent" };
+  const captured = cloneChatStateSnapshot({
+    floatingChat: null,
+    selectedChatId: "draft",
+    draftConversations: [draft],
+    chatTranscripts: new Map([["old", {}]]),
+  });
+  assert.deepEqual(captured, {
+    floatingChat: null,
+    selectedChatId: "draft",
+    draftConversations: [draft],
+  });
+});
+
+test("transcript profile preserves missing responses for viewer-specific handling", async () => {
+  const { chatResourceProfile } = await server.ssrLoadModule("/src/chat/chatResources.ts");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "Missing conversation" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  try {
+    await assert.rejects(
+      chatResourceProfile("p", MAIN_GRAPH, "regular", "/api/projects/p").fetch(
+        new AbortController().signal,
+      ),
+      (error) => error instanceof ApiError && error.status === 404,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("hidden projects retain selected transcripts until their own selection changes", async () => {
+  const { ProjectTabResources } = await server.ssrLoadModule(
+    "/src/projects/projectTabResources.ts",
+  );
+  const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+  const { chatResourceProfile } = await server.ssrLoadModule("/src/chat/chatResources.ts");
+  const store = new ResourceStore();
+  store.attachScheduler(() => {});
+  const retained = new ProjectTabResources(store, new Map());
+  const select = (project, chat) =>
+    retained.select(project, [
+      chatResourceProfile(project, MAIN_GRAPH, chat, `/api/projects/${project}`),
+    ]);
+  const watched = (project, chat) => store.requests(project).some((key) => key.entity === chat);
+  select("p", "c");
+  select("q", "c");
+  assert.ok(watched("p", "c"));
+  select("p", "other");
+  assert.equal(watched("p", "c"), false);
+  assert.ok(watched("p", "other"));
+  assert.ok(watched("q", "c"));
+});

@@ -16,6 +16,7 @@ from rcp.api.dependencies import (
     get_launcher,
     get_project_display_cache,
     get_project_service,
+    get_project_writer,
     get_setup,
     get_store,
     require_project_membership,
@@ -1025,7 +1026,7 @@ def clear_all_rebuildable_caches(
             status_code=409,
             detail="All project caches cannot be cleared while any agent task is active.",
         )
-    current_service = get_project_service(catalog, project_id)
+    current_service = get_project_writer(catalog, project_id)
 
     project_roots = discover_project_cache_roots(catalog.data_dir)
     for source_root, slice_root in project_roots:

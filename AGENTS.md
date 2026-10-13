@@ -12,9 +12,10 @@ queue, operational task history, and a human-authored paper introduction.
 Current authority, highest first:
 
 1. [`docs/design.md`](docs/design.md) for product boundaries and cross-cutting invariants.
-2. The applicable file in [`docs/specs/`](docs/specs/) for current behavior.
-3. Active decisions for rationale that remains easy to regress.
-4. Active handoffs for human-confirmed work that is not yet complete.
+2. The applicable file in [`docs/specs/`](docs/specs/) for current behavior,
+   including the brief rationale that guards it against regression.
+3. The few remaining [decision records](docs/decisions/README.md) for
+   cross-cutting rationale too large for one spec.
 
 Read the sources relevant to the affected behavior. A typo or formatting fix
 does not require a design review. Report contradictions instead of silently
@@ -27,13 +28,13 @@ choosing a source.
 - Provider launches, prompts, skills, or task-engine ownership: `docs/specs/providers-and-containment.md`.
 - Chat, Experiment control, or watcher behavior: `docs/specs/conversations-episodes-and-watchers.md`.
 - Scheduler submission, the launch helper, or job watchers: `docs/specs/compute-jobs.md`.
-- Auto-research or graph-branch scope: `docs/specs/auto-research-and-branch-merge.md` and `docs/decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
+- Auto-research or graph-branch scope: `docs/specs/auto-research-and-branch-merge.md`.
 - Nightly graph consolidation or operational lessons: `docs/specs/graph-consolidation-and-lessons.md`.
 - Task storage or persisted requests: `docs/specs/projects-spaces-and-operations.md`.
 - API, Web, or native contracts: `docs/specs/api-web-and-desktop-projections.md`; visual design: `docs/specs/interface-and-visual-design.md`.
 - Paper, previews, reports, or artifact viewing: `docs/specs/paper-artifacts-and-result-views.md`.
 - Server, deployment, or release work: `docs/specs/server-and-machine-operations.md`, `docs/server.md`, and `docs/release.md`.
-- Use `docs/handoffs/README.md` to find an active handoff or an open live check when continuing unfinished work.
+- Unfinished or confirmed-but-unbuilt work lives in GitHub issues and pull requests, never in docs.
 
 ## Working loop
 
@@ -46,8 +47,7 @@ choosing a source.
    affected checks. Add regression coverage when behavior changes; review prose
    edits directly. Test prompt data and enforcement, never exact instruction wording.
 4. Read the complete diff and inspect check results yourself.
-5. Update current behavior docs when semantics changed. Close or replace any
-   handoff whose status changed in the same commit.
+5. Update current behavior docs when semantics changed, in the same commit.
 
 When another session changes the tree during long work, integrate through a real
 three-way Git merge; never pipe a whole diff into `git apply`. All work uses a
@@ -116,9 +116,9 @@ lives in each owner's docstring, its module spec, and a test that attempts the
 violation.
 
 1. **Canonical Patch logs are append-only; materialized graph files are outputs.** Never edit or delete main or branch Patch history, and never hand-edit `graph.json`, `research.md`, glossary, Proposal, or control projections; replay rebuilds the outputs and would change the past.
-3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges; a member's own page, including an agent the member runs there, counts as that human ([decision](docs/decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)). The Auto-research orchestrator is the one explicit exception: on its branch it may choose Decisions and set ordinary belief standing, and a human-dispatched branch merge inherits that profile.
+3. **Humans retain protected authority.** Only humans approve Proposals, change project truth membership, authorize episodes, or dispatch branch merges; a member's own page, including an agent the member runs there, counts as that human ([why](docs/specs/conversations-episodes-and-watchers.md#native-chat-context)). The Auto-research orchestrator is the one explicit exception: on its branch it may choose Decisions and set ordinary belief standing, and a human-dispatched branch merge inherits that profile.
 3b. **Existing ResearchQuestions and Hypotheses are protected beliefs.** Agents may create them; structural or semantic changes to existing ones use a Proposal. Never infer protected intent from operation shape.
-4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no graph/project authority, though every team launch carries its repositories' Git transport ([decision](docs/decisions/2026-09-24-team-launches-carry-git-transport.md)); Work names exact write roots to provider enforcement, which bounds every file-editing tool and bounds the shell only where a provider can do so without disabling compute ([decision](docs/decisions/2026-09-13-claude-work-runs-without-the-os-sandbox.md)); ingestion writes only scratch; paper coach is read-only. The per-chat browser grant is human consent to a code-defined tool ([decision](docs/decisions/2026-10-04-agents-browse-with-playwright-cli.md)).
+4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no graph/project authority, though every team launch carries its repositories' Git transport ([why](docs/specs/providers-and-containment.md#login-state-and-failure)); Work names exact write roots to provider enforcement, which bounds every file-editing tool and bounds the shell only where a provider can do so without disabling compute ([why](docs/specs/providers-and-containment.md#claude)); ingestion writes only scratch; paper coach is read-only. The per-chat browser grant is human consent to a code-defined tool ([why](docs/specs/providers-and-containment.md#browser-grants)).
 4b. **The task stage is the only graph-change channel.** RCP collects the agent's Patch from its exact RCP-owned stage and nowhere else; `docs/specs/providers-and-containment.md` names the files each run kind collects. Never parse graph authority from answers, traces, artifacts, or repository edits.
 6. **One canonical state repository.** Routes never write canonical files directly; `StateWorkspace` owns local/remote locking and publication.
 6b. **One synchronous transition owns one semantic mutation.** Sync, Apply, branch Apply, and merge commit one expanded transition or nothing; replay does not rerun historical rules.
@@ -159,7 +159,7 @@ conversations spec; 11 `ProviderStreamEvent`.
   only the listed research layer names research node types, classes, or
   relations. `tests/test_project_types.py` and `web/tests/projectType.test.mjs`
   hold every other file to a falling count
-  ([decision](docs/decisions/2026-10-04-the-kernel-asks-node-type-questions.md)).
+  ([why](docs/specs/graph-history-and-transitions.md#product-ontology)).
 - A new external program is declared in `src/rcp/dependencies.py` with its
   purpose, roles, platforms, and tier. Required programs are checked up front
   and refuse agent runs when missing; optional ones name their feature and
@@ -171,17 +171,12 @@ conversations spec; 11 `ProviderStreamEvent`.
 - Keep docs and PR titles, descriptions, and comments free of real hostnames,
   account names, personal/backup paths, and private project/repository identities.
   Use neutral descriptions or placeholders; check the full text before publishing.
-- Specs own current behavior and durable journeys; decisions explain active tradeoffs.
-- A handoff is active work, not a diary; its opening names implemented and remaining work and settled decisions.
-- When a handoff decision changes, update its plan and status in the same commit.
-  Rejected work is closed, not “not done.” Never leave mutually contradictory
-  old and new plans active in one file.
-- When work completes, is rejected, superseded, or abandoned, delete the handoff
-  in the same change. If later work materially changes scope, delete the
-  predecessor and create a new handoff rather than appending a second plan.
-  Git history is the record; rationale that must outlive the work goes in a
-  decision record.
-- Delete stale instructions; avoid caveats and rules duplicated across AGENTS, specs, and handoffs.
+- Docs describe only what the code does now. Plans, status, and remaining work
+  belong in GitHub issues and pull requests; git history is the record.
+- Specs own current behavior, durable journeys, and the short "why" that keeps a
+  rule from regressing. Add a decision record only for rationale that spans
+  several specs and would bloat each of them.
+- Delete stale instructions; state each rule once and link to its owner.
 
 ## Conventions and local facts
 

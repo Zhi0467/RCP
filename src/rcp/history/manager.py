@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -386,6 +387,7 @@ class HistoryManager:
             manifest.research_dir, str(manifest.research_dir)
         )
         self.root = self.workspace.root
+        self._read_project_root: Path | None = None
         self.patches_dir = self.root / "patches"
         self._process_lock = self.workspace.snapshot_lock
         self._accepted_revision: int | None = None
@@ -396,15 +398,43 @@ class HistoryManager:
         self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
         self._history_engine: ProjectHistoryEngine | None = None
+        self._engine_lock = threading.Lock()
+        self._reader_lock = threading.Lock()
+        self._reader: HistoryManager | None = None
 
     @property
     def history_engine(self) -> ProjectHistoryEngine:
         from rcp.history.engine import ProjectHistoryEngine
 
-        with self._process_lock:
+        with self._engine_lock:
             if self._history_engine is None:
                 self._history_engine = ProjectHistoryEngine(self)
             return self._history_engine
+
+    @contextmanager
+    def read_view(self) -> Iterator[HistoryManager]:
+        """Pin all inputs for a display operation without refreshing canonical state."""
+        if not self.workspace.remote:
+            with self._process_lock:
+                yield self
+            return
+        with self.workspace.read_snapshot() as root:
+            with self._reader_lock:
+                reader = self._reader
+                if reader is None or reader.root != root:
+                    reader = HistoryManager(
+                        self.manifest,
+                        LocalStateWorkspace(root, str(root), display_reader=True),
+                        expected_space_id=self.expected_space_id,
+                        project_id=self.project_id,
+                        write_authority=self.write_authority,
+                    )
+                    reader._read_project_root = self.manifest.path.parent.parent
+                    reader._reload_manifest()
+                    self._reader = reader
+                if reader.history_engine.store is None:
+                    reader.history_engine.store = self.history_engine.store
+            yield reader
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -595,6 +625,9 @@ class HistoryManager:
             self._atomic_text(research_md, "")
 
     def load_patches(self) -> list[Patch]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.load_patches()
         with self._process_lock:
             return [
                 self._decode_persisted_patch(path.read_text(encoding="utf-8"))
@@ -618,6 +651,8 @@ class HistoryManager:
 
         if materialization is not None:
             return self._project_identity_from_replay(materialization)
+        # Registration asks this before any display generation exists, so it
+        # reads canonical state rather than a pinned display view.
         with self._process_lock:
             with suppress(StateUnavailable):
                 self.workspace.refresh_if_stale()
@@ -782,6 +817,9 @@ class HistoryManager:
     def current_accepted_revision(self) -> int:
         """Return the cached accepted revision without reading canonical patch bodies."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.current_accepted_revision()
         with self._process_lock:
             if self._accepted_revision is None:
                 # Project services call ``initialize`` before exposure. This fallback
@@ -866,7 +904,7 @@ class HistoryManager:
         *,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, BranchReadSnapshot | None]:
-        """Read several episode branches from one refreshed, read-only snapshot."""
+        """Read several episode branches from one pinned, read-only snapshot."""
 
         from rcp.history.branches import read_branch_snapshots
 
@@ -899,6 +937,9 @@ class HistoryManager:
     def current_materialization(self) -> MaterializationResult:
         """Replay current canonical history once and return state plus reports."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.current_materialization()
         with self._process_lock:
             self._repair_materializations_if_needed()
             with suppress(StateUnavailable):
@@ -1149,6 +1190,9 @@ class HistoryManager:
     def transition_trace_at_revision(self, revision: int) -> TransitionTrace | None:
         """Read one accepted transition trace without replaying rule code."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.transition_trace_at_revision(revision)
         for path in self._patch_paths():
             if int(path.stem) != revision:
                 continue
@@ -1494,6 +1538,9 @@ class HistoryManager:
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
         """Read each accepted Patch and its exact pre/post state from the shared engine."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.accepted_patch_boundaries()
         engine = self.history_engine
         generation = engine.snapshot(self.graph_target)
         return generation.result, [
@@ -1556,10 +1603,16 @@ class HistoryManager:
 
         if materialization is not None:
             return build_refresh_delta(materialization.patches, materialization)
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.refresh_delta()
         result, steps = self.history_engine.projection(self.graph_target)
         return build_refresh_delta(result.patches, result, steps=steps)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.slice(from_revision, to_revision)
         _result, steps = self.history_engine.projection(
             self.graph_target, from_revision=from_revision, to_revision=to_revision
         )
@@ -1581,6 +1634,9 @@ class HistoryManager:
     ) -> list[dict[str, object]]:
         """Return a reader-facing projection without changing the raw history contract."""
 
+        if self.workspace.remote:
+            with self.read_view() as reader:
+                return reader.revision_summaries(from_revision, to_revision)
         engine = self.history_engine
         generation = engine.snapshot(self.graph_target)
         latest = generation.result.state.revision
@@ -1807,7 +1863,7 @@ class HistoryManager:
     def _reload_manifest(self) -> None:
         path = self.root / "manifest.toml"
         if path.is_file():
-            self.manifest = load_manifest(path)
+            self.manifest = load_manifest(path, project_root=self._read_project_root)
 
     @staticmethod
     def _materialized_paths(*, include_manifest: bool = False) -> list[Path]:

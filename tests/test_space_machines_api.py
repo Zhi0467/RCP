@@ -16,6 +16,7 @@ from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
 from rcp.projects import fill_space_machines
 from tests.helpers import create_named_app, signed_in_client
+from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_project_membership import _create_project, _team_app
 
 
@@ -497,6 +498,7 @@ def test_machine_card_column_upgrades_preserve_existing_card(app) -> None:
     machine = store.space_machines()[0]
     store.update_space_machine(machine.machine_id, writable_paths=["/shared"])
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("ALTER TABLE space_machines DROP COLUMN hidden_folders_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_autocompact_json")
         connection.execute("ALTER TABLE space_machines DROP COLUMN provider_shell_timeout_json")

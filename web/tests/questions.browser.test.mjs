@@ -70,19 +70,15 @@ test("chat question answers stay separate from steering and resolved cards enter
     // Let any unwanted read finish before comparing; elapsed time is display-only.
     await page.waitForTimeout(150);
     assert.equal(questionReads, 1);
-    const changedOwnerRead = page.waitForResponse(
-      "**/api/projects/project/chats/steering-chat/questions",
-    );
-    await page.evaluate(() => window.setSteeringFixture({ updated_at: "2026-09-05T12:00:02Z" }));
-    await changedOwnerRead;
-    assert.equal(questionReads, 2);
+    await page.evaluate(async () => {
+      window.setSteeringFixture({ updated_at: "2026-09-05T12:00:02Z" });
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await page.waitForTimeout(150);
+    assert.equal(questionReads, 1);
     await single.getByText("Agent is waiting", { exact: true }).waitFor();
     questions[0].agent_waiting = false;
-    await page.evaluate(() =>
-      window.dispatchEvent(
-        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
-      ),
-    );
+    await page.evaluate(() => window.refreshQuestions("project", "v1"));
     await single.getByText("Needs you", { exact: true }).waitFor();
     await single.getByRole("button", { name: "a", exact: true }).click();
     await page
@@ -126,7 +122,7 @@ test("chat question answers stay separate from steering and resolved cards enter
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
       true,
     );
-    // A project heartbeat refreshes parked questions even when tasks stop changing.
+    // A project watermark refreshes parked questions even when tasks stop changing.
     // Earlier answers may still be refreshing; none may read the parked question.
     await page.waitForLoadState("networkidle");
     questions.push({
@@ -137,17 +133,9 @@ test("chat question answers stay separate from steering and resolved cards enter
       answer: null,
       chosen_choices: [],
     });
-    await page.evaluate(() =>
-      window.dispatchEvent(
-        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/other" }),
-      ),
-    );
+    await page.evaluate(() => window.refreshQuestions("other", "v2"));
     assert.equal(await page.locator('[data-question-id="parked"]').count(), 0);
-    await page.evaluate(() =>
-      window.dispatchEvent(
-        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
-      ),
-    );
+    await page.evaluate(() => window.refreshQuestions("project", "v3"));
     await page.locator('[data-question-id="parked"]').waitFor();
     await page.evaluate(() =>
       window.setSteeringFixture({
@@ -163,11 +151,7 @@ test("chat question answers stay separate from steering and resolved cards enter
       .getByRole("button", { name: "Answer and continue Work", exact: true })
       .waitFor();
     questions.push({ ...questions[3], question_id: "discuss", capability: "discuss" });
-    await page.evaluate(() =>
-      window.dispatchEvent(
-        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
-      ),
-    );
+    await page.evaluate(() => window.refreshQuestions("project", "v4"));
     const discuss = page.locator('[data-question-id="discuss"]');
     await discuss.getByRole("textbox").fill("Discuss this route");
     await discuss.getByRole("button", { name: "Answer and continue Discuss", exact: true }).click();
@@ -179,11 +163,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     });
     questions[3].withdrawn_readonly = true;
     questions[3].can_answer = false;
-    await page.evaluate(() =>
-      window.dispatchEvent(
-        new CustomEvent("rcp:refresh-questions", { detail: "/api/projects/project" }),
-      ),
-    );
+    await page.evaluate(() => window.refreshQuestions("project", "v5"));
     await page
       .locator('.node-chat-lines [data-question-id="parked"][data-question-state="ended"]')
       .waitFor();

@@ -1,14 +1,15 @@
-import { NotebookPen, UserRound } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { NotebookPen, UserRound, RotateCw } from "lucide-react";
+import { useCallback, useState } from "react";
 import {
   addLesson,
   deleteLesson,
   editLesson,
   LESSON_TEXT_MAX_CHARS,
   lessonTextIsValid,
-  loadLessons,
 } from "./consolidation";
-import type { Lesson } from "../core/types";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime } from "../core/useResource";
+import { lessonsProfile, projectIdFromApiBase, useProjectResource } from "./projectResources";
 
 // The card shows this many lessons until the member asks for the rest.
 const COLLAPSED_LESSONS = 5;
@@ -20,11 +21,11 @@ interface Props {
 
 /** The project's operational lessons: members list, add, edit, and delete them. */
 export function ProjectLessons({ apiBase, writesDisabled }: Props) {
-  // Keyed by project so a response for the previous project never shows here.
-  const [loaded, setLoaded] = useState<{ apiBase: string; lessons: Lesson[] } | null>(null);
-  const lessons = loaded?.apiBase === apiBase ? loaded.lessons : null;
-  const currentApiBase = useRef(apiBase);
-  currentApiBase.current = apiBase;
+  const { store } = useRefreshRuntime();
+  const profile = lessonsProfile(projectIdFromApiBase(apiBase));
+  const resource = useProjectResource(profile);
+  const lessons = resource.value?.lessons ?? null;
+  const resourceId = resourceKeyId(profile.key);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<{ lessonId: string; text: string } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -32,27 +33,22 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
-  const reload = useCallback(async () => {
-    const { lessons } = await loadLessons(apiBase);
-    if (currentApiBase.current === apiBase) setLoaded({ apiBase, lessons });
-  }, [apiBase]);
-
-  useEffect(() => {
-    void reload().catch((failure) =>
-      setError(failure instanceof Error ? failure.message : String(failure)),
-    );
-  }, [reload]);
+  const reload = useCallback(async () => store.invalidate(resourceId), [store, resourceId]);
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
+    const mutation = store.beginMutation(
+      crypto.randomUUID(),
+      new Map([[resourceId, (value: unknown) => value]]),
+    );
     try {
       await action();
-      await reload();
+      mutation.settle();
       return true;
     } catch (failure) {
+      mutation.fail();
       setError(failure instanceof Error ? failure.message : String(failure));
-      await reload().catch(() => {});
       return false;
     } finally {
       setBusy(false);
@@ -63,12 +59,29 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
   const shownLessons = showAll ? allLessons : allLessons.slice(0, COLLAPSED_LESSONS);
 
   return (
-    <section className="settings-section project-lessons">
+    <section
+      className="settings-section project-lessons"
+      style={{ borderColor: error || resource.error ? "var(--danger, #d84c4c)" : undefined }}
+    >
       <header>
         <span>
           <NotebookPen size={16} />
         </span>
         <h2>Lessons</h2>
+        {error || resource.error ? (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Retry refresh"
+            title={error ?? String(resource.error)}
+            onClick={() => {
+              setError(null);
+              void reload();
+            }}
+          >
+            <RotateCw size={14} />
+          </button>
+        ) : null}
       </header>
       <ul className={`project-lesson-list${showAll ? " is-expanded" : ""}`}>
         {shownLessons.map((lesson) => (
@@ -198,7 +211,6 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
           Add
         </button>
       </div>
-      {error ? <p className="project-member-error">{error}</p> : null}
     </section>
   );
 }

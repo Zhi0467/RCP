@@ -7,7 +7,7 @@
  * lane order. Generic modules ask these predicates and tables instead of naming
  * research node types; only the research layer (`RESEARCH_LAYER` in
  * `web/tests/projectType.test.mjs`) names them. See
- * docs/decisions/2026-10-04-the-kernel-asks-node-type-questions.md.
+ * docs/specs/graph-history-and-transitions.md (Product ontology).
  *
  * Custom ontology types are stored as their base type, so every answer here is
  * keyed by the base `node.type`.

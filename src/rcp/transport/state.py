@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
 from functools import lru_cache
@@ -50,7 +50,7 @@ from rcp.server_ops.backup_models import (
     BackupCanonicalSourceFile,
     BackupCanonicalSourcePlan,
 )
-from rcp.transport import state_transfer
+from rcp.transport import generations, state_transfer
 from rcp.transport.remote_read_kept_view import MISSING as _REMOTE_VIEW_MISSING
 from rcp.transport.remote_read_kept_view import TOO_LARGE as _REMOTE_VIEW_TOO_LARGE
 from rcp.transport.remote_read_kept_view import UNSAFE as _REMOTE_VIEW_UNSAFE
@@ -1004,7 +1004,7 @@ class StateWorkspaceStatus(BaseModel):
 
 
 class StateWorkspace:
-    def __init__(self, root: Path, location: str) -> None:
+    def __init__(self, root: Path, location: str, *, display_reader: bool = False) -> None:
         self.root = root
         self.location = location
         self.remote = False
@@ -1012,7 +1012,28 @@ class StateWorkspace:
         self.last_synced_at: datetime | None = None
         self.error: str | None = None
         self.materialization_repair_required = False
-        self.snapshot_lock = _snapshot_lock(root)
+        self.snapshot_lock = threading.RLock() if display_reader else _snapshot_lock(root)
+        self._generations = (
+            generations.ReadGenerations(root) if display_reader else generations.owner(root)
+        )
+        self._transaction_thread = threading.local()
+
+    def set_sync_request(self, callback: Callable[[], None]) -> None:
+        self._generations.request_sync = callback
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[Path]:
+        """Local display reads retain the existing in-process coherence lock."""
+        with self.snapshot_lock:
+            yield self.root
+
+    def content_generations(self, families: Iterable[str]) -> dict[str, str]:
+        return self._generations.tokens(families)
+
+    def sync_health(self) -> dict:
+        if not self.remote:
+            return {"last_completed_at": None, "status": "local", "error": None}
+        return self._generations.health()
 
     def refresh(self) -> bool:
         with self.snapshot_lock:
@@ -1386,7 +1407,7 @@ class StateWorkspace:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def publish(self, relative_paths: list[Path | str]) -> None:
-        del relative_paths
+        self._generations.bump(relative_paths)
 
     def publish_committed_batch(
         self,
@@ -1829,7 +1850,14 @@ def _process_advisory_lock(
 
 
 class SSHStateWorkspace(StateWorkspace):
-    def __init__(self, root: Path, host: str, repository_path: str) -> None:
+    def __init__(
+        self,
+        root: Path,
+        host: str,
+        repository_path: str,
+        *,
+        expected_project_name: str | None = None,
+    ) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", host):
             raise ValueError("SSH host contains unsupported characters")
         remote_repository = PurePosixPath(repository_path)
@@ -1837,12 +1865,93 @@ class SSHStateWorkspace(StateWorkspace):
             raise ValueError("remote state repository must use a specific absolute path")
         super().__init__(root, f"{host}:{remote_repository}/.research")
         self.remote = True
+        self._generations.restore()
         self.host = host
         self.remote_repository = remote_repository
+        self.expected_project_name = expected_project_name
         self.remote_root = remote_repository / ".research"
         self.lock_dir = self.remote_root / ".refresh.lock"
         self._last_refresh_monotonic = 0.0
         self._publication_lease: RunLockLease | None = None
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[Path]:
+        """Pin display state without refreshing or waiting for a transfer."""
+        if getattr(self._transaction_thread, "active", False):
+            yield self.root
+            return
+        pinned = getattr(self._generations.thread, "read_root", None)
+        if pinned is not None:
+            yield pinned
+            return
+        with self._generations.pin() as root:
+            if root is None:
+                if self._generations.request_sync is not None:
+                    self._generations.request_sync()
+                raise StateUnavailable("Remote state is loading; no completed display generation.")
+            self._generations.thread.read_root = root
+            try:
+                yield root
+            finally:
+                self._generations.thread.read_root = None
+
+    def status(self) -> StateWorkspaceStatus:
+        health = self._generations.health()
+        return StateWorkspaceStatus(
+            remote=True,
+            reachable=health["error"] is None
+            and (self._generations.completed is not None or self.reachable),
+            location=self.location,
+            last_synced_at=self._generations.completed,
+            error=health["error"] or (self.error if self._generations.completed is None else None),
+        )
+
+    def _validate_capture(self, stage: Path) -> None:
+        manifest = load_manifest(stage / "manifest.toml")
+        repository = manifest.repository_map[manifest.state.repository]
+        machine = manifest.machine_map[repository.machine]
+        if machine.host != self.host or repository.path != str(self.remote_repository):
+            raise ValueError("Canonical manifest changed its own remote state locator")
+        expected_name = self.expected_project_name
+        previous = self._generations.current
+        if expected_name is None and previous is not None:
+            expected_name = load_manifest(previous / "manifest.toml").name
+        if expected_name is not None and manifest.name != expected_name:
+            raise ValueError("Canonical manifest belongs to a different project")
+
+    def capture(self) -> bool:
+        """Capture remotely under the same sequencing owner used by publications."""
+        acquired = self.snapshot_lock.acquire(timeout=STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS)
+        if not acquired:
+            return False
+        stage = None
+        with self._generations.guard:
+            self._generations.syncing = True
+        try:
+            deadline = time.monotonic() + STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS
+            with self._remote_advisory_lock(
+                self.lock_dir, cancelled=lambda: time.monotonic() >= deadline
+            ) as lease:
+                if not self._remote_manifest_exists():
+                    raise StateMissing("Remote canonical manifest is missing.")
+                stage = self._generations.stage()
+                lease.assert_owned()
+                self._pull_remote_tree(stage)
+                lease.assert_owned()
+                self._validate_capture(stage)
+                changed = self._generations.publish(stage)
+                stage = None
+            return changed
+        except Exception as exc:
+            with self._generations.guard:
+                self._generations.error = str(exc)
+            raise
+        finally:
+            if stage is not None:
+                shutil.rmtree(stage, ignore_errors=True)
+            with self._generations.guard:
+                self._generations.syncing = False
+            self.snapshot_lock.release()
 
     def _refresh_snapshot(self) -> bool:
         if not self._remote_manifest_exists():
@@ -1851,6 +1960,7 @@ class SSHStateWorkspace(StateWorkspace):
             self._publication_lease.assert_owned()
             refreshed = self._sync_remote_tree()
             self._publication_lease.assert_owned()
+            self._publish_committed_generation()
             return refreshed
         # A reader must not wait indefinitely behind a writer: the holder it is
         # queued behind may belong to a connection that died mid-publication.
@@ -1863,6 +1973,7 @@ class SSHStateWorkspace(StateWorkspace):
                 lease.assert_owned()
                 refreshed = self._sync_remote_tree()
                 lease.assert_owned()
+                self._publish_committed_generation()
                 return refreshed
         except RunLockCancelled as exc:
             raise StateUnavailable(
@@ -1933,6 +2044,7 @@ class SSHStateWorkspace(StateWorkspace):
                     f"continue: {exc}"
                 ) from exc
             self.last_synced_at = None
+            self._generations.clear()
             self._mark_reachable()
             return f"{self.host}:{remote_archive}"
 
@@ -1970,6 +2082,10 @@ class SSHStateWorkspace(StateWorkspace):
         return True, int(head[:-5])
 
     def _sync_remote_tree(self) -> bool:
+        self._pull_remote_tree(self.root)
+        return True
+
+    def _pull_remote_tree(self, destination: Path) -> bool:
         remote = f"{self.host}:{shlex.quote(str(self.remote_root))}/"
         engine = state_transfer.get_engine(self.host)
         excludes = (".refresh.lock", ".agent-run.lock", ".append.lock", ".chat.lock", ".publish")
@@ -1980,15 +2096,20 @@ class SSHStateWorkspace(StateWorkspace):
                     engine.local_path,
                     "-a",
                     "--delete",
+                    *(
+                        [f"--link-dest={self._generations.current.resolve()}"]
+                        if destination != self.root and self._generations.current is not None
+                        else []
+                    ),
                     *(f"--exclude={name}" for name in excludes),
                     *rsync_ssh_arguments(),
                     remote,
-                    f"{self.root}/",
+                    f"{destination}/",
                 ],
                 phase="pull",
             )
         else:
-            result = state_transfer.pull_tar(self.host, self.remote_root, self.root, excludes)
+            result = state_transfer.pull_tar(self.host, self.remote_root, destination, excludes)
         if result.returncode:
             self._mark_unreachable(result.stderr)
             raise StateUnavailable(self.error or "canonical state sync failed")
@@ -2131,14 +2252,18 @@ class SSHStateWorkspace(StateWorkspace):
     def transaction(self) -> Iterator[None]:
         with self.snapshot_lock, self._remote_advisory_lock(self.lock_dir) as lease:
             self._publication_lease = lease
+            self._transaction_thread.active = True
             try:
                 lease.assert_owned()
                 if self._remote_manifest_exists():
                     self._sync_remote_tree()
+                    lease.assert_owned()
+                    self._publish_committed_generation()
                 lease.assert_owned()
                 yield
                 lease.assert_owned()
             finally:
+                self._transaction_thread.active = False
                 self._publication_lease = None
 
     @contextmanager
@@ -2213,6 +2338,7 @@ class SSHStateWorkspace(StateWorkspace):
     def publish(self, relative_paths: list[Path | str]) -> None:
         with self.snapshot_lock, self._publication_lock() as lease:
             self._publish(relative_paths, lease)
+            self._publish_committed_generation()
 
     def restore_exact_file(
         self,
@@ -2343,6 +2469,8 @@ class SSHStateWorkspace(StateWorkspace):
                 str(response.get("error") or "restored project publication failed")
             )
         self._mark_reachable(synced=True)
+        if not external:
+            self._publish_committed_generation()
 
     def keep_result_view(
         self,
@@ -2639,6 +2767,15 @@ class SSHStateWorkspace(StateWorkspace):
                 lease=lease,
             )
 
+    def _publish_committed_generation(self) -> None:
+        try:
+            self._generations.copy(self.root)
+        except (OSError, ValueError) as exc:
+            message = f"Display publication failed: {exc}"
+            with self._generations.guard:
+                self._generations.error = message
+            # Display failures cannot undo an accepted canonical write.
+
     def _publish_committed_history(
         self,
         relative_paths: list[Path | str],
@@ -2696,6 +2833,7 @@ class SSHStateWorkspace(StateWorkspace):
             self._raise_reconciled_commit_failure(commit_path, commit_is_directory, exc)
         if response["ok"] and response.get("commit_status") == "present":
             self._mark_reachable(synced=True)
+            self._publish_committed_generation()
             return
         status = response.get("commit_status")
         message = str(response.get("error") or "canonical state commit failed")
@@ -2706,6 +2844,7 @@ class SSHStateWorkspace(StateWorkspace):
                 self._raise_reconciled_commit_failure(commit_path, commit_is_directory, exc)
             if repaired["ok"] and repaired.get("commit_status") == "present":
                 self._mark_reachable(synced=True)
+                self._publish_committed_generation()
                 return
             status = repaired.get("commit_status")
             message = str(repaired.get("error") or message)
@@ -2963,7 +3102,9 @@ def state_workspace_for_probe(bootstrap: Manifest, data_dir: Path) -> StateWorks
         )
     cache_key = hashlib.sha256(f"{machine.host}\0{state_repository.path}".encode()).hexdigest()[:16]
     cache_root = data_dir / "state-cache" / cache_key / ".research"
-    return SSHStateWorkspace(cache_root, machine.host, state_repository.path)
+    return SSHStateWorkspace(
+        cache_root, machine.host, state_repository.path, expected_project_name=bootstrap.name
+    )
 
 
 def _validate_remote_identity(

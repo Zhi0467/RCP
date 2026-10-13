@@ -37,9 +37,6 @@ from rcp.api.dependencies import (
     ServerStatusComposition,
     require_project_membership,
 )
-from rcp.api.dependencies import (
-    get_project_service as _project_service,
-)
 from rcp.api.digest import router as digest_router
 from rcp.api.episode_branches import (
     ensure_episode_graph_target as _ensure_episode_graph_target,
@@ -224,6 +221,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     TeamAuthenticationError,
 )
+from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
 from rcp.transfer.target import (
     TargetTransferActivationCoordinator,
@@ -729,6 +727,9 @@ def create_app(
         ),
         logger=logger,
     )
+    sync_coordinator = SyncCoordinator(
+        catalog, on_capture=project_display_cache.rebuild_cached_snapshot
+    )
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
 
     setup = ProjectSetupManager(
@@ -773,7 +774,7 @@ def create_app(
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> AsyncIterator[str]:
-        service = _project_service(catalog, project_id)
+        service = await asyncio.to_thread(catalog.open_execution, project_id)
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("The agent stream lost its durable project task.")
@@ -804,8 +805,9 @@ def create_app(
             if owner is None:
                 raise ValueError("episode_isolation_owner_missing")
             if owner.mode == "experiment_loop" and task.episode_id == owner.episode_id:
-                ensure_episode_graph_target(owner)
-            service = service.for_graph_target(
+                await asyncio.to_thread(ensure_episode_graph_target, owner)
+            service = await asyncio.to_thread(
+                service.for_graph_target,
                 task.graph_target,
                 expected_episode_id=task.graph_target.branch_id,
             )
@@ -1042,12 +1044,13 @@ def create_app(
         finalizer = recorded_finalizer(store, execution.operation_id)
         if finalizer is None:
             raise ValueError(f"No recorded-result owner is registered for {kind}.")
-        service = _project_service(catalog, project_id)
+        service = await asyncio.to_thread(catalog.open_execution, project_id)
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("Recorded finalization lost its durable project task.")
         if task.graph_target.kind == "branch":
-            service = service.for_graph_target(
+            service = await asyncio.to_thread(
+                service.for_graph_target,
                 task.graph_target,
                 expected_episode_id=task.graph_target.branch_id,
             )
@@ -1063,7 +1066,7 @@ def create_app(
             raise ValueError("Command mailbox recovery lost its durable task.")
 
         def service_for_validation() -> ProjectService:
-            service = catalog.open(task.project_id)
+            service = catalog.open_execution(task.project_id)
             if task.graph_target.kind == "branch":
                 service = service.for_graph_target(
                     task.graph_target,
@@ -1103,7 +1106,7 @@ def create_app(
     def _branch_service(graph_target: GraphTargetRef, project_id: str) -> ProjectService:
         # The branch is named after the chain root; a continuation episode
         # shares it, so the expected episode is the branch id, not the member.
-        return _project_service(catalog, project_id).for_graph_target(
+        return catalog.open_execution(project_id).for_graph_target(
             graph_target,
             expected_episode_id=graph_target.branch_id,
         )
@@ -1141,7 +1144,7 @@ def create_app(
         episode = store.episode(episode_id)
         if episode is None or episode.project_id != project_id:
             raise ValueError("Auto-research child admission lost its branch episode.")
-        service = _project_service(catalog, project_id).for_graph_target(
+        service = catalog.open_execution(project_id).for_graph_target(
             episode.graph_target,
             expected_episode_id=(
                 episode.graph_target.branch_id if episode.graph_target.kind == "branch" else None
@@ -1213,9 +1216,9 @@ def create_app(
     watcher_delivery = WatcherDelivery(
         store,
         retry=graph_watcher_retry,
-        project_service=lambda project_id: _project_service(catalog, project_id),
-        graph_project_service=lambda project_id, target: _project_service(
-            catalog, project_id
+        project_service=lambda project_id: catalog.open_execution(project_id),
+        graph_project_service=lambda project_id, target: catalog.open_execution(
+            project_id
         ).for_graph_target(
             target,
             expected_episode_id=(target.branch_id if target.kind == "branch" else None),
@@ -1256,7 +1259,7 @@ def create_app(
         statuses = reconcile_chat_question_answers(
             store,
             background_tasks,
-            lambda identity: _project_service(catalog, identity),
+            catalog.open_execution,
             project_id=project_id,
         )
         statuses.update(
@@ -1517,6 +1520,7 @@ def create_app(
         watcher_poller=watcher_poller,
         artifact_mutation_locks=artifact_mutation_locks,
         project_display_cache=project_display_cache,
+        sync_coordinator=sync_coordinator,
         watcher_delivery=watcher_delivery,
         experiment_operation_lock=experiment_operation_lock,
         background_tasks=background_tasks,
@@ -1716,17 +1720,11 @@ def create_app(
             raise MaintenanceRefused("The app runtime loop is unavailable at the update boundary.")
 
         async def wait_for_scheduled_reads() -> None:
+            await sync_coordinator.stop()
             await terminals.end_all(reason="server_maintenance")
             for task in artifact_import_tasks.values():
                 task.cancel()
-            pending = {
-                task
-                for task in (
-                    *startup_maintenance,
-                    *project_display_cache.reconciliation_tasks.values(),
-                )
-                if not task.done()
-            }
+            pending = {task for task in startup_maintenance if not task.done()}
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 
@@ -1748,6 +1746,7 @@ def create_app(
             phone_listener.resume()
         loop = runtime_loop[0]
         if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(sync_coordinator.start)
             loop.call_soon_threadsafe(schedule_artifact_imports)
 
     if control_server is not None:
@@ -1791,6 +1790,7 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
+                sync_coordinator.start()
                 background_tasks.recover_at_startup()
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 
@@ -1802,9 +1802,12 @@ def create_app(
                         if state is None or state.merge_reservation is None:
                             continue
                         try:
+                            service = await asyncio.to_thread(
+                                catalog.open_execution, project.project_id
+                            )
                             await asyncio.to_thread(
                                 reconcile_episode_merge,
-                                _project_service(catalog, project.project_id),
+                                service,
                                 store,
                                 episode,
                             )
@@ -1952,6 +1955,7 @@ def create_app(
             try:
                 await start_deferred_runtime()
             except BaseException:
+                await sync_coordinator.stop()
                 background_tasks.shutdown()
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
@@ -1982,6 +1986,7 @@ def create_app(
                     try:
                         await start_deferred_runtime()
                     except BaseException as exc:
+                        await sync_coordinator.stop()
                         background_tasks.shutdown()
                         await asyncio.to_thread(
                             deploy_key_agent.stop_after_workers_drained,
@@ -2008,14 +2013,10 @@ def create_app(
                 control_server.stop()
             for task in startup_maintenance:
                 task.cancel()
-            for task in list(project_display_cache.reconciliation_tasks.values()):
-                task.cancel()
             for task in startup_maintenance:
                 with suppress(asyncio.CancelledError):
                     await task
-            for task in list(project_display_cache.reconciliation_tasks.values()):
-                with suppress(asyncio.CancelledError):
-                    await task
+            await sync_coordinator.stop()
             await asyncio.to_thread(drain_live_artifact_pass)
             try:
                 await terminals.close()
@@ -2062,7 +2063,7 @@ def create_app(
     app.state.machine_power = machine_power
     app.state.machine_power_started = False
     app.state.reconcile_question_answers = reconcile_question_answers
-    app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
+    app.state.sync_coordinator = sync_coordinator
     app.state.watcher_poller = watcher_poller
     app.state.consolidation_poller = consolidation_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
@@ -2377,6 +2378,9 @@ def create_app(
     app.include_router(index_router)
     app.include_router(index_membership_router)
     app.include_router(project_provisioning_router)
+    from rcp.api.resource_watermarks import router as resource_watermarks_router
+
+    app.include_router(resource_watermarks_router)
     app.include_router(project_state_router)
     app.include_router(episode_router)
     app.include_router(experiments_router)

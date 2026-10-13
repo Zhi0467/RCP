@@ -310,3 +310,34 @@ def test_archive_cannot_address_an_episode_through_a_different_project(
         json={"archived": archived},
     )
     assert response.status_code == 404, response.text
+
+
+def test_admitted_command_answers_without_a_display_generation(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from rcp.api import episode_routes
+    from rcp.transport import StateUnavailable
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    episode, _task = create_recoverable_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="branch-episode",
+        status="queued",
+        stage=tmp_path / "retained-stage",
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise StateUnavailable("no display generation")
+
+    monkeypatch.setattr(episode_routes, "graph_branch_summary", unavailable)
+    response = signed_in_client(app).post(
+        f"/api/projects/{project_id}/episodes/{episode.episode_id}/archive",
+        json={"archived": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["archived"] is True
+    assert response.json()["graph_branch"] is None

@@ -1,4 +1,4 @@
-// Pure logic for "Since you last looked": request fencing, emptiness, the
+// Pure logic for "Since you last looked": emptiness, the
 // Research dots, and line labels. The hook and views own only React state.
 
 import type {
@@ -24,43 +24,6 @@ export function digestChangedNodeIds(
 ): ReadonlySet<string> {
   if (!digest || target.kind !== "main" || digest.changed_node_ids.length === 0) return NO_NODES;
   return new Set(digest.changed_node_ids);
-}
-
-/**
- * Newest request wins. A response applies only for the project it was issued
- * for and only when no newer response has applied, so a late response for an
- * older request or another project is dropped in either arrival order.
- * `invalidate` drops everything in flight (used after Caught up, so a read
- * started before the mark moved cannot repaint the old lines).
- */
-export interface DigestRequestFence {
-  begin(projectId: string): number;
-  accept(projectId: string, generation: number): boolean;
-  invalidate(): void;
-}
-
-export function createDigestRequestFence(): DigestRequestFence {
-  let projectId: string | null = null;
-  let issued = 0;
-  let applied = 0;
-  return {
-    begin(nextProjectId) {
-      if (nextProjectId !== projectId) {
-        projectId = nextProjectId;
-        applied = issued;
-      }
-      issued += 1;
-      return issued;
-    },
-    accept(responseProjectId, generation) {
-      if (responseProjectId !== projectId || generation <= applied) return false;
-      applied = generation;
-      return true;
-    },
-    invalidate() {
-      applied = issued;
-    },
-  };
 }
 
 /**

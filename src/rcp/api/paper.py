@@ -3,16 +3,18 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from rcp.api.dependencies import (
     get_catalog,
     get_project_service,
+    get_project_writer,
     require_project_membership,
     require_project_write_admission,
 )
 from rcp.paper import PaperService
+from rcp.paper.service import PaperDraftConflict
 from rcp.projects import ProjectCatalog
 
 _LOG = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ def _refresh_cached_paper(catalog: ProjectCatalog, project_id: str, paper: Paper
 class PaperSaveRequest(BaseModel):
     content: str
     base_hash: str | None = None
+    draft_version: str | None
 
 
 @router.get("/api/projects/{project_id}/paper")
@@ -50,7 +53,7 @@ def create_paper(
     project_id: str,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
-    paper = get_project_service(catalog, project_id).paper
+    paper = get_project_writer(catalog, project_id).paper
     created = paper.create()
     _refresh_cached_paper(catalog, project_id, paper)
     return created.model_dump(mode="json")
@@ -65,8 +68,11 @@ def save_paper(
     body: PaperSaveRequest,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
-    paper = get_project_service(catalog, project_id).paper
-    saved = paper.save(body.content, body.base_hash)
+    paper = get_project_writer(catalog, project_id).paper
+    try:
+        saved = paper.save(body.content, body.base_hash, body.draft_version)
+    except PaperDraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     _refresh_cached_paper(catalog, project_id, paper)
     return saved.model_dump(mode="json")
 

@@ -770,7 +770,7 @@ def comment_artifact(
     origin = store.agent_task(artifact.origin_operation_id or "")
     if origin is None:
         raise HTTPException(status_code=409, detail="The artifact's origin is unavailable.")
-    service = get_graph_service(catalog, project_id, origin.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, origin.graph_target.branch_id, write=True)
     try:
         admitted = admit_artifact_edit(
             store,

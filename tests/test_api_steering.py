@@ -19,7 +19,7 @@ from rcp.service import (
     iter_canonical_chat_backup_prefix,
     iter_canonical_chat_transfer,
 )
-from tests.helpers import signed_in_client
+from tests.helpers import resource_watermark_tokens, signed_in_client
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, store_test_claude_token, wait_until
 
@@ -198,6 +198,8 @@ def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
         )
         return summary["updated_at"], summary["message_count"]
 
+    keys = ({"name": "chats"}, {"name": "chat", "entity": run.chat_id})
+    tokens_before = resource_watermark_tokens(run.client, run.project_id, *keys)
     before = chat_version()
     assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 0
     assert run.client.post(run.url + "/steer", json=_body()).status_code == 200
@@ -205,12 +207,8 @@ def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
     # the summary it prompts the page to fetch moves too.
     assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 2
     assert chat_version() != before
-    # The heartbeat moves too, for a page that no longer polls this finished task.
-    assert run.client.get(f"/api/projects/{run.project_id}").status_code == 200
-    heartbeat = run.client.get(f"/api/projects/{run.project_id}/cached/revision").json()
-    assert heartbeat["steer_epoch"] == 2
-    # Another project's heartbeat never sees this project's steers.
-    assert run.background.steer_epoch("another-project") == 0
+    tokens_after = resource_watermark_tokens(run.client, run.project_id, *keys)
+    assert all(a != b for a, b in zip(tokens_before, tokens_after, strict=True))
 
 
 @pytest.mark.parametrize(

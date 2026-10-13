@@ -18,6 +18,9 @@ AGENT_TASK_LIST_OPEN_CHAT_LIMIT = 50
 # How long such a chat's turn stays listed after it finishes, so an open client
 # sees the terminal record and marks the result unread.
 AGENT_TASK_LIST_FINISHED_CHAT_SECONDS = 600
+# A running task's elapsed time and heuristic progress are computed from the
+# clock, so its progress token moves on this cadence while any task runs.
+TASK_PROGRESS_REFRESH_SECONDS = 5
 AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT = 200
 AGENT_TASK_EVENT_LIST_MAX_LIMIT = 500
 AGENT_TASK_EVENT_RETENTION_COUNT = 200
@@ -291,11 +294,11 @@ REFRESH_DELTA_MAX_BYTES = 16 * 1024
 
 # Rebuildable display/source caches and remote source operations.
 PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024
-REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS = 3.0
 REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS = 5.0
 REMOTE_STATE_RECONCILE_WINDOW_SECONDS = 2.0
-# Display-only routes may read a remote-state mirror this old; gating reads keep the window above.
+# Background capture cadence; display reads retain the last good generation on failure.
 REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS = 10.0
+REMOTE_STATE_CLIENT_LEASE_SECONDS = 60.0
 REMOTE_SOURCE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
 REMOTE_SOURCE_CACHE_MAX_COUNT = 256
 REMOTE_SOURCE_CACHE_MAX_BYTES = 1024 * 1024 * 1024

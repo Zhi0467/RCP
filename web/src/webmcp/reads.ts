@@ -36,7 +36,6 @@ type Route = { template: string; parameters: Parameter[]; scope: "displayed_grap
  * /terminals: reconcile_registrations can terminate repointed sessions.
  * /experiment-episodes: _experiment_episode_entries settles pending loop stops.
  * /digest: digest_snapshot inserts the member's initial caught-up mark.
- * /cached/revision: schedules project reconciliation, beyond a cached read.
  * /episodes/{episode_id}/merge-preview: Git merge-tree writes repository objects.
  * /artifacts/{artifact_id}/download and
  * /tasks/{operation_id}/artifacts/{artifact_id}/download: attachment downloads.
@@ -59,7 +58,6 @@ export const PROJECT_READ_POLICY = {
     "/chats/{chat_id}/worktree": "remote_git_network_contact",
     "/experiment-episodes": "experiment_stop_settlement",
     "/digest": "member_digest_mark_creation",
-    "/cached/revision": "project_reconciliation",
     "/episodes/{episode_id}/merge-preview": "git_object_write",
     "/machines/{machine_alias}/browser": "live_readiness_probe",
     "/artifacts/{artifact_id}/versions/{version_id}/live": "live_remote_snapshot",

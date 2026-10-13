@@ -26,11 +26,22 @@ def test_paper_endpoints_cover_snapshot_create_save_and_sessions(manifest, tmp_p
         json={
             "content": "# API introduction\n",
             "base_hash": created.json()["base_hash"],
+            "draft_version": created.json()["draft_version"],
         },
     )
     assert saved.status_code == 200
     assert saved.json()["content"] == "# API introduction\n"
     assert saved.json()["sync_state"] == "synced"
+    stale = client.put(
+        f"/api/projects/{project_id}/paper",
+        json={
+            "content": "# Stale editor",
+            "base_hash": created.json()["base_hash"],
+            "draft_version": created.json()["draft_version"],
+        },
+    )
+    assert stale.status_code == 409
+    assert client.get(f"/api/projects/{project_id}/paper").json() == saved.json()
     # The project snapshot, which a restarted app opens Paper from, follows the save.
     restarted = signed_in_client(create_named_app(str(manifest.path), data_dir=tmp_path / "data"))
     assert restarted.get(f"/api/projects/{project_id}").json()["paper"] == saved.json()
@@ -87,7 +98,11 @@ def test_a_failed_cache_refresh_does_not_fail_the_save(manifest, tmp_path, monke
     monkeypatch.setattr(app.state.services.catalog, "update_cached_snapshot_paper", too_large)
     saved = client.put(
         f"/api/projects/{project_id}/paper",
-        json={"content": "# Kept\n", "base_hash": created["base_hash"]},
+        json={
+            "content": "# Kept\n",
+            "base_hash": created["base_hash"],
+            "draft_version": created["draft_version"],
+        },
     )
     assert saved.status_code == 200
     assert client.get(f"/api/projects/{project_id}/paper").json()["content"] == "# Kept\n"
@@ -112,12 +127,76 @@ def test_a_late_cache_refresh_keeps_the_newer_paper(manifest, tmp_path) -> None:
     catalog.update_cached_snapshot_paper = delay_the_first_refresh
     first = client.put(
         f"/api/projects/{project_id}/paper",
-        json={"content": "# First\n", "base_hash": created["base_hash"]},
+        json={
+            "content": "# First\n",
+            "base_hash": created["base_hash"],
+            "draft_version": created["draft_version"],
+        },
     ).json()
     second = client.put(
         f"/api/projects/{project_id}/paper",
-        json={"content": "# Second\n", "base_hash": first["base_hash"]},
+        json={
+            "content": "# Second\n",
+            "base_hash": first["base_hash"],
+            "draft_version": first["draft_version"],
+        },
     ).json()
     refresh(*delayed[0])
 
     assert catalog.cached_snapshot(project_id)["paper"]["content"] == second["content"]
+
+
+def test_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monkeypatch) -> None:
+    from rcp.transport import StateUnavailable
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+
+    def no_generation(*_args, **_kwargs):
+        raise StateUnavailable("Remote state is loading; no completed display generation.")
+
+    monkeypatch.setattr(app.state.services.catalog, "open_display", no_generation)
+    assert client.get(f"/api/projects/{project_id}/paper").status_code == 503
+    created = client.post(f"/api/projects/{project_id}/paper/create", json={})
+    assert created.status_code == 200
+    saved = client.put(
+        f"/api/projects/{project_id}/paper",
+        json={
+            "content": "# Written before any generation\n",
+            "base_hash": created.json()["base_hash"],
+            "draft_version": created.json()["draft_version"],
+        },
+    )
+    assert saved.status_code == 200
+
+
+def test_mutating_routes_open_the_authoritative_owner() -> None:
+    """A write never waits on, or starts from, a remote display generation."""
+    import ast
+    from pathlib import Path
+
+    import rcp.api
+
+    display = []
+    for path in Path(rcp.api.__file__).parent.glob("*.py"):
+        for route in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(route, ast.FunctionDef | ast.AsyncFunctionDef) or not any(
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr in {"post", "put", "patch", "delete"}
+                for decorator in route.decorator_list
+            ):
+                continue
+            display += [
+                f"{path.name}:{call.lineno}"
+                for call in ast.walk(route)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and (
+                    call.func.id == "get_project_service"
+                    or call.func.id == "get_graph_service"
+                    and not any(keyword.arg == "write" for keyword in call.keywords)
+                )
+            ]
+    assert display == []

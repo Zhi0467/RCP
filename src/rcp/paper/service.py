@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import json
 import os
 import stat
 from datetime import datetime
@@ -89,8 +90,13 @@ def validate_canonical_introduction_backup(path: Path) -> None:
         os.close(descriptor)
 
 
+class PaperDraftConflict(ValueError):
+    """The editor loaded a draft that has since been replaced."""
+
+
 class PaperSnapshot(BaseModel):
     content: str
+    draft_version: str | None = None
     sync_state: Literal["not_created", "synced", "unsynced", "behind"]
     base_hash: str | None = None
     canonical_hash: str | None = None
@@ -146,14 +152,13 @@ class PaperService:
         self.canonical_path = self.workspace.root / "paper" / "introduction.md"
 
     def read_canonical_reference(self, max_bytes: int) -> bytes:
-        """Read saved Paper only, with a confirmed remote refresh and no draft fallback."""
+        """Read saved Paper from one completed generation, without a draft fallback."""
 
-        with self.workspace.snapshot_lock:
-            if self.workspace.remote and not self.workspace.refresh():
-                raise StateUnavailable("The canonical Paper could not be refreshed.")
-            if self.canonical_path.stat().st_size > max_bytes:
+        with self.workspace.read_snapshot() as root:
+            path = root / "paper" / "introduction.md"
+            if path.stat().st_size > max_bytes:
                 raise ValueError("The canonical Paper exceeds the attachment file-size limit.")
-            return self.canonical_path.read_bytes()
+            return path.read_bytes()
 
     def snapshot(self) -> PaperSnapshot:
         draft = self._draft()
@@ -176,42 +181,59 @@ class PaperService:
         return self._draft_snapshot(draft, canonical_content, canonical_available)
 
     def create(self) -> PaperSnapshot:
-        draft = self._draft()
-        if draft is None:
-            canonical_content = self._read_cached_canonical()
-            content = canonical_content if canonical_content is not None else INTRODUCTION_TEMPLATE
-            base_hash = _hash(canonical_content) if canonical_content is not None else None
-            self._save_draft(content, base_hash, canonical_content)
+        with self.workspace.snapshot_lock:
             draft = self._draft()
-        return self._local_draft_snapshot(draft)
-
-    def save(self, content: str, base_hash: str | None) -> PaperSnapshot:
-        draft = self._draft()
-        stored_content = draft["content"] if draft is not None else None
-        stored_base_hash = draft["base_hash"] if draft is not None else base_hash
-        ancestor_content = draft["ancestor_content"] if draft is not None else None
-        self._save_draft(content, stored_base_hash, ancestor_content)
-        try:
-            with self.workspace.transaction():
+            # Seed from the published generation, the same one snapshot() compares
+            # against; a remote mirror can lag it. Before the first generation
+            # exists the mirror is the only copy.
+            try:
+                with self.workspace.read_snapshot() as root:
+                    path = root / "paper" / "introduction.md"
+                    canonical_content = path.read_text(encoding="utf-8") if path.exists() else None
+            except StateUnavailable:
                 canonical_content = self._read_cached_canonical()
-                canonical_hash = _hash(canonical_content) if canonical_content is not None else None
-                if canonical_hash == _hash(content):
-                    self._save_draft(content, canonical_hash, canonical_content)
+            if draft is None:
+                content = (
+                    canonical_content if canonical_content is not None else INTRODUCTION_TEMPLATE
+                )
+                base_hash = _hash(canonical_content) if canonical_content is not None else None
+                self._save_draft(content, base_hash, canonical_content)
+                draft = self._draft()
+            return self._draft_snapshot(draft, canonical_content, True)
+
+    def save(self, content: str, base_hash: str | None, draft_version: str | None) -> PaperSnapshot:
+        # One data-directory owner and one workspace lock serialize draft writers.
+        with self.workspace.snapshot_lock:
+            draft = self._draft()
+            if _draft_version(draft) != draft_version:
+                raise PaperDraftConflict("The Paper draft changed since it was loaded.")
+            stored_content = draft["content"] if draft is not None else None
+            stored_base_hash = draft["base_hash"] if draft is not None else base_hash
+            ancestor_content = draft["ancestor_content"] if draft is not None else None
+            self._save_draft(content, stored_base_hash, ancestor_content)
+            try:
+                with self.workspace.transaction():
+                    canonical_content = self._read_cached_canonical()
+                    canonical_hash = (
+                        _hash(canonical_content) if canonical_content is not None else None
+                    )
+                    if canonical_hash == _hash(content):
+                        self._save_draft(content, canonical_hash, canonical_content)
+                        return self.snapshot()
+                    if canonical_hash != base_hash:
+                        return self.snapshot()
+                    if (
+                        draft is not None
+                        and stored_base_hash != base_hash
+                        and stored_content == content
+                    ):
+                        return self.snapshot()
+                    self._write_canonical(content)
+                    new_hash = _hash(content)
+                    self._save_draft(content, new_hash, content)
                     return self.snapshot()
-                if canonical_hash != base_hash:
-                    return self.snapshot()
-                if (
-                    draft is not None
-                    and stored_base_hash != base_hash
-                    and stored_content == content
-                ):
-                    return self.snapshot()
-                self._write_canonical(content)
-                new_hash = _hash(content)
-                self._save_draft(content, new_hash, content)
+            except StateUnavailable:
                 return self.snapshot()
-        except StateUnavailable:
-            return self.snapshot()
 
     def restore_canonical(
         self,
@@ -293,10 +315,6 @@ class PaperService:
                 (self.project_id, content, base_hash, ancestor_content, self.store.now()),
             )
 
-    def _local_draft_snapshot(self, draft) -> PaperSnapshot:
-        canonical_content = self._read_cached_canonical()
-        return self._draft_snapshot(draft, canonical_content, self.workspace.reachable)
-
     def _draft_snapshot(
         self,
         draft,
@@ -327,16 +345,17 @@ class PaperService:
             canonical_hash=canonical_hash,
             incoming_content=incoming_content,
             updated_at=datetime.fromisoformat(draft["updated_at"]),
+            draft_version=_draft_version(draft),
             canonical_available=canonical_available,
         )
 
     def _read_canonical(self) -> tuple[str | None, bool]:
-        available = True
         try:
-            self.workspace.refresh_if_stale()
+            with self.workspace.read_snapshot() as root:
+                path = root / "paper" / "introduction.md"
+                return (path.read_text(encoding="utf-8") if path.exists() else None), True
         except StateUnavailable:
-            available = False
-        return self._read_cached_canonical(), available
+            return None, False
 
     def _read_cached_canonical(self) -> str | None:
         try:
@@ -356,3 +375,13 @@ class PaperService:
 
 def _hash(content: str | None) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+def _draft_version(draft) -> str | None:
+    if draft is None:
+        return None
+    return _hash(
+        json.dumps(
+            [draft[key] for key in ("content", "base_hash", "ancestor_content", "updated_at")]
+        )
+    )

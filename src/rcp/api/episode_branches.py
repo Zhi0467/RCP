@@ -17,7 +17,6 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.task_policy import task_graph_capable
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore, EpisodeRecord
 from rcp.storage.models import EpisodeMode
-from rcp.transport import StateUnavailable
 
 
 class MainGraphRefResponse(BaseModel):
@@ -69,51 +68,50 @@ def project_graph_refs(
     """Main first, then unique branches in newest-chain-member order, without filtering."""
 
     service = get_project_service(catalog, project_id)
-    branches: dict[str, EpisodeRecord] = {}
-    episodes = store.episodes(project_id, limit=None)
-    by_id = {episode.episode_id: episode for episode in episodes}
-    for episode in episodes:
-        if episode.graph_target.kind == "branch":
-            assert episode.graph_target.branch_id is not None
-            branches.setdefault(episode.graph_target.branch_id, episode)
-    summaries, attention = _graph_branch_projections(
-        list(branches.values()),
-        store=store,
-        catalog=catalog,
-        refresh_max_age_seconds=refresh_max_age_seconds,
-    )
-    # Main is read after the branch reads, which refresh a remote mirror, so
-    # every ref comes from the same refreshed state. Without branches nothing
-    # refreshed it yet.
-    if not branches and not service.history.workspace.refresh_if_stale(refresh_max_age_seconds):
-        raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-    refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
-    isolation = store.episode_isolation_states(project_id)
-    names = store.branch_names(project_id)
-    question_branches = {
-        question.origin.graph_target.branch_id
-        for question in store.list_questions(project_id=project_id, open_only=True)
-        if question.origin.graph_target.kind == "branch"
-    }
-    for episode in branches.values():
-        summary = summaries[episode.episode_id]
-        state = isolation.get(episode.isolation_owner_episode_id or summary.episode_id)
-        root = by_id[summary.episode_id]
-        refs.append(
-            BranchGraphRefResponse(
-                **summary.model_dump(),
-                archived=state.graph_archived if state else False,
-                mode=root.mode,
-                name=names[summary.branch_id],
-                running=any(
-                    task.status in ACTIVE_AGENT_TASK_STATUSES
-                    for task in store.unsettled_graph_target_tasks(project_id, root.graph_target)
-                ),
-                needs_you=attention[summary.branch_id] or summary.branch_id in question_branches,
-                created_at=root.created_at,
-            )
+    with service.history.workspace.read_snapshot():
+        branches: dict[str, EpisodeRecord] = {}
+        episodes = store.episodes(project_id, limit=None)
+        by_id = {episode.episode_id: episode for episode in episodes}
+        for episode in episodes:
+            if episode.graph_target.kind == "branch":
+                assert episode.graph_target.branch_id is not None
+                branches.setdefault(episode.graph_target.branch_id, episode)
+        summaries, attention = _graph_branch_projections(
+            list(branches.values()),
+            store=store,
+            catalog=catalog,
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )
-    return refs
+        refs: list[GraphRefResponse] = [MainGraphRefResponse(head=service.history.head_ref())]
+        isolation = store.episode_isolation_states(project_id)
+        names = store.branch_names(project_id)
+        question_branches = {
+            question.origin.graph_target.branch_id
+            for question in store.list_questions(project_id=project_id, open_only=True)
+            if question.origin.graph_target.kind == "branch"
+        }
+        for episode in branches.values():
+            summary = summaries[episode.episode_id]
+            state = isolation.get(episode.isolation_owner_episode_id or summary.episode_id)
+            root = by_id[summary.episode_id]
+            refs.append(
+                BranchGraphRefResponse(
+                    **summary.model_dump(),
+                    archived=state.graph_archived if state else False,
+                    mode=root.mode,
+                    name=names[summary.branch_id],
+                    running=any(
+                        task.status in ACTIVE_AGENT_TASK_STATUSES
+                        for task in store.unsettled_graph_target_tasks(
+                            project_id, root.graph_target
+                        )
+                    ),
+                    needs_you=attention[summary.branch_id]
+                    or summary.branch_id in question_branches,
+                    created_at=root.created_at,
+                )
+            )
+        return refs
 
 
 def ensure_episode_graph_target(
@@ -128,7 +126,7 @@ def ensure_episode_graph_target(
         or episode.authorized_by is None
     ):
         raise ValueError("Episode reservation lost its exact graph branch identity.")
-    service = get_project_service(catalog, episode.project_id)
+    service = catalog.open_execution(episode.project_id)
     service.history.create_episode_branch(
         GraphBranchMetadata(
             kind=episode.mode,

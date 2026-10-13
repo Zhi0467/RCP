@@ -12,6 +12,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { ExperimentRunDetail, experimentHealthLabel } = await server.ssrLoadModule(
   "/src/experiments/ExperimentRunDetail.tsx",
 );
@@ -198,9 +205,10 @@ function render(run, props = {}) {
     ...run,
     watcherItems: run.watcherItems ?? experimentWatcherDisplayItems(run.watchers),
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExperimentRunDetail, {
       run: withWatcherItems,
+      apiBase: "/api/projects/test",
       runBusy: false,
       runDisabled: false,
       stopBusy: false,
@@ -221,9 +229,7 @@ function render(run, props = {}) {
     recommendation.step !== "start_episode" ||
     (!props.startDisabled && props.allowStart !== false)
   ) {
-    const expected = renderToStaticMarkup(
-      React.createElement("strong", null, recommendation.label),
-    );
+    const expected = renderMarkup(React.createElement("strong", null, recommendation.label));
     const actual = html.match(/class="experiment-run-recommendation[^]*?<strong>(.*?)<\/strong>/s);
     assert.ok(actual);
     assert.equal(`<strong>${actual[1]}</strong>`, expected);
@@ -238,7 +244,7 @@ function assertDetailProjection(html, health, step) {
   assert.equal(healthViews.length, 1);
   assert.equal(
     healthViews[0][1],
-    renderToStaticMarkup(React.createElement("strong", null, experimentHealthLabel(health))),
+    renderMarkup(React.createElement("strong", null, experimentHealthLabel(health))),
   );
 
   const recommendationViews = [
@@ -827,7 +833,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   assert.doesNotMatch(detail, /experiment-stop-loop/);
   assert.match(detail, /experiment-run-button" disabled=""/);
 
-  const row = renderToStaticMarkup(
+  const row = renderMarkup(
     React.createElement(ExecutionView, {
       graph: { nodes: { [run.node.id]: run.node } },
       episodes: [
@@ -1205,7 +1211,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
 
   assert.doesNotMatch(detail, /experiment-stop-loop|OBSOLETE SUCCEEDED TASK STATUS/);
 
-  const row = renderToStaticMarkup(
+  const row = renderMarkup(
     React.createElement(ExecutionView, {
       graph: { nodes: { [run.node.id]: run.node } },
       episodes: [
@@ -1444,7 +1450,7 @@ test("external job rows use watcher facts and keep Cancel independent of observa
     cancel_error: "Scheduler is unavailable",
     last_error: "Check could not connect",
   });
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExternalJobRow, {
       apiBase: "/api/projects/test",
       watcher: record,
@@ -1454,7 +1460,7 @@ test("external job rows use watcher facts and keep Cancel independent of observa
 
   assert.match(html, /Scheduler is unavailable/);
 
-  const completed = renderToStaticMarkup(
+  const completed = renderMarkup(
     React.createElement(ExternalJobRow, {
       apiBase: "/api/projects/test",
       watcher: { ...record, status: "completed", can_cancel: false },
@@ -1605,7 +1611,7 @@ test("a parent link selects and expands the newest member of its continued run",
       { episode_id: "parent-newest", invocation_ceiling: 3, invocations_used: 1 },
     ],
   });
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: { nodes: {} },
       episodes: [parent],

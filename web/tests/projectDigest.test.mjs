@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   catchUpProjectDigest,
-  createDigestRequestFence,
   digestChangedNodeIds,
   projectDigestIsEmpty,
 } from "../src/projects/projectDigest.ts";
@@ -33,37 +32,6 @@ test("the digest is empty only when all three groups are empty", () => {
   for (const group of ["needs_you", "changed", "reports"]) {
     assert.equal(projectDigestIsEmpty(digest({ [group]: [{}] })), false, group);
   }
-});
-
-test("a late response for an older request is dropped in either arrival order", () => {
-  const inOrder = createDigestRequestFence();
-  const first = inOrder.begin("p");
-  const second = inOrder.begin("p");
-  assert.equal(inOrder.accept("p", first), true);
-  assert.equal(inOrder.accept("p", second), true);
-
-  const reversed = createDigestRequestFence();
-  const older = reversed.begin("p");
-  const newer = reversed.begin("p");
-  assert.equal(reversed.accept("p", newer), true);
-  assert.equal(reversed.accept("p", older), false);
-});
-
-test("a response for a project that is no longer open is dropped", () => {
-  const fence = createDigestRequestFence();
-  const forA = fence.begin("a");
-  const forB = fence.begin("b");
-  assert.equal(fence.accept("a", forA), false);
-  assert.equal(fence.accept("b", forB), true);
-});
-
-test("invalidate drops reads issued before Caught up", () => {
-  const fence = createDigestRequestFence();
-  const before = fence.begin("p");
-  fence.invalidate();
-  const after = fence.begin("p");
-  assert.equal(fence.accept("p", before), false);
-  assert.equal(fence.accept("p", after), true);
 });
 
 test("Caught up marks the on-screen cursor and keeps items recorded after it", async () => {

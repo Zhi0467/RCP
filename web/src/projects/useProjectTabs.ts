@@ -1,12 +1,10 @@
+import { useRefreshRuntime, useResource } from "../core/useResource";
+import { resourceKeyId } from "../core/resourceStore";
+import { experimentIndexProfile } from "../experiments/episodeResources";
 import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  api,
-  loadExperimentEpisodes,
-  loadProjectExperimentEpisodes,
-  loadSpaceRuns,
-} from "../core/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, loadSpaceRuns } from "../core/api";
 import { experimentBoardHref } from "../experiments/experimentBoardModel";
 import {
   adjacentProjectTabId,
@@ -18,7 +16,6 @@ import type {
   Episode,
   ExperimentLoopIndex,
   ExperimentLoopIndexEntry,
-  UnavailableExperimentLoop,
   ProjectCard,
   ProjectSnapshot,
   SpaceRunIndexEntry,
@@ -26,20 +23,6 @@ import type {
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 export const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
-export const PROJECT_TAB_CACHE_LIMIT = 8;
-export const OPEN_PROJECT_HEARTBEAT_INTERVAL_MS = 3_000;
-export const ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS = 1_000;
-
-interface ProjectCachePollingClock {
-  setInterval(callback: () => void, delay: number): number;
-  clearInterval(intervalId: number): void;
-}
-
-interface ProjectCachePollingVisibility {
-  isHidden(): boolean;
-  listen(callback: () => void): () => void;
-}
-
 interface UseProjectTabsOptions {
   initialProjectId: string | null;
   initialSetupOpen: boolean;
@@ -48,19 +31,9 @@ interface UseProjectTabsOptions {
   reportError: (message: string) => void;
 }
 
-export function cacheProjectTabState<T>(
-  cache: Map<string, T>,
-  projectId: string,
-  state: T,
-  limit = PROJECT_TAB_CACHE_LIMIT,
-): void {
+export function cacheProjectTabState<T>(cache: Map<string, T>, projectId: string, state: T): void {
   cache.delete(projectId);
   cache.set(projectId, state);
-  while (cache.size > limit) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
 }
 
 /** The route that reopens a project on the graph target its human last left it on. */
@@ -99,10 +72,6 @@ export function projectTabStateForOpen<T>(
   return { state, loading: false };
 }
 
-export function projectIdsForCacheHeartbeat(tabs: ProjectTab[]): string[] {
-  return [...new Set(tabs.map((tab) => tab.id))];
-}
-
 export function inactiveProjectTabState<T>(
   cache: Map<string, T>,
   tabs: ProjectTab[],
@@ -114,66 +83,9 @@ export function inactiveProjectTabState<T>(
   return cache.get(requestedProjectId) ?? null;
 }
 
-/** Rewrites every retained ref of an open, inactive project: main and each visited branch. */
-export function updateInactiveProjectTabStates<T>(
-  cache: Map<string, { state: T | null }>,
-  tabs: ProjectTab[],
-  activeProjectId: string | null,
-  requestedProjectId: string,
-  update: (state: T) => T,
-): boolean {
-  if (activeProjectId === requestedProjectId || !tabs.some((tab) => tab.id === requestedProjectId))
-    return false;
-  let updated = false;
-  for (const [key, entry] of cache) {
-    if (!entry.state) continue;
-    if (key !== requestedProjectId && !key.startsWith(`${requestedProjectId}:branch:`)) continue;
-    entry.state = update(entry.state);
-    updated = true;
-  }
-  return updated;
-}
-
-export function startProjectCachePolling(
-  clock: ProjectCachePollingClock,
-  visibility: ProjectCachePollingVisibility,
-  sweepOpenProjects: () => void,
-  observeActiveProject: () => void,
-): () => void {
-  const runWhenVisible = (callback: () => void) => () => {
-    if (!visibility.isHidden()) callback();
-  };
-  const sweepInterval = clock.setInterval(
-    runWhenVisible(sweepOpenProjects),
-    OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  );
-  const activeInterval = clock.setInterval(
-    runWhenVisible(observeActiveProject),
-    ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  );
-  const stopListening = visibility.listen(runWhenVisible(sweepOpenProjects));
-  return () => {
-    clock.clearInterval(sweepInterval);
-    clock.clearInterval(activeInterval);
-    stopListening();
-  };
-}
-
-export function singleFlightProjectCacheHeartbeat(
-  inFlight: Map<string, Promise<void>>,
-  projectId: string,
-  heartbeat: () => Promise<void>,
-): Promise<void> {
-  const pending = inFlight.get(projectId);
-  if (pending) return pending;
-  const request = heartbeat().finally(() => {
-    if (inFlight.get(projectId) === request) inFlight.delete(projectId);
-  });
-  inFlight.set(projectId, request);
-  return request;
-}
-
-export function useProjectTabs<T extends { project: ProjectSnapshot }>({
+export function useProjectTabs<
+  T extends { projectId: string | null; graphTarget: GraphTargetRef },
+>({
   initialProjectId,
   initialSetupOpen,
   projectIndexReady,
@@ -184,30 +96,25 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const [setupOpen, setSetupOpen] = useState(initialSetupOpen);
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
-  const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
-  const [unavailableExperimentLoops, setUnavailableExperimentLoops] = useState<
-    UnavailableExperimentLoop[]
-  >([]);
-  const [experimentLoopLoadedProjects, setExperimentLoopLoadedProjects] = useState<Set<string>>(
-    () => new Set(),
+  const { store } = useRefreshRuntime();
+  const experimentIndex = useResource(
+    `${projectId}:experiment-index-view`,
+    projectIndexReady && projectId ? experimentIndexProfile(projectId) : null,
   );
-  // Projects whose latest loop-list request failed; overlap is unknown, never a gate.
-  const [experimentLoopUnavailableProjects, setExperimentLoopUnavailableProjects] = useState<
-    Set<string>
-  >(() => new Set());
+  const experimentLoops = useMemo(
+    () => experimentIndex.value?.entries ?? [],
+    [experimentIndex.value],
+  );
+  const unavailableExperimentLoops = experimentIndex.value?.unavailable ?? [];
   const [spaceRuns, setSpaceRuns] = useState<SpaceRunIndexEntry[]>([]);
   const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
     readProjectHeaderCollapsed(initialProjectId),
   );
   const activeProjectId = useRef(projectId);
   const openProjectTabsRef = useRef(openProjectTabs);
-  const projectTabStatesRef = useRef(
-    new Map<string, { project: ProjectSnapshot; state: T | null }>(),
-  );
+  const projectTabStatesRef = useRef(new Map<string, { state: T }>());
   // Where the human left each project; background cache writes never change it.
   const leftGraphTargetsRef = useRef(new Map<string, GraphTargetRef>());
-  const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
-  const experimentLoopRefreshGeneration = useRef(0);
   const spaceRunRefreshGeneration = useRef(0);
   activeProjectId.current = projectId;
   openProjectTabsRef.current = openProjectTabs;
@@ -220,107 +127,58 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const replaceProjects = useCallback((nextProjects: ProjectCard[]) => {
     setProjects(nextProjects);
   }, []);
+  const refreshProjectExperimentLoops = useCallback(
+    async (requestedProjectId: string) => {
+      const id = resourceKeyId(experimentIndexProfile(requestedProjectId).key);
+      // Callers hold their action lock until this read settles or fails.
+      await store.refresh(id);
+      return store.view<ExperimentLoopIndex>(id).value?.entries ?? [];
+    },
+    [store],
+  );
   const refreshExperimentLoops = useCallback(async () => {
     const requestedProjectId = activeProjectId.current;
-    const refreshGeneration = ++experimentLoopRefreshGeneration.current;
-    let nextIndex: ExperimentLoopIndex;
-    try {
-      nextIndex = await loadExperimentEpisodes();
-    } catch (error) {
-      // Only the newest request may change availability.
-      if (
-        requestedProjectId &&
-        experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
-      ) {
-        setExperimentLoopUnavailableProjects(
-          (current) => new Set([...current, requestedProjectId]),
-        );
-      }
-      throw error;
-    }
-    if (
-      experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
-    ) {
-      setExperimentLoopUnavailableProjects((current) => (current.size ? new Set() : current));
-      setExperimentLoops(nextIndex.entries);
-      setUnavailableExperimentLoops(nextIndex.unavailable);
-      setExperimentLoopLoadedProjects(
-        (current) =>
-          new Set([
-            ...current,
-            ...nextIndex.entries.map((entry) => entry.project_id),
-            ...nextIndex.unavailable.map((entry) => entry.project_id),
-            ...(requestedProjectId ? [requestedProjectId] : []),
-          ]),
-      );
-    }
-    return nextIndex.entries;
-  }, []);
-  const refreshProjectExperimentLoops = useCallback(async (requestedProjectId: string) => {
-    const refreshGeneration = ++experimentLoopRefreshGeneration.current;
-    let nextIndex: ExperimentLoopIndex;
-    try {
-      nextIndex = await loadProjectExperimentEpisodes(requestedProjectId);
-    } catch (error) {
-      if (
-        experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
-      ) {
-        setExperimentLoopUnavailableProjects(
-          (current) => new Set([...current, requestedProjectId]),
-        );
-      }
-      throw error;
-    }
-    if (
-      experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
-    ) {
-      setExperimentLoopUnavailableProjects((current) =>
-        current.has(requestedProjectId)
-          ? new Set([...current].filter((id) => id !== requestedProjectId))
-          : current,
-      );
-      setExperimentLoops((current) =>
-        mergeProjectExperimentLoops(current, requestedProjectId, nextIndex.entries),
-      );
-      setUnavailableExperimentLoops((current) => [
-        ...current.filter((entry) => entry.project_id !== requestedProjectId),
-        ...nextIndex.unavailable,
-      ]);
-      setExperimentLoopLoadedProjects((current) => new Set([...current, requestedProjectId]));
-    }
-    return nextIndex.entries;
-  }, []);
+    return requestedProjectId ? refreshProjectExperimentLoops(requestedProjectId) : [];
+  }, [refreshProjectExperimentLoops]);
   const refreshSpaceRuns = useCallback(async () => {
     const generation = ++spaceRunRefreshGeneration.current;
     const nextEntries = await loadSpaceRuns();
     if (generation === spaceRunRefreshGeneration.current) setSpaceRuns(nextEntries);
   }, []);
-  const replaceEpisodeRunArchive = useCallback((episode: Episode) => {
-    experimentLoopRefreshGeneration.current += 1;
-    spaceRunRefreshGeneration.current += 1;
-    const archive = { archived: episode.archived, can_archive: episode.can_archive };
-    setExperimentLoops((current) =>
-      current.map((entry) =>
-        entry.project_id === episode.project_id && entry.episode.episode_id === episode.episode_id
-          ? {
-              ...entry,
-              episode: { ...entry.episode, ...archive },
-              control: {
-                ...entry.control,
-                episode: entry.control.episode ? { ...entry.control.episode, ...archive } : null,
-              },
-            }
-          : entry,
-      ),
-    );
-    setSpaceRuns((current) =>
-      current.map((entry) =>
-        entry.project_id === episode.project_id && entry.episode_id === episode.episode_id
-          ? { ...entry, ...archive }
-          : entry,
-      ),
-    );
-  }, []);
+  const replaceEpisodeRunArchive = useCallback(
+    (episode: Episode) => {
+      spaceRunRefreshGeneration.current += 1;
+      const archive = { archived: episode.archived, can_archive: episode.can_archive };
+      const id = resourceKeyId(experimentIndexProfile(episode.project_id).key);
+      const current = store.view<ExperimentLoopIndex>(id).value;
+      if (current)
+        store.write(id, {
+          ...current,
+          entries: current.entries.map((entry) =>
+            entry.episode.episode_id === episode.episode_id
+              ? {
+                  ...entry,
+                  episode: { ...entry.episode, ...archive },
+                  control: {
+                    ...entry.control,
+                    episode: entry.control.episode
+                      ? { ...entry.control.episode, ...archive }
+                      : null,
+                  },
+                }
+              : entry,
+          ),
+        });
+      setSpaceRuns((current) =>
+        current.map((entry) =>
+          entry.project_id === episode.project_id && entry.episode_id === episode.episode_id
+            ? { ...entry, ...archive }
+            : entry,
+        ),
+      );
+    },
+    [store],
+  );
   const loadProjectIndex = useCallback(async () => {
     setProjects(await api<ProjectCard[]>("/api/projects"));
   }, []);
@@ -376,7 +234,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       const result = closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id);
       if (result.tabs === openProjectTabsRef.current) return false;
       for (const [key, state] of projectTabStatesRef.current) {
-        if (state.project.id === id) projectTabStatesRef.current.delete(key);
+        if (state.state.projectId === id) projectTabStatesRef.current.delete(key);
       }
       leftGraphTargetsRef.current.delete(id);
       setTabs(result.tabs);
@@ -399,10 +257,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const removeProject = useCallback(
     (id: string) => {
       setProjects((current) => current.filter((item) => item.id !== id));
-      setExperimentLoops((current) => current.filter((item) => item.project_id !== id));
       setSpaceRuns((current) => current.filter((item) => item.project_id !== id));
       for (const [key, state] of projectTabStatesRef.current) {
-        if (state.project.id === id) projectTabStatesRef.current.delete(key);
+        if (state.state.projectId === id) projectTabStatesRef.current.delete(key);
       }
       leftGraphTargetsRef.current.delete(id);
       setTabs(closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id).tabs);
@@ -421,32 +278,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   }, []);
 
   const cacheProjectState = useCallback((id: string, state: T) => {
-    const cache = projectTabStatesRef.current;
-    const key = graphSessionKey(id, state.project.graph_target);
-    cache.delete(key);
-    cache.set(key, { project: state.project, state });
-    // Speculative snapshots must not evict a visited ref's draft and UI state.
-    const visited = [...cache].filter(([, entry]) => entry.state !== null);
-    for (const [oldest] of visited.slice(
-      0,
-      Math.max(0, visited.length - PROJECT_TAB_CACHE_LIMIT),
-    )) {
-      cache.delete(oldest);
-    }
+    projectTabStatesRef.current.set(graphSessionKey(id, state.graphTarget), { state });
   }, []);
   const clearProjectCache = useCallback(() => projectTabStatesRef.current.clear(), []);
-  const cacheProjectSnapshot = useCallback((snapshot: ProjectSnapshot) => {
-    const key = graphSessionKey(snapshot.id, snapshot.graph_target);
-    // Never replace a visited ref (including its draft) with speculative data.
-    if (!projectTabStatesRef.current.has(key)) {
-      projectTabStatesRef.current.set(key, { project: snapshot, state: null });
-    }
-  }, []);
-  const cachedProjectSnapshotForOpen = useCallback(
-    (id: string, target: GraphTargetRef) =>
-      projectTabStatesRef.current.get(graphSessionKey(id, target))?.project ?? null,
-    [],
-  );
   const rememberLeftGraphTarget = useCallback((id: string, target: GraphTargetRef) => {
     leftGraphTargetsRef.current.set(id, target);
   }, []);
@@ -472,33 +306,13 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       )?.state ?? null,
     [],
   );
-  const updateInactiveProjectStates = useCallback(
-    (id: string, update: (state: T) => T) =>
-      updateInactiveProjectTabStates(
-        projectTabStatesRef.current,
-        openProjectTabsRef.current,
-        activeProjectId.current,
-        id,
-        update,
-      ),
-    [],
-  );
   const isProjectTabOpen = useCallback(
     (id: string) => openProjectTabsRef.current.some((tab) => tab.id === id),
-    [],
-  );
-  const projectIdsForHeartbeat = useCallback(
-    () => projectIdsForCacheHeartbeat(openProjectTabsRef.current),
     [],
   );
   const adjacentProjectId = useCallback(
     (offset: -1 | 1) =>
       adjacentProjectTabId(openProjectTabsRef.current, activeProjectId.current, offset),
-    [],
-  );
-  const runProjectHeartbeat = useCallback(
-    (id: string, heartbeat: () => Promise<void>) =>
-      singleFlightProjectCacheHeartbeat(projectCacheHeartbeatInFlight.current, id, heartbeat),
     [],
   );
 
@@ -565,9 +379,8 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     experimentLoopsUnavailableRows: unavailableExperimentLoops.filter(
       (entry) => entry.project_id === projectId,
     ),
-    experimentLoopsLoaded: projectId !== null && experimentLoopLoadedProjects.has(projectId),
-    experimentLoopsUnavailable:
-      projectId !== null && experimentLoopUnavailableProjects.has(projectId),
+    experimentLoopsLoaded: projectId !== null && !experimentIndex.loading,
+    experimentLoopsUnavailable: projectId !== null && experimentIndex.stale,
     spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
@@ -589,17 +402,12 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
-    cacheProjectSnapshot,
     clearProjectCache,
-    cachedProjectSnapshotForOpen,
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
-    updateInactiveProjectStates,
     isProjectTabOpen,
-    projectIdsForHeartbeat,
     adjacentProjectId,
-    runProjectHeartbeat,
   };
 }
 

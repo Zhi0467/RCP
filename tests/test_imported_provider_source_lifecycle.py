@@ -208,6 +208,9 @@ class _CleanupStore:
     def project_aliases(self):
         return {}
 
+    def projects(self):
+        return []
+
     def project_transfer_request(self, request_id: str):
         return SimpleNamespace(
             request_id=request_id,

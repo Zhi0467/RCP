@@ -1,3 +1,4 @@
+import { ResourceRuntime, store } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -65,6 +66,8 @@ function Fixture() {
   const [history, setHistory] = useState([]);
   const [generation, setGeneration] = useState(0);
   Object.assign(window, {
+    refreshQuestions: (projectId: string, version: string) =>
+      store.observe(projectId, [{ name: "questions", version }]),
     setSteeringFixture: (updates: object) => setTask((current) => ({ ...current, ...updates })),
     reopenSteeringFixture: (messages: never[]) => {
       setHistory(messages);
@@ -98,4 +101,8 @@ function Fixture() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <ResourceRuntime>
+    <Fixture />
+  </ResourceRuntime>,
+);

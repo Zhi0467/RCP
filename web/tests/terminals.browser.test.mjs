@@ -160,6 +160,13 @@ async function fixture(t, { failLaunch = false, cooperative = false, mac = false
     },
     setRepositories: (value) => {
       projectedRepositories = value;
+      void page.evaluate(async () =>
+        (await import("/tests/fixtures/resourceRuntime.ts")).store.invalidate(
+          (await import("/src/core/resourceStore.ts")).resourceKeyId(
+            (await import("/src/terminals/terminalResources.ts")).terminalsProfile("alpha").key,
+          ),
+        ),
+      );
     },
   };
 }
@@ -326,7 +333,11 @@ test("both themes and all modes show the cooperative warning, repaint the emulat
 test("launch failure displays the real missing systemd diagnostic", async (t) => {
   const { page } = await fixture(t, { failLaunch: true });
   await page.getByRole("button", { name: "code /srv/project/code", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "systemd-run; executable not found" }).waitFor();
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".terminals-view button")
+      ?.title.includes("systemd-run; executable not found"),
+  );
   assert.equal(await page.locator(".xterm-screen").count(), 0);
   assert.equal(await page.locator(".terminal-protection-warning").count(), 0);
 });

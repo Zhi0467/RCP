@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { api } from "../core/api";
+import type { ResourceStore } from "../core/resourceStore";
+import { runArtifactsProfile } from "./artifactResources";
 import type { RunArtifactEntry } from "../core/types";
 
 export type ArtifactViewerTarget =
@@ -27,18 +28,6 @@ export function closeArtifactViewer(): void {
   publish(null);
 }
 
-// The panel learns of version moves an inline copy of the same artifact cannot
-// see, such as Undo, which settles no task.
-const versionListeners = new Set<(artifactId: string) => void>();
-export function announceArtifactVersionChange(artifactId: string): void {
-  versionListeners.forEach((listener) => listener(artifactId));
-}
-export function onArtifactVersionChange(listener: (artifactId: string) => void): () => void {
-  versionListeners.add(listener);
-  return () => {
-    versionListeners.delete(listener);
-  };
-}
 export function useArtifactViewerTarget() {
   return useSyncExternalStore(
     (listener) => {
@@ -48,6 +37,7 @@ export function useArtifactViewerTarget() {
       };
     },
     () => target,
+    () => null,
   );
 }
 
@@ -90,15 +80,44 @@ export function useArtifactViewerHidden(): boolean {
   );
 }
 
+let resourceStore: ResourceStore | null = null;
+
+/** The App runtime owns this binding, including backend/member replacement. */
+export function bindArtifactResourceStore(store: ResourceStore): () => void {
+  resourceStore = store;
+  return () => {
+    if (resourceStore === store) resourceStore = null;
+  };
+}
+
 export async function openEpisodeReport(input: {
   projectId: string;
   episodeId: string;
 }): Promise<void> {
   const generation = ++requestGeneration;
-  const artifacts = await api<RunArtifactEntry[]>(
-    `/api/projects/${encodeURIComponent(input.projectId)}/episodes/${encodeURIComponent(input.episodeId)}/artifacts`,
-  );
-  if (generation !== requestGeneration) return;
+  const store = resourceStore;
+  if (!store) throw new Error("Artifact refresh runtime is unavailable.");
+  const id = store.register(input.projectId, runArtifactsProfile(input.projectId, input.episodeId));
+  // A one-shot lookup: its registration ends with the lookup.
+  const artifacts = await new Promise<RunArtifactEntry[]>((resolve, reject) => {
+    const read = () => {
+      const view = store.view<RunArtifactEntry[]>(id);
+      if (view.value !== undefined) {
+        unsubscribe();
+        resolve(view.value);
+      } else if (
+        view.error ||
+        resourceStore !== store ||
+        store.requests(input.projectId).length === 0
+      ) {
+        unsubscribe();
+        reject(view.error ?? new Error("Artifact refresh target was closed."));
+      }
+    };
+    const unsubscribe = store.subscribe(read);
+    read();
+  }).finally(() => store.release(input.projectId, [id]));
+  if (generation !== requestGeneration || resourceStore !== store) return;
   const report = artifacts.find((artifact) => artifact.supplier === "episode_ending");
   if (!report) throw new Error("The episode report is unavailable.");
   openArtifact({ projectId: input.projectId, artifactId: report.artifact_id });

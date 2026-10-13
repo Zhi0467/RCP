@@ -20,7 +20,7 @@ from rcp.watchers import (
     run_watcher_cancel,
 )
 
-from .storage_helpers import downgrade_artifacts
+from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 from .test_watchers import _binding, _record
 
 
@@ -242,6 +242,7 @@ def test_watcher_actions_upgrade_preserves_old_shell_rows_and_indexes(tmp_path):
     store.create_watchers([shell])
     expected = store.watcher(shell.watcher_id)
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         indexes = list(connection.execute("PRAGMA index_list(watchers)"))
         for field in (
             "cancel_command",

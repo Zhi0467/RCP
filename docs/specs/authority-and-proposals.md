@@ -1,349 +1,238 @@
 # Authority and Proposals
 
-This specification owns who may start work or request a graph action, the two
-permission gates, protected-belief Proposals, human judgment, and durable
-authorization lineage. Runtime filesystem capability is specified separately in
-[Providers and containment](providers-and-containment.md).
+This spec owns graph and orchestration permission, protected-belief Proposals,
+and authorization lineage. [Providers and containment](providers-and-containment.md)
+owns runtime filesystem capability.
 
 ## Product authority and machine authority
 
-RCP distinguishes product authorization from operating-system authority.
-A project member is trusted on the server that hosts their project.
+**Product authority** governs graph actions, conversations, episodes, and
+membership through authenticated members, agent profiles, and task contracts.
+Members are equal; RCP has no administrator product role.
 
-**Product authority** is everything below: authenticated members, agent
-profiles, task contracts, and project membership. It governs graph actions,
-conversations, episodes, and ordinary membership. RCP has equal members and no
-administrator product role, so no member token is more powerful than another.
-
-**Machine authority** is operating-system authority on the server host. It
-governs installing, updating, restoring, configuring machine credentials,
-provisioning a central checkout, and removing a member. Those operations live
-under `rcp server ...`; their handlers require the appropriate OS identity and
-are not ordinary member API actions. A member terminal retains the service
-identity, including its access to that account's control socket. Separately,
-signing a shared provider login in, verifying it, and signing it out are
-reachable from a member session, because a dead login
-stops every member's work and RCP has no administrator; the action runs as the
-execution account, is attributed to the acting member, and is visible to every
-member.
-
-The service account owns its data directory, singleton lock, and private control
-socket. An unrelated operating-system account does not inherit that access.
-A member terminal, however, runs as the service account and inherits the Work
-turn's trust boundary: it is not isolated from that account's authority. Where supported, the
-mount namespace resists wrong-directory mistakes; it is not a security boundary
-against a deliberate member. Route membership gates which project terminal a
-member may open, not what the service identity could deliberately reach. This
-accepted gap follows the
-[member terminal decision](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md).
-Mirrored sessions mount canonical state read-only in the ordinary filesystem
-view using the shared protected-path construction. Cooperative sessions report
-that canonical-state protection is unavailable on the machine: there is no
-canonical-state filesystem fence. Neither kind of session is a graph-write
-channel.
-
-A running-server CLI command uses the private control socket instead of opening
-SQLite beside the lock owner. `install`, `backup configure`, `restore`, and
-`update` additionally need root because they change accounts, `/etc`, systemd,
-or stopped-service state, and each drops back to the service account for
-ordinary source and data work.
-
-Machine authority never substitutes for human product judgment. An operator with
-root cannot approve a Proposal, change project truth membership, or authorize an
-episode through a machine command; those remain the protected human actions
-below. The behavior of each server operation is specified in
+**Machine authority** governs installation, updates, restore, machine credentials,
+central checkouts, and member removal through `rcp server ...`. Running-server
+commands use the private control socket rather than opening SQLite beside its
+lock owner. `install`, `backup configure`, `restore`, and `update` require root,
+then drop to the service account for ordinary source and data work. See
 [Server and machine operations](server-and-machine-operations.md).
+
+Members may sign shared provider accounts in, verify them, and sign them out.
+These actions run as the execution account, name the acting member, and are
+visible to all members. A dead shared login blocks everyone's work.
+
+A member terminal inherits the service account's authority, including its
+control socket. Project membership gates opening the terminal, not deliberate
+use of that account's access. Mirrored sessions mount canonical state read-only
+to resist mistakes; cooperative sessions report that this fence is unavailable.
+Neither is a hostile-member security boundary or a graph-write channel. See the
+[terminal trust boundary](providers-and-containment.md#member-terminals).
+Unrelated OS accounts do not inherit the service account's data, lock, or socket.
+Machine authority never grants human product judgment.
 
 ## Four separate boundaries
 
-RCP keeps these questions independent:
+Every effect must pass four independent boundaries:
 
-1. The authenticated human says **who authorized the root action**.
-2. The constant agent profile says **which semantic and orchestration actions
-   this agent role may request**.
-3. The task contract says **which tools and RCP channels this surface exposes**.
-4. Project membership, graph target, task scope, current state, and budget say
-   **which concrete targets may be affected now**.
+1. The authenticated human authorizes the root action.
+2. A constant agent profile permits semantic and orchestration actions.
+3. The task contract exposes tools and RCP channels.
+4. Membership, graph target, scope, current state, and budget admit the targets.
 
-Every applicable boundary must admit an effect. A prompt, model, provider,
-manifest, skill, native session, client field, file path, or parent-task id can
-never widen another boundary.
+Prompts, providers, manifests, skills, paths, sessions, and parent-task ids cannot
+widen these boundaries. Execution profiles select provider, model, reasoning,
+machine, and repositories; they grant no graph permission.
 
-Execution profiles choose provider, model, reasoning, execution machine, and
-run-scope repositories. They grant no graph or orchestration permission. The
-model is always a catalogued model: no surface offers a "provider default"
-choice, and a profile or request that names no model resolves to the first
-model the provider CLI vendors on that machine, read from the already-probed
-readiness catalog. Only while that catalog is unknown does the model stay empty
-and the CLI choose for itself. Projections export the saved model and the
-effective model separately, and re-export both with every readiness refresh, so
-an unnamed profile is shown as the model it runs without being pinned to it.
+There is no selectable "provider default" model. An unnamed model resolves to
+the first model in that machine's probed CLI readiness catalog. Only an unknown
+catalog leaves the model empty for the CLI to choose. Projections export saved
+and effective models separately on every readiness refresh without pinning an
+unnamed profile to its current effective model.
 
 ## Human identity and project membership
 
-Every human has an immutable random `user_id` inside a space and a mutable,
-single-line display name. A personal space has one durable local owner. A team
-request derives its human identity from server-authenticated state; a request
-body cannot select an actor id.
+Humans have an immutable random `user_id` within a space and a mutable single-line
+display name. Personal spaces have one durable local owner. Team requests derive
+identity from server authentication, never an actor id supplied in the body.
 
-All members have equal product authority at the space level. Project membership
-is separate: creating a project seats the creator, project members may invite
-another enrolled member, and a nonmember sees the same not-found behavior as an
-unknown project. Project membership is checked on every project-scoped request
-and again during Apply under the canonical append lock.
+Project creation seats its creator; project members may invite enrolled space
+members. Nonmembers receive the same not-found response as for an unknown project.
+Membership is checked on each project request and again under the Apply lock.
 
-Leaving or losing membership durably applies the existing Stop fence: the
-already-authorized turn finishes, but no new continuation or watcher claim may
-start. The last project member cannot leave. Credential rotation or revocation
-does not stop already-authorized work; membership removal is the project-level
-authority change that does.
+Leaving or losing membership durably fences new continuations and watcher claims;
+already-authorized turns finish. The last member cannot leave. Credential rotation
+or revocation alone does not stop already-authorized work.
 
 ## Human authority
 
-Only a human action may:
+The [protected authority boundary](../design.md#cross-cutting-invariants) reserves
+Proposal resolution, ordinary standing, Decision choice, Hypothesis status
+judgment, truth-scope membership, episode authorization, and merge dispatch to
+humans. The orchestrator profile's bounded exceptions are listed below.
 
-- approve or reject a Proposal;
-- set ordinary node standing;
-- select an option on an ordinary non-superseded Decision;
-- accept a Hypothesis status transition;
-- change project truth-scope membership;
-- authorize a new bounded Experiment or Auto-research episode; or
-- dispatch a graph-branch merge to main.
+An action in the member's authenticated page counts as that member's action,
+including through WebMCP or RCP's voice agent. Their fixed catalog can authorize
+and stop episodes but exposes no other protected judgment controls; those remain
+visible controls. Provider agents never run in the member page. A voice
+confirmation toggle removes a guard, not a capability. See the
+[member-page authority decision](conversations-episodes-and-watchers.md#native-chat-context).
 
-The Auto-research orchestrator is the deliberate Decision exception. The human
-has already authorized project-wide bounded research, so the orchestrator may
-queue and choose Decisions directly on its episode branch. A human-dispatched
-merge agent receives that orchestrator graph profile for carrying legal branch
-changes to main. This exception does not grant Proposal approval, project
-configuration, membership, ontology, or server authority.
-
-A request from the member's own authenticated session is a human action, whatever
-the input device, including one made by an agent the member runs inside their
-RCP page: a WebMCP host agent or RCP's voice agent
-([decision](../decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)).
-Such an agent acts only through the page's fixed tool catalog, and history
-records the member. The catalog can authorize an Experiment or Auto-research
-episode and gracefully stop one. It holds none of the other actions above, so
-they stay visible controls. Provider agents never run in a member's page. The
-four boundaries hold: the catalog is fixed in web code, the model only chooses
-among its tools, and the voice confirmation toggle removes a guard without
-adding a capability.
-
-Contest and Agree are independent human controls. Clearing or replacing either
-returns standing to the corresponding staged state, and Sync is the only
-canonical commit. Blocker standing and lifecycle are independent: humans and
-authorized graph agents may set a Blocker `open`, `resolved`, or `superseded`;
-changing judged node content returns accepted or contested standing to asserted.
+Contest and Agree are independent staged controls. Clearing or replacing one
+updates the corresponding staged standing; Sync commits it. Blocker standing is
+independent of its `open`, `resolved`, or `superseded` lifecycle, which authorized
+graph agents may change. Editing judged node content returns accepted or
+contested standing to asserted.
 
 ## Decision authority
 
-A Decision records whether it is `open`, `ready`, `revisit`, `decided`, or
-superseded. Agents may create and queue a Decision as `open`, `ready`, or
-`revisit`. `ready` and `revisit` require at least two distinct options and enter
-human attention; ripeness is prompt guidance, not an inferred scientific fact.
-Agents write those options at one level of detail after investigating each
-distinct choice with equal care; a leaning belongs in `rationale`, never in
-option order, length, or wording.
+A Decision is `open`, `ready`, `revisit`, `decided`, or superseded. Agents may
+queue `open`, `ready`, or `revisit`; the latter two require at least two distinct
+options and enter human attention. Ripeness is prompt guidance. Options should
+receive equal investigation and comparable detail; a leaning belongs in
+`rationale`, not their order or wording.
 
-Queueing may restate the ballot. Any update that leaves a Decision `open`,
-`ready`, or `revisit` may also rewrite its title, question, options, rationale,
-and consequences, so the queued card describes the choice the human now faces
-instead of the one already made. The queued status is the licence, not the
-transition into it: a Decision queued by an earlier turn stays restatable, which
-is how a later turn adds the option its new evidence raises. Admission checks
-that licence and nothing beyond it: a restatement is accepted on the queued
-status alone. Restating one already queued replaces what the human is reading,
-so the agent contract asks for it only on new evidence, and asks that an
-option's wording change freely while a choice the evidence has not closed stays
-on the ballot. Neither of those is enforced. This holds for the Experiment loop over its
-pinned Decisions. The prior `selected_option` stays untouched: it is what makes
-a `revisit` coherent, and writing it remains the human choice action alone.
+Any update leaving a Decision queued may restate its title, question, options,
+rationale, and consequences, even if it was queued earlier. Admission checks the
+queued status, not the quality of the reason. The contract asks agents to
+restate only on new evidence and retain choices that evidence has not closed;
+these are guidance, not enforcement. This also holds for pinned Experiment
+Decisions. The prior `selected_option` stays untouched so a revisit retains the
+previous choice.
 
-For ordinary work, the node-detail ballot is the only producer of
-`selected_option` plus `status: decided`. Human Sync commits those fields and
-accepted standing together and withdraws competing pending Proposals on that
-Decision. Historical Decision Proposals remain replayable and resolvable through
-the same named Decision-choice authority path.
+For ordinary work, only the node-detail human ballot produces `selected_option`
+with `status: decided`. Sync commits these with accepted standing and withdraws
+competing pending Proposals. Historical Decision Proposals remain replayable and
+resolvable through the named Decision-choice path.
 
-The Auto-research orchestrator may queue and decide Decisions directly within
-its authorized episode and graph branch. Its child workers use the ordinary
-profile and do not inherit that exception. Experiment Work also has no Decision
-exception, including on an Experiment-owned graph branch.
+The Auto-research root may queue and decide on its branch. Its ordinary-profile
+children and Experiment Work have no Decision exception.
 
 ## Two permission gates
 
 ### Dispatch
 
-Before any provider-side effect, RCP resolves the named dispatch action against
-the current human or authorized parent, project membership, agent profile, task
-contract, graph target, execution profile, scope, and budget. Refusal launches
-nothing, creates no scratch, and spends no unit. A permitted dispatch first
-writes a durable task binding those facts.
-
-Every continuation that spends a new unit must derive from that bound authority
-or pass admission again. Task lineage explains causation; it is not itself a
-permission principal.
+Before provider effects, dispatch resolves the action against the human or
+admitted parent, membership, profile, contract, graph target, execution profile,
+scope, and budget. Refusal creates no scratch, launches nothing, and spends no
+unit. Admission first persists a task binding those facts. A paid continuation
+must derive from that binding or pass admission again; lineage is not permission.
 
 ### Apply
 
-Under the append lock, core `WriteAuthority` runs Gate 1 before validation.
-It checks the producer, live human membership, agent task binding and membership,
-and each operation's permitted actions against the pre-Patch graph. Human
-approvals require an explicit authorizer. Branch writes use the parent's authority.
-No-change merge receipts also require live task authority.
+Under the append lock, core `WriteAuthority` runs Gate 1: producer, live human
+membership, agent task binding, and operation actions against the pre-Patch graph.
+Human approvals require an explicit authorizer. Branch writes use their parent's
+authority; no-change merge receipts also require live task authority.
 
-Gate 2 checks graph rules with the resolved writer role. Ordered staging keeps
-state-dependent writer rules, but never looks up identities, membership, or tasks.
-Agent validation reports profile refusals before Apply. Graph movement alone is
-not a rejection; current semantic invalidity or lost authority is.
+Gate 2, `validate_patch`, checks graph legality with the resolved `Writer`.
+Ordered staging checks state-dependent writer rules but never identities,
+membership, or tasks. `HistoryManager` requires a write authority. Agent validation
+reports profile refusals before Apply. Graph movement alone is not rejection;
+semantic invalidity or lost authority is.
 
-A refusal is not a rollback. Provider cost, repository writes, external calls,
-and compute already performed remain real, and the task answer remains visible
-independently of the Patch verdict.
+**Why:** one core owner per gate makes new writer paths inherit both checks.
+Rules about nodes created earlier in a Patch still need staged state, so they
+read the resolved role in the single validation loop. Graph well-formedness is
+tested with generated operation sequences; defects belong in operation checks,
+not a second runtime invariant gate.
+
+Refusal does not undo provider cost, repository writes, calls, or compute. The
+task answer stays visible independently of its Patch verdict.
 
 ### Replay
 
-Replay performs no permission check. Once admitted, a Patch cannot later be
-invalidated by user, membership, profile, or task changes. Historical records
-with no current attribution continue to materialize. Producer, author, and kind
-consistency remain persisted-shape checks during replay.
+Replay checks persisted producer/author/kind consistency and graph validity, not
+live permission. Later membership, task, or profile changes cannot invalidate an
+admitted Patch; unattributed history remains readable. Restore, transfer import,
+identity publication, scope bootstrap, branch metadata, and merge receipts keep
+their own publication contracts; a no-change merge receipt still checks authority.
 
 ## Agent profiles
 
-Agent semantic permission is represented by two constant code profiles:
+Two constant code profiles grant semantic permission:
 
-- **ordinary** — shared by ordinary Work, Seed/Refresh within its ingestion
-  contract, Experiment-loop work, and Auto-research child Work; and
-- **orchestrator** — one project-owned profile used only by an Auto-research root
-  and by a human-dispatched graph merge.
+- **ordinary:** Work, Seed/Refresh within ingestion, Experiment loops, and
+  Auto-research child Work.
+- **orchestrator:** an Auto-research root and a human-dispatched graph merge.
 
-The manifest cannot edit these profiles. Surface contracts narrow them further:
-Discuss and Paper expose no Patch; Experiment-loop work is limited to its
-focused Experiment policy; merge receives no repository write scope unless it
-lands episode code, and then exactly chat Integrate's local-merge roots, the
-episode worktree and the shared checkout.
+Manifests cannot edit them. Surface contracts narrow them: Discuss and Paper
+expose no Patch; Experiment work has its focused policy. A merge has no repository
+write roots unless it lands episode code, when it gets exactly chat Integrate's
+local-merge roots: the episode worktree and shared checkout.
 
 ## Graph action vocabulary
 
-Graph authority derives from the typed operation plus a named exception wherever
-the target type or field changes who may act. It is never guessed from an
-operation's superficial shape.
+Typed operations map to named create, update, remove, supersede, merge, edge,
+standing, Proposal, truth-scope, and ontology actions. Special human paths must
+name `human_action`; a Decision choice is never inferred from `update_nodes`.
 
-The base action families are create, update, remove, supersede, and merge node;
-create and remove edge; set standing; create, resolve, and withdraw Proposal;
-set project truth scope; and set ontology. Current profiles apply
-these rules:
+Both profiles may create ResearchQuestions and Hypotheses and connect nodes
+created earlier in the same outer Patch. Existing protected nodes require a
+Proposal for edits, removal, supersede, merge, or structural changes. Evidence-to-
+Hypothesis epistemic edges remain direct assertions; Hypothesis status is the
+protected judgment.
 
-- Humans may perform current product graph actions, subject to their explicit UI
-  action and project membership.
-- Ordinary and orchestrator agents may create ResearchQuestions and Hypotheses
-  and connect nodes created earlier in the same outer Patch.
-- Once a ResearchQuestion or Hypothesis exists, every agent must use a Proposal
-  to edit, remove, supersede, merge, or restructure that protected record.
-- Attaching or replacing Evidence-to-Hypothesis epistemic edges remains a direct
-  agent assertion. The later Hypothesis status change is the protected judgment.
-- Ordinary agents may queue Decisions but cannot choose them. The orchestrator
-  may queue and choose Decisions within its bounded episode or merge.
-- The orchestrator has direct current control of Evidence, Decisions,
-  Experiments, and Blockers, including standing, subject to operation validation.
-- No agent may resolve a Proposal or change project truth scope or ontology.
-- Graph-writing agents may add or revise project-wide glossary definitions through
-  `upsert_glossary`, including bounded Experiment and Auto-research work. Entries
-  are explanatory metadata, not protected belief nodes; Discuss remains without
-  graph authority. No separate human glossary editor is exposed.
-- Historical Ambiguity operations remain replayable but no current agent or
-  human surface grants their legacy authoring authority.
-
-Any action whose ordinary typed payload cannot distinguish a special human path
-must declare the exact `human_action`; for example, a Decision choice cannot be
-inferred from a generic `update_nodes` shape.
+The orchestrator directly controls ordinary Evidence, Decisions, Experiments,
+and Blockers, including standing, within typed validation and its bounded branch
+or merge. No agent resolves Proposals or changes truth scope or ontology.
+Graph-writing agents may `upsert_glossary`, including during bounded episodes;
+there is no separate human glossary editor. Historical Ambiguity operations are
+replayable but no current surface grants their authoring authority.
 
 ## Protected-belief Proposals
 
-An ordinary agent Proposal contains exactly one declared intent:
+An ordinary Proposal declares exactly one intent: `content_change`, `removal`,
+`supersede`, `merge`, `protected_relation_change`, or `status_change`. Its restricted
+typed operation union cannot bundle unrelated judgment. Supersede and merge join
+distinct nodes of the same protected type. Status change targets one Hypothesis
+and names a valid Evidence-to-Hypothesis epistemic edge as cause. Other intents
+use a rationale without an invented evidence cause.
 
-- `content_change`;
-- `removal`;
-- `supersede`;
-- `merge`;
-- `protected_relation_change`; or
-- `status_change`.
+Canonical branch merge may propose an exact `standing_change` or a `status_change`
+with canonically proven human cause. It may bundle at most one content, one status,
+and one standing intent for the same existing protected node, independently
+validated and approved atomically. Explicit proposed standing overrides implicit
+accepted standing. It may also propose exact removal of an accepted ordinary
+node. Merge conformance proves every effect against the source delta; none of
+these forms grants direct approval or accepted-node removal.
 
-The intent is checked against its restricted typed operation union and may not
-bundle an unrelated judgment. Supersede and merge join two distinct nodes of the
-same protected type. A status-change Proposal changes exactly one Hypothesis and
-names one valid Evidence-to-Hypothesis epistemic edge as its cause. Other
-Proposal intents use their human-readable rationale and do not invent an
-evidence cause.
+Every agent Proposal waits for a human. An orchestrator writes its children's
+instructions and cannot independently approve them. Any agent may withdraw a
+pending obsolete or duplicate Proposal; withdrawal applies no semantic operation.
 
-A canonical branch merge has narrowly bounded review forms for changes humans
-could make on the source branch. It may propose one exact `standing_change`, or
-a `status_change` with a canonically proven human cause. It may bundle at most
-one content, one status, and one standing intent for the same existing protected
-node, with each intent validated independently. The normal human Inbox approves
-that bundle atomically; an explicit proposed standing is not replaced by the
-usual implicit accepted standing. A merge may also propose one exact removal of
-an accepted ordinary node. None of these forms grants an agent approval or
-direct accepted-node removal authority. Merge conformance must prove every
-effect against the source delta before the Proposal can become canonical.
-
-Every agent-produced Proposal waits for a human. The orchestrator writes its
-children's instructions and therefore may not approve a child's Proposal as an
-independence shortcut. Any agent may withdraw a still-pending Proposal that later
-work proves obsolete or duplicated; withdrawal applies no semantic operation.
-
-RCP snapshots Proposal dependencies at creation: referenced nodes, edges, and
-project configuration. Removal also snapshots the exact incident-edge set,
-including empty. A changed dependency, recreated edge, or changed incident set
-makes approval stale. Sync then records withdrawal and applies no semantic
-change. Several human judgments in one Sync are evaluated in order against the
-state produced by earlier judgments and commit atomically.
+Creation snapshots referenced nodes, edges, and project configuration. Removal
+also snapshots the exact incident-edge set, including empty. Changed dependencies,
+recreated edges, or changed incident sets make approval stale: Sync withdraws it
+without semantic change. Multiple judgments in one Sync evaluate in order and
+commit atomically.
 
 ## Guarded removal
 
-`remove_nodes` removes current nodes and their incident edges without rewriting
-history. Every target must exist, lack accepted standing, and, for an
-Experiment, have no active bounded episode. One invalid target rejects the whole
-operation.
-
-The only accepted-standing exception is human approval of a current removal
-Proposal for a protected node, and only while its dependency and exact incident
-snapshot remain current. The UI does not combine clearing standing and removal;
-the standing change must first become canonical.
+`remove_nodes` deletes current nodes and incident edges, preserving history.
+Each target must exist, lack accepted standing, and, for an Experiment, have no
+active bounded attempt. One invalid target rejects the operation. Human approval
+of a current removal Proposal is the accepted-standing exception, including the
+merge review form for an accepted ordinary node. Dependency and incident snapshots
+must still match. The UI requires clearing standing to become canonical before
+ordinary removal; it never combines them.
 
 ## Authorization lineage and provenance
 
-The durable task record binds authorizer, project, graph target, agent profile,
-task contract, scope, execution profile, provider/session/machine, parent and
-episode lineage, and budget allocation. Every continuation preserves its exact
-root authority and target.
+Tasks bind authorizer, project, graph target, profile, contract, scope, execution
+profile, provider/session/machine, parent and episode lineage, and budget.
+Continuations preserve root authority and exact target.
 
-Canonical Patch provenance retains the facts required outside the originating
-space:
-
-- `producer`;
-- immutable `authorized_by` snapshot;
-- `profile` where an agent produced it;
-- direct `task_id`;
-- `episode_id` for episode work;
-- source operation/effect identities where applicable; and
-- strict branch-merge provenance for a merge Patch.
-
-Display names are snapshots and are never repainted after rename. Legacy
-Patches remain unattributed. Provider credentials, operational parent chains,
-and private execution details stay in task receipts rather than canonical graph
-history.
+[Patch provenance](graph-history-and-transitions.md#patch-provenance) keeps the
+portable subset: producer, immutable authorizer snapshot, agent profile and task,
+episode where applicable, source operation/effect identity, and merge provenance.
+Display-name snapshots never repaint after rename; legacy Patches remain
+unattributed. Credentials, private execution details, and operational parent
+chains stay in task receipts.
 
 ## Orchestration commands
 
-Orchestration commands use a separate closed vocabulary and audit path from
-graph operations. The Auto-research orchestrator may validate/apply, inspect
-status, spawn ordinary workers, pause/resume/stop its children, exchange
-star-topology mail, arm graph conditions, start or stop bounded child Experiment
-episodes, harvest lifecycle notices, and request guarded finish within its
-episode and budgets. Ordinary workers can reply only through their narrower
-contract. Humans own root dispatch, reauthorization, merge dispatch, and human
-controls.
-
-Commands never become graph authority by themselves. A graph change still uses
-the typed Patch, transition manager, and Apply gate.
+[Auto-research](auto-research-and-branch-merge.md#staged-command-client) owns the
+closed command vocabulary and its audit path. Ordinary workers have narrower
+contracts. Humans own root and merge dispatch, reauthorization, and protected
+controls. Commands do not grant graph authority: changes still require typed
+Patches through the transition manager and Apply gate.

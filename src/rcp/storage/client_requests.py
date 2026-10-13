@@ -97,11 +97,9 @@ def record_client_request(
     if scope is None or scope[0] is not store:
         return
     admission = scope[1]
-    if (
-        task.project_id != admission.project_id
-        or task.authorized_by is None
-        or task.authorized_by.user_id != admission.user_id
-    ):
+    # The receipt belongs to the requesting member. Episode continuations retain
+    # their original human authorizer, independently of who requested recovery.
+    if task.project_id != admission.project_id:
         raise ClientRequestConflict("Request admission identity changed.")
     if not connection.in_transaction:
         raise RuntimeError("Client request recording requires an admission transaction.")

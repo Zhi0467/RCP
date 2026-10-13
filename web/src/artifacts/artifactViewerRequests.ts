@@ -1,8 +1,3 @@
-/** HTTP failures which need a human retry, rather than another automatic tick. */
-export function isPermanentArtifactError(status: number): boolean {
-  return status >= 400 && status < 500 && ![408, 409, 425, 429].includes(status);
-}
-
 export type ArtifactPopupTarget =
   | { kind: "artifact"; projectId: string; artifactId: string }
   | { kind: "report"; projectId: string; episodeId: string };

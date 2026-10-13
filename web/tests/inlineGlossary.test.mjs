@@ -13,6 +13,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
 const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
@@ -47,7 +54,7 @@ test("node prose renders focusable inline definitions without a detached glossar
   };
   let html;
   try {
-    html = renderToStaticMarkup(
+    html = renderMarkup(
       React.createElement(DetailDrawer, {
         node,
         edges: [],
@@ -79,7 +86,7 @@ test("node prose renders focusable inline definitions without a detached glossar
 });
 
 test("proposal prose uses the shared inline glossary treatment", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ProposalJudgmentSection, {
       proposals: [
         {
@@ -143,7 +150,7 @@ test("node chat passes the prebuilt index into Markdown answers", () => {
     state_repository: "repo",
     machines: [{ alias: "local", host: null }],
   };
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(NodeChat, {
       project,
       glossaryIndex,

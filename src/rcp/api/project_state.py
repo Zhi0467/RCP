@@ -15,16 +15,15 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_project_display_cache,
     get_project_service,
+    get_project_writer,
     get_store,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.graph_changes import (
-    active_merge,
     branch_changes,
     graph_mutation_availability,
-    merge_fenced_mutation_availability,
 )
 from rcp.api.identity import IdentityAccess
 from rcp.api.space_machines import MACHINE_ATTACHMENT_LOCK
@@ -32,10 +31,8 @@ from rcp.background import BackgroundAgentTasks
 from rcp.browser import readiness as browser_readiness
 from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
-from rcp.core.attention import project_graph_mutation_availability
 from rcp.history.branches import BranchHistoryManager
-from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
-from rcp.projects import ProjectCatalog, ProjectDisplayCache, experiment_signal
+from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
 from rcp.repository_preview import (
     REPOSITORY_PREVIEW_CSP,
@@ -131,53 +128,6 @@ def _branch_snapshot(
         materialization.state,
     ).model_dump(mode="json")
     return snapshot
-
-
-def _branch_revision(
-    project_id: str,
-    branch_id: str,
-    project_display_cache: ProjectDisplayCache,
-    catalog: ProjectCatalog,
-    store: AppStore,
-) -> dict[str, object]:
-    service = get_graph_service(
-        catalog,
-        project_id,
-        branch_id,
-        initialize=False,
-        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
-    )
-    history = service.history
-    assert isinstance(history, BranchHistoryManager)
-    canonical_project_id = catalog.resolve_project_id(project_id)
-    generation = service.history.history_engine.snapshot(
-        history.graph_target, refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
-    )
-    assert generation.source.metadata is not None
-    history._validate_metadata(generation.source.metadata)
-    head = generation.head(generation.result.state.revision)
-    state = generation.result.state
-    availability = project_graph_mutation_availability(state)
-    if active_merge(store, canonical_project_id, history.graph_target):
-        availability = merge_fenced_mutation_availability()
-    # Experiment controls are operational, so a teammate's start or stop on
-    # this branch moves no revision; the branch snapshot carries the same digest.
-    controls = project_display_cache.complete_transition_control(
-        canonical_project_id,
-        {
-            "graph": state.model_dump(mode="json"),
-            "graph_target": history.graph_target.model_dump(mode="json"),
-        },
-    )["experiment_control"]
-    return {
-        "revision": head.revision,
-        "snapshot_freshness": "fresh",
-        "last_remote_sync_at": None,
-        "graph_mutation": availability.model_dump(mode="json"),
-        "experiment_signal": experiment_signal(controls),
-        "latest_task_id": store.latest_agent_task_id(canonical_project_id),
-        "latest_watcher_id": store.latest_watcher_id(canonical_project_id),
-    }
 
 
 @router.get("/api/projects/{project_id}")
@@ -293,54 +243,6 @@ def cached_project(
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Cached project snapshot not found")
     return snapshot
-
-
-@router.get("/api/projects/{project_id}/cached/revision")
-async def cached_project_revision(
-    project_id: str,
-    branch_id: str | None = None,
-    *,
-    project_display_cache: DisplayCacheDependency,
-    catalog: CatalogDependency,
-    store: StoreDependency,
-    background_tasks: BackgroundTasksDependency,
-) -> dict[str, object]:
-    if branch_id is not None:
-        branch = await asyncio.to_thread(
-            _branch_revision, project_id, branch_id, project_display_cache, catalog, store
-        )
-        return {
-            **branch,
-            # Tasks are project-wide, so a branch view watches the same signal.
-            "task_status_signal": await asyncio.to_thread(
-                store.agent_task_status_signal, project_id
-            ),
-            "steer_epoch": background_tasks.steer_epoch(project_id),
-        }
-    snapshot = await asyncio.to_thread(
-        project_display_cache.cached_project_snapshot,
-        project_id,
-    )
-    if snapshot is None:
-        raise HTTPException(status_code=404, detail="Cached project snapshot not found")
-    project_display_cache.schedule_project_reconciliation(project_id)
-    return {
-        "revision": snapshot["revision"],
-        "snapshot_freshness": snapshot["snapshot_freshness"],
-        "last_remote_sync_at": snapshot["last_remote_sync_at"],
-        # Probes finish in the background after startup or a settings save;
-        # a change here tells an open page to reload their results.
-        "compute_probes_probed_at": snapshot["compute_probes_probed_at"],
-        "settings_signal": snapshot["settings_signal"],
-        "experiment_signal": snapshot["experiment_signal"],
-        # A teammate's new task or watcher changes no graph revision; these tell the page.
-        "latest_task_id": await asyncio.to_thread(store.latest_agent_task_id, project_id),
-        # A task that finishes or waits on a person moves this, not latest_task_id.
-        "task_status_signal": await asyncio.to_thread(store.agent_task_status_signal, project_id),
-        "latest_watcher_id": await asyncio.to_thread(store.latest_watcher_id, project_id),
-        # A final steer receipt can land after its task stopped being polled.
-        "steer_epoch": background_tasks.steer_epoch(project_id),
-    }
 
 
 @router.get("/api/projects/{project_id}/readiness")
@@ -461,7 +363,7 @@ def _refresh_machine_compute_probes(
 ) -> None:
     project_id = catalog.resolve_project_id(project_id)
     try:
-        manifest = get_project_service(catalog, project_id).manifest
+        manifest = get_project_writer(catalog, project_id).manifest
         refresh_compute_probes(
             store, manifest, project_id, data_dir=catalog.data_dir, machines=machines
         )
@@ -539,7 +441,7 @@ def check_machine_compute(
 ) -> dict[str, object]:
     """Re-check every route of one machine after a human fixed what a notice named."""
     project_id = catalog.resolve_project_id(project_id)
-    manifest = get_project_service(catalog, project_id).manifest
+    manifest = get_project_writer(catalog, project_id).manifest
     if machine_alias not in manifest.machine_map:
         raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
     refresh_compute_probes(
@@ -585,7 +487,7 @@ def clear_rebuildable_caches(
     store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ):
-    service = get_project_service(catalog, project_id)
+    service = get_project_writer(catalog, project_id)
     if store.has_active_agent_task(project_id):
         raise HTTPException(
             status_code=409,
@@ -616,7 +518,6 @@ __all__ = [
     "add_project_machine",
     "agent_usage",
     "cached_project",
-    "cached_project_revision",
     "clear_rebuildable_caches",
     "graph",
     "invite_project_member",

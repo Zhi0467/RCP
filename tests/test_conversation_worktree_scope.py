@@ -21,6 +21,7 @@ from rcp.agents.write_scope import (
 from rcp.config import Manifest
 from rcp.core.models import ConversationWorktreeBinding, EpisodeWorktreeBinding, WorktreeBinding
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+from tests.storage_helpers import downgrade_resource_watermarks
 
 
 def _binding(manifest: Manifest, tmp_path: Path) -> ConversationWorktreeBinding:
@@ -336,6 +337,7 @@ def test_existing_store_adds_worktree_table_without_rewriting_tasks(tmp_path: Pa
     database = tmp_path / "rcp.sqlite3"
     store = AppStore(database)
     with store.connection() as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE conversation_worktrees")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 8")
     upgraded = AppStore(database)

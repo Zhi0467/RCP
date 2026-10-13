@@ -13,7 +13,7 @@ from rcp.api.dependencies import (
     get_experiment_operation_lock,
     get_graph_service,
     get_identity_access,
-    get_project_service,
+    get_project_writer,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -21,13 +21,14 @@ from rcp.api.dependencies import (
 )
 from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.api.episodes import _episode_for_http, episode_on_branch
-from rcp.api.experiment_controls import _experiment_control
+from rcp.api.experiment_controls import _experiment_control, _experiment_operational_state
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.control import ExperimentControlState
 from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.core.transition_models import GraphTargetRef
+from rcp.history.branches import canonical_branch_id
 from rcp.keyed_locks import KeyedLocks
 from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.projects import ProjectCatalog
@@ -120,7 +121,7 @@ def run_experiment(
                 assert record is not None
                 return _start_response(store, record, str(record.request.get("node_id", node_id)))
             project_id = catalog.resolve_project_id(project_id)
-            service = get_graph_service(catalog, project_id, branch_id)
+            service = get_graph_service(catalog, project_id, branch_id, write=True)
             target = service.history.graph_target
             require_graph_edit_admission(store, project_id, target)
             try:
@@ -305,28 +306,6 @@ def stop_bound_experiment_episode(
     node_id = episode.control_node_id
     if episode.mode != "experiment_loop" or node_id is None:
         raise HTTPException(status_code=409, detail="This is not an Experiment-loop episode.")
-    main_service = get_project_service(catalog, project_id)
-    try:
-        target_service = (
-            main_service
-            if episode.graph_target.kind == "main"
-            else main_service.for_graph_target(
-                episode.graph_target,
-                expected_episode_id=episode.graph_target.branch_id,
-            )
-        )
-        materialization = target_service.history.current_materialization()
-        state = materialization.state
-        head = target_service.history.head_ref(materialization)
-    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if head.target != episode.graph_target:
-        raise HTTPException(
-            status_code=409,
-            detail="The Experiment episode no longer resolves to its exact graph target.",
-        )
-    if not isinstance(state.nodes.get(node_id), Experiment):
-        raise HTTPException(status_code=404, detail="Experiment not found")
     if episode.graph_target.kind == "branch":
         route = store.auto_research_child_experiment(episode.episode_id)
         if route is not None and not episode_on_branch(
@@ -356,14 +335,49 @@ def stop_bound_experiment_episode(
         )
     except EpisodeNotRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    _, control = _experiment_control(
-        store,
-        project_id,
-        state,
-        node_id,
-        graph_target=episode.graph_target,
-    )
-    return control
+    try:
+        main_service = get_project_writer(catalog, project_id)
+        target_service = (
+            main_service
+            if episode.graph_target.kind == "main"
+            else main_service.for_graph_target(
+                episode.graph_target,
+                expected_episode_id=episode.graph_target.branch_id,
+                initialize=False,
+            )
+        )
+        materialization = target_service.history.current_materialization()
+        state = materialization.state
+        head = target_service.history.head_ref(materialization)
+        if head.target != episode.graph_target:
+            raise ValueError("The Experiment episode no longer resolves to its exact graph target.")
+        if not isinstance(state.nodes.get(node_id), Experiment):
+            raise ValueError("Experiment not found")
+        _, control = _experiment_control(
+            store,
+            project_id,
+            state,
+            node_id,
+            graph_target=episode.graph_target,
+        )
+        return control
+    except (HTTPException, KeyError, OSError, StateUnavailable, ValueError):
+        # Stop is already durable. A display failure cannot undo its acceptance;
+        # return its operational receipt with graph readiness explicitly unknown.
+        runtime = store.experiment_loop_runtime(
+            project_id, node_id, graph_target=episode.graph_target
+        )
+        return ExperimentControlState(
+            ready=False,
+            reasons=["Stop accepted; graph readiness is unavailable."],
+            episode_id=runtime.episode_id,
+            invocations_used=runtime.invocations_used,
+            invocation_ceiling=episode.invocation_ceiling,
+            invocations_remaining=max(0, episode.invocation_ceiling - runtime.invocations_used),
+            paused=runtime.paused,
+            active=runtime.active,
+            operational=_experiment_operational_state(runtime),
+        )
 
 
 def continue_experiment_episode(
@@ -413,7 +427,7 @@ def continue_experiment_episode(
     last_turn = store.agent_task(experiment.last_turn_operation_id)
     if last_turn is None:
         raise HTTPException(status_code=409, detail="The episode lost its last turn record.")
-    main_service = get_project_service(catalog, project_id)
+    main_service = get_project_writer(catalog, project_id)
     target_service = (
         main_service
         if source.graph_target.kind == "main"
@@ -521,7 +535,12 @@ def stop_experiment_loop(
 
     actor = identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
-    target = get_graph_service(catalog, project_id, branch_id).history.graph_target
+    if branch_id is not None:
+        try:
+            canonical_branch_id(branch_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Episode graph not found") from exc
+    target = GraphTargetRef(kind="branch", branch_id=branch_id) if branch_id else GraphTargetRef()
     with experiment_operation_lock(project_id):
         if episode_id is None:
             runtime = store.experiment_loop_runtime(

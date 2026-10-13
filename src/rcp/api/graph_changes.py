@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Literal, cast
 
 from fastapi import HTTPException
@@ -61,8 +62,10 @@ def branch_changes(
     """Project one branch head, including actual per-change authorship."""
 
     assert isinstance(service.history, BranchHistoryManager)
-    history = cast(BranchHistoryManager, service.history)
-    generation = service.history.history_engine.snapshot(history.graph_target)
+    branch = cast(BranchHistoryManager, service.history)
+    # The engine verifies its own generation locally; a remote read pins one first.
+    with branch.read_view() if branch.workspace.remote else nullcontext(branch) as history:
+        generation = history.history_engine.snapshot(history.graph_target)
     metadata = generation.source.metadata
     assert metadata is not None
     history._validate_metadata(metadata)

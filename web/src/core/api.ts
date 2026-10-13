@@ -100,9 +100,11 @@ export async function api<T>(
     retryIdentity?: boolean;
     /** Bounds each attempt, never the human's display-name prompt between them. */
     attemptTimeoutMs?: number;
+    /** A POST display read must not trigger mutation-failure reconciliation. */
+    readOnly?: boolean;
   } = {},
 ): Promise<T> {
-  const mutation = isMutationRequest(init);
+  const mutation = !options.readOnly && isMutationRequest(init);
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
@@ -120,7 +122,11 @@ export async function api<T>(
       ...init,
       headers,
       ...(options.attemptTimeoutMs !== undefined
-        ? { signal: AbortSignal.timeout(options.attemptTimeoutMs) }
+        ? {
+            signal: init?.signal
+              ? AbortSignal.any([init.signal, AbortSignal.timeout(options.attemptTimeoutMs)])
+              : AbortSignal.timeout(options.attemptTimeoutMs),
+          }
         : {}),
     });
   let response: Response;
@@ -970,12 +976,6 @@ export function installMachinePower(): Promise<MachinePowerStatus> {
 
 export function uninstallMachinePower(): Promise<MachinePowerStatus> {
   return api("/api/machine-power/uninstall", { method: "POST" });
-}
-
-export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {
-  return api<AgentQuestion[]>(
-    `${apiBase}/${ownerKind === "chat" ? "chats" : "episodes"}/${encodeURIComponent(ownerId)}/questions`,
-  );
 }
 
 export function answerQuestion(apiBase: string, questionId: string, body: AnswerQuestionRequest) {

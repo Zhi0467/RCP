@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath
 
 import pytest
+import tomlkit
 
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
@@ -199,7 +200,7 @@ def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_p
     assert created.sync_state == "unsynced"
     assert workspace.transactions == 2
 
-    saved = paper.save(created.content, created.base_hash)
+    saved = paper.save(created.content, created.base_hash, created.draft_version)
     published = {path for batch in workspace.published for path in batch}
     assert "paper/introduction.md" in published
     assert saved.sync_state == "synced"
@@ -323,81 +324,6 @@ def test_shared_snapshot_lock_keeps_refresh_behind_single_patch_publication(
     assert appended.revision == 2
     assert (root / "patches" / "000002.json").is_file()
     assert reader.materialize(write_outputs=False).state.revision == 2
-
-
-def test_shared_snapshot_lock_keeps_atomic_transition_out_of_refresh_and_replay(
-    manifest, monkeypatch
-) -> None:
-    HistoryManager(manifest, write_authority=unchecked_write_authority()).append(seed_patch())
-    root = manifest.research_dir
-    reader_workspace = StateWorkspace(root, "test-host:/canonical/.research")
-    writer_workspace = StateWorkspace(root, "test-host:/canonical/.research")
-    reader_workspace.remote = True
-    writer_workspace.remote = True
-    reader = HistoryManager(
-        load_manifest(manifest.path), reader_workspace, write_authority=unchecked_write_authority()
-    )
-    writer = HistoryManager(
-        load_manifest(manifest.path), writer_workspace, write_authority=unchecked_write_authority()
-    )
-
-    refresh_entered = threading.Barrier(2)
-    refresh_release = threading.Barrier(2)
-    writer_probed = threading.Barrier(2)
-    writer_continue = threading.Barrier(2)
-    replay_entered = threading.Barrier(2)
-    replay_release = threading.Barrier(2)
-    writer_lock_probe: list[bool] = []
-    published_transitions: list[str] = []
-
-    def paused_refresh() -> bool:
-        refresh_entered.wait(timeout=5)
-        refresh_release.wait(timeout=5)
-        return True
-
-    real_replay = reader.history_engine.materialization
-
-    def paused_replay(*args, **kwargs):
-        replay_entered.wait(timeout=5)
-        replay_release.wait(timeout=5)
-        return real_replay(*args, **kwargs)
-
-    def append_after_probe():
-        acquired = writer_workspace.snapshot_lock.acquire(blocking=False)
-        writer_lock_probe.append(acquired)
-        if acquired:
-            writer_workspace.snapshot_lock.release()
-        writer_probed.wait(timeout=5)
-        writer_continue.wait(timeout=5)
-        return writer.append_batch([_accept_question_patch()], expected_revision=1)
-
-    def record_transition_publish(_relative_paths, patch_path) -> None:
-        published_transitions.append(Path(patch_path).as_posix())
-
-    monkeypatch.setattr(reader_workspace, "_refresh_snapshot", paused_refresh)
-    monkeypatch.setattr(reader.history_engine, "materialization", paused_replay)
-    monkeypatch.setattr(writer_workspace, "publish_committed_patch", record_transition_publish)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        read_future = pool.submit(reader.current_materialization)
-        refresh_entered.wait(timeout=5)
-        append_future = pool.submit(append_after_probe)
-        writer_probed.wait(timeout=5)
-        writer_continue.wait(timeout=5)
-        refresh_release.wait(timeout=5)
-        replay_entered.wait(timeout=5)
-        transition_existed_during_replay = (root / "patches" / "000002.json").exists()
-        replay_release.wait(timeout=5)
-
-        read_result = read_future.result(timeout=5)
-        prepared, appended_result = append_future.result(timeout=5)
-
-    assert writer_lock_probe == [False]
-    assert transition_existed_during_replay is False
-    assert read_result.state.revision == 1
-    assert [patch.revision for patch in prepared] == [2]
-    assert appended_result.state.revision == 2
-    assert published_transitions == ["patches/000002.json"]
 
 
 def test_local_graph_run_waits_then_acquires_and_reports_once(tmp_path) -> None:
@@ -2004,10 +1930,11 @@ def test_confirmed_remote_transition_commit_is_not_rolled_back(manifest) -> None
 
     workspace.publish = fail_repair
     with pytest.raises(StateUnavailable):
-        history.state()
+        history._repair_materializations_if_needed()
     assert workspace.materialization_repair_required is True
 
     workspace.publish = publish
+    history._repair_materializations_if_needed()
     assert history.state().nodes["rq/learning-after-shift"].standing == "accepted"
     assert workspace.materialization_repair_required is False
 
@@ -2643,3 +2570,424 @@ def test_tar_publication_preserves_staging_and_exact_paths(tmp_path, monkeypatch
     assert stage.parent == workspace.remote_root / ".publish"
     assert commands[0]["stage"] == str(stage)
     assert commands[0]["paths"] == paths
+
+
+def _remote_capture_manifest(manifest):
+    content = tomlkit.parse(manifest.path.read_text())
+    for repository in content["repositories"]:
+        if repository["alias"] == manifest.state.repository:
+            repository["path"] = "/srv/project"
+            for machine in content["machines"]:
+                if machine["alias"] == repository["machine"]:
+                    machine["host"] = "research.example"
+    manifest.path.write_text(tomlkit.dumps(content))
+
+
+def test_remote_capture_keeps_pinned_readers_off_transfer_and_retains_failed_snapshot(
+    tmp_path, manifest, monkeypatch
+):
+    _remote_capture_manifest(manifest)
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    entered = threading.Event()
+    release = threading.Event()
+    blocked = False
+    fail = False
+
+    def transfer(destination):
+        if blocked:
+            entered.set()
+            assert release.wait(5)
+        if fail:
+            raise StateUnavailable("transfer failed")
+        shutil.copytree(manifest.research_dir, destination, dirs_exist_ok=True)
+        return True
+
+    monkeypatch.setattr(workspace, "_pull_remote_tree", transfer)
+    workspace.capture()
+    with workspace.read_snapshot() as previous:
+        blocked = True
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            capture = pool.submit(workspace.capture)
+            assert entered.wait(5)
+
+            def read():
+                with workspace.read_snapshot() as root:
+                    return root
+
+            assert pool.submit(read).result(timeout=1) == previous
+            release.set()
+            capture.result(timeout=5)
+        fail = True
+        with pytest.raises(StateUnavailable, match="transfer failed"):
+            workspace.capture()
+        fail = False
+        manifest.path.write_text(
+            manifest.path.read_text().replace("research.example", "other.example")
+        )
+        with pytest.raises(ValueError):
+            workspace.capture()
+        with workspace.read_snapshot() as root:
+            assert root == previous
+    assert workspace.sync_health()["status"] == "error"
+    assert workspace.sync_health()["last_completed_at"] is not None
+
+
+def test_remote_generations_track_deletion_chat_and_paper_without_graph_head(
+    tmp_path, manifest, monkeypatch
+):
+    _remote_capture_manifest(manifest)
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(
+        workspace,
+        "_pull_remote_tree",
+        lambda destination: shutil.copytree(manifest.research_dir, destination, dirs_exist_ok=True),
+    )
+    chat_id = "11111111-1111-4111-8111-111111111111"
+    chat = manifest.research_dir / "chat" / f"project-{chat_id}.jsonl"
+    paper = manifest.research_dir / "paper" / "introduction.md"
+    chat.parent.mkdir()
+    paper.parent.mkdir(exist_ok=True)
+    chat.write_text('"first"\n')
+    paper.write_text("first")
+    workspace.capture()
+    families = ["graph:main", "refs", "chats", f"chat:{chat_id}", "paper", "unknown"]
+    before = workspace.content_generations(families)
+    with workspace.read_snapshot() as old:
+        chat.unlink()
+        paper.write_text("second")
+        workspace.capture()
+        after = workspace.content_generations(families)
+        assert before["graph:main"] == after["graph:main"]
+        assert before["unknown"] == after["unknown"]
+        assert all(before[key] != after[key] for key in ("chats", f"chat:{chat_id}", "paper"))
+        assert (old / "chat" / chat.name).exists()
+
+        def observe():
+            with workspace.read_snapshot() as new:
+                assert not (new / "chat" / chat.name).exists()
+                assert (new / "paper/introduction.md").read_text() == "second"
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(observe).result(timeout=5)
+    assert not old.exists()
+    (manifest.research_dir / "graph.json").write_text('{"revision": 2}')
+    workspace.capture()
+    changed = workspace.content_generations(families)
+    assert changed["graph:main"] != after["graph:main"]
+    assert changed["refs"] != after["refs"]
+
+
+def test_capture_and_writer_share_order_but_not_display_lock(tmp_path, manifest, monkeypatch):
+    _remote_capture_manifest(manifest)
+    root = tmp_path / "mirror"
+    shutil.copytree(manifest.research_dir, root)
+    writer = SSHStateWorkspace(root, "research.example", "/srv/project")
+    capture_workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    for workspace in (writer, capture_workspace):
+        monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+        monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    entered, release = threading.Event(), threading.Event()
+
+    def transfer(destination):
+        shutil.copytree(manifest.research_dir, destination, dirs_exist_ok=True)
+        entered.set()
+        assert release.wait(5)
+        return True
+
+    monkeypatch.setattr(capture_workspace, "_pull_remote_tree", transfer)
+    monkeypatch.setattr(writer, "_publish", lambda paths, lease: None)
+    (root / "paper").mkdir(exist_ok=True)
+    (root / "paper/introduction.md").write_text("committed")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        capture = pool.submit(capture_workspace.capture)
+        assert entered.wait(5)
+        publication = pool.submit(writer.publish, ["paper/introduction.md"])
+        release.set()
+        capture.result(timeout=5)
+        publication.result(timeout=5)
+    with capture_workspace.read_snapshot() as snapshot:
+        assert (snapshot / "paper/introduction.md").read_text() == "committed"
+
+
+def test_cold_display_schedules_without_sync_and_local_reads_do_no_added_work(tmp_path):
+    remote = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    scheduled = []
+    remote.set_sync_request(lambda: scheduled.append(True))
+    with pytest.raises(StateUnavailable), remote.read_snapshot():
+        pass
+    assert scheduled == [True]
+    local = LocalStateWorkspace(tmp_path / "local", "local")
+    with local.read_snapshot() as root:
+        assert root == local.root
+    assert not root.exists()
+    before = local.content_generations(["paper", "unknown"])
+    local.publish(["paper/introduction.md"])
+    after = local.content_generations(["paper", "unknown"])
+    assert before["paper"] != after["paper"]
+    assert before["unknown"] == after["unknown"]
+    assert local.sync_health()["status"] == "local"
+
+
+def test_remote_generation_descriptor_survives_restart_and_nested_reads_stay_pinned(
+    tmp_path, manifest, monkeypatch
+):
+    from rcp.transport.generations import ReadGenerations
+
+    _remote_capture_manifest(manifest)
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(
+        workspace,
+        "_pull_remote_tree",
+        lambda destination: shutil.copytree(manifest.research_dir, destination, dirs_exist_ok=True),
+    )
+    workspace.capture()
+    with workspace.read_snapshot() as previous:
+        (manifest.research_dir / "paper").mkdir(exist_ok=True)
+        (manifest.research_dir / "paper/introduction.md").write_text("updated")
+        workspace.capture()
+        other = SSHStateWorkspace(workspace.root, workspace.host, str(workspace.remote_repository))
+        with other.read_snapshot() as nested:
+            assert nested == previous
+    restarted = ReadGenerations(workspace.root)
+    restarted.restore()
+    with restarted.pin() as restored:
+        assert restored is not None
+        assert (restored / "paper/introduction.md").read_text() == "updated"
+    assert restarted.completed is not None
+    assert restarted.versions == workspace._generations.versions
+
+
+def test_display_publication_failure_preserves_remote_commit_status(tmp_path, monkeypatch):
+    root = tmp_path / ".research"
+    patch = Path("patches/000001.json")
+    _publication_files(root, patch, Path("graph.json"))
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+
+    @contextmanager
+    def remote_lock(path, **_kwargs):
+        yield _command_lease(str(path), lambda command: {"ok": True, "commit_status": "present"})
+
+    def no_space(root):
+        raise OSError("No space for display generation")
+
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", remote_lock)
+    monkeypatch.setattr(workspace, "_ssh", _successful_process)
+    monkeypatch.setattr(subprocess, "run", _successful_process)
+    monkeypatch.setattr(workspace._generations, "copy", no_space)
+    workspace.publish_committed_patch([patch, "graph.json"], patch)
+    assert workspace.sync_health()["status"] == "error"
+
+
+def test_retired_cleanup_failure_does_not_delete_published_generation(tmp_path, monkeypatch):
+    from rcp.transport.generations import ReadGenerations
+
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "paper.md").write_text("before")
+    generations = ReadGenerations(root)
+    generations.copy(root)
+    retired = generations.current
+    remove = shutil.rmtree
+
+    def fail_old_cleanup(path, *args, **kwargs):
+        if path == retired:
+            raise OSError("Retired directory is busy")
+        return remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", fail_old_cleanup)
+    (root / "paper.md").write_text("after")
+    generations.copy(root)
+    with generations.pin() as current:
+        assert current is not None
+        assert (current / "paper.md").read_text() == "after"
+
+
+@pytest.mark.parametrize(
+    ("relative", "invalid"),
+    [
+        ("graph.json", b"{"),
+        ("patches/batch-000001-000001-test/000001.json", b"{"),
+        (f"branches/{_ARCHIVE_BRANCH_ID}/branch.json", b"{"),
+        (f"branches/{_ARCHIVE_BRANCH_ID}/patches/000001.json", b"{"),
+        (f"branches/{_ARCHIVE_BRANCH_ID}/merges/{_ARCHIVE_MERGE_ID}.json", b"{"),
+        (f"chat/project-{_ARCHIVE_BRANCH_ID}.jsonl", b"{}\n{\n"),
+        (f"chat/project-{_ARCHIVE_BRANCH_ID}.jsonl", b"\xff\n"),
+    ],
+)
+def test_capture_rejects_broken_canonical_documents_without_losing_last_good(
+    tmp_path, manifest, monkeypatch, relative, invalid
+):
+    _remote_capture_manifest(manifest)
+    source = manifest.research_dir / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("{}\n")
+    scratch = manifest.research_dir / "scratch" / "unfinished.json"
+    scratch.parent.mkdir()
+    scratch.write_text("{")
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(
+        workspace,
+        "_pull_remote_tree",
+        lambda destination: shutil.copytree(manifest.research_dir, destination, dirs_exist_ok=True),
+    )
+    workspace.capture()
+    before = workspace.content_generations(["graph:main", "chats", "refs"])
+    with workspace.read_snapshot() as previous:
+        source.write_bytes(invalid)
+        with pytest.raises(ValueError):
+            workspace.capture()
+    with workspace.read_snapshot() as current:
+        assert current == previous
+        assert (current / relative).read_text() == "{}\n"
+    assert workspace.content_generations(before) == before
+    assert workspace.sync_health()["status"] == "error"
+
+
+@pytest.mark.parametrize("invalid", [b"{", None])
+def test_display_validation_cannot_fail_transactions_or_publication(tmp_path, monkeypatch, invalid):
+    root = tmp_path / "mirror"
+    root.mkdir()
+    graph = root / "graph.json"
+    graph.write_text("{}")
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    workspace._generations.copy(root)
+    previous = workspace._generations.current
+    if invalid is None:
+        graph.unlink()
+        graph.symlink_to(root / "missing")
+    else:
+        graph.write_bytes(invalid)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(workspace, "_sync_remote_tree", lambda: True)
+    published = []
+    monkeypatch.setattr(workspace, "_publish", lambda paths, lease: published.extend(paths))
+    with workspace.transaction():
+        workspace.publish(["graph.json"])
+    assert published == ["graph.json"]
+    assert workspace._generations.current == previous
+    assert workspace.sync_health()["status"] == "error"
+
+
+def test_generation_reuses_unchanged_bytes_and_accepts_torn_chat_tail(tmp_path, monkeypatch):
+    from rcp.transport.generations import ReadGenerations
+
+    root = tmp_path / "source"
+    (root / "chat").mkdir(parents=True)
+    chat = root / "chat/transcript.jsonl"
+    chat.write_bytes(b'{}\n{"partial":')
+    paper = root / "paper.md"
+    paper.write_text("original")
+    generations = ReadGenerations(root)
+    generations.copy(root)
+    with generations.pin() as previous:
+        assert previous is not None
+        assert (previous / "chat/transcript.jsonl").read_bytes() == b"{}\n"
+        assert chat.read_bytes() == b'{}\n{"partial":'
+        paper.write_text("updated")
+        read_bytes = Path.read_bytes
+        copied = []
+        copy2 = shutil.copy2
+
+        def copy_changed(source, destination):
+            copied.append(Path(source).name)
+            return copy2(source, destination)
+
+        def read_changed(path):
+            assert path.name != chat.name
+            return read_bytes(path)
+
+        monkeypatch.setattr(shutil, "copy2", copy_changed)
+        monkeypatch.setattr(Path, "read_bytes", read_changed)
+        generations.copy(root)
+        assert copied == ["paper.md"]
+        assert generations.current is not None
+        assert (generations.current / "chat/transcript.jsonl").samefile(
+            previous / "chat/transcript.jsonl"
+        )
+        assert (previous / "paper.md").read_text() == "original"
+        assert (generations.current / "paper.md").read_text() == "updated"
+        current = generations.current
+        generations.copy(root)
+        assert generations.current == current
+        assert copied == ["paper.md"]
+
+
+def test_display_readers_do_not_register_generation_paths(tmp_path):
+    from rcp.transport import generations, state
+
+    owners, locks = len(generations._OWNERS), len(state._SNAPSHOT_LOCKS)
+    for index in range(20):
+        root = tmp_path / str(index)
+        LocalStateWorkspace(root, str(root), display_reader=True)
+    assert len(generations._OWNERS) == owners
+    assert len(state._SNAPSHOT_LOCKS) == locks
+
+
+def test_capture_skips_busy_writer_without_changing_health(tmp_path, monkeypatch):
+    from rcp.transport import state
+
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    monkeypatch.setattr(state, "STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS", 0)
+    before = workspace.sync_health()
+    with workspace.snapshot_lock, ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(workspace.capture).result(timeout=5) is False
+    assert workspace.sync_health() == before
+
+
+def test_capture_rsync_links_to_current_generation(tmp_path, monkeypatch):
+    from rcp.transport import state_transfer
+
+    root = tmp_path / "mirror"
+    root.mkdir()
+    (root / "paper.md").write_text("retained")
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    workspace._generations.copy(root)
+    calls = []
+    monkeypatch.setattr(
+        state_transfer,
+        "run_rsync",
+        lambda host, argv, **kwargs: calls.append(argv) or _successful_process(argv),
+    )
+    workspace._pull_remote_tree(workspace._generations.stage())
+    assert f"--link-dest={workspace._generations.current}" in calls[0]
+    workspace._pull_remote_tree(root)
+    assert not any(arg.startswith("--link-dest") for arg in calls[1])
+
+
+def test_generation_flushes_data_and_descriptor_before_selection(tmp_path, monkeypatch):
+    from rcp.transport.generations import ReadGenerations
+
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "paper.md").write_text("durable")
+    generations = ReadGenerations(root)
+    synced = []
+    fsync = os.fsync
+    replace = Path.replace
+
+    def flush(descriptor):
+        synced.append(os.fstat(descriptor).st_ino)
+        fsync(descriptor)
+
+    def select(path, destination):
+        if path.name == ".current.tmp":
+            descriptor = json.loads(path.read_text())
+            stage = generations.directory / descriptor["directory"]
+            assert (stage / "paper.md").stat().st_ino in synced
+            assert stage.stat().st_ino in synced
+            assert path.stat().st_ino in synced
+        return replace(path, destination)
+
+    monkeypatch.setattr(os, "fsync", flush)
+    monkeypatch.setattr(Path, "replace", select)
+    generations.copy(root)
+    assert generations.current is not None

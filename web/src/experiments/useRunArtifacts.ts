@@ -1,47 +1,25 @@
-import { useEffect, useState } from "react";
-import { api } from "../core/api";
+import { useId } from "react";
+import { runArtifactsProfile } from "../artifacts/artifactResources";
 import { errorMessage } from "../core/errors";
-import { orderRunArtifacts } from "./runArtifactsModel";
-import type { RunArtifactEntry } from "../core/types";
+import { resourceKeyId } from "../core/resourceStore";
+import { useResource, useRefreshRuntime } from "../core/useResource";
 
 export function useRunArtifacts(
-  apiBase: string,
+  projectId: string | undefined,
   episodeId: string | undefined,
   visible: boolean,
-  revision: string,
 ) {
-  const key = `${apiBase}:${episodeId ?? ""}`;
-  const [result, setResult] = useState<{
-    key: string;
-    artifacts: RunArtifactEntry[];
-    error: string | null;
-  } | null>(null);
-  const [retry, setRetry] = useState(0);
-  useEffect(() => {
-    if (!visible || !episodeId) return;
-    const controller = new AbortController();
-    void api<RunArtifactEntry[]>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/artifacts`, {
-      signal: controller.signal,
-    }).then(
-      (artifacts) => {
-        if (!controller.signal.aborted)
-          setResult({ key, artifacts: orderRunArtifacts(artifacts), error: null });
-      },
-      (failure) => {
-        if (!controller.signal.aborted)
-          setResult((previous) => ({
-            key,
-            artifacts: previous?.key === key ? previous.artifacts : [],
-            error: errorMessage(failure),
-          }));
-      },
-    );
-    return () => controller.abort();
-  }, [apiBase, episodeId, visible, revision, key, retry]);
+  const owner = useId();
+  const { store } = useRefreshRuntime();
+  const profile =
+    projectId && episodeId && visible ? runArtifactsProfile(projectId, episodeId) : null;
+  const resource = useResource(owner, profile);
   return {
-    artifacts: result?.key === key ? result.artifacts : [],
-    error: result?.key === key ? result.error : null,
-    loading: Boolean(visible && episodeId && result?.key !== key),
-    reload: () => setRetry((value) => value + 1),
+    artifacts: resource.value ?? [],
+    error: resource.error ? errorMessage(resource.error) : null,
+    loading: Boolean(profile && resource.value === undefined && !resource.error),
+    reload: () => {
+      if (profile) store.invalidate(resourceKeyId(profile.key));
+    },
   };
 }

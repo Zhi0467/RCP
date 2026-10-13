@@ -1,10 +1,16 @@
-import { graphSessionKey, graphTargetUrl, MAIN_GRAPH } from "../core/graphTarget";
+import { graphSessionKey, MAIN_GRAPH } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "../core/api";
+import { useResource } from "../core/useResource";
+import { historyProfile } from "./graphResources";
 import type { RevisionSummary, ValidationMessage } from "../core/types";
 
-export interface ProjectHistorySnapshot {
+export interface ProjectHistoryUiState {
+  projectHistoryOpen: boolean;
+  dismissedHistoryNoticeIds: Set<string>;
+}
+
+export interface ProjectHistorySnapshot extends ProjectHistoryUiState {
   latestRevisionSummary: RevisionSummary | null;
   historyRevisionSummaries: RevisionSummary[];
   historySummariesRevision: number | null;
@@ -31,11 +37,10 @@ export function revisionSummariesUrl(apiBase: string, revision?: number): string
 }
 
 export function cloneProjectHistorySnapshot(
-  snapshot: ProjectHistorySnapshot,
-): ProjectHistorySnapshot {
+  snapshot: ProjectHistoryUiState,
+): ProjectHistoryUiState {
   return {
-    ...snapshot,
-    historyRevisionSummaries: [...snapshot.historyRevisionSummaries],
+    projectHistoryOpen: snapshot.projectHistoryOpen,
     dismissedHistoryNoticeIds: new Set(snapshot.dismissedHistoryNoticeIds),
   };
 }
@@ -46,92 +51,34 @@ export function validationNoticeId(message: ValidationMessage): string {
 
 export function useProjectHistory({
   projectId,
-  apiBase,
   graphTarget = MAIN_GRAPH,
   loadedProjectId,
   revision,
-  isActiveProject,
   reportError,
 }: UseProjectHistoryOptions) {
-  const [latestRevisionSummary, setLatestRevisionSummary] = useState<RevisionSummary | null>(null);
-  const [historyRevisionSummaries, setHistoryRevisionSummaries] = useState<RevisionSummary[]>([]);
-  const [historySummariesRevision, setHistorySummariesRevision] = useState<number | null>(null);
-  const [historySummariesError, setHistorySummariesError] = useState<string | null>(null);
   const [projectHistoryOpen, setProjectHistoryOpen] = useState(false);
   const [dismissedHistoryNoticeIds, setDismissedHistoryNoticeIds] = useState<Set<string>>(() =>
     readDismissedHistoryNoticeIds(projectId, graphTarget),
   );
 
+  const latest = useResource(
+    `${projectId}:history-view`,
+    projectId && loadedProjectId === projectId ? historyProfile(projectId, graphTarget) : null,
+  );
+  const history = useResource(
+    `${projectId}:history-panel`,
+    projectId && projectHistoryOpen ? historyProfile(projectId, graphTarget) : null,
+  );
+  const latestRevisionSummary =
+    latest.value?.find((summary) => summary.to_revision === revision) ?? null;
+  const historyRevisionSummaries = useMemo(() => history.value ?? [], [history.value]);
+  const historySummariesRevision = history.value ? revision : null;
+  const historySummariesError = history.error ? String(history.error) : null;
   useEffect(() => {
-    if (!projectId || !apiBase || loadedProjectId !== projectId) return;
-    const requestedProjectId = projectId;
-    const requestedRevision = revision;
-    if (requestedRevision === 0) {
-      setLatestRevisionSummary(null);
-      return;
-    }
-    let cancelled = false;
-    setLatestRevisionSummary((current) =>
-      current?.to_revision === requestedRevision ? current : null,
-    );
-    void api<RevisionSummary[]>(
-      graphTargetUrl(revisionSummariesUrl(apiBase, requestedRevision), graphTarget),
-    )
-      .then((summaries) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
-        setLatestRevisionSummary(
-          summaries.find((summary) => summary.to_revision === requestedRevision) ?? null,
-        );
-      })
-      .catch((error) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
-        setLatestRevisionSummary(null);
-        reportError(
-          `Latest project change could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, graphTarget, isActiveProject, revision, loadedProjectId, projectId, reportError]);
-
-  useEffect(() => {
-    if (!projectHistoryOpen || !projectId || !apiBase || loadedProjectId !== projectId) return;
-    const requestedProjectId = projectId;
-    const requestedRevision = revision;
-    let cancelled = false;
-    setHistorySummariesError(null);
-    void api<RevisionSummary[]>(graphTargetUrl(revisionSummariesUrl(apiBase), graphTarget))
-      .then((summaries) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
-        setHistoryRevisionSummaries(summaries);
-        setHistorySummariesRevision(requestedRevision);
-      })
-      .catch((error) => {
-        if (cancelled || !isActiveProject(requestedProjectId)) return;
-        const message = `Project history could not be loaded: ${error instanceof Error ? error.message : String(error)}`;
-        setHistoryRevisionSummaries([]);
-        setHistorySummariesError(message);
-        setHistorySummariesRevision(requestedRevision);
-        reportError(message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    apiBase,
-    graphTarget,
-    isActiveProject,
-    revision,
-    loadedProjectId,
-    projectHistoryOpen,
-    projectId,
-    reportError,
-  ]);
+    if (history.error) reportError(String(history.error));
+  }, [history.error, reportError]);
 
   const openProjectHistory = useCallback(() => {
-    setHistorySummariesRevision(null);
-    setHistorySummariesError(null);
     setProjectHistoryOpen(true);
   }, []);
 
@@ -141,21 +88,13 @@ export function useProjectHistory({
 
   const resetProjectHistory = useCallback(
     (nextProjectId: string | null, nextTarget: GraphTargetRef = MAIN_GRAPH) => {
-      setLatestRevisionSummary(null);
-      setHistoryRevisionSummaries([]);
-      setHistorySummariesRevision(null);
-      setHistorySummariesError(null);
       setProjectHistoryOpen(false);
       setDismissedHistoryNoticeIds(readDismissedHistoryNoticeIds(nextProjectId, nextTarget));
     },
     [],
   );
 
-  const restoreProjectHistory = useCallback((snapshot: ProjectHistorySnapshot) => {
-    setLatestRevisionSummary(snapshot.latestRevisionSummary);
-    setHistoryRevisionSummaries([...snapshot.historyRevisionSummaries]);
-    setHistorySummariesRevision(snapshot.historySummariesRevision);
-    setHistorySummariesError(snapshot.historySummariesError);
+  const restoreProjectHistory = useCallback((snapshot: ProjectHistoryUiState) => {
     setProjectHistoryOpen(snapshot.projectHistoryOpen);
     setDismissedHistoryNoticeIds(new Set(snapshot.dismissedHistoryNoticeIds));
   }, []);

@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import Mapping
-from contextlib import nullcontext
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, nullcontext
+from copy import copy
 from pathlib import Path
 from typing import Annotated, Literal, cast
 from urllib.parse import quote, urlencode
@@ -21,7 +22,6 @@ from rcp.api.dependencies import (
     get_experiment_admission,
     get_graph_service,
     get_identity_access,
-    get_project_service,
     get_store,
     get_watcher_delivery,
     project_write_admission,
@@ -352,7 +352,9 @@ def start_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return _agent_task_response(store, record, background_tasks)
-            service = get_graph_service(catalog, project_id, branch_id)
+            service = get_graph_service(
+                catalog, project_id, branch_id, initialize=False, write=True
+            )
             if branch_id is not None and kind not in {"node_chat", "project_chat"}:
                 raise HTTPException(
                     status_code=422,
@@ -360,15 +362,16 @@ def start_agent_task(
                 )
             chat_admission_lock = None
             try:
-                request = _validated_task_request(service, kind, body)
-                if isinstance(request, RunRequest):
-                    request = _admit_artifact_context_request(
-                        store,
-                        service,
-                        project_id,
-                        kind,
-                        request,
-                    )
+                with _task_preparation_service(service) as reader:
+                    request = _validated_task_request(reader, kind, body)
+                    if isinstance(request, RunRequest):
+                        request = _admit_artifact_context_request(
+                            store,
+                            reader,
+                            project_id,
+                            kind,
+                            request,
+                        )
                 if task_graph_capable(kind, request):
                     require_graph_edit_admission(
                         store, catalog.resolve_project_id(project_id), service.history.graph_target
@@ -477,6 +480,8 @@ def start_agent_task(
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             except ClientRequestConflict:
                 raise
+            except StateUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             finally:
@@ -594,7 +599,7 @@ def steer_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    service = get_graph_service(catalog, project_id, record.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, record.graph_target.branch_id, write=True)
     try:
         with project_write_admission(project_id, http_request):
             delivery = begin_chat_steer(
@@ -862,7 +867,7 @@ def pause_agent_task(
     store: StoreDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
-    get_project_service(catalog, project_id)
+    require_registered_project(catalog, project_id)
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
@@ -888,6 +893,7 @@ def resume_agent_task(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
     experiment_admission: ExperimentAdmissionDependency,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
@@ -899,19 +905,36 @@ def resume_agent_task(
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    project_id = catalog.resolve_project_id(project_id)
     try:
-        experiment_admission.require_current(service, previous.request)
-        skills = _validate_stored_task_request(service, previous.kind, previous.request)
-        with _chat_recovery_admission(service, store, previous):
-            return background_tasks.resume(
-                operation_id,
-                skills=skills,
-                authorized_by=authorized_by,
-            ).model_dump(mode="json")
-    except OSError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
+        with store.client_request_admission(
+            project_id,
+            authorized_by.user_id,
+            str(idempotency_key) if idempotency_key is not None else None,
+            f"tasks/{operation_id}/resume",
+        ) as existing:
+            if existing is not None:
+                record = store.agent_task(existing.operation_id or "")
+                assert record is not None
+                return record.model_dump(mode="json")
+            service = get_graph_service(
+                catalog, project_id, previous.graph_target.branch_id, initialize=False, write=True
+            )
+            try:
+                with _task_preparation_service(service) as reader:
+                    experiment_admission.require_current(reader, previous.request)
+                    skills = _validate_stored_task_request(reader, previous.kind, previous.request)
+                with _chat_recovery_admission(service, store, previous):
+                    return background_tasks.resume(
+                        operation_id,
+                        skills=skills,
+                        authorized_by=authorized_by,
+                    ).model_dump(mode="json")
+            except (OSError, StateUnavailable) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
@@ -945,7 +968,7 @@ def repair_agent_task_graph_update(
         if task_graph_capable(previous.kind, previous.request)
         else None
     )
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id, write=True)
     try:
         experiment_admission.require_current(service, previous.request)
         with _chat_recovery_admission(service, store, previous):
@@ -983,7 +1006,7 @@ def apply_agent_task_graph_update_again(
     if not task_graph_capable(previous.kind, previous.request):
         raise HTTPException(status_code=409, detail="This task cannot change the graph.")
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id, write=True)
     target = service.history.graph_target
     require_graph_edit_admission(store, catalog.resolve_project_id(project_id), target)
     try:
@@ -1024,6 +1047,7 @@ def retry_agent_task(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
     experiment_admission: ExperimentAdmissionDependency,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
@@ -1035,64 +1059,94 @@ def retry_agent_task(
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    project_id = catalog.resolve_project_id(project_id)
     try:
-        overrides = body.model_dump(exclude_none=True) if body is not None else {}
-        if previous.kind == "auto_research":
-            candidate = load_stored_request(
-                AutoResearchRunRequest,
-                {**previous.request, **overrides},
-                operation_id=previous.operation_id,
+        with store.client_request_admission(
+            project_id,
+            authorized_by.user_id,
+            str(idempotency_key) if idempotency_key is not None else None,
+            f"tasks/{operation_id}/retry",
+        ) as existing:
+            if existing is not None:
+                record = store.agent_task(existing.operation_id or "")
+                assert record is not None
+                return record.model_dump(mode="json")
+            service = get_graph_service(
+                catalog, project_id, previous.graph_target.branch_id, initialize=False, write=True
             )
-        else:
-            request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
-            candidate = load_stored_request(
-                request_type,
-                {**previous.request, **overrides, "session_id": None},
-                operation_id=previous.operation_id,
-            )
-        if isinstance(candidate, RunRequest) and candidate.artifact_edit is None:
-            candidate = _admit_artifact_context_request(
-                store,
-                service,
-                project_id,
-                previous.kind,
-                candidate,
-            )
-            if candidate.artifact_context is not None:
-                overrides.update(
-                    {
-                        "provider": candidate.provider,
-                        "model": candidate.model,
-                        "reasoning": candidate.reasoning,
-                        "run_on": candidate.run_on,
-                    }
-                )
-        candidate_payload = candidate.model_dump(mode="json")
-        experiment_admission.require_current(service, candidate_payload)
-        skills = _validate_stored_task_request(
-            service,
-            previous.kind,
-            candidate_payload,
-        )
-        if previous.kind == "auto_research":
-            return background_tasks.retry_auto_research(
-                operation_id,
-                service=service,
-                skills=skills,
-                **overrides,
-            ).model_dump(mode="json")
-        with _chat_recovery_admission(service, store, previous, candidate):
-            return background_tasks.retry(
-                operation_id,
-                skills=skills,
-                authorized_by=authorized_by,
-                **overrides,
-            ).model_dump(mode="json")
-    except OSError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
+            try:
+                overrides = body.model_dump(exclude_none=True) if body is not None else {}
+                if previous.kind == "auto_research":
+                    candidate = load_stored_request(
+                        AutoResearchRunRequest,
+                        {**previous.request, **overrides},
+                        operation_id=previous.operation_id,
+                    )
+                else:
+                    request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
+                    candidate = load_stored_request(
+                        request_type,
+                        {**previous.request, **overrides, "session_id": None},
+                        operation_id=previous.operation_id,
+                    )
+                with _task_preparation_service(service) as reader:
+                    if isinstance(candidate, RunRequest) and candidate.artifact_edit is None:
+                        candidate = _admit_artifact_context_request(
+                            store,
+                            reader,
+                            project_id,
+                            previous.kind,
+                            candidate,
+                        )
+                        if candidate.artifact_context is not None:
+                            overrides.update(
+                                {
+                                    "provider": candidate.provider,
+                                    "model": candidate.model,
+                                    "reasoning": candidate.reasoning,
+                                    "run_on": candidate.run_on,
+                                }
+                            )
+                    candidate_payload = candidate.model_dump(mode="json")
+                    experiment_admission.require_current(reader, candidate_payload)
+                    skills = _validate_stored_task_request(
+                        reader,
+                        previous.kind,
+                        candidate_payload,
+                    )
+                if previous.kind == "auto_research":
+                    return background_tasks.retry_auto_research(
+                        operation_id,
+                        service=service,
+                        skills=skills,
+                        **overrides,
+                    ).model_dump(mode="json")
+                assert isinstance(candidate, (RunRequest, CoachRequest))
+                with _chat_recovery_admission(service, store, previous, candidate):
+                    return background_tasks.retry(
+                        operation_id,
+                        skills=skills,
+                        authorized_by=authorized_by,
+                        **overrides,
+                    ).model_dump(mode="json")
+            except (OSError, StateUnavailable) as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@contextmanager
+def _task_preparation_service(service: ProjectService) -> Iterator[ProjectService]:
+    """Resolve one remote request from a pinned generation; execution keeps its owner."""
+    if not service.history.workspace.remote:
+        yield service
+        return
+    with service.history.read_view() as history:
+        reader = copy(service)
+        reader.history = history
+        yield reader
 
 
 def _chat_recovery_admission(

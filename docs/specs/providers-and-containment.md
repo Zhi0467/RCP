@@ -7,43 +7,22 @@ separate and defined in [Authority and Proposals](authority-and-proposals.md).
 
 ## Fixed task capabilities
 
-Run policy has explicit modules for Seed/Refresh, Discuss, Work,
-Experiment-loop, Auto-research orchestration, graph merge, correction, and Paper
-coaching. Shared launch, event, stage, and receipt plumbing never chooses policy
-from a generic surface discriminator.
+Capabilities are fixed by each run owner; shared launch plumbing does not select
+policy. [Authority and Proposals](authority-and-proposals.md) owns graph authority.
 
-Capabilities are fixed in code:
+| Run | Operational contract |
+| --- | --- |
+| Seed/Refresh | Read provider logs and repositories; write scratch Patch only. |
+| Discuss | Writable conversation scratch, read-only project context, public web; human chats may ask and query graph history. No active Patch contract. |
+| Work | Noninteractive tools, public web, exact repository roots, optional Patch. [Consolidation](graph-consolidation-and-lessons.md) may commit keyed Patches during its turn. |
+| Experiment-loop | Work-like access with focused Experiment and watcher authority. |
+| Auto-research orchestrate | Work-like access, staged command client, orchestrator graph profile. |
+| Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
+| Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
+| Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
+| Paper coach | Read-only; no graph, draft-write or Apply channel. |
 
-- **Seed/Refresh** reads configured provider logs and project repositories and
-  writes only its RCP scratch Patch.
-- **Discuss** has writable conversation scratch, read-only project reasoning,
-  public-web tools, and no active Patch contract. Human conversation turns receive
-  only `ask` through the broker command mailbox, including a chat composer's
-  artifact comment; an origin-bound viewer edit receives no commands.
-- **Work** has noninteractive project operational tools, public-web tools, exact
-  project repository write roots, and one optional semantic Patch. A nightly
-  consolidation turn is Work that may also commit keyed Patches inside the turn
-  ([graph consolidation](graph-consolidation-and-lessons.md)).
-- **Experiment-loop** uses Work-like operational access with its dedicated
-  focused-Experiment graph and watcher contract.
-- **Auto-research orchestrate** uses Work-like project repository access plus
-  its dedicated staged command client and orchestrator graph profile.
-- **episode merge** writes its scratch candidate. It receives no repository
-  write roots unless it lands episode code; then it receives exactly chat
-  Integrate's local-merge roots, the episode worktree and the shared checkout.
-- **generic graph correction** rewrites only retained scratch output; Work-like
-  correction retains the same native session and the same exact Work write
-  scope so it can repair reflection without repeating operational effects.
-- **Artifact edit** revokes the retained operational contract and uses Discuss
-  capability with writable scratch only. Its admitted request fixes the exact
-  session, stage, version base, and reply destination; it carries no master or
-  operational commands. A chat-master artifact commented from the viewer instead
-  uses ordinary Discuss; one commented from a chat composer is that chat's
-  ordinary Discuss or Work turn with the same capability as any other.
-- **Paper coach** is read-only and has no graph, draft-write, or Apply channel.
-
-The manifest and selected skills may choose execution details or add guidance;
-they cannot widen or narrow these capabilities.
+Manifest settings and skills select execution details and methods, not capability.
 
 ## Machine provider settings
 
@@ -72,362 +51,236 @@ default hold.
 
 ## Member terminals
 
-`terminals/` owns member shell sessions separately from provider tasks. A session
-runs as the local service account or remote execution account, in the same
-registered checkout used by agents,
-with the Work turn's trust boundary. Where supported, its mount namespace provides
-accident resistance to a wrong-directory mistake, never isolation from the
-service account or a security boundary against a deliberate member. Read access to a Git deploy key conveys
-its write authority; exposing the key read-only does not keep it secret.
+`terminals/` owns member shells separately from provider tasks. Membership gates
+the route. Shells run as the local service or remote execution account in a
+registered checkout. They create no agent task, Patch or research receipt.
 
-A small terminal backend registry owns an id, display name, and
-`supports(os_name, is_remote)` predicate per backend, following the compute
-backend pattern. Selection is per machine and independent of space kind:
+**Why:** Members are trusted on their project's host. A terminal removes the
+agent intermediary from authority Work already gives them. Mount restrictions
+resist mistakes, not deliberate use of the service account; real isolation would
+need a separate identity, clone and credential broker. Revisit this boundary if
+Work gains real isolation or membership includes people untrusted on the host.
+Read-only access to a deploy key still conveys its transport authority.
 
-- Linux with usable `systemd-run`, `systemctl`, `findmnt`, and a reachable
-  user manager reports `mirrored`. Lingering is deliberately not required: the
-  PTY lives inside the session that owns a session-scoped manager, which runs
-  transient units and tears down with the link. A manager reporting `degraded`
-  still answers and still launches.
-- `--expand-environment=no` exists only from systemd 254. A probe reports the
-  manager's version and a launch passes the option only where it exists; below
-  it, the launch refuses any path or value containing `$` rather than running
-  under an expansion it cannot disable. The shipped preflight also sets a value
-  and reads it back, so a manager that rewrote the command line is caught
-  whatever version it reports. A transient unit is built over D-Bus rather than
-  parsed from a unit file and receives no `%` specifier expansion, so registered
-  paths are passed through exactly as they are; doubling a literal percent
-  instead makes the working directory unreachable.
-- Every machine requires an executable `/bin/bash` before it is offered at all.
-  The cooperative helper writes its readiness marker before replacing itself
-  with the shell, so an unrunnable shell would otherwise admit a session that
-  is already gone.
-- Other operating systems, including macOS, report `cooperative` and use a
-  plain PTY in the registered repository. Canonical-state protection is
-  unavailable on that machine: there is no canonical-state fence.
-- A machine with a non-empty `host` uses its probed remote OS, never the OS of
-  the RCP process. A source-shipped Python probe checks the execution account's
-  tools and user manager, and reports the account it actually answered as. An
-  SSH destination that carries no user takes its account from the client's SSH
-  configuration, so a machine answering as an account other than its registered
-  `os_account` is refused rather than offered: the shell would hold the wrong
-  home, credentials and write authority, and the mount profile was computed for
-  the registered account. A machine with no registered account has nothing to
-  compare and is not refused on this ground. The probe's answer is cached for
-  the manager's lifetime, so the launch verifies the account again inside the
-  connection that runs the shell, and refuses there too. The shared SSH failure vocabulary distinguishes
-  unreachable, authentication failed, host key failed, and reachable but
-  incapable machines, with the actual diagnostic.
+Backend selection is per machine, independent of space and compute readiness:
 
-The `containment` field reuses compute's `mirrored` / `cooperative` vocabulary;
-those labels do not make the terminal mount profile a security boundary.
-Linux with missing tools or an unusable user manager is unavailable, with the
-prerequisite diagnostic. Cooperative is selected by OS, never after a mirrored
-launch or probe fails. Terminal capability does not reuse compute readiness.
-A non-Linux remote selects cooperative only after its OS is known.
+- Linux requires `systemd-run`, `systemctl`, `findmnt`, a reachable user manager
+  and `/bin/bash`, and reports `mirrored`. A degraded manager is usable. Linger
+  is unnecessary for a PTY tied to its owning session.
+- Other known operating systems use a plain PTY and report `cooperative`, with
+  canonical-state protection explicitly unavailable. A failed Linux probe or
+  mirrored launch never downgrades to cooperative.
+- Remote selection probes the remote OS and account. A nonempty registered
+  `os_account` must match both the cached probe and the launch connection.
+  Failures distinguish unreachable, authentication, host-key and prerequisite
+  errors. Every backend requires executable `/bin/bash` before admission.
 
-Remote launches allocate a PTY through SSH and ship the remote launcher module's
-source. Local and remote launchers share `terminals/profile.py` for the scrubbed
-shell and mirrored profile rather than maintaining a second set of mount properties.
-Remote canonicalization uses `protected_repository_paths` with `remote_stage`,
-so declared paths and remote symlink targets receive the same refusal checks.
-An explicit shell completion marker distinguishes a shell exiting 255 from an
-SSH connection failure; exit 255 without completion reports the lost link and
-ends the session. RCP never reconnects into a replacement shell.
+The mirrored profile uses `systemd-run --user --pty`, `ProtectHome=tmpfs`,
+`ProtectSystem=strict`, writable binds for the checkout and machine grants,
+and read-only Git configuration/credentials not covered by grants. It shares
+the host's `/tmp`. `protected_repository_paths` protects declared and resolved
+`.research` paths, including read-only empty mounts for absent directories.
+Overlapping or canonical-state repository roots are refused.
 
-Ending a mirrored remote session confirms that its unit stopped, through one
-explicit remote stop over a fresh connection. A stop that cannot be confirmed
-leaves the session record unfinished, so the next startup reconciles that unit
-instead of skipping it. A session whose SSH has already exited is confirmed the
-same way: the supervisor writes its completion marker before the cleanup that
-can still fail, and reports that failure only through an exit status a dropped
-link produces too, so neither says whether the unit went with the shell. Server
-shutdown skips the round trip and leaves the same unfinished record rather than
-waiting on the network.
+The launched profile must prove that each write root is writable and each
+protected path exists, refuses writes and has a read-only mount (`findmnt`).
+Only its readiness marker admits the PTY. Unsupported properties fail visibly.
+Both backends use the repository cwd, `env -i`, and no startup scripts or saved
+history; cooperative sessions perform no mount preflight.
 
-The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
-with `ProtectHome=tmpfs`, `BindPaths` for the selected repository and for the
-machine's writable paths (below), and `BindReadOnlyPaths` plus `ReadOnlyPaths`
-for existing Git configuration and credentials not covered by a writable path.
-`ProtectSystem=strict` provides accident resistance to writes in the wrong
-place, not isolation from the service account. The shell shares the real
-`/tmp` with agents on that machine. Before the interactive shell starts, the
-same launched profile checks that the checkout and every writable path are
-writable and that every protected path exists,
-rejects writes, and reports a read-only effective mount through `findmnt`.
-The PTY owner requires this check's readiness marker; an active unit alone does
-not admit a session. Unsupported mount properties or failed verification refuse
-launch with the real diagnostic. There is no cooperative retry or downgrade.
+systemd 254 or newer receives `--expand-environment=no`; older versions refuse
+values containing `$`. Preflight also checks literal value preservation. D-Bus
+transient units do not expand `%` specifiers, so paths are not percent-escaped.
+Local and remote launchers share `terminals/profile.py`; remote Python source
+is shipped, and canonicalization uses the remote stage's path resolver.
 
-For mirrored sessions, canonical-state writes are refused through
-`agents/write_scope.py`'s shared `protected_repository_paths` construction,
-including declared and canonicalized `.research` paths for registered
-repositories on the execution machine. These paths receive read-only mounts
-even beneath the writable checkout. Absent protected directories receive read-only empty mounts so absence
-cannot turn a deny into write access. An overlapping or canonical-state
-repository root is refused. These filesystem-view restrictions provide accident
-resistance against corruption; the retained service identity does not prevent
-deliberate action by a member.
+A completion marker distinguishes shell exit 255 from lost SSH. A lost session
+ends rather than reconnecting to a replacement shell. Mirrored remote cleanup
+confirms unit termination over a fresh connection, even after SSH exited.
+Unconfirmed stops remain unfinished for startup reconciliation. Shutdown leaves
+that record instead of waiting on the network.
 
-Both backends preserve the repository working directory, `env -i` environment
-scrubbing, and shells without startup scripts or history persistence. Cooperative
-sessions apply no mount properties or mount preflight and explicitly report the
-missing canonical-state protection in the session payload and terminal view.
-
-A live Work turn in the same checkout is projected as a warning with its task
-identity and does not block opening a terminal. Git's index locking remains the
-ordinary collision mechanism. Terminals create no agent task, Patch, or research
-receipt.
+An active Work turn in the checkout is a warning, not an admission block.
+Git index locking handles ordinary collisions.
 
 ## Task-engine ownership
 
-`BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,
-Experiment recovery, watcher admission, and report owners intentionally share
-named calls with it. These are navigational module boundaries, not plugins.
-Add no `kind`, `patch_kind`, or request-subtype branch to the engine unless the
-change removes an existing exception or the rule belongs to universal task-row
-construction. A feature touching three or more engine entry points requires
-moving one complete policy decision to its concrete owner; do not manufacture
-a registry, facade, callback bus, or event bus to hide the coupling.
+`BackgroundAgentTasks` owns common launch/runtime plumbing. Concrete owners keep
+Auto-research, Experiment recovery, watcher admission and report policy. Follow
+[AGENTS.md](../../AGENTS.md#cross-cutting-implementation-rules) for shared-code
+boundaries. A change touching three or more engine entry points must move one
+complete policy decision to its owner, not hide coupling behind a registry or bus.
 
-An orchestrator-triggered chat is specialized child Work only when its durable
-child-route row exists. Missing route identity intentionally follows ordinary
-Work for compatibility; changing that to a failure requires a product decision.
-The [backend structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md)
-records the accepted coupling and rejected extractions.
+An orchestrator-triggered chat is child Work only with a durable child-route row;
+missing identity follows ordinary Work. The
+[structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md)
+records the accepted coupling.
 
 ## Provider runtime selection
 
-Each project agent profile selects a provider-owned runtime. An omitted value is
-backward compatible: Codex uses `exec`, Claude uses `stream-json`, and OpenCode
-uses `run-json`. Provider
-readiness exports the allowed names and the one an omitted value resolves to;
-project setup and Project Settings render those answers, and the backend
-validates the saved provider/runtime pair. No surface derives that default from
-the order of the exported names. A profile always carries a resolved runtime, so
-no selection surface stages or shows an empty one. A task request cannot
-override the profile's runtime. The selected profile runtime applies to every
-capability launched through that profile, so one `node_chat` choice covers both
-Discuss and Work while their distinct capability contracts remain fixed in code.
+Each project profile selects a provider-owned runtime. Defaults are Codex `exec`,
+Claude `stream-json`, and OpenCode `run-json`; Codex also offers `app-server`.
+Readiness exports choices and the explicit default. Settings validates the pair,
+profiles always resolve a runtime, and task requests cannot override it. One
+profile's runtime covers all its capabilities, including Discuss and Work.
 
-Codex additionally offers `app-server`. RCP starts one fresh stdio app-server
-process for each provider turn and uses the same shared local/SSH launcher,
-process control, invocation gate, exact permission profile, event normalization,
-usage accounting, and cleanup as `exec`. Provider threads remain persisted by
-Codex, so a local app-server-created conversation can appear in Codex Desktop.
-That visibility is provider-owned inspection; RCP does not order, take over, or
-coordinate Desktop tasks.
+The current profile preference applies on every invocation, even when resuming
+a native session. Tasks and Paper writing sessions record the actual runtime.
+Codex app-server uses one fresh stdio process per turn, with shared local/SSH
+launching, permissions, process control, usage and cleanup. Its persisted
+threads may appear in Codex Desktop; RCP does not coordinate Desktop tasks.
 
-App-server usage counts the change in `tokenUsage.total` from the same thread's
-pre-turn resume snapshot (zero for a fresh thread) to the active turn's final
-snapshot. `last` covers only one model response, not a whole agent turn. Repeated
-snapshots replace the current total; they are never summed. Other threads and
-other active turn ids cannot contribute usage. A failed terminal turn retains
-its last observed usage. New reports use `codex.app-server.turn.v2`; existing v1
-records remain historical observations and are not guessed or rewritten.
+App-server may use exec on the same machine and native thread only before the
+new prompt could reach Codex. RCP records the actual runtime before the
+`turn/start` write. Afterwards failure remains an interrupted or failed attempt.
+A pre-prompt substitution records the passed-over runtime and diagnostic without
+failing the human's turn. The capability, stage and scope do not change.
 
-Native Codex subagents are available in both runtimes. App-server clears ambient
-custom-role files and instructions while retaining native delegation and the
-parent's provider-enforced permissions. Child notifications cannot supply the
-parent's answer or end its turn. Codex usage totals cover the parent agent only;
-neither runtime's parent summary includes descendant usage. RCP does not crawl
-Codex's private transcript/database formats to reconstruct that missing total.
+**Why:** Runtime is a profile preference, not permanent session identity.
+Binding it to a session would prevent configuration changes taking effect on
+resume. The prompt-delivery boundary prevents fallback from duplicating work.
 
-Every provider contract carries one shared fact: provider-native subagents must
-finish inside the turn. Wait for their results before replying. Only helper and
-scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle.
-RCP does not track descendants or hold a completed turn for them.
+App-server usage is the change in a thread's `tokenUsage.total` between its
+pre-turn resume snapshot (zero when fresh) and active turn's final snapshot.
+Snapshots replace totals, never sum them; other threads/turns contribute nothing.
+A failed turn retains observed usage. Reports use `codex.app-server.turn.v2`;
+older observations are not rewritten. `last` counts one model response only.
 
-Every local and remote Claude launch sets
-`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Claude subagents run in the foreground.
-Parallel Agent calls still work.
+Both Codex runtimes support native subagents. App-server clears ambient custom
+roles/instructions but retains delegation and parent permissions. Child notices
+cannot answer or end the parent turn. Usage covers the parent only; RCP does not
+read private transcripts to reconstruct descendant totals. Contracts require
+native subagents to finish before the reply; RCP neither tracks nor waits for
+descendants. Only helper/scheduler jobs outlive turns; RCP workers have their
+own lifecycle. Claude launches set `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`,
+keeping subagents foreground while allowing parallel Agent calls.
 
-Codex exec `error` events are retry traces. `turn.failed` or a non-zero exit
-ends a failed turn. Without `turn.failed`, the last retry error supplies the
-failure text on non-zero exit. The live decoder, host fence, and recorded replay
-treat retry notices as traces. Recovery still fails a journal with no terminal
-event without finalizing it, because the host snapshots deliverables only at a
-terminal event; the stage keeps its patch text.
+Codex exec `error` events are retry traces. `turn.failed` or nonzero exit fails
+the turn; without `turn.failed`, the last retry error explains a nonzero exit.
+The live decoder, remote fence and replay share this rule. A journal without a
+terminal event cannot finalize or claim deliverable snapshots.
 
-The preferred runtime is chosen anew from the current project profile for every
-RCP task invocation, including a continuation of an existing native session. A
-native session is not permanently bound to the runtime that created it. RCP
-records the runtime actually used on the task and, for Paper, on the writing
-session.
+Containment differs by transport: exec disables user config and execpolicy
+rules with `--ignore-user-config` and `--ignore-rules`. App-server supports
+neither flag; RCP overrides capability-bearing keys but cannot disable `.rules`.
 
-Codex app-server may fall back silently to Codex exec on the same local or SSH
-machine only while failure is known to precede delivery of the new prompt. RCP
-checkpoints the actual runtime before the write that can deliver that prompt.
-Once `turn/start` may have been accepted, failure is retained as an interrupted
-or failed attempt and RCP never retries the prompt through exec. This rule is the
-same for fresh and resumed conversations. Silent means the human's turn is not
-failed, not that the cause is lost: the passed-over runtime and its failure are
-recorded as a task diagnostic, and the runtime that did run is named on the task
-and on the Paper writing session, which is where a substitution becomes visible.
-
-Containment differs by runtime because the transports differ. `exec` refuses the
-whole user config file and its execpolicy `.rules` files with `--ignore-user-config`
-and `--ignore-rules`. `app-server` accepts neither flag, so RCP names each
-capability-bearing config key instead, and cannot disable `.rules` at all.
-
-The recorded actual runtime also decides live human steering support. Codex
-app-server accepts `turn/steer` against the recorded thread and active turn id;
-`expectedTurnId` is the provider's precondition. Claude stream-json keeps stdin
-open and launches with `--replay-user-messages`; each additional user message
-with an RCP-generated UUID is delivered to the running attempt, and Claude
-decides its placement by timing: a message that arrives while a tool call is
-running joins that turn and is attributed to its result, otherwise it runs as
-the next turn in the same session. RCP promises delivery, not placement. Each
-runtime declares its steering behavior and composer action label. Codex exec has no inbound channel,
-including when it was selected by the pre-prompt fallback. The backend publishes the disabled reason
-for an unsupported runtime instead of offering a send that cannot be delivered.
+[Live steering](#live-human-steering) follows the actual runtime. App-server
+uses `turn/steer` with `expectedTurnId`. Claude stream-json retains stdin and
+uses `--replay-user-messages`; Claude decides whether a message joins the running
+turn or becomes its next turn. Exec, including a pre-prompt fallback, cannot
+receive input. The backend publishes each runtime's action label and refusal
+reason.
 
 ## Cooperative project write containment
 
-Work-like provider launches are guarded against accidental writes into another
-project. The users, team members, prompts, and project inputs in this model are
-cooperative. RCP does not claim hostile same-account process isolation,
-cross-project read secrecy, a general OS sandbox, network confinement, or
-resource supervision.
+Project write scope protects cooperative users from accidental writes. It is
+not same-account isolation, read secrecy, a general sandbox, network confinement
+or resource supervision; see [design boundaries](../design.md#cross-cutting-invariants).
 
-Selected-secret hiding is a separate read policy for supported launches, including
-Discuss, Work, Experiment, orchestration, ingestion, correction, consolidation,
-and paper coaching. One immutable `HiddenReadScope` is resolved after launch-host
-key confirmation, before provider or browser preparation. Prompts render that
-same scope and its effective status. This targets generic network prompt
-injection; research data remains readable. It does not add same-account isolation
-or restrict network, Git, browser, SSH, Slurm, GPUs, or process managers.
+Selected-secret hiding is a separate read policy. After launch-host key
+confirmation, RCP resolves one immutable `HiddenReadScope` before provider or
+browser preparation. Prompts render its exact paths and effective status for
+Discuss, Work, Experiment, orchestration, ingestion, correction, consolidation
+and Paper.
 
-Code owns the default directories, literal files, and globs: RCP database and
-backup/checkpoint copies, provider credential stores and login files, command-mailbox
-checkpoints, service connection keys, the remote Claude setup token, private control sockets, and
-selected WebKit storage. Deploy keys and private `~/.ssh/id_*` identities enter
-the scope only after their decoded public-key SHA256 fingerprint is listed by
-the appropriate agent and a bounded signing check passes. Missing or stale public
-keys and failed confirmation leave the key readable with a reason in Settings
-and doctor. Public keys, SSH configuration, and `known_hosts` remain readable.
-A folder containing an exempt key must never be masked.
+Code defaults cover RCP databases/backups/checkpoints, provider credentials,
+mailbox checkpoints, service keys, remote Claude tokens, private sockets and
+selected WebKit storage. Private SSH identities and deploy keys are hidden only
+after the right agent lists their decoded public-key SHA256 fingerprint and a
+bounded signing check succeeds. Missing/stale public keys or failed confirmation
+leave keys readable with a Settings/doctor reason. Public keys, SSH config and
+known hosts stay readable; parents containing exempt keys cannot be masked.
 
-Settings adds per-machine hidden folders to the code defaults. The shared host
-validator bounds a machine to 64 absolute folders, canonicalizes them, and
-rejects overlap in either direction with checkouts, stages, required tools,
-provider binaries and command sockets. Launch rechecks: a saved folder that has
-since come to cover a required path is dropped alone with
-`hidden_folder_conflict`, and every default stays hidden. These additions live beside machine writable paths, never in
-project manifests; any member may edit them. Tool environments drop names matching the resolved
-deny list (case-insensitive globs of credential-looking names) and keep every
-other variable; provider authentication remains outside the tool wrapper.
-Credential files read directly by ordinary tools, including `~/.config/gh`,
-`~/.netrc`, and `~/.aws`, are not defaults. The macOS Keychain stays open so
-Keychain-backed Git and `gh` continue working.
+Machine Settings accepts at most 64 absolute hidden folders. Host validation
+canonicalizes and rejects overlap with checkouts, stages, tools, binaries,
+command sockets and readable keys. Launch drops a newly conflicting saved folder
+with `hidden_folder_conflict`, preserving code defaults. Any member may edit
+these machine settings; they are not project manifest policy. Tool environments
+drop case-insensitive credential-name globs and retain other variables. Provider
+authentication stays outside the wrapper. Direct-tool credentials such as
+`~/.config/gh`, `~/.netrc` and `~/.aws` are not default denies; Keychain stays open.
 
-Deploy keys use the account's RCP agent at `~/.rcp/ssh-agent/agent.sock`;
-user identities use that account's own `SSH_AUTH_SOCK`. On remote machines, the
-generic launch helper starts the long-lived agent through a systemd user unit
-on Linux or launchd on macOS, on the first launch that needs it. A staged stdlib
-helper loads remote deploy keys and confirms both kinds against their respective agents on every launch.
-Locally, provisioning and restore load newly written deploy keys into the
-running account agent immediately, so confirmation does not require a restart.
+Deploy keys use `~/.rcp/ssh-agent/agent.sock`; user identities use the account's
+`SSH_AUTH_SOCK`. The generic helper starts remote agents via systemd or launchd
+when needed. A staged stdlib helper loads remote deploy keys and confirms both
+agent types each launch. Provisioning/restore loads new local keys into a running
+agent immediately. Git retains private-key transport and adds the stable agent
+when available.
 
-A host without working hiding support runs unhidden and reports the reason in
-Settings and doctor only, without a per-turn trace or badge. The agent prompt
-still states its effective scope and status. Hiding never blocks a launch. See the
-[decision](../decisions/2026-10-04-agent-secret-hiding.md) for the threat model.
+**Why:** This policy targets credential exfiltration prompted by generic untrusted
+web content while retaining network, Git, SSH, schedulers, GPUs and browsers.
+Research data, deliberate escapes through other process owners and targeted
+RCP-content attacks are outside it. An environment allowlist would break lab,
+proxy and compute variables; a denylist accepts unusually named secrets passing
+through. Keychain and directly read tool credentials remain compatibility gaps.
+Missing hiding support never blocks launch: Settings/doctor show the reason,
+prompts state the effective scope, and no per-turn badge or trace is added.
 
-RCP resolves one strict `ProjectWriteScope` before every Work or orchestrate
-launch. It binds:
+RCP derives `ProjectWriteScope` from manifests, catalog, repository pointers,
+lineage and run scope, never from client/provider requests. It binds project,
+execution host/account, capability, exact stage/workspace, admitted aliases and
+canonical roots, protected paths and a stable fingerprint. Prompts render it.
 
-- durable `project_id`;
-- execution machine and host/account identity;
-- capability;
-- exact task stage and workspace;
-- exact admitted run-scope repository aliases and canonical roots on that
-  execution machine;
-- protected RCP-owned write paths; and
-- a stable fingerprint of the canonicalized contract.
+Construction requires a complete valid manifest inventory for every registered
+project. Local manifests come from the opened workspace or registration; remote
+ones use validated canonical mirrors, without a new catalog-wide connectivity
+probe. Relative paths resolve against registered project roots. Snapshot locks
+prevent reading provisional publication/rollback state. Missing inventory fails
+closed.
 
-Work and Auto-research root prompts render these same resolved roots and
-protected paths. Repository pointers do not supply a separate write allowlist.
+The workspace must be inside its exact stage. Roots must belong to the same
+project/alias/machine/host, exist and be writable there. Deduplication never
+replaces roots with a common parent. Host identity comes from catalog/manifest;
+a repository pointer's host describes how the agent reaches it, not ownership.
+Its machine and canonical path must match on the execution host.
 
-Only RCP derives the scope from the manifest, project catalog, repository
-pointers, task/episode lineage, and run scope. A browser, prompt, request body,
-provider, or staged file cannot add a root. Scope construction requires a
-complete inventory of every registered project manifest. Remote projects supply
-their canonical workspace mirror, validated against the registered project and
-state location, including before they are opened. Inventory resolves relative
-local checkout paths against the registered manifest's project root. Local
-projects use their opened canonical manifest or their unopened registration
-manifest. If a required file is unavailable or invalid, the
-Work-like scope and launch fail closed. The existing project workspace lifecycle
-owns remote refresh; inventory construction adds no catalog-wide connectivity
-probe. Canonical manifest reads hold the workspace snapshot lock so an in-flight
-publication or rollback cannot expose a provisional scope to a launch.
-
-The workspace must be within the exact task stage. Repository roots must be
-registered to the same project, alias, execution machine, and host, must exist
-and be writable by the execution account, and are deduplicated without replacing
-them with a common parent. Local and remote resolution use the paths on the
-actual execution machine.
-
-That host comes from the project catalog and manifest. It is never read from the
-repository pointer handed to the agent: a pointer's host states how that agent
-reaches the repository, so it is empty for a repository on the execution machine
-and says nothing about where the machine is. What the scope requires of a
-pointer is its machine and its path, and the path is compared after both are
-canonicalized on the execution machine.
-
-The scope rejects another project's repository, a parent containing several
-projects, the application data directory, SQLite, canonical `.research`, the
-execution account's home directory, and broad temporary directories as
-*repository* roots. Provider authentication/session/cache storage may use the
-provider's own runtime exceptions; those exceptions are not general project
-roots.
+Repository roots cannot be another project's checkout, broad parent/home/temp
+folder, app data, SQLite or canonical `.research`. Provider auth/session/cache
+exceptions are runtime storage, not general project write roots.
 
 ### Watcher commands
 
-A `watch.json` entry's `check_command` and `cancel_command` are not bounded by
-the turn's write scope or by any provider sandbox. RCP runs each one as written
-in a fresh `bash -lic` shell as the execution account, locally or over SSH,
-under the watcher timeout and a process-group kill. Polls continue after the
-turn ends, and a human Cancel runs the entry's `cancel_command`. The commands
-therefore reach everything the execution account can reach
-([decision](../decisions/2026-10-05-watcher-commands-run-outside-the-provider-sandbox.md)).
+`watch.json` check and cancel commands run as written in a fresh `bash -lic`
+as the execution account, locally or over SSH. They are outside provider sandbox
+and turn write scope, bounded only by timeout and process-group termination.
+Human Cancel executes saved agent-authored text with the same account reach.
+
+**Why:** Watchers outlive provider turns and need the observed job's login
+environment, scheduler, network and sockets. A provider sandbox cannot supply
+that contract. This cooperative boundary permits side effects beyond the turn's
+roots and lifetime; hostile-agent containment would require a different owner.
 
 ### Machine writable paths
 
-A scope that writes repositories also receives `granted_roots`: the space
-machine card's writable paths for its execution host and account, plus `/tmp`
-and the local temporary directory. Launches without repository roots (branch
-merge, episode reports, Discuss, ingestion, paper coach) receive none. Humans
-choose the paths in Settings; code fixes which launches receive them
-([decision](../decisions/2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)).
+Repository-writing scopes receive machine-card `granted_roots`, plus `/tmp` and
+the local temporary directory. Scratch-only/read-only launches receive none.
+Humans choose paths; code fixes eligible capabilities.
 
-The only constraint is RCP's own storage, computed at every launch by
-`rcp_owned_paths` and the scope builder: the data directory, the installed
-server's release, source, credentials, update-checkpoint, and restore folders,
-`/etc/rcp` and `/run/rcp`, `~/.rcp` on every machine, `~/.local/share/rcp` on
-remote machines, every registered repository's `.research`, this launch's
-`inputs`, and legacy `/tmp/rcp-run.*` stages. A grant equal to or inside any of
-them is refused, both when a card is saved and in the folder picker, which locks
-it; one of them inside a grant stays read-only there (`granted_protected_paths`). The launch's own workspace and job folder stay
-writable. Paths are compared by filesystem identity on the execution machine.
-Grants and the protections they add are machine settings, so they stay out of
-the scope fingerprint: changing a machine's writable paths leaves open chats
-resumable, and their next turn uses the new grants.
+Only RCP storage constrains grants: data and installed-server folders, credentials,
+checkpoints/restores, `/etc/rcp`, `/run/rcp`, account `~/.rcp`, remote
+`~/.local/share/rcp`, registered `.research`, launch inputs and legacy stages.
+`rcp_owned_paths` and scope construction compare filesystem identity on the host.
+Save and picker refuse roots equal to or inside protected storage. Storage inside
+a grant remains read-only via `granted_protected_paths`, except the launch's own
+workspace/jobs. Grants stay outside the fingerprint so the next chat turn can
+use changed machine settings without losing resumability.
 
-systemd jobs render grants as `ReadWritePaths` and covered storage as
-`ReadOnlyPaths`, where the deeper writable workspace wins. Codex renders a
-deeper `write` entry inside a `read` parent, which wins (probed with codex-cli
-0.157.0). Claude's deny rules beat its allows, so a protected folder holding
-the launch's own stage is left undenied for Claude; its shell was already
-unbounded. RCP keeps its own files under `~/.rcp`: remote stages, command and
-SSH control sockets, and temporary files. Two exceptions sit in `/tmp`, and both
-are protected: when a home is too deep for a socket path, sockets use a private
-`/tmp/rcp-<id>` folder named from the home, and a saved legacy `/tmp/rcp-run.*`
-stage still resumes until a later release removes it. RCP creates `~/.rcp` mode
-700 under any umask. A `~/.rcp` the account owns but others can write, such as
-one an older release made under a 0002 umask, loses that write access on next
-use; one owned by another account is refused.
+systemd uses `ReadWritePaths`/`ReadOnlyPaths`; Codex permits a deeper write root
+inside a read parent. Claude denies override allows, so a protected parent of its
+own stage is left undenied. A grant covering it can expose sibling stages to file
+writes; Claude's shell is already unbounded.
+
+**Why:** Configuring roots is distinct from granting a capability. Home, SSH and
+other repository paths may be explicitly granted; only RCP storage is reserved.
+The Claude exception preserves usable stages without a second file-edit hook.
+A separate systemd write sandbox around Claude would alter command ancestry,
+Stop and recovery while still allowing escapes through compute owners; it is
+not the chosen write boundary.
+
+RCP files live under private `~/.rcp`. Long-home socket paths may use a protected
+`/tmp/rcp-<id>` directory; saved legacy `/tmp/rcp-run.*` stages remain protected
+and resumable. Creation uses mode 700; existing owned directories lose group/other
+write access, and directories owned by another account are refused.
 
 ## Provider enforcement
 
@@ -488,32 +341,31 @@ app-server checks the activated profile before starting a turn.
 
 ### Browser grants
 
-The per-chat browser preference is a human grant of a code-defined tool
-([decision](../decisions/2026-10-04-agents-browse-with-playwright-cli.md)).
-Admission resolves one immutable grant before rendering the prompt. The launcher
-passes it explicitly through provider requests and legacy command construction.
-Work, orchestrate, and Discuss admit grants. Paper coach, ingestion, scratch-only
-correction, and recorded replay do not. Prompts render the resolved session and
-invocation directory, say the session is already open, and tell the agent to
-start with `goto`: the CLI's `open`, `close`, `close-all`, and `kill-all` end
-RCP's session for the rest of the turn, and `delete-data` also erases its logins. Continuations send explicit off or unavailable values.
-The owner releases the grant in a finally block, including prompt preparation
-failures. A detached remote turn retains the same lease until remote-result
-reconciliation proves its provider stopped. Its lease identity stays in the
-existing turn status record; settlement releases it and records the final browser
-status before deferred cleanup, without acquiring another grant. A controller
-restart preserves leases whose remote result is still pending and reconstructs
-release routing from the durable task and browser owner. Host epoch cleanup
-adopts those leases while pruning the others. Settled paused tasks do not block
-cleanup.
-Granted turns merge its environment and prefix its tool directory to PATH.
-SSH launches prefix the execution host's PATH after login-shell initialization;
-they never copy the controller's PATH. Codex retains `shell_environment_policy={}`.
+Browser is a per-chat human grant, off by default, resolved immutably at admission
+and passed through launch construction. Work, orchestration and Discuss may use
+it; Paper, ingestion, scratch correction and recorded replay may not. Prompts
+name the already-open session and invocation directory, starting with `goto`.
+`open`, `close`, `close-all` and `kill-all` end that session for the turn;
+`delete-data` also removes logins. Continuations send explicit off/unavailable.
 
-Browser actions execute in an RCP-started process outside the provider sandbox.
-The CLI permits agent-written Playwright code and writes outside the chat's write
-roots. It can reach any address available to its execution account. The human's
-grant accepts this boundary; the task stage remains the only graph-change channel.
+The CLI tool directory prefixes PATH; SSH uses the host's PATH after login-shell
+initialization, never the controller's. Codex retains `shell_environment_policy={}`.
+Owners release grants even on prompt failures. Detached remote work retains its
+lease until settlement proves the provider stopped; restart restores routing and
+adopts pending leases. Settlement records browser status before deferred cleanup,
+without acquiring again. [Host runtime](#host-browser-runtime) owns lease cleanup.
+
+**Why:** A headless Playwright CLI daemon preserves tabs, pages and logins between
+turns on the execution host, including access to its local services. It avoids
+another MCP channel and repeated tool descriptions. Every CLI feature, including
+`run-code`, remains available by human consent.
+
+The daemon runs outside provider write containment. It can write anywhere and
+reach any address its account can; team agents can address each other's sessions.
+The grant accepts those gaps without changing graph authority. Selected-secret
+hiding has the platform limits below. RCP installs the CLI per host; Node 20+
+and Linux browser libraries are prerequisites. Launches offer no MCP server or
+MCP configuration UI.
 
 ### Claude
 
@@ -531,7 +383,7 @@ settings. A browser grant separately adds
 `Bash(playwright-cli:*)`. Public WebSearch and WebFetch remain available under
 the provider contract.
 
-Claude's OS sandbox is off. Its Linux backend always unshares the network
+**Why:** Claude's OS sandbox is off because its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
 sandboxed Work turn cannot reach a scheduler, a GPU device, its own command
 broker, or any non-HTTP service on its execution host. Turning it off is a
@@ -541,8 +393,8 @@ compute, and a containment that forbids that is not usable containment.
 Write roots are therefore enforced by Claude's file permission rules. `Edit(path)`
 is the only rule kind Claude matches for file writes, and it covers every
 file-editing tool; a `Write(path)` rule is accepted and then ignored, so RCP
-emits only the `Edit` form. These rules bound every file-editing tool and do not
-bound `Bash`. A Work turn's shell can therefore write outside its admitted roots
+emits only the `Edit` form. These rules govern file-editing tools, subject to the
+[grant exception](#machine-writable-paths), and do not bound `Bash`. A Work turn's shell can therefore write outside its admitted roots
 on its execution machine. That is an accepted accidental-write gap for this
 provider, not a claim of containment; Codex's native permission profile still
 bounds both. Nothing here widens graph authority, which stays with `patch.json`.
@@ -630,114 +482,69 @@ Provider logins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
 
-Every launch receipt records the project, execution host, capability, canonical
-writable roots, scope fingerprint, provider enforcement mode, and whether the
-launch was fresh or resumed.
+Launch receipts record project, host, capability, canonical write roots,
+fingerprint, enforcement mode and fresh/resumed state. Before any resumed
+launch, RCP recomputes and compares project, host, exact stage, graph target and
+root fingerprint. Missing/moved roots, cross-project bindings or incompatible
+run scope fail before launch; they require a fresh session.
 
-Before Resume, Retry, watcher wake, Work graph/watcher correction, child
-continuation, or report-independent Work continuation, RCP recomputes the
-current scope and compares project id, host, exact stage, target, and root
-fingerprint with the durable binding. A cross-project session/stage, relocated
-repository, incompatible run-scope change, or missing root fails before provider
-launch. Legitimate relocation or scope change starts a fresh task/session; it
-does not widen an existing native session.
+The session id actually passed to the provider decides whether this is a
+continuation, not admission's label. A sessionless launch establishes a new
+stage binding, but refuses an overlapping live turn with another scope. A
+continuation compares the current stage binding, not one superseded by a fresh
+launch. Refusals name both repository sets and direct run-scope changes to a
+new episode.
 
-A launch that carries no provider session is that fresh task/session, and it
-establishes the stage binding rather than inheriting it. What decides this is
-the session the launch actually hands the provider, not the label admission gave
-it: an ordinary follow-up is admitted as fresh while still supplying its chat's
-session id, and that session is what would otherwise gain roots it did not start
-with. A chat stage is named from its chat id and is never cleared, so comparing
-every launch against the scope a previous episode left there made a
-conversation's run scope permanent: the human could not drop a repository from
-an Experiment that had ever run. A sessionless launch is still refused while
-another turn is live on that stage with a different scope, and a continuation is
-compared against the stage's current binding, not against bindings a later fresh
-launch superseded. A refused comparison names the repositories on both sides and
-says a new episode is how run scope changes.
+Conversation-local merge and the following ordinary turn may transition between
+exactly recomputed worktree-only and worktree-plus-shared roots for the same
+binding. Resume/Retry of an already-bound operation still requires its original
+fingerprint. This exception cannot change project, host, stage or repository.
 
-Conversation-local merge integration and the following ordinary turn are the
-one explicit root-transition exception: their related-turn fingerprints may be
-the exactly recomputed worktree-only or worktree-plus-shared contracts for that
-same durable binding. An already-bound operation's Resume/Retry still requires
-its original fingerprint. This exception cannot admit a different repository,
-host, stage, or moved root.
-
-The same resolver covers ordinary Work, Auto-research root, child Work, child
-Experiment, watcher wake, and correction paths. There is no permissive fallback
-for a continuation's project, host, stage, graph target, or write scope. The
-pre-prompt provider-runtime fallback above changes none of those bindings and
-resumes the same native session id.
-
-Recovery retains the original assignment and completed native-session progress.
-The attempt's graph inputs, output schema and locations, validator, and command
-metadata apply to this attempt and travel inline (see
-[continuation prompts](#continuation-prompts)). This refresh does not widen the
-captured task authority or authorize repeating completed external effects;
-historical diagnostics remain failure reports, not policy.
-After a completed Work-like Patch correction, RCP revalidates the retained candidate
-against current state even if its bytes did not change. A stale rejection does not
-require cosmetic edits; current schema and authority validation still govern Apply.
+The same resolver covers Work, orchestration, children, wakes and corrections.
+Runtime fallback preserves every binding and the native session. Recovery keeps
+the original assignment and completed progress. Current inputs, schema,
+validator, output and command metadata travel inline; they do not authorize
+repeating external effects. After Work-like correction, RCP revalidates the
+candidate against current state even if its bytes are unchanged.
 
 ## Continuation prompts
 
-The session id a launch hands the provider decides its prompt. A launch with no
-session id is a session start. It sends the owner's full contract, records its
-exact bytes as the session master, and tells the agent to open and retain it.
-Handoff, a provider switch, a clean Retry, a progress handoff, and a fresh
-watcher notification are all session starts.
+A launch without a native session sends the owner's full contract and records
+its exact bytes as the session master. Handoff, provider switch, clean Retry,
+progress handoff and fresh watcher notification are session starts.
 
-A launch with a session id is a continuation: a human turn, a wake, a recovery
-(Resume, same-session Retry, graph repair), or a correction. It sends, inline:
-why it launched; what is new for its node (the human text and invoked skills,
-the trigger and accepted handoff, the diagnostics, or the correction's exact
-restriction); and one line for each value that differs from the master. The
-master records the stable values it was rendered with (paths, the command
-client, write roots, repositories, skill pointers, execution facts), so a new
-mailbox or a changed root appears and an unchanged one does not. Static
-explanations, such as validator exit codes, the launch helper, and the write
-boundary, live only in the master. A turn lists its attachments as plain lines
-with no rules beside them: what they may do is enforced, not explained. Current values take precedence over the
-master. Every master says so: a listed value replaces its own for that launch,
-and an unlisted one is its own. The graph head is the one value compared with
-the owner's seen head instead (see Graph history queries below). An Experiment watcher-maintenance correction restates the rules
-for its one resource, because that resource can be newer than the master. It ends with one pointer to the master. The pointer says this is the contract given at
-the session's start, and to read it only after a compaction or a lost grip on
-the graph rules or authority. A continuation never resends the master and never
-forces a read.
+A continuation sends its reason, new human input/skills/trigger/diagnostics,
+current restrictions, and stable values that differ from the master. Paths,
+command clients, write roots, repositories, skills and execution facts use this
+delta. Current values override the master; omitted values retain it. Graph head
+uses the owner's seen head instead. Attachments are plain listings. Watcher
+maintenance corrections restate their resource's current rules.
 
-RCP restores the master file from its durable record into the launch's stage
-before every pointer. The native session id alone selects the record, so an
-owner that gives each turn a fresh stage, such as the paper coach, finds it too.
-Only a master recorded by a succeeded operation counts;
-otherwise, or when the session has no record, the continuation bootstraps: it
-renders the current master, records it, and tells the agent to open it. The
-master key joins a shared master version, the graph rules version, the owner's
-policy version, and whether the project has ontology extensions. A key change bootstraps a replacement and says it
-replaces the earlier master. A branch-merge continuation re-sends the graph
-rules inline once main's ontology extensions differ from its master's.
+One final pointer identifies the original contract and asks for a read only
+after compaction or lost understanding. RCP restores the exact master bytes to
+the stage before each pointer, selected by native session id even for owners
+with per-turn stages. A missing stage fails closed. Only a succeeded operation's
+master counts; absent records or changed master keys bootstrap a replacement.
+The key includes shared master version, graph-rules digest, owner policy version
+and ontology-extension mode. Branch-merge continuation also resends graph rules
+when main's extensions differ.
 
-Discuss, Work, and Experiment render one artifact contract from the Artifact
-media model and enforced caps. An empty artifact directory is normal. A turn
-naming a commented artifact's writable path instructs editing that file in
-place. Figures are useful when clearer than prose; a short result needs none.
-The live-page section renders declaration and snapshot fields from the enforced
-live-data model. Only episode contracts offer the episode need. The packaged
-`live-pages` skill supplies validated worked examples. Master and policy versions
-are unchanged; existing native sessions retain their recorded master.
+**Why:** A stable pointer recovers compacted context without repeating a full
+contract each wake. Durable bytes prevent dangling pointers; successful delivery
+prevents pointing to instructions a failed launch may never have sent. Current
+authority stays inline so a master cannot restore expired commands or permissions.
 
-The episode report is its own node type, `report`. It reuses the operational
-session but gets no master pointer, and says the operational instructions no
-longer apply; `compose` adds both, and refuses a report with a master or any
-other continuation without one. The next operational continuation on that
-session then reopens the master, and keeps doing so until an operational attempt
-on the session succeeds.
+Discuss, Work and Experiment share the artifact contract rendered from the media
+model and enforced caps, including live-data fields. Empty output is normal;
+a commented writable file is edited in place. The `live-pages` package supplies
+examples; only episodes offer episode needs. Existing sessions keep their master
+until its version key changes.
 
-Every owner builds its own parts and calls `compose` in
-`src/rcp/agents/continuation_prompt.py`; the master record lives in
-`src/rcp/runs/session_master.py`. The
-[decision](../decisions/2026-09-27-continuations-point-to-their-master.md)
-explains the tradeoffs.
+A report is a separate prompt node: it revokes operational instructions and
+carries no master pointer. The next operational launch explicitly reopens its
+master until an operational attempt succeeds. Each owner builds its parts;
+`agents/continuation_prompt.py` composes them and `runs/session_master.py` owns
+the durable record.
 
 ## Graph history queries
 
@@ -763,8 +570,8 @@ verb, writes a file, or contributes graph authority (invariant 4b).
 
 Each owner resolves one read scope at launch: project, readable targets, and the
 allowed verb set. The command handler checks every request and cursor against
-that same object, and the prompt renders it. Discuss, whose broker otherwise
-allows exactly `ask`, gains the two verbs the same way; a report or artifact
+that same object, and the prompt renders it. Discuss gains these read verbs
+alongside its human-question channel; a report or artifact
 edit keeps its command revocation. One prompt helper renders the query section
 from the launch's read scope; a session master or shared prompt finalizer that
 receives a scope appends it, so an owner passes its scope rather than writing
@@ -809,118 +616,74 @@ the one its session began with.
 
 ## One graph output channel
 
-An agent's exact RCP-owned task stage is the sole graph-change channel. RCP
-collects `patch.json` there once the invocation ends. A conversation turn reads
-that exact name and nothing else. An ingestion run and a branch merge collect
-`patch.json` when it holds a Patch; when it is missing or not patch-shaped they
-collect exactly one other patch-shaped JSON file from the stage, and refuse more
-than one. They examine at most eight JSON files, `patch.json` first and then by
-name; a file beyond that window is not collected. Work repository edits carry
-operational authority,
-not graph authority, and canonical `.research` stays outside agent write roots.
-RCP never extracts a Patch from stdout, an answer, provider directive, artifact,
-URL, or repository file.
+The collection boundary is [invariant 4b](../../AGENTS.md#stable-invariants).
+Conversation turns collect only `patch.json` from their exact task stage.
+Ingestion and branch merge prefer it, then accept exactly one patch-shaped JSON
+file if it is missing or not Patch-shaped. They inspect at most eight files,
+`patch.json` first then filename order; multiple candidates are refused.
+The labelled final assistant message is the answer, separate from traces,
+reasoning, tool output and Patch verdict. Rejection preserves an existing answer.
 
-The labelled final assistant message is the answer. Provider traces, reasoning,
-tool output, and the Patch verdict remain separate. A rejected Patch does not
-discard an already-produced answer.
+Seed, Refresh and Work stages include a Python command client. Bounded mailbox
+requests let RCP prepare candidates against live state and record validation.
+Exit codes distinguish valid, semantically invalid and unavailable. Apply
+re-prepares bookkeeping and validates under the canonical append lock; a prior
+check reserves nothing. Operations retain written order, with whole-Patch lookup
+for legal forward references.
 
-Every patch-producing Seed, Refresh, or Work stage carries an RCP-staged Python
-command client with a validator verb. It exchanges bounded request and response
-files through the writable workspace while RCP polls locally or through the
-existing SSH run stage,
-prepares the candidate against live current state in process, and records each
-check. Client exit codes distinguish valid, semantically invalid, and validator
-unavailable, so a transport failure can never become a correction loop. Every
-command result is JSON on stdout, and one invocation shares a single deadline of
-`COMMAND_CLIENT_WAIT_SECONDS`, inside provider shell-tool limits. A transport
-failure also states its `delivery`: `not_sent` never reached RCP, while
-`unknown` reached it or may have, so RCP can still act and the exact same call
-returns that outcome. An `ask` polls in rounds; once one round delivered the
-question, a later round's failure reports `unknown`, never `not_sent`, so the
-agent repeats the same key instead of asking again under a new one. Handler outcomes such as `submitted` or `disposition` are
-separate result fields. A keyed file command sends only the checked file name;
-RCP reads the contents on first admission and answers a known key from its
-record, so a retry works after Apply consumed or replaced the file. Refusals
-made before a handler sees a request, by the mailbox or the broker, are recorded
-as bounded task events. Broker refusal notices are signed with the turn token
-under a notice-only prefix and bound to their file name, so neither an agent
-nor a copied signed request can pass as one.
+Commands return JSON within `COMMAND_CLIENT_WAIT_SECONDS`. Transport `delivery`
+is `not_sent` only when RCP could not receive the call, otherwise `unknown`.
+Handler fields such as `submitted` and `disposition` are separate. A keyed file
+command sends its checked filename; first admission reads it, while repeats use
+the recorded result even after Apply consumed the file. Mailbox/broker refusals
+are bounded task events. Broker notices are signed under a notice-only prefix
+and bound to their filename.
 
-The protocol also defines keyed `ask --key <key> --question <text>` with
-repeatable `--choice <text>` and optional `--multiple` (requires choices).
-Its nonblocking helper persists an immutable origin binding and returns `status: ok`
-with `result.state` of `pending`, `answered`, `dismissed`, or `parked`, plus
-`question_id`; `answered` includes answer text and selected `choices`. Identical
-owner/key arguments reuse the question; changed arguments are invalid. The client
-polls pending questions with fresh transport request ids under the same outer
-wait deadline. At that deadline, pending tells the caller to repeat the exact
-call or end the turn. Transport failures retain their separate `delivery`
-semantics. Human-started Discuss and Work chats, human-started Experiment episodes,
-and the Auto-research orchestrator authorize `ask`, each from its handler's
-resolved allowed verbs. Discuss chat turns use the same handler and broker
-with exactly `ask`; origin-bound viewer artifact edits, workers, and child Work
-or Experiments refuse it. The prompt reads the handler's same resolved verb set.
-For a live Discuss, Work, or Experiment answer, the response carries a server-generated
-receipt token persisted against that turn, question, and answer revision. Only
-after parsing the complete `answered` response does the client echo that token
-in a fresh authenticated `ask` request with the same key and arguments. This uses
-the same file-mailbox or broker path on local and SSH stages, stays within the
-original deadline, and keeps acknowledgement diagnostics on stderr. Receipt
-requires both this durable acknowledgement and successful task settlement.
-Producing a response, publishing its file, or sending bytes on a socket alone
-never suppresses follow-up. Missing or ambiguous acknowledgement retains the
-answer for follow-up, including after restart; a duplicate is preferable to loss.
-The receipt token is transport metadata and omitted from the agent's stdout.
-Answer delivery for each owner is described in
-[conversations, episodes, and watchers](conversations-episodes-and-watchers.md)
+`ask --key K --question TEXT` accepts repeated `--choice` and optional `--multiple`
+(which requires choices). It binds immutable origin and arguments; identical
+keys reuse a question, changed arguments fail. Its result carries `question_id`
+and `pending`, `answered`, `dismissed` or `parked`; answered includes text and
+choices. Fresh transport ids poll the same key under one deadline. Once any round
+delivered, later transport failure stays `unknown`. At deadline the agent may
+repeat exactly or end its turn.
+
+Human Discuss/Work chats, human Experiment episodes and the orchestrator may ask;
+viewer edits, workers and child Work/Experiments may not. The handler's resolved
+verbs also drive the prompt. For live answers, the client acknowledges the
+server's durable receipt token through the same authenticated request path only
+after parsing the complete response. Tokens stay out of agent stdout; diagnostics
+go to stderr. Receipt requires acknowledgement and successful settlement.
+Publishing bytes alone never suppresses follow-up; ambiguous delivery remains
+eligible after restart. Owner delivery is in
+[human input](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)
 and [Auto-research](auto-research-and-branch-merge.md).
 
-Validation stages operations in their written order against earlier valid
-operations while retaining whole-patch node and edge lookup for legal forward
-references; it never reorders operations. A validator self-check is not a
-reservation: Apply re-prepares RCP-owned bookkeeping and reruns the same semantic
-validator against current state while holding the canonical append lock, so graph
-movement between response and Apply is not by itself a rejection.
+**Why:** The command channel already owns authentication, idempotency, events
+and delivery. Provider ask tools differ or are unavailable in unattended modes;
+a separate ask MCP server would duplicate those mechanisms. Answers are human
+input, never authority to change scope, budget or protected beliefs.
 
-Ordinary Work and Experiment-loop, including correction turns, stage the
-turn-bound broker and pass its invocation gate to the provider launch. Broker
-authority is explicit and does not require an episode id. The broker binds the
-live provider process tree on the execution host and signs each request; a
-prior turn's process cannot acquire the next turn's authority. Validate-only
-credentials still refuse keyed commands. These Work owners serve the generic
-`launch` helper only on the selected helper route, with task events and durable
-diagnostic receipts. A Slurm route uses agent-authored scheduler submission
-commands. Both hand off the shell watcher described in
-[compute jobs](compute-jobs.md).
-This gives no additional graph output channel or command authority to other
-task surfaces. The `lesson` verb is an operational command over RCP's own
-lesson store, separate from filesystem and graph authority; its owners are
-listed in [graph consolidation and lessons](graph-consolidation-and-lessons.md).
+Work and Experiment, including correction, bind their broker to the live provider
+process tree on the execution host. Prior turns cannot gain new authority;
+validate-only credentials refuse keyed commands. The helper's `launch` verb and
+scheduler route are owned by [compute jobs](compute-jobs.md); `lesson` is owned by
+[graph consolidation](graph-consolidation-and-lessons.md).
 
-A remote Discuss, Work, Experiment, or child Work mailbox has one thread-based owner from
-launch through settlement. A disconnected accepted turn transfers the owner to
-background reconciliation; its command service does not end with the stream.
-Before settlement the owner fences new requests and drains admitted work. Backend
-shutdown suspends detached owners, preserving their private restart checkpoints.
-Startup restores the same mailbox id, token, budget reservations, and completed
-responses before checking provider liveness. Concrete owners restore their exact
-launch-time policy; no new credential or authority is issued. Discuss, Work, and Experiment
-checkpoints retain whether the resolved launch handler offered `ask`; restoration
-requires both that saved offer and current owner authorization. Older checkpoints
-without the offer cannot add `ask`; Work owners still receive `lesson` under
-their server-owned task authority. Checkpoints use the
-existing private provider-credential storage protections and backup exclusion.
+Remote Discuss, Work, Experiment and child Work mailboxes retain one thread owner
+through settlement. Disconnected accepted turns transfer it to reconciliation.
+Settlement fences new requests and drains admitted work; shutdown suspends the
+owner with a private checkpoint. Startup restores the same id, token, budget
+reservations and results before liveness checks. Restoration requires both a
+saved `ask` offer and current authorization; old checkpoints cannot add it.
+Work retains server-owned `lesson` authority. Credential-store protections and
+backup exclusion apply to checkpoints.
 
-Mailbox listing, request reading, handling, and response publication retry
-separately on classified temporary transport failures. Backoff is bounded and
-jittered, with one event per outage and recovery; remote polling has a separate
-interval. Completed responses survive lost writes and restart without repeating
-handlers, and validation retries spend only one budget reservation per request.
-Permanent failure or Stop publishes a permanent closure reason for later calls.
-Stop bounds failed drain attempts; an unreachable host can prevent publishing
-that closure, but cannot imply provider death or hang settlement indefinitely.
-All polling and retry bounds live in `limits.py`.
+Listing, reading, handling and publishing retry separately on typed temporary
+transport failures, with bounded jittered backoff and one outage/recovery event.
+Completed responses and validation reservations are reused across lost writes
+and restart. Permanent failure or Stop publishes closure; failed drains are
+bounded. An unreachable host may prevent that publication but proves no provider
+death. Polling and retry bounds live in `limits.py`.
 
 ## Durable task lifecycle
 
@@ -999,105 +762,54 @@ state workspace.
 
 ### Live human steering
 
-A human may steer the ordinary Discuss or Work turn they are watching only
-through RCP's live provider process for that exact task attempt. The route
-rechecks the addressed attempt and its live runtime; it cannot select a newer
-attempt, start a turn, wake a sleeping agent, or target an episode worker.
-Agent mail and lifecycle notices do not use this channel.
+Steering addresses RCP's live process for one exact ordinary Discuss/Work attempt.
+It cannot select a newer attempt, start work or target an episode worker. Agent
+mail uses its own channel. Input retains the attempt's mode, scope, target and
+budget; [chat records](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)
+own its human message.
 
-Delivery has three receipts: **delivered** means the provider acknowledged the
-input; **refused** names why delivery was rejected; **unknown** means the write
-began or may have begun but no acknowledgment established its outcome. Codex
-acknowledges through the matching `turn/steer` response and rejects a stale or
-completed turn. Completion immediately fences new Codex input, but RCP drains
-matching responses before marking outstanding receipts unknown at stream shutdown.
-Claude becomes ready when `command_lifecycle state=started` names the initial
-RCP command UUID. `state=queued` for a pending follow-up UUID acknowledges
-acceptance immediately; replayed user echoes are consumed but never establish
-readiness or delivery. Its durable `delivered` receipt is labelled **Delivered**,
-like every runtime's, with no reason; Claude decides where the message lands,
-inside the running turn when a tool call is in progress and otherwise as the
-next turn, and it keeps the captured capability and write scope either way.
+Receipts are **delivered** (provider acknowledgement), **refused** (with reason)
+or **unknown** (write may have begun without acknowledgement). Codex uses the
+matching `turn/steer` response; completion fences new input but drains matching
+responses before shutdown marks unresolved input unknown.
 
-Both placements are handled by one rule. Lifecycle lines admit a command to the
-outstanding set and `completed` removes it; a result then removes the commands
-it attributes. Injected: the follow-up's `queued`, `started`, and `completed`
-all arrive inside the first turn, the result attributes both UUIDs, and the set
-is empty, so the invocation stops with the message consumed. Queued: the first
-result attributes only the initial UUID, the follow-up stays outstanding, and the
-process runs on to the second result. Attribution is what settles the stop;
-lifecycle alone cannot, because `completed` for a command lands after that
-command's own result in the queued case.
+Claude becomes ready at `command_lifecycle state=started` for RCP's initial UUID.
+A follow-up's `queued` acknowledges delivery; replayed user echoes do not. RCP
+tracks only UUIDs it generated: `queued`/`started` add outstanding commands,
+`completed` removes them, and each result removes its attributed
+`user_message_uuids` or `user_message_uuid`. An outstanding accepted follow-up
+keeps the process open for another result. Otherwise RCP ends it and refuses
+unacknowledged follow-ups. Missing usable UUIDs fail closed to that stop rule;
+`queued_turn_count` is ignored. Successful `task-notification` results with no
+RCP message id remain traces in both live decoder and host fence.
 
-RCP tracks accepted, unfinished command UUIDs that it generated itself:
-`queued` and `started` add them, `completed` removes them. Unknown command UUIDs
-cannot keep the process open. Each Claude `result` removes its
-`user_message_uuids` (or singular `user_message_uuid`) from that set. When an
-accepted follow-up remains, RCP yields that result's answer and usage and lets
-the same process run the next turn. Otherwise it completes and stops the
-process, refusing any unacknowledged follow-ups. A result without usable command
-UUIDs fails closed to the same stop behavior. `queued_turn_count` is not used.
-Without a follow-up, the first result still ends the invocation, with one
-exception: a successful result with `origin.kind` equal to `task-notification`
-and no message id sent by RCP stays a trace. It does not end the turn. Both the
-local decoder and the host fence apply this notice rule.
+Claude decides whether input joins the running turn or becomes its next one.
+Both share session, stage, capability and scope. Answers join with a blank line
+into one chat reply; each result counts usage separately. Work reads Patch once
+at invocation end and clears scratch only on entry. No extra task or answer file
+is created.
 
-The provider turns share one native session, capability, write scope, and task
-stage. Their answers are joined with a blank line into one assistant chat
-message; each result retains its own usage accounting. Work reads `patch.json`
-only once, after the invocation ends, and scratch is cleared only on entry to
-the RCP turn. No second task, chat record for an assistant, or answer file is
-created for a queued turn.
-
-A transport drop or process exit after a write began leaves an unacknowledged
-steer unknown, except for Claude's explicit result fence above. Waiting for a
-receipt is bounded by `PROVIDER_STEER_ACK_TIMEOUT_SECONDS` in `limits.py`; timeout
-stores unknown and cancels only the receipt waiter, not the running turn. Late
-responses do not rewrite that stored outcome or trigger a resend. The durable
-message reservation immediately precedes the external write; those two effects
-cannot commit atomically. If RCP restarts before the acknowledgment is recorded,
-the reservation remains unknown: delivery acknowledgment was not recorded, and
-the write may have begun. A live refusal proved before writing remains refused.
-RCP never automatically retries or resends a steer, and never queues a refused
-steer as the next turn. SSH uses the same existing stdin pipe and receipt rules.
-
-The message and receipt belong to the
-[human chat record](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input).
-Steering changes no mode, scope, graph target, budget, or permission. It creates
-no persistent provider daemon and wires no hard interrupt. Each provider process
-still ends when its accepted commands finish; Pause, Resume, Retry, graceful Stop,
-and restart recovery keep their existing attempt and durable-state contracts. A restart
-does not recover or resend an in-flight steer through a replacement process.
+A dropped connection after writing leaves unknown delivery, except at Claude's
+explicit result fence. `PROVIDER_STEER_ACK_TIMEOUT_SECONDS` bounds receipt wait,
+not the turn. Late responses do not rewrite outcomes. Durable reservation occurs
+before the external write; restart leaves unacknowledged reservations unknown.
+RCP never retries, resends or queues a refused steer. SSH uses the existing stdin
+pipe. Pause, Retry, Stop and restart retain their normal lifecycle; replacement
+processes do not recover in-flight steering.
 
 ## Local and SSH execution
 
-The provider runs on the machine that owns the selected repository pointers.
-Local and SSH launches use the same capability and write-scope contract. Remote
-command construction carries remote canonical roots, never local substitutes or
-a broad remote working directory.
+Providers run on the selected repository execution machine with the same
+capability and scope locally and over SSH. Remote launches use remote canonical
+roots. The remote stage owns validation, wrappers, transfers and recovery;
+resumption proves its saved host and stage. Transport failure is unavailable,
+not semantic correction.
 
-The remote run stage owns exact path validation, process/event wrappers,
-scratch transfer, and recovery. A task resumed remotely must prove the saved
-host and stage. SSH or provider transport failure is reported as unavailable,
-not converted into semantic correction.
-
-RCP shares an SSH connection per unit of work, not per host. Work that owns
-something durable keeps its own connection, named by what it owns: the work in
-one run stage by that stage's root, a lock holder by the lock it holds. A link
-that drops therefore ends the work on that connection and nothing else. Short
-control traffic owns nothing durable and shares one connection, which is what
-keeps it cheap. Stopping a remote process after a failure stays on the shared
-connection on purpose: it must not ride the connection whose death it is
-cleaning up after, and the shared one is the only path OpenSSH reopens by
-itself. Connections left behind by finished work are cleared by asking whether
-they still answer, never by whose they look like, because the local socket
-directory is keyed by user account and a second RCP instance keeps its live
-connections in the same place.
-
-This separates work that would otherwise fail together for no reason of its
-own. It does not make a host's connections independent of the network between
-them: an outage still ends every connection to that host, now as separate
-failures rather than one.
+SSH connections are owned per durable unit of work: stage or lock. Short control
+traffic shares a connection. Cleanup uses that shared route, not the failed
+work's route, so OpenSSH can reopen it. Finished-work sockets are removed only
+after probing liveness; another RCP instance may own them in the account's shared
+socket directory. This limits connection coupling, not host-wide network outages.
 
 ### Compute connections are resources, not execution profiles
 
@@ -1135,7 +847,7 @@ Projects configure at most 32 compute connections and a turn selects at most 32
 ids. These shared schema limits apply before manifest persistence, probing, chat
 record storage, or prompt assembly. Unsaved compute form metadata remains only in
 the live Settings component; local settings drafts deliberately omit it and
-discard the briefly shipped v3 field during migration.
+discard the v3 field during migration.
 
 The human attaches configured computes through the conversation composer. The
 task request and canonical chat record persist the selected ids so reload and
@@ -1154,591 +866,269 @@ grants authority and never includes credential contents or paths.
 
 ### Team execution accounts and credentials
 
-The team backend remains the one owner of every provider call, whether the
-provider runs on the RCP server or over SSH. A local team run executes as the
-Linux `rcp` service account and uses whatever provider-native authentication is
-already present for that account. A remote team run uses the exact SSH
-host/account selected by the project profile and whatever provider-native
-authentication is already present there. The remote account need not be named
-`rcp`; it must be explicitly configured and reachable from the server's service
-account.
+The backend owns team provider calls. Local runs use the service account;
+remote runs use the exact profile's configured SSH account and its provider
+state. No account switching or alternate provider homes are created.
 
-RCP signs each machine account in and out of a provider from the product and
-keeps every credential on exactly one refresh path, per the
-[provider logins decision](../decisions/2026-09-14-provider-logins-are-kept-alive.md).
-It never switches accounts or creates alternate provider homes. RCP's server
-CLI checks executable, version, the account's durable login state, configured
-runtime, explicit model catalog entry, reasoning effort, and the provider-owned
-minimum version for that profile through the same launch abstraction used by
-tasks. The provider's own status command is a presence check, not a liveness
-check, and is never proof of a login.
+Provider profiles own sign-in interactions, validation, environment, protocol,
+safe metadata and evidence interpretation. The credential store owns private
+atomic persistence and collision-free paths; remote keys digest the exact host.
+Ambiguous legacy remote token paths require repasting, never guessed migration.
 
-Each `ProviderProfile` selects its authentication implementation alongside its
-runtime. The implementation owns supported sign-in interactions, credential
-requirements and validation, environment preparation, protocol parsing, safe
-credential metadata, and interpretation of provider evidence. Shared RCP code
-uses these capabilities and normalized outcomes without selecting authentication
-behavior by provider name. The credential store owns private atomic persistence
-and collision-free account paths; it does not choose launch semantics.
-Remote account keys use a digest of the exact execution host instead of the old
-lossy character replacement. Tokens stored under the old remote account paths
-must be pasted again; RCP does not guess which account owned an ambiguous old
-path. Local token paths remain unchanged.
+Codex device sign-in uses app-server `account/login/start` with
+`chatgptDeviceCode`, the reply's URL/code, completion's `success` and
+`account/login/cancel`. It parses no console prose; missing completion records
+failure. Codex also owns logout and verification. Claude validates/stores a
+setup-token, estimates lifetime, injects `CLAUDE_CODE_OAUTH_TOKEN` into every
+process and removes conflicting inherited credentials. Tokens travel through
+stdin/private environment, never argv, events, responses, receipts, logs or
+backups. The `providers` store is backup-excluded. Required missing credentials
+refuse admission even without a login row.
 
-**Codex** owns native device sign-in over the app-server protocol
-(`codex app-server`, `account/login/start` with the ChatGPT device-code type).
-The one-time code and verification URL are that reply's own fields, the outcome
-is the `success` flag on the `account/login/completed` notification, and a
-member's cancellation is `account/login/cancel`; RCP reads no console prose, so
-reworded provider output cannot stall a sign-in. Codex also owns native logout
-and verification commands. A sign-in that ends without its protocol's completion
-publishes the reason on the account, which never keeps describing an attempt
-that is over.
-**Claude** owns setup-token validation, the estimated lifetime metadata,
-`CLAUDE_CODE_OAUTH_TOKEN` injection, removal of conflicting inherited credential
-sources, and remote token placement and removal. Tokens travel on transport
-stdin or through private environment preparation, never in argv, responses,
-events, receipts, logs, or backups. The `providers` directory remains excluded
-from protected backups. A provider that requires a managed credential refuses
-admission when it is missing, including an account with no durable login row.
+**Why:** Startup serialization reduces rotating-token races; Claude's static
+setup-token avoids rotation entirely. A shared persistent Codex process would
+need per-thread permissions and command authority independent of process ancestry,
+plus remote attachment and interrupt semantics. Until those exist, turns retain
+separate processes and unnecessary probes are avoided. Codex mid-turn refresh
+races remain possible; verified sign-in is the recovery.
 
-The shared account lifecycle owner coordinates sign-in, verification, and
-sign-out per execution account. Concurrent device sign-ins atomically join one
-operation. It acquires the account gate before reading or mutating credentials
-and holds it through verification and durable login-state publication. Token
-replacement and native device sign-in publish a signed-out fence before changing
-credentials, so interruption cannot leave an unverified credential eligible. Successful
-verification invalidates readiness and releases eligible parked work through the
-existing recovery owners. Completion belongs to this service, not an HTTP poll;
-its durable recovery work can be reconciled after interruption without duplicate
-dispatch. Member authorization remains at the API boundary; durable changes
-record the acting member.
+The account lifecycle owner serializes sign-in, verify and sign-out under the
+gate through durable publication. Concurrent device sign-ins join one operation.
+Replacement first publishes a signed-out fence, so interruption cannot admit an
+unverified credential. A minimal real request must succeed before sign-in counts;
+provider status only proves credential presence. Successful verification
+invalidates readiness and releases parked work through existing owners, once.
+Completion and restart reconciliation belong to the service, not HTTP polling.
+Any authorized member may sign in/out; durable actions record the member.
 
-The provider-neutral routes are `POST /api/providers/{provider}/logins/sign-in`,
-`GET /api/providers/{provider}/logins/sign-in/{login_id}`,
-`POST /api/providers/{provider}/logins/token`, `.../verify`, and `.../sign-out`.
-Unsupported interactions are explicitly refused. Status GET only reads operation
-status. Sign-out publishes `signed_out` with a new generation, `source="sign_out"`,
-and the acting member, fencing admission exactly as a failed login does.
+Routes under `/api/providers/{provider}/logins` provide `sign-in`, status
+`sign-in/{login_id}`, `token`, `verify` and `sign-out`. Unsupported interactions
+refuse explicitly; status GET is read-only. Sign-out records a new generation,
+`source="sign_out"` and actor and fences admission.
 
 ### Login state and failure
 
-RCP keeps one durable login state per `(provider, host)` machine account,
-`signed_in` or `signed_out`, with a generation number. A provider process whose
-own diagnostic matches the provider profile's revoked-login signatures (for
-Codex: `token_revoked`, `refresh_token_invalidated`, `refresh_token_reused`,
-"refresh token was revoked", "refresh token was already used", "your session has
-ended"; Claude recognizes its own remote missing-credential fence and declares
-no native revoked-login signatures until one is observed) is classified
-`provider_auth` on every path: a turn, a wake, a worker, an automatic recovery,
-the hidden report attempt, and the readiness probes. The classification marks
-the account `signed_out` with the generation the launch captured; a late
-failure carrying an older generation never re-marks an account repaired since.
+One durable `(provider, host)` login row stores `signed_in`/`signed_out` and a
+generation. Provider-owned revoked-login evidence classifies `provider_auth`
+across turns, wakes, workers, reports, recovery and probes. Only the generation
+captured at launch can revoke the account; late failures cannot revoke a repaired
+login. Claude recognizes its remote missing-token fence and declares no unobserved
+native revocation signatures.
 
-While an account is `signed_out` or lacks a required managed credential, every
-paid admission for it (an Auto-research
-turn, wake, child Work, child Experiment, or report attempt; an Experiment-loop
-turn or Retry) is refused before a task is created or budget debited. Human and
-API paths receive the refusal text. One shared task-admission fence checks
-eligibility before durable task creation or budget debit; queued tasks remain queued when
-the account cannot launch. Reconcilers leave the durable input pending
-(notices, mail, watcher completions, the report allocation). An Auto-research
-recovery for a `provider_auth` failure is created `blocked` and is never claimed
-until the account is verified. Readiness reads the durable state, so the Retry
-preflight, the project readiness snapshot, and the server readiness coordinator
-report a signed-out account truthfully.
+Signed-out or missing-required-credential accounts refuse paid admission before
+task creation/budget debit. Queued tasks remain queued, reconcilers retain their
+inputs, and auth recoveries remain blocked. Readiness, Retry and server checks
+read that same state. Verify runs a minimal authenticated request under the gate.
+Success increments generation, invalidates readiness and releases account-bound
+recovery, queued work, mail, lifecycle/watcher inputs, reports and eligible
+Experiment Retry once. Ordinary episode reconciliation retains other accounts'
+fences. Authentication failures sign out; transport/configuration/ordinary failures
+do not. Errors direct members to Settings, Provider logins, without exposing
+credentials or prescribing shell login commands.
 
-**Verify** (`POST /api/providers/{provider}/logins/verify`) runs one minimal
-authenticated request as the execution account under the credential gate, using
-the profile's `login_probe_command`. Success marks `signed_in`, bumps the
-generation, invalidates readiness, and resumes the parked work once: blocked
-recoveries are released and claimed, pending lifecycle, mail, and watcher
-inputs are delivered, pending wrap-ups restart, and one Experiment-loop turn
-that failed with `provider_auth` is retried through its exact path. Authentication
-failure records `signed_out` and a safe diagnostic; transport,
-unsupported configuration, and ordinary provider failures do not falsely revoke
-the login. Any signed-in
-member may verify; the acting member is recorded. Recovery release, Experiment
-Retry, queued launches, and watcher delivery target the verified account. The
-ordinary episode reconciliation pass also runs once, with its existing login
-gates keeping other signed-out accounts parked. A catalog failure cannot approve
-an explicitly saved model, and an unexpected implementation error fails the command rather than
-being relabelled as a missing install. The later provider call uses the same
-authentication and version rule. A failed check names the provider and
-machine/account and points at Settings, Provider logins, where any member signs
-the account in; it never prints a shell login command. Provider credentials
-never enter a project manifest, provisioning request, prompt, backup, or
-member's desktop credential store.
+Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
+native paths, locally or in the remote interactive login shell. An explicit path
+fails as given, without choosing another installation. Successful absolute paths
+preserve symlinks for native updates; home is the OS home, not inherited `HOME`.
 
-Provider discovery uses the same filesystem lookup locally and over SSH: first
-`PATH`, then the executing account's `~/.local/bin/<provider>`, then native
-installation paths declared by that provider's profile (OpenCode declares
-`~/.opencode/bin/opencode`). Local execution uses the process environment; SSH
-execution uses the remote interactive login shell's environment. Home-relative
-locations use the execution account's OS home, not an inherited `HOME` value.
-An explicitly configured executable is checked as given; failure never selects
-another installation. A successful check records and later invokes the absolute
-executable path, preserving symlinks so native updates can replace their targets.
+`rcp server provider check` requires exactly one `--request` or `--project`.
+It checks the configured executable, version, login, runtime, model and effort
+through the normal launch abstraction, not arbitrary host/account overrides.
+The running service owns probing through its private control socket; the CLI does
+not open its SQLite. A SHA-256 boundary over request revision or project profiles
+is rechecked before subprocesses. Request results retain only executable,
+bounded version, runtime, observed account and check time; later checks reuse
+that path. Doctor reports readiness-protocol support. Implementation errors stay
+errors, not invented missing-install diagnoses.
 
-The check always resolves an existing configuration boundary:
-`rcp server provider check --request <request-id>` checks the intended profiles
-of one provisioning request, while `--project <project-id>` checks the stored
-profiles of one existing project. Exactly one selector is required. The command
-does not accept an arbitrary host, account, executable, provider home, or runtime
-that could bypass the request/manifest contract.
+Team admission uses `effective_repositories`, including completed Add/Connect
+provenance. Invalid provenance refuses admission. Server-only repositories need
+no deploy key or `core.sshCommand`; GitHub-backed ones retain key checks. Missing
+keys refuse terminals or produce the provider transport notice. Provider login,
+Git transport, SSH access and RCP membership are distinct authorities.
 
-The service owns resolution and probing through its private control socket; the
-`rcp` CLI never opens SQLite beside the running process. Planning is read-only
-and binds one SHA-256 boundary over the durable request revision or stored
-project profiles. Each check revalidates that boundary before a subprocess and
-publishes a safe refusal if it changed. A successful request check stores only
-the resolved absolute executable path, bounded version, durable runtime id,
-observed OS account, and check time. Rechecking that request uses the stored
-executable instead of rediscovering `PATH`. The provisioning projection exposes
-those nonsecret proof fields for final review; no provider home or credential is
-added. `server doctor` separately reports whether the running private control
-protocol offers provider readiness.
+Each GitHub-backed checkout pins its own key with `core.sshCommand`, written by
+provisioning and backfilled by verification. Every launch, including Discuss,
+carries that transport. Repository writes still follow capability, but Discuss
+can push existing refs or delete remote branches. `GIT_CONFIG_SYSTEM` supplies
+member display name and `<member-id>@members.rcp.invalid` at lowest precedence;
+shared repository/global config may override it. RCP stores no personal Git keys
+or settings. Authorship is unverified; pushes authenticate as the deploy key.
 
-Terminal and provider admission resolve team repository sources through
-`effective_repositories`, including completed Add and Connect requests. Missing
-or invalid provenance refuses admission rather than treating a repository as
-server-only. Server-only repositories receive no deploy-key path and require no
-`core.sshCommand`; both local and SSH launches still carry the member Git identity.
-GitHub-backed repositories retain their existing key checks: a missing key
-refuses a terminal and produces the existing provider transport notice.
+**Why:** Shared-account personal keys cannot provide per-member isolation. Each
+checkout needs its own key because one launch may use several repositories.
+Membership therefore grants repository transport write access; removing membership
+revokes product access. Discuss keeps no repository-write allowance despite its
+transport access.
 
-The central Git checkout and its repository-scoped deploy key, when GitHub-backed,
-are independent of the provider login. A Git key grants repository transport;
-a provider login grants provider execution; an RCP member token grants product
-authority. None is
-accepted in place of another.
-
-Every GitHub-backed team checkout's local Git config pins `core.sshCommand` to
-its own deploy key, so any process in that repository, whether terminal, Discuss, Work, or
-episode, fetches and pushes with it. Provisioning writes it and checkout
-verification backfills it. This grants transport only: a launch's write roots
-still decide where it may commit, though any launch, Discuss included, can push
-refs that already exist or delete a remote branch. Every terminal and provider launch also gets
-`GIT_CONFIG_SYSTEM` naming a generated file with the member's default identity,
-their display name and `<member-id>@members.rcp.invalid`. It sits at Git's
-lowest precedence, so any repository or global `git config` overrides it; on a
-team server those layers belong to the shared service account and apply to
-every member. RCP stores no per-member Git setting. GitHub pushes authenticate
-as the deploy key, so project membership is repository write access and removal is its
-revocation ([decision](../decisions/2026-09-24-team-launches-carry-git-transport.md)).
-
-Remote execution adds one more transport boundary: the server's `rcp` account
-must already be able to authenticate with ordinary OpenSSH to the exact account
-in the selected machine profile. A remote project manifest records that account
-as `machines[].os_account`; omission is refused rather than guessed. A
-server-local team profile executes as `rcp`, including for older manifests that
-predate the explicit field. RCP checks and uses that configured route; it
-does not import a member's SSH key, collect one through Web/desktop state, or try
-a different login. This SSH transport authentication does not select the remote
-provider identity—the remote operating-system account and its native provider
-state do.
-
-There is no team fallback to a member laptop, personal checkout, local member
-provider login, or different SSH account. Unreachable SSH, missing provider
-authentication, or incompatible provider readiness fails visibly on the chosen
-machine. Runtime-specific behavior remains behind the provider-call abstraction,
-so Codex exec, Codex app-server, and Claude use their own provider contracts
-without changing this local/SSH identity rule.
-
-Remote canonical-state locking and publication are specified in
-[Graph, history, and transitions](graph-history-and-transitions.md#canonical-publication).
+Remote machines require explicit `machines[].os_account` and working ordinary
+SSH from the service account. Server-local profiles use the service account.
+RCP imports no member SSH key and never falls back to a laptop, personal checkout,
+provider login or alternate account. Unreachable or unready targets fail visibly.
+[Canonical publication](graph-history-and-transitions.md#canonical-publication)
+owns remote state locking.
 
 ### A remote turn outliving its connection
 
-Four owners register durable remote-turn finalization: ordinary human Work,
-Discuss, the Experiment loop, and the Auto-research child Work turn. Each retains
-its own launch snapshot under its own contract role, and the routing table
-selects the owner from that retained contract, never from the task's chat kind --
-one chat kind names all four. A task with no retained contract, or with more than
-one, is visibly left waiting rather than settled by a neighbour that shares its
-launch plumbing. Remaining provider task owners keep their existing launch
-behavior until they expose their own typed, idempotent post-provider finalizer.
-Shared staging and local-only turns register no remote finalization context: a
-local provider dies with the process that launched it, so there is no finished
-pass left to fetch.
+Ordinary Work, Discuss, Experiment-loop and Auto-research child Work register
+typed, durable finalizers. Routing uses the retained contract, never chat kind.
+Zero or multiple contracts leave the task visibly waiting. Other owners retain
+their own launch behavior. Local turns register no remote finalizer.
 
-What an owner settles is its own. Work applies its Patch, arms its watchers and
-answers its chat. Discuss answers its chat and republishes the session binding
-that lets the next message continue the same provider conversation. The
-Auto-research child settles under the parent episode's authority, admitting no
-second child to go and fetch its result. The Experiment loop reaches its joint
-Patch/watch admission and binds the episode to the session a later wake resumes;
-it settles against the episode its launch read, whose baseline, control snapshot
-and committed wake session are written down before the provider starts, so a
-reconnect cannot commit a pass belonging to a different invocation.
+Each owner settles its own effects: Work's Patch/watchers/reply; Discuss's reply
+and session binding; the child's parent-authorized result; Experiment's joint
+Patch/watch admission and wake binding. Experiment records its baseline, control
+snapshot and committed wake session before launch. Recovery creates no second
+child or invocation and retains the original authority, target and accounting.
 
-Automatic graph, watcher, and Experiment watcher-maintenance corrections within
-ordinary Work use the same supervision. Before any correction, Work retains the
-primary answer in an immutable database checkpoint. Replaying a correction
-applies its deliverables while preserving that original reply and starting no
-further correction calls. A recorded pass that is itself a failed correction
-still carries that retained reply ahead of its own error, because the live path
-had already delivered it before the correction began. No recorded finalization
-may correct a deliverable:
-the provider that could answer a correction stopped when its connection did, so
-a deliverable a live turn would have sent back is rejected instead, and a
-recorded pass offered a correction round fails rather than launching one. Manual
-graph-repair tasks retain their separate existing launch behavior.
+Supervised Work corrections retain the primary answer in an immutable checkpoint.
+Replay preserves it, even when correction failed, and starts no further correction.
+A recorded deliverable needing correction is rejected; manual graph repair keeps
+its separate launch path.
 
-Provider execution state and controller connection state are separate things.
-Losing SSH says nothing about the provider, which on a remote host keeps working
-and finishes into a stage RCP can read later. So a lost link is not a failure of
-the turn, and recovering one is not a new turn: the pass belongs to the operation
-that opened it and is finalized on that same operation, under the authority,
-graph target, episode and accounting identity it already had.
+The host supervisor is shipped as a staged source file; launches without that
+path are refused. It journals output and records prompt acceptance before any
+prompt byte reaches the provider. Host acceptance, not a controller receipt,
+proves work may have begun. The supervisor detects turn end but assigns no
+semantic verdict; the live decoder also reads recorded bytes.
 
-A supervised pass is journalled on its execution host. Its source travels as a
-staged run input and the launch names that path, because a command large enough
-to carry the source cannot reach an SSH multiplexing master: the client fills the
-control socket with the command and then fails passing the process's own file
-descriptors, so the launch dies before the host runs anything. A supervised
-launch without that staged path is refused rather than sent. The supervisor
-forwards output while recording it, and writes its acceptance of the prompt
-before a byte of it reaches the provider. That host-written acceptance, never
-the presence of a receipt in RCP's own database, is what says work may have
-begun: a controller that died in that window has no receipt of its own, and its
-silence is not the host's answer.
+At turn end it snapshots Patch, watcher handoff and maintenance files under
+digests. Before reading deliverables, finalizers restore that exact set, removing
+later maintenance files. Per-file and aggregate limits apply: overflow makes the
+whole set incomplete. Journals without snapshot metadata leave files alone.
+Every supervised launch also records its pinned native session, including each
+correction. A mismatched recorded session is refused before restoring Patch,
+adopting the session or arming watchers.
 
-The supervisor publishes no verdict. It decides only where the turn ends, which a
-persistent server makes unavoidable, and hands over its bytes. What the turn was
-worth is read from those bytes by the same decoder that reads a live one, so the
-two cannot drift apart. The supervisor also snapshots the turn's deliverables
-beside its journal, Patch and watcher handoff alike, each under its own digest.
-A stage is mutable and a recorded pass is not, so every owner restores those
-snapshots before reading any deliverable: what settles is what the host proved,
-not whatever the directory happens to hold when RCP reconnects. Experiment watcher
-maintenance writes one file per resource, so that set is discovered rather than
-named: the host snapshots all of it, and recovery makes the stage hold exactly
-the set the pass wrote, removing one that appeared afterwards. The provider
-chose that set's size, so it is bounded as a whole and not only file by file,
-and a pass that overflows either bound is an incomplete turn whose outcome
-claims none of the set rather than a smaller one. A journal that
-predates deliverable snapshots is silent about a handoff rather than claiming
-there was none, and recovery leaves those files alone rather than deleting them.
+A lost SSH link does not prove provider death. Restart preserves accepted passes
+with no recorded stop as waiting for their remote result. Reconciliation handles:
 
-A host that cannot be reached is never a verdict about watcher maintenance. An
-outage while reading, validating or persisting those outputs leaves the task
-waiting for its stage, rather than completing it with the maintenance silently
-undone or recording a permanent refusal the turn never earned.
+- Unreachable host or still-running provider: wait without a timeout.
+- Stopped pass with a complete journal: finalize the original task.
+- Stopped incomplete pass, or no accepted prompt: fail visibly for human Retry.
+- Already consumed/settled pass: do nothing.
 
-Reconciliation is owed only a pass nobody read. A supervised start with no
-recorded stop is what both the waiting-task query and the reconciler itself look
-for, so once a live stream has consumed a turn and written that stop down, no
-reconciler will revisit it. Settlement that fails after that point therefore
-reports the outage rather than parking the task on a remote result it already
-holds, which nothing would ever come back for. A completed provider spoke for
-itself, so such a failure is not a lost link and no retry repeats the turn.
+Owners mark transport outages while reopening stages, reading, validating or
+persisting results; these keep recorded finalization waiting. A reachable host
+reporting a removed, replaced or unowned stage is a real failure. Reading one
+part successfully does not make later reads reliable. Once a live stream has
+recorded its stop, reconciliation never rereads it; a later settlement outage
+is reported rather than parking work whose result was already consumed.
 
-Settlement reports an unreachable stage the same way it reports a deliverable
-the agent botched, so the read that failed is what says which happened. Every
-owner reads its own deliverables through its own code and marks its own
-outages, including on paths a recorded pass may never take: the mark is read
-only when a recorded finalization fails, so marking too widely costs nothing
-while marking too narrowly loses a finished turn. A failure carrying that mark
-leaves the task waiting; one that does not is the turn's real verdict and
-stands, whether or not the host is still answering by the time it is recorded.
-
-A continuation pinned to an exact native provider session is held to it when it
-is recovered exactly as it is live. Every supervised launch writes down the
-session it pinned before it reaches the host, including a correction, whose
-session belongs to the pass it corrects and so cannot be named by the launch
-snapshot written before that pass existed. This holds for every supervised
-correction, including the Experiment watcher-maintenance one that reaches its
-host through the raw provider stream rather than the shared Work one. The launch
-retains the session it pinned beside the rest of its snapshot, a correction
-retains its own, and a journal that answered on a different one
-is refused before its Patch reaches the stage, before that session is adopted
-and before any watcher is armed -- the same refusal, and the same operational
-receipt, that stops such a turn live before any result is accepted. A launch
-that pinned no session pins none on recovery.
-
-A restart preserves a task holding such a pass instead of interrupting it, and
-leaves it waiting for a remote result. Reconciliation then asks the host one
-question with five answers: unreachable and still running both wait, without
-limit; a stopped pass whose journal reached the turn's end finalizes that task; a
-stopped pass whose journal did not, or that never took the prompt, fails it
-visibly for a human to retry; an already settled pass is left alone. Waiting is
-never cut short by a timeout, and nothing replaces a provider that may still be
-working. Reaching the host once proves nothing about reaching it again: an owner
-reopens its retained stage over the same link and reads its deliverables from it,
-and those reads report a vanished host exactly as they report a deliverable the
-agent botched. No verdict is drawn about a turn whose stage cannot be seen, so a
-host that goes quiet anywhere between reading the journal and finishing
-settlement leaves the task waiting rather than settling an intact result as
-failed. A stage that was genuinely removed is an answer, and the failure it
-causes stands. Reopening a retained stage cannot report both the same way:
-silence from the host is retried, while the host answering that the stage is
-gone, replaced or no longer ours fails that turn for a human.
-
-Pause of a waiting task is immediate and requires a reachable host and verified
-process identity. If the provider already stopped, or finishes before the Stop
-arrives, its completed journal stays available for finalization. RCP refuses the
-Pause instead of discarding that output; an unreadable journal also stays
-unresolved. There is no delayed kill intent. Active reconciliation counts as
-runtime work for maintenance draining and joins the bounded shutdown wait.
+Pause of waiting work requires a reachable host and proven process identity.
+There is no delayed kill intent. If the provider already completed, or completes
+before Stop reaches it, Pause refuses and preserves its journal for finalization.
+Unreadable journals remain unresolved. Active reconciliation participates in
+maintenance draining and bounded shutdown.
 
 ## Seed and Refresh ingestion
 
-Seed and Refresh alone ingest provider conversation logs. RCP supplies the
-execution-host agent with configured provider log roots, project
-`last_refresh_at`, the complete current graph and research rendering, exact
-repository pointers, selected packages, and an optional human request.
+Seed/Refresh alone ingest provider-native history. Context supplies execution-host
+log roots, `last_refresh_at`, current graph/research rendering, repository pointers,
+selected packages and optional human input. The agent reads live logs in place.
+RCP only preflights existence/readability, reporting nonblocking failures; it does
+not normalize, cache, transfer or project ordinary live log content, nor maintain
+per-log cursors, coverage truth or reports. OpenCode has no supplied log roots
+because its sessions live in SQLite.
 
-The agent reads logs in place. RCP performs only bounded existence/readability
-preflight and reports exact failures without blocking launch. RCP does not parse,
-index, normalize, slice, hash, cache, transfer, or project provider conversation
-content and maintains no per-log cursor or coverage truth. There is no agent-written
-coverage report or coverage-warning banner. OpenCode keeps its sessions in one
-SQLite database rather than in log files, so RCP names no log roots for it yet.
-
-That is the implemented ordinary-run path, not a promise to abandon source
-history during a pending personal-to-team transfer. The confirmed transfer
-target exports every complete provider conversation selected through the
-existing native conversation index into the read-only project app-data root
+Personal-to-team transfer uses the native conversation index to select complete
+sources by recorded project working paths, best-effort with nonblocking skipped
+source diagnostics. It copies original transcript bytes into read-only
 `<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`.
-Configured provider profiles supply the native roots, while the index remains
-the one owner of project-path matching and local/SSH source retrieval. Matching
-is automatic and best-effort from recorded working paths; skipped sources are a
-non-blocking diagnostic, not a transfer decision. The target agent reads those
-imported provider-native sources alongside live roots from its configured
-execution account. Local execution reads the project-owned source directly;
-remote execution stages only that validated project-owned inventory as immutable
-task input and leaves the remote account's live native roots in place. Resume
-reuses the same staged fingerprint, and a missing or changed stage fails visibly
-through clean retry rather than omitting history. Missing or corrupt durable
-imported bytes block Seed/Refresh; the non-blocking best-effort rule applies only
-to source-side selection before transfer. RCP-owned project chats
-transfer only as human-visible history and remain excluded from Seed/Refresh
-input under the native-chat-context rule. Imported sources never enter canonical
-`.research`, a rebuildable cache, or the native provider home and never grant
-Resume, Retry, credentials, or execution authority. The index copies the
-selected original native transcript files byte-for-byte; RCP does not flatten
-them into its lossy conversation-record model.
+Seed/Refresh reads these beside the execution account's live roots. Local runs
+read project storage; remote runs stage the validated inventory as immutable
+input. Resume requires the same fingerprint; missing/changed staging requires
+clean Retry, and missing/corrupt durable imported bytes block ingestion.
 
-The watermark advances only after a Seed/Refresh Patch commits. Failed,
-paused, interrupted, or rejected work leaves it unchanged. It is an
-overlap-tolerant timestamp, not exactly-once ingestion.
+RCP chats transfer for human display only, excluded under the
+[native chat context rule](conversations-episodes-and-watchers.md#native-chat-context).
+Imported sources never enter canonical `.research`, provider homes or rebuildable
+caches and grant no session recovery, credential or execution authority.
 
-Seed/Refresh correction stays scratch-only and offline over the retained staged
-inputs. Large source-corpus fan-out is provider-owned and read-only; the root is
-the sole Patch writer.
+Only committed Seed/Refresh Patch advances the overlap-tolerant timestamp.
+Failure, pause, interruption or rejection leaves it unchanged. Correction is
+scratch-only and offline over retained inputs; provider-owned read-only fan-out
+leaves the root as the sole Patch writer.
 
 ## Provider readiness and native skills
 
-Readiness is an app-process service. Startup coalesces provider executable,
-version, authentication, model-catalog, and configured machine probes; results
-are cached for their configured lifetime. Explicit Refresh bypasses the cache.
-A profile probes whatever its CLI can enumerate and declares only the rest.
-Codex reports its models and their per-model reasoning efforts from its own
-catalog. Claude Code cannot enumerate models, so its aliases stay declared and
-dated to the CLI they were read from, while the reasoning efforts it accepts are
-probed from the CLI itself and are provider-wide. OpenCode lists its models,
-each with the reasoning variants it takes, and many take none. A probe that cannot be read
-falls back to the declared list rather than leaving a surface with no models.
-Navigation never owns provider warmup and ordinary application use remains
-available while it runs.
+An app-process service coalesces startup executable, version, authentication,
+model and machine probes. Navigation does not own warmup or block ordinary use.
+Profiles probe what their CLI can enumerate and declare the rest: Codex models
+and per-model efforts, Claude declared model aliases and probed provider-wide
+efforts, OpenCode models and optional reasoning variants. Unreadable catalogs
+use the declared list; that cannot approve an explicitly saved unknown model.
 
-A provider login is one rotating credential owned by one execution account, and
-no provider CLI locks it while refreshing. RCP therefore admits one provider
-startup at a time per provider and execution account. Turns, readiness probes,
-and skill inventory probes share that one gate. Each credential-touching path
-acquires it before preparing the environment and capturing the login generation
-from the same credential state. A turn rechecks eligibility there before spawn;
-a late failure from an older generation cannot invalidate a repaired account.
-The provider implementation interprets evidence from turns, verification, model
-catalog, Work readiness, and skill probes; shared code durably applies the same
-authentication-failure policy on every path. Each runs the provider
-executable and each can rotate the same token; a probe holds for its whole run,
-while a turn holds until the provider writes a line of its own and a minimum
-stagger has passed. A broker readiness line is not the provider speaking. A hold
-expires on a generous bound, which prefers a rare unserialized start over one
-stalled startup closing the credential to everything else.
+Turns and credential-touching readiness/skill probes share one startup gate per
+provider and execution account. They acquire it before environment preparation
+and login-generation capture; turns recheck eligibility before spawn. Probes
+hold it throughout; turns hold until a provider-authored line and the minimum
+stagger, with a bounded maximum hold. Broker readiness is not provider output.
+No process is signalled before the minimum hold, including Pause and probe
+timeout, so a refresh can finish its credential write.
 
-RCP starts no provider process it does not need. The credential-touching
-readiness answer (login status, model catalog, Work probe) is stored durably per
-`(provider, host, executable)` with the version it was read from; a later
-readiness read runs only `--version`, with its environment prepared under the
-account gate, and reuses the stored answer while the version is unchanged. An
-explicit Refresh, a version change, a verify, a sign-in, or a sign-out probes
-again. The skill inventory is reused the same way while the executable, its
-version, and the probe command match the stored inventory on implicit reads.
-The explicit readiness Refresh also probes every target's skill inventory
-without reusing the stored one, so an edited provider-native skill becomes
-visible while nothing about the executable changed. A provider process,
-probe, or turn is never signalled before the gate's minimum hold has elapsed
-since it started, so a login refresh begun at start can finish its write; a
-probe timeout is clamped to that hold, and a Pause of a young process waits it
-out before the signal.
+Local accounts also use an advisory lock under their RCP directory across RCP
+processes. Only contention retries; filesystem lock errors fail the launch and
+release the in-process lock. OS exit releases the file lock. Remote gates cover
+one RCP process only, and different spellings of the SSH destination form separate
+gates. Mid-turn provider refresh remains outside this startup protection.
 
-A local login is also held against other RCP processes through an advisory lock
-under the account's own RCP directory, because two data directories share one
-login while the single-instance lock only excludes a second process on the same
-data directory. The operating system drops that lock when its holder exits, so a
-crashed process never strands a login. A remote login has no such file: the
-credential sits on the far machine, where only a lock taken there would mean
-anything, so remote launches are serialized within one RCP process only.
-If the local account lock cannot be created, opened, or acquired because of a
-filesystem error, the startup or probe fails with the lock error. Only lock
-contention retries; a failed acquisition releases its in-process lock so a later
-attempt can succeed after the filesystem problem is corrected.
+Credential-touching readiness is durable per `(provider, host, executable)` and
+version. Implicit reads run `--version` under the gate and reuse matching answers.
+Refresh, version change, verify, sign-in and sign-out invalidate them. Native
+skill inventory similarly reuses matching executable/version/probe-command
+results; explicit Refresh probes all targets, including edited native skills.
 
-This staggers startups, it does not make rotation safe. A provider that
-refreshes again mid-turn is outside the boundary, and RCP never performs or
-stores the refresh itself. Reaching one account through two spellings of its SSH
-destination still yields two gates.
+Claude's zero-cost Work startup probe uses enforced settings, stream-json and
+closed empty stdin. It proves CLI acceptance, not containment. Its availability
+and diagnostic are separate from general readiness and shown for profiles that
+can launch Work, including chat. Work/orchestrate enforce it with the version
+floor; Discuss and Paper do not. Transport failures stay transport failures.
 
-After authentication succeeds, the Claude profile also supplies a zero-cost
-Work-like startup probe using its enforced Work settings, stream-json input,
-and closed empty stdin. It proves the installed CLI accepts those settings
-before any model call; it does not prove containment. The
-cached readiness result records Work-like availability and its concrete reason,
-kept apart from the general readiness reason, which also carries benign notes
-such as a discovered path. Settings renders it only on a profile the projection
-marks as able to launch a Work-like capability, which a profile's default
-capability cannot establish: a chat profile defaults to Discuss and still
-launches Work. The paper coach is never subject to it. A Work or orchestrate
-launch checks this
-precondition alongside the profile's version requirement before starting its
-provider turn. A CLI that refuses those settings fails with the provider's actual
-diagnostic; connection loss or an unreachable host is reported as such, not
-diagnosed as a refused setting. Discuss does not require this precondition or
-attach the enforced write settings. Refresh and normal readiness invalidation also invalidate the probe.
+The first decoded error includes bounded, TTY-filtered stderr; a result lacking
+text uses its subtype. Service start/end logs carry only identifiers and RCP
+wording: provider, capability, runtime, host, executable, pid, operation, exit,
+duration and classification. Raw provider output stays off the journal because
+it may contain credentials; the task row owns detailed results.
 
-A decoded provider error includes meaningful captured stderr in the first error
-event, with a bounded drain after process termination and existing shell TTY
-noise filtering. When the result has no text-bearing field, its subtype is the
-fallback diagnostic. This preserves the real startup failure for task consumers
-that stop reading at the first error.
+Typed SSH/rsync exit 255 during stage preparation, readiness, transfer or a silent
+turn may trigger bounded transport reattempts with increasing waits. Failure to
+start a transport or a local wait timeout is not that signal. Provider terminal
+events/errors take precedence over SSH exit codes. Unreachable readiness is not
+cached. Accepted supervised passes instead use
+[remote finalization](#a-remote-turn-outliving-its-connection).
 
-Every provider process is also journalled by the service: one log line when
-it starts and one when it ends, each carrying the provider, capability,
-runtime, execution host, resolved executable, child pid, and the operation id,
-with the exit code, duration, and RCP's own reading of a non-zero exit on the
-end line. A failed task adds one line naming its classification. These lines
-carry identifiers and RCP wording only; provider stdout and stderr never reach
-the journal, because a provider CLI can print token-shaped values in its own
-errors. The task row remains the complete record.
+Reattempts use the same native-session recovery as human Retry. Atomic admission
+refuses a second continuation if another path already claimed one. Shutdown waits
+for admission already in progress, then pauses its child. Refused attempts retain
+remaining waits; startup rearms the durable sequence at its current position.
+A repeat of the preceding failure ends the ladder. Human Retry retires that
+verdict before insertion so a new failure gets its own ladder; revoked login
+requires sign-in. Attempts, refusals and exhaustion remain receipts.
 
-A settled failure is also named, because recovery differs by cause. SSH's own
-exit codes for a remote run mean the link died rather than the work, and RCP
-reattempts such a turn a bounded number of times with growing waits before
-leaving it to a human; the reattempt is the same recovery a human Retry
-performs, so it resumes the native session rather than repeating the turn. Those
-exit codes decide this only for a turn that said nothing: ssh returns 255 for a
-provider that exits 255 as readily as for a link it lost, so a provider that
-reached its own terminal event or reported its own error is never blamed on the
-link, whatever the code. A link that drops before the provider starts is named
-the same way. Opening the remote stage, every stage read or write that prepares
-the turn (such as clearing the previous turn's mailbox), the readiness probe
-under whichever of its probes ssh died, the check that the previous remote pass
-has stopped, and the input transfer each fail the turn with no process to leave
-a code, so each
-carries its own typed word for an unreachable host to classification, on the
-host the turn was bound to even before a stage existed; the error text is never
-read. Only an ssh or rsync that ran to a verdict and exited 255 carries it: one
-RCP could not start, or stopped waiting for on a live link, is a failure the
-same reattempt would meet again.
-An unreachable readiness answer is not cached, so the reattempt asks the host
-again instead of failing from memory. A reattempt stands down when
-anything else has already taken the turn over, so a wait that outlives the
-failure it was scheduled for cannot repeat finished work. That claim is made
-inside the admission that inserts the reattempt's child: an ordinary task's
-resume, retry, or handoff is refused there when the task already has one, so a
-human Retry admitted and settled during the wait leaves the timer nothing to
-repeat. Experiment and Auto-research recoveries keep their own atomic claims.
-Shutdown waits for a reattempt that has already begun admitting before it
-fences new workers, so the child it admits is paused with the rest instead of
-being left queued for a startup that would only interrupt it. A wait whose reattempt is refused keeps the waits
-that remain, because a host that is still returning is the case the longer waits
-exist for. The promise of a reattempt is durable while the wait holding it is
-not, so startup re-arms the waits a stopped process could not keep, at the wait
-the sequence had reached rather than at its first; a turn something else has
-already continued is not re-armed.
+Work recovery uses its lineage's durable prompt contract, never the bounded,
+prunable `agent_prompt` diagnostic alone. Experiment recovery before prompt
+composition reruns the same invocation kind and records
+`experiment_uncomposed_rerun`, retaining the newest context candidate. A composed
+legacy prompt with no candidate still refuses recovery.
 
-An Experiment-loop turn whose link dropped before it composed its prompt sent
-the provider nothing: its lineage holds no prompt contract, only bookkeeping
-such as a context candidate or finalization context. That is not a legacy root
-to refuse. Its recovery, automatic or human, runs the same invocation again as
-the turn it recovers, a watcher wake as a wake, and records the context that run
-sends; the child carries an `experiment_uncomposed_rerun` receipt, and later
-recoveries keep the newest candidate in the lineage. A lineage that composed a
-prompt but kept no candidate is legacy and still refuses recovery.
+Automatic launches wait for `AUTOMATIC_LAUNCH_AWAKE_SECONDS` of sustained wake.
+Watchers, reports and orchestration inputs stay pending; transport waits rearm
+without spending attempts. Already-admitted wake redispatch and human launches
+are exempt. `machine_sleep` compares platform clocks including/excluding sleep;
+unsupported or unreliable pairs impose no hold.
 
-A Work Resume or Retry continues the prompt its lineage first sent. Every
-launch, including a chat-protocol or Auto-research child Work turn, records the
-prompt it sends as a durable task contract. The `agent_prompt` launch receipt is
-a bounded diagnostic (`AGENT_TASK_RECEIPT_MAX_BYTES`) that may be omitted or
-pruned, so recovery never depends on it alone.
+Revoked login is `provider_auth`: stop transport retries and direct sign-in,
+without permanently removing recovery controls. A dropped native session starts
+clean recovery, including explicit episode rebinding; `session_limit` retains
+its session because an account limit may lift. RCP does not infer limit scope
+from prose. Humans may change provider/model/reasoning where recovery supports it.
 
-New automatic launches wait until the machine has stayed awake long enough to
-finish one (`AUTOMATIC_LAUNCH_AWAKE_SECONDS`). A laptop sleeping with its lid
-closed wakes for a few seconds at a time, and a launch started in one of those
-wakes loses its link partway through. Watcher delivery leaves a completed group
-for the next poll; a transport reattempt re-arms its wait without spending the
-attempt; an episode report stays wrapping up for the next reconciliation; and
-Auto-research mail and lifecycle wakes leave their inputs pending for the next
-pass. Re-dispatching a wake an earlier pass already admitted is not held, and
-falls back on the lost-link reattempt. Sleep is read from two monotonic clocks, one that counts time
-asleep and one that does not, named per platform in `rcp.machine_sleep`: on
-macOS `CLOCK_MONOTONIC` counts sleep and `CLOCK_UPTIME_RAW` skips it, on Linux
-`CLOCK_BOOTTIME` counts it and `CLOCK_MONOTONIC` skips it. A platform with no
-named pair, or a pair that stops behaving as named, holds nothing. Turns a
-human starts are never held.
-
-A provider whose CLI reports that its own login is no longer valid is named
-separately, because no unattended attempt can fix it: every one fails
-identically until a person signs in again. That name informs, and never
-withdraws the way back. It stops the automatic transport reattempt, which would
-only spend three waits proving the point, and it makes the projection ask for
-the sign-in. It withdraws no control and withholds no scheduled recovery: a
-failure kind never changes, so anything taken away on one could never be given
-back, and signing in again is exactly what makes the next attempt work. A
-profile that has had no real revoked login observed claims none, since a wrong
-match would name a failure Retry would have fixed.
-
-A saved provider session the provider no longer has is named separately from one
-that reached its limit, because the remedy differs: a session that is simply
-gone cannot be resumed at all, so recovery starts the turn clean instead of
-resuming into the same failure. A session-bound episode is the same case: its
-binding names a session the provider has dropped, so recovery hands the episode
-to a clean session on the record rather than refusing and stranding it. A
-reached limit of any kind (`session_limit` is the umbrella name) keeps its
-session: Retry, Resume, and Auto-research recovery resume it, and whether the
-limit has lifted is the provider's answer on that attempt. Every other failure
-keeps its existing behaviour.
-
-A reattempt that failed the same way as the attempt before it ends the ladder
-whatever the failure was named, because the remaining waits would only reproduce
-a settled answer. RCP does not read provider prose for whether a reached limit
-belongs to the session or to the account: it offers the human the one thing that
-makes the next attempt different, a changed provider, model, or reasoning, and
-whether that attempt then succeeds is the provider's answer rather than a state
-RCP models. A stopped ladder, whether it stopped on a repeat or ran out of
-waits, is a verdict on the failure that produced it, so the human's own Retry
-retires it before that turn exists: the turn can settle the instant it is
-spawned, and its settlement is what writes the next verdict, so the next failure
-is judged on its own and gets a full ladder. The automatic path keeps counting
-its attempts as before. A Retry that is then refused leaves no verdict and no
-attempt, which reads as the failed turn it still points at. A
-revoked login is the exception it already was, cleared by signing in rather than
-by retrying. Reattempts, their refusals, and their exhaustion are receipts on the
-failed turn.
-
-Provider-native skill inventory is app-scoped and separate from official RCP
-packages. Startup refreshes each provider/machine target after readiness. A
-successful refresh atomically replaces the last successful result; failure
-retains it as visibly stale with a current diagnostic. Project open and launch
-do not refresh it.
-
-A native skill selection is structured per-turn metadata bound to provider,
-machine, successful version, inventory hash, and name. It never changes launch
-flags, authority, graph scope, or repository scope. A stale selection that the
-provider rejects fails visibly without fallback.
+Native skill inventory is app-scoped, separate from official packages. Startup
+refreshes after readiness; success atomically replaces inventory and failure
+retains it visibly stale. Project open and launch do not refresh. Selection binds
+provider, machine, successful version, hash and name per turn. It cannot change
+launch flags or scope; provider rejection fails visibly without fallback.
 
 ## Official skills and workflows
 

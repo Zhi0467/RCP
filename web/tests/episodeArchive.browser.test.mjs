@@ -157,7 +157,7 @@ test("active and unresolved episodes archive without stopping work and restore a
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
+    server: { host: "127.0.0.1", port: 8468, strictPort: true },
   });
   let browser;
   try {
@@ -170,7 +170,17 @@ test("active and unresolved episodes archive without stopping work and restore a
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
+    page.on("requestfailed", (request) => {
+      // An archive fences the run reads it supersedes, and a card it removes
+      // releases its episode reads; those aborts are deliberate.
+      const path = new URL(request.url()).pathname;
+      if (
+        /\/(episodes|experiment-episodes|episodes\/[^/]+\/(messages|timeline))$/.test(path) &&
+        request.failure()?.errorText === "net::ERR_ABORTED"
+      )
+        return;
+      errors.push(request.failure()?.errorText);
+    });
     const nodes = {
       main: node("experiment/main", "Measure transfer"),
       child: node("experiment/child", "Reproduce the baseline"),
@@ -590,6 +600,11 @@ test("active and unresolved episodes archive without stopping work and restore a
       mutationPaths,
       writes.map(([episodeId]) => `/api/projects/project-one/episodes/${episodeId}/archive`),
       "Archive and unarchive never call stop, watcher, or other mutation endpoints",
+    );
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(
+      await page.getByRole("button", { name: "Refresh runs", exact: true }).isVisible(),
+      true,
     );
     assert.deepEqual(errors, []);
   } finally {

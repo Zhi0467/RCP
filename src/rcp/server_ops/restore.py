@@ -46,6 +46,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Transactional resource watermarks (v49), fresh, immutable fixture
+        # upgrades, and in-place upgrades.
+        "2ac59846e73c9850643d4930f28cab997b43703c02972d43c7bb4328466f0dc4",
+        "2b88c00a85bdcf32d8b6ab0352f2b3feaa70ca0bc8347421d6dc18d7d9a2c063",
+        "394d0e82a28d1a8a78a926f933e6597d478d69796ab07c53b4c36c366d632e80",
+        "7e4a76fed510f46929f54862775e875298d4d844dbf0e6a11bedb8c0ee9dc2a7",
+        "7f66b3efac8fa32288556e68fbe15752be63193efa02988368989e94ea0f1d7d",
+        "8f160d42d7766660474e7405652711f71b6ffee9866a29e378acf93450a6d0e8",
+        "b3a29dae5e1b41b2ccbbfa39f348653051a8e782c7421f7775e693bd2fb815f1",
+        "b8f5513ea37c88523aa5e5760b5b4c8ae8a9bc869a4c17ab28119da8477ce19b",
+        "e136144e7ca5daaa785170591ad1075b63a36be5ac7170327010f18995f4a848",
         # Graph seen heads (v48), fresh plus the immutable fixture upgrades
         # and in-place upgrades.
         "005c7faf995666de703a7d5fa51e41ad8aaa0514c345f8c6289aeb93a52ddb25",

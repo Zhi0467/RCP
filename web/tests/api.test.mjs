@@ -805,3 +805,33 @@ test("turn admission refusals resolve through the shared code map", async () => 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("watermark POST honors caller cancellation without mutation reconciliation", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let mutations = 0;
+  registerMutationFailureHandler(async () => {
+    mutations += 1;
+  });
+  globalThis.fetch = async (_path, { signal }) =>
+    new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  try {
+    const request = api(
+      "/api/resource-watermarks",
+      {
+        method: "POST",
+        body: "{}",
+        signal: controller.signal,
+      },
+      { attemptTimeoutMs: 5000, readOnly: true },
+    );
+    controller.abort();
+    await assert.rejects(request, { name: "AbortError" });
+    assert.equal(mutations, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    registerMutationFailureHandler(null);
+  }
+});

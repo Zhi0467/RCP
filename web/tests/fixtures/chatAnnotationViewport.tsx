@@ -1,3 +1,4 @@
+import { ResourceRuntime } from "./resourceRuntime";
 import { createRoot } from "react-dom/client";
 
 import { NodeChat } from "../../src/chat/NodeChat";
@@ -65,28 +66,30 @@ let resolveTask: (() => void) | null = null;
 };
 
 createRoot(document.getElementById("root")!).render(
-  <main style={{ height: "100vh", padding: 24 }}>
-    <NodeChat
-      graphTarget={{ kind: "main" }}
-      project={project as never}
-      node={null}
-      runScope={["repo"]}
-      tasks={[]}
-      historyMessages={historyMessages as never}
-      chatId="viewport-regression"
-      presentation="workspace"
-      onStartTask={() =>
-        new Promise<void>((resolve) => {
-          resolveTask = resolve;
-        })
-      }
-      onInspectTask={() => undefined}
-      onOpenInbox={() => undefined}
-      onRepairGraphUpdate={() => Promise.resolve()}
-      onNewSession={() => undefined}
-      onClose={() => undefined}
-      onResumeTask={() => undefined}
-      onRetryTask={() => undefined}
-    />
-  </main>,
+  <ResourceRuntime>
+    <main style={{ height: "100vh", padding: 24 }}>
+      <NodeChat
+        graphTarget={{ kind: "main" }}
+        project={project as never}
+        node={null}
+        runScope={["repo"]}
+        tasks={[]}
+        historyMessages={historyMessages as never}
+        chatId="viewport-regression"
+        presentation="workspace"
+        onStartTask={() =>
+          new Promise<void>((resolve) => {
+            resolveTask = resolve;
+          })
+        }
+        onInspectTask={() => undefined}
+        onOpenInbox={() => undefined}
+        onRepairGraphUpdate={() => Promise.resolve()}
+        onNewSession={() => undefined}
+        onClose={() => undefined}
+        onResumeTask={() => undefined}
+        onRetryTask={() => undefined}
+      />
+    </main>
+  </ResourceRuntime>,
 );

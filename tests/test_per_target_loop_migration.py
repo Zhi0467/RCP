@@ -10,6 +10,7 @@ import pytest
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.storage import AppStore, WatcherContinuation, WatcherRecord
+from tests.storage_helpers import downgrade_resource_watermarks
 
 from .test_episode_storage import _episode, _operational_task
 
@@ -57,6 +58,7 @@ def _legacy_database(path: Path) -> AppStore:
             "ON auto_research_child_experiments(project_id, control_node_id) "
             "WHERE state = 'pending'"
         )
+        downgrade_resource_watermarks(connection)
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 44")
         connection.execute("DROP TABLE client_requests")
         connection.execute(
@@ -98,13 +100,14 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
         43,
-        48,
+        49,
         (
             "per_target_experiment_loops_v1",
             "client_requests_v1",
             "repository_provisioning_contracts_v1",
             "branch_names_v1",
             "graph_seen_heads_v1",
+            "resource_watermarks_v1",
         ),
     )
     readonly.close()
@@ -190,7 +193,7 @@ def test_per_target_migration_failure_rolls_back_and_reopens(tmp_path: Path, mon
         assert target != graph_target_json(GraphTargetRef())
         assert json.loads(target) == GraphTargetRef().model_dump()
     reopened = AppStore(path)
-    assert reopened.storage_schema_ledger_head() == 48
+    assert reopened.storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
 
 
 def test_migration_cancellation_wakes_parent_once_without_launching(tmp_path: Path):

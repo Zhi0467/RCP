@@ -526,12 +526,16 @@ class _ExecutionMachine(Protocol):
 
 
 class _ProjectManifest(Protocol):
-    machine_map: Mapping[str, _ExecutionMachine]
+    @property
+    def machine_map(self) -> Mapping[str, _ExecutionMachine]: ...
 
 
 class _ProjectService(Protocol):
-    history: _ProjectHistory
-    manifest: _ProjectManifest
+    @property
+    def history(self) -> _ProjectHistory: ...
+
+    @property
+    def manifest(self) -> _ProjectManifest: ...
 
 
 class _TaskExecution(Protocol):

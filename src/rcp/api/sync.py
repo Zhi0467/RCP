@@ -72,7 +72,7 @@ def sync_graph(
     authorized_by = identity_access.require_patch_capable_identity(request)
     try:
         with project_write_admission(project_id, request) as canonical_project_id:
-            service = get_graph_service(catalog, canonical_project_id, branch_id)
+            service = get_graph_service(catalog, canonical_project_id, branch_id, write=True)
             target = service.history.graph_target
             require_graph_edit_admission(store, canonical_project_id, target)
             transition = service.sync_graph_transition(
@@ -132,7 +132,7 @@ def preview_graph_sync(
     project_display_cache: DisplayCacheDependency,
 ):
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False, write=True)
     project_id = catalog.resolve_project_id(project_id)
     require_graph_edit_admission(store, project_id, service.history.graph_target)
     try:

@@ -17,6 +17,7 @@ from rcp.storage import (
     QuestionOrigin,
     QuestionStateConflict,
 )
+from tests.storage_helpers import downgrade_resource_watermarks
 
 
 @pytest.fixture
@@ -225,6 +226,7 @@ def test_episode_withdrawal_and_continuation_preserve_provenance(store, origin, 
 def test_migration_upgrades_existing_database_and_preserves_existing_rows(store) -> None:
     with sqlite3.connect(store.path) as connection:
         identity = connection.execute("SELECT * FROM space_identity").fetchall()
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE notification_question_events")
         connection.execute("DROP TABLE questions")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=33")

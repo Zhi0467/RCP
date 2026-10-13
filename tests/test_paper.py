@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
+import pytest
+
 from rcp.paper import INTRODUCTION_TEMPLATE, PaperService
+from rcp.paper.service import PaperDraftConflict
 from rcp.storage import AppStore, ProjectRecord
 from rcp.transport import StateUnavailable, StateWorkspace
 
@@ -14,6 +18,11 @@ class RecordingWorkspace(StateWorkspace):
         self.refreshes = 0
         self.transactions = 0
         self.published: list[list[str]] = []
+        self.generation = None
+
+    @contextmanager
+    def read_snapshot(self):
+        yield self.generation or self.root
 
     def refresh(self) -> bool:
         self.refreshes += 1
@@ -67,7 +76,7 @@ def test_create_is_local_first_and_next_save_synchronizes(manifest, tmp_path) ->
     assert draft["content"] == INTRODUCTION_TEMPLATE
     assert draft["base_hash"] is None
 
-    synchronized = service.save(created.content, created.base_hash)
+    synchronized = service.save(created.content, created.base_hash, created.draft_version)
 
     assert synchronized.sync_state == "synced"
     assert workspace.transactions == 1
@@ -95,7 +104,26 @@ def test_create_preserves_synced_cached_canonical_without_workspace_io(manifest,
     assert workspace.published == []
 
 
-def test_cached_canonical_without_draft_is_unsynced_while_remote_is_unavailable(
+def test_create_seeds_from_the_published_generation_not_the_mirror(manifest, tmp_path) -> None:
+    workspace = RecordingWorkspace(manifest.research_dir)
+    mirror = manifest.research_dir / "paper" / "introduction.md"
+    mirror.parent.mkdir(parents=True)
+    mirror.write_text("# Older mirror\n", encoding="utf-8")
+    workspace.generation = tmp_path / "generation"
+    (workspace.generation / "paper").mkdir(parents=True)
+    (workspace.generation / "paper" / "introduction.md").write_text(
+        "# Published\n", encoding="utf-8"
+    )
+    service = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"), workspace)
+
+    created = service.create()
+
+    assert created.content == "# Published\n"
+    assert created.sync_state == "synced"
+    assert service.snapshot().sync_state == "synced"
+
+
+def test_last_good_canonical_remains_readable_while_remote_is_unavailable(
     manifest, tmp_path
 ) -> None:
     canonical = manifest.research_dir / "paper" / "introduction.md"
@@ -109,9 +137,9 @@ def test_cached_canonical_without_draft_is_unsynced_while_remote_is_unavailable(
 
     snapshot = service.snapshot()
 
-    assert snapshot.sync_state == "unsynced"
+    assert snapshot.sync_state == "synced"
     assert snapshot.content == "# Cached introduction\n"
-    assert snapshot.canonical_available is False
+    assert snapshot.canonical_available is True
 
 
 def test_save_keeps_local_draft_when_workspace_is_unavailable(manifest, tmp_path) -> None:
@@ -120,7 +148,9 @@ def test_save_keeps_local_draft_when_workspace_is_unavailable(manifest, tmp_path
     service = PaperService(manifest, store, workspace)
     created = service.create()
 
-    unsynced = service.save("# Recover this local draft\n", created.base_hash)
+    unsynced = service.save(
+        "# Recover this local draft\n", created.base_hash, created.draft_version
+    )
 
     assert unsynced.sync_state == "unsynced"
     assert unsynced.content == "# Recover this local draft\n"
@@ -141,10 +171,14 @@ def test_template_is_created_once_and_remains_freeform(manifest, tmp_path) -> No
     assert created.content == INTRODUCTION_TEMPLATE
     assert service.create().content == INTRODUCTION_TEMPLATE
 
-    synchronized = service.save(created.content, created.base_hash)
+    synchronized = service.save(created.content, created.base_hash, created.draft_version)
     assert synchronized.sync_state == "synced"
 
-    changed = service.save("# My own structure\n\nNo enforced headings.\n", synchronized.base_hash)
+    changed = service.save(
+        "# My own structure\n\nNo enforced headings.\n",
+        synchronized.base_hash,
+        synchronized.draft_version,
+    )
     assert changed.sync_state == "synced"
     recreated = service.create()
     assert recreated.content == changed.content
@@ -155,11 +189,13 @@ def test_external_change_preserves_draft_until_later_edit_repins(manifest, tmp_p
     store = AppStore(tmp_path / "app.sqlite3")
     service = PaperService(manifest, store)
     created = service.create()
-    synchronized = service.save(created.content, created.base_hash)
+    synchronized = service.save(created.content, created.base_hash, created.draft_version)
     canonical = manifest.research_dir / "paper" / "introduction.md"
     canonical.write_text("# Changed elsewhere\n", encoding="utf-8")
 
-    behind = service.save("# Local human draft\n", synchronized.base_hash)
+    behind = service.save(
+        "# Local human draft\n", synchronized.base_hash, synchronized.draft_version
+    )
     assert behind.sync_state == "behind"
     assert behind.content == "# Local human draft\n"
     assert behind.incoming_content == "# Changed elsewhere\n"
@@ -176,11 +212,15 @@ def test_external_change_preserves_draft_until_later_edit_repins(manifest, tmp_p
     assert draft["base_hash"] == synchronized.base_hash
     assert draft["ancestor_content"] == INTRODUCTION_TEMPLATE
 
-    unchanged_retry = service.save(behind.content, behind.canonical_hash)
+    unchanged_retry = service.save(behind.content, behind.canonical_hash, behind.draft_version)
     assert unchanged_retry.sync_state == "behind"
     assert canonical.read_text(encoding="utf-8") == "# Changed elsewhere\n"
 
-    repinned = service.save("# Local human draft\n\nOne later edit.\n", behind.canonical_hash)
+    repinned = service.save(
+        "# Local human draft\n\nOne later edit.\n",
+        behind.canonical_hash,
+        unchanged_retry.draft_version,
+    )
     assert repinned.sync_state == "synced"
     assert repinned.incoming_content is None
     assert canonical.read_text(encoding="utf-8") == repinned.content
@@ -199,7 +239,7 @@ def test_snapshot_discovers_external_change_without_replacing_editor_content(
 ) -> None:
     service = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))
     created = service.create()
-    synchronized = service.save(created.content, created.base_hash)
+    synchronized = service.save(created.content, created.base_hash, created.draft_version)
     canonical = manifest.research_dir / "paper" / "introduction.md"
     canonical.write_text("# Incoming canonical\n", encoding="utf-8")
 
@@ -214,8 +254,8 @@ def test_legacy_named_draft_is_copied_to_stable_project_id(manifest, tmp_path) -
     store = AppStore(tmp_path / "app.sqlite3")
     legacy = PaperService(manifest, store)
     created = legacy.create()
-    synchronized = legacy.save(created.content, created.base_hash)
-    legacy.save("# Legacy draft\n", synchronized.base_hash)
+    synchronized = legacy.save(created.content, created.base_hash, created.draft_version)
+    legacy.save("# Legacy draft\n", synchronized.base_hash, synchronized.draft_version)
     stable_project_id = "11111111-1111-4111-8111-111111111111"
     store.upsert_project(
         ProjectRecord(
@@ -252,7 +292,7 @@ def test_legacy_named_draft_is_deleted_when_canonical_draft_already_wins(
     store = AppStore(tmp_path / "app.sqlite3")
     legacy = PaperService(manifest, store)
     legacy_created = legacy.create()
-    legacy.save("# Legacy draft\n", legacy_created.base_hash)
+    legacy.save("# Legacy draft\n", legacy_created.base_hash, legacy_created.draft_version)
     stable_project_id = "11111111-1111-4111-8111-111111111111"
     store.upsert_project(
         ProjectRecord(
@@ -267,7 +307,9 @@ def test_legacy_named_draft_is_deleted_when_canonical_draft_already_wins(
     )
     canonical = PaperService(manifest, store, project_id=stable_project_id)
     canonical_created = canonical.create()
-    canonical.save("# Canonical draft\n", canonical_created.base_hash)
+    canonical.save(
+        "# Canonical draft\n", canonical_created.base_hash, canonical_created.draft_version
+    )
 
     store.migrate_legacy_project_data(manifest.name, stable_project_id)
 
@@ -278,3 +320,24 @@ def test_legacy_named_draft_is_deleted_when_canonical_draft_already_wins(
     assert [dict(row) for row in rows] == [
         {"project_id": stable_project_id, "content": "# Canonical draft\n"}
     ]
+
+
+@pytest.mark.parametrize("created_first", [False, True])
+def test_only_one_save_accepts_a_loaded_draft_version(manifest, tmp_path, created_first) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    first = PaperService(manifest, store)
+    second = PaperService(manifest, store)
+    loaded = first.create() if created_first else first.snapshot()
+
+    def save(service, content):
+        try:
+            return service.save(content, loaded.base_hash, loaded.draft_version)
+        except PaperDraftConflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        attempts = [pool.submit(save, first, "# First"), pool.submit(save, second, "# Second")]
+        accepted = [result for attempt in attempts if (result := attempt.result()) is not None]
+    assert len(accepted) == 1
+    assert first.snapshot() == accepted[0]
+    assert first.canonical_path.read_text() == accepted[0].content

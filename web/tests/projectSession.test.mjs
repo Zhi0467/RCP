@@ -11,14 +11,9 @@ const server = await createServer({
 });
 const {
   emptyProjectSessionState,
-  heartbeatNamesUnknownId,
-  heartbeatTaskStatusMoved,
   projectDraftPreviewEffectInputs,
-  projectHeartbeatSnapshotDisposition,
-  projectHeartbeatMetadataChanged,
   projectSessionReducer,
   projectSettingsSavedProject,
-  reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
   trustedProjectTransitionManifest,
 } = await server.ssrLoadModule("/src/graph/projectSession.ts");
@@ -579,6 +574,11 @@ for (const navigation of ["another project", "another view"]) {
         state: alphaTab,
       });
       assert.strictEqual(projectSessionReducer(state, olderSave), state);
+      state = projectSessionReducer(state, {
+        kind: "snapshot_applied",
+        snapshot: snapshot(1, { paper: { content: "Initial introduction" } }),
+        preserve_readiness: false,
+      });
     } else {
       // Merely leaving Paper allows its save to finish in the other view.
       assert.deepEqual(projectSessionReducer(state, olderSave).project.paper, olderSave.paper);
@@ -672,93 +672,24 @@ test("a provider resolve keeps the rendered compute matrix and takes fresh provi
   assert.deepEqual(applied.provider_readiness.laptop.codex, readiness);
 });
 
-test("a populated project session survives tab serialization and restoration", () => {
-  let populated = projectSessionReducer(emptyProjectSessionState("alpha"), {
+test("tab serialization retains only human UI and drafts", () => {
+  const state = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",
-    snapshot: snapshot(1),
+    snapshot: snapshot(2),
     preserve_readiness: false,
   });
-  populated = projectSessionReducer(populated, {
-    kind: "human_draft_loaded",
-    draft: {
-      version: 1,
-      base_revision: 1,
-      nodes: {},
-      removed_node_ids: [],
-      proposals: { "proposal/one": { decision: "rejected" } },
-      ontology: null,
-      custom_nodes: {},
-      added_edges: [],
-      removed_edge_ids: [],
-      edge_base_revision: null,
-    },
-  });
-  populated = projectSessionReducer(populated, {
-    kind: "manifest_valid",
-    project_id: "alpha",
-    manifest: { ruleset_tag: "rcp.lifecycle.v1", triggers: [] },
-  });
-  populated = projectSessionReducer(populated, {
-    kind: "draft_preview_changed",
-    projection: projection(2),
-    conflict: "last valid preview retained",
-    pending: true,
-  });
-
-  const serialized = serializeProjectSessionTabState(populated);
-  const restored = projectSessionReducer(emptyProjectSessionState(), {
-    kind: "restore_tab",
-    project_id: "alpha",
-    state: serialized,
-  });
-
-  assert.equal("draftPreviewPending" in serialized, false);
-  assert.equal(restored.draftPreviewPending, false);
-  assert.deepEqual(serializeProjectSessionTabState(restored), serialized);
-});
-
-test("tab restoration replaces project identity and draft in one reducer transition", () => {
-  let projectY = projectSessionReducer(emptyProjectSessionState("project-y"), {
-    kind: "snapshot_applied",
-    snapshot: snapshot(7, { id: "project-y", name: "Project Y" }),
-    preserve_readiness: false,
-  });
-  projectY = projectSessionReducer(projectY, {
-    kind: "human_draft_loaded",
-    draft: humanDraft(7, "Project Y draft"),
-  });
-  const projectX = projectSessionReducer(emptyProjectSessionState("project-x"), {
-    kind: "snapshot_applied",
-    snapshot: snapshot(0, { id: "project-x", name: "Project X" }),
-    preserve_readiness: false,
-  });
-
-  const restored = projectSessionReducer(projectY, {
-    kind: "restore_tab",
-    project_id: "project-x",
-    state: serializeProjectSessionTabState(projectX),
-  });
-
-  assert.equal(restored.projectId, "project-x");
-  assert.equal(restored.project.id, "project-x");
-  assert.equal(restored.humanDraft, null);
-  assert.deepEqual(projectDraftPreviewEffectInputs(projectY, "project-x"), {
-    project: null,
-    humanDraft: null,
-  });
-  assert.deepEqual(projectDraftPreviewEffectInputs(restored, "project-x"), {
-    project: restored.project,
-    humanDraft: null,
-  });
-
-  const mismatchedCache = projectSessionReducer(projectY, {
-    kind: "restore_tab",
-    project_id: "project-x",
-    state: serializeProjectSessionTabState(projectY),
-  });
-  assert.equal(mismatchedCache.projectId, "project-x");
-  assert.equal(mismatchedCache.project, null);
-  assert.equal(mismatchedCache.humanDraft, null);
+  const saved = serializeProjectSessionTabState(state);
+  assert.deepEqual(
+    Object.keys(saved).sort(),
+    [
+      "projectId",
+      "graphTarget",
+      "humanDraft",
+      "paperEditorGeneration",
+      "draftReconciliationDiscardedProposalIds",
+    ].sort(),
+  );
+  assert.equal(saved.project, undefined);
 });
 
 test("reset replaces project identity and a stored draft in one reducer transition", () => {
@@ -824,220 +755,10 @@ test("an empty project session survives tab serialization and restoration", () =
     state: serialized,
   });
 
-  assert.deepEqual(serializeProjectSessionTabState(restored), serialized);
-});
-
-test("a heartbeat that finishes after its inactive tab reactivates reloads the active project", () => {
-  assert.deepEqual(
-    projectHeartbeatSnapshotDisposition({
-      requestedProjectId: "alpha",
-      activeProjectId: "alpha",
-      tabOpen: true,
-      inactiveState: null,
-      snapshotRevision: 3,
-      renderedRevision: 2,
-    }),
-    { kind: "reload_active" },
-  );
-  assert.deepEqual(
-    projectHeartbeatSnapshotDisposition({
-      requestedProjectId: "alpha",
-      activeProjectId: "alpha",
-      tabOpen: true,
-      inactiveState: null,
-      snapshotRevision: 2,
-      renderedRevision: 2,
-    }),
-    { kind: "ignore" },
-  );
-  assert.deepEqual(
-    projectHeartbeatSnapshotDisposition({
-      requestedProjectId: "alpha",
-      activeProjectId: "alpha",
-      tabOpen: false,
-      inactiveState: null,
-      snapshotRevision: 3,
-      renderedRevision: 2,
-    }),
-    { kind: "ignore" },
-  );
-});
-
-test("an unreadable inactive heartbeat snapshot fails instead of becoming a silent cache miss", () => {
-  const retained = serializeProjectSessionTabState(
-    projectSessionReducer(emptyProjectSessionState("alpha"), {
-      kind: "snapshot_applied",
-      snapshot: snapshot(1),
-      preserve_readiness: false,
-    }),
-  );
-
-  assert.throws(() =>
-    reconcileInactiveProjectSession(retained, {
-      ...snapshot(2),
-      graph: null,
-    }),
-  );
-});
-
-test("heartbeat metadata detects same-revision reconnection without requiring a graph change", () => {
-  const stale = { snapshot_freshness: "stale", last_remote_sync_at: "2026-09-01T12:00:00Z" };
-  const fresh = { snapshot_freshness: "fresh", last_remote_sync_at: "2026-09-01T12:01:00Z" };
-  assert.equal(projectHeartbeatMetadataChanged(fresh, stale), true);
-  assert.equal(
-    projectHeartbeatMetadataChanged(fresh, {
-      ...fresh,
-      last_remote_sync_at: stale.last_remote_sync_at,
-    }),
-    true,
-  );
-  assert.equal(projectHeartbeatMetadataChanged(fresh, fresh), false);
-  assert.equal(projectHeartbeatMetadataChanged({}, fresh), false);
-  // A background compute probe finishing is a change; an older snapshot without
-  // the field counts as never probed.
-  const probed = { ...fresh, compute_probes_probed_at: "2026-09-01T12:02:00Z" };
-  assert.equal(projectHeartbeatMetadataChanged(probed, fresh), true);
-  assert.equal(projectHeartbeatMetadataChanged(probed, probed), false);
-  assert.equal(
-    projectHeartbeatMetadataChanged({ ...fresh, compute_probes_probed_at: null }, fresh),
-    false,
-  );
-  for (const renderedRevision of [7, 8]) {
-    assert.deepEqual(
-      projectHeartbeatSnapshotDisposition({
-        requestedProjectId: "alpha",
-        activeProjectId: "alpha",
-        tabOpen: true,
-        inactiveState: null,
-        snapshotRevision: 7,
-        renderedRevision,
-        metadataChanged: true,
-      }),
-      { kind: renderedRevision === 7 ? "reload_active" : "ignore" },
-    );
-  }
-});
-
-test("inactive same-revision reconnection applies metadata and preserves the human draft", () => {
-  const node = {
-    id: "hyp/example",
-    type: "hypothesis",
-    title: "Canonical title",
-    updated_rev: 7,
-    created_rev: 7,
-    standing: "asserted",
-    source_refs: [],
-    extension_fields: {},
-  };
-  const offline = snapshot(7, {
-    graph: graph(7, node),
-    canonical_state: { remote: true, reachable: false },
-    last_remote_sync_at: "2026-09-01T12:00:00Z",
+  assert.deepEqual(serializeProjectSessionTabState(restored), {
+    ...serialized,
+    paperEditorGeneration: serialized.paperEditorGeneration + 1,
   });
-  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
-    kind: "snapshot_applied",
-    snapshot: offline,
-    preserve_readiness: false,
-  });
-  state = projectSessionReducer(state, { kind: "human_draft_loaded", draft: humanDraft(7) });
-  const retained = serializeProjectSessionTabState(state);
-  const fresh = {
-    ...offline,
-    canonical_state: { remote: true, reachable: true },
-    last_remote_sync_at: "2026-09-01T12:01:00Z",
-  };
-  const disposition = projectHeartbeatSnapshotDisposition({
-    requestedProjectId: "alpha",
-    activeProjectId: "beta",
-    tabOpen: true,
-    inactiveState: retained,
-    snapshotRevision: 7,
-    renderedRevision: 7,
-    metadataChanged: true,
-  });
-  assert.equal(disposition.kind, "reconcile_inactive");
-  const next = reconcileInactiveProjectSession(disposition.state, fresh);
-  assert.equal(next.project.canonical_state.reachable, true);
-  assert.equal(next.project.last_remote_sync_at, fresh.last_remote_sync_at);
-  assert.equal(next.renderedRevision, 7);
-  assert.equal(next.humanDraft.base_revision, retained.humanDraft.base_revision);
-  assert.deepEqual(
-    next.humanDraft.nodes[node.id].changes,
-    retained.humanDraft.nodes[node.id].changes,
-  );
-  assert.equal(next.humanDraft.nodes[node.id].base_updated_rev, 7);
-});
-
-test("unchanged branch heartbeat ignores main-cache freshness metadata", () => {
-  const branch = { kind: "branch", branch_id: "branch-one" };
-  const metadataChanged = projectHeartbeatMetadataChanged(
-    { snapshot_freshness: "fresh", last_remote_sync_at: null },
-    { snapshot_freshness: "fresh", last_remote_sync_at: "2026-09-01T12:01:00Z" },
-    branch,
-  );
-  assert.equal(metadataChanged, false);
-  assert.deepEqual(
-    projectHeartbeatSnapshotDisposition({
-      requestedProjectId: "alpha",
-      activeProjectId: "alpha",
-      tabOpen: true,
-      inactiveState: null,
-      snapshotRevision: 7,
-      renderedRevision: 7,
-      metadataChanged,
-    }),
-    { kind: "ignore" },
-  );
-});
-
-test("a heartbeat naming an unloaded record asks for its list", () => {
-  assert.equal(heartbeatNamesUnknownId("teammate", ["mine"]), true);
-  assert.equal(heartbeatNamesUnknownId("mine", ["mine"]), false);
-  assert.equal(heartbeatNamesUnknownId(null, ["mine"]), false);
-  assert.equal(heartbeatNamesUnknownId(undefined, []), false);
-});
-
-test("a task status signal rereads tasks only when it moved", () => {
-  assert.equal(heartbeatTaskStatusMoved("a", undefined), true);
-  assert.equal(heartbeatTaskStatusMoved("b", "a"), true);
-  assert.equal(heartbeatTaskStatusMoved("a", "a"), false);
-  assert.equal(heartbeatTaskStatusMoved(undefined, "a"), false);
-});
-
-test("a changed settings or Experiment signal reloads the main view", () => {
-  const rendered = { settings_signal: "s1", experiment_signal: "e1" };
-  assert.equal(projectHeartbeatMetadataChanged({ ...rendered }, rendered), false);
-  assert.equal(
-    projectHeartbeatMetadataChanged({ ...rendered, settings_signal: "s2" }, rendered),
-    true,
-  );
-  assert.equal(
-    projectHeartbeatMetadataChanged({ ...rendered, experiment_signal: "e2" }, rendered),
-    true,
-  );
-  // An older server sends no signal; that is not a change.
-  assert.equal(projectHeartbeatMetadataChanged({}, rendered), false);
-});
-
-test("a branch view compares its Experiment signal only against the same graph", () => {
-  const branch = { kind: "branch", branch_id: "b" };
-  const rendered = { settings_signal: "s1", experiment_signal: "e1", graph_target: branch };
-  // The branch heartbeat names no target; it was read for the branch.
-  assert.equal(
-    projectHeartbeatMetadataChanged({ experiment_signal: "e2" }, rendered, branch),
-    true,
-  );
-  // Settings stay main-only.
-  assert.equal(projectHeartbeatMetadataChanged({ settings_signal: "s2" }, rendered, branch), false);
-  // A main snapshot never compares against a branch page.
-  assert.equal(
-    projectHeartbeatMetadataChanged(
-      { experiment_signal: "e2", graph_target: { kind: "main" } },
-      rendered,
-      branch,
-    ),
-    false,
-  );
 });
 
 test("a replacement backend accepts its own revision and invalidates old Sync fences", () => {
