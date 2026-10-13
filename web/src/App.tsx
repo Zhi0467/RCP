@@ -929,6 +929,7 @@ function MemberApp({
     activityTask,
     beginTasksRead,
     replaceTasks,
+    replaceTasksReadBeforeRestore,
     consumeTerminalTasks,
     upsertTask,
     recordStartedTask,
@@ -1474,27 +1475,31 @@ function MemberApp({
             observation.task_status_signal,
             taskStatusSignalsRef.current.get(requestedProjectId),
           );
+          let tasksCurrent = true;
           if (
             steerMoved ||
             taskStatusMoved ||
             heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)
           ) {
             const tasksRead = beginTasksRead();
-            const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
+            // A failed read retries next beat; this one still checks the graph below.
+            const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
             if (!isActiveProject(requestedProjectId)) return;
-            replaceTasks(nextTasks, tasksRead);
-            // A teammate's turn may have started and finished between heartbeats;
-            // its chat history then changed without any status change seen here.
-            if (
-              nextTasks.some(
-                (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
+            if (nextTasks) {
+              replaceTasks(nextTasks, tasksRead);
+              // A teammate's turn may have started and finished between heartbeats;
+              // its chat history then changed without any status change seen here.
+              if (
+                nextTasks.some(
+                  (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
+                )
               )
-            )
-              chatRefreshOwedRef.current.set(requestedProjectId, {});
+                chatRefreshOwedRef.current.set(requestedProjectId, {});
+            } else tasksCurrent = false;
           }
-          if (observation.steer_epoch !== undefined)
+          if (tasksCurrent && observation.steer_epoch !== undefined)
             steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
-          if (observation.task_status_signal !== undefined)
+          if (tasksCurrent && observation.task_status_signal !== undefined)
             taskStatusSignalsRef.current.set(requestedProjectId, observation.task_status_signal);
           // Owed until it succeeds: the task is already listed, so no later
           // heartbeat would notice it again.
@@ -1555,14 +1560,21 @@ function MemberApp({
             taskStatusSignalsRef.current.get(requestedProjectId),
           )
         ) {
-          const nextTasks = await api<AgentTask[]>(`${base}/tasks`);
-          // Became active meanwhile: the active heartbeat owns the list now.
-          if (isActiveProject(requestedProjectId)) return;
-          updateInactiveProjectStates(requestedProjectId, (state) => ({
-            ...state,
-            tasks: nextTasks,
-          }));
-          taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
+          // A failed read retries next beat; this one still checks the graph below.
+          const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
+          if (nextTasks && isActiveProject(requestedProjectId)) {
+            // Activated mid-read: the restored list is older than this one.
+            if (replaceTasksReadBeforeRestore(nextTasks))
+              taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
+            return;
+          }
+          if (nextTasks) {
+            updateInactiveProjectStates(requestedProjectId, (state) => ({
+              ...state,
+              tasks: nextTasks,
+            }));
+            taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
+          }
         }
         const retained = inactiveCachedProjectState(requestedProjectId);
         if (
@@ -1623,6 +1635,7 @@ function MemberApp({
       removeProject,
       beginTasksRead,
       replaceTasks,
+      replaceTasksReadBeforeRestore,
       runProjectHeartbeat,
       updateInactiveProjectStates,
     ],
