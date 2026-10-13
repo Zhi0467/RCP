@@ -644,6 +644,7 @@ def stored_artifact_live(
     artifact_id: str,
     version_id: str,
     *,
+    head: str | None = None,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
     store: Annotated[AppStore, Depends(get_store)],
 ):
@@ -652,7 +653,7 @@ def stored_artifact_live(
     require_registered_project(catalog, project_id)
     _stored_artifact(store, project_id, artifact_id)
     try:
-        snapshot = artifact_live_snapshot(store, catalog, artifact_id, version_id)
+        snapshot = artifact_live_snapshot(store, catalog, artifact_id, version_id, head=head)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Artifact version not found") from exc
     except ValueError as exc:

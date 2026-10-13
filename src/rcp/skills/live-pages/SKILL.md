@@ -2,8 +2,8 @@
 id: live-pages
 kind: skill
 label: Live pages
-version: 1.3.0
-description: Build self-contained HTML artifacts that redraw from bounded job, node, episode, file, and folder snapshots delivered by RCP.
+version: 1.4.0
+description: Build self-contained HTML artifacts that redraw from bounded graph, job, node, episode, file, and folder snapshots delivered by RCP.
 dependencies:
 ---
 
@@ -108,6 +108,43 @@ unavailable, never zero. JSONL snapshots decode each line; CSV snapshots contain
 arrays, including the header for whole reads. Prefer JSONL for large tails:
 CSV byte tails beyond the read cap are unavailable because clipped multiline
 records cannot be decoded reliably.
+
+## Live graph board
+
+Declare exactly one parameter-free `graph` need to receive the artifact's bound
+main or branch graph. It may accompany node/file/files needs, never job/episode.
+Graph pages never finalize. Each node has `id`, `type`, `title`,
+`title_truncated`, `status`, and `standing`; each edge has `source`, `relation`,
+and `target`. Titles are bounded; ids remain whole. No bodies are sent.
+Filter these arrays in your own JavaScript. The viewer caches complete graphs
+and reuses them when unchanged. An over-cap read supplies an error code without
+data; retain the last complete display until polling recovers. The wrapper marks
+stale data with a persistent red edge.
+
+```html
+<!doctype html><title>Graph board</title>
+<script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"graph"}]}</script>
+<div id="board"></div>
+<script>
+addEventListener('message', ({data}) => {
+  if (data?.kind !== 'rcp-live-data') return;
+  const graph = data.snapshots.find(s => s.kind === 'graph');
+  if (!graph || graph.error || !graph.nodes) return;
+  const board = document.getElementById('board');
+  board.replaceChildren();
+  for (const node of graph.nodes) {
+    const button = document.createElement('button');
+    button.textContent = node.title;
+    button.onclick = () => parent.postMessage({type:'rcp-open-node', version:1, id:node.id}, '*');
+    board.append(button);
+  }
+});
+</script>
+```
+
+A node click opens RCP's native node panel only when this artifact is the active
+pinned Research tab. Other viewers ignore it. This one-way action returns no
+acknowledgement and grants no request capability.
 
 ## Episode progress
 

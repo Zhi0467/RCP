@@ -21,7 +21,10 @@ def test_live_endpoint_pins_version_and_rechecks_project(manifest, tmp_path):
     metrics.write_text('{"loss": 1.0}\n')
     declaration = {
         "version": 1,
-        "needs": [{"kind": "file", "path": str(metrics), "read": "tail", "format": "jsonl"}],
+        "needs": [
+            {"kind": "file", "path": str(metrics), "read": "tail", "format": "jsonl"},
+            {"kind": "graph"},
+        ],
     }
     html = '<script type="application/json" id="rcp-live">' + json.dumps(declaration) + "</script>"
     version = store.publish_artifact_version(
@@ -41,6 +44,11 @@ def test_live_endpoint_pins_version_and_rechecks_project(manifest, tmp_path):
         assert result.headers["cache-control"] == "no-store"
         assert result.json()["snapshots"][0]["rows"] == [{"loss": 1.0}]
         assert result.json()["final"] is False
+        graph = result.json()["snapshots"][1]
+        cached = client.get(live_url, params={"head": graph["head"]})
+        assert cached.json()["snapshots"][1] == dict(
+            kind="graph", head=graph["head"], unchanged=True
+        )
         metrics.write_text('{"loss": 0.5}\n')
         assert client.get(live_url).json()["snapshots"][0]["rows"] == [{"loss": 0.5}]
         assert client.get(live_url.replace(project_id, "other-project")).status_code == 404
