@@ -106,6 +106,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "notification_question_events",
         # Questions bind to source-machine sessions and turns.
         "questions",
+        # Seen graph heads bind to source-machine native sessions.
+        "graph_seen_heads",
         "digest_events",
         "digest_marks",
         "digest_heads",

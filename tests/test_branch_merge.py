@@ -11,6 +11,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.config import Manifest
@@ -841,6 +842,8 @@ async def test_conflict_only_empty_candidate_resolves_to_main_without_append(
             stage=stage,
             write_scope=_local_scope(stage, context),
             validator_command="python3 validator.py validate patch.json",
+            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+            history_client="python3 validator.py",
             outcome=outcome,
         )
     ]
@@ -893,6 +896,8 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(
             stage=stage,
             write_scope=scope,
             validator_command="python3 validator.py validate patch.json",
+            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+            history_client="python3 validator.py",
             outcome=outcome,
         )
     ]
@@ -911,6 +916,8 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(
     assert any('"event":"done"' in frame for frame in frames)
     # The rebase replaces its context inline and points back to the start contract.
     _assert_points_to_start_contract(launcher.prompts)
+    assert "current.graph_changed_since: `main@4`" in launcher.prompts[1]
+    assert "current.graph_head: `main@5`" in launcher.prompts[1]
     assert first.context_id not in launcher.prompts[1]
     assert f"- merge_context_id: `{second.context_id}`" in launcher.prompts[1]
 
@@ -971,6 +978,8 @@ async def test_semantic_conflict_uses_two_bounded_same_session_corrections(
             stage=stage,
             write_scope=scope,
             validator_command="python3 validator.py validate patch.json",
+            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+            history_client="python3 validator.py",
             outcome=outcome,
         )
     ]
@@ -1019,6 +1028,8 @@ async def test_empty_semantic_delta_returns_no_change_receipt_without_provider(
             stage=stage,
             write_scope=scope,
             validator_command="python3 validator.py validate patch.json",
+            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+            history_client="python3 validator.py",
             outcome=outcome,
         )
     ]
@@ -1059,6 +1070,8 @@ async def test_effective_main_no_change_returns_receipt_without_provider(
             stage=stage,
             write_scope=_local_scope(stage, context),
             validator_command="python3 validator.py validate patch.json",
+            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+            history_client="python3 validator.py",
             outcome=outcome,
         )
     ]

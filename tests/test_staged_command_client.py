@@ -8,7 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -1818,8 +1818,11 @@ async def test_permanent_mailbox_failure_answers_later_calls(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments", [("status",), ("graph_diff", "@0", "@head"), ("graph_log", "n")]
+)
 async def test_suspended_mailbox_restores_completed_response_and_same_credential(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, arguments
 ) -> None:
     import threading
     from dataclasses import replace
@@ -1863,7 +1866,7 @@ async def test_suspended_mailbox_restores_completed_response_and_same_credential
             poll_seconds=0.001,
         )
     )
-    caller = asyncio.create_task(_run_client(staged, "status"))
+    caller = asyncio.create_task(_run_client(staged, *arguments))
     await async_wait_until(first.done)
     await first
     assert len(effects) == 1
@@ -1896,7 +1899,7 @@ async def test_suspended_mailbox_restores_completed_response_and_same_credential
         assert code == 0, output
         assert len(effects) == 1
         # The previously staged client and its unchanged credential still work.
-        code, output = await _run_client(staged, "status")
+        code, output = await _run_client(staged, *arguments)
         assert code == 0, output
         assert len(effects) == 2
     finally:
@@ -2381,3 +2384,97 @@ def test_file_client_acknowledges_only_consumed_answer(
     else:
         assert code == 2
         assert output["result"]["delivery"] == "unknown"
+
+
+def test_history_request_bounds_and_read_only_classification() -> None:
+    from rcp.agents.command_protocol import command_requires_idempotency_key
+    from rcp.limits import GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT
+
+    for verb, arguments in (
+        ("graph_diff", {"from": "main@0", "to": "@head", "ids": ["node-1"]}),
+        ("graph_diff", {"branch_changes": "branch-1"}),
+        ("graph_log", {"id": "node-1", "at": "branch:branch-1@2"}),
+    ):
+        request = validate_command_request(_request_document(verb, arguments))
+        assert not command_requires_idempotency_key(request.verb)
+        assert validate_command_request(request.model_dump_json()) == request
+    for verb, arguments in (
+        ("graph_diff", {"from": "@0"}),
+        ("graph_diff", {"from": "@0", "to": "@head", "branch_changes": "b"}),
+        ("graph_diff", {"from": "@0", "to": "other-project@2"}),
+        (
+            "graph_diff",
+            {"from": "@0", "to": "@head", "ids": ["a"] * (GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT + 1)},
+        ),
+        ("graph_log", {"id": "a", "at": "@-1"}),
+    ):
+        with pytest.raises(ValueError):
+            validate_command_request(_request_document(verb, arguments))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authority", ["validate_only", "broker"])
+async def test_history_verbs_round_trip_through_staged_client_and_broker(
+    tmp_path, authority
+) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id="episode" if authority == "broker" else None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+        authority=authority,
+    )
+    seen = []
+
+    def handler(request, _identity):
+        seen.append(request.arguments.model_dump(mode="json"))
+        return CommandResponse(
+            request_id=request.request_id, status="ok", result={"cursor": "next"}
+        )
+
+    stop = asyncio.Event()
+    async with (
+        staged.invocation_gate.serve_current_session()
+        if staged.invocation_gate is not None
+        else nullcontext()
+    ):
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            for arguments in (
+                ("graph_diff", "main@0", "@head", "node-1", "--cursor", "previous"),
+                ("graph_log", "node-1", "--at", "branch:b@head"),
+                ("graph-diff", "--branch-changes", "b", "--ids", "node-1", "node-2"),
+            ):
+                code, output = await _run_client(staged, *arguments)
+                assert code == 0, output
+                assert json.loads(output)["result"] == {"cursor": "next"}
+        finally:
+            stop.set()
+            await server
+    assert seen == [
+        {
+            "from": "main@0",
+            "to": "@head",
+            "ids": ["node-1"],
+            "cursor": "previous",
+            "branch_changes": None,
+        },
+        {"id": "node-1", "at": "branch:b@head", "cursor": None},
+        {
+            "from": None,
+            "to": None,
+            "ids": ["node-1", "node-2"],
+            "cursor": None,
+            "branch_changes": "b",
+        },
+    ]

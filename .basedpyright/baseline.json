@@ -4322,14 +4322,6 @@
                     "endColumn": 46,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/tasks/branch_merge.py": [
@@ -4380,14 +4372,6 @@
                 "range": {
                     "startColumn": 37,
                     "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 12,
-                    "endColumn": 28,
                     "lineCount": 1
                 }
             },

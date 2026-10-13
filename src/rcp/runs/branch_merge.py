@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -44,9 +44,13 @@ from rcp.agents.continuation_prompt import (
     changed_since_master,
     classify,
     compose,
+    graph_head_delta,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.prompts import graph_read_contract
 from rcp.agents.schema import (
     AgentProjectNode,
     OrchestratorAgentPatch,
@@ -122,8 +126,13 @@ from rcp.history.delta import (
     ProposalSemanticDelta,
     semantic_delta,
 )
+from rcp.history.queries import StepRecord
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
-from rcp.runs.session_master import record_inline_prompt, record_session_master
+from rcp.runs.session_master import (
+    prepare_graph_observation,
+    record_inline_prompt,
+    record_session_master,
+)
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
@@ -137,7 +146,7 @@ from rcp.runs.shared import (
     _stream_agent_events,
     _task_token,
 )
-from rcp.service import RunRequest, _proposal_judgment_patch
+from rcp.service import ProjectService, RunRequest, _proposal_judgment_patch
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
@@ -504,12 +513,13 @@ def build_semantic_delta(
 
 
 def branch_human_review_changes(
-    patches: list[Patch], base: GraphState, branch: GraphState
+    patches: Sequence[StepRecord], base: GraphState, branch: GraphState
 ) -> list[BranchHumanReviewChange]:
     """Retain exact human initiating writes, never generated actions or summary claims."""
 
     latest: dict[tuple[str, str], BranchHumanReviewChange] = {}
-    for patch in patches:
+    for step in patches:
+        patch = step.patch
         if patch.admission != "accepted":
             continue
         if patch.author != "human":
@@ -1789,6 +1799,10 @@ async def stream_branch_merge_run(
     write_scope: ProjectWriteScope,
     validator_command: str,
     outcome: BranchMergeRunOutcome,
+    graph_read_scope: GraphReadScope,
+    history_client: str,
+    invocation_gate: ProviderInvocationGate | None = None,
+    service: ProjectService | None = None,
     execution: Any | None = None,
     binary: str | None = None,
     max_main_rebases: int = MAX_BRANCH_MERGE_REBASE_ROUNDS,
@@ -1812,6 +1826,9 @@ async def stream_branch_merge_run(
         raise ValueError("branch merge requires a staged live validator command")
     if max_main_rebases < 1:
         raise ValueError("branch merge main rebase bound must be positive")
+
+    if execution is not None and service is None:
+        raise ValueError("A tracked branch merge requires its project history service.")
 
     context = load_context()
     require_graph_only_merge_scope(write_scope, context=context, stage=stage, code_roots=code_roots)
@@ -1858,6 +1875,20 @@ async def stream_branch_merge_run(
     candidate: Patch | None = None
     candidate_problem: BranchMergeCandidateProblem | None = None
     first_turn = True
+    delivered_head: GraphHeadRef | None = None
+
+    def observe_snapshot() -> GraphHeadRef:
+        if service is not None:
+            return prepare_graph_observation(
+                execution,
+                service,
+                owner_id=context.metadata.episode_id,
+                target=graph_read_scope.target,
+                revision=context.main_head.revision,
+                native_session_id=session_id,
+                previous_head=delivered_head,
+            )
+        return context.main_head
 
     while True:
         deterministic_ops, residue = build_deterministic_merge_ops(context)
@@ -1897,16 +1928,21 @@ async def stream_branch_merge_run(
             plan_path = _stage_merge_plan(
                 stage, token, deterministic_ops, round_number=outcome.rebase_rounds
             )
-            contract = branch_merge_task_contract(
-                context_path=context_path,
-                context_id=context.context_id,
-                patch_path=patch_path,
-                validator_command=validator_command,
-                review_contract_json=context.review_contract.model_dump_json(indent=2),
-                plan_path=plan_path,
-                residue_block=render_merge_residue(residue),
-                ontology_extensions=_has_ontology_extensions(context.main_graph),
-                code_block=code_block,
+            staged_head = observe_snapshot()
+            contract = graph_read_contract(
+                branch_merge_task_contract(
+                    context_path=context_path,
+                    context_id=context.context_id,
+                    patch_path=patch_path,
+                    validator_command=validator_command,
+                    review_contract_json=context.review_contract.model_dump_json(indent=2),
+                    plan_path=plan_path,
+                    residue_block=render_merge_residue(residue),
+                    ontology_extensions=_has_ontology_extensions(context.main_graph),
+                    code_block=code_block,
+                ),
+                graph_read_scope,
+                history_client,
             )
             master_values = merge_values = _merge_master_values(
                 context,
@@ -1963,6 +1999,7 @@ async def stream_branch_merge_run(
                 session_id=None,
                 required_session_id=None,
                 hidden_read_scope=hidden_read_scope,
+                invocation_gate=invocation_gate,
             )
             async with aclosing(events) as frames:
                 async for frame in frames:
@@ -1976,6 +2013,7 @@ async def stream_branch_merge_run(
                 outcome.status = "rejected"
                 outcome.diagnostic = "The branch merge provider did not complete its first turn."
                 return
+            delivered_head = staged_head
             try:
                 candidate_text = _read_candidate_text(stage)
                 candidate = parse_branch_merge_candidate(
@@ -2089,6 +2127,7 @@ async def stream_branch_merge_run(
             )
             master = _restaged_merge_master(stage, session_master, master_values)
             rules, session_master = _changed_graph_rules(context, session_master)
+            staged_head = observe_snapshot()
             prompt = compose(
                 classify(LaunchPhase(session_id=session_id, phase="correction")),
                 parts=branch_merge_rebase_parts(
@@ -2099,7 +2138,10 @@ async def stream_branch_merge_run(
                 )
                 + rules,
                 master=master,
-                delta=changed_since_master(master, merge_values),
+                delta={
+                    **(changed_since_master(master, merge_values) or {}),
+                    **graph_head_delta(delivered_head, staged_head),
+                },
             )
             contract_path = record_inline_prompt(
                 execution,
@@ -2130,6 +2172,7 @@ async def stream_branch_merge_run(
                 session_id=session_id,
                 required_session_id=session_id,
                 hidden_read_scope=hidden_read_scope,
+                invocation_gate=invocation_gate,
             )
             async with aclosing(events) as frames:
                 async for frame in frames:
@@ -2144,6 +2187,7 @@ async def stream_branch_merge_run(
                 outcome.status = "retryable"
                 outcome.diagnostic = "The branch merge rebase turn did not complete."
                 return
+            delivered_head = staged_head
             try:
                 candidate_text = _read_candidate_text(stage)
                 candidate = parse_branch_merge_candidate(
@@ -2310,6 +2354,7 @@ async def stream_branch_merge_run(
         }
         master = _restaged_merge_master(stage, session_master, master_values)
         rules, session_master = _changed_graph_rules(context, session_master)
+        staged_head = observe_snapshot()
         prompt = compose(
             classify(LaunchPhase(session_id=session_id, phase="correction")),
             parts=branch_merge_correction_parts(
@@ -2317,7 +2362,10 @@ async def stream_branch_merge_run(
             )
             + rules,
             master=master,
-            delta=changed_since_master(master, merge_values),
+            delta={
+                **(changed_since_master(master, merge_values) or {}),
+                **graph_head_delta(delivered_head, staged_head),
+            },
         )
         contract_path = record_inline_prompt(
             execution,
@@ -2349,6 +2397,7 @@ async def stream_branch_merge_run(
             session_id=session_id,
             required_session_id=session_id,
             hidden_read_scope=hidden_read_scope,
+            invocation_gate=invocation_gate,
         )
         async with aclosing(events) as frames:
             async for frame in frames:
@@ -2363,6 +2412,7 @@ async def stream_branch_merge_run(
             outcome.status = "rejected"
             outcome.diagnostic = "The branch merge correction turn did not complete."
             return
+        delivered_head = staged_head
         try:
             candidate_text = _read_candidate_text(stage)
             digest = hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
@@ -3015,6 +3065,7 @@ def _provider_turn(
     session_id: str | None,
     required_session_id: str | None,
     hidden_read_scope: HiddenReadScope | None,
+    invocation_gate: ProviderInvocationGate | None = None,
 ) -> tuple[_ProviderOutcome, AsyncIterator[str]]:
     provider_outcome = _ProviderOutcome(session_id=session_id)
     inputs = (
@@ -3038,6 +3089,7 @@ def _provider_turn(
         execution=execution,
         remote_stage=stage.remote_stage,
         capability="orchestrate",
+        invocation_gate=invocation_gate,
         outcome=provider_outcome,
         binary=binary,
         required_session_id=required_session_id,

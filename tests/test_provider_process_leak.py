@@ -34,19 +34,21 @@ def test_local_provider_discovery_stays_unconfigured(provider: str) -> None:
 
 
 def test_a_real_dispatch_without_a_lifespan_stages_no_provider_process(
-    manifest: Manifest, tmp_path: Path
+    manifest: Manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A dispatch over the real launcher must refuse before a broker exists.
+    """An unavailable provider must refuse before starting its staged broker.
 
-    This is the leak's exact shape: `create_app` with an unentered `TestClient`
-    runs no lifespan, so nothing pauses the daemon worker this starts. A staged
-    broker would outlive the pytest process that orphaned it, holding its
-    `/tmp/rcp-command-*.sock` for as long as it ran.
-
-    The staged broker script stands in for the socket: `/tmp` is shared machine
-    state that a concurrent suite or the developer's own server also writes, so
-    only this data directory can be asserted on.
+    An unentered TestClient has no lifespan to stop a leaked worker. Inspect
+    process creation directly: a staged script is now a normal history input,
+    and does not mean a broker or provider process was started.
     """
+    started_processes: list[tuple[object, ...]] = []
+
+    async def refuse_process(*args, **kwargs):
+        started_processes.append(args)
+        raise AssertionError("Unavailable provider must not start a process")
+
+    monkeypatch.setattr(launcher_module.asyncio, "create_subprocess_exec", refuse_process)
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
@@ -71,7 +73,7 @@ def test_a_real_dispatch_without_a_lifespan_stages_no_provider_process(
     )
     assert settled.status == "failed"
     assert "codex" in (settled.error or "")
-    assert not list((tmp_path / "data" / "run-stage").glob("*/inputs/rcp-command-broker-*.py"))
+    assert started_processes == []
 
 
 @pytest.mark.asyncio

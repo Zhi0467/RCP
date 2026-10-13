@@ -48,9 +48,9 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "32d8c2dede40d3a7a808ae4c9c740ae0d0902e26",
         "89e3071fc5b5d390851d46b467ecb4cdc4c626b9ee998327f504b795906f3c6a",
     ),
-    "pre-resource-versions-v22-383e50e": (
-        "383e50e5e4197ee023d306fcbae58b6229a9ffc2",
-        "878a728ea30eb85a7f6ddc7f54f4d7ab97aaf257a945c0917753f79e93778910",
+    "pre-graph-seen-heads-v22-3a77a32": (
+        "3a77a3276b2103d49e198d3da0d9f4532098a88f",
+        "31869c3a747a247e04c8ba268e044daecffb17555e27ae742cfc20840be52d2d",
     ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",

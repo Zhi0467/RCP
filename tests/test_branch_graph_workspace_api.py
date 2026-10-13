@@ -349,3 +349,34 @@ def test_branch_watermarks_fence_revisions_without_replaying(manifest, tmp_path,
     assert after[1] == first[1]
     assert not replays
     assert client.get(base, params=params).json()["revision"] == synced.json()["head"]["revision"]
+
+
+def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, monkeypatch):
+    from rcp.core import materialize
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.history.queries import HeadSpec
+
+    app, main, episode, _root = _app_branch(manifest, tmp_path)
+    engine = main.history_engine
+    main_head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+    assert engine.state_at(main_head).nodes[QUESTION].id == QUESTION
+    main_patches = {step.patch.model_dump_json() for step in engine.steps(main_head)}
+    assert main_patches
+    apply_patch = materialize._apply_patch
+
+    def refuse_main_replay(state, patch, descriptors):
+        assert patch.model_dump_json() not in main_patches, (
+            "branch read replayed the verified main prefix"
+        )
+        return apply_patch(state, patch, descriptors)
+
+    monkeypatch.setattr(materialize, "_apply_patch", refuse_main_replay)
+    client = signed_in_client(app)
+    base = f"/api/projects/{episode.project_id}"
+    params = {"branch_id": episode.episode_id}
+    for endpoint in ("/graph/changes", ""):
+        for _ in range(2):
+            response = client.get(base + endpoint, params=params)
+            assert response.status_code == 200, response.text
+    branch_service = main.for_graph_target(episode.graph_target, initialize=False)
+    assert branch_service.history_engine is engine

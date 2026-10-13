@@ -92,6 +92,7 @@ from rcp.core.validation.proposals import (
     proposal_updates_node,
 )
 from rcp.history import HistoryManager
+from rcp.history.queries import HistoryEngine
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
@@ -1163,6 +1164,8 @@ class ProjectService:
         self.provider_skills = provider_skills
         self._data_dir = data_dir
         self._project_id = project_id or history.project_id
+        if data_dir is not None and self._project_id is not None:
+            history.history_engine.configure_store(data_dir, self._project_id)
         self.imported_sources = _imported_source_store(data_dir, self._project_id)
         self._repository_inventory = repository_inventory
         self._task_continuation_session = task_continuation_session
@@ -1191,6 +1194,14 @@ class ProjectService:
         self._indexes: dict[str, ConversationIndex] = {}
         self._chat_summary_lock = threading.Lock()
         self._chat_summary_cache: dict[Path, _ChatSummaryCacheEntry] = {}
+
+    @property
+    def history_engine(self) -> HistoryEngine:
+        """The canonical project owner, shared by all target wrappers."""
+        engine = self.history.history_engine
+        if self._data_dir is not None and self._project_id is not None:
+            engine.configure_store(self._data_dir, self._project_id)
+        return engine
 
     @property
     def manifest(self) -> Manifest:

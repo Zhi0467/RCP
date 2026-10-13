@@ -17,7 +17,7 @@ from rcp.runs.questions import (
     work_command_handler,
 )
 from rcp.runs.tasks.work import _work_execution_instructions
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.question_activity import QuestionActivity
 from tests.helpers import signed_in_client
@@ -207,7 +207,11 @@ def test_discuss_resolves_only_ask(tmp_path):
         request = ask_request().model_copy(update={"verb": verb})
         assert handler(request, identity()).status == "invalid"
     assert (
-        _work_execution_instructions(SimpleNamespace(execution=execution, compute_commands=None))
+        _work_execution_instructions(
+            SimpleNamespace(
+                execution=execution, compute_commands=None, service=None, graph_read_scope=None
+            )
+        )
         == ""
     )
     assert _discuss_execution_instructions(discuss_command_handler(None)) == ""
@@ -270,6 +274,8 @@ def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
     turn = SimpleNamespace(
         execution=execution,
         compute_commands=None,
+        service=None,
+        graph_read_scope=None,
         patch_inputs=SimpleNamespace(validator_staged=staged),
     )
     prompt = _work_execution_instructions(turn, client="rcp-client")
@@ -437,3 +443,72 @@ def test_episode_stop_racing_question_creation_leaves_readonly_card(tmp_path, mo
     )
     assert response.status == "invalid"
     assert all(q.withdrawn_readonly for q in store.list_questions(owner_id=episode_id))
+
+
+@pytest.mark.parametrize("mode", ["discuss", "work"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_history_reads_keep_apply_revoked(tmp_path, monkeypatch, mode, resume):
+    from rcp.agents.command_protocol import (
+        ApplyCommandRequest,
+        CommandResponse,
+        GraphDiffCommandRequest,
+    )
+    from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.core.transition_models import GraphTargetRef
+
+    execution, _ = work_execution(tmp_path, mode=mode)
+    scope = GraphReadScope(project_id="project", target=GraphTargetRef())
+    service = cast(ProjectService, object())
+    calls = []
+
+    def history(actual_service, actual_scope, request):
+        calls.append((actual_service, actual_scope, request.verb))
+        return CommandResponse(request_id=request.request_id, status="ok", result={"changes": []})
+
+    monkeypatch.setattr("rcp.runs.questions.handle_graph_history_command", history)
+    if resume:
+        from rcp.runs.tasks import discuss, work
+
+        if mode == "work":
+            handler = work._resume_work_command_handler(
+                execution,
+                work._WorkMailboxContext(run_truth_scope=[], graph_read_scope=scope),
+                lambda: service,
+            )
+        else:
+            monkeypatch.setattr(
+                discuss,
+                "load_work_mailbox_context",
+                lambda _: {
+                    "ask_allowed": False,
+                    "graph_read_scope": scope.model_dump(mode="json"),
+                },
+            )
+            monkeypatch.setattr(
+                discuss,
+                "restore_work_validator_mailbox",
+                lambda _, **kwargs: kwargs["command_handler"],
+            )
+            handler = discuss.resume_discuss_command_mailbox(lambda: service, execution)
+    else:
+        handler = (
+            discuss_command_handler(execution, service=service, graph_read_scope=scope)
+            if mode == "discuss"
+            else work_command_handler(execution, None, service=service, graph_read_scope=scope)
+        )
+    request = GraphDiffCommandRequest(
+        **{
+            **ask_request().model_dump(exclude={"call_id", "receipt_token"}),
+            "verb": "graph_diff",
+            "arguments": {"from": "@0", "to": "@head"},
+        }
+    )
+    assert scope.verbs <= handler.allowed_verbs
+    assert ("ask" in handler.allowed_verbs) is not resume
+    assert handler(request, identity()).result == {"changes": []}
+    apply_request = ApplyCommandRequest.model_validate(
+        {**request.model_dump(), "verb": "apply", "arguments": {"patch_file": "patch.json"}}
+    )
+    assert handler(apply_request, identity()).status == "invalid"
+    assert handler(request, identity(task_id="other")).status == "invalid"
+    assert calls == [(service, scope, "graph_diff")]

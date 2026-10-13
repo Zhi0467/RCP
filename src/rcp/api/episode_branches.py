@@ -203,7 +203,7 @@ def _graph_branch_projections(
                 and (projection.decisions_awaiting_choice_ids or projection.open_blocker_ids)
             )
             current_episode_id = store.episode_chain(root.episode_id)[-1].episode_id
-            by_branch[root.episode_id] = (
+            summary = (
                 missing_graph_branch_summary(root, store=store)
                 if snapshot is None
                 else graph_branch_summary_from_snapshot(
@@ -214,6 +214,15 @@ def _graph_branch_projections(
                     current_episode_id=current_episode_id,
                 )
             )
+            if snapshot is not None and snapshot.state.replay_status == "degraded":
+                # A damaged branch stays readable but is never offered for merge.
+                summary = summary.model_copy(
+                    update={
+                        "merge_eligible": False,
+                        "merge_blocked_reason": "This branch's history is damaged and read-only.",
+                    }
+                )
+            by_branch[root.episode_id] = summary
     return (
         {
             episode.episode_id: by_branch[episode.graph_target.branch_id or ""]

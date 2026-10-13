@@ -17,11 +17,12 @@ import pytest
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
-from rcp.agents.command_protocol import MessageCommandRequest
+from rcp.agents.command_protocol import GraphDiffCommandRequest, MessageCommandRequest
 from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import PromptFactory
+from rcp.agents.prompts import PromptFactory, render_graph_history
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
@@ -83,6 +84,7 @@ from .helpers import (
     write_local_test_manifest,
 )
 from .test_conversation_worktree_git import repository, repository_template  # noqa: F401
+from .test_graph_reader_launches import _HistoryLauncher, history_handlers  # noqa: F401
 
 
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:
@@ -554,8 +556,7 @@ def _enable_task_attribution(
 def _setup_branch_auto_research(
     main_service: ProjectService,
     tmp_path: Path,
-    *,
-    code_worktree: bool = False,
+    **episode_options: Any,
 ) -> tuple[
     ProjectService,
     AppStore,
@@ -571,7 +572,7 @@ def _setup_branch_auto_research(
         tmp_path,
         episode_id=episode_id,
         graph_base_head=base_head,
-        code_worktree=code_worktree,
+        **episode_options,
     )
     _enable_task_attribution(main_service, store)
     assert episode.authorized_by is not None
@@ -780,20 +781,25 @@ def _recovery_task(
     return recovery
 
 
-def _saved_worker(tmp_path, *, status):
+def _saved_worker(tmp_path, *, status, service=None):
     stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
     stage.mkdir(parents=True)
-    records = _setup_auto_research(
-        tmp_path,
-        worker_status=status,
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
-    return stage, *records
+    setup = {
+        "worker_status": status,
+        "native_session_id": "worker-session",
+        "stage_root": str(stage),
+    }
+    if service is None:
+        records = _setup_auto_research(tmp_path, **setup)
+    else:
+        service, *records = _setup_branch_auto_research(service, tmp_path, **setup)
+    return stage, service, *records
 
 
 def _claimed_mail_recovery(tmp_path: Path):
-    stage, store, auto_research, root, worker = _saved_worker(tmp_path, status="succeeded")
+    stage, _service, store, auto_research, root, worker = _saved_worker(
+        tmp_path, status="succeeded"
+    )
     message = record_auto_research_message(
         store,
         episode_id=auto_research.episode_id,
@@ -1353,7 +1359,9 @@ async def test_orchestrator_result_orders_applied_invalid_and_valid_empty_dispos
     tmp_path,
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        service, tmp_path / "store"
+    )
     updates = [
         GraphUpdateResult(status="applied", applied_revision=7),
         GraphUpdateResult(
@@ -1470,7 +1478,9 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     monkeypatch,
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        service, tmp_path / "store"
+    )
     data_dir = tmp_path / "data"
     fresh_launcher = _WorkerLauncher(session_id="orchestrator-session")
 
@@ -1610,7 +1620,9 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
     """
 
     service = _service(manifest, tmp_path)
-    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        service, tmp_path / "store"
+    )
     data_dir = tmp_path / "data"
     stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
     stage.mkdir(parents=True)
@@ -1733,7 +1745,8 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     failure_point,
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, _auto_research, root, _worker = _setup_auto_research(
+    service, store, _auto_research, root, _worker = _setup_branch_auto_research(
+        service,
         tmp_path / "store",
         root_status="running",
     )
@@ -1838,7 +1851,8 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
     tmp_path,
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, auto_research, root, _worker = _setup_auto_research(
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        service,
         tmp_path / "store",
         root_status="running",
     )
@@ -1883,7 +1897,11 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
     assert store.agent_task(resumed.operation_id).native_session_id is None
 
 
-def test_validate_only_dispatch_audits_denial_without_keyed_lookup_or_replay(tmp_path) -> None:
+def test_validate_only_dispatch_audits_denial_without_keyed_lookup_or_replay(
+    manifest, tmp_path
+) -> None:
+    service = _service(manifest, tmp_path)
+    service.history.project_id = "project"
     store, auto_research, root, worker = _setup_auto_research(tmp_path)
     completed_id = "1" * 32
     unknown_id = "2" * 32
@@ -1907,7 +1925,24 @@ def test_validate_only_dispatch_audits_denial_without_keyed_lookup_or_replay(tmp
     )
     replies: list[str] = []
     base = _dispatcher(store, replies)
-    dispatcher = _ValidateOnlyAutoResearchCommandDispatcher(store, base.effects)
+    dispatcher = _ValidateOnlyAutoResearchCommandDispatcher(
+        store,
+        base.effects,
+        service=service,
+        graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+    )
+    response = dispatcher.dispatch(
+        worker.operation_id,
+        GraphDiffCommandRequest(
+            mailbox_id="a" * 32,
+            request_id="f" * 32,
+            credential="b" * 64,
+            verb="graph_diff",
+            arguments={"from": "main@0", "to": "main@head"},
+        ),
+    )
+    assert response.status == "ok"
+    assert response.result["to_head"] == f"main@{service.history.state().revision}"
     with store.connection() as connection:
         before = [
             dict(row)
@@ -1972,7 +2007,9 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, _auto_research, _root, worker = _setup_auto_research(tmp_path, browser_requested=True)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(
+        service, tmp_path, browser_requested=True
+    )
     from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
     from rcp.runs import browser_runtime_seam
 
@@ -2008,7 +2045,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
         staged_mailboxes.append(staged)
         return staged
 
-    original_serve = auto_research_stream_module._serve_worker_commands
+    original_serve = auto_research_stream_module._serve_auto_research_commands
 
     async def tracked_serve(*args, **kwargs):
         turn_id = str(kwargs["expected_turn_id"])
@@ -2022,7 +2059,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
         raise ValueError("prompt failed after command mailbox staging")
 
     monkeypatch.setattr(auto_research_stream_module, "stage_command_mailbox", capture_mailbox)
-    monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", tracked_serve)
+    monkeypatch.setattr(auto_research_stream_module, "_serve_auto_research_commands", tracked_serve)
     monkeypatch.setattr(auto_research_stream_module, "_worker_prompt", fail_prompt)
 
     events = await _worker_events(service, _WorkerLauncher(), store, worker, tmp_path / "data")
@@ -2047,7 +2084,7 @@ async def test_main_mailbox_preserves_prompt_failure_over_server_and_cleanup_fai
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, _auto_research, _root, worker = _setup_auto_research(tmp_path)
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
     staged_mailboxes: list[StagedCommandMailbox] = []
     original_cleanup = StagedCommandMailbox.cleanup
 
@@ -2067,7 +2104,7 @@ async def test_main_mailbox_preserves_prompt_failure_over_server_and_cleanup_fai
         raise ValueError("primary prompt failure")
 
     monkeypatch.setattr(auto_research_stream_module, "stage_command_mailbox", capture_mailbox)
-    monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", fail_serve)
+    monkeypatch.setattr(auto_research_stream_module, "_serve_auto_research_commands", fail_serve)
     monkeypatch.setattr(auto_research_stream_module, "_worker_prompt", fail_prompt)
     monkeypatch.setattr(StagedCommandMailbox, "cleanup", fail_cleanup)
 
@@ -2194,8 +2231,10 @@ async def test_close_mailbox_finishes_shielded_cleanup_before_reraising_cancella
 async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_handoffs(
     manifest, tmp_path
 ) -> None:
-    service = _service(manifest, tmp_path)
-    store, auto_research, _root, worker = _setup_auto_research(tmp_path / "fresh")
+    main_service = _service(manifest, tmp_path)
+    service, store, auto_research, _root, worker = _setup_branch_auto_research(
+        main_service, tmp_path / "fresh"
+    )
     stage = (
         tmp_path
         / "fresh-data"
@@ -2228,11 +2267,14 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
 
     retry_root = tmp_path / "retry-data" / "run-stage" / _worker_stage_name("project", "worker")
     retry_root.mkdir(parents=True)
-    retry_store, retry_auto_research, _retry_orchestrator, retry_worker = _setup_auto_research(
-        tmp_path / "retry",
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(retry_root),
+    service, retry_store, retry_auto_research, _retry_orchestrator, retry_worker = (
+        _setup_branch_auto_research(
+            main_service,
+            tmp_path / "retry",
+            worker_status="failed",
+            native_session_id="worker-session",
+            stage_root=str(retry_root),
+        )
     )
     _record_original_contract(retry_store, retry_worker, retry_root)
     retry_store.mark_auto_research_handoffs_cleared(retry_worker.operation_id)
@@ -2286,7 +2328,9 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
     _record_original_contract(store, worker, stage)
     for name in ("patch.json", "watch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
@@ -2345,7 +2389,9 @@ async def test_worker_continuation_replaces_original_repository_pointers(
     manifest, tmp_path
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
     _record_original_contract(
         store,
         worker,
@@ -2377,7 +2423,9 @@ async def test_worker_continuation_replaces_original_repository_pointers(
 @pytest.mark.asyncio
 async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, root, worker = _saved_worker(tmp_path, status="succeeded")
+    stage, service, store, auto_research, root, worker = _saved_worker(
+        tmp_path, status="succeeded", service=service
+    )
     _record_original_contract(store, worker, stage)
     message = record_auto_research_message(
         store,
@@ -2459,7 +2507,9 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     tmp_path,
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
+    service, store, auto_research, root, _worker = _setup_branch_auto_research(
+        service, tmp_path / "store"
+    )
     data_dir = tmp_path / "data"
     fresh_events = await _orchestrator_events(
         service, _WorkerLauncher(session_id="orchestrator-session"), store, root, data_dir
@@ -2629,7 +2679,8 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
         "rcp.runs.tasks.auto_research_stream.RemoteRunStage",
         _LocalBackedRemoteStage,
     )
-    store, _auto_research, _root, worker = _setup_auto_research(
+    service, store, _auto_research, _root, worker = _setup_branch_auto_research(
+        service,
         tmp_path / "store",
         run_on="worker-host",
     )
@@ -2675,7 +2726,9 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     replies: list[str] = []
@@ -2696,6 +2749,8 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
         (reply_key,) = [
             line.split("`")[1] for line in read.splitlines() if line.startswith("- Reply key: `")
         ]
+        scope = GraphReadScope(project_id="project", target=service.history.graph_target)
+        assert render_graph_history(scope, shlex.join(_command_argv(read))) in read
         argv = [*_command_argv(read), "message", "--key", reply_key, "Recovered worker result"]
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -2717,7 +2772,7 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
     )
 
     expected_digest = hashlib.sha256(
-        b"auto_research-worker-reply\0auto_research\0worker"
+        f"auto_research-worker-reply\0{auto_research.episode_id}\0worker".encode()
     ).hexdigest()[:32]
     assert replies == ["Recovered worker result"]
     assert command_outputs[0]["status"] == "ok"
@@ -2736,7 +2791,9 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     replies: list[str] = []
@@ -2810,7 +2867,7 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
     assert "validation only" in str(command_results[0][1]["message"])
     assert command_results[1][1]["status"] == "valid"
     rejected = store.agent_command_by_key(
-        "auto_research",
+        auto_research.episode_id,
         "correction-must-not-message",
     )
     assert rejected is None
@@ -2832,7 +2889,9 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     staged_mailboxes = []
@@ -2844,7 +2903,7 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
         staged_mailboxes.append(staged)
         return staged
 
-    original_serve = auto_research_stream_module._serve_worker_commands
+    original_serve = auto_research_stream_module._serve_auto_research_commands
 
     async def tracked_serve(*args, **kwargs):
         turn_id = str(kwargs["expected_turn_id"])
@@ -2868,7 +2927,7 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
         )
 
     monkeypatch.setattr(auto_research_stream_module, "stage_command_mailbox", capture_mailbox)
-    monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", tracked_serve)
+    monkeypatch.setattr(auto_research_stream_module, "_serve_auto_research_commands", tracked_serve)
     monkeypatch.setattr(
         auto_research_stream_module,
         "_record_agent_launch_receipt",
@@ -2905,7 +2964,9 @@ async def test_patch_correction_setup_failure_survives_secondary_cleanup_failure
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
+    stage, service, store, auto_research, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     staged_mailboxes: list[StagedCommandMailbox] = []
@@ -2960,7 +3021,7 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
     manifest, tmp_path
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, auto_research, _root, worker = _setup_auto_research(tmp_path)
+    service, store, auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
     request_auto_research_stop(store, auto_research.episode_id)
     patch = Patch(
         kind="work",
@@ -3049,7 +3110,9 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         original_contract_path="/stage/inputs/original.md", mode="continuation", **common
     )
     assert "/stage/inputs/original.md" in continued
-    assert "other_branch_loops" not in auto_research_prompt_values(**common)
+    values = auto_research_prompt_values(**common)
+    assert "other_branch_loops" not in values
+    assert values["history_client"] == common["command_client"]
     assert package_path in fresh
     assert graph_rules(edits=True, ontology_extensions=False) in fresh
     # A continuation sends the packages again only when one of them changed.
@@ -3203,7 +3266,9 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     from rcp.providers.browser_grant import BrowserGrant
 
     service = _service(manifest, tmp_path)
-    store, _episode, root, _worker = _setup_auto_research(tmp_path / "store")
+    service, store, _episode, root, _worker = _setup_branch_auto_research(
+        service, tmp_path / "store"
+    )
     stage_path = tmp_path / "stage"
     stage_path.mkdir()
     execution = _execution(store, root)
@@ -3292,3 +3357,37 @@ def test_child_profile_choices_list_at_most_the_capped_models_per_provider():
     rendered = render_child_profile_choices({"codex": models})
     listed = [name for name in models if name in rendered]
     assert listed == list(models)[:CHILD_PROFILE_PROMPT_MAX_MODELS]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_fails", [False, True])
+async def test_orchestrator_observes_snapshot_only_after_success(
+    manifest,
+    tmp_path,
+    history_handlers,  # noqa: F811
+    provider_fails: bool,
+) -> None:
+    service, store, _episode, root, _worker = _setup_branch_auto_research(
+        _service(manifest, tmp_path),
+        tmp_path / "store",
+    )
+    snapshot = service.history.head_ref()
+    owner = f"auto-root:{root.operation_id}"
+    session = "reader-session"
+
+    def during_provider() -> None:
+        assert store.graph_seen_head(root.project_id, owner, session, snapshot.target) is None
+        if provider_fails:
+            raise OSError("provider failed before completing its turn")
+
+    launcher = _HistoryLauncher(
+        service,
+        history_handlers,
+        kind="auto_actor",
+        during_provider=during_provider,
+    )
+    events = await _orchestrator_events(service, launcher, store, root, tmp_path / "data")
+    assert launcher.calls == 1
+    observed = store.graph_seen_head(root.project_id, owner, session, snapshot.target)
+    assert observed == (None if provider_fails else snapshot)
+    assert events[-1].event == ("error" if provider_fails else "done")

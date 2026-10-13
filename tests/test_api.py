@@ -1436,6 +1436,9 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     b_cached_slice.parent.mkdir(parents=True)
     b_cached.write_text("project-b-source", encoding="utf-8")
     b_cached_slice.write_text("project-b-slice", encoding="utf-8")
+    b_history = b_source_root.parent / "graph-history" / "checkpoint.json"
+    b_history.parent.mkdir(parents=True)
+    b_history.write_text("project-b-history", encoding="utf-8")
 
     legacy_cached = data_dir / "source-cache" / "remote" / "legacy.jsonl"
     legacy_slice = data_dir / "session-slices" / "legacy" / "records.jsonl"
@@ -1517,6 +1520,7 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     assert not cached.exists()
     assert not b_cached.exists()
     assert not b_cached_slice.exists()
+    assert not b_history.exists()
     assert not legacy_cached.exists()
     assert not legacy_slice.exists()
     assert original.read_text(encoding="utf-8") == "provider-original"
@@ -2496,7 +2500,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     # A failed remote run keeps its scratch folder for inspection and for a
     # Resume that points the native session back at the same directory.
     assert FakeRemoteStage.instances[0].closed is False
-    assert FakeRemoteStage.instances[0].finalized == 2
+    assert FakeRemoteStage.instances[0].finalized == 3
     assert failed_launcher.calls == 1
 
     paused_execution = _agent_task_execution(
@@ -2518,7 +2522,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
 
     assert any('"event":"paused"' in item for item in paused_events)
     assert FakeRemoteStage.instances[1].closed is False
-    assert FakeRemoteStage.instances[1].finalized == 2
+    assert FakeRemoteStage.instances[1].finalized == 3
     assert paused_launcher.calls == 1
 
     FakeRemoteStage.finalize_error = True
@@ -5212,6 +5216,12 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_workspace_files(self):
             return []
 
+        def list_workspace_entries(self):
+            return sorted(self.workspace_text)
+
+        def remove_workspace_file(self, name):
+            self.workspace_text.pop(name, None)
+
         def touch(self):
             type(self).touched += 1
 
@@ -5256,7 +5266,8 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
 
     assert not _error_texts(frames)
     assert RecordingRemoteStage.attached == [("remote.example", saved_root)]
-    assert RecordingRemoteStage.finalized == launcher.calls == 1
+    assert RecordingRemoteStage.finalized == 3
+    assert launcher.calls == 1
     assert RecordingRemoteStage.touched == 1
     assert launcher.last_kwargs["cwd"] == Path(saved_root) / "workspace"
     assert len(staged_contexts) == 1
@@ -5464,7 +5475,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "work",
         "browser",
     }
-    assert isinstance(prompt_values["current"]["graph_revision"], int)
+    assert "graph_revision" not in prompt_values["current"]
     assert prompt_values["compute"] == {"active": []}
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1

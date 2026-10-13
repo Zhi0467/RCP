@@ -173,7 +173,7 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
             connection.execute(f'DROP TRIGGER "{trigger[0]}"')
         for table in ("resource_versions", "resource_deadlines", "resource_watermark_epoch"):
             connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=48")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=49")
     store.close()
     store = AppStore(path)
     with store.connection() as connection:

@@ -113,7 +113,7 @@ def _branch_snapshot(
 ) -> dict[str, object]:
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     assert isinstance(service.history, BranchHistoryManager)
-    materialization, changes = branch_changes(service.history)
+    materialization, changes = branch_changes(service)
     snapshot = project_display_cache.complete_snapshot(
         project_id,
         service.project_snapshot(materialization=materialization, head=changes.head),
@@ -278,7 +278,7 @@ def graph_changes(
 ) -> dict[str, object]:
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     assert isinstance(service.history, BranchHistoryManager)
-    _, changes = branch_changes(service.history)
+    _, changes = branch_changes(service)
     return changes.model_dump(mode="json")
 
 

@@ -23,6 +23,8 @@ from rcp.agents.command_protocol import (
     EpisodeControlArguments,
     ExperimentKickoffArguments,
     FinishCommandRequest,
+    GraphDiffCommandRequest,
+    GraphLogCommandRequest,
     InboxArguments,
     InboxCommandRequest,
     LessonCommandRequest,
@@ -39,6 +41,7 @@ from rcp.agents.command_protocol import (
     WatchGraphCommandRequest,
     command_requires_idempotency_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
     AUTO_RESEARCH_APPLY_MAX_PER_TURN,
@@ -47,6 +50,7 @@ from rcp.limits import (
     PATCH_SELF_CHECK_MAX_REQUEST_BYTES,
 )
 from rcp.providers import ProviderId, ProviderSkillReference
+from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.skill_registry import SkillReference
 from rcp.storage import (
     AgentCommandInvocationRecord,
@@ -62,7 +66,7 @@ from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
-    from rcp.service import RunRequest
+    from rcp.service import ProjectService, RunRequest
 
 AutoResearchActorRole = Literal["orchestrator", "worker"]
 AutoResearchWakeCause = Literal["watcher", "graph_condition", "message", "lifecycle"]
@@ -865,9 +869,13 @@ class AutoResearchCommandDispatcher:
         command_file_consumer: AutoResearchCommandFileConsumer | None = None,
         command_state_refresher: AutoResearchCommandStateRefresher | None = None,
         _apply_admission_locks: _AutoResearchApplyAdmissionLocks | None = None,
+        service: ProjectService | None = None,
+        graph_read_scope: GraphReadScope | None = None,
     ) -> None:
         self.store = store
         self.effects = effects
+        self.service = service
+        self.graph_read_scope = graph_read_scope
         self.command_file_reader = command_file_reader
         self.command_file_consumer = command_file_consumer
         self.command_state_refresher = command_state_refresher
@@ -879,6 +887,8 @@ class AutoResearchCommandDispatcher:
         reader: AutoResearchCommandFileReader,
         consumer: AutoResearchCommandFileConsumer,
         refresher: AutoResearchCommandStateRefresher,
+        service: ProjectService | None = None,
+        graph_read_scope: GraphReadScope | None = None,
     ) -> AutoResearchCommandDispatcher:
         """Bind this turn's exact reusable stage to file-backed commands."""
 
@@ -889,12 +899,33 @@ class AutoResearchCommandDispatcher:
             command_file_consumer=consumer,
             command_state_refresher=refresher,
             _apply_admission_locks=self._apply_admission_locks,
+            service=service if service is not None else self.service,
+            graph_read_scope=graph_read_scope
+            if graph_read_scope is not None
+            else self.graph_read_scope,
         )
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
         context = self._context(operation_id)
         if request.mailbox_id == "":  # already schema-validated; keeps the binding explicit here
             raise AutoResearchCommandInvalid("The Auto-research command mailbox is missing.")
+
+        if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest)):
+            if self.graph_read_scope is None or self.service is None:
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    result={"code": "graph_history_scope_required"},
+                    message="This turn has no graph history scope.",
+                )
+            if context.task.project_id != self.graph_read_scope.project_id:
+                return CommandResponse(
+                    request_id=request.request_id,
+                    status="invalid",
+                    result={"code": "graph_history_scope_refused"},
+                    message="The task is outside this graph history scope.",
+                )
+            return handle_graph_history_command(self.service, self.graph_read_scope, request)
 
         if isinstance(request, LessonCommandRequest):
             from rcp.runs.lesson_commands import handle_lesson
@@ -1828,7 +1859,9 @@ class AutoResearchCommandDispatcher:
     def _check_admission(
         self, context: AutoResearchCommandContext, request: CommandRequest
     ) -> None:
-        if request.verb not in auto_research_allowed_verbs(context.request.role):
+        if request.verb not in auto_research_allowed_verbs(
+            context.request.role, graph_read_scope=self.graph_read_scope
+        ):
             raise AutoResearchCommandInvalid(
                 "Only the Auto-research orchestrator may issue mutating staged commands."
                 if context.request.role == "worker" and request.verb in MUTATING_COMMAND_VERBS

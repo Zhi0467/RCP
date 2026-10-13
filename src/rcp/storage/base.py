@@ -109,7 +109,8 @@ class AppStoreBase:
         (45, "client_requests_v1"),
         (46, "repository_provisioning_contracts_v1"),
         (47, "branch_names_v1"),
-        (48, "resource_watermarks_v1"),
+        (48, "graph_seen_heads_v1"),
+        (49, "resource_watermarks_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -848,8 +849,11 @@ class AppStoreBase:
             connection, version=47, name="branch_names_v1", migration=migrate_branch_names
         )
         self._run_storage_schema_migration(
+            connection, version=48, name="graph_seen_heads_v1", migration=_migrate_graph_seen_heads
+        )
+        self._run_storage_schema_migration(
             connection,
-            version=48,
+            version=49,
             name="resource_watermarks_v1",
             migration=migrate_resource_versions,
         )
@@ -3849,3 +3853,15 @@ class AppStoreBase:
     @staticmethod
     def now() -> str:
         return datetime.now(UTC).isoformat()
+
+
+def _migrate_graph_seen_heads(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE IF NOT EXISTS graph_seen_heads (
+        project_id TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        native_session_id TEXT NOT NULL,
+        graph_target TEXT NOT NULL,
+        head_json TEXT NOT NULL,
+        committed_operation_id TEXT NOT NULL,
+        PRIMARY KEY(project_id, owner_id, native_session_id, graph_target)
+    )""")

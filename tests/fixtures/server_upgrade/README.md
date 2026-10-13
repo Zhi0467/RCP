@@ -93,7 +93,6 @@ gained durable names and name reservations (storage migration 47), ending at
 migration 46. It is built by the exact boundary source from the preceding
 immutable fixture.
 
-`pre-resource-versions-v22-383e50e` retains the last shape before resource
-versions and watermarks (storage migration 48), ending at migration 47. It also
-carries the branch-name and name-reservation migration. It is built by the
-exact boundary source from the preceding immutable fixture.
+`pre-graph-seen-heads-v22-3a77a32` retains the last shape before agent runs gained durable
+graph seen heads (storage migration 48), ending at migration 47. It is built by
+the exact boundary source from the preceding immutable fixture.

@@ -8,6 +8,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from typing import cast
 
 import pytest
 
@@ -47,7 +48,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.auto_research_delivery import record_auto_research_message
 from rcp.runs.auto_research_effects import _auto_research_message_matches
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import ProjectService, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -2676,3 +2677,40 @@ def test_auto_research_root_refuses_compute_launch(tmp_path):
     assert response.status == "invalid"
     assert "does not authorize" in response.message
     assert store.compute_jobs(root.project_id) == []
+
+
+def test_history_commands_bypass_effects_and_command_ledger(tmp_path, monkeypatch):
+    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+    from rcp.agents.command_protocol import GraphLogCommandRequest
+    from rcp.agents.graph_read_scope import GraphReadScope
+
+    store, episode, root = _setup_auto_research(tmp_path)
+    scope = GraphReadScope(project_id="project", target=episode.graph_target)
+    service = cast(ProjectService, object())
+    calls = []
+
+    def history(actual_service, actual_scope, request):
+        calls.append((actual_service, actual_scope, request.verb))
+        return CommandResponse(request_id=request.request_id, status="ok", result={"entries": []})
+
+    def reject_write(*args, **kwargs):
+        pytest.fail("A history read entered the mutating command path")
+
+    monkeypatch.setattr("rcp.runs.auto_research.handle_graph_history_command", history)
+    monkeypatch.setattr(store, "start_agent_command", reject_write)
+    dispatcher = AutoResearchCommandDispatcher(
+        store, _Effects(store, episode, root).bundle(), service=service, graph_read_scope=scope
+    ).with_command_files(reader=reject_write, consumer=reject_write, refresher=reject_write)
+    request = _request(
+        GraphLogCommandRequest, request_id="f" * 32, verb="graph_log", arguments={"id": "node"}
+    )
+    assert dispatcher.dispatch(root.operation_id, request).result == {"entries": []}
+    assert calls == [(service, scope, "graph_log")]
+    for role in ("orchestrator", "worker"):
+        assert scope.verbs <= set(auto_research_allowed_verbs(role, graph_read_scope=scope))
+    assert (
+        AutoResearchCommandDispatcher(store, _Effects(store, episode, root).bundle())
+        .dispatch(root.operation_id, request)
+        .status
+        == "invalid"
+    )
