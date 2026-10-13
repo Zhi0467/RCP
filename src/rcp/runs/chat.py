@@ -63,6 +63,7 @@ from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
     continuation_session_master,
+    merge_prepared_graph_observation_delta,
     read_legacy_session_master,
     record_session_master,
     recorded_master_values,
@@ -226,7 +227,6 @@ def chat_prompt_values(
         },
         "current": {
             "ontology_path": f"{context.graph_path}#ontology",
-            "graph_revision": context.graph_revision,
             "graph_path": context.graph_path,
             "research_path": context.research_md_path,
             "focused_node_id": str(context.node["id"]) if context.node else None,
@@ -279,24 +279,6 @@ def _stage_chat_turn_contract(
         role="chat_turn",
     )
     return contract_path
-
-
-def _with_graph_revision(
-    master_values: dict[str, object], baseline: dict[str, object]
-) -> dict[str, object]:
-    """The master's values, with the graph revision the last committed turn ended on."""
-
-    current = baseline.get("current")
-    if not isinstance(current, dict) or "graph_revision" not in current:
-        return master_values
-    master_current = master_values.get("current")
-    return {
-        **master_values,
-        "current": {
-            **(master_current if isinstance(master_current, dict) else {}),
-            "graph_revision": current["graph_revision"],
-        },
-    }
 
 
 def _chat_master_status(
@@ -399,14 +381,10 @@ def _prepare_chat_prompt_state(
     # The delta is a complete overlay on the master, never on the previous turn: a value a
     # later turn leaves out is the master's, so an agent that compacted and reread the
     # master reads the same current state as one that kept every turn.
-    # The graph revision is the one exception: it signals a graph change someone else made,
-    # so it is compared with the last committed turn, which absorbed this chat's own Apply.
     delta = None
     if not must_bootstrap:
         assert execution is not None and master_operation_id is not None
         reference = recorded_master_values(execution.store, master_operation_id)
-        if reference is not None and previous is not None:
-            reference = _with_graph_revision(reference, previous.values)
         delta = changed_since_master(
             MasterRef(path=master_context_path, bootstrap=False, values=reference), values
         )
@@ -418,6 +396,7 @@ def _prepare_chat_prompt_state(
                 "path": master_context_path,
             },
         }
+    delta = merge_prepared_graph_observation_delta(delta, execution, request.session_id)
     # The browser grant is also compared with the last committed turn: the human
     # toggles it between turns, so the session hears it only when it changes.
     browser = values.get("browser")
@@ -702,72 +681,6 @@ def _commit_chat_prompt_state(
         snapshot_sha256=hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest(),
         committed_operation_id=execution.operation_id,
         expected_snapshot_sha256=candidate.expected_snapshot_sha256,
-    )
-
-
-def _record_applied_graph_revision(
-    execution: AgentTaskExecution | None,
-    request: RunRequest,
-    native_session_id: str | None,
-    applied_revision: int | None,
-) -> None:
-    """Absorb this conversation's own accepted patch into its committed baseline.
-
-    The baseline is committed before the patch is applied, so without this the next
-    turn would announce the conversation's own revision back to it. The delta must
-    mean the graph moved for some other reason — a human Sync between turns.
-    """
-
-    if (
-        execution is None
-        or native_session_id is None
-        or applied_revision is None
-        or request.chat_id is None
-        or request.provider is None
-        or request.run_on is None
-    ):
-        return
-    # Read the row this turn just committed, not the one the turn started from:
-    # a first turn has no request.session_id to look itself up by.
-    record = execution.store.chat_session_context(
-        request.provider,
-        request.run_on,
-        native_session_id,
-    )
-    if record is None:
-        return
-    baseline = _ChatMasterSnapshot.model_validate_json(record.snapshot_json)
-    current = baseline.values.get("current")
-    if not isinstance(current, dict) or current.get("graph_revision") == applied_revision:
-        return
-    snapshot = baseline.model_copy(
-        update={
-            "values": {
-                **baseline.values,
-                "current": {**current, "graph_revision": applied_revision},
-            }
-        }
-    )
-    task = execution.store.agent_task(execution.operation_id)
-    if task is None:
-        return
-    kind: Literal["node_chat", "project_chat"] = (
-        "node_chat" if request.chat_scope == "node" else "project_chat"
-    )
-    snapshot_json = snapshot.model_dump_json()
-    execution.store.commit_chat_session_context(
-        provider=request.provider,
-        execution_machine=request.run_on,
-        native_session_id=native_session_id,
-        project_id=task.project_id,
-        kind=kind,
-        chat_id=request.chat_id,
-        node_id=request.node_id,
-        protocol_version=snapshot.master_context_version,
-        snapshot_json=snapshot_json,
-        snapshot_sha256=hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest(),
-        committed_operation_id=execution.operation_id,
-        expected_snapshot_sha256=record.snapshot_sha256,
     )
 
 

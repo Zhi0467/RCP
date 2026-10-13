@@ -17,6 +17,7 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 
@@ -121,10 +122,15 @@ def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = N
     )
 
 
-def _tidy(text: str) -> str:
+def _tidy(
+    text: str,
+    *,
+    graph_read_scope: GraphReadScope | None = None,
+    command_client: str = "",
+) -> str:
     """Collapse the blank runs that empty optional sections leave behind."""
 
-    return re.sub(r"\n{3,}", "\n\n", text)
+    return graph_read_contract(re.sub(r"\n{3,}", "\n\n", text), graph_read_scope, command_client)
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -213,10 +219,10 @@ one `- key: value` line each, and it lists every value that differs from this co
 what changed since the launch before. A listed value replaces this contract's value for that
 launch; a key it does not list has this contract's value. The keys: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
 `work.*` the Work write roots and launch facts, `discuss.*` the Discuss command contract, and likewise `repositories`, `skills`, `settings.*`,
-and `workspace.path`. `current.graph_revision` is the one exception: it is listed only when the
-graph changed since the last committed turn of this chat, so an omitted revision means no one else
-changed the graph, not that it returned to this contract's revision. It never means the human
-approved anything; read the live graph for the records you rely on."""
+and `workspace.path`. `current.graph_changed_since` and `current.graph_head` are turn-relative:
+they name the range from the last snapshot this owner received to this turn's staged snapshot.
+An omitted range can mean the earlier head is unknown. It never means the human approved
+anything; read the live graph for the records you rely on."""
 
 
 def _work_write_boundary(scope: ProjectWriteScope | None) -> str:
@@ -236,6 +242,39 @@ def _command_client_rule(command_client: str) -> str:
         f"- Command client: `{command_client}`\n"
         f"  Every staged RCP command below starts with it where it shows `{COMMAND_CLIENT}`. A later\n"
         "  turn that changes it sends `patch.command_client`."
+    )
+
+
+def graph_read_contract(content: str, scope: GraphReadScope | None, command_client: str) -> str:
+    """Finish a master with the same resolved grant its command dispatcher enforces.
+
+    Owners use this when their contract does not pass through ``_tidy``. Retained
+    masters and inline continuations bypass finalization; they keep delta semantics.
+    """
+
+    if scope is None:
+        return content
+    return content + "\n\n" + render_graph_history(scope, command_client)
+
+
+def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
+    """Render the exact read grant used by this launch's command dispatcher."""
+
+    forms = {
+        "graph_diff": "<head A> <head B> [ids] | --branch-changes <branch>",
+        "graph_log": "<id> [--at <head>]",
+    }
+    calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
+    return (
+        "## Graph history queries\n\n"
+        f"Project: `{scope.project_id}`. Readable targets: main and every branch of this project. "
+        f"Unqualified heads use `{scope.target.key}`. Reads grant no write authority.\n"
+        f"{calls}\n"
+        "A continuation that changes `history_client` or `patch.command_client` replaces the command prefix above. "
+        "Heads: `main@R`, `branch:<id>@R`, or `@R`; `head` may replace R. "
+        "Continue a paged answer with the same verb and its returned cursor (`--cursor`). "
+        "When a continuation lists `current.graph_changed_since` and `current.graph_head`, "
+        "query that range with graph_diff. The range tracks only this run's target."
     )
 
 
@@ -925,6 +964,7 @@ class PromptFactory:
         execution_instructions: str = "",
         auto_research_child_boundary: str = "",
         discuss_execution_instructions: str = "",
+        graph_read_scope: GraphReadScope | None = None,
     ) -> str:
         """Render the one master a conversation session holds for both modes.
 
@@ -988,7 +1028,8 @@ class PromptFactory:
             compute_connections=compute_connections,
             graph_edits=True,
         )
-        return _tidy(f"""# RCP chat master context v{CHAT_MASTER_CONTEXT_VERSION}
+        return _tidy(
+            f"""# RCP chat master context v{CHAT_MASTER_CONTEXT_VERSION}
 
 {_WHAT_IS_RCP_CONVERSATION}
 
@@ -1013,7 +1054,10 @@ Turn protocol:
 
 {work}
 {auto_research_child_boundary}
-""")
+""",
+            graph_read_scope=graph_read_scope,
+            command_client=command_client,
+        )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
     GRAPH_TASK_POLICY_VERSION = "ingestion-v2"
@@ -1254,6 +1298,7 @@ Boundary:
         attachments: list[dict[str, object]] | None = None,
         compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
+        graph_read_scope: GraphReadScope | None = None,
     ) -> str:
         """Render the Work contract a session starts from.
 
@@ -1327,7 +1372,8 @@ Optional watcher handoff:
             + "\n\n"
             + _patch_validator_rules(f"{COMMAND_CLIENT} {shlex.join(['validate', patch_path])}")
         )
-        return _tidy(f"""# RCP Work task contract
+        return _tidy(
+            f"""# RCP Work task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
@@ -1390,7 +1436,10 @@ Graph Patch (optional):
 
 {render_agent_graph_authority_contract()}
 
-{watch_rules}""")
+{watch_rules}""",
+            graph_read_scope=None if embedded else graph_read_scope,
+            command_client=command_client,
+        )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
     PAPER_COACH_POLICY_VERSION = "paper-coach-v2"

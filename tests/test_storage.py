@@ -18,7 +18,7 @@ import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -2179,6 +2179,16 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
                 ),
             )
 
+    for project_id in ("delete-me", "keep-me"):
+        store.commit_graph_seen_head(
+            project_id=project_id,
+            owner_id="chat:c",
+            native_session_id="session",
+            head=GraphHeadRef(revision=1),
+            operation_id=f"{project_id}-operation",
+            expected_operation_id=None,
+        )
+
     counts = store.delete_project_records("delete-me")
 
     assert counts == {
@@ -2187,6 +2197,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "paper_drafts": 1,
         "writing_sessions": 1,
         "chat_session_contexts": 1,
+        "graph_seen_heads": 1,
         "chat_display": 0,
         "chat_browser_preferences": 0,
         "browser_turn_status": 0,
@@ -2259,6 +2270,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
             "paper_drafts",
             "writing_sessions",
             "chat_session_contexts",
+            "graph_seen_heads",
             "graph_runs",
             "graph_run_outputs",
             "graph_run_contracts",

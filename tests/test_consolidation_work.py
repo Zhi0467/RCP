@@ -14,6 +14,7 @@ from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import ApplyArguments, ApplyCommandRequest
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentAuthorizerDeparted
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.consolidation import consolidation_apply_handler, settlement_source_effect_id
 from rcp.runs.questions import work_command_handler
 from rcp.runs.tasks.work import _apply_work_patch, stream_work_run
@@ -380,8 +381,10 @@ async def test_consolidation_admission_launches_only_with_compatible_stage(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("interleaved", [False, True])
+@pytest.mark.parametrize("handoff", ["consumed", "surviving", "recovered_receipt"])
 async def test_consolidation_mailbox_apply_is_not_reapplied_at_turn_settlement(
-    manifest, tmp_path, monkeypatch
+    manifest, tmp_path, monkeypatch, interleaved, handoff
 ):
     import rcp.runs.tasks.work as work
 
@@ -405,13 +408,25 @@ async def test_consolidation_mailbox_apply_is_not_reapplied_at_turn_settlement(
         async def stream(self, provider, prompt, **kwargs):
             async for event in super().stream(provider, prompt, **kwargs):
                 if event.event == "answer":
+                    if interleaved:
+                        append_fixture_patch(app.state.service, refresh_patch("rq/teammate"))
                     response = handlers[-1](
                         _apply_request("during-turn"),
                         CommandTurnIdentity(None, execution.operation_id, "turn", "broker"),
                     )
                     assert response.status == "ok"
-                    # Simulate a handoff surviving consumption (including crash-after-append).
-                    (self.workspaces[-1] / "patch.json").write_text(text)
+                    if handoff == "surviving":
+                        # Simulate a handoff surviving consumption (including crash-after-append).
+                        (self.workspaces[-1] / "patch.json").write_text(text)
+                    elif handoff == "recovered_receipt":
+                        # A restarted execution has only the durable keyed result.
+                        execution.applied_revision = None
+                        execution.applied_graph_state = None
+                        replay = handlers[-1](
+                            _apply_request("during-turn"),
+                            CommandTurnIdentity(None, execution.operation_id, "turn", "broker"),
+                        )
+                        assert replay.result == response.result
                 yield event
 
     launcher = ApplyingLauncher([{"patch.json": text}], message="Applied the graph changes")
@@ -419,9 +434,17 @@ async def test_consolidation_mailbox_apply_is_not_reapplied_at_turn_settlement(
         app.state.service, launcher, request, tmp_path / "data", execution=execution
     ):
         pass
-    assert app.state.service.history.state().revision == initial_revision + 1
+    assert app.state.service.history.state().revision == initial_revision + 1 + int(interleaved)
     assert launcher.calls == 1
     assert execution.store.list_consolidation_apply_receipts(execution.operation_id)[0]["result"]
+    seen = execution.store.graph_seen_head(
+        app.state.default_project_id,
+        f"chat:{request.chat_id}",
+        launcher.native_session_id,
+        GraphTargetRef(),
+    )
+    assert seen is not None
+    assert seen.revision == initial_revision + (0 if interleaved else 1)
 
 
 def test_consolidation_startup_preserves_the_exact_unstarted_admission(

@@ -4,11 +4,10 @@ import uuid
 
 import pytest
 
-import rcp.history.delta as delta_module
-from rcp.core.materialize import MaterializationResult, materialize_patches
+from rcp.core.materialize import apply_valid_patch, materialize_patches
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
-from rcp.core.validation import ValidationContext, ValidationReport
-from rcp.history import build_revision_summaries
+from rcp.core.validation import ValidationContext
+from rcp.history.delta import RevisionSummary, render_revision_summary
 from rcp.service import ReviewRequest
 from tests.helpers import (
     append_fixture_patch,
@@ -34,6 +33,16 @@ def _patch(
         ops=ops,
         change_summary=change_summary or [],
     )
+
+
+def _render_summaries(patches: list[Patch]) -> list[RevisionSummary]:
+    state = GraphState()
+    summaries = []
+    for patch in patches:
+        previous = state
+        state = apply_valid_patch(previous, patch)
+        summaries.append(render_revision_summary(previous, patch, state))
+    return summaries
 
 
 def test_revision_summaries_resolve_titles_fallback_and_quote_stored_consequences() -> None:
@@ -100,12 +109,7 @@ def test_revision_summaries_resolve_titles_fallback_and_quote_stored_consequence
             ],
         ),
     ]
-    materialization = MaterializationResult(
-        state=GraphState(revision=4),
-        reports={patch.revision: ValidationReport() for patch in patches},
-    )
-
-    summaries = build_revision_summaries(patches, materialization)
+    summaries = _render_summaries(patches)
 
     assert len(summaries) == len(patches)
     assert all(summary.sentences and all(summary.sentences) for summary in summaries)
@@ -166,12 +170,7 @@ def test_revision_summaries_preserve_unresolved_slash_tokens_and_paths() -> None
             ],
         ),
     ]
-    materialization = MaterializationResult(
-        state=GraphState(revision=2),
-        reports={patch.revision: ValidationReport() for patch in patches},
-    )
-
-    summaries = build_revision_summaries(patches, materialization)
+    summaries = _render_summaries(patches)
 
     for summary in summaries:
         assert summary.sentences and all(summary.sentences)
@@ -231,9 +230,8 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
     assert raw.json()[-1]["change_summary"] == []
 
 
-def test_manager_collects_range_during_one_replay_and_skips_stored_rejection(
+def test_manager_summaries_filter_range_and_skip_stored_rejection(
     manifest,
-    monkeypatch,
     tmp_path,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -245,11 +243,6 @@ def test_manager_collects_range_during_one_replay_and_skips_stored_rejection(
         raise_on_reject=False,
     )
     accepted, _ = append_fixture_patch(app.state.service, refresh_patch())
-
-    def reject_duplicate_apply(*_args) -> None:
-        raise AssertionError("manager summaries must not apply accepted patches a second time")
-
-    monkeypatch.setattr(delta_module, "apply_valid_patch", reject_duplicate_apply)
 
     summaries = history.revision_summaries(from_revision=3, to_revision=4)
 
@@ -298,12 +291,7 @@ def test_identity_revision_summary_uses_system_prose(action, prefix) -> None:
             },
         }
     )
-    materialization = MaterializationResult(
-        state=GraphState(revision=1),
-        reports={1: ValidationReport()},
-    )
-
-    summary = build_revision_summaries([patch], materialization)[0]
+    summary = render_revision_summary(GraphState(), patch, GraphState(revision=1))
 
     assert summary.author is None
     assert summary.producer == "system"
@@ -327,12 +315,7 @@ def test_revision_summary_preserves_human_snapshot_and_agent_task_attribution() 
             "task_id": "task-direct-1",
         }
     )
-    materialization = MaterializationResult(
-        state=GraphState(revision=2),
-        reports={1: ValidationReport(), 2: ValidationReport()},
-    )
-
-    summaries = build_revision_summaries([human, agent], materialization)
+    summaries = _render_summaries([human, agent])
 
     assert summaries[0].producer == "human"
     assert summaries[0].authorized_by == authorized
@@ -354,12 +337,7 @@ def test_legacy_revision_summary_remains_explicitly_unattributed() -> None:
             "ops": [],
         }
     )
-    materialization = MaterializationResult(
-        state=GraphState(revision=1),
-        reports={1: ValidationReport()},
-    )
-
-    summary = build_revision_summaries([legacy], materialization)[0]
+    summary = render_revision_summary(GraphState(), legacy, GraphState(revision=1))
 
     assert summary.producer == "human"
     assert summary.authorized_by is None

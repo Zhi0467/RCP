@@ -355,12 +355,12 @@ def test_shared_snapshot_lock_keeps_atomic_transition_out_of_refresh_and_replay(
         refresh_release.wait(timeout=5)
         return True
 
-    real_replay = reader._replay
+    real_replay = reader.history_engine.materialization
 
-    def paused_replay(pending_patch_paths=None):
+    def paused_replay(*args, **kwargs):
         replay_entered.wait(timeout=5)
         replay_release.wait(timeout=5)
-        return real_replay(pending_patch_paths)
+        return real_replay(*args, **kwargs)
 
     def append_after_probe():
         acquired = writer_workspace.snapshot_lock.acquire(blocking=False)
@@ -375,7 +375,7 @@ def test_shared_snapshot_lock_keeps_atomic_transition_out_of_refresh_and_replay(
         published_transitions.append(Path(patch_path).as_posix())
 
     monkeypatch.setattr(reader_workspace, "_refresh_snapshot", paused_refresh)
-    monkeypatch.setattr(reader, "_replay", paused_replay)
+    monkeypatch.setattr(reader.history_engine, "materialization", paused_replay)
     monkeypatch.setattr(writer_workspace, "publish_committed_patch", record_transition_publish)
 
     with ThreadPoolExecutor(max_workers=2) as pool:

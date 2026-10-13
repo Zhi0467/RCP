@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import ApplyCommandRequest, CommandResponse
 from rcp.core.authority import AgentAuthorizerDeparted
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history.queries import HeadSpec
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
 from rcp.skill_registry import official_registry
 from rcp.transport import StateUnavailable
@@ -38,6 +40,25 @@ def is_consolidation(execution: AgentTaskExecution | None) -> bool:
     return (
         execution is not None
         and execution.store.consolidation_run_for_operation(execution.operation_id) is not None
+    )
+
+
+def consolidation_covered_head(
+    service: ProjectService,
+    execution: AgentTaskExecution | None,
+) -> GraphHeadRef | None:
+    """The scheduler's coverage baseline, independent of any provider observation."""
+    if execution is None:
+        return None
+    run = execution.store.consolidation_run_for_operation(execution.operation_id)
+    if run is None:
+        return None
+    schedule = execution.store.consolidation_schedule(run.project_id)
+    if schedule is None or schedule.covered_head is None:
+        return None
+    return service.history_engine.resolve(
+        HeadSpec(target=GraphTargetRef(), revision=schedule.covered_head),
+        default_target=GraphTargetRef(),
     )
 
 

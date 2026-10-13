@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents.continuation_prompt import (
+    MASTER_VERSION,
     SECTIONS,
     LaunchPhase,
     MasterRef,
     classify,
     compose,
+    graph_head_delta,
 )
 from rcp.agents.graph_rules import GRAPH_RULES_VERSION
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, PromptFactory, chat_master_contract_key
@@ -28,9 +30,10 @@ def test_the_session_id_decides_start_versus_continuation(phase, continued) -> N
     assert classify(LaunchPhase(session_id="native", phase=phase)) == continued
 
 
-def test_chat_master_key_keeps_the_key_existing_sessions_hold() -> None:
+def test_chat_master_key_versions_the_shared_contract() -> None:
     assert chat_master_contract_key(ontology_extensions=False) == (
-        f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-rules-{GRAPH_RULES_VERSION}"
+        f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-master-v{MASTER_VERSION}"
+        f"-rules-{GRAPH_RULES_VERSION}"
     )
     assert chat_master_contract_key(ontology_extensions=False, owner="episode:child") != (
         chat_master_contract_key(ontology_extensions=False)
@@ -112,3 +115,34 @@ def test_a_continuation_carries_no_master_text() -> None:
 
     assert GRAPH_RULES_VERSION not in prompt
     assert not any(block in prompt for block in master.split("\n\n") if len(block) > 80)
+
+
+def test_graph_range_is_turn_relative_and_unknown_is_absent() -> None:
+    from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+
+    target = GraphTargetRef(kind="branch", branch_id="experiment")
+    seen = GraphHeadRef(target=target, revision=4)
+    staged = GraphHeadRef(target=target, revision=7)
+    assert graph_head_delta(None, staged) == {}
+    assert graph_head_delta(staged, staged) == {}
+    assert graph_head_delta(seen, staged) == {
+        "current": {
+            "graph_changed_since": "branch:experiment@4",
+            "graph_head": "branch:experiment@7",
+        }
+    }
+
+
+def test_history_contract_renders_only_scope_verbs() -> None:
+    from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.agents.prompts import render_graph_history
+    from rcp.core.transition_models import GraphTargetRef
+
+    scope = GraphReadScope(
+        project_id="project", target=GraphTargetRef(), verbs=frozenset({"graph_log"})
+    )
+    contract = render_graph_history(scope, "client")
+    assert "`client graph_log " in contract
+    assert "`client graph_diff " not in contract
+    assert "`project`" in contract
+    assert "`main`" in contract

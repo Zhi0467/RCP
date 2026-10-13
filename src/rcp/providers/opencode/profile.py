@@ -97,7 +97,10 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
             request.hidden_read_scope,
             request.invocation_gate,
         )
-        if request.capability == "discuss" and request.invocation_gate is not None:
+        if (
+            request.capability in {"discuss", "paper_readonly"}
+            and request.invocation_gate is not None
+        ):
             self.command[self.command.index("--agent") + 1] = _agent_name(permission)
         self.environment = profile.launch_environment(request, permission=permission)
         self._session_seen = False
@@ -394,7 +397,10 @@ def _permission(
         }
 
     if capability == "paper_readonly":
-        # Reads its staged inputs outside the project; it can neither edit nor run.
+        # The owner dispatches only history reads; the client cannot be replaced.
+        if invocation_gate is not None and invocation_gate.client_path is not None:
+            client = shlex.join(invocation_gate.client_executable_argv())
+            base["bash"] = {"*": "deny", f"{client} *": "allow"}
         return base
     if scope is not None:
         allowed, denied = scope.writable_roots, scope.protected_write_paths

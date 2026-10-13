@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shlex
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, replace
@@ -41,9 +42,11 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import (
     _invoked_package_section,
+    graph_read_contract,
     invoked_package_pointers,
     invoked_provider_skill_section,
 )
@@ -52,6 +55,7 @@ from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin
+from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ReplayHalted
 from rcp.limits import (
     EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
@@ -116,7 +120,10 @@ from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
+    commit_prepared_graph_observation,
     continuation_session_master,
+    merge_prepared_graph_observation_delta,
+    prepare_graph_observation,
     record_inline_prompt,
     record_session_master,
     recorded_master_values,
@@ -158,6 +165,7 @@ from rcp.runs.tasks.work import (
     _record_work_finalization_context,
     _record_work_graph_rejection,
     _recorded_retry_deliverable_baseline,
+    _refresh_work_snapshot,
     _rejected_graph_update_for_repair,
     _resolve_work_execution,
     _ResolvedWorkExecution,
@@ -392,6 +400,43 @@ async def _stage_work_turn(
     return turn, staged
 
 
+def _prepare_experiment_observation(
+    turn: WorkTurn, previous_head: GraphHeadRef | None = None
+) -> None:
+    assert turn.execution is not None
+    owner_episode_id = turn.request.control_episode_id
+    visited: set[str] = set()
+    while owner_episode_id is not None:
+        if owner_episode_id in visited:
+            raise ValueError("Experiment observation lineage contains a cycle.")
+        visited.add(owner_episode_id)
+        owner_episode = turn.execution.store.episode(owner_episode_id)
+        if (
+            owner_episode is None
+            or owner_episode.mode != "experiment_loop"
+            or owner_episode.graph_target != turn.service.history.graph_target
+        ):
+            raise ValueError("Experiment observation lineage lost its graph target.")
+        if owner_episode_id != turn.request.control_episode_id:
+            binding = turn.execution.store.experiment_episode(owner_episode_id)
+            if binding is None or binding.native_session_id != turn.request.session_id:
+                raise ValueError("Experiment observation lineage lost its native session.")
+        if owner_episode.continues_episode_id is None:
+            break
+        owner_episode_id = owner_episode.continues_episode_id
+    if owner_episode_id is None:
+        raise ValueError("Experiment observation requires its episode lineage.")
+    prepare_graph_observation(
+        turn.execution,
+        turn.service,
+        owner_id=f"experiment:{owner_episode_id}",
+        target=turn.service.history.graph_target,
+        revision=turn.context.graph_revision,
+        native_session_id=turn.request.session_id,
+        previous_head=previous_head,
+    )
+
+
 async def _prepare_work_prompt_context(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
@@ -414,6 +459,7 @@ async def _prepare_work_prompt_context(
         continuation=turn.continuation,
     )
     assert turn.execution is not None
+    _prepare_experiment_observation(turn)
     episode = (
         turn.execution.store.experiment_episode(turn.request.control_episode_id)
         if turn.request.control_episode_id
@@ -493,6 +539,7 @@ def _handoff_values(turn: WorkTurn) -> dict[str, dict[str, object]]:
             "patch_schema": turn.patch_inputs.schema_path,
         },
         "commands": {"validate": turn.patch_inputs.validator_command},
+        "patch": {"command_client": turn.patch_inputs.command_client},
     }
     if turn.write_scope is not None:
         values["write_scope"] = {
@@ -560,6 +607,7 @@ def _experiment_values(
         execution["job_manager_rules"] = manager.instructions if manager is not None else None
     return {
         **values,
+        "history_client": turn.patch_inputs.command_client,
         "execution": execution,
         "repositories": {
             item["alias"]: {"host": item["host"], "path": item["path"]}
@@ -854,6 +902,7 @@ def _record_continuation_prompt(
     # An episode's browser intent is fixed at launch, so "off" has nothing to revoke.
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
+    delta = merge_prepared_graph_observation_delta(delta, turn.execution, phase.session_id)
     prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
     contract_path = record_inline_prompt(
         turn.execution,
@@ -1115,6 +1164,9 @@ def _experiment_start_contract(
             if invoked
             else None
         ),
+    )
+    contract = graph_read_contract(
+        contract, turn.graph_read_scope, turn.patch_inputs.command_client
     )
     if invoked:
         contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
@@ -1445,10 +1497,13 @@ def _correction_prompt(
     already holds this launch's values, so only the correction's own validator is new.
     """
 
+    previous_head = _refresh_work_snapshot(launch_turn)
+    _prepare_experiment_observation(launch_turn, previous_head)
     launched = composed.values or {}
     commands = launched.get("commands")
     current = {
         **launched,
+        "history_client": shlex.join(shlex.split(validator_command)[:-2]),
         "commands": {
             **(commands if isinstance(commands, dict) else {}),
             "validate": validator_command,
@@ -1594,6 +1649,7 @@ async def _settle_watch_deliverable(
                 execution=turn.execution,
                 budget=launch_turn.validator_budget,
                 compute_commands=turn.compute_commands,
+                graph_read_scope=launch_turn.graph_read_scope,
                 run_truth_scope=turn.run_truth_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
@@ -1886,6 +1942,7 @@ async def _apply_experiment_loop_turn(
                 execution=turn.execution,
                 budget=launch_turn.validator_budget,
                 compute_commands=turn.compute_commands,
+                graph_read_scope=launch_turn.graph_read_scope,
                 run_truth_scope=turn.run_truth_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
@@ -2804,12 +2861,20 @@ async def _stream_work_graph_repair(
             ask_wait_seconds=ask_hold_seconds(shell_timeout),
             shell_timeout_seconds=shell_timeout,
         )
+        task_record = execution.store.agent_task(execution.operation_id)
+        if task_record is None:
+            raise ValueError("The graph-reading task record is unavailable.")
+        graph_read_scope = GraphReadScope(
+            project_id=task_record.project_id,
+            target=service.history.graph_target,
+        )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
             patch_inputs.validator_staged,
             execution=execution,
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
+            graph_read_scope=graph_read_scope,
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
         )
@@ -2836,6 +2901,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
+            graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,
             request=request,
@@ -2854,6 +2920,7 @@ async def _stream_work_graph_repair(
             validator_budget=validator_budget,
             outcome=outcome,
         )
+        _prepare_experiment_observation(turn)
         browser_grant = BrowserGrant()
         previous = _rejected_graph_update_for_repair(execution)
         if not request.session_id:
@@ -3053,6 +3120,13 @@ async def _stream_work_graph_repair(
             f"The graph repair completed but its chat receipt could not be written: {exc}",
             level="warning",
         )
+    if graph_update.status in {"applied", "none"}:
+        commit_prepared_graph_observation(
+            execution,
+            service,
+            native_session_id=outcome.session_id,
+            applied_revision=graph_update.applied_revision,
+        )
     payload: dict[str, object] = {
         "graph_update": graph_update.model_dump(mode="json"),
     }
@@ -3070,10 +3144,13 @@ def _start_work_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
+    graph_read_scope: GraphReadScope | None = None,
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
-    command_handler = _work_command_handler(execution, compute_commands)
+    command_handler = _work_command_handler(
+        execution, compute_commands, service=service, graph_read_scope=graph_read_scope
+    )
     return start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -3085,6 +3162,7 @@ def _start_work_validator_mailbox(
                 run_truth_scope,
                 compute_commands,
                 ask_allowed="ask" in command_handler.allowed_verbs,
+                graph_read_scope=graph_read_scope,
             ).model_dump(),
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,

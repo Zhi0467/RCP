@@ -9,12 +9,15 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from rcp.compute_jobs.models import ComputeLaunchRequest
+from rcp.history.queries import parse_head
 from rcp.limits import (
     ASK_ANSWER_MAX_LENGTH,
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
     ASK_QUESTION_MAX_LENGTH,
     COMMAND_ASK_POLL_SECONDS,
+    GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH,
+    GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT,
     LESSON_TEXT_MAX_CHARS,
 )
 from rcp.providers import ProviderId
@@ -27,6 +30,8 @@ COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
     "validate",
+    "graph_diff",
+    "graph_log",
     "apply",
     "status",
     "spawn",
@@ -128,6 +133,52 @@ class StatusArguments(BaseModel):
 
 
 _SAFE_WORKSPACE_FILENAME = r"^[A-Za-z0-9._-]+$"
+
+
+class GraphDiffArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, serialize_by_alias=True)
+
+    from_head: str | None = Field(default=None, alias="from")
+    to_head: str | None = Field(default=None, alias="to")
+    branch_changes: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,200}$")
+    ids: list[Annotated[str, Field(min_length=1)]] = Field(
+        default_factory=list, max_length=GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT
+    )
+    cursor: str | None = Field(
+        default=None, min_length=1, max_length=GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH
+    )
+
+    @field_validator("from_head", "to_head")
+    @classmethod
+    def valid_head(cls, value: str | None) -> str | None:
+        if value is not None:
+            parse_head(value)
+        return value
+
+    @model_validator(mode="after")
+    def valid_range(self) -> GraphDiffArguments:
+        if self.branch_changes is not None:
+            if self.from_head is not None or self.to_head is not None:
+                raise ValueError("branch_changes cannot be combined with from or to")
+        elif self.from_head is None or self.to_head is None:
+            raise ValueError("graph_diff requires from and to, or branch_changes")
+        return self
+
+
+class GraphLogArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str = Field(min_length=1)
+    at: str = "@head"
+    cursor: str | None = Field(
+        default=None, min_length=1, max_length=GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH
+    )
+
+    @field_validator("at")
+    @classmethod
+    def valid_head(cls, value: str) -> str:
+        parse_head(value)
+        return value
 
 
 class SpawnArguments(BaseModel):
@@ -375,6 +426,16 @@ class StatusCommandRequest(_CommandRequest):
     arguments: StatusArguments = Field(default_factory=StatusArguments)
 
 
+class GraphDiffCommandRequest(_CommandRequest):
+    verb: Literal["graph_diff"]
+    arguments: GraphDiffArguments
+
+
+class GraphLogCommandRequest(_CommandRequest):
+    verb: Literal["graph_log"]
+    arguments: GraphLogArguments
+
+
 class SpawnCommandRequest(_CommandRequest):
     verb: Literal["spawn"]
     arguments: SpawnArguments
@@ -449,6 +510,8 @@ CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
     | ApplyCommandRequest
     | StatusCommandRequest
+    | GraphDiffCommandRequest
+    | GraphLogCommandRequest
     | SpawnCommandRequest
     | PauseCommandRequest
     | ResumeCommandRequest

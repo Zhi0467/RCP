@@ -40,10 +40,7 @@ from .test_auto_research_stream import (
     _events,
     _execution,
     _service,
-    _WorkerLauncher,
-)
-from .test_auto_research_stream import (
-    _setup_auto_research as _setup_stream_auto_research,
+    _setup_branch_auto_research,
 )
 
 _SCOPE = ["repo-a"]
@@ -589,22 +586,22 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
     tmp_path: Path,
 ) -> None:
     service = _service(manifest, tmp_path)
+    service, store, _episode, _root, worker = _setup_branch_auto_research(
+        service, tmp_path / "store"
+    )
     before = service.history.state().model_dump(mode="json")
-    store, _episode, _root, worker = _setup_stream_auto_research(tmp_path / "store")
 
-    class DifficultyLauncher(_WorkerLauncher):
+    class DifficultyLauncher:
         async def stream(self, provider, prompt, **kwargs):
-            async for event in super().stream(provider, prompt, **kwargs):
-                if event.event == "answer":
-                    yield AgentEvent(
-                        event="answer",
-                        text=(
-                            "I could not finish because the evidence contradicts the existing "
-                            "Hypothesis; changing that belief requires human judgment."
-                        ),
-                    )
-                else:
-                    yield event
+            yield AgentEvent(event="session", session_id="worker-session")
+            yield AgentEvent(
+                event="answer",
+                text=(
+                    "I could not finish because the evidence contradicts the existing "
+                    "Hypothesis; changing that belief requires human judgment."
+                ),
+            )
+            yield AgentEvent(event="done")
 
     events = await _events(
         stream_auto_research_worker_run(
@@ -618,6 +615,7 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
     )
 
     answers = [event.text for event in events if event.event == "answer"]
+    assert not [event for event in events if event.event == "error"]
     assert answers == [
         "I could not finish because the evidence contradicts the existing Hypothesis; "
         "changing that belief requires human judgment."

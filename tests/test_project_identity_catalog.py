@@ -175,7 +175,9 @@ def test_coherent_cold_open_replays_once_without_reloading_patch_bodies(
         identity_action="adopted",
     )
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
-    replay = HistoryManager._replay
+    from rcp.history.engine import ProjectHistoryEngine
+
+    replay = ProjectHistoryEngine.materialization
     load_patches = HistoryManager.load_patches
     calls = {"replay": 0, "load_patches": 0}
 
@@ -187,7 +189,7 @@ def test_coherent_cold_open_replays_once_without_reloading_patch_bodies(
         calls["load_patches"] += 1
         return load_patches(self)
 
-    monkeypatch.setattr(HistoryManager, "_replay", counted_replay)
+    monkeypatch.setattr(ProjectHistoryEngine, "materialization", counted_replay)
     monkeypatch.setattr(HistoryManager, "load_patches", counted_load_patches)
 
     catalog.open(registered.project_id)

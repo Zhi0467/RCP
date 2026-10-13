@@ -88,11 +88,11 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             else:
                 self.command[index] = rendered
         if (
-            request.capability == "discuss"
+            request.capability in {"discuss", "paper_readonly"}
             and request.invocation_gate is not None
             and request.invocation_gate.client_path is not None
         ):
-            self.command = _with_discuss_client_permissions(self.command, request.invocation_gate)
+            self.command = _with_readonly_client_permissions(self.command, request.invocation_gate)
         if (
             request.hidden_read_scope is not None
             and request.hidden_read_scope.account_home is not None
@@ -698,7 +698,9 @@ def _claude_absolute_pattern(path: str, *, directory: bool = True) -> str:
     return f"//{path.lstrip('/')}" + ("/**" if directory else "")
 
 
-def _with_discuss_client_permissions(command: list[str], gate: ProviderInvocationGate) -> list[str]:
+def _with_readonly_client_permissions(
+    command: list[str], gate: ProviderInvocationGate
+) -> list[str]:
     """Grant the isolated client only after denying replacement of its inputs."""
     assert gate.client_path is not None
     command = list(command)

@@ -189,7 +189,12 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
     turn = SimpleNamespace(
         task=root,
         request=SimpleNamespace(instruction=None),
-        binding=SimpleNamespace(native_session_id=None, stage_root=None, stage_host=None),
+        binding=SimpleNamespace(
+            actor_operation_id=root.operation_id,
+            native_session_id=None,
+            stage_root=None,
+            stage_host=None,
+        ),
         allocation_operation_id=root.operation_id,
     )
     arguments = dict(
