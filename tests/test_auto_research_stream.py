@@ -2529,7 +2529,6 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         continuation="lifecycle_wake",
     )
     assert events[-1].event == "done"
-    retained_lifecycle = (stage / "lifecycle.json").read_text(encoding="utf-8")
     # A second answer arrives mid-turn and this turn harvests it before failing.
     second = record_auto_research_message(
         store,
@@ -2539,6 +2538,17 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         authorized_by=auto_research.authorized_by,
         recipient_task_id=root.operation_id,
         body="A second answer, harvested during the turn.",
+    )
+    later = store.record_auto_research_lifecycle_notice(
+        AutoResearchLifecycleNoticeRecord(
+            notice_id="worker-failed",
+            episode_id=auto_research.episode_id,
+            source_kind="worker",
+            source_id="worker",
+            source_event="failed",
+            payload={"kind": "work", "status": "failed"},
+            created_at=store.now(),
+        )
     )
     store.process_auto_research_lifecycle_inbox(
         auto_research.episode_id,
@@ -2556,8 +2566,14 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     )
 
     def recovery_writer(_contract_text, workspace):
-        assert (workspace / "lifecycle.json").read_text(encoding="utf-8") == (retained_lifecycle)
-        # The retry gets the claimed answer and the one harvested before the failure.
+        # The retry gets the claimed facts and answer plus those harvested before the failure.
+        lifecycle = parse_auto_research_lifecycle_delivery(
+            (workspace / "lifecycle.json").read_text(encoding="utf-8")
+        )
+        assert [item.notice_id for item in lifecycle.notices] == [
+            notice.notice_id,
+            later.notice_id,
+        ]
         mail = parse_auto_research_mail_delivery(
             (workspace / "messages.json").read_text(encoding="utf-8")
         )

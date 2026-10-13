@@ -123,6 +123,7 @@ from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AgentTaskRecord,
     AutoResearchActorBinding,
+    AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
 )
 from rcp.transport import (
@@ -1256,6 +1257,24 @@ def _claimed_messages(
     ]
 
 
+def _claimed_notices(
+    execution: AgentTaskExecution,
+    turn: _CanonicalOrchestratorTurn,
+) -> list[AutoResearchLifecycleNoticeRecord]:
+    # As with mail: includes notices the allocation's first attempt harvested,
+    # which a clean retry has not seen. A Clear receipt keeps no notice bodies.
+    claimed = {
+        notice.notice_id: notice
+        for notice in execution.store.auto_research_lifecycle_delivery(turn.allocation_operation_id)
+    }
+    for receipt in execution.store.auto_research_inbox_receipts(turn.request.episode_id):
+        if receipt.mode == "harvest":
+            for notice in receipt.notices:
+                if notice.acknowledged_operation_id == turn.allocation_operation_id:
+                    claimed.setdefault(notice.notice_id, notice)
+    return sorted(claimed.values(), key=lambda notice: (notice.created_at, notice.notice_id))
+
+
 def _prepare_turn_handoffs(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
@@ -1313,7 +1332,7 @@ def _stage_claimed_lifecycle(
     turn: _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
 ) -> str | None:
-    notices = execution.store.auto_research_lifecycle_delivery(turn.allocation_operation_id)
+    notices = _claimed_notices(execution, turn)
     mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
     if notices:
         if turn.binding.role != "orchestrator":

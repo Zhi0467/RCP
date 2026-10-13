@@ -287,7 +287,9 @@ input, and not itself waiting on that question, the answer is steered into it.
 Only an acknowledged steer becomes the answer's projection, shown as that
 turn's delivered steer; the acknowledgment counts as the turn's answer
 acknowledgment, so its successful settlement records receipt and no follow-up
-runs. A refused or unknown steer records nothing: the answer is projected and
+runs. The acknowledgment is recorded before the transcript; if that write
+fails, reconciliation repairs it onto the receiving turn, never by a second
+delivery. A refused or unknown steer records nothing: the answer is projected and
 delivered by its ordinary follow-up, so the chat never shows a refusal for an
 answer that still arrives.
 Failed or disconnected turns retain delivery eligibility. After full settlement

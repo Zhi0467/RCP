@@ -1789,7 +1789,10 @@ def reconcile_chat_question_answers(
                 service = project_service(question.origin.project_id).for_graph_target(
                     question.origin.graph_target
                 )
-                from rcp.runs.steering import steer_question_answer
+                from rcp.runs.steering import (
+                    repair_received_answer_steer,
+                    steer_question_answer,
+                )
 
                 # Steer over a new turn: a running turn in the same binding takes the
                 # answer now. The steer is the answer's transcript projection.
@@ -1797,6 +1800,8 @@ def reconcile_chat_question_answers(
                     steer_question_answer(service, store, background_tasks, question)
                     if question.client_receipt_revision is None
                     and question.followup_operation_id is None
+                    else "steered"
+                    if repair_received_answer_steer(service, store, background_tasks, question)
                     else "not_steered"
                 )
                 if steered == "in_flight":

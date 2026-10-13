@@ -55,8 +55,8 @@ Every orchestrator turn, worker turn, mail wake, graph-condition wake, and other
 Auto-research operational continuation spends one unit of B. Exact recovery of
 the same allocation spends none. Recovery restages the allocation's mail and
 lifecycle input from the durable claim, over any copy a failed attempt left, and
-includes mail that attempt harvested, since a retry may run in a clean session;
-mail it cleared stays unread.
+includes the mail and lifecycle notices that attempt harvested, since a retry
+may run in a clean session; what it cleared stays unread.
 Current turns finish at exhaustion; new work
 does not start.
 

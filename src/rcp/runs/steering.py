@@ -332,9 +332,8 @@ def steer_question_answer(
             or not question_receiver_binds(origin, target)
         ):
             return "not_steered"
-        if _answer_acknowledged(store, question, target):
+        if (turn_id := _steered_turn(store, question, target)) is not None:
             # Delivered earlier, but its transcript record did not land: repair it.
-            turn_id = chat_steering_state(background, target).turn_id
             _record_answer_steer(service, background, question, target, turn_id)
             return "steered"
         state = chat_steering_state(background, target)
@@ -347,15 +346,44 @@ def steer_question_answer(
             _ANSWER_STEERS_IN_FLIGHT.discard(question.question_id)
 
 
-def _answer_acknowledged(
-    store: AppStore, question: QuestionRecord, target: AgentTaskRecord
+def repair_received_answer_steer(
+    service: ProjectService,
+    store: AppStore,
+    background: BackgroundAgentTasks,
+    question: QuestionRecord,
 ) -> bool:
-    return any(
-        receipt.payload.get("question_id") == question.question_id
-        and receipt.payload.get("answer_revision") == question.answer_revision
-        for receipt in store.agent_task_receipts_by_category(
-            target.operation_id, "question_answer_acknowledged"
-        )
+    """Restore a steered answer's record after its receiving turn settled.
+
+    A failed transcript write can outlive the turn; the settled turn's receipt
+    still names the steer, so the chat keeps the answer on that turn.
+    """
+    receiver = (
+        store.agent_task(question.client_receipt_operation_id)
+        if question.client_receipt_operation_id
+        else None
+    )
+    turn_id = _steered_turn(store, question, receiver) if receiver is not None else None
+    if receiver is None or turn_id is None:
+        return False
+    _record_answer_steer(service, background, question, receiver, turn_id)
+    return True
+
+
+def _steered_turn(store: AppStore, question: QuestionRecord, target: AgentTaskRecord) -> str | None:
+    """The provider turn an acknowledged steer of this answer reached, if any."""
+    # Only this answer's own steer: an ask call that returned it has another request id.
+    return next(
+        (
+            str(receipt.payload["turn_id"])
+            for receipt in store.agent_task_receipts_by_category(
+                target.operation_id, "question_answer_acknowledged"
+            )
+            if receipt.payload.get("question_id") == question.question_id
+            and receipt.payload.get("answer_revision") == question.answer_revision
+            and receipt.payload.get("request_id") == question_answer_message_id(question)
+            and receipt.payload.get("turn_id")
+        ),
+        None,
     )
 
 
@@ -364,7 +392,7 @@ def _record_answer_steer(
     background: BackgroundAgentTasks,
     question: QuestionRecord,
     target: AgentTaskRecord,
-    turn_id: str | None = None,
+    turn_id: str,
 ) -> None:
     """Project a delivered answer as the target turn's steer, once."""
     request = load_stored_request(RunRequest, target.request, operation_id=target.operation_id)
@@ -375,7 +403,7 @@ def _record_answer_steer(
             target,
             message_id=question_answer_message_id(question),
             text=question_answer_text(question),
-            receipt=_receipt(target.attempt, turn_id or "", "delivered", None),
+            receipt=_receipt(target.attempt, turn_id, "delivered", None),
         )
     background.bump_steer_revision(target.operation_id, target.project_id)
 
@@ -413,6 +441,7 @@ def _steer_answer(
             "question_id": question.question_id,
             "answer_revision": question.answer_revision,
             "request_id": message_id,
+            "turn_id": turn_id,
         },
         tier="diagnostic",
     )

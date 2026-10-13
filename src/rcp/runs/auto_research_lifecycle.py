@@ -74,11 +74,15 @@ def auto_research_lifecycle_delivery(
 ) -> AutoResearchLifecycleDelivery:
     facts: list[AutoResearchLifecycleFact] = []
     for notice in notices:
-        if (
-            notice.episode_id != episode_id
-            or notice.delivery_operation_id != delivery_operation_id
-            or notice.delivered_at is None
-        ):
+        # Woken with it, or harvested it from the inbox during the turn.
+        delivered_at = (
+            notice.delivered_at
+            if notice.delivery_operation_id == delivery_operation_id
+            else notice.acknowledged_at
+            if notice.acknowledged_operation_id == delivery_operation_id
+            else None
+        )
+        if notice.episode_id != episode_id or delivered_at is None:
             raise ValueError("Lifecycle notice does not match its claimed delivery")
         facts.append(
             AutoResearchLifecycleFact(
@@ -89,7 +93,7 @@ def auto_research_lifecycle_delivery(
                 source_attempt=notice.source_attempt,
                 payload=notice.payload,
                 created_at=notice.created_at,
-                delivered_at=notice.delivered_at,
+                delivered_at=delivered_at,
             )
         )
     return AutoResearchLifecycleDelivery(

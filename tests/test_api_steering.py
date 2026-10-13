@@ -686,18 +686,14 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     )
     assert len(answers) == 1
     answer = answers[0]
-    if delivery == "delivered":
+    if delivery != "refused":
+        # An unrecorded steer is never redelivered by a follow-up, and its record
+        # is repaired onto the turn that received it.
         assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
             run.operation_id,
             None,
         )
         assert (answer.operation_id, answer.steering.status) == (run.operation_id, "delivered")
-    elif delivery == "unrecorded":
-        # Never a paid second delivery; the chat still shows the answer.
-        assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
-            run.operation_id,
-            None,
-        )
     else:
         # The chat shows the answer once, on the turn that actually receives it.
         assert settled.client_receipt_revision is None
