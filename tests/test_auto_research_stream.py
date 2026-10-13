@@ -2614,9 +2614,28 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         wake,
         operation_id="lifecycle-wake-retry",
     )
+    # That retry harvests a third answer and fails too; the next retry gets it as well.
+    third = record_auto_research_message(
+        store,
+        episode_id=auto_research.episode_id,
+        sender_role="human",
+        sender_task_id=None,
+        authorized_by=auto_research.authorized_by,
+        recipient_task_id=root.operation_id,
+        body="A third answer, harvested by the first retry.",
+    )
+    store.process_auto_research_lifecycle_inbox(
+        auto_research.episode_id,
+        effect_id="retry-harvest",
+        mode="harvest",
+        acknowledged_by=root.operation_id,
+        delivery_operation_id=retry.operation_id,
+    )
+    store.fail_agent_task(retry.operation_id, "provider connection interrupted")
+    retry = _recovery_task(store, auto_research, retry, operation_id="lifecycle-wake-retry-2")
 
     def recovery_writer(_contract_text, workspace):
-        # The retry gets the claimed facts and answer plus those harvested before the failure.
+        # The retry gets the claimed facts and answer plus those harvested before the failures.
         lifecycle = parse_auto_research_lifecycle_delivery(
             (workspace / "lifecycle.json").read_text(encoding="utf-8")
         )
@@ -2627,7 +2646,7 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         mail = parse_auto_research_mail_delivery(
             (workspace / "messages.json").read_text(encoding="utf-8")
         )
-        assert mail.message_ids == [message.message_id, second.message_id]
+        assert mail.message_ids == [message.message_id, second.message_id, third.message_id]
 
     recovery_events = await _orchestrator_events(
         service,
@@ -3397,3 +3416,15 @@ async def test_orchestrator_observes_snapshot_only_after_success(
     observed = store.graph_seen_head(root.project_id, owner, session, snapshot.target)
     assert observed == (None if provider_fails else snapshot)
     assert events[-1].event == ("error" if provider_fails else "done")
+
+
+def test_a_recovery_handoff_keeps_what_fits_and_still_refuses_a_bad_first_item(caplog) -> None:
+    def build(batch):
+        if len(batch) > 2 or "bad" in batch:
+            raise ValueError("over the handoff limit")
+
+    fit = auto_research_stream_module._fit_handoff
+    assert fit(["a", "b", "c"], build, kind="mail messages", allocation="wake") == ["a", "b"]
+    assert [record.levelname for record in caplog.records] == ["WARNING"]
+    with pytest.raises(ValueError):
+        fit(["bad", "a"], build, kind="mail messages", allocation="wake")

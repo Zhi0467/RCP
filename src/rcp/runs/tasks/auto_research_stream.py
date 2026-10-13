@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 from rcp.agents import (
     AgentEvent,
@@ -167,6 +168,10 @@ _LAUNCH_PHASES: dict[str, Literal["wake", "recovery"]] = {
     "lifecycle_wake": "wake",
     "auto_research_continuation": "wake",
 }
+
+
+_LOGGER = logging.getLogger(__name__)
+_Item = TypeVar("_Item")
 
 
 @dataclass(frozen=True)
@@ -1023,7 +1028,16 @@ def _paid_allocation_operation_id(
     execution: AgentTaskExecution,
     task: AgentTaskRecord,
 ) -> str:
+    return _allocation_lineage(execution, task)[-1]
+
+
+def _allocation_lineage(
+    execution: AgentTaskExecution,
+    task: AgentTaskRecord,
+) -> list[str]:
+    """The task and each recovery attempt back to its paid allocation, which is last."""
     current = task
+    lineage = [task.operation_id]
     seen: set[str] = set()
     while execution.store.agent_task_continuation_cause(current.operation_id) in {
         "resume",
@@ -1036,7 +1050,8 @@ def _paid_allocation_operation_id(
         if parent is None or parent.episode_id != task.episode_id or parent.kind != "auto_research":
             raise ValueError("AutoResearch actor recovery crossed its paid allocation lineage.")
         current = parent
-    return current.operation_id
+        lineage.append(current.operation_id)
+    return lineage
 
 
 def _worker_stage_name(project_id: str, actor_operation_id: str) -> str:
@@ -1294,9 +1309,11 @@ def _claimed_messages(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
 ) -> list[AutoResearchMessageRecord]:
-    # Includes mail the allocation's first attempt harvested mid-turn, since a
-    # retry, often in a clean native session, has not seen it; mail it cleared
-    # was acknowledged unread and stays unread.
+    # Includes mail any attempt of this allocation harvested mid-turn, since a
+    # retry, often in a clean native session, has not seen it; mail an attempt
+    # cleared was acknowledged unread and stays unread. The handoff copies carry
+    # the allocation's claim; the durable records keep the attempt that took them.
+    lineage = set(_allocation_lineage(execution, turn.task))
     cleared = {
         message_id
         for receipt in execution.store.auto_research_inbox_receipts(turn.request.episode_id)
@@ -1304,10 +1321,9 @@ def _claimed_messages(
         for message_id in receipt.message_ids
     }
     return [
-        message
+        message.model_copy(update={"delivery_operation_id": turn.allocation_operation_id})
         for message in execution.store.auto_research_messages(turn.request.episode_id)
-        if message.delivery_operation_id == turn.allocation_operation_id
-        and message.message_id not in cleared
+        if message.delivery_operation_id in lineage and message.message_id not in cleared
     ]
 
 
@@ -1315,8 +1331,9 @@ def _claimed_notices(
     execution: AgentTaskExecution,
     turn: _CanonicalOrchestratorTurn,
 ) -> list[AutoResearchLifecycleNoticeRecord]:
-    # As with mail: includes notices the allocation's first attempt harvested,
-    # which a clean retry has not seen. A Clear receipt keeps no notice bodies.
+    # As with mail: includes notices any attempt harvested, re-stamped as this
+    # allocation's claim. A Clear receipt keeps no notice bodies.
+    lineage = set(_allocation_lineage(execution, turn.task))
     claimed = {
         notice.notice_id: notice
         for notice in execution.store.auto_research_lifecycle_delivery(turn.allocation_operation_id)
@@ -1324,9 +1341,46 @@ def _claimed_notices(
     for receipt in execution.store.auto_research_inbox_receipts(turn.request.episode_id):
         if receipt.mode == "harvest":
             for notice in receipt.notices:
-                if notice.acknowledged_operation_id == turn.allocation_operation_id:
-                    claimed.setdefault(notice.notice_id, notice)
+                if notice.acknowledged_operation_id in lineage:
+                    claimed.setdefault(
+                        notice.notice_id,
+                        notice.model_copy(
+                            update={
+                                "delivery_operation_id": turn.allocation_operation_id,
+                                "delivered_at": notice.acknowledged_at,
+                            }
+                        ),
+                    )
     return sorted(claimed.values(), key=lambda notice: (notice.created_at, notice.notice_id))
+
+
+def _fit_handoff(
+    items: list[_Item], build: Callable[[list[_Item]], object], *, kind: str, allocation: str
+) -> list[_Item]:
+    """Keep the oldest items one handoff can carry; say how many a recovery dropped.
+
+    Wake claims and harvests are each bounded, but their union across attempts
+    may not be. Anything else wrong with an item still raises.
+    """
+    kept: list[_Item] = []
+    for item in items:
+        try:
+            build([*kept, item])
+        except ValueError:
+            if not kept:
+                raise
+            break
+        kept.append(item)
+    if len(kept) < len(items):
+        _LOGGER.warning(
+            "Auto-research allocation %s restaged %d of %d claimed %s; the rest exceed "
+            "one handoff.",
+            allocation,
+            len(kept),
+            len(items),
+            kind,
+        )
+    return kept
 
 
 def _prepare_turn_handoffs(
@@ -1365,11 +1419,19 @@ def _stage_claimed_mail(
         recipient = messages[0].recipient_task_id
         if recipient != turn.binding.actor_operation_id:
             raise ValueError("Claimed auto_research mail targets another auto_research actor.")
-        delivery = auto_research_mail_delivery(
-            episode_id=turn.request.episode_id,
-            recipient_task_id=recipient,
-            delivery_operation_id=turn.allocation_operation_id,
-            messages=messages,
+
+        def build(batch: list[AutoResearchMessageRecord]):
+            return auto_research_mail_delivery(
+                episode_id=turn.request.episode_id,
+                recipient_task_id=recipient,
+                delivery_operation_id=turn.allocation_operation_id,
+                messages=batch,
+            )
+
+        delivery = build(
+            _fit_handoff(
+                messages, build, kind="mail messages", allocation=turn.allocation_operation_id
+            )
         )
         # The durable claim is the record; a recovery restages it rather than
         # trusting or refusing whatever copy an earlier attempt left behind.
@@ -1391,11 +1453,22 @@ def _stage_claimed_lifecycle(
     if notices:
         if turn.binding.role != "orchestrator":
             raise ValueError("Lifecycle notices may wake only the Auto-research orchestrator.")
-        delivery = auto_research_lifecycle_delivery(
-            episode_id=turn.request.episode_id,
-            recipient_task_id=turn.binding.actor_operation_id,
-            delivery_operation_id=turn.allocation_operation_id,
-            notices=notices,
+
+        def build(batch: list[AutoResearchLifecycleNoticeRecord]):
+            return auto_research_lifecycle_delivery(
+                episode_id=turn.request.episode_id,
+                recipient_task_id=turn.binding.actor_operation_id,
+                delivery_operation_id=turn.allocation_operation_id,
+                notices=batch,
+            )
+
+        delivery = build(
+            _fit_handoff(
+                notices,
+                build,
+                kind="lifecycle notices",
+                allocation=turn.allocation_operation_id,
+            )
         )
         stage_auto_research_lifecycle_delivery(mailbox, delivery)
         return str(stage.workspace / AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE)

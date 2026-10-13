@@ -307,8 +307,9 @@ def steer_question_answer(
     """Deliver a chat answer into the chat's running turn instead of queueing a new one.
 
     Only a later turn bound exactly like the asker can receive it, so the receipt
-    rule that retires the follow-up accepts it. The asking turn itself is never
-    steered: its own ask call returns the answer, and both would deliver it twice.
+    rule that retires the follow-up accepts it. Neither the asking turn nor any
+    turn whose ask call is still waiting on the question is steered: that call
+    returns the answer, and both would deliver it twice.
     The transcript records the answer only after the provider acknowledges it, as
     that turn's steer; refused or unknown delivery leaves the answer to its
     ordinary projection and follow-up turn, so the chat never shows a refusal for
@@ -325,6 +326,10 @@ def steer_question_answer(
             return "in_flight"
         _ANSWER_STEERS_IN_FLIGHT.add(question.question_id)
     try:
+        # An ask call still polling this question returns the answer itself,
+        # whichever turn made it; a steer as well would deliver it twice.
+        if store.question_activity.is_waiting(question.question_id):
+            return "not_steered"
         target = store.running_chat_task(origin.project_id, origin.owner_id)
         if (
             target is None
