@@ -35,19 +35,21 @@ def views(manifest, tmp_path):
 
 @pytest.fixture
 def served_views(manifest, monkeypatch, caplog):
-    with tempfile.TemporaryDirectory(prefix="rcp-pin-api-", dir="/private/tmp") as data_dir:
+    with tempfile.TemporaryDirectory(prefix="rcp-pin-api-") as data_dir:
         monkeypatch.setenv("RCP_DATA_DIR", data_dir)
         app = create_named_app(str(manifest.path), data_dir=Path(data_dir))
         store = app.state.background_tasks.store
         project = app.state.default_project_id
         with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 8432))
+            sock.bind(("127.0.0.1", 0))
             server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=True))
             worker = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
             worker.start()
             try:
                 wait_until(lambda: server.started)
-                with httpx.Client(base_url="http://127.0.0.1:8432", trust_env=False) as client:
+                with httpx.Client(
+                    base_url=f"http://127.0.0.1:{sock.getsockname()[1]}", trust_env=False
+                ) as client:
                     assert (
                         client.post(
                             "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
