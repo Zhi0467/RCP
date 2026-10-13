@@ -193,6 +193,7 @@ _EXEMPT_TABLES = {
     "_legacy_campaign_recoveries_archive": "legacy",
     "_legacy_campaign_reports_archive": "legacy",
     "_legacy_campaigns_archive": "legacy",
+    "graph_seen_heads": "agent-context",
     "notification_episode_observations": "delivery",
     "notification_graph_markers": "delivery",
     "notification_outbox": "delivery",

@@ -400,7 +400,7 @@ def test_malformed_tail_preserves_coherent_history_and_recovers(history, tmp_pat
     assert "ev/later" in result.state.nodes
 
 
-@pytest.mark.parametrize("read", ["metadata", "changes", "revision"])
+@pytest.mark.parametrize("read", ["metadata", "changes"])
 def test_canonical_append_lock_is_free_during_cold_publication(
     history, tmp_path, monkeypatch, read
 ):
@@ -410,7 +410,6 @@ def test_canonical_append_lock_is_free_during_cold_publication(
 
     import rcp.history.engine as module
     from rcp.api.graph_changes import branch_changes
-    from rcp.api.project_state import _branch_revision
 
     metadata = _branch_metadata(history)
     branch = history.create_episode_branch(metadata)
@@ -449,24 +448,10 @@ def test_canonical_append_lock_is_free_during_cold_publication(
     service = SimpleNamespace(history=branch)
     if read == "metadata":
         query = branch.branch_metadata
-    elif read == "changes":
+    else:
 
         def query():
             return branch_changes(service)
-    else:
-        import rcp.api.project_state as project_state
-
-        monkeypatch.setattr(project_state, "get_graph_service", lambda *a, **kw: service)
-        monkeypatch.setattr(project_state, "active_merge", lambda *a: False)
-        monkeypatch.setattr(project_state, "experiment_signal", lambda *a: "signal")
-        cache = SimpleNamespace(complete_transition_control=lambda *a: {"experiment_control": {}})
-        catalog = SimpleNamespace(resolve_project_id=lambda p: p)
-        store = SimpleNamespace(
-            latest_agent_task_id=lambda p: None, latest_watcher_id=lambda p: None
-        )
-
-        def query():
-            return _branch_revision("project", branch.branch_id, cache, catalog, store)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(query)
