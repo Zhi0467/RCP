@@ -146,14 +146,13 @@ class PaperService:
         self.canonical_path = self.workspace.root / "paper" / "introduction.md"
 
     def read_canonical_reference(self, max_bytes: int) -> bytes:
-        """Read saved Paper only, with a confirmed remote refresh and no draft fallback."""
+        """Read saved Paper from one completed generation, without a draft fallback."""
 
-        with self.workspace.snapshot_lock:
-            if self.workspace.remote and not self.workspace.refresh():
-                raise StateUnavailable("The canonical Paper could not be refreshed.")
-            if self.canonical_path.stat().st_size > max_bytes:
+        with self.workspace.read_snapshot() as root:
+            path = root / "paper" / "introduction.md"
+            if path.stat().st_size > max_bytes:
                 raise ValueError("The canonical Paper exceeds the attachment file-size limit.")
-            return self.canonical_path.read_bytes()
+            return path.read_bytes()
 
     def snapshot(self) -> PaperSnapshot:
         draft = self._draft()
@@ -331,12 +330,12 @@ class PaperService:
         )
 
     def _read_canonical(self) -> tuple[str | None, bool]:
-        available = True
         try:
-            self.workspace.refresh_if_stale()
+            with self.workspace.read_snapshot() as root:
+                path = root / "paper" / "introduction.md"
+                return (path.read_text(encoding="utf-8") if path.exists() else None), True
         except StateUnavailable:
-            available = False
-        return self._read_cached_canonical(), available
+            return None, False
 
     def _read_cached_canonical(self) -> str | None:
         try:

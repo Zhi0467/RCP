@@ -15,6 +15,10 @@ class RecordingWorkspace(StateWorkspace):
         self.transactions = 0
         self.published: list[list[str]] = []
 
+    @contextmanager
+    def read_snapshot(self):
+        yield self.root
+
     def refresh(self) -> bool:
         self.refreshes += 1
         return True
@@ -95,7 +99,7 @@ def test_create_preserves_synced_cached_canonical_without_workspace_io(manifest,
     assert workspace.published == []
 
 
-def test_cached_canonical_without_draft_is_unsynced_while_remote_is_unavailable(
+def test_last_good_canonical_remains_readable_while_remote_is_unavailable(
     manifest, tmp_path
 ) -> None:
     canonical = manifest.research_dir / "paper" / "introduction.md"
@@ -109,9 +113,9 @@ def test_cached_canonical_without_draft_is_unsynced_while_remote_is_unavailable(
 
     snapshot = service.snapshot()
 
-    assert snapshot.sync_state == "unsynced"
+    assert snapshot.sync_state == "synced"
     assert snapshot.content == "# Cached introduction\n"
-    assert snapshot.canonical_available is False
+    assert snapshot.canonical_available is True
 
 
 def test_save_keeps_local_draft_when_workspace_is_unavailable(manifest, tmp_path) -> None:

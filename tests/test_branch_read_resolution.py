@@ -36,7 +36,9 @@ def branch_service(manifest, tmp_path):
 
 def test_repeated_read_resolution_never_repairs_or_publishes(branch_service, monkeypatch):
     service, metadata = branch_service
-    catalog = SimpleNamespace(open=lambda _project_id: service)
+    catalog = SimpleNamespace(
+        open=lambda _project_id: service, open_display=lambda _project_id: service
+    )
     root = service.history.root
     (root / "branches" / metadata.branch_id / "graph.json").unlink()
     before = {
@@ -76,7 +78,9 @@ def test_repeated_read_resolution_never_repairs_or_publishes(branch_service, mon
 
 def test_default_resolution_still_initializes_branch_outputs(branch_service):
     service, metadata = branch_service
-    catalog = SimpleNamespace(open=lambda _project_id: service)
+    catalog = SimpleNamespace(
+        open=lambda _project_id: service, open_display=lambda _project_id: service
+    )
     graph_path = service.history.root / "branches" / metadata.branch_id / "graph.json"
     graph_path.unlink()
 
@@ -105,7 +109,9 @@ def test_read_resolution_refreshes_before_reading_metadata(branch_service, monke
 @pytest.mark.parametrize("raises", [False, True])
 def test_unavailable_read_refresh_is_explicit(branch_service, monkeypatch, raises):
     service, metadata = branch_service
-    catalog = SimpleNamespace(open=lambda _project_id: service)
+    catalog = SimpleNamespace(
+        open=lambda _project_id: service, open_display=lambda _project_id: service
+    )
     metadata_path = service.history.root / "branches" / metadata.branch_id / "branch.json"
     metadata_path.write_text("stale incomplete remote metadata")
 
@@ -115,14 +121,17 @@ def test_unavailable_read_refresh_is_explicit(branch_service, monkeypatch, raise
         return False
 
     monkeypatch.setattr(service.history.workspace, "refresh_if_stale", unavailable_refresh)
-    with pytest.raises(StateUnavailable):
+    with pytest.raises(HTTPException) as error:
         get_graph_service(catalog, metadata.project_id, metadata.branch_id, initialize=False)
+    assert error.value.status_code == 503
 
 
 @pytest.mark.parametrize("foreign", ["project", "branch", "malformed"])
 def test_read_resolution_refuses_foreign_and_malformed_targets(branch_service, foreign):
     service, metadata = branch_service
-    catalog = SimpleNamespace(open=lambda _project_id: service)
+    catalog = SimpleNamespace(
+        open=lambda _project_id: service, open_display=lambda _project_id: service
+    )
     metadata_path = service.history.root / "branches" / metadata.branch_id / "branch.json"
     document = json.loads(metadata_path.read_text())
     if foreign == "project":
@@ -155,3 +164,102 @@ def test_read_resolution_refuses_wrong_episode_and_unsafe_paths(branch_service, 
     (service.history.root / "branches" / symlink_id).symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="not a regular directory"):
         service.history.branch(symlink_id, initialize=False)
+
+
+def test_remote_branch_resolution_and_display_use_pinned_inputs(
+    branch_service, monkeypatch, tmp_path
+):
+    import shutil
+    from contextlib import contextmanager
+
+    service, metadata = branch_service
+    workspace = service.history.workspace
+    pinned = tmp_path / "published"
+    shutil.copytree(workspace.root, pinned)
+    (workspace.root / "branches" / metadata.branch_id / "branch.json").write_text("partial")
+    workspace.remote = True
+    pins = 0
+
+    @contextmanager
+    def read_snapshot():
+        nonlocal pins
+        pins += 1
+        yield pinned
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("display must not refresh or initialize canonical state")
+
+    monkeypatch.setattr(workspace, "read_snapshot", read_snapshot)
+    monkeypatch.setattr(workspace, "refresh_if_stale", forbidden)
+    monkeypatch.setattr(workspace, "transaction", forbidden)
+    branch = service.history.branch(metadata.branch_id, initialize=False)
+    assert branch.workspace is workspace
+    with branch.read_view() as reader:
+        assert reader.branch_metadata().branch_id == metadata.branch_id
+        assert "ev/branch-only" in reader.state().nodes
+        assert "ev/main-only" not in reader.state().nodes
+    assert pins == 2
+
+
+def test_remote_project_snapshot_reads_published_manifest_graph_and_paper(
+    branch_service, monkeypatch, tmp_path
+):
+    import shutil
+
+    from rcp.transport import SSHStateWorkspace
+
+    service, _metadata = branch_service
+    root = service.history.root
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    stage = workspace._generations.stage()
+    shutil.copytree(root, stage, dirs_exist_ok=True)
+    manifest_path = stage / "manifest.toml"
+    document = manifest_path.read_text().replace(service.manifest.name, "published")
+    document = document.replace(service.manifest.repositories[0].path, "relative-repository")
+    document = document.replace(service.manifest.sources.claude_roots[0], "relative-chats")
+    manifest_path.write_text(document)
+    (stage / "paper").mkdir(exist_ok=True)
+    (stage / "paper" / "introduction.md").write_text("Published introduction")
+    workspace._generations.publish(stage)
+    service.history.workspace = workspace
+    service.paper.workspace = workspace
+
+    def forbidden_refresh(*_args, **_kwargs):
+        raise AssertionError("snapshot must not synchronize canonical state")
+
+    monkeypatch.setattr(workspace, "refresh", forbidden_refresh)
+    monkeypatch.setattr(workspace, "refresh_if_stale", forbidden_refresh)
+    project_root = service.manifest.path.parent.parent
+    expected_repository = str(project_root / "relative-repository")
+    expected_chats = str(project_root / "relative-chats")
+    with service.history.read_view() as reader:
+        assert reader.manifest.repositories[0].path == expected_repository
+        assert reader.manifest.sources.claude_roots == [expected_chats]
+        reader.current_materialization()
+        assert reader.manifest.repositories[0].path == expected_repository
+        assert reader.manifest.sources.claude_roots == [expected_chats]
+    snapshot = service.project_snapshot()
+    assert snapshot["repositories"][0]["path"] == expected_repository
+    assert snapshot["name"] == "published"
+    assert snapshot["canonical_state"]["remote"] is True
+    assert snapshot["paper"]["content"] == "Published introduction"
+    assert service.manifest.name != "published"
+
+
+def test_main_only_refs_do_not_refresh(branch_service, monkeypatch):
+    from rcp.api.episode_branches import project_graph_refs
+
+    service, metadata = branch_service
+    catalog = SimpleNamespace(open_display=lambda _project_id: service)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("refs must not refresh")
+
+    from rcp.transport import SSHStateWorkspace
+
+    workspace = SSHStateWorkspace(service.history.root, "research.example", "/srv/project")
+    workspace._generations.copy(service.history.root)
+    service.history.workspace = workspace
+    monkeypatch.setattr(workspace, "refresh_if_stale", forbidden)
+    refs = project_graph_refs(metadata.project_id, store=service.paper.store, catalog=catalog)
+    assert [ref.kind for ref in refs] == ["main"]

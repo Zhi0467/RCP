@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -11,7 +10,6 @@ import sqlite3
 import stat
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
@@ -53,7 +51,6 @@ from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
-    REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
@@ -100,7 +97,6 @@ from rcp.transport import (
 )
 from rcp.transport.state import (
     SSHStateWorkspace,
-    load_remote_workspace_manifest,
     state_workspace_for_probe,
 )
 
@@ -858,6 +854,62 @@ class ProjectCatalog:
         self._compute_probe_locks: dict[str, threading.Lock] = {}
         self._registration_lock = threading.Lock()
         self._project_aliases = self.store.project_aliases()
+        self.request_sync: Callable[[str], None] | None = None
+        self._display_workspaces: dict[str, StateWorkspace] = {}
+        self._refresh_display_workspaces()
+
+    def _refresh_display_workspaces(self) -> None:
+        workspaces: dict[str, StateWorkspace] = {}
+        for record in self.store.projects():
+            try:
+                workspaces[record.project_id] = state_workspace_for_probe(
+                    load_manifest(record.locator), self.data_dir
+                )
+            except (OSError, ValueError):
+                continue
+        self._display_workspaces = workspaces
+        for project_id, workspace in workspaces.items():
+            if isinstance(workspace, SSHStateWorkspace):
+                workspace.set_sync_request(
+                    lambda pid=project_id: self.request_sync(pid) if self.request_sync else None
+                )
+
+    def workspace_for_display(self, project_id: str) -> StateWorkspace | None:
+        """Resolve cached transport metadata without opening state or touching disk."""
+        return self._display_workspaces.get(self.resolve_project_id(project_id))
+
+    def content_generations(self, project_id: str, families: Iterable[str]) -> dict[str, str]:
+        workspace = self.workspace_for_display(project_id)
+        if workspace is None:
+            return dict.fromkeys(families, "unavailable")
+        return workspace.content_generations(families)
+
+    def open_display(self, project_id: str) -> ProjectService:
+        """Resolve a read/admission owner without initializing or refreshing state."""
+        project_id = self.resolve_project_id(project_id)
+        workspace = self.workspace_for_display(project_id)
+        if workspace is None:
+            raise KeyError(project_id)
+        if not workspace.remote:
+            return self.open(project_id)
+        with workspace.read_snapshot() as root:
+            manifest = load_manifest(root / "manifest.toml", project_root=workspace.root.parent)
+            # The service keeps its authoritative root for eventual execution.
+            manifest._path = workspace.root / "manifest.toml"
+            history = self._history_for_manifest(manifest, workspace, project_id=project_id)
+            self._validate_open_identity(history, history.current_materialization(), project_id)
+        return ProjectService(
+            manifest,
+            history,
+            PaperService(manifest, self.store, workspace, project_id=project_id),
+            self.launcher,
+            data_dir=self.data_dir,
+            provider_skills=self.provider_skills,
+            project_id=project_id,
+            repository_inventory=self.repository_ownership_inventory,
+            task_continuation_session=self.store.agent_task_continuation_session_id,
+            chat_graph_target=self.store.chat_graph_target,
+        )
 
     def register(
         self,
@@ -1105,6 +1157,7 @@ class ProjectCatalog:
             self._finish_alias_file_migrations(identity.project_id)
             self._seat_first_member(stored.project_id, seat_member, seated_by=seated_by)
             record_space_machines(self.store, manifest)
+            self._refresh_display_workspaces()
             return stored
 
     def register_degraded_read_only(
@@ -1151,6 +1204,7 @@ class ProjectCatalog:
                 }
             )
             self.store.upsert_project(record)
+            self._refresh_display_workspaces()
             record_space_machines(self.store, manifest)
             paper = PaperService(
                 manifest,
@@ -1277,6 +1331,7 @@ class ProjectCatalog:
         # Replace the snapshot as one object so concurrent request reads never
         # observe a partially refreshed mapping.
         self._project_aliases = self.store.project_aliases()
+        self._refresh_display_workspaces()
 
     def _history_for_manifest(
         self,
@@ -1552,6 +1607,19 @@ class ProjectCatalog:
         service, _ = self._service_or_open(project_id)
         return service
 
+    def open_execution(self, project_id: str) -> ProjectService:
+        """Revalidate canonical configuration before a queued remote task executes."""
+        project_id = self.resolve_project_id(project_id)
+        service = self.open(project_id)
+        history = service.history
+        if history.workspace.remote:
+            with history.workspace.transaction():
+                history._reload_manifest()
+                current = history.materialize(write_outputs=False)
+                self._validate_open_identity(history, current, project_id)
+            service.paper.manifest = history.manifest
+        return service
+
     def open_transfer_source(self, request_id: str) -> ProjectService:
         """Open the exact source for export, including after its home Patch committed."""
 
@@ -1638,65 +1706,20 @@ class ProjectCatalog:
             self._services.pop(transfer.project_id, None)
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
-        project_id = self._canonical_project_id(project_id)
-        service, initialized = self._service_or_open(project_id)
-        project_id = self._canonical_project_id(project_id)
-        snapshot = _snapshot_payload(service.project_snapshot(materialization=initialized))
-        self._stamp_snapshot_identity(snapshot, project_id)
-        self.mark_snapshot_fresh(snapshot)
-        return service, _ProjectSnapshotDraft(snapshot)
-
-    def reconcile_snapshot(
-        self,
-        project_id: str,
-    ) -> tuple[ProjectService, _ProjectSnapshotDraft]:
-        """Refresh canonical state and build one fresh display-snapshot candidate."""
-
-        project_id = self._canonical_project_id(project_id)
-        service, initialized = self._service_or_open(project_id)
-        project_id = self._canonical_project_id(project_id)
-        if initialized is None:
-            refreshed = service.history.workspace.refresh()
-            if service.history.workspace.remote and not refreshed:
-                raise StateUnavailable("Remote canonical state has no readable manifest.")
-            initialized = service.history.materialize(write_outputs=False)
-        snapshot = _snapshot_payload(service.project_snapshot(materialization=initialized))
-        self._stamp_snapshot_identity(snapshot, project_id)
-        self.mark_snapshot_fresh(snapshot)
-        return service, _ProjectSnapshotDraft(snapshot)
-
-    def probe_remote_patch_log_head(
-        self,
-        project_id: str,
-    ) -> Literal["moved", "unchanged", "unavailable"]:
-        """Compare canonical and cached patch heads without opening the project."""
-
-        project_id = self._canonical_project_id(project_id)
-        with self._services_lock:
-            if project_id in self._deleting:
-                raise KeyError(project_id)
-            service = self._services.get(project_id)
-        if service is not None:
-            workspace = service.history.workspace
-        else:
-            record = self.store.project(project_id)
-            if record is None:
-                raise KeyError(project_id)
-            workspace = state_workspace_for_probe(load_manifest(record.locator), self.data_dir)
-        if isinstance(workspace, SSHStateWorkspace):
-            available, canonical_head = workspace.probe_remote_patch_log_head()
-            if not available:
-                return "unavailable"
-        else:
-            canonical_head = workspace.cached_patch_log_head()
-        snapshot = self.cached_snapshot(project_id)
-        if snapshot is None:
+        project_id = self.resolve_project_id(project_id)
+        workspace = self.workspace_for_display(project_id)
+        if workspace is None:
             raise KeyError(project_id)
-        return (
-            "moved"
-            if canonical_head != self._cached_snapshot_patch_heads.get(project_id)
-            else "unchanged"
-        )
+        with workspace.read_snapshot():
+            service = self.open_display(project_id)
+            snapshot = _snapshot_payload(service.project_snapshot())
+        self._stamp_snapshot_identity(snapshot, project_id)
+        self.mark_snapshot_fresh(snapshot)
+        return service, _ProjectSnapshotDraft(snapshot)
+
+    def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
+        """Rebuild from the published read generation; capture has a separate owner."""
+        return self.open_snapshot(project_id)
 
     @staticmethod
     def mark_snapshot_fresh(snapshot: dict[str, object]) -> None:
@@ -1763,6 +1786,9 @@ class ProjectCatalog:
         project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             cached = self._services.get(project_id)
+        workspace = self.workspace_for_display(project_id)
+        if workspace is not None and workspace.remote:
+            cached = self.open_display(project_id)
         if cached is not None:
             snapshot = cached.readiness_snapshot(refresh=refresh)
             snapshot["compute_status"] = self._compute_status_snapshot(
@@ -1844,18 +1870,13 @@ class ProjectCatalog:
             try:
                 bootstrap = load_manifest(record.locator)
                 workspace = state_workspace_for_probe(bootstrap, self.data_dir)
-                if isinstance(workspace, SSHStateWorkspace):
-                    manifest = load_remote_workspace_manifest(
-                        bootstrap, workspace, project_root=bootstrap.path.parent.parent
+                if service is not None:
+                    workspace = service.history.workspace
+                with workspace.read_snapshot() as root:
+                    manifest = load_manifest(
+                        root / "manifest.toml", project_root=bootstrap.path.parent.parent
                     )
-                else:
-                    if service is not None:
-                        workspace = service.history.workspace
-                    with workspace.snapshot_lock:
-                        manifest = load_manifest(
-                            service.manifest.path if service is not None else record.locator
-                        )
-            except (FileNotFoundError, OSError, ValueError) as exc:
+            except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "
                     f"project {record.project_id!r} is unavailable: {exc}"
@@ -1905,6 +1926,7 @@ class ProjectCatalog:
 
                 close_chat_browser_owners(self.store, project_id, delete_profile=True)
                 database_records = self.store.delete_project_records(project_id)
+                self._display_workspaces.pop(project_id, None)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
                 self._cached_snapshot_patch_heads.pop(project_id, None)
@@ -2412,20 +2434,11 @@ class ProjectCatalog:
             / (f"{(safe_project_id or 'project')[:80]}-introduction.md")
         )
 
-    def _open_service(self, project_id: str) -> tuple[ProjectService, MaterializationResult]:
-        project_id = self._canonical_project_id(project_id)
-        record = self.store.project(project_id)
-        if record is None:
-            raise KeyError(project_id)
-        bootstrap = load_manifest(record.locator)
-        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
-        history = self._history_for_manifest(manifest, workspace, project_id=project_id)
-        try:
-            initialized = history.initialize()
-        except ReplayHalted:
-            initialized = history.materialize(write_outputs=False)
-        identity = history.project_identity(initialized)
-        if identity is None and initialized.state.replay_status != "degraded":
+    def _validate_open_identity(
+        self, history: HistoryManager, materialization: MaterializationResult, project_id: str
+    ) -> None:
+        identity = history.project_identity(materialization)
+        if identity is None and materialization.state.replay_status != "degraded":
             raise RuntimeError(
                 "Registered project identity disappeared before the project could open."
             )
@@ -2439,6 +2452,20 @@ class ProjectCatalog:
                 f"Registered project id {project_id!r} does not match canonical history "
                 f"{identity.project_id!r}."
             )
+
+    def _open_service(self, project_id: str) -> tuple[ProjectService, MaterializationResult]:
+        project_id = self._canonical_project_id(project_id)
+        record = self.store.project(project_id)
+        if record is None:
+            raise KeyError(project_id)
+        bootstrap = load_manifest(record.locator)
+        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+        history = self._history_for_manifest(manifest, workspace, project_id=project_id)
+        try:
+            initialized = history.initialize()
+        except ReplayHalted:
+            initialized = history.materialize(write_outputs=False)
+        self._validate_open_identity(history, initialized, project_id)
         if initialized.state.replay_status != "degraded":
             self.store.migrate_legacy_project_data(history.manifest.name, project_id)
         paper = PaperService(
@@ -2662,14 +2689,8 @@ class ProjectDisplayCache:
         self._serialize_episode = serialize_episode
         self._project_experiment_control = project_experiment_control
         self._logger = logger
-        self._reconciliation_tasks: dict[str, asyncio.Task[None]] = {}
-        self._probe_started_at: dict[str, float] = {}
         self._legacy_rebuilds_started: set[str] = set()
         self._legacy_rebuilds_lock = threading.Lock()
-
-    @property
-    def reconciliation_tasks(self) -> dict[str, asyncio.Task[None]]:
-        return self._reconciliation_tasks
 
     def complete_snapshot(
         self,
@@ -2717,6 +2738,15 @@ class ProjectDisplayCache:
         return service, self.complete_snapshot(project_id, draft)
 
     def cached_project_snapshot(self, project_id: str) -> dict[str, object] | None:
+        workspace = self._catalog.workspace_for_display(project_id)
+        if workspace is not None and workspace.remote:
+            # A separately persisted display cache can lag the published transport
+            # token. Read its immutable inputs so observing T then GET is >= T.
+            try:
+                _service, draft = self._catalog.open_snapshot(project_id)
+            except StateUnavailable:
+                return None
+            return self.complete_snapshot(project_id, draft)
         snapshot = self._catalog.cached_snapshot(project_id)
         if snapshot is None:
             return None
@@ -3009,89 +3039,10 @@ class ProjectDisplayCache:
             controls[experiment_id] = control
         return controls
 
-    async def reconcile_cached_project(self, project_id: str) -> None:
-        try:
-            head_status = await asyncio.to_thread(
-                self._catalog.probe_remote_patch_log_head,
-                project_id,
-            )
-            if head_status == "unavailable":
-                await asyncio.to_thread(
-                    self._catalog.update_cached_snapshot_freshness,
-                    project_id,
-                    "stale",
-                )
-                return
-            if head_status == "unchanged":
-                cached = await asyncio.to_thread(self._catalog.cached_snapshot, project_id)
-                canonical = cached.get("canonical_state") if cached is not None else None
-                if not (
-                    isinstance(canonical, dict)
-                    and canonical.get("remote") is True
-                    and canonical.get("reachable") is False
-                ):
-                    await asyncio.to_thread(
-                        self._catalog.update_cached_snapshot_freshness,
-                        project_id,
-                        "fresh",
-                    )
-                    return
-
-            await asyncio.to_thread(
-                self._catalog.update_cached_snapshot_freshness,
-                project_id,
-                "reconciling",
-            )
-            generation = await asyncio.to_thread(
-                self._catalog.reserve_cached_snapshot_generation,
-                project_id,
-            )
-            service, snapshot = await asyncio.to_thread(
-                self.reconcile_snapshot,
-                project_id,
-            )
-            await asyncio.to_thread(
-                self._catalog.commit_cached_snapshot,
-                project_id,
-                snapshot,
-                generation=generation,
-                patch_log_head=service.history.workspace.cached_patch_log_head(),
-            )
-        except KeyError:
-            return
-        except Exception as exc:
-            self._logger.warning(
-                "Could not reconcile display snapshot for %s: %s",
-                project_id,
-                exc,
-            )
-            with suppress(KeyError, OSError, TypeError, ValueError):
-                await asyncio.to_thread(
-                    self._catalog.update_cached_snapshot_freshness,
-                    project_id,
-                    "stale",
-                )
-
     def schedule_project_reconciliation(self, project_id: str) -> None:
-        task = self._reconciliation_tasks.get(project_id)
-        if task is not None and not task.done():
-            return
-        now = time.monotonic()
-        last_started = self._probe_started_at.get(project_id)
-        if (
-            last_started is not None
-            and now - last_started < REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS
-        ):
-            return
-        self._probe_started_at[project_id] = now
-        task = asyncio.create_task(self.reconcile_cached_project(project_id))
-        self._reconciliation_tasks[project_id] = task
-
-        def forget(completed: asyncio.Task[None]) -> None:
-            if self._reconciliation_tasks.get(project_id) is completed:
-                self._reconciliation_tasks.pop(project_id, None)
-
-        task.add_done_callback(forget)
+        """Legacy revision callers use the same capture owner until route retirement."""
+        if self._catalog.request_sync is not None:
+            self._catalog.request_sync(project_id)
 
 
 def _control_node_ids(state: GraphState, candidates: Iterable[str] | None = None) -> list[str]:

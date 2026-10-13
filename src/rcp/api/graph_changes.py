@@ -59,7 +59,7 @@ def branch_changes(
 ) -> tuple[MaterializationResult, GraphBranchChanges]:
     """Project one coherent branch replay, including actual per-change authorship."""
 
-    with history.workspace.snapshot_lock:
+    with history.read_view() as history:
         metadata = history.branch_metadata()
         # The immutable base, not the first accepted boundary: a retained rejected
         # Patch advances the revision the next boundary's before-state carries.

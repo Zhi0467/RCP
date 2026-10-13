@@ -189,3 +189,27 @@ def test_an_old_key_still_returns_its_original_admission(request_app):
         assert again.json()["operation_id"] == first.json()["operation_id"]
         lookup = client.get(f"/api/projects/{project_id}/client-requests/{key}")
         assert lookup.status_code == 200
+
+
+def test_retry_request_replay_admits_one_recovery(request_app):
+    app = request_app
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+
+    async def fail(*_args):
+        yield f"data: {AgentEvent(event='error', text='provider disconnected').model_dump_json()}\n\n"
+
+    app.state.background_tasks.stream = fail
+    with signed_in_client(app) as client:
+        started = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=chat_request())
+        assert started.status_code == 202, started.text
+        original = wait_for_task(store, started.json()["operation_id"], expect="failed")
+        url = f"/api/projects/{project_id}/tasks/{original.operation_id}/retry"
+        headers = {"Idempotency-Key": str(uuid.uuid4())}
+        first = client.post(url, json={}, headers=headers)
+        assert first.status_code == 202, first.text
+        wait_for_task(store, first.json()["operation_id"], expect="failed")
+        repeated = client.post(url, json={}, headers=headers)
+        assert repeated.status_code == 202, repeated.text
+        assert repeated.json()["operation_id"] == first.json()["operation_id"]
+        assert len(store.agent_tasks(project_id)) == 2

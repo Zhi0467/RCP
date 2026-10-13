@@ -26,7 +26,6 @@ from tests.helpers import sign_in_async_client, signed_in_client
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
     append_fixture_patch,
-    async_wait_until,
     create_named_app,
     gated_patch,
     seed_patch,
@@ -231,26 +230,15 @@ def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_p
     assert response.status_code == 404
 
 
-def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_refresh(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_cached_revision_heartbeat_is_cache_only(manifest, tmp_path, monkeypatch) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
-    probes = 0
-
-    def unchanged_head(requested_project_id):
-        nonlocal probes
-        assert requested_project_id == project_id
-        probes += 1
-        return "unchanged"
-
-    monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", unchanged_head)
     monkeypatch.setattr(
         app.state.catalog,
         "reconcile_snapshot",
         lambda _project_id: (_ for _ in ()).throw(
-            AssertionError("an unchanged head must not start a full refresh")
+            AssertionError("a cached heartbeat must not rebuild the display snapshot")
         ),
     )
     # A teammate's new task changes no graph revision; the heartbeat names it.
@@ -292,10 +280,6 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
             response = await client.get(f"/api/projects/{project_id}/cached/revision")
-            for _ in range(100):
-                if project_id not in app.state.project_reconciliation_tasks:
-                    break
-                await asyncio.sleep(0.01)
             return response
 
     response = asyncio.run(drive())
@@ -314,7 +298,6 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "latest_watcher_id": "teammate-watcher",
         "steer_epoch": 0,
     }
-    assert probes == 1
 
 
 def test_heartbeat_task_status_signal_moves_on_finish_not_progress(manifest, tmp_path) -> None:
@@ -410,58 +393,6 @@ def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> Non
     assert client.get(f"{base}/tasks/aliased-task").status_code == 200
 
 
-@pytest.mark.parametrize("refresh_fails", [False, True])
-def test_unchanged_head_reconciles_cached_offline_state(
-    manifest, tmp_path, monkeypatch, refresh_fails
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
-    offline = {
-        **initial,
-        "canonical_state": {
-            **initial["canonical_state"],
-            "remote": True,
-            "reachable": False,
-            "error": "Connection lost",
-        },
-        "snapshot_freshness": "stale",
-    }
-    app.state.catalog.write_cached_snapshot(project_id, offline)
-    monkeypatch.setattr(
-        app.state.catalog, "probe_remote_patch_log_head", lambda _project_id: "unchanged"
-    )
-    reconcile_snapshot = app.state.catalog.reconcile_snapshot
-    refresh_calls = []
-
-    def refresh(requested_project_id):
-        refresh_calls.append(requested_project_id)
-        if refresh_fails:
-            raise OSError("Canonical lock remains unavailable")
-        return reconcile_snapshot(requested_project_id)
-
-    monkeypatch.setattr(app.state.catalog, "reconcile_snapshot", refresh)
-
-    async def drive():
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await sign_in_async_client(client, app)
-            await client.get(f"/api/projects/{project_id}/cached/revision")
-            await async_wait_until(
-                lambda: project_id not in app.state.project_reconciliation_tasks,
-                detail="offline project reconciliation did not finish",
-            )
-            return (await client.get(f"/api/projects/{project_id}")).json()
-
-    refreshed = asyncio.run(drive())
-    assert refresh_calls == [project_id]
-    assert refreshed["revision"] == initial["revision"]
-    assert refreshed["snapshot_freshness"] == ("stale" if refresh_fails else "fresh")
-    assert refreshed["canonical_state"] == (
-        offline["canonical_state"] if refresh_fails else initial["canonical_state"]
-    )
-
-
 def test_cached_revision_file_read_does_not_block_the_event_loop(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -502,178 +433,6 @@ def test_cached_revision_file_read_does_not_block_the_event_loop(
     assert health.status_code == 200
 
 
-def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert signed_in_client(app).get(f"/api/projects/{project_id}").status_code == 200
-    clock = 100.0
-    probes = 0
-
-    class FakeTime:
-        @staticmethod
-        def monotonic() -> float:
-            return clock
-
-    def unchanged_head(_project_id):
-        nonlocal probes
-        probes += 1
-        return "unchanged"
-
-    monkeypatch.setattr(projects_module, "time", FakeTime)
-    monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", unchanged_head)
-
-    async def wait_for_probe() -> None:
-        for _ in range(100):
-            if project_id not in app.state.project_reconciliation_tasks:
-                return
-            await asyncio.sleep(0.01)
-        raise AssertionError("background probe did not complete")
-
-    async def drive() -> list[httpx.Response]:
-        nonlocal clock
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await sign_in_async_client(client, app)
-            first = await client.get(f"/api/projects/{project_id}/cached/revision")
-            await wait_for_probe()
-            clock = 102.999
-            inside_cooldown = await client.get(f"/api/projects/{project_id}/cached/revision")
-            await asyncio.sleep(0)
-            assert project_id not in app.state.project_reconciliation_tasks
-            clock = 103.0
-            at_boundary = await client.get(f"/api/projects/{project_id}/cached/revision")
-            await wait_for_probe()
-            return [first, inside_cooldown, at_boundary]
-
-    responses = asyncio.run(drive())
-
-    assert all(response.status_code == 200 for response in responses)
-    assert probes == 2
-
-
-def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, monkeypatch) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
-    append_fixture_patch(app.state.service, seed_patch())
-    append_fixture_patch(app.state.service, _experiment_fixture_patch())
-    entered = threading.Event()
-    release = threading.Event()
-    probe_calls = 0
-    refresh_calls = 0
-    reconcile_snapshot = app.state.catalog.reconcile_snapshot
-
-    def moved_head(requested_project_id):
-        nonlocal probe_calls
-        assert requested_project_id == project_id
-        probe_calls += 1
-        return "moved"
-
-    def blocked_reconcile(requested_project_id):
-        nonlocal refresh_calls
-        refresh_calls += 1
-        entered.set()
-        assert release.wait(TASK_SETTLE_TIMEOUT)
-        return reconcile_snapshot(requested_project_id)
-
-    monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", moved_head)
-    monkeypatch.setattr(app.state.catalog, "reconcile_snapshot", blocked_reconcile)
-
-    async def drive() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await sign_in_async_client(client, app)
-            first = await client.get(f"/api/projects/{project_id}/cached/revision")
-            await asyncio.to_thread(wait_for_entry, entered)
-            second = await asyncio.wait_for(
-                client.get(f"/api/projects/{project_id}/cached/revision"),
-                timeout=TASK_SETTLE_TIMEOUT,
-            )
-            project = await asyncio.wait_for(
-                client.get(f"/api/projects/{project_id}"),
-                timeout=TASK_SETTLE_TIMEOUT,
-            )
-            release.set()
-            await async_wait_until(
-                lambda: project_id not in app.state.project_reconciliation_tasks,
-                detail="background reconciliation never drained",
-            )
-            return first, second, project
-
-    first, second, project = asyncio.run(drive())
-    refreshed = app.state.catalog.cached_snapshot(project_id)
-
-    assert first.json()["revision"] == initial["revision"]
-    assert second.status_code == 200
-    assert project.status_code == 200
-    assert project.json()["revision"] == initial["revision"]
-    assert probe_calls == 1
-    assert refresh_calls == 1
-    assert refreshed is not None
-    assert refreshed["revision"] == 3
-    assert refreshed["snapshot_freshness"] == "fresh"
-    assert set(refreshed["experiment_control"]) == {"exp/bounded-loop"}
-
-
-def test_local_patch_head_refreshes_cache_without_joining_the_write_path(
-    manifest, tmp_path
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
-    append_fixture_patch(app.state.service, seed_patch())
-
-    async def drive() -> httpx.Response:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await sign_in_async_client(client, app)
-            response = await client.get(f"/api/projects/{project_id}/cached/revision")
-            for _ in range(100):
-                if project_id not in app.state.project_reconciliation_tasks:
-                    break
-                await asyncio.sleep(0.01)
-            return response
-
-    response = asyncio.run(drive())
-    refreshed = app.state.catalog.cached_snapshot(project_id)
-
-    assert response.json()["revision"] == initial["revision"]
-    assert refreshed is not None
-    assert refreshed["revision"] == 2
-
-
-def test_transient_head_probe_failure_marks_only_display_freshness_stale(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
-    monkeypatch.setattr(
-        app.state.catalog,
-        "probe_remote_patch_log_head",
-        lambda _project_id: "unavailable",
-    )
-
-    async def drive() -> None:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await sign_in_async_client(client, app)
-            await client.get(f"/api/projects/{project_id}/cached/revision")
-            for _ in range(100):
-                if project_id not in app.state.project_reconciliation_tasks:
-                    break
-                await asyncio.sleep(0.01)
-
-    asyncio.run(drive())
-    cached = app.state.catalog.cached_snapshot(project_id)
-
-    assert cached is not None
-    assert cached["snapshot_freshness"] == "stale"
-    assert cached["canonical_state"] == initial["canonical_state"]
-
-
 def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -701,13 +460,6 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
         "open_snapshot",
         lambda _project_id: (_ for _ in ()).throw(
             AssertionError("cached project navigation must not open canonical state")
-        ),
-    )
-    monkeypatch.setattr(
-        app.state.catalog,
-        "probe_remote_patch_log_head",
-        lambda _project_id: (_ for _ in ()).throw(
-            AssertionError("cached project navigation must not issue a remote probe")
         ),
     )
     cached = client.get(f"/api/projects/{project_id}")
