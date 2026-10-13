@@ -132,6 +132,7 @@ class ResearchViewStoreMixin(ArtifactStoreMixin):
                 and not artifact.kept_at
                 and datetime.fromisoformat(artifact.expires_at)
                 <= datetime.fromisoformat(self.now())
+                and artifact_id not in self._protected_edit_artifact_ids(connection)
             ):
                 raise ResearchViewConflict("artifact_expired", 410)
             if artifact.media_type != "text/html":

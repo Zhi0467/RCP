@@ -243,3 +243,26 @@ def test_migration_cleanup_and_transfer_classification(views):
     store.delete_project_records(migrated)
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM research_view_pins").fetchone()[0] == 0
+
+
+def test_expired_artifact_pins_only_while_an_edit_protects_it(views):
+    store, project, client, url = views
+    artifact = page(store, project)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE artifacts SET metadata=? WHERE artifact_id=?",
+            (
+                artifact.model_copy(update={"expires_at": store.now()}).model_dump_json(),
+                artifact.artifact_id,
+            ),
+        )
+    body = {"artifact_id": artifact.artifact_id}
+    assert client.post(url, json=body).status_code == 410
+    _task(
+        store,
+        project,
+        status="running",
+        request={"artifact_edit": {"artifact_id": artifact.artifact_id}},
+    )
+    assert client.post(url, json=body).status_code == 200
+    assert store.artifact(artifact.artifact_id).kept_at

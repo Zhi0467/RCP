@@ -366,14 +366,18 @@ class ArtifactStoreMixin(StoreMixinBase):
 
     def protected_edit_artifact_ids(self) -> frozenset[str]:
         with self.connection() as connection:
-            # A rebound answer turn carries its edit without an artifact context.
-            rows = connection.execute(
-                "SELECT json_extract(request_json, '$.artifact_context.artifact_id'), "
-                "json_extract(request_json, '$.artifact_edit.artifact_id') "
-                "FROM graph_runs WHERE status IN "
-                f"({','.join('?' for _ in _EDIT_RETENTION_STATUSES)})",
-                _EDIT_RETENTION_STATUSES,
-            ).fetchall()
+            return self._protected_edit_artifact_ids(connection)
+
+    @staticmethod
+    def _protected_edit_artifact_ids(connection: sqlite3.Connection) -> frozenset[str]:
+        # A rebound answer turn carries its edit without an artifact context.
+        rows = connection.execute(
+            "SELECT json_extract(request_json, '$.artifact_context.artifact_id'), "
+            "json_extract(request_json, '$.artifact_edit.artifact_id') "
+            "FROM graph_runs WHERE status IN "
+            f"({','.join('?' for _ in _EDIT_RETENTION_STATUSES)})",
+            _EDIT_RETENTION_STATUSES,
+        ).fetchall()
         return frozenset(value for row in rows for value in row if isinstance(value, str))
 
     @staticmethod
