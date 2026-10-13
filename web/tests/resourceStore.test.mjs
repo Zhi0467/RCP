@@ -343,6 +343,43 @@ test("valid_until is anchored to the server's as_of, not the browser clock", asy
   assert.deepEqual(requests[2], ["active", "hidden"]);
 });
 
+test("with a scheduler, a new key reads once, after its first watermark", async () => {
+  const time = fakeClock();
+  const store = new ResourceStore(() => time.clock.now());
+  const scheduler = new RefreshScheduler({
+    store,
+    clientId: "c",
+    openProjects: () => [{ projectId: "p", currentRef: "main" }],
+    activeProjectId: () => "p",
+    send: async () => ({
+      epoch: "e",
+      as_of: new Date(0).toISOString(),
+      projects: [
+        {
+          requested_id: "p",
+          project_id: "p",
+          resources: [{ name: "chats", version: "7", valid_until: null }],
+          sync: { last_completed_at: null, status: "local", error: null },
+        },
+      ],
+      unavailable: [],
+    }),
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.start();
+  const { reads, profile } = manualProfile("chats");
+  store.register("tab", profile);
+  assert.equal(reads.length, 0);
+  await time.advance(1);
+  assert.equal(reads.length, 1);
+  reads[0].resolve("v7");
+  await time.advance(2500);
+  scheduler.stop();
+  assert.equal(reads.length, 1);
+});
+
 test("an unavailable project loses its data and its tab", async () => {
   const time = fakeClock();
   const store = new ResourceStore(() => time.clock.now());

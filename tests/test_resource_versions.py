@@ -306,3 +306,17 @@ def test_graph_invalidation_tracks_experiment_control_inputs(
         _insert(connection, table, fields, store.now())
         assert (_generation(connection, "graph") > graph) == changes_graph
         assert (_generation(connection, "refs") > refs) == changes_refs
+
+
+def test_only_launch_receipts_move_terminals(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        _insert(connection, "graph_runs", _CASES[0][3], store.now())
+        before = _generation(connection, "terminals")
+        progress = {"receipt_id": 1, "operation_id": "task", "payload_json": "{}"}
+        _insert(connection, "graph_run_receipts", progress, store.now())
+        assert _generation(connection, "terminals") == before
+        launch = '{"canonical_repository_roots": {"r": "/repo"}}'
+        receipt = {"receipt_id": 2, "operation_id": "task", "payload_json": launch}
+        _insert(connection, "graph_run_receipts", receipt, store.now())
+        assert _generation(connection, "terminals") > before

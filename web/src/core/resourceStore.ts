@@ -61,6 +61,8 @@ interface ResourceState {
   observed: string | undefined;
   /** Owes a read regardless of tokens (invalidated, new epoch, unsettled command). */
   owed: boolean;
+  /** A watermark covering this key has arrived since it was registered. */
+  seen: boolean;
   generation: number;
   sequence: number;
   inFlight: AbortController | null;
@@ -114,6 +116,12 @@ export class ResourceStore {
   private running = 0;
   private runningBackground = 0;
   private epoch: string | null = null;
+  /**
+   * Set by an attached scheduler. Then a new key waits for its first
+   * watermark before reading, so the read commits a real version instead of
+   * being repeated when that watermark arrives.
+   */
+  private requestWatermark: (() => void) | null = null;
   private mutations = 0;
   private readonly now: () => number;
 
@@ -149,6 +157,7 @@ export class ResourceStore {
         committed: undefined,
         observed: undefined,
         owed: false,
+        seen: false,
         generation: 0,
         sequence: 0,
         inFlight: null,
@@ -166,6 +175,7 @@ export class ResourceStore {
       state.profile = profile as ResourceProfile<unknown>;
     }
     state.owners.set(owner, (state.owners.get(owner) ?? 0) + 1);
+    if (!state.seen) this.requestWatermark?.();
     state.dormant.delete(owner);
     this.pump();
     return id;
@@ -240,6 +250,23 @@ export class ResourceStore {
     this.notify();
   }
 
+  attachScheduler(requestWatermark: () => void): () => void {
+    this.requestWatermark = requestWatermark;
+    return () => {
+      if (this.requestWatermark === requestWatermark) this.requestWatermark = null;
+    };
+  }
+
+  /** Open projects with a watched key still waiting for its first watermark. */
+  awaitingWatermark(): Set<string> {
+    const projects = new Set<string>();
+    if (!this.requestWatermark) return projects;
+    for (const state of this.states.values()) {
+      if (!state.seen && this.watched(state)) projects.add(state.profile.key.project);
+    }
+    return projects;
+  }
+
   setActiveProject(project: string | null): void {
     this.activeProject = project;
     this.pump();
@@ -288,12 +315,14 @@ export class ResourceStore {
       if (key.project !== project || !this.watched(state)) continue;
       const version = versions.get(watermarkId(project, key));
       if (version !== undefined) state.observed = version;
+      state.seen = true;
     }
     this.pump();
   }
 
   private owes(state: ResourceState): boolean {
     if (!this.watched(state) || state.inFlight || state.retryAt > this.now()) return false;
+    if (this.requestWatermark && !state.seen) return false;
     return !state.hasValue || state.owed || state.committed !== state.observed;
   }
 

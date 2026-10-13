@@ -7,6 +7,8 @@ from rcp.storage import AppStore
 
 def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     """Reconstruct older schema eras without retaining the later owner triggers."""
+    # The ledger write first: a read-only store must refuse here, before DDL.
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=48")
     triggers = connection.execute(
         "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'resource_%'"
     ).fetchall()
@@ -14,7 +16,6 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute(f'DROP TRIGGER "{name}"')
     for table in ("resource_versions", "resource_deadlines", "resource_watermark_epoch"):
         connection.execute(f"DROP TABLE IF EXISTS {table}")
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=48")
 
 
 def downgrade_artifacts(

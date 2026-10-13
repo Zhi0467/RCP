@@ -236,7 +236,21 @@ def migrate_resource_versions(connection: sqlite3.Connection) -> None:
             table,
             [
                 _bump(scope, "task", "ROW.operation_id"),
-                *([_bump(scope, "terminals")] if table == "graph_run_receipts" else []),
+                # Terminals show running work from launch receipts only, the ones
+                # naming repository roots; progress receipts must not move them.
+                *(
+                    [
+                        _bump(
+                            scope,
+                            "terminals",
+                            predicate="CASE WHEN json_valid(ROW.payload_json) THEN "
+                            "json_extract(ROW.payload_json,'$.canonical_repository_roots') "
+                            "END IS NOT NULL",
+                        )
+                    ]
+                    if table == "graph_run_receipts"
+                    else []
+                ),
                 _bump(scope, "tasks.progress", predicate=visible),
                 _bump(scope, "episode", episode, f"{episode} IS NOT NULL"),
                 _bump(scope, "chat", chat, f"{chat} IS NOT NULL"),

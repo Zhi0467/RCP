@@ -115,7 +115,10 @@ export class RefreshScheduler {
     this.visibility = options.visibility ?? documentVisibility;
   }
 
+  private detachStore: (() => void) | null = null;
+
   start(): void {
+    this.detachStore = this.options.store.attachScheduler(() => this.now());
     this.stopVisibility = this.visibility.listen(() => {
       if (!this.visibility.isHidden()) this.now();
     });
@@ -123,6 +126,8 @@ export class RefreshScheduler {
   }
 
   stop(): void {
+    this.detachStore?.();
+    this.detachStore = null;
     this.stopVisibility?.();
     this.stopVisibility = null;
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
@@ -167,15 +172,25 @@ export class RefreshScheduler {
   private due(open: readonly OpenProject[], active: string | null): string[] {
     const hiddenDue = this.beat % HIDDEN_PROJECT_BEAT_EVERY === 0;
     const now = this.clock.now();
+    const awaiting = this.options.store.awaitingWatermark();
     return open
       .map((project) => project.projectId)
       .filter(
         (id) =>
           id === active ||
           id === this.activated ||
+          awaiting.has(id) ||
           hiddenDue ||
           (this.validUntil.get(id) ?? Number.POSITIVE_INFINITY) <= now,
       );
+  }
+
+  /** An open project with a key registered after `due` was sent waits no beat. */
+  private newlyAwaiting(open: readonly OpenProject[], due: readonly string[]): boolean {
+    const awaiting = this.options.store.awaitingWatermark();
+    return open.some(
+      (project) => awaiting.has(project.projectId) && !due.includes(project.projectId),
+    );
   }
 
   private async run(): Promise<void> {
@@ -247,7 +262,7 @@ export class RefreshScheduler {
         // An activation queued during this request runs at once, not next beat.
         const beatMs = this.failures
           ? retryBackoffMs(this.failures)
-          : this.activated
+          : this.activated || this.newlyAwaiting(open, due)
             ? 0
             : REFRESH_BEAT_MS;
         const untilRetry = retry === null ? beatMs : Math.max(0, retry - this.clock.now());

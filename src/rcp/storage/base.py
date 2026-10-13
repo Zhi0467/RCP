@@ -8,6 +8,7 @@ import stat
 import tempfile
 import threading
 import uuid
+import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
@@ -44,6 +45,17 @@ from rcp.storage.resource_versions import migrate_resource_versions
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+
+
+def _weak_changed(store: AppStoreBase) -> Callable[[str, bool], None]:
+    """Publish question activity without the tracker keeping its store alive."""
+    method = weakref.WeakMethod(store._question_activity_changed)
+
+    def changed(question_id: str, waiting: bool) -> None:
+        if (bound := method()) is not None:
+            bound(question_id, waiting)
+
+    return changed
 
 
 class AppStoreBase:
@@ -142,7 +154,7 @@ class AppStoreBase:
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
         if space_kind is not None and space_kind not in ("personal", "team"):
             raise ValueError("space kind must be 'personal' or 'team'")
-        self.question_activity = QuestionActivity(changed=self._question_activity_changed)
+        self.question_activity = QuestionActivity(changed=_weak_changed(self))
         self.path = path
         self._read_only_snapshot = False
         self._immutable_read_only = False
@@ -153,7 +165,7 @@ class AppStoreBase:
     def initialize_team_space(cls, path: Path, name: str) -> tuple[AppStore, str]:
         database_existed = path.exists()
         store = cls.__new__(cls)
-        store.question_activity = QuestionActivity(changed=store._question_activity_changed)
+        store.question_activity = QuestionActivity(changed=_weak_changed(store))
         store.path = path
         store._read_only_snapshot = False
         store._immutable_read_only = False
