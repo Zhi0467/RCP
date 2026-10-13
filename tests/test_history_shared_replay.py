@@ -227,3 +227,20 @@ def test_transient_patch_read_failure_keeps_prefix_and_recovers(history, monkeyp
     assert recovered.state.replay_status == "complete"
     assert recovered.state.revision == patch.revision
     assert "ev/later" in recovered.state.nodes
+
+
+def test_branch_revision_gap_and_zero_head_stay_degraded(history):
+    branch = history.create_episode_branch(_branch_metadata(history))
+    branch.append(_branch_patch("ev/one"))
+    branch.append(_branch_patch("ev/two"))
+    first, second = sorted((branch.root / "patches").glob("*.json"))
+    first.unlink()
+    result = branch.current_materialization()
+    assert result.state.replay_status == "degraded"
+    assert result.state.replay_failure.code == "patch-revision-discontinuous"
+    assert "ev/two" not in result.state.nodes
+
+    (history.root / "scope-base.json").unlink()
+    engine = history.history_engine
+    zero = engine.resolve(HeadSpec(revision=0), default_target=history.graph_target)
+    assert engine.state_at(zero).replay_status == "degraded"
