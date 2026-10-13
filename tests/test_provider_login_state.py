@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 
 from rcp.storage import AppStore
+from tests.storage_helpers import downgrade_resource_watermarks
 
 
 def test_default_login_is_synthetic_signed_in(tmp_path):
@@ -59,6 +60,7 @@ def test_migration_18_upgrades_a_copy_of_version_17(tmp_path):
     fixture = tmp_path / "version17.sqlite3"
     AppStore(fixture)
     with sqlite3.connect(fixture) as connection:
+        downgrade_resource_watermarks(connection)
         connection.execute("DROP TABLE provider_login_states")
         connection.execute("DROP TABLE provider_readiness_snapshots")
         connection.execute(
