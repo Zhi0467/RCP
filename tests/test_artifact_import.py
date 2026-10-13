@@ -69,6 +69,16 @@ def test_resumed_turn_keeps_logical_supplier_scope(store, tmp_path):
     assert artifact.origin_operation_id == task.operation_id
 
 
+def test_resumed_wake_turn_keeps_the_wake_as_its_scope(store, tmp_path):
+    # A wake reuses the native session with no parent; it still opens its own turn.
+    wake, _, _ = _legacy(store, tmp_path, result=False, continuation="watcher_wake")
+    task, descriptor, _ = _legacy(store, tmp_path, parent=wake)
+    assert _run(store) is None
+    artifact = store.artifact(descriptor.artifact_id)
+    assert artifact.supplier_id == wake.operation_id
+    assert artifact.origin_operation_id == task.operation_id
+
+
 def test_kept_file_import_uses_workspace_and_leaves_repository_unchanged(store, tmp_path):
     task, descriptor, _ = _legacy(store, tmp_path, kept=True)
     _legacy(store, tmp_path, parent=task)

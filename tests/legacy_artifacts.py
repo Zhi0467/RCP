@@ -53,6 +53,7 @@ def create_legacy_artifact(
     result=True,
     project_id="project",
     data=b"page",
+    continuation=None,
 ):
     operation_id = str(uuid.uuid4())
     scope = parent.operation_id if parent else operation_id
@@ -86,7 +87,8 @@ def create_legacy_artifact(
             "kind": task.kind,
             "attempt": task.attempt,
             "has_parent": parent is not None,
-            "resumed": parent is not None,
+            "continuation_cause": continuation or ("resume" if parent else "fresh"),
+            "resumed": parent is not None or continuation is not None,
         },
     )
     if split:
