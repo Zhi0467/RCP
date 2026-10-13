@@ -159,7 +159,9 @@ class SyncCoordinator:
                 capture.follow_up = False
                 capture.last_started = now
                 capture.task = asyncio.create_task(self._capture(capture))
-            elif project_ids & demanded and capture.last_started is not None:
+            elif capture.last_started is not None:
+                with self._lock:
+                    self._requested.update(project_ids & requested)
                 delays.append(
                     capture.last_started + REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS - now
                 )
@@ -168,8 +170,8 @@ class SyncCoordinator:
     async def _capture(self, capture: _Capture) -> None:
         def transfer() -> None:
             try:
-                capture.workspace.capture()
-                if self._on_capture is not None:
+                changed = capture.workspace.capture()
+                if changed and self._on_capture is not None:
                     for project_id in tuple(capture.project_ids):
                         self._on_capture(project_id)
             except Exception:

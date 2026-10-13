@@ -21,7 +21,7 @@ from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, WatcherContinuation, WatcherRecord
 from rcp.transport import StateUnavailable
-from tests.helpers import sign_in_async_client, signed_in_client
+from tests.helpers import resource_watermark_tokens, sign_in_async_client, signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -230,18 +230,22 @@ def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_p
     assert response.status_code == 404
 
 
-def test_cached_revision_heartbeat_is_cache_only(manifest, tmp_path, monkeypatch) -> None:
+def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
+    manifest, tmp_path, monkeypatch
+) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
-    initial = signed_in_client(app).get(f"/api/projects/{project_id}").json()
+    client = signed_in_client(app)
+    keys = ({"name": "tasks.status"}, {"name": "watchers"})
+    before = resource_watermark_tokens(client, project_id, *keys)
     monkeypatch.setattr(
         app.state.catalog,
         "reconcile_snapshot",
         lambda _project_id: (_ for _ in ()).throw(
-            AssertionError("a cached heartbeat must not rebuild the display snapshot")
+            AssertionError("a watermark must not rebuild the display snapshot")
         ),
     )
-    # A teammate's new task changes no graph revision; the heartbeat names it.
+    # A teammate's new task changes no graph revision; its resource token moves.
     store = app.state.background_tasks.store
     now = store.now()
     store.create_agent_task(
@@ -275,32 +279,11 @@ def test_cached_revision_heartbeat_is_cache_only(manifest, tmp_path, monkeypatch
         ]
     )
 
-    async def drive() -> httpx.Response:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await sign_in_async_client(client, app)
-            response = await client.get(f"/api/projects/{project_id}/cached/revision")
-            return response
-
-    response = asyncio.run(drive())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert isinstance(body.pop("task_status_signal"), str)
-    assert body == {
-        "revision": initial["revision"],
-        "snapshot_freshness": "fresh",
-        "last_remote_sync_at": None,
-        "compute_probes_probed_at": None,
-        "settings_signal": initial["settings_signal"],
-        "experiment_signal": initial["experiment_signal"],
-        "latest_task_id": "teammate-task",
-        "latest_watcher_id": "teammate-watcher",
-        "steer_epoch": 0,
-    }
+    after = resource_watermark_tokens(client, project_id, *keys)
+    assert all(previous != current for previous, current in zip(before, after, strict=True))
 
 
-def test_heartbeat_task_status_signal_moves_on_finish_not_progress(manifest, tmp_path) -> None:
+def test_task_status_watermark_moves_on_finish_not_progress(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     client = signed_in_client(app)
@@ -321,27 +304,24 @@ def test_heartbeat_task_status_signal_moves_on_finish_not_progress(manifest, tmp
     client.get(f"/api/projects/{project_id}")  # warms the display cache, as a page does
 
     def signal() -> str:
-        return client.get(f"/api/projects/{project_id}/cached/revision").json()[
-            "task_status_signal"
-        ]
+        return resource_watermark_tokens(client, project_id, {"name": "tasks.status"})[0]
 
     running = signal()
     store.update_agent_task_message("background-task", "still working")
-    # Progress moves neither the newest task id nor this signal.
+    # Progress leaves the task status token unchanged.
     assert signal() == running
     store.complete_agent_task("background-task", applied_revision=None, result={})
     assert signal() != running
 
 
-def test_heartbeat_signals_a_settings_save_the_page_has_not_rendered(manifest, tmp_path) -> None:
+def test_settings_watermark_signals_a_save_the_page_has_not_rendered(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     client = signed_in_client(app)
     rendered = client.get(f"/api/projects/{project_id}").json()
-    heartbeat = client.get(f"/api/projects/{project_id}/cached/revision").json()
-    # The page and the heartbeat agree, so an idle page never reloads.
-    assert heartbeat["settings_signal"] == rendered["settings_signal"]
-    assert heartbeat["experiment_signal"] == rendered["experiment_signal"]
+    keys = ({"name": "settings"}, {"name": "graph", "ref": "main"})
+    before = resource_watermark_tokens(client, project_id, *keys)
+    assert resource_watermark_tokens(client, project_id, *keys) == before
 
     body = {
         "default_run_truth_scope": rendered["default_run_truth_scope"],
@@ -355,10 +335,9 @@ def test_heartbeat_signals_a_settings_save_the_page_has_not_rendered(manifest, t
     }
     assert client.put(f"/api/projects/{project_id}/settings", json=body).status_code == 200
 
-    after = client.get(f"/api/projects/{project_id}/cached/revision").json()
-    assert after["revision"] == heartbeat["revision"]
-    assert after["settings_signal"] != rendered["settings_signal"]
-    assert after["experiment_signal"] == rendered["experiment_signal"]
+    after = resource_watermark_tokens(client, project_id, *keys)
+    assert after[0] != before[0]
+    assert after[1] == before[1]
 
 
 def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> None:
@@ -388,12 +367,14 @@ def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> Non
     client = signed_in_client(app)
     base = "/api/projects/legacy-project-url"
     assert client.get(base).status_code == 200  # warms the display cache, as a page does
-    assert client.get(f"{base}/cached/revision").json()["latest_task_id"] == "aliased-task"
+    assert resource_watermark_tokens(client, "legacy-project-url", {"name": "tasks.status"}) == (
+        resource_watermark_tokens(client, project_id, {"name": "tasks.status"})
+    )
     assert [task["operation_id"] for task in client.get(f"{base}/tasks").json()] == ["aliased-task"]
     assert client.get(f"{base}/tasks/aliased-task").status_code == 200
 
 
-def test_cached_revision_file_read_does_not_block_the_event_loop(
+def test_project_snapshot_file_read_does_not_block_the_event_loop(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -415,9 +396,7 @@ def test_cached_revision_file_read_does_not_block_the_event_loop(
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
-            revision_task = asyncio.create_task(
-                client.get(f"/api/projects/{project_id}/cached/revision")
-            )
+            revision_task = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             await asyncio.to_thread(wait_for_entry, entered)
             health = await asyncio.wait_for(client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT)
             # Ordering, not latency: health answered while the cached snapshot

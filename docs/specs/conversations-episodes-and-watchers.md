@@ -470,6 +470,8 @@ episode, so a different current human pressing Resume or Retry cannot stand in f
 it. An episode with no recorded authorizer therefore has no recoverable turn, and
 RCP refuses that recovery by naming the situation and the remaining action — a
 fresh human Run, which starts a new episode and records its own authorizer.
+An idempotent Resume or Retry receipt belongs to the requesting member; it does
+not replace the episode's recorded authorizer.
 
 Every episode has exactly one validated native-session binding at a time:
 provider, session id, execution host, exact reusable stage, project, graph
@@ -645,7 +647,9 @@ watcher, correction, settlement, and report input remains branch-targeted.
 **Stop loop** persists intent before returning and before an unclaimed compatible
 watcher can win a new claim. It means: finish the already-authorized turn, retain
 its valid Patch and semantic result, stop existing and newly emitted compatible
-watchers, and admit no automatic continuation.
+watchers, and admit no automatic continuation. A later display-read failure
+returns the accepted Stop with operational state and unavailable graph readiness;
+it does not turn the durable Stop into a failed request.
 
 The current loop's Stop also retires unclaimed observations adopted from older
 episodes on the same Experiment, graph target, and execution host. Their origin

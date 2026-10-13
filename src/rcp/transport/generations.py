@@ -25,6 +25,14 @@ def _remove_retired(path: Path) -> None:
         _LOG.warning("Could not remove retired display generation %s", path, exc_info=True)
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 _EXCLUDED = {".refresh.lock", ".agent-run.lock", ".append.lock", ".chat.lock", ".publish"}
 _OWNERS_LOCK = threading.Lock()
 _OWNERS: dict[str, ReadGenerations] = {}
@@ -72,17 +80,25 @@ _CANONICAL_JSON = re.compile(
 )
 
 
-def _validate_content(relative: Path, data: bytes) -> None:
+def _validate_content(relative: Path, data: bytes) -> bytes:
     """Reject broken canonical documents, without parsing scratch or replaying history."""
     try:
         if relative.parent == Path("chat") and relative.suffix == ".jsonl":
-            for line in data.decode("utf-8").splitlines():
+            lines = data.splitlines(keepends=True)
+            for index, line in enumerate(lines):
                 if line.strip():
-                    json.loads(line)
+                    try:
+                        json.loads(line)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        if index == len(lines) - 1 and not line.endswith(b"\n"):
+                            # Serve the complete prefix while its last record is appended.
+                            return b"".join(lines[:index])
+                        raise
         elif _CANONICAL_JSON.fullmatch(relative.as_posix()):
             json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid canonical document {relative}: {exc}") from exc
+    return data
 
 
 class ReadGenerations:
@@ -94,6 +110,7 @@ class ReadGenerations:
         self.current: Path | None = None
         self.readers: dict[Path, int] = {}
         self.hashes: dict[str, str] = {}
+        self.source_stats: dict[str, tuple[int, int, int, int, int]] = {}
         self.epoch = uuid.uuid4().hex
         self.versions: dict[str, int] = {}
         self.completed: datetime | None = None
@@ -177,12 +194,40 @@ class ReadGenerations:
         return path
 
     def copy(self, root: Path) -> None:
+        """Copy mutable inputs once; reuse unchanged files from the immutable generation."""
         stage = self.stage()
+        source_stats: dict[str, tuple[int, int, int, int, int]] = {}
+
+        def copy_file(source: str, destination: str) -> str:
+            path = Path(source)
+            relative = path.relative_to(root).as_posix()
+            metadata = path.stat()
+            signature = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            previous = self.current / relative if self.current is not None else None
+            if self.source_stats.get(relative) == signature and previous is not None:
+                os.link(previous, destination)
+            else:
+                shutil.copy2(source, destination)
+            source_stats[relative] = signature
+            return destination
+
         try:
             shutil.copytree(
-                root, stage, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*_EXCLUDED)
+                root,
+                stage,
+                dirs_exist_ok=True,
+                symlinks=True,
+                ignore=shutil.ignore_patterns(*_EXCLUDED),
+                copy_function=copy_file,
             )
             self.publish(stage)
+            self.source_stats = source_stats
         except BaseException:
             shutil.rmtree(stage, ignore_errors=True)
             raise
@@ -206,18 +251,38 @@ class ReadGenerations:
             ),
             encoding="utf-8",
         )
+        with descriptor.open("rb") as stream:
+            os.fsync(stream.fileno())
         return descriptor
 
-    def publish(self, stage: Path) -> None:
+    def _replace_descriptor(self, descriptor: Path) -> None:
+        descriptor.replace(self.directory / "current.json")
+        # After replace the new generation is selected even if directory sync fails.
+        try:
+            _fsync_directory(self.directory)
+        except OSError:
+            _LOG.warning("Could not sync display descriptor directory", exc_info=True)
+
+    def publish(self, stage: Path) -> bool:
         hashes: dict[str, str] = {}
         for path in stage.rglob("*"):
             if path.is_symlink():
                 raise ValueError("Canonical display state contains a symbolic link")
             if path.is_file():
                 relative = path.relative_to(stage)
-                data = path.read_bytes()
-                _validate_content(relative, data)
-                hashes[relative.as_posix()] = hashlib.sha256(data).hexdigest()
+                key = relative.as_posix()
+                previous = self.current / relative if self.current is not None else None
+                if previous is not None and key in self.hashes and path.samefile(previous):
+                    hashes[key] = self.hashes[key]
+                else:
+                    data = path.read_bytes()
+                    validated = _validate_content(relative, data)
+                    if validated != data:
+                        path.write_bytes(validated)
+                        data = validated
+                    hashes[key] = hashlib.sha256(data).hexdigest()
+                    with path.open("rb") as stream:
+                        os.fsync(stream.fileno())
         changed = {
             path
             for path in self.hashes.keys() | hashes.keys()
@@ -228,10 +293,19 @@ class ReadGenerations:
             completed = datetime.now(UTC)
             descriptor = self._write_descriptor(self.current, hashes, self.versions, completed)
             with self.guard:
-                descriptor.replace(self.directory / "current.json")
+                self._replace_descriptor(descriptor)
                 self.completed = completed
                 self.error = None
-            return
+            return False
+        # Persist directory entries before publishing a descriptor that names them.
+        for directory in sorted(
+            (path for path in stage.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            _fsync_directory(directory)
+        _fsync_directory(stage)
+        _fsync_directory(self.directory)
         versions = self.versions.copy()
         for family in set().union(*(families_for_path(path) for path in changed)):
             versions[family] = versions.get(family, 0) + 1
@@ -239,9 +313,11 @@ class ReadGenerations:
         descriptor = self._write_descriptor(stage, hashes, versions, completed)
         retired = None
         with self.guard:
-            descriptor.replace(self.directory / "current.json")
+            self._replace_descriptor(descriptor)
             old = self.current
             self.current = stage
+            for path in changed:
+                self.source_stats.pop(path, None)
             self.hashes = hashes
             self.versions = versions
             self.completed = completed
@@ -250,6 +326,7 @@ class ReadGenerations:
                 retired = old
         if retired is not None:
             _remove_retired(retired)
+        return True
 
     def clear(self) -> None:
         """A confirmed archive invalidates the published home, retaining active pins."""

@@ -170,6 +170,23 @@ def test_remote_display_never_prepares_and_cannot_lag_its_content_token(
     workspace._generations.publish(stage)
     first = client.get(f"/api/projects/{project_id}")
     assert first.status_code == 200, first.text
+    # Readiness and repeated display/digest reads reuse the generation's replay.
+    catalog.open_display(project_id)
+
+    def forbid_replay(*_args, **_kwargs):
+        raise AssertionError("An unchanged generation must not replay again")
+
+    with monkeypatch.context() as cached:
+        from rcp.history.manager import HistoryManager
+
+        cached.setattr(HistoryManager, "current_materialization", forbid_replay)
+        for _ in range(2):
+            assert client.get(f"/api/projects/{project_id}").status_code == 200
+            assert (
+                app.state.services.project_display_cache.cached_project_snapshot(project_id)
+                is not None
+            )
+            catalog.readiness_snapshot(project_id)
     before = catalog.content_generations(project_id, ["paper", "graph:main"])
     with workspace.read_snapshot() as root:
         stage = workspace._generations.stage()
@@ -240,3 +257,100 @@ def test_execution_reloads_authoritative_manifest_before_resolving_write_scope(
     assert transactions == [True]
     assert display.manifest.repository_map["repo-b"].path == previous_path
     assert scope.repository_roots == [str(current_path)]
+
+
+def test_one_shot_request_waits_until_cadence_without_a_lease(tmp_path, monkeypatch):
+    async def drive():
+        now = [0.0]
+        workspace = SSHStateWorkspace(tmp_path / "remote", "fixture", "/project")
+        calls = []
+        monkeypatch.setattr(workspace, "capture", lambda: calls.append(now[0]))
+        coordinator = SyncCoordinator(_catalog({"p": workspace}), clock=lambda: now[0])
+        coordinator.start()
+        try:
+            coordinator.request("p")
+            await async_wait_until(lambda: calls == [0])
+            now[0] = 1
+            coordinator.request("p")
+            await async_wait_until(lambda: "p" in coordinator._requested)
+            assert coordinator._schedule() == 9
+            assert "p" in coordinator._requested
+            now[0] = 10
+            coordinator._wake.set()
+            await async_wait_until(lambda: calls == [0, 10])
+            assert not coordinator._leases
+        finally:
+            await coordinator.stop()
+
+    asyncio.run(drive())
+
+
+def test_watermark_route_leases_continue_expire_and_activation_bypasses_cadence(
+    manifest, tmp_path, monkeypatch
+):
+    from tests.helpers import create_named_app, signed_in_client
+
+    async def drive():
+        app = create_named_app(str(manifest.path), data_dir=tmp_path / "lease-data")
+        project_id = app.state.default_project_id
+        catalog = app.state.catalog
+        workspace = SSHStateWorkspace(tmp_path / "remote", "fixture", "/project")
+        catalog._display_workspaces[project_id] = workspace
+        now = [0.0]
+        calls = []
+        monkeypatch.setattr(workspace, "capture", lambda: calls.append(now[0]))
+        coordinator = app.state.sync_coordinator
+        coordinator._clock = lambda: now[0]
+        client = signed_in_client(app)
+        coordinator.start()
+        body = {
+            "client_id": "tab",
+            "open": [{"project_id": project_id, "resources": [{"name": "tasks.status"}]}],
+            "due": [project_id],
+        }
+        try:
+            response = client.post("/api/resource-watermarks", json=body)
+            assert response.status_code == 200, response.text
+            await async_wait_until(lambda: calls == [0])
+            # No further request is needed to keep the leased project syncing.
+            now[0] = 10
+            coordinator._wake.set()
+            await async_wait_until(lambda: calls == [0, 10])
+            now[0] = 11
+            response = client.post(
+                "/api/resource-watermarks", json={**body, "activated": project_id}
+            )
+            assert response.status_code == 200, response.text
+            await async_wait_until(lambda: calls == [0, 10, 11])
+            now[0] = 72
+            coordinator._wake.set()
+            await async_wait_until(lambda: not coordinator._leases)
+            assert calls == [0, 10, 11]
+        finally:
+            await coordinator.stop()
+            client.close()
+
+    asyncio.run(drive())
+
+
+def test_unchanged_capture_does_not_rebuild_snapshot(tmp_path, monkeypatch):
+    async def drive():
+        workspace = SSHStateWorkspace(tmp_path / "remote", "fixture", "/project")
+        calls = []
+        rebuilt = []
+
+        def capture():
+            calls.append(True)
+            return False
+
+        monkeypatch.setattr(workspace, "capture", capture)
+        coordinator = SyncCoordinator(_catalog({"p": workspace}), on_capture=rebuilt.append)
+        coordinator.start()
+        try:
+            coordinator.request("p")
+            await async_wait_until(lambda: bool(calls))
+        finally:
+            await coordinator.stop()
+        assert rebuilt == []
+
+    asyncio.run(drive())

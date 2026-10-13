@@ -127,7 +127,6 @@ test("discovery and execution intersect the real backend schema with the same GE
       "/chats/{chat_id}/worktree",
       "/experiment-episodes",
       "/digest",
-      "/cached/revision",
       "/episodes/{episode_id}/merge-preview",
       "/machines/{machine_alias}/browser",
       "/artifacts/{artifact_id}/versions/{version_id}/live",

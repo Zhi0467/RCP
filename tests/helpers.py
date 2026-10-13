@@ -705,3 +705,23 @@ def reset_from_template(template: Path, live: Path) -> None:
 
     shutil.rmtree(live, ignore_errors=True)
     shutil.copytree(template, live, symlinks=True)
+
+
+def resource_watermark_tokens(
+    client: TestClient, project_id: str, *resources: dict[str, str], current_ref: str = "main"
+) -> list[str]:
+    """Read subscribed versions through the same route as an open project tab."""
+    response = client.post(
+        "/api/resource-watermarks",
+        json={
+            "client_id": "test-open-tab",
+            "open": [
+                {"project_id": project_id, "current_ref": current_ref, "resources": resources}
+            ],
+            "due": [project_id],
+        },
+    )
+    assert response.status_code == 200, response.text
+    project = response.json()["projects"][0]
+    assert project["requested_id"] == project_id
+    return [item["version"] for item in project["resources"]]

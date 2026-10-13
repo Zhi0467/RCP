@@ -213,3 +213,44 @@ def test_retry_request_replay_admits_one_recovery(request_app):
         assert repeated.status_code == 202, repeated.text
         assert repeated.json()["operation_id"] == first.json()["operation_id"]
         assert len(store.agent_tasks(project_id)) == 2
+
+
+def test_second_member_retry_receipt_keeps_episode_authority(tmp_path):
+    from .helpers import append_fixture_patch
+    from .test_api import _experiment_fixture_patch
+
+    app, client, store, people, acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo")
+    store.seat_project_member(project_id, people[1].user_id)
+    service = app.state.catalog.open(project_id)
+    append_fixture_patch(
+        service,
+        _experiment_fixture_patch().model_copy(
+            update={"run_truth_scope": ["paper-repo"], "repositories_read": ["paper-repo"]}
+        ),
+    )
+
+    async def pause(*_args):
+        yield f"data: {AgentEvent(event='paused', text='provider paused').model_dump_json()}\n\n"
+
+    app.state.background_tasks.stream = pause
+    started = client.post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["paper-repo"]},
+    )
+    assert started.status_code == 202, started.text
+    original = wait_for_task(store, started.json()["operation_id"], expect="paused")
+    acting[0] = people[1].user_id
+    key = str(uuid.uuid4())
+    url = f"/api/projects/{project_id}/tasks/{original.operation_id}/retry"
+    response = client.post(url, json={}, headers={"Idempotency-Key": key})
+    assert response.status_code == 202, response.text
+    recovered = wait_for_task(store, response.json()["operation_id"], expect="paused")
+    assert recovered.authorized_by == original.authorized_by
+    assert recovered.authorized_by.user_id == people[0].user_id
+    receipt = store.client_request(project_id, key)
+    assert receipt is not None and receipt.user_id == people[1].user_id
+    repeated = client.post(url, json={}, headers={"Idempotency-Key": key})
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["operation_id"] == recovered.operation_id
+    assert len(store.agent_tasks(project_id)) == 2

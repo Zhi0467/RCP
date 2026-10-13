@@ -3167,3 +3167,35 @@ def test_artifact_edit_does_not_replace_episode_control_or_block_watcher_wake(lo
     watcher = loop.store.watcher("after-edit")
     assert watcher.notified
     assert watcher.notification_operation_id is not None
+
+
+@pytest.mark.parametrize("route", ["experiments", "episodes"])
+def test_stop_acceptance_survives_display_failure(loop, monkeypatch, route) -> None:
+    import rcp.api.experiments as experiments
+    from rcp.transport import StateUnavailable
+
+    loop.start_episode(status="running")
+
+    def unavailable(*_args, **_kwargs):
+        raise StateUnavailable("display generation unavailable")
+
+    monkeypatch.setattr(experiments, "get_project_service", unavailable)
+    resource = NODE_PATH if route == "experiments" else loop.episode_id
+    response = loop.client.post(f"/api/projects/{loop.project_id}/{route}/{resource}/stop", json={})
+    assert response.status_code == 200, response.text
+    assert loop.store.episode(loop.episode_id).stop_requested_at is not None
+    if route == "experiments":
+        assert response.json()["operational"]["stop_requested"] is True
+        assert response.json()["ready"] is False
+
+
+@pytest.mark.parametrize("branch_id", ["", "invalid", "../main"])
+def test_stop_rejects_invalid_branch_before_persisting_intent(loop, branch_id) -> None:
+    loop.start_episode(status="running")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/stop",
+        params={"branch_id": branch_id, "episode_id": loop.episode_id},
+        json={},
+    )
+    assert response.status_code == 404, response.text
+    assert loop.store.episode(loop.episode_id).stop_requested_at is None

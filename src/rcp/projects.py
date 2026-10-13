@@ -97,6 +97,7 @@ from rcp.transport import (
 )
 from rcp.transport.state import (
     SSHStateWorkspace,
+    load_remote_workspace_manifest,
     state_workspace_for_probe,
 )
 
@@ -856,6 +857,9 @@ class ProjectCatalog:
         self._project_aliases = self.store.project_aliases()
         self.request_sync: Callable[[str], None] | None = None
         self._display_workspaces: dict[str, StateWorkspace] = {}
+        self._display_lock = threading.RLock()
+        self._display_services: dict[str, tuple[Path, ProjectService, MaterializationResult]] = {}
+        self._display_snapshots: dict[str, tuple[Path, dict[str, object]]] = {}
         self._refresh_display_workspaces()
 
     def _refresh_display_workspaces(self) -> None:
@@ -892,13 +896,21 @@ class ProjectCatalog:
             raise KeyError(project_id)
         if not workspace.remote:
             return self.open(project_id)
-        with workspace.read_snapshot() as root:
-            manifest = load_manifest(root / "manifest.toml", project_root=workspace.root.parent)
-            # The service keeps its authoritative root for eventual execution.
-            manifest._path = workspace.root / "manifest.toml"
-            history = self._history_for_manifest(manifest, workspace, project_id=project_id)
-            self._validate_open_identity(history, history.current_materialization(), project_id)
-        return ProjectService(
+        with workspace.read_snapshot() as root, self._display_lock:
+            return self._display_service(project_id, workspace, root)[0]
+
+    def _display_service(
+        self, project_id: str, workspace: StateWorkspace, root: Path
+    ) -> tuple[ProjectService, MaterializationResult]:
+        cached = self._display_services.get(project_id)
+        if root != workspace.root and cached is not None and cached[0] == root:
+            return cached[1], cached[2]
+        manifest = load_manifest(root / "manifest.toml", project_root=workspace.root.parent)
+        manifest._path = workspace.root / "manifest.toml"
+        history = self._history_for_manifest(manifest, workspace, project_id=project_id)
+        materialization = history.current_materialization()
+        self._validate_open_identity(history, materialization, project_id)
+        service = ProjectService(
             manifest,
             history,
             PaperService(manifest, self.store, workspace, project_id=project_id),
@@ -910,6 +922,9 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
         )
+        if root != workspace.root:
+            self._display_services[project_id] = (root, service, materialization)
+        return service, materialization
 
     def register(
         self,
@@ -1710,9 +1725,23 @@ class ProjectCatalog:
         workspace = self.workspace_for_display(project_id)
         if workspace is None:
             raise KeyError(project_id)
-        with workspace.read_snapshot():
-            service = self.open_display(project_id)
-            snapshot = _snapshot_payload(service.project_snapshot())
+        if workspace.remote:
+            with workspace.read_snapshot() as root, self._display_lock:
+                service, materialization = self._display_service(project_id, workspace, root)
+                cached = self._display_snapshots.get(project_id)
+                if root == workspace.root or cached is None or cached[0] != root:
+                    snapshot = _snapshot_payload(
+                        service.project_snapshot(materialization=materialization)
+                    )
+                    if root != workspace.root:
+                        self._display_snapshots[project_id] = (root, deepcopy(snapshot))
+                else:
+                    snapshot = deepcopy(cached[1])
+                snapshot["canonical_state"] = workspace.status().model_dump(mode="json")
+        else:
+            with workspace.read_snapshot():
+                service = self.open_display(project_id)
+                snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, _ProjectSnapshotDraft(snapshot)
@@ -1870,12 +1899,18 @@ class ProjectCatalog:
             try:
                 bootstrap = load_manifest(record.locator)
                 workspace = state_workspace_for_probe(bootstrap, self.data_dir)
-                if service is not None:
+                if service is not None and hasattr(service, "history"):
                     workspace = service.history.workspace
-                with workspace.read_snapshot() as root:
-                    manifest = load_manifest(
-                        root / "manifest.toml", project_root=bootstrap.path.parent.parent
+                if isinstance(workspace, SSHStateWorkspace):
+                    manifest = load_remote_workspace_manifest(
+                        bootstrap, workspace, project_root=bootstrap.path.parent.parent
                     )
+                else:
+                    with workspace.snapshot_lock:
+                        manifest = load_manifest(
+                            workspace.root / "manifest.toml",
+                            project_root=bootstrap.path.parent.parent,
+                        )
             except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
                 raise ValueError(
                     "Cannot establish the repository ownership inventory because registered "
@@ -3038,11 +3073,6 @@ class ProjectDisplayCache:
             )
             controls[experiment_id] = control
         return controls
-
-    def schedule_project_reconciliation(self, project_id: str) -> None:
-        """Legacy revision callers use the same capture owner until route retirement."""
-        if self._catalog.request_sync is not None:
-            self._catalog.request_sync(project_id)
 
 
 def _control_node_ids(state: GraphState, candidates: Iterable[str] | None = None) -> list[str]:

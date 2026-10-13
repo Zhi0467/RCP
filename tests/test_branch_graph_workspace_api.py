@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from rcp.core.models import Patch
-from tests.helpers import signed_in_client
+from tests.helpers import resource_watermark_tokens, signed_in_client
 
 from .test_branch_chats import _app_branch
 from .test_branch_merge_api import _admit_held_merge_task, _create_branch_harness
@@ -76,9 +76,6 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
     assert set(after["graph_changes"]["context_node_ids"]) == {QUESTION, HYPOTHESIS}
     assert client.get(f"{base}/graph/changes", params=params).json() == after["graph_changes"]
     assert client.get(f"{base}/revision", params=params).json()["revision"] == after["revision"]
-    assert (
-        client.get(f"{base}/cached/revision", params=params).json()["revision"] == after["revision"]
-    )
     history = client.get(f"{base}/history/summaries", params=params).json()
     assert history[-1]["producer"] == "human"
     assert history[-1]["episode_id"] is None
@@ -216,10 +213,6 @@ def test_branch_merge_fences_manual_sync_and_projects_unavailability(
     params = {"branch_id": harness.episode.episode_id}
     snapshot = harness.client.get(base, params=params).json()
     assert snapshot["graph_mutation"]["available"] is False
-    assert (
-        harness.client.get(f"{base}/cached/revision", params=params).json()["graph_mutation"]
-        == snapshot["graph_mutation"]
-    )
     for route in ("sync", "sync/preview"):
         response = harness.client.post(
             f"{base}/{route}", params=params, json={"base_revision": snapshot["revision"]}
@@ -306,16 +299,18 @@ def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_pa
     assert changes.json()["nodes"][0]["history"][0]["producer"] == "human"
 
 
-def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
-    manifest, tmp_path, monkeypatch
-):
-    from rcp.api import project_state
+def test_branch_watermarks_fence_revisions_without_replaying(manifest, tmp_path, monkeypatch):
     from rcp.history.branches import BranchHistoryManager
 
     app, main, episode, _root = _app_branch(manifest, tmp_path)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
+    keys = (
+        {"name": "graph", "ref": f"branch:{episode.episode_id}"},
+        {"name": "graph", "ref": "main"},
+    )
+    snapshot = client.get(base, params=params).json()
     replays = []
     materialize = BranchHistoryManager.materialize
 
@@ -324,19 +319,15 @@ def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
         return materialize(self, **kwargs)
 
     monkeypatch.setattr(BranchHistoryManager, "materialize", counting)
-    project_state._BRANCH_HEARTBEATS.clear()
-    first = client.get(f"{base}/cached/revision", params=params).json()
-    second = client.get(f"{base}/cached/revision", params=params).json()
-    assert first == second
-    assert first["graph_mutation"] == {"available": True, "reason": None}
-    # Tasks are project-wide: a branch view reads the main heartbeat's task signal.
-    client.get(base)  # warms the main display cache, as a page does
-    main_signal = client.get(f"{base}/cached/revision").json()["task_status_signal"]
-    assert first["task_status_signal"] == main_signal
-    assert len(replays) == 1
-    snapshot = client.get(base, params=params).json()
-    # The branch page and its heartbeat agree, so an idle branch view never reloads.
-    assert first["experiment_signal"] == snapshot["experiment_signal"]
+    first = resource_watermark_tokens(client, episode.project_id, *keys)
+    assert resource_watermark_tokens(client, episode.project_id, *keys) == first
+    assert not replays
+    task_key = {"name": "tasks.status"}
+    assert resource_watermark_tokens(client, episode.project_id, task_key) == (
+        resource_watermark_tokens(
+            client, episode.project_id, task_key, current_ref=f"branch:{episode.episode_id}"
+        )
+    )
     synced = client.post(
         f"{base}/sync",
         params=params,
@@ -346,20 +337,15 @@ def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
                 {
                     "node_id": QUESTION,
                     "base_updated_rev": main.history.state().nodes[QUESTION].updated_rev,
-                    "changes": {"question": "Does the heartbeat notice this?"},
+                    "changes": {"question": "Does the watermark notice this?"},
                 }
             ],
         },
     )
     assert synced.status_code == 200, synced.text
-    heartbeat_replays = len(replays)
-    third = client.get(f"{base}/cached/revision", params=params).json()
-    assert third["revision"] == synced.json()["head"]["revision"] > first["revision"]
-    assert len(replays) == heartbeat_replays + 1
-    client.get(f"{base}/cached/revision", params=params)
-    assert len(replays) == heartbeat_replays + 1
-    monkeypatch.setattr(project_state, "active_merge", lambda *args: True)
-    fenced = client.get(f"{base}/cached/revision", params=params).json()
-    assert fenced["revision"] == third["revision"]
-    assert fenced["graph_mutation"]["available"] is False
-    assert "merge" in fenced["graph_mutation"]["reason"]
+    replays.clear()
+    after = resource_watermark_tokens(client, episode.project_id, *keys)
+    assert after[0] != first[0]
+    assert after[1] == first[1]
+    assert not replays
+    assert client.get(base, params=params).json()["revision"] == synced.json()["head"]["revision"]

@@ -445,7 +445,7 @@ class HistoryManager:
         with self.workspace.read_snapshot() as root:
             reader = HistoryManager(
                 self.manifest,
-                LocalStateWorkspace(root, str(root)),
+                LocalStateWorkspace(root, str(root), display_reader=True),
                 expected_space_id=self.expected_space_id,
                 project_id=self.project_id,
                 write_authority=self.write_authority,

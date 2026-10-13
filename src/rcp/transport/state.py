@@ -1004,7 +1004,7 @@ class StateWorkspaceStatus(BaseModel):
 
 
 class StateWorkspace:
-    def __init__(self, root: Path, location: str) -> None:
+    def __init__(self, root: Path, location: str, *, display_reader: bool = False) -> None:
         self.root = root
         self.location = location
         self.remote = False
@@ -1012,8 +1012,10 @@ class StateWorkspace:
         self.last_synced_at: datetime | None = None
         self.error: str | None = None
         self.materialization_repair_required = False
-        self.snapshot_lock = _snapshot_lock(root)
-        self._generations = generations.owner(root)
+        self.snapshot_lock = threading.RLock() if display_reader else _snapshot_lock(root)
+        self._generations = (
+            generations.ReadGenerations(root) if display_reader else generations.owner(root)
+        )
         self._transaction_thread = threading.local()
 
     def set_sync_request(self, callback: Callable[[], None]) -> None:
@@ -1921,10 +1923,7 @@ class SSHStateWorkspace(StateWorkspace):
         """Capture remotely under the same sequencing owner used by publications."""
         acquired = self.snapshot_lock.acquire(timeout=STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS)
         if not acquired:
-            error = "Timed out waiting for canonical-state publication."
-            with self._generations.guard:
-                self._generations.error = error
-            raise StateUnavailable(error)
+            return False
         stage = None
         with self._generations.guard:
             self._generations.syncing = True
@@ -1940,9 +1939,9 @@ class SSHStateWorkspace(StateWorkspace):
                 self._pull_remote_tree(stage)
                 lease.assert_owned()
                 self._validate_capture(stage)
-                self._generations.publish(stage)
+                changed = self._generations.publish(stage)
                 stage = None
-            return True
+            return changed
         except Exception as exc:
             with self._generations.guard:
                 self._generations.error = str(exc)
@@ -1961,7 +1960,7 @@ class SSHStateWorkspace(StateWorkspace):
             self._publication_lease.assert_owned()
             refreshed = self._sync_remote_tree()
             self._publication_lease.assert_owned()
-            self._generations.copy(self.root)
+            self._publish_committed_generation()
             return refreshed
         # A reader must not wait indefinitely behind a writer: the holder it is
         # queued behind may belong to a connection that died mid-publication.
@@ -1974,7 +1973,7 @@ class SSHStateWorkspace(StateWorkspace):
                 lease.assert_owned()
                 refreshed = self._sync_remote_tree()
                 lease.assert_owned()
-                self._generations.copy(self.root)
+                self._publish_committed_generation()
                 return refreshed
         except RunLockCancelled as exc:
             raise StateUnavailable(
@@ -2097,6 +2096,11 @@ class SSHStateWorkspace(StateWorkspace):
                     engine.local_path,
                     "-a",
                     "--delete",
+                    *(
+                        [f"--link-dest={self._generations.current.resolve()}"]
+                        if destination != self.root and self._generations.current is not None
+                        else []
+                    ),
                     *(f"--exclude={name}" for name in excludes),
                     *rsync_ssh_arguments(),
                     remote,
@@ -2254,7 +2258,7 @@ class SSHStateWorkspace(StateWorkspace):
                 if self._remote_manifest_exists():
                     self._sync_remote_tree()
                     lease.assert_owned()
-                    self._generations.copy(self.root)
+                    self._publish_committed_generation()
                 lease.assert_owned()
                 yield
                 lease.assert_owned()
@@ -2334,7 +2338,7 @@ class SSHStateWorkspace(StateWorkspace):
     def publish(self, relative_paths: list[Path | str]) -> None:
         with self.snapshot_lock, self._publication_lock() as lease:
             self._publish(relative_paths, lease)
-            self._generations.copy(self.root)
+            self._publish_committed_generation()
 
     def restore_exact_file(
         self,
@@ -2466,7 +2470,7 @@ class SSHStateWorkspace(StateWorkspace):
             )
         self._mark_reachable(synced=True)
         if not external:
-            self._generations.copy(self.root)
+            self._publish_committed_generation()
 
     def keep_result_view(
         self,
@@ -2767,10 +2771,10 @@ class SSHStateWorkspace(StateWorkspace):
         try:
             self._generations.copy(self.root)
         except (OSError, ValueError) as exc:
-            message = f"Canonical history committed but display publication failed: {exc}"
+            message = f"Display publication failed: {exc}"
             with self._generations.guard:
                 self._generations.error = message
-            raise BatchPublishFailed(message, commit_status="present") from exc
+            # Display failures cannot undo an accepted canonical write.
 
     def _publish_committed_history(
         self,

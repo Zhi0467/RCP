@@ -7,7 +7,17 @@ W3 and W4 Web slices are integrated: one runtime and resource read owner, UI-onl
 tab retention, task overlays, graph/chat/episode/history/Paper profiles, and no
 legacy heartbeat or open/reload read bundle. Remaining: end-to-end qualification
 (including phone-width journeys and disposable local/remote data measurements)
-and confirmation of the other server slices below.
+and confirmation of the other server slices below. S1 review repairs are implemented:
+nonfatal display publication, incremental generation reuse, generation-scoped
+snapshot caching, bounded reader registries, durable generation publication,
+requesting-member retry receipts, and accepted Stop responses despite display
+failure. The legacy revision endpoint is retired; its branch, probe, steer, and
+alias checks now use watermarks or the owning payload. The task-status accessor
+remains while its resource-version tests are owned by the parallel server slice.
+Local HTTP sign-in, activation watermarks, project/chat reads, stable tokens,
+and the retired endpoint's 404 were verified on disposable data. Live provider
+readiness was blocked by sandbox credential-lock access; live SSH transfer and
+browser/phone qualification remain open.
 
 ## Goal
 

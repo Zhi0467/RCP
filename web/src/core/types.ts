@@ -1890,23 +1890,6 @@ export interface ProjectCounts {
 export type GraphMutationAvailability =
   { available: true; reason: null } | { available: false; reason: string };
 
-export interface GraphRevisionSnapshot {
-  revision: number;
-  snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
-  last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
-  compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
-  settings_signal?: ProjectSnapshot["settings_signal"];
-  experiment_signal?: ProjectSnapshot["experiment_signal"];
-  graph_mutation?: GraphMutationAvailability;
-  /** The newest visible task and watcher, so a teammate's new ones reach an open page. */
-  latest_task_id?: string | null;
-  latest_watcher_id?: string | null;
-  /** Moves when a task changes status or finishes, not on progress; a change rereads tasks. */
-  task_status_signal?: string;
-  /** Moves with every steer write on the server; a change rereads tasks. */
-  steer_epoch?: number;
-}
-
 export interface RevisionedTransitionGraph {
   revision: number;
 }

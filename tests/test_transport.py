@@ -200,7 +200,7 @@ def test_history_and_paper_publish_only_explicit_canonical_files(manifest, tmp_p
     assert created.sync_state == "unsynced"
     assert workspace.transactions == 2
 
-    saved = paper.save(created.content, created.base_hash)
+    saved = paper.save(created.content, created.base_hash, created.draft_version)
     published = {path for batch in workspace.published for path in batch}
     assert "paper/introduction.md" in published
     assert saved.sync_state == "synced"
@@ -2775,9 +2775,7 @@ def test_display_publication_failure_preserves_remote_commit_status(tmp_path, mo
     monkeypatch.setattr(workspace, "_ssh", _successful_process)
     monkeypatch.setattr(subprocess, "run", _successful_process)
     monkeypatch.setattr(workspace._generations, "copy", no_space)
-    with pytest.raises(BatchPublishFailed) as failed:
-        workspace.publish_committed_patch([patch, "graph.json"], patch)
-    assert failed.value.commit_status == "present"
+    workspace.publish_committed_patch([patch, "graph.json"], patch)
     assert workspace.sync_health()["status"] == "error"
 
 
@@ -2813,8 +2811,8 @@ def test_retired_cleanup_failure_does_not_delete_published_generation(tmp_path, 
         (f"branches/{_ARCHIVE_BRANCH_ID}/branch.json", b"{"),
         (f"branches/{_ARCHIVE_BRANCH_ID}/patches/000001.json", b"{"),
         (f"branches/{_ARCHIVE_BRANCH_ID}/merges/{_ARCHIVE_MERGE_ID}.json", b"{"),
-        (f"chat/project-{_ARCHIVE_BRANCH_ID}.jsonl", b"{}\n{"),
-        (f"chat/project-{_ARCHIVE_BRANCH_ID}.jsonl", b"\xff"),
+        (f"chat/project-{_ARCHIVE_BRANCH_ID}.jsonl", b"{}\n{\n"),
+        (f"chat/project-{_ARCHIVE_BRANCH_ID}.jsonl", b"\xff\n"),
     ],
 )
 def test_capture_rejects_broken_canonical_documents_without_losing_last_good(
@@ -2846,3 +2844,145 @@ def test_capture_rejects_broken_canonical_documents_without_losing_last_good(
         assert (current / relative).read_text() == "{}\n"
     assert workspace.content_generations(before) == before
     assert workspace.sync_health()["status"] == "error"
+
+
+@pytest.mark.parametrize("invalid", [b"{", None])
+def test_display_validation_cannot_fail_transactions_or_publication(tmp_path, monkeypatch, invalid):
+    root = tmp_path / "mirror"
+    root.mkdir()
+    graph = root / "graph.json"
+    graph.write_text("{}")
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    workspace._generations.copy(root)
+    previous = workspace._generations.current
+    if invalid is None:
+        graph.unlink()
+        graph.symlink_to(root / "missing")
+    else:
+        graph.write_bytes(invalid)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
+    monkeypatch.setattr(workspace, "_sync_remote_tree", lambda: True)
+    published = []
+    monkeypatch.setattr(workspace, "_publish", lambda paths, lease: published.extend(paths))
+    with workspace.transaction():
+        workspace.publish(["graph.json"])
+    assert published == ["graph.json"]
+    assert workspace._generations.current == previous
+    assert workspace.sync_health()["status"] == "error"
+
+
+def test_generation_reuses_unchanged_bytes_and_accepts_torn_chat_tail(tmp_path, monkeypatch):
+    from rcp.transport.generations import ReadGenerations
+
+    root = tmp_path / "source"
+    (root / "chat").mkdir(parents=True)
+    chat = root / "chat/transcript.jsonl"
+    chat.write_bytes(b'{}\n{"partial":')
+    paper = root / "paper.md"
+    paper.write_text("original")
+    generations = ReadGenerations(root)
+    generations.copy(root)
+    with generations.pin() as previous:
+        assert previous is not None
+        assert (previous / "chat/transcript.jsonl").read_bytes() == b"{}\n"
+        assert chat.read_bytes() == b'{}\n{"partial":'
+        paper.write_text("updated")
+        read_bytes = Path.read_bytes
+        copied = []
+        copy2 = shutil.copy2
+
+        def copy_changed(source, destination):
+            copied.append(Path(source).name)
+            return copy2(source, destination)
+
+        def read_changed(path):
+            assert path.name != chat.name
+            return read_bytes(path)
+
+        monkeypatch.setattr(shutil, "copy2", copy_changed)
+        monkeypatch.setattr(Path, "read_bytes", read_changed)
+        generations.copy(root)
+        assert copied == ["paper.md"]
+        assert generations.current is not None
+        assert (generations.current / "chat/transcript.jsonl").samefile(
+            previous / "chat/transcript.jsonl"
+        )
+        assert (previous / "paper.md").read_text() == "original"
+        assert (generations.current / "paper.md").read_text() == "updated"
+        current = generations.current
+        generations.copy(root)
+        assert generations.current == current
+        assert copied == ["paper.md"]
+
+
+def test_display_readers_do_not_register_generation_paths(tmp_path):
+    from rcp.transport import generations, state
+
+    owners, locks = len(generations._OWNERS), len(state._SNAPSHOT_LOCKS)
+    for index in range(20):
+        root = tmp_path / str(index)
+        LocalStateWorkspace(root, str(root), display_reader=True)
+    assert len(generations._OWNERS) == owners
+    assert len(state._SNAPSHOT_LOCKS) == locks
+
+
+def test_capture_skips_busy_writer_without_changing_health(tmp_path, monkeypatch):
+    from rcp.transport import state
+
+    workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
+    monkeypatch.setattr(state, "STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS", 0)
+    before = workspace.sync_health()
+    with workspace.snapshot_lock, ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(workspace.capture).result(timeout=5) is False
+    assert workspace.sync_health() == before
+
+
+def test_capture_rsync_links_to_current_generation(tmp_path, monkeypatch):
+    from rcp.transport import state_transfer
+
+    root = tmp_path / "mirror"
+    root.mkdir()
+    (root / "paper.md").write_text("retained")
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    workspace._generations.copy(root)
+    calls = []
+    monkeypatch.setattr(
+        state_transfer,
+        "run_rsync",
+        lambda host, argv, **kwargs: calls.append(argv) or _successful_process(argv),
+    )
+    workspace._pull_remote_tree(workspace._generations.stage())
+    assert f"--link-dest={workspace._generations.current}" in calls[0]
+    workspace._pull_remote_tree(root)
+    assert not any(arg.startswith("--link-dest") for arg in calls[1])
+
+
+def test_generation_flushes_data_and_descriptor_before_selection(tmp_path, monkeypatch):
+    from rcp.transport.generations import ReadGenerations
+
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "paper.md").write_text("durable")
+    generations = ReadGenerations(root)
+    synced = []
+    fsync = os.fsync
+    replace = Path.replace
+
+    def flush(descriptor):
+        synced.append(os.fstat(descriptor).st_ino)
+        fsync(descriptor)
+
+    def select(path, destination):
+        if path.name == ".current.tmp":
+            descriptor = json.loads(path.read_text())
+            stage = generations.directory / descriptor["directory"]
+            assert (stage / "paper.md").stat().st_ino in synced
+            assert stage.stat().st_ino in synced
+            assert path.stat().st_ino in synced
+        return replace(path, destination)
+
+    monkeypatch.setattr(os, "fsync", flush)
+    monkeypatch.setattr(Path, "replace", select)
+    generations.copy(root)
+    assert generations.current is not None

@@ -27,8 +27,24 @@ visibility, question liveness, artifact expiry, consolidation authorization,
 or readiness recheck). `epoch` fences process restart, offline restore, and
 projection-contract changes. Payload and mutation response bodies keep their
 existing shapes: a client records the watermark observed before its payload
-read, so a subsequent changed token requests another read. The legacy
-`/cached/revision` endpoint remains until the Web migration is integrated.
+read, so a subsequent changed token requests another read. Watermarks replace
+the legacy revision heartbeat: graph revisions and mutation availability remain
+in the graph payload; task, watcher, chat, settings, and probe changes move their
+resource tokens. Remote-sync demand is renewed only through this endpoint.
+
+Remote captures reuse unchanged files from the current immutable generation.
+Canonical write success is independent of display publication: invalid display
+inputs retain the last good generation and report sync error. A torn trailing
+chat record is omitted from the staged display copy until complete. Generation
+files and the descriptor are synced before atomic publication. An unchanged
+capture updates freshness without rebuilding the display snapshot; a busy
+canonical writer skips that capture round without reporting an outage.
+
+Display services and graph snapshots cache one immutable generation per project;
+readiness and digest reads reuse its replay. Operational controls and sync health
+are completed from their current owners. Repository ownership checks read the
+canonical manifest under the writer lock, independently of display availability.
+One-shot sync requests inside the cadence window remain scheduled for its end.
 
 ## Project graph-ref inventory
 
