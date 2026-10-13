@@ -13,7 +13,6 @@ from rcp.core.models import Edge, GraphState, ProjectNode
 from rcp.core.transition_models import GraphHeadRef, GraphMutationAvailability, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.delta import semantic_delta
-from rcp.history.queries import HeadSpec, HistoryEngine
 from rcp.service import ProjectService
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore
 
@@ -63,75 +62,73 @@ def branch_changes(
 
     assert isinstance(service.history, BranchHistoryManager)
     history = cast(BranchHistoryManager, service.history)
-    engine: HistoryEngine = service.history_engine
-
-    with history.workspace.snapshot_lock:
-        metadata = history.branch_metadata()
-        # The immutable base, not the first accepted boundary: a retained rejected
-        # Patch advances the revision the next boundary's before-state carries.
-        base = engine.state_at(metadata.base_head)
-        head = engine.resolve(HeadSpec(revision="head"), default_target=history.graph_target)
-        result = MaterializationResult(state=engine.state_at(head))
-        delta = semantic_delta(base, result.state)
-        sources = [(step.delta, step.patch) for step in engine.steps(head) if step.accepted]
-        nodes = [
-            NodeChange(
-                **item.model_dump(mode="python"),
-                history=[
-                    GraphChangeSource(
-                        revision=patch.revision,
-                        producer=patch.producer,
-                        summary=_entity_summary(node.before, node.after),
-                        task_id=patch.task_id,
-                        episode_id=patch.episode_id,
-                    )
-                    for change, patch in sources
-                    for node in change.nodes
-                    if node.node_id == item.node_id
-                ],
-            )
-            for item in delta.nodes
-        ]
-        edges = [
-            EdgeChange(
-                **item.model_dump(mode="python"),
-                history=[
-                    GraphChangeSource(
-                        revision=patch.revision,
-                        producer=patch.producer,
-                        summary=_entity_summary(edge.before, edge.after),
-                        task_id=patch.task_id,
-                        episode_id=patch.episode_id,
-                    )
-                    for change, patch in sources
-                    for edge in change.edges
-                    if edge.edge_id == item.edge_id
-                ],
-            )
-            for item in delta.edges
-        ]
-        changed_ids = {item.node_id for item in nodes}
-        for item in edges:
-            for edge in (item.before, item.after):
-                if edge is not None:
-                    changed_ids.update((edge.source, edge.target))
-        for item in delta.proposals:
-            for proposal in (item.before, item.after):
-                if proposal is not None:
-                    changed_ids.update(proposal.related_node_ids)
-        context_ids = set(changed_ids)
-        for edge in (*base.edges.values(), *result.state.edges.values()):
-            if edge.source in changed_ids or edge.target in changed_ids:
-                context_ids.update((edge.source, edge.target))
-        return result, GraphBranchChanges(
-            branch_id=history.branch_id,
-            base_head=metadata.base_head,
-            head=head,
-            nodes=nodes,
-            edges=edges,
-            changed_node_ids=sorted(changed_ids),
-            context_node_ids=sorted(context_ids),
+    generation = service.history.history_engine.snapshot(history.graph_target)
+    metadata = generation.source.metadata
+    assert metadata is not None
+    history._validate_metadata(metadata)
+    base = generation.initial
+    head = generation.head(generation.result.state.revision)
+    result = generation.result
+    delta = semantic_delta(base, result.state)
+    sources = [(step.delta, step.patch) for step in generation.index if step.accepted]
+    nodes = [
+        NodeChange(
+            **item.model_dump(mode="python"),
+            history=[
+                GraphChangeSource(
+                    revision=patch.revision,
+                    producer=patch.producer,
+                    summary=_entity_summary(node.before, node.after),
+                    task_id=patch.task_id,
+                    episode_id=patch.episode_id,
+                )
+                for change, patch in sources
+                for node in change.nodes
+                if node.node_id == item.node_id
+            ],
         )
+        for item in delta.nodes
+    ]
+    edges = [
+        EdgeChange(
+            **item.model_dump(mode="python"),
+            history=[
+                GraphChangeSource(
+                    revision=patch.revision,
+                    producer=patch.producer,
+                    summary=_entity_summary(edge.before, edge.after),
+                    task_id=patch.task_id,
+                    episode_id=patch.episode_id,
+                )
+                for change, patch in sources
+                for edge in change.edges
+                if edge.edge_id == item.edge_id
+            ],
+        )
+        for item in delta.edges
+    ]
+    changed_ids = {item.node_id for item in nodes}
+    for item in edges:
+        for edge in (item.before, item.after):
+            if edge is not None:
+                changed_ids.update((edge.source, edge.target))
+    for item in delta.proposals:
+        for proposal in (item.before, item.after):
+            if proposal is not None:
+                changed_ids.update(proposal.related_node_ids)
+    context_ids = set(changed_ids)
+    for edge in (*base.edges.values(), *result.state.edges.values()):
+        if edge.source in changed_ids or edge.target in changed_ids:
+            context_ids.update((edge.source, edge.target))
+    return result, GraphBranchChanges(
+        branch_id=history.branch_id,
+        base_head=metadata.base_head,
+        head=head,
+        nodes=nodes,
+        edges=edges,
+        changed_node_ids=sorted(changed_ids),
+        context_node_ids=sorted(context_ids),
+    )
 
 
 def _entity_summary(before: ProjectNode | Edge | None, after: ProjectNode | Edge | None) -> str:

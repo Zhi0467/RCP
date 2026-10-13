@@ -34,7 +34,6 @@ from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
 from rcp.history.branches import BranchHistoryManager
-from rcp.history.queries import HeadSpec, HistoryEngine
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, experiment_signal
 from rcp.providers import profile_for
@@ -151,33 +150,34 @@ def _branch_revision(
     history = service.history
     assert isinstance(history, BranchHistoryManager)
     canonical_project_id = catalog.resolve_project_id(project_id)
-    with history.workspace.snapshot_lock:
-        if not history.workspace.refresh_if_stale(REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS):
-            raise StateUnavailable("The episode graph could not confirm a current snapshot.")
-        engine: HistoryEngine = service.history_engine
-        head = engine.resolve(HeadSpec(revision="head"), default_target=history.graph_target)
-        state = engine.state_at(head)
-        availability = project_graph_mutation_availability(state)
-        if active_merge(store, canonical_project_id, history.graph_target):
-            availability = merge_fenced_mutation_availability()
-        # Experiment controls are operational, so a teammate's start or stop on
-        # this branch moves no revision; the branch snapshot carries the same digest.
-        controls = project_display_cache.complete_transition_control(
-            canonical_project_id,
-            {
-                "graph": state.model_dump(mode="json"),
-                "graph_target": history.graph_target.model_dump(mode="json"),
-            },
-        )["experiment_control"]
-        return {
-            "revision": head.revision,
-            "snapshot_freshness": "fresh",
-            "last_remote_sync_at": None,
-            "graph_mutation": availability.model_dump(mode="json"),
-            "experiment_signal": experiment_signal(controls),
-            "latest_task_id": store.latest_agent_task_id(canonical_project_id),
-            "latest_watcher_id": store.latest_watcher_id(canonical_project_id),
-        }
+    generation = service.history.history_engine.snapshot(
+        history.graph_target, refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+    )
+    assert generation.source.metadata is not None
+    history._validate_metadata(generation.source.metadata)
+    head = generation.head(generation.result.state.revision)
+    state = generation.result.state
+    availability = project_graph_mutation_availability(state)
+    if active_merge(store, canonical_project_id, history.graph_target):
+        availability = merge_fenced_mutation_availability()
+    # Experiment controls are operational, so a teammate's start or stop on
+    # this branch moves no revision; the branch snapshot carries the same digest.
+    controls = project_display_cache.complete_transition_control(
+        canonical_project_id,
+        {
+            "graph": state.model_dump(mode="json"),
+            "graph_target": history.graph_target.model_dump(mode="json"),
+        },
+    )["experiment_control"]
+    return {
+        "revision": head.revision,
+        "snapshot_freshness": "fresh",
+        "last_remote_sync_at": None,
+        "graph_mutation": availability.model_dump(mode="json"),
+        "experiment_signal": experiment_signal(controls),
+        "latest_task_id": store.latest_agent_task_id(canonical_project_id),
+        "latest_watcher_id": store.latest_watcher_id(canonical_project_id),
+    }
 
 
 @router.get("/api/projects/{project_id}")

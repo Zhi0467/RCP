@@ -14,7 +14,8 @@ from rcp.core.models import GraphBranchMetadata, GraphState, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.episode_health import episode_needs_action, load_episode_health
 from rcp.history.delta import SemanticDelta, semantic_delta
-from rcp.history.queries import HeadSpec, HistoryEngine
+from rcp.history.engine import ProjectHistoryEngine
+from rcp.history.queries import HeadSpec
 from rcp.limits import DIGEST_RECHECK_SECONDS, DIGEST_STOP_TIMEOUT_SECONDS
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.storage.branch_names import resolve_branch_names
@@ -410,7 +411,7 @@ def _branch_state(catalog, project_id: str, branch_id: str) -> GraphState | None
     if service is None:
         return None
     target = GraphTargetRef(kind="branch", branch_id=branch_id)
-    engine: HistoryEngine = service.history_engine
+    engine = service.history.history_engine
     return engine.state_at(engine.resolve(HeadSpec(revision="head"), default_target=target))
 
 
@@ -737,7 +738,7 @@ class DigestProjector:
         with self._lock:
             service = self.catalog.open(project_id)
             history = service.history
-            engine: HistoryEngine = service.history_engine
+            engine = service.history.history_engine
             with self.store.connection() as conn:
                 initial = (
                     conn.execute(
@@ -771,7 +772,7 @@ class DigestProjector:
                 self._observe_episodes(project_id)
                 self._project_history(project_id, "main", engine)
 
-    def _project_history(self, project_id, target, engine: HistoryEngine):
+    def _project_history(self, project_id, target, engine: ProjectHistoryEngine):
         with self.store.connection() as conn:
             head = conn.execute(
                 "SELECT revision,patch_id FROM digest_heads WHERE project_id=? AND target=?",
@@ -782,13 +783,13 @@ class DigestProjector:
             if target == "main"
             else GraphTargetRef(kind="branch", branch_id=target.removeprefix("branch:"))
         )
-        resolved = engine.resolve(HeadSpec(revision="head"), default_target=graph_target)
-        steps = engine.steps(resolved)
-        if engine.state_at(resolved).replay_status != "complete":
+        generation = engine.snapshot(graph_target)
+        resolved = generation.head(generation.result.state.revision)
+        if generation.result.state.replay_status != "complete":
             raise ValueError("digest requires a complete accepted history")
         identities = {}
         prefix = hashlib.sha256()
-        accepted = [step for step in steps if step.accepted]
+        accepted = [step for step in generation.index if step.accepted]
         for step in accepted:
             patch = step.patch
             prefix.update(patch.model_dump_json().encode())
@@ -813,7 +814,7 @@ class DigestProjector:
         )
         events = (
             []
-            if reset
+            if reset or (head is None and not discovered_branch)
             else [
                 graph_event(
                     self.store,
@@ -824,8 +825,13 @@ class DigestProjector:
                     step.after_state,
                     delta=step.delta,
                 )
-                for step in accepted
-                if step.patch.revision > merged_revision
+                for step in engine._steps(
+                    generation,
+                    resolved,
+                    from_revision=max(merged_revision, head["revision"] if head else 0) + 1,
+                )
+                if step.accepted
+                and step.patch.revision > merged_revision
                 and (
                     (head is not None and step.patch.revision > head["revision"])
                     or (head is None and discovered_branch)

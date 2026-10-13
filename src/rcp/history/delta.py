@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from rcp.core.materialize import MaterializationResult, apply_valid_patch
+from rcp.core.materialize import MaterializationResult
 from rcp.core.models import (
     Ambiguity,
     AuthorizedHuman,
@@ -45,6 +45,7 @@ from rcp.limits import REFRESH_DELTA_MAX_BYTES, REFRESH_DELTA_MAX_ENTRIES
 
 if TYPE_CHECKING:
     from rcp.history.queries import StepRecord
+    from rcp.history.store import IndexedStep
 
 
 _MAX_TITLE_CHARS = 240
@@ -92,36 +93,20 @@ class RevisionSummary(BaseModel):
 
 
 def build_revision_summaries(
-    patches: Iterable[Patch],
-    materialization: MaterializationResult,
+    steps: Iterable[StepRecord],
     *,
     from_revision: int = 1,
     to_revision: int | None = None,
-    steps: Iterable[StepRecord] | None = None,
 ) -> list[RevisionSummary]:
-    """Render accepted append-only history without exposing graph implementation labels."""
+    """Render accepted engine steps without exposing graph implementation labels."""
 
-    end = to_revision if to_revision is not None else 10**12
-    if steps is not None:
-        return [
-            render_revision_summary(step.before_state, step.patch, step.after_state)
-            for step in steps
-            if step.accepted and from_revision <= step.patch.revision <= end
-        ]
-    state = GraphState()
-    summaries: list[RevisionSummary] = []
-
-    for patch in sorted(patches, key=lambda item: item.revision):
-        report = materialization.reports.get(patch.revision)
-        if report is None or report.rejected:
-            continue
-
-        previous_state = state
-        state = apply_valid_patch(state, patch)
-        if not from_revision <= patch.revision <= end:
-            continue
-        summaries.append(render_revision_summary(previous_state, patch, state))
-    return summaries
+    return [
+        render_revision_summary(step.before_state, step.patch, step.after_state)
+        for step in steps
+        if step.accepted
+        and from_revision <= step.patch.revision
+        and (to_revision is None or step.patch.revision <= to_revision)
+    ]
 
 
 def render_revision_summary(
@@ -220,7 +205,7 @@ def build_refresh_delta(
     patches: Iterable[Patch],
     materialization: MaterializationResult,
     *,
-    steps: Iterable[StepRecord] | None = None,
+    steps: Iterable[StepRecord | IndexedStep] | None = None,
 ) -> RefreshDelta:
     """Build refresh routing data from already-loaded canonical history.
 

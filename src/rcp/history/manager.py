@@ -1533,9 +1533,12 @@ class HistoryManager:
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
         """Read each accepted Patch and its exact pre/post state from the shared engine."""
 
-        result, steps = self.history_engine.projection(self.graph_target)
-        return result, [
-            (step.before_state, step.patch, step.after_state) for step in steps if step.accepted
+        engine = self.history_engine
+        generation = engine.snapshot(self.graph_target)
+        return generation.result, [
+            (step.before_state, step.patch, step.after_state)
+            for step in engine._steps(generation, generation.head(generation.result.state.revision))
+            if step.accepted
         ]
 
     def _coherent_materialization(self) -> MaterializationResult | None:
@@ -1701,8 +1704,9 @@ class HistoryManager:
         return build_refresh_delta(result.patches, result, steps=steps)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
-        end = to_revision if to_revision is not None else 10**12
-        _result, steps = self.history_engine.projection(self.graph_target)
+        _result, steps = self.history_engine.projection(
+            self.graph_target, from_revision=from_revision, to_revision=to_revision
+        )
         return [
             {
                 "revision": step.patch.revision,
@@ -1712,7 +1716,6 @@ class HistoryManager:
                 "change_summary": step.patch.change_summary,
             }
             for step in steps
-            if from_revision <= step.patch.revision <= end
         ]
 
     def revision_summaries(
@@ -1722,15 +1725,16 @@ class HistoryManager:
     ) -> list[dict[str, object]]:
         """Return a reader-facing projection without changing the raw history contract."""
 
-        result, steps = self.history_engine.projection(self.graph_target)
+        engine = self.history_engine
+        generation = engine.snapshot(self.graph_target)
+        latest = generation.result.state.revision
+        end = latest if to_revision is None else min(to_revision, latest)
+        if end < generation.initial_head.revision:
+            return []
         return [
             item.model_dump(mode="json")
             for item in build_revision_summaries(
-                result.patches,
-                result,
-                from_revision=from_revision,
-                to_revision=to_revision,
-                steps=steps,
+                engine._steps(generation, generation.head(end), from_revision=from_revision)
             )
         ]
 

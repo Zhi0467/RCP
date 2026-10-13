@@ -46,7 +46,6 @@ from rcp.transport import BatchPublishFailed, StateUnavailable
 if TYPE_CHECKING:
     from rcp.history.engine import ProjectHistoryEngine
     from rcp.history.manager import HistoryManager
-    from rcp.history.queries import StepRecord
 
 
 _PATCH_NAME = re.compile(r"[0-9]{6}\.json")
@@ -130,10 +129,13 @@ class BranchHistoryManager:
                 path.mkdir(mode=0o700)
 
     def branch_metadata(self) -> GraphBranchMetadata:
-        with self._process_lock:
-            self._metadata = self._read_metadata()
-            result = self.history_engine.materialization(self.graph_target, refresh=False)
-            return self._metadata.model_copy(update={"head": self.head_ref(result)})
+        generation = self.history_engine.snapshot(self.graph_target, refresh=False)
+        metadata = generation.source.metadata
+        assert metadata is not None
+        self._validate_metadata(metadata)
+        return metadata.model_copy(
+            update={"head": generation.head(generation.result.state.revision)}
+        )
 
     def head_ref(self, materialization: MaterializationResult | None = None) -> GraphHeadRef:
         result = materialization or self.current_materialization()
@@ -501,18 +503,17 @@ class BranchHistoryManager:
         result, boundaries = self.accepted_patch_boundaries()
         return result, [state for _previous, _patch, state in boundaries]
 
-    def _history_projection(self) -> tuple[MaterializationResult, list[StepRecord]]:
-        projection = self.history_engine.projection(self.graph_target)
-        with self._process_lock:
-            self._read_metadata()
-        return projection
-
     def accepted_patch_boundaries(
         self,
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
-        result, steps = self._history_projection()
-        return result, [
-            (step.before_state, step.patch, step.after_state) for step in steps if step.accepted
+        engine = self.history_engine
+        generation = engine.snapshot(self.graph_target)
+        assert generation.source.metadata is not None
+        self._validate_metadata(generation.source.metadata)
+        return generation.result, [
+            (step.before_state, step.patch, step.after_state)
+            for step in engine._steps(generation, generation.head(generation.result.state.revision))
+            if step.accepted
         ]
 
     def revision_summaries(
@@ -520,21 +521,28 @@ class BranchHistoryManager:
         from_revision: int = 1,
         to_revision: int | None = None,
     ) -> list[dict[str, object]]:
-        result, steps = self._history_projection()
+        engine = self.history_engine
+        generation = engine.snapshot(self.graph_target)
+        assert generation.source.metadata is not None
+        self._validate_metadata(generation.source.metadata)
+        latest = generation.result.state.revision
+        end = latest if to_revision is None else min(to_revision, latest)
+        if end < generation.initial_head.revision:
+            return []
         return [
             item.model_dump(mode="json")
             for item in build_revision_summaries(
-                result.patches,
-                result,
-                from_revision=from_revision,
-                to_revision=to_revision,
-                steps=steps,
+                engine._steps(generation, generation.head(end), from_revision=from_revision)
             )
         ]
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
-        end = to_revision if to_revision is not None else 10**12
-        _result, steps = self._history_projection()
+        generation = self.history_engine.snapshot(self.graph_target)
+        assert generation.source.metadata is not None
+        self._validate_metadata(generation.source.metadata)
+        base = generation.initial_head.revision
+        stop = len(generation.index) if to_revision is None else max(0, to_revision - base)
+        steps = generation.index[max(0, from_revision - base - 1) : stop]
         return [
             {
                 "revision": step.patch.revision,
@@ -544,7 +552,6 @@ class BranchHistoryManager:
                 "change_summary": step.patch.change_summary,
             }
             for step in steps
-            if from_revision <= step.patch.revision <= end
         ]
 
     def merge_receipts(self) -> list[BranchMergeReceipt]:
@@ -721,43 +728,6 @@ class BranchHistoryManager:
             created_at=patch.created_at,
         )
         return self.write_merge_receipt(receipt)
-
-    def retained_patch_signature(self) -> tuple[object, ...]:
-        """Identify the exact inputs of this branch's replay without replaying it.
-
-        The accepted main prefix below ``base_head`` is immutable, so the retained
-        branch Patch files, that head, and the manifest are the whole input.
-        """
-
-        with self._process_lock:
-            self._metadata = self._read_metadata()
-            manifest_path = self.parent.root / "manifest.toml"
-            manifest_stamp = manifest_path.stat().st_mtime_ns if manifest_path.is_file() else None
-            return (
-                self._metadata.base_head.model_dump_json(),
-                manifest_stamp,
-                tuple(
-                    (path.name, stat.st_size, stat.st_mtime_ns)
-                    for path in self._patch_paths()
-                    for stat in [path.stat()]
-                ),
-            )
-
-    def materialize_at_revision(self, revision: int) -> MaterializationResult:
-        """Replay the branch exactly through ``revision``, retained rejected Patches included.
-
-        A branch head can end on a rejected Patch, which advances the revision without an
-        accepted boundary, so callers that must reproduce the state a receipt named cannot
-        rely on accepted boundaries alone.
-        """
-
-        with self._process_lock:
-            if not self.workspace.refresh_if_stale():
-                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-            self.parent._reload_manifest()
-            self.manifest = self.parent.manifest
-            self._metadata = self._read_metadata()
-            return self._replay(through_revision=revision)
 
     def _replay(
         self,
@@ -961,13 +931,16 @@ class BranchHistoryManager:
             metadata = GraphBranchMetadata.model_validate_json(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raise KeyError(self.branch_id) from None
+        self._validate_metadata(metadata)
+        return metadata
+
+    def _validate_metadata(self, metadata: GraphBranchMetadata) -> None:
         if metadata.branch_id != self.branch_id:
             raise ValueError("graph branch path disagrees with branch.json identity")
         if metadata.model_copy(update={"head": self._identity_metadata.head}) != (
             self._identity_metadata
         ):
             raise ValueError("graph branch immutable metadata changed after it was opened")
-        return metadata
 
     def _write_metadata(self, metadata: GraphBranchMetadata) -> None:
         self.parent._atomic_text(
@@ -1179,11 +1152,14 @@ def read_branch_snapshots(
         targets = [
             GraphTargetRef(kind="branch", branch_id=branch_id) for branch_id in metadata_contents
         ]
-    projections = parent.history_engine.projections(targets, refresh=False)
-    main, main_steps = projections["main"]
+    generations = parent.history_engine.snapshots(targets, refresh=False)
+    main = generations["main"].result
     main_heads = _main_heads_by_revision(main)
-    initial = main_steps[0].before_state if main_steps else main.state
-    main_states = {0: initial, **{step.patch.revision: step.after_state for step in main_steps}}
+    main_states = {
+        generation.initial_head.revision: generation.initial
+        for key, generation in generations.items()
+        if key != "main"
+    }
     main_receipts = _main_merge_receipts(main)
     with parent._process_lock:
         for branch_id, content in metadata_contents.items():
@@ -1201,11 +1177,11 @@ def read_branch_snapshots(
                 main_heads=main_heads,
                 main_states=main_states,
                 main_receipts=main_receipts.get(branch_id, ()),
-                materialization=projections[GraphTargetRef(kind="branch", branch_id=branch_id).key][
-                    0
-                ],
+                materialization=generations[
+                    GraphTargetRef(kind="branch", branch_id=branch_id).key
+                ].result,
             )
-            if GraphTargetRef(kind="branch", branch_id=branch_id).key in projections
+            if GraphTargetRef(kind="branch", branch_id=branch_id).key in generations
             else None
             for branch_id, (episode_id, project_id) in expected.items()
         }
@@ -1254,7 +1230,9 @@ def _read_branch_snapshot(
         raise ValueError("graph branch immutable main base has no coherent main state")
 
     branch = BranchHistoryManager(parent, metadata)
-    replayed = _replay_branch_tail(branch, base_state, materialization)
+    if base_state.revision != metadata.base_head.revision:
+        raise ValueError("graph branch snapshot has a different immutable main base")
+    replayed = materialization
     branch.require_writable(replayed.state)
     exact_metadata = metadata.model_copy(update={"head": branch.head_ref(replayed)})
 
@@ -1291,18 +1269,6 @@ def _main_heads_by_revision(main: MaterializationResult) -> dict[int, GraphHeadR
             transition_id=transition_id,
         )
     return heads
-
-
-def _replay_branch_tail(
-    branch: BranchHistoryManager,
-    base_state: GraphState,
-    materialization: MaterializationResult,
-) -> MaterializationResult:
-    """Project the engine's already-replayed tail at this exact immutable base."""
-    if base_state.revision != branch._metadata.base_head.revision:
-        raise ValueError("graph branch snapshot has a different immutable main base")
-    branch.require_writable(materialization.state)
-    return materialization
 
 
 def _main_merge_receipts(

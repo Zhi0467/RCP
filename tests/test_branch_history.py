@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import rcp.history.branches as branch_module
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -595,10 +594,7 @@ def test_branch_read_snapshot_semantically_replays_the_tail_and_fails_closed(man
         )
 
 
-def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(
-    manifest,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(manifest) -> None:
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
@@ -627,18 +623,14 @@ def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(
     )
     assert rejected.admission == "rejected"
     exact_base = branch.base_state()
-    observed: list[object] = []
-    replay_tail = branch_module._replay_branch_tail
-
-    def capture_base(candidate_branch, base_state, patches):
-        observed.append(base_state)
-        return replay_tail(candidate_branch, base_state, patches)
-
-    monkeypatch.setattr(branch_module, "_replay_branch_tail", capture_base)
-
-    history.branch_read_snapshots([(metadata.branch_id, metadata.episode_id, metadata.project_id)])
-
-    assert observed == [exact_base]
+    snapshots = history.branch_read_snapshots(
+        [(metadata.branch_id, metadata.episode_id, metadata.project_id)]
+    )
+    snapshot = snapshots[metadata.branch_id]
+    assert snapshot is not None
+    assert snapshot.state == exact_base
+    assert snapshot.metadata.base_head == metadata.base_head
+    assert snapshot.metadata.head.revision == exact_base.revision < rejected.revision
 
 
 def test_merge_receipts_are_append_only_exact_and_support_no_change(manifest) -> None:

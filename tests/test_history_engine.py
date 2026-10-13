@@ -298,7 +298,6 @@ def test_cached_snapshots_preserve_derived_edge_layers(tmp_path):
     from rcp.core.models import Edge, GraphState
     from rcp.core.transition_models import GraphHeadRef
     from rcp.history.delta import semantic_delta
-    from rcp.history.queries import StepRecord
     from rcp.history.state_delta import apply_state_delta, capture_state_delta
     from rcp.history.store import GraphHistoryStore, IndexedStep
 
@@ -318,20 +317,19 @@ def test_cached_snapshots_preserve_derived_edge_layers(tmp_path):
     store.save_checkpoint(digest, after_head, MaterializationResult(after))
     checkpoint = store.load_checkpoint(digest)
     assert checkpoint is not None and checkpoint.result.state == after
-    record = StepRecord(
-        before_head,
-        after_head,
-        before,
-        after,
-        seed_patch(),
-        semantic_delta(before, after),
-        frozenset(),
-        frozenset({edge.id}),
-        True,
+    index = IndexedStep(
+        before_head=before_head,
+        after_head=after_head,
+        patch=seed_patch(),
+        delta=semantic_delta(before, after),
+        changed_node_ids=frozenset(),
+        changed_edge_ids=frozenset({edge.id}),
+        accepted=True,
+        state_delta=capture_state_delta(before, after),
     )
-    index = IndexedStep.from_record(record)
-    store.save_steps(digest, [index])
-    loaded = store.load_steps(digest)
+    digests = ("b" * 64, digest)
+    store.save_step_segments(digests, [index], 256)
+    loaded = store.load_step_segments(digests, 256)
     assert loaded is not None and loaded == [index]
     assert apply_state_delta(before, loaded[0].state_delta) == after
 
@@ -395,3 +393,164 @@ def test_malformed_tail_preserves_coherent_history_and_recovers(history, tmp_pat
     assert result.state.replay_status == "complete"
     assert [step.patch.revision for step in steps] == [1, 2]
     assert "ev/later" in result.state.nodes
+
+
+@pytest.mark.parametrize("read", ["metadata", "changes", "revision"])
+def test_canonical_append_lock_is_free_during_cold_publication(
+    history, tmp_path, monkeypatch, read
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+
+    import rcp.history.engine as module
+    from rcp.api.graph_changes import branch_changes
+    from rcp.api.project_state import _branch_revision
+
+    metadata = _branch_metadata(history)
+    branch = history.create_episode_branch(metadata)
+    branch.append(_branch_patch("ev/branch"))
+    engine = history.history_engine
+    engine.configure_store(tmp_path / "cache", "project")
+    engine.checkpoint_interval = 2
+    assert engine.store is not None
+    publishing, release = Event(), Event()
+    original = engine.store.save_checkpoint
+    replay = module.materialize_patches_from_state
+
+    def assert_unlocked():
+        with ThreadPoolExecutor(max_workers=1) as threads:
+
+            def acquire():
+                acquired = history.workspace.snapshot_lock.acquire(timeout=2)
+                if acquired:
+                    history.workspace.snapshot_lock.release()
+                return acquired
+
+            assert threads.submit(acquire).result(timeout=3)
+
+    def replay_outside_lock(*args, **kwargs):
+        assert_unlocked()
+        return replay(*args, **kwargs)
+
+    def blocked(*args, **kwargs):
+        publishing.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "materialize_patches_from_state", replay_outside_lock)
+    monkeypatch.setattr(engine.store, "save_checkpoint", blocked)
+    service = SimpleNamespace(history=branch)
+    if read == "metadata":
+        query = branch.branch_metadata
+    elif read == "changes":
+
+        def query():
+            return branch_changes(service)
+    else:
+        import rcp.api.project_state as project_state
+
+        monkeypatch.setattr(project_state, "get_graph_service", lambda *a, **kw: service)
+        monkeypatch.setattr(project_state, "active_merge", lambda *a: False)
+        monkeypatch.setattr(project_state, "experiment_signal", lambda *a: "signal")
+        cache = SimpleNamespace(complete_transition_control=lambda *a: {"experiment_control": {}})
+        catalog = SimpleNamespace(resolve_project_id=lambda p: p)
+        store = SimpleNamespace(
+            latest_agent_task_id=lambda p: None, latest_watcher_id=lambda p: None
+        )
+
+        def query():
+            return _branch_revision("project", branch.branch_id, cache, catalog, store)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(query)
+        try:
+            assert publishing.wait(5)
+            assert_unlocked()
+        finally:
+            release.set()
+        future.result(timeout=5)
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_valid_segments_repair_checkpoint_for_next_cold_engine(
+    history, tmp_path, monkeypatch, damage
+):
+    import rcp.history.engine as module
+    from rcp.history.engine import ProjectHistoryEngine
+
+    history.append(_branch_patch("ev/checkpoint"))
+    engine = history.history_engine
+    engine.configure_store(tmp_path / "cache", "project")
+    engine.checkpoint_interval = 2
+    last = head(engine, "main@head")
+    expected = engine.state_at(last)
+    assert engine.store is not None
+    for path in engine.store.root.glob("*.checkpoint.json"):
+        if damage == "missing":
+            path.unlink()
+        else:
+            path.write_text("{broken")
+    repaired = ProjectHistoryEngine(history)
+    repaired.checkpoint_interval = 2
+    repaired.configure_store(tmp_path / "cache", "project")
+    assert repaired.state_at(last) == expected
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("repaired checkpoint must serve a second cold engine without replay")
+
+    monkeypatch.setattr(module, "materialize_patches_from_state", forbidden)
+    cold = ProjectHistoryEngine(history)
+    cold.checkpoint_interval = 2
+    cold.configure_store(tmp_path / "cache", "project")
+    assert cold.state_at(last) == expected
+
+
+def test_metadata_projections_do_not_reconstruct_history(history, monkeypatch):
+    from types import SimpleNamespace
+
+    import rcp.history.engine as module
+    from rcp.api.graph_changes import branch_changes
+
+    metadata = _branch_metadata(history)
+    branch = history.create_episode_branch(metadata)
+    branch.append(_branch_patch("ev/branch"))
+    engine = history.history_engine
+    engine.snapshot(branch.graph_target)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("metadata/delta projection must not construct step states")
+
+    monkeypatch.setattr(module, "apply_state_delta", forbidden)
+    monkeypatch.setattr(engine, "_steps", forbidden)
+    assert [step.patch.revision for step in engine.indexed_steps(metadata.head)] == []
+    assert [row["revision"] for row in history.slice(from_revision=1)] == [1]
+    assert [row["revision"] for row in branch.slice(from_revision=2)] == [2]
+    assert branch.slice(from_revision=3) == []
+    history.refresh_delta()
+    _, changes = branch_changes(SimpleNamespace(history=branch))
+    assert "ev/branch" in changes.changed_node_ids
+    snapshots = history.branch_read_snapshots(
+        [(metadata.branch_id, metadata.episode_id, metadata.project_id)]
+    )
+    assert snapshots[metadata.branch_id].metadata.head.revision == 2
+
+
+def test_stateful_projection_starts_at_requested_predecessor(history, monkeypatch):
+    import rcp.history.engine as module
+
+    for number in range(4):
+        history.append(_branch_patch(f"ev/step-{number}"))
+    engine = history.history_engine
+    latest = head(engine, "main@head")
+    calls = []
+    apply = module.apply_state_delta
+
+    def record(before, delta):
+        calls.append(before.revision)
+        return apply(before, delta)
+
+    monkeypatch.setattr(module, "apply_state_delta", record)
+    summaries = history.revision_summaries(from_revision=latest.revision)
+    assert [item["to_revision"] for item in summaries] == [latest.revision]
+    assert calls == [latest.revision - 1]

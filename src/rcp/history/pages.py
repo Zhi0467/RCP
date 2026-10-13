@@ -36,18 +36,34 @@ from rcp.history.queries import (
 )
 from rcp.history.store import IndexedStep
 
+# Each semantic collection's public kind, identity field, and excluded bookkeeping.
+_COLLECTIONS = (
+    ("nodes", "node", "node_id", _SEMANTIC_NODE_BOOKKEEPING),
+    ("edges", "edge", "edge_id", _SEMANTIC_EDGE_BOOKKEEPING),
+    ("proposals", "proposal", "proposal_id", _SEMANTIC_PROPOSAL_BOOKKEEPING),
+    ("ambiguities", "ambiguity", "ambiguity_id", _SEMANTIC_AMBIGUITY_BOOKKEEPING),
+    ("glossary", "glossary", "term", _SEMANTIC_GLOSSARY_BOOKKEEPING),
+    ("globals", "global", "field", frozenset()),
+)
 
-def entity_changes(delta: SemanticDelta) -> Iterator[EntityChange]:
-    """Use the semantic comparison's bookkeeping exclusions for field output too."""
-    groups = (
-        ("node", delta.nodes, "node_id", _SEMANTIC_NODE_BOOKKEEPING),
-        ("edge", delta.edges, "edge_id", _SEMANTIC_EDGE_BOOKKEEPING),
-        ("proposal", delta.proposals, "proposal_id", _SEMANTIC_PROPOSAL_BOOKKEEPING),
-        ("ambiguity", delta.ambiguities, "ambiguity_id", _SEMANTIC_AMBIGUITY_BOOKKEEPING),
-        ("glossary", delta.glossary, "term", _SEMANTIC_GLOSSARY_BOOKKEEPING),
-    )
-    for kind, changes, identity, bookkeeping in groups:
-        for item in changes:
+
+def entity_changes(
+    delta: SemanticDelta, ids: frozenset[str] = frozenset()
+) -> Iterator[EntityChange]:
+    """Use semantic exclusions and filter identities before serializing fields."""
+    for collection, kind, identity, bookkeeping in _COLLECTIONS:
+        for item in getattr(delta, collection):
+            entity_id = getattr(item, identity)
+            if ids and entity_id not in ids:
+                continue
+            if kind == "global":
+                yield EntityChange(
+                    kind="global",
+                    id=entity_id,
+                    change="updated",
+                    fields=[FieldChange(field=entity_id, before=item.before, after=item.after)],
+                )
+                continue
             before = (
                 item.before.model_dump(mode="json", exclude=set(bookkeeping)) if item.before else {}
             )
@@ -57,7 +73,7 @@ def entity_changes(delta: SemanticDelta) -> Iterator[EntityChange]:
             label = after or before
             yield EntityChange(
                 kind=cast(Literal["node", "edge", "proposal", "ambiguity", "glossary"], kind),
-                id=getattr(item, identity),
+                id=entity_id,
                 type=label.get("type") or label.get("relation"),
                 title=label.get("title") or label.get("question") or label.get("term"),
                 change=item.change,
@@ -67,13 +83,6 @@ def entity_changes(delta: SemanticDelta) -> Iterator[EntityChange]:
                     if key not in before or key not in after or before[key] != after[key]
                 ],
             )
-    for item in delta.globals:
-        yield EntityChange(
-            kind="global",
-            id=item.field,
-            change="updated",
-            fields=[FieldChange(field=item.field, before=item.before, after=item.after)],
-        )
 
 
 def attribution(step: StepRecord | IndexedStep) -> StepAttribution:
@@ -182,13 +191,25 @@ def _step_key(step: StepRecord | IndexedStep) -> tuple[str, int, str | None]:
 
 
 def _supports(delta: SemanticDelta, changed: set[tuple[str, str]]) -> bool:
-    return (
-        any(("node", item.node_id) in changed for item in delta.nodes)
-        or any(("edge", item.edge_id) in changed for item in delta.edges)
-        or any(("proposal", item.proposal_id) in changed for item in delta.proposals)
-        or any(("ambiguity", item.ambiguity_id) in changed for item in delta.ambiguities)
-        or any(("glossary", item.term) in changed for item in delta.glossary)
-        or any(("global", item.field) in changed for item in delta.globals)
+    return any(
+        (kind, getattr(item, identity)) in changed
+        for collection, kind, identity, _ in _COLLECTIONS
+        for item in getattr(delta, collection)
+    )
+
+
+def _matches_ids(step: StepRecord | IndexedStep, ids: frozenset[str]) -> bool:
+    # Node/edge deltas can be large; the persisted index rules them out without
+    # inspecting their values. Sidecar IDs remain queryable too.
+    return bool(
+        not ids
+        or ids.intersection(step.changed_node_ids)
+        or ids.intersection(step.changed_edge_ids)
+        or any(
+            getattr(item, identity) in ids
+            for collection, _, identity, _ in _COLLECTIONS[2:]
+            for item in getattr(step.delta, collection)
+        )
     )
 
 
@@ -233,11 +254,7 @@ def compute_diff(
     ids: frozenset[str],
     identity: str,
 ) -> DiffAnswer:
-    changes = [
-        change
-        for change in entity_changes(semantic_delta(before, after))
-        if not ids or change.id in ids
-    ]
+    changes = list(entity_changes(semantic_delta(before, after), ids))
     changed = {(change.kind, change.id) for change in changes}
     left, right = {_step_key(step) for step in from_steps}, {_step_key(step) for step in to_steps}
     common = left & right
@@ -246,7 +263,12 @@ def compute_diff(
     ]
     change_count = len(units)
     for step in [*from_steps, *to_steps]:
-        if step.accepted and _step_key(step) not in common and _supports(step.delta, changed):
+        if (
+            step.accepted
+            and _step_key(step) not in common
+            and _matches_ids(step, ids)
+            and _supports(step.delta, changed)
+        ):
             item = attribution(step)
             units.extend(
                 item.model_copy(update={"summary": part}).model_dump_json().encode()
@@ -262,24 +284,11 @@ def compute_diff(
     )
 
 
-def _id_changes(delta: SemanticDelta, entity_id: str) -> Iterator[EntityChange]:
-    filtered = delta.model_copy(
-        update={
-            "nodes": [item for item in delta.nodes if item.node_id == entity_id],
-            "edges": [item for item in delta.edges if item.edge_id == entity_id],
-            "proposals": [item for item in delta.proposals if item.proposal_id == entity_id],
-            "ambiguities": [item for item in delta.ambiguities if item.ambiguity_id == entity_id],
-            "glossary": [item for item in delta.glossary if item.term == entity_id],
-            "globals": [item for item in delta.globals if item.field == entity_id],
-        }
-    )
-    return entity_changes(filtered)
-
-
 def _log_units(step: StepRecord | IndexedStep, entity_id: str) -> Iterator[GraphLogEntry]:
-    if not step.accepted:
+    ids = frozenset({entity_id})
+    if not step.accepted or not _matches_ids(step, ids):
         return
-    for change in _id_changes(step.delta, entity_id):
+    for change in entity_changes(step.delta, ids):
         item = attribution(step)
         fragments = list(_fragments(change))
         summaries = _parts(item.summary)

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, cast, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 
 from rcp.core.models import Edge, GraphState
 from rcp.core.operations import adapt_persisted_graph_state_document
-
-_SCALAR_TYPES = {str, int, float, bool, type(None), datetime}
 
 _FIELD_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     name: TypeAdapter(field.annotation) for name, field in GraphState.model_fields.items()
@@ -20,40 +17,29 @@ _MAP_FIELDS = {
     name for name, field in GraphState.model_fields.items() if get_origin(field.annotation) is dict
 }
 
+_LIST_FIELDS = {
+    name for name, field in GraphState.model_fields.items() if get_origin(field.annotation) is list
+}
+
 
 def copy_state(state: GraphState) -> GraphState:
-    """Isolate mutable public snapshot data without copying immutable scalar values."""
-    return cast(GraphState, _copy_snapshot(state))
+    """Isolate mutable public snapshot data from the retained generation."""
+    return state.model_copy(deep=True)
 
 
-def _copy_snapshot(value: Any) -> Any:
-    if type(value) in _SCALAR_TYPES:
-        return value
-    if isinstance(value, dict):
-        return {key: _copy_snapshot(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_copy_snapshot(item) for item in value]
-    if isinstance(value, BaseModel):
-        copied = value.model_copy(
-            update={key: _copy_snapshot(item) for key, item in value.__dict__.items()}
-        )
-        copied.__pydantic_fields_set__ = value.__pydantic_fields_set__.copy()
-        if value.__pydantic_extra__ is not None:
-            copied.__pydantic_extra__ = _copy_snapshot(value.__pydantic_extra__)
-        if value.__pydantic_private__ is not None:
-            copied.__pydantic_private__ = _copy_snapshot(value.__pydantic_private__)
-        return copied
-    if isinstance(value, tuple):
-        return tuple(_copy_snapshot(item) for item in value)
-    if isinstance(value, set):
-        return set(value)
-    return value
+class ListSplice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: int = Field(ge=0)
+    delete_count: int = Field(ge=0)
+    items: list[JsonValue]
 
 
 class StateDelta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     replacements: dict[str, JsonValue] = Field(default_factory=dict)
+    splices: dict[str, ListSplice] = Field(default_factory=dict)
     changed: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
     removed: dict[str, list[str]] = Field(default_factory=dict)
 
@@ -63,6 +49,8 @@ class StateDelta(BaseModel):
             raise ValueError("snapshot replacement names an unknown or dictionary field")
         if (self.changed.keys() | self.removed.keys()) - _MAP_FIELDS:
             raise ValueError("snapshot dictionary change names an unknown or scalar field")
+        if self.splices.keys() - _LIST_FIELDS or self.splices.keys() & self.replacements.keys():
+            raise ValueError("snapshot splice names an unknown, non-list, or replaced field")
         for name, removed in self.removed.items():
             if (
                 len(removed) != len(set(removed))
@@ -74,6 +62,7 @@ class StateDelta(BaseModel):
 
 def capture_state_delta(before: GraphState, after: GraphState) -> StateDelta:
     replacements: dict[str, JsonValue] = {}
+    splices: dict[str, ListSplice] = {}
     changed: dict[str, dict[str, JsonValue]] = {}
     removed: dict[str, list[str]] = {}
     for name, adapter in _FIELD_ADAPTERS.items():
@@ -93,9 +82,22 @@ def capture_state_delta(before: GraphState, after: GraphState) -> StateDelta:
             absent = old.keys() - new.keys()
             if absent:
                 removed[name] = sorted(absent)
+        elif name in _LIST_FIELDS and old != new:
+            start = 0
+            while start < min(len(old), len(new)) and old[start] == new[start]:
+                start += 1
+            old_end, new_end = len(old), len(new)
+            while old_end > start and new_end > start and old[old_end - 1] == new[new_end - 1]:
+                old_end -= 1
+                new_end -= 1
+            splices[name] = ListSplice(
+                start=start,
+                delete_count=old_end - start,
+                items=cast(list[JsonValue], adapter.dump_python(new[start:new_end], mode="json")),
+            )
         elif old != new:
             replacements[name] = cast(JsonValue, adapter.dump_python(new, mode="json"))
-    return StateDelta(replacements=replacements, changed=changed, removed=removed)
+    return StateDelta(replacements=replacements, splices=splices, changed=changed, removed=removed)
 
 
 def apply_state_delta(before: GraphState, delta: StateDelta) -> GraphState:
@@ -103,6 +105,13 @@ def apply_state_delta(before: GraphState, delta: StateDelta) -> GraphState:
         name: _FIELD_ADAPTERS[name].validate_python(value)
         for name, value in delta.replacements.items()
     }
+    for name, splice in delta.splices.items():
+        collection = getattr(before, name)
+        end = splice.start + splice.delete_count
+        if end > len(collection):
+            raise ValueError("snapshot list splice exceeds its predecessor")
+        items = _FIELD_ADAPTERS[name].validate_python(splice.items)
+        updates[name] = [*collection[: splice.start], *items, *collection[end:]]
     for name in delta.changed.keys() | delta.removed.keys():
         collection = dict(getattr(before, name))
         for key in delta.removed.get(name, []):

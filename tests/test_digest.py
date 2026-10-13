@@ -8,7 +8,8 @@ from rcp.core.models import Decision, Edge, GatedCard, GraphState, Patch, Propos
 from rcp.core.transition_models import GraphHeadRef
 from rcp.digest import DigestProjector, assemble_digest, attribution, graph_event
 from rcp.history.delta import semantic_delta
-from rcp.history.queries import HistoryEngine, StepRecord
+from rcp.history.engine import ProjectHistoryEngine
+from rcp.history.queries import StepRecord
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.digest import digest_event
@@ -48,10 +49,28 @@ def _events(store):
         ]
 
 
-def _engine(boundaries) -> HistoryEngine:
-    def steps(_head):
-        return [
-            StepRecord(
+def _engine(boundaries, *, requested_ranges=None, streamed_revisions=None) -> ProjectHistoryEngine:
+    def snapshot(_target):
+        captured = tuple(boundaries)
+        return SimpleNamespace(
+            result=SimpleNamespace(state=captured[-1][2]),
+            index=tuple(
+                SimpleNamespace(patch=patch, accepted=patch.admission != "rejected")
+                for _, patch, _ in captured
+            ),
+            head=lambda revision: GraphHeadRef(revision=revision),
+            boundaries=captured,
+        )
+
+    def steps(generation, head, *, from_revision=1):
+        if requested_ranges is not None:
+            requested_ranges.append(from_revision)
+        for before, patch, after in generation.boundaries:
+            if not from_revision <= patch.revision <= head.revision:
+                continue
+            if streamed_revisions is not None:
+                streamed_revisions.append(patch.revision)
+            yield StepRecord(
                 GraphHeadRef(revision=before.revision),
                 GraphHeadRef(revision=patch.revision),
                 before,
@@ -62,15 +81,8 @@ def _engine(boundaries) -> HistoryEngine:
                 frozenset(),
                 patch.admission != "rejected",
             )
-            for before, patch, after in boundaries
-        ]
 
-    engine = SimpleNamespace(
-        resolve=lambda *_args, **_kwargs: GraphHeadRef(revision=boundaries[-1][1].revision),
-        state_at=lambda _head: boundaries[-1][2],
-        steps=steps,
-    )
-    return cast(HistoryEngine, engine)
+    return cast(ProjectHistoryEngine, SimpleNamespace(snapshot=snapshot, _steps=steps))
 
 
 def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path):
@@ -78,10 +90,17 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
     state = GraphState(revision=1)
     patch = _patch()
     boundaries = [(GraphState(), patch, state)]
-    history = _engine(boundaries)
+    requested_ranges, streamed_revisions = [], []
+    history = _engine(
+        boundaries, requested_ranges=requested_ranges, streamed_revisions=streamed_revisions
+    )
     projector = DigestProjector(store, None, admission=RuntimeAdmissionGate())
     projector._project_history("p", "main", history)
     assert _events(store) == []
+    assert requested_ranges == streamed_revisions == []
+    projector._project_history("p", "main", history)
+    assert streamed_revisions == []
+    requested_ranges.clear()
     next_state = GraphState(revision=2, nodes={"d/one": _decision(status="ready")})
     boundaries.append((state, _patch(2), next_state))
     state = next_state
@@ -90,6 +109,8 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
         "p", "main", history
     )
     assert len(_events(store)) == 1
+    assert requested_ranges == [2]
+    assert streamed_revisions == [2]
     mark = {"seq": 0, "marked_at": store.now()}
     assert assemble_digest("p", "me", _events(store), mark, 1)["needs_you"]
     # A restored history removes the previously projected ready Decision.
@@ -123,9 +144,9 @@ def test_slower_projection_cannot_move_checkpoint_backward(tmp_path):
     fast._project_history("p", "main", history)
     newer_head = None
 
-    def delayed_steps(head):
+    def delayed_steps(generation, head, *, from_revision):
         nonlocal newer_head
-        stale = history.steps(head)
+        stale = history._steps(generation, head, from_revision=from_revision)
         boundaries.append((first, _patch(2), second))
         fast._project_history("p", "main", history)
         with store.connection() as conn:
@@ -138,10 +159,8 @@ def test_slower_projection_cannot_move_checkpoint_backward(tmp_path):
         "p",
         "main",
         cast(
-            HistoryEngine,
-            SimpleNamespace(
-                resolve=history.resolve, state_at=history.state_at, steps=delayed_steps
-            ),
+            ProjectHistoryEngine,
+            SimpleNamespace(snapshot=history.snapshot, _steps=delayed_steps),
         ),
     )
     with store.connection() as conn:

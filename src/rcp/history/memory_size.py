@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import sys
-from contextlib import suppress
 from dataclasses import fields, is_dataclass
-from types import CodeType, FunctionType, MethodType, ModuleType
+from datetime import datetime
+from pathlib import PurePath
 
 from pydantic import BaseModel
 
+from rcp.core.validation.report import ValidationReport
+
 
 def retained_size(root: object) -> int:
-    """Count each reachable instance once, excluding shared class/global machinery."""
+    """Count retained models, dataclasses, containers, and immutable leaves once."""
     seen: set[int] = set()
     pending = [root]
     total = 0
@@ -22,9 +24,10 @@ def retained_size(root: object) -> int:
             continue
         seen.add(identity)
         total += sys.getsizeof(value)
-        if isinstance(
-            value, (str, bytes, bytearray, type, ModuleType, FunctionType, MethodType, CodeType)
-        ):
+        if isinstance(value, (str, bytes, int, float, bool, datetime, type(None))):
+            continue
+        if isinstance(value, PurePath):
+            pending.extend(value.parts)
             continue
         if isinstance(value, dict):
             pending.extend(value.keys())
@@ -43,20 +46,12 @@ def retained_size(root: object) -> int:
                 )
             )
             continue
-        namespace = getattr(value, "__dict__", None)
-        if isinstance(namespace, dict):
-            pending.append(namespace)
-        if is_dataclass(value):
-            pending.extend(getattr(value, field.name) for field in fields(value))
-        for owner in type(value).__mro__:
-            slots = owner.__dict__.get("__slots__", ())
-            if isinstance(slots, str):
-                slots = (slots,)
-            for name in slots:
-                if name in {"__dict__", "__weakref__"}:
-                    continue
-                if name.startswith("__") and not name.endswith("__"):
-                    name = f"_{owner.__name__.lstrip('_')}{name}"
-                with suppress(AttributeError):
-                    pending.append(getattr(value, name))
+        if isinstance(value, ValidationReport):
+            pending.append(value.__dict__)
+        if is_dataclass(value) and not isinstance(value, type):
+            namespace = getattr(value, "__dict__", None)
+            if namespace is not None:
+                pending.append(namespace)
+            else:
+                pending.extend(getattr(value, field.name) for field in fields(value))
     return total

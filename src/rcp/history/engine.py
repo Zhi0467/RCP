@@ -12,6 +12,7 @@ import sys
 import threading
 import weakref
 from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     from rcp.config import Manifest
     from rcp.history.manager import HistoryManager
 
-_VERSION = "graph-history-3"
+_VERSION = "graph-history-4"
 _LOGGER = logging.getLogger(__name__)
 _PATCH_NAME = re.compile(r"[0-9]{6}\.json")
 _MEMORY_LOCK = threading.RLock()
@@ -642,18 +643,20 @@ class ProjectHistoryEngine:
             # outside its lock; append never depends on checkpoint publication.
             if self.store:
                 for generation in built.values():
-                    if not generation.saved and generation.result.state.replay_status == "complete":
+                    if generation.result.state.replay_status == "complete":
                         for head in generation.pending:
                             result = self._prefix_result(
                                 generation, head, state=generation.checkpoints[head.revision]
                             )
                             self.store.save_checkpoint(generation.prefix(head), head, result)
-                        self.store.save_step_segments(
-                            generation.digests,
-                            list(generation.index),
-                            self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL,
-                            start=generation.start,
-                        )
+                        if not generation.saved:
+                            self.store.save_step_segments(
+                                generation.digests,
+                                list(generation.index),
+                                self.checkpoint_interval
+                                or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL,
+                                start=generation.start,
+                            )
                         generation.pending.clear()
                         generation.saved = True
             return built
@@ -739,27 +742,37 @@ class ProjectHistoryEngine:
         )
         return prefix + [r for r in generation.index if r.after_head.revision <= head.revision]
 
-    def _steps(self, generation: _Generation, head: GraphHeadRef) -> list[StepRecord]:
+    def _steps(
+        self, generation: _Generation, head: GraphHeadRef, *, from_revision: int = 1
+    ) -> Iterator[StepRecord]:
         generation.prefix(head)
-        state = generation.initial
-        records = []
-        for item in self._index(generation, head, False):
+        start = max(generation.initial_head.revision, from_revision - 1)
+        if start >= head.revision:
+            return
+        state = self._state(generation, generation.head(start))
+        for item in generation.index[
+            start - generation.initial_head.revision : head.revision
+            - generation.initial_head.revision
+        ]:
             after = apply_state_delta(state, item.state_delta)
-            records.append(
-                StepRecord(
-                    item.before_head,
-                    item.after_head,
-                    state,
-                    after,
-                    item.patch,
-                    item.delta,
-                    item.changed_node_ids,
-                    item.changed_edge_ids,
-                    item.accepted,
-                )
+            yield StepRecord(
+                item.before_head,
+                item.after_head,
+                state,
+                after,
+                item.patch,
+                item.delta,
+                item.changed_node_ids,
+                item.changed_edge_ids,
+                item.accepted,
             )
             state = after
-        return records
+
+    def indexed_steps(
+        self, head: GraphHeadRef, *, include_inherited: bool = False
+    ) -> list[IndexedStep]:
+        generation = self._query_generations([head], None)[head.target.key]
+        return self._index(generation, head, include_inherited)
 
     def steps(self, head: GraphHeadRef, *, include_inherited: bool = False) -> list[StepRecord]:
         generations = self._query_generations([head], None)
@@ -768,13 +781,27 @@ class ProjectHistoryEngine:
         if include_inherited and generation.inherited:
             base = generation.inherited[-1].after_head
             inherited = [replace(s, inherited=True) for s in self._steps(generations["main"], base)]
-        return inherited + self._steps(generation, head)
+        return inherited + list(self._steps(generation, head))
 
-    def projection(self, target: GraphTargetRef) -> tuple[MaterializationResult, list[StepRecord]]:
-        generation = self._pin([target])[target.key]
-        return generation.result, self._steps(
-            generation, generation.head(generation.result.state.revision)
-        )
+    def snapshot(
+        self,
+        target: GraphTargetRef,
+        *,
+        refresh: bool = True,
+        refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+    ) -> _Generation:
+        """Capture metadata, base, index and head as one verified generation."""
+        return self._pin(
+            [target], refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
+        )[target.key]
+
+    def projection(
+        self, target: GraphTargetRef, *, from_revision: int = 1, to_revision: int | None = None
+    ) -> tuple[MaterializationResult, tuple[IndexedStep, ...]]:
+        generation = self.snapshot(target)
+        base = generation.initial_head.revision
+        stop = len(generation.index) if to_revision is None else max(0, to_revision - base)
+        return generation.result, generation.index[max(0, from_revision - base - 1) : stop]
 
     def _prefix_result(
         self, generation: _Generation, head: GraphHeadRef, *, state: GraphState | None = None
@@ -805,20 +832,14 @@ class ProjectHistoryEngine:
             [target], refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
         )[target.key].result
 
-    def projections(
+    def snapshots(
         self,
         targets: list[GraphTargetRef],
         *,
         refresh: bool = True,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
-    ) -> dict[str, tuple[MaterializationResult, list[StepRecord]]]:
-        generations = self._pin(
-            targets, refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
-        )
-        return {
-            key: (g.result, self._steps(g, g.head(g.result.state.revision)))
-            for key, g in generations.items()
-        }
+    ) -> dict[str, _Generation]:
+        return self._pin(targets, refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds)
 
     def _query_generations(
         self, heads: list[GraphHeadRef], cursor: str | None

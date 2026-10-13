@@ -18,8 +18,7 @@ from rcp.core.operations import adapt_persisted_graph_state_document, adapt_pers
 from rcp.core.transition_models import GraphHeadRef
 from rcp.core.validation.report import ValidationReport
 from rcp.history.delta import SemanticDelta
-from rcp.history.queries import StepRecord
-from rcp.history.state_delta import StateDelta, capture_state_delta, restore_edge_layer
+from rcp.history.state_delta import StateDelta, restore_edge_layer
 from rcp.limits import (
     GRAPH_HISTORY_STORE_MAX_BYTES,
     GRAPH_HISTORY_STORE_MAX_COUNT,
@@ -82,13 +81,6 @@ class IndexedStep(BaseModel):
                     if snapshot is not None:
                         setattr(edge, side, restore_edge_layer(snapshot, document.get(side)))
         return delta
-
-    @classmethod
-    def from_record(cls, record: StepRecord) -> IndexedStep:
-        return cls(
-            **{name: getattr(record, name) for name in cls.model_fields if name != "state_delta"},
-            state_delta=capture_state_delta(record.before_state, record.after_state),
-        )
 
 
 @dataclass(frozen=True)
@@ -214,12 +206,6 @@ class GraphHistoryStore:
         except (ValueError, TypeError, KeyError):
             _LOGGER.warning("Invalid graph history step index; rebuilding", exc_info=True)
             return None
-
-    def save_steps(self, prefix_digest: str, steps: list[IndexedStep]) -> None:
-        try:
-            self._save(prefix_digest, "steps", _StepsPayload(steps=steps).model_dump_json())
-        except (ValueError, TypeError):
-            _LOGGER.warning("Could not encode graph history step index", exc_info=True)
 
     def load_step_segments(
         self, digests: tuple[str, ...], interval: int
