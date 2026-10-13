@@ -110,7 +110,12 @@ export function visibleChatTranscriptTarget(
   experimentChatId: string | null,
   experimentChatTarget: GraphTargetRef,
   graphTarget: GraphTargetRef,
+  summaries: readonly ChatSummary[] = [],
 ): GraphTargetRef {
+  // A chat listed from another graph, such as a branch orchestrator on main,
+  // reads its transcript from its own graph.
+  const summary = summaries.find((item) => item.chat_id === chatId);
+  if (summary?.conversation_kind === "auto_research") return summary.graph_target;
   // The Runs panel routes an Experiment by its own graph, which it keeps
   // separate from the graph being viewed: its href carries `branch`, while the
   // viewed target comes from `branch_id`. A branch-scoped Experiment therefore
@@ -243,6 +248,7 @@ export function useChatState({
           selectedExperimentChatId,
           selectedExperimentChatTarget,
           graphTarget,
+          inventoryChatSummaries,
         ),
       )
         .then((transcript) => {
@@ -303,7 +309,12 @@ export function useChatState({
   const selectListedConversation = useCallback(
     (chatId: string) => {
       const summary = chatSummariesRef.current.find((item) => item.chat_id === chatId);
-      if (summary && !sameGraphTarget(summary.graph_target, graphTarget)) return;
+      if (
+        summary &&
+        summary.conversation_kind !== "auto_research" &&
+        !sameGraphTarget(summary.graph_target, graphTarget)
+      )
+        return;
       selectChat(chatId);
       if (!apiBase || summary) return;
       const generation = chatSummaryRefreshGeneration.current;
@@ -401,7 +412,14 @@ export function useChatState({
           !nextSummaries.some((summary) => summary.chat_id === selectedId)
         ) {
           try {
-            validation = await loadChatTranscript(base, selectedId, api, graphTarget);
+            validation = await loadChatTranscript(
+              base,
+              selectedId,
+              api,
+              previousSummary.conversation_kind === "auto_research"
+                ? previousSummary.graph_target
+                : graphTarget,
+            );
           } catch (error) {
             if (error instanceof ApiError && error.status === 404) validation = null;
             else throw error;

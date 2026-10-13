@@ -598,13 +598,28 @@ test("inventory retains every target while latest selection cannot reuse another
       summary("branch-chat", branch, "experiment", "2026-10-08T02:00:00Z"),
       summary("main-chat", main, "chat", "2026-10-08T01:00:00Z"),
       summary("orchestrator", branch, "auto_research", "2026-10-08T00:00:00Z"),
+      summary(
+        "other-orchestrator",
+        { kind: "branch", branch_id: "other" },
+        "auto_research",
+        "2026-10-07T00:00:00Z",
+      ),
     ],
     [],
     { "node/a": "Main node" },
     "Project",
   );
   assert.deepEqual(
-    listedAgentConversations(conversations, main).map((c) => c.chatId),
+    listedAgentConversations(
+      conversations,
+      main,
+      new Set(["orchestrator", "other-orchestrator"]),
+    ).map((c) => c.chatId),
+    ["child", "main-chat", "orchestrator", "other-orchestrator"],
+  );
+  // An orchestrator without a known current episode (e.g. an archived branch) stays off main.
+  assert.deepEqual(
+    listedAgentConversations(conversations, main, new Set(["orchestrator"])).map((c) => c.chatId),
     ["child", "main-chat", "orchestrator"],
   );
   assert.deepEqual(

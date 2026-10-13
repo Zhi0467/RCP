@@ -1046,6 +1046,16 @@ function MemberApp({
     runsVisible: view === "execution",
   });
   const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
+  // Agents lists every branch's orchestrator, so each needs its branch's current episode.
+  const orchestratorEpisodes = useMemo(
+    () =>
+      episodes.filter(
+        (episode) =>
+          episode.mode === "auto_research" &&
+          episode.episode_id === episode.graph_branch?.current_episode_id,
+      ),
+    [episodes],
+  );
   // undefined while loading; null when the list could not be read.
   const [graphRefs, setGraphRefs] = useState<{
     projectId: string;
@@ -2898,8 +2908,13 @@ function MemberApp({
     [chatReads, projectTasks],
   );
   const listedConversations = useMemo(
-    () => listedAgentConversations(inventoryConversations, graphTarget),
-    [inventoryConversations, graphTarget],
+    () =>
+      listedAgentConversations(
+        inventoryConversations,
+        graphTarget,
+        new Set(orchestratorEpisodes.map((episode) => episode.graph_target.branch_id ?? "")),
+      ),
+    [inventoryConversations, graphTarget, orchestratorEpisodes],
   );
   const unreadChatIds = useMemo(
     () =>
@@ -3057,15 +3072,16 @@ function MemberApp({
       selectedExperimentChatId,
       agentsBoard,
     );
-    markVisibleChatRead(tasks, visibleChatId);
+    // Project-wide, as unread is: an orchestrator opened from main has its turns on its branch.
+    markVisibleChatRead(projectTasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
   }, [
     agentsBoard,
     chatReads,
     markVisibleChatRead,
+    projectTasks,
     selectedChatId,
     selectedExperimentChatId,
-    tasks,
     view,
   ]);
 
@@ -5747,7 +5763,12 @@ function MemberApp({
               chatTranscripts={chatTranscripts}
               onSelect={(chatId) => {
                 const conversation = inventoryConversations.find((item) => item.chatId === chatId);
-                if (conversation && !sameGraphTarget(conversation.graphTarget, graphTarget)) {
+                // An orchestrator opens in place from main; other chats open on their own graph.
+                if (
+                  conversation &&
+                  conversation.conversationKind !== "auto_research" &&
+                  !sameGraphTarget(conversation.graphTarget, graphTarget)
+                ) {
                   window.location.hash = conversationHref(project.id, conversation);
                   return;
                 }
@@ -5763,9 +5784,7 @@ function MemberApp({
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
-              orchestratorEpisode={
-                activeBranchEpisode?.mode === "auto_research" ? activeBranchEpisode : null
-              }
+              orchestratorEpisodes={orchestratorEpisodes}
               episodeAction={episodeAction}
               onSendOrchestratorMessage={messageEpisodeOrchestrator}
               onArchiveChange={() =>
