@@ -319,6 +319,10 @@ def test_branch_revision_heartbeat_tracks_changes_and_live_merge_fence(
     second = client.get(f"{base}/cached/revision", params=params).json()
     assert first == second
     assert first["graph_mutation"] == {"available": True, "reason": None}
+    # Tasks are project-wide: a branch view reads the main heartbeat's task signal.
+    client.get(base)  # warms the main display cache, as a page does
+    main_signal = client.get(f"{base}/cached/revision").json()["task_status_signal"]
+    assert first["task_status_signal"] == main_signal
     snapshot = client.get(base, params=params).json()
     # The branch page and its heartbeat agree, so an idle branch view never reloads.
     assert first["experiment_signal"] == snapshot["experiment_signal"]
