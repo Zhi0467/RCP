@@ -628,7 +628,7 @@ def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> Non
     assert allocation["allocation_operation_id"] == wake.operation_id
 
 
-def test_session_limit_notice_requires_replacement_even_with_a_saved_checkpoint(
+def test_session_limit_notice_offers_resume_of_the_saved_checkpoint(
     tmp_path,
 ) -> None:
     store, episode, root = _setup_parent(tmp_path, ceiling=2)
@@ -648,8 +648,9 @@ def test_session_limit_notice_requires_replacement_even_with_a_saved_checkpoint(
     store.fail_agent_task(task.operation_id, "You've hit your session limit.")
 
     notice = store.auto_research_lifecycle_notices(episode.episode_id)[0]
-    assert notice.payload["resume_available"] is False
-    assert notice.payload["replacement_command"] == "spawn"
+    # A reached limit of any kind keeps the session; resume rechecks it.
+    assert notice.payload["resume_available"] is True
+    assert "replacement_command" not in notice.payload
 
 
 def test_ordinary_child_work_mail_preserves_parent_worker_star_topology(tmp_path) -> None:

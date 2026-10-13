@@ -14,7 +14,6 @@ from rcp.limits import (
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
 )
-from rcp.providers import classify_terminal_error
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -1348,9 +1347,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         if diagnostic:
             payload["diagnostic"] = diagnostic
         if status in {"paused", "failed", "interrupted"}:
-            unavailable = (
-                status != "paused" and classify_terminal_error(diagnostic or "") == "session_limit"
-            )
+            unavailable = False
             receipt_rows = connection.execute(
                 """
                 SELECT category, payload_json FROM graph_run_receipts
@@ -1368,9 +1365,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 except (TypeError, json.JSONDecodeError):
                     continue
                 if (
-                    receipt["category"] == "provider_terminal_error"
-                    and receipt_payload.get("classification") == "session_limit"
-                ) or (
                     receipt["category"] == "continuation_context_unavailable"
                     and receipt_payload.get("retry_required") is True
                 ):

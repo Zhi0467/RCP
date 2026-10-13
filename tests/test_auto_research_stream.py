@@ -1598,15 +1598,15 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
 
 
 @pytest.mark.parametrize("recovery", ["rebind", "session_limit"])
-def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
+def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
     manifest,
     tmp_path,
     recovery,
 ) -> None:
     """A wake names the delivery attached to the turn, never the session running it.
 
-    Both reasons a human meets in practice start clean: changing the binding,
-    and a provider that reported its limit on the turn that failed.
+    Changing the binding starts clean; a provider that reported a limit of any
+    kind resumes the same session, which rechecks the limit.
     """
 
     service = _service(manifest, tmp_path)
@@ -1689,7 +1689,8 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
             encoding="utf-8",
         )
 
-    launcher = _WorkerLauncher(session_id="replacement-session", writer=writer)
+    resumed = "live-session" if recovery == "session_limit" else None
+    launcher = _WorkerLauncher(session_id=resumed or "replacement-session", writer=writer)
 
     async def stream(_project_id, kind, request, execution):
         assert kind == "auto_research"
@@ -1705,8 +1706,6 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
 
     tasks = BackgroundAgentTasks(store, stream)
     tasks.recover_at_startup()
-    # A limit recovery changes nothing about the binding; only the retired
-    # session makes it start clean.
     retry = tasks.retry(
         wake.operation_id, **({"reasoning": "high"} if recovery == "rebind" else {})
     )
@@ -1715,17 +1714,17 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
     retried = AutoResearchRunRequest.model_validate(retry.request)
     assert retried.reasoning == ("high" if recovery == "rebind" else "medium")
     assert retried.wake_cause == "lifecycle"
-    assert retried.session_id is None
-    assert launcher.requested_session_ids == [None]
-    assert retry.native_session_id == "replacement-session"
-    # The delivery follows the paid allocation, not the session, so the clean
+    assert retried.session_id == resumed
+    assert launcher.requested_session_ids == [resumed]
+    assert retry.native_session_id == (resumed or "replacement-session")
+    # The delivery follows the paid allocation, not the session, so either
     # turn still receives the fact that woke it.
     assert staged_notice_ids == [[notice.notice_id]]
 
 
 @pytest.mark.parametrize(
     "failure_point",
-    ["session-limit", "saved-stage", "pre-stage", "rebind"],
+    ["saved-stage", "pre-stage", "rebind"],
 )
 def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream(
     manifest,
@@ -1743,13 +1742,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         stage.mkdir(parents=True)
         store.checkpoint_agent_task(
             root.operation_id,
-            native_session_id=(
-                "spent-session"
-                if failure_point == "session-limit"
-                else "live-session"
-                if failure_point == "rebind"
-                else None
-            ),
+            native_session_id="live-session" if failure_point == "rebind" else None,
             stage_host=None,
             stage_root=str(stage),
         )
@@ -1762,9 +1755,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         )
     store.fail_agent_task(
         root.operation_id,
-        "provider session limit"
-        if failure_point == "session-limit"
-        else "The provider exited before finishing its turn."
+        "The provider exited before finishing its turn."
         if failure_point == "rebind"
         else "Network connection failed before session creation.",
     )
@@ -1816,11 +1807,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     )
     assert clean_retry_receipt.payload == {
         "classification": (
-            "session_limit"
-            if failure_point == "session-limit"
-            else "binding_changed"
-            if failure_point == "rebind"
-            else "checkpoint_missing"
+            "binding_changed" if failure_point == "rebind" else "checkpoint_missing"
         ),
         "same_allocation": True,
         "actor_operation_id": root.operation_id,

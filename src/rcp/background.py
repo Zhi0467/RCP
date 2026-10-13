@@ -930,7 +930,6 @@ class BackgroundAgentTasks:
         )
         same_provider = request.provider == original.provider
         same_execution_host = request.run_on == original.run_on
-        session_limit = self._failure_is_session_limit(previous)
         # Resuming a session the provider has dropped fails the same way every
         # time; a fresh session is the only attempt that can succeed.
         stale_session = self._failure_is_stale_session(previous)
@@ -950,9 +949,7 @@ class BackgroundAgentTasks:
             elif owned_checkpoint and previous.stage_root:
                 stage = Path(previous.stage_root)
                 stage_available = stage.is_dir() and not stage.is_symlink()
-            if session_limit:
-                problem = "the native provider session reached its limit"
-            elif stale_session:
+            if stale_session:
                 problem = "the provider no longer has the saved session"
             elif continuation_context_unavailable:
                 problem = "the saved continuation context is unavailable"
@@ -987,7 +984,6 @@ class BackgroundAgentTasks:
             and same_provider
             and same_execution_host
             and owned_checkpoint
-            and not session_limit
             and not stale_session
             and not continuation_context_unavailable
         )
@@ -1020,19 +1016,16 @@ class BackgroundAgentTasks:
             estimate_samples=samples,
             authorized_by=authorized_by,
         )
-        if same_provider and (session_limit or stale_session):
-            classification = "session_limit" if session_limit else "stale_session"
+        if same_provider and stale_session:
             self.store.record_agent_task_receipt(
                 retried.operation_id,
                 "native_resume_skipped",
-                {"classification": classification},
+                {"classification": "stale_session"},
                 tier="diagnostic",
             )
             self.store.record_agent_task_event(
                 retried.operation_id,
-                "The provider session limit was exhausted; starting a clean retry."
-                if session_limit
-                else "The provider no longer has the saved session; starting a clean retry.",
+                "The provider no longer has the saved session; starting a clean retry.",
                 level="warning",
             )
         elif previous.status == "failed" and same_provider and not retry_same_provider:
