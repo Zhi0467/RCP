@@ -29,8 +29,8 @@ INVALID = 1
 UNAVAILABLE = 2
 COMMAND_MAILBOX_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # Read the trusted broker's single response through EOF. Guarded Finish hydrates
-# its complete durable blocker snapshot outside the compact event ledger, and no
-# finite response bound is proved by admission. The socket timeout still bounds a
+# its complete durable blocker snapshot outside the compact event ledger. RCP
+# bounds the encoded envelope before retaining it; the socket timeout bounds a
 # peer that stalls before closing the newline-framed response.
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _TOKEN = re.compile(r"^[a-f0-9]{64}$")
@@ -171,6 +171,19 @@ def _parser():
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
 
+    graph_diff = subparsers.add_parser("graph_diff", aliases=["graph-diff"])
+    graph_diff.add_argument("from_head", nargs="?")
+    graph_diff.add_argument("to_head", nargs="?")
+    graph_diff.add_argument("ids", nargs="*")
+    graph_diff.add_argument("--branch-changes")
+    graph_diff.add_argument("--ids", nargs="+", dest="filter_ids", default=[])
+    graph_diff.add_argument("--cursor")
+
+    graph_log = subparsers.add_parser("graph_log", aliases=["graph-log"])
+    graph_log.add_argument("id")
+    graph_log.add_argument("--at", default="@head")
+    graph_log.add_argument("--cursor")
+
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
     for action in ("add", "list", "update", "delete"):
@@ -291,6 +304,23 @@ def _request_arguments(namespace, workspace):
             if len(episode_id) > 200:
                 raise ClientInputError("episode id must be at most 200 characters")
         return verb, None, {"worker_id": worker_id, "episode_id": episode_id}
+    if verb in ("graph_diff", "graph_log"):
+        arguments = {}
+        if namespace.cursor is not None:
+            arguments["cursor"] = _nonblank(namespace.cursor, "cursor")
+        if verb == "graph_log":
+            arguments.update(id=_nonblank(namespace.id, "entity id"), at=namespace.at)
+        elif namespace.branch_changes is not None:
+            if namespace.from_head is not None or namespace.to_head is not None:
+                raise ClientInputError("--branch-changes cannot be combined with heads")
+            arguments["branch_changes"] = namespace.branch_changes
+            arguments["ids"] = namespace.filter_ids
+        else:
+            if namespace.from_head is None or namespace.to_head is None:
+                raise ClientInputError("graph_diff requires two heads or --branch-changes")
+            arguments.update({"from": namespace.from_head, "to": namespace.to_head})
+            arguments["ids"] = namespace.ids + namespace.filter_ids
+        return verb, None, arguments
     if verb == "lesson":
         action = namespace.lesson_action
         arguments = {"action": action}
@@ -868,6 +898,10 @@ def _requested_verb(argv):
             "ask",
             "lesson",
             "validate",
+            "graph_diff",
+            "graph_log",
+            "graph-diff",
+            "graph-log",
             "apply",
             "status",
             "spawn",

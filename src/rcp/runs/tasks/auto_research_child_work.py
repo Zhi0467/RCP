@@ -27,6 +27,7 @@ from rcp.agents.command_protocol import (
     ValidateCommandRequest,
 )
 from rcp.agents.continuation_prompt import LaunchPhase, classify
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     _invoked_package_section,
@@ -289,8 +290,14 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 
 
 def _child_allowed_verbs(turn: WorkTurn) -> frozenset[str]:
-    return frozenset({"validate", "message", "lesson"}) | (
-        turn.compute_commands.allowed_verbs if turn.compute_commands is not None else frozenset()
+    return (
+        frozenset({"validate", "message", "lesson"})
+        | (turn.graph_read_scope.verbs if turn.graph_read_scope is not None else frozenset())
+        | (
+            turn.compute_commands.allowed_verbs
+            if turn.compute_commands is not None
+            else frozenset()
+        )
     )
 
 
@@ -648,6 +655,7 @@ def _start_auto_research_child_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands,
     run_truth_scope: list[str],
+    graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     return start_work_validator_mailbox(
         staged,
@@ -662,10 +670,14 @@ def _start_auto_research_child_validator_mailbox(
         serve=partial(
             _serve_auto_research_child_work_mailbox,
             route=route,
+            service=lambda: service,
+            graph_read_scope=graph_read_scope,
             compute_commands=compute_commands,
         ),
         resume_context=_ChildMailboxContext(
-            **_work_mailbox_context(run_truth_scope, compute_commands).model_dump(),
+            **_work_mailbox_context(
+                run_truth_scope, compute_commands, graph_read_scope=graph_read_scope
+            ).model_dump(),
             route=route,
         ).model_dump(mode="json"),
     )
@@ -703,6 +715,8 @@ def resume_child_work_command_mailbox(
         serve=partial(
             _serve_auto_research_child_work_mailbox,
             route=context.route,
+            service=service,
+            graph_read_scope=context.graph_read_scope,
             compute_commands=compute_commands,
         ),
     )
@@ -1250,6 +1264,8 @@ async def _serve_auto_research_child_work_mailbox(
     terminal: dict[str, str] | None = None,
     checkpoint: Callable[[], None] | None = None,
     suspend: threading.Event | None = None,
+    service: Callable[[], ProjectService] | None = None,
+    graph_read_scope: GraphReadScope | None = None,
 ) -> None:
     async def handle(
         request: CommandRequest,
@@ -1260,6 +1276,13 @@ async def _serve_auto_research_child_work_mailbox(
                 request_id=request.request_id,
                 status="invalid",
                 message="This child Work command credential is bound to another turn.",
+            )
+        if graph_read_scope is not None and request.verb in graph_read_scope.verbs:
+            from rcp.runs.graph_history_queries import handle_graph_history_command
+
+            assert service is not None
+            return await asyncio.to_thread(
+                handle_graph_history_command, service(), graph_read_scope, request
             )
         if isinstance(request, ValidateCommandRequest):
             count = budget.reserve(request.request_id)

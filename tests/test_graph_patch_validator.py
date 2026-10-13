@@ -77,13 +77,16 @@ async def test_seed_attempt_stages_and_serves_live_validator_before_final_append
             assert validator_client.read_text(encoding="utf-8") == VALIDATOR_CLIENT_SOURCE
 
             (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-            self.validator_result = await asyncio.to_thread(
-                subprocess.run,
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            gate = kwargs["invocation_gate"]
+            assert gate is not None
+            async with gate.serve_current_session():
+                self.validator_result = await asyncio.to_thread(
+                    subprocess.run,
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
             assert self.validator_result.returncode == 0
             assert json.loads(self.validator_result.stdout)["status"] == "valid"
             assert service.history.state().revision == 1

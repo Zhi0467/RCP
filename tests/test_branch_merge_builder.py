@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents.branch_merge_prompt import branch_merge_task_contract
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -271,6 +272,8 @@ async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
             stage=stage,
             write_scope=_local_scope(stage, load_context()),
             validator_command="python3 validator.py validate patch.json",
+            graph_read_scope=GraphReadScope(project_id="project", target=GraphTargetRef()),
+            history_client="python3 validator.py",
             outcome=outcome,
         )
     ]

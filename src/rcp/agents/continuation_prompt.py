@@ -12,12 +12,14 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rcp.agents.graph_rules import GRAPH_RULES_VERSION
+from rcp.core.transition_models import GraphHeadRef
+from rcp.history.queries import format_head
 
 PromptNode = Literal["session_start", "human_turn", "wake", "recovery", "correction", "report"]
 
 # Bumped by hand when the shared master framing changes. Version 1 adds nothing to the
 # key, so keys minted before this module existed stay valid and sessions keep their master.
-MASTER_VERSION = 1
+MASTER_VERSION = 2
 
 _CONTINUATION_NODES: dict[str, PromptNode] = {
     "turn": "human_turn",
@@ -100,6 +102,19 @@ def changed_since_master(master: MasterRef, current: dict[str, object]) -> dict[
     if master.values is None:
         return dict(current) or None
     return context_delta(dict(master.values), current)
+
+
+def graph_head_delta(seen: GraphHeadRef | None, staged: GraphHeadRef) -> dict[str, object]:
+    """A turn-relative observation, independent of the retained master's values."""
+
+    if seen is None or seen == staged:
+        return {}
+    return {
+        "current": {
+            "graph_changed_since": format_head(seen),
+            "graph_head": format_head(staged),
+        }
+    }
 
 
 def classify(phase: LaunchPhase) -> PromptNode:

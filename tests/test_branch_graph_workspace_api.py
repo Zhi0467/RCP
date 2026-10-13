@@ -306,25 +306,15 @@ def test_graph_changes_project_from_the_immutable_base_after_a_rejected_first_pa
     assert changes.json()["nodes"][0]["history"][0]["producer"] == "human"
 
 
-def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
+def test_branch_revision_heartbeat_tracks_changes_and_live_merge_fence(
     manifest, tmp_path, monkeypatch
 ):
     from rcp.api import project_state
-    from rcp.history.branches import BranchHistoryManager
 
     app, main, episode, _root = _app_branch(manifest, tmp_path)
     client = signed_in_client(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
-    replays = []
-    materialize = BranchHistoryManager.materialize
-
-    def counting(self, **kwargs):
-        replays.append(kwargs)
-        return materialize(self, **kwargs)
-
-    monkeypatch.setattr(BranchHistoryManager, "materialize", counting)
-    project_state._BRANCH_HEARTBEATS.clear()
     first = client.get(f"{base}/cached/revision", params=params).json()
     second = client.get(f"{base}/cached/revision", params=params).json()
     assert first == second
@@ -333,7 +323,6 @@ def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
     client.get(base)  # warms the main display cache, as a page does
     main_signal = client.get(f"{base}/cached/revision").json()["task_status_signal"]
     assert first["task_status_signal"] == main_signal
-    assert len(replays) == 1
     snapshot = client.get(base, params=params).json()
     # The branch page and its heartbeat agree, so an idle branch view never reloads.
     assert first["experiment_signal"] == snapshot["experiment_signal"]
@@ -352,14 +341,42 @@ def test_branch_revision_heartbeat_replays_once_until_the_branch_changes(
         },
     )
     assert synced.status_code == 200, synced.text
-    heartbeat_replays = len(replays)
     third = client.get(f"{base}/cached/revision", params=params).json()
     assert third["revision"] == synced.json()["head"]["revision"] > first["revision"]
-    assert len(replays) == heartbeat_replays + 1
     client.get(f"{base}/cached/revision", params=params)
-    assert len(replays) == heartbeat_replays + 1
     monkeypatch.setattr(project_state, "active_merge", lambda *args: True)
     fenced = client.get(f"{base}/cached/revision", params=params).json()
     assert fenced["revision"] == third["revision"]
     assert fenced["graph_mutation"]["available"] is False
     assert "merge" in fenced["graph_mutation"]["reason"]
+
+
+def test_branch_reads_reuse_the_shared_engine_main_prefix(manifest, tmp_path, monkeypatch):
+    from rcp.core import materialize
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.history.queries import HeadSpec
+
+    app, main, episode, _root = _app_branch(manifest, tmp_path)
+    engine = main.history_engine
+    main_head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+    assert engine.state_at(main_head).nodes[QUESTION].id == QUESTION
+    main_patches = {step.patch.model_dump_json() for step in engine.steps(main_head)}
+    assert main_patches
+    apply_patch = materialize._apply_patch
+
+    def refuse_main_replay(state, patch, descriptors):
+        assert patch.model_dump_json() not in main_patches, (
+            "branch read replayed the verified main prefix"
+        )
+        return apply_patch(state, patch, descriptors)
+
+    monkeypatch.setattr(materialize, "_apply_patch", refuse_main_replay)
+    client = signed_in_client(app)
+    base = f"/api/projects/{episode.project_id}"
+    params = {"branch_id": episode.episode_id}
+    for endpoint in ("/cached/revision", "/graph/changes", ""):
+        for _ in range(2):
+            response = client.get(base + endpoint, params=params)
+            assert response.status_code == 200, response.text
+    branch_service = main.for_graph_target(episode.graph_target, initialize=False)
+    assert branch_service.history_engine is engine

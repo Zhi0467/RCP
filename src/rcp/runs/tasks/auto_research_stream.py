@@ -42,12 +42,15 @@ from rcp.agents.continuation_prompt import (
     changed_since_master,
     classify,
     compose,
+    graph_head_delta,
     master_key,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
+from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.loop_status import other_branch_loops
 from rcp.providers import classify_terminal_error
@@ -87,7 +90,10 @@ from rcp.runs.chat import (
 from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
+    commit_prepared_graph_observation,
     continuation_session_master,
+    merge_prepared_graph_observation_delta,
+    prepare_graph_observation,
     record_inline_prompt,
     record_session_master,
 )
@@ -243,7 +249,12 @@ async def stream_auto_research_orchestrator_run(
             local_stage=stage.local,
             remote_stage=stage.remote,
         )
+        graph_read_scope = GraphReadScope(
+            project_id=turn.task.project_id, target=turn.task.graph_target
+        )
         command_dispatcher = command_dispatcher.with_command_files(
+            service=service,
+            graph_read_scope=graph_read_scope,
             reader=lambda name, max_bytes: command_files.read_text(name, max_bytes=max_bytes),
             consumer=command_files.remove_if_sha256,
             refresher=lambda: _refreshed_orchestrator_state_paths(
@@ -285,6 +296,14 @@ async def stream_auto_research_orchestrator_run(
             label=skill_bundle_label(orchestrator_selection),
             reuse_existing=True,
         )
+        staged_head = prepare_graph_observation(
+            execution,
+            service,
+            owner_id=_actor_seen_owner(turn),
+            target=graph_read_scope.target,
+            revision=context.graph_revision,
+            native_session_id=turn.binding.native_session_id,
+        )
         expected_turn_id = f"{execution.operation_id}:orchestrator"
         staged_commands = stage_command_mailbox(
             local_stage=stage.local,
@@ -301,6 +320,8 @@ async def stream_auto_research_orchestrator_run(
                 execution=execution,
                 turn=turn,
                 dispatcher=command_dispatcher,
+                service=service,
+                graph_read_scope=graph_read_scope,
                 stop=stop,
                 expected_turn_id=expected_turn_id,
             ),
@@ -327,6 +348,8 @@ async def stream_auto_research_orchestrator_run(
                 patch_path=patch_path,
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
+                graph_read_scope=graph_read_scope,
+                staged_head=staged_head,
                 messages_path=messages_path,
                 lifecycle_path=lifecycle_path,
                 skill_pointers=orchestrator_skill_pointers,
@@ -440,6 +463,7 @@ async def stream_auto_research_orchestrator_run(
             stage,
             master=master,
             values=values,
+            staged_head=staged_head,
             patch_path=patch_path,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
@@ -473,6 +497,13 @@ async def stream_auto_research_orchestrator_run(
         if latest_applied_revision is not None:
             payload["applied_revision"] = latest_applied_revision
         yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
+        if graph_update.status in {"applied", "none"}:
+            commit_prepared_graph_observation(
+                execution,
+                service,
+                native_session_id=outcome.session_id,
+                applied_revision=latest_applied_revision,
+            )
         yield _sse(AgentEvent(event="done"))
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -560,6 +591,17 @@ async def stream_auto_research_worker_run(
             f"auto_research-patch-schema-{schema_digest}.json",
             schema,
         )
+        graph_read_scope = GraphReadScope(
+            project_id=turn.task.project_id, target=turn.task.graph_target
+        )
+        staged_head = prepare_graph_observation(
+            execution,
+            service,
+            owner_id=_actor_seen_owner(turn),
+            target=graph_read_scope.target,
+            revision=context.graph_revision,
+            native_session_id=turn.binding.native_session_id,
+        )
         patch_path = str(stage.workspace / "patch.json")
         staged_commands = stage_command_mailbox(
             local_stage=stage.local,
@@ -571,11 +613,13 @@ async def stream_auto_research_worker_run(
         async with _worker_mailbox_lifecycle(
             staged_commands,
             execution=execution,
-            start=lambda stop: _serve_worker_commands(
+            start=lambda stop: _serve_auto_research_commands(
                 staged_commands,
                 execution=execution,
                 turn=turn,
                 dispatcher=command_dispatcher,
+                service=service,
+                graph_read_scope=graph_read_scope,
                 stop=stop,
                 expected_turn_id=f"{execution.operation_id}:worker",
             ),
@@ -603,6 +647,8 @@ async def stream_auto_research_worker_run(
                 patch_path=patch_path,
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
+                graph_read_scope=graph_read_scope,
+                staged_head=staged_head,
                 reply_key=_worker_reply_key(turn),
                 messages_path=messages_path,
                 write_scope=write_scope,
@@ -711,6 +757,7 @@ async def stream_auto_research_worker_run(
             stage,
             master=master,
             values=values,
+            staged_head=staged_head,
             patch_path=patch_path,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
@@ -729,6 +776,13 @@ async def stream_auto_research_worker_run(
         if graph_update.applied_revision is not None:
             payload["applied_revision"] = graph_update.applied_revision
         yield _sse(AgentEvent(event="message", text=json.dumps(payload, separators=(",", ":"))))
+        if graph_update.status in {"applied", "none"}:
+            commit_prepared_graph_observation(
+                execution,
+                service,
+                native_session_id=outcome.session_id,
+                applied_revision=graph_update.applied_revision,
+            )
         yield _sse(AgentEvent(event="done"))
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -1381,6 +1435,11 @@ def _retry_diagnostics_path(
     )
 
 
+def _actor_seen_owner(turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn) -> str:
+    kind = "auto-root" if isinstance(turn, _CanonicalOrchestratorTurn) else "auto-child"
+    return f"{kind}:{turn.binding.actor_operation_id}"
+
+
 def _actor_launch_prompt(
     execution: AgentTaskExecution,
     *,
@@ -1396,6 +1455,7 @@ def _actor_launch_prompt(
     continuation_parts: Callable[[], list[str]],
     values: dict[str, object],
     ontology_extensions: bool,
+    staged_head: GraphHeadRef | None = None,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
     fresh_parts: tuple[str, ...] = (),
 ) -> tuple[str, str, MasterRef]:
@@ -1441,7 +1501,10 @@ def _actor_launch_prompt(
     # The report's restriction is the newest instruction this session holds; the prompt
     # retires it and sends the agent back to its operational master.
     held = replace(master, after_report=True) if after_report else master
-    prompt = compose(node, parts=parts, master=held, delta=changed_since_master(master, values))
+    delta = changed_since_master(master, values) or {}
+    if staged_head is not None:
+        delta = merge_prepared_graph_observation_delta(delta, execution, session_id)
+    prompt = compose(node, parts=parts, master=held, delta=delta)
     contract_path = record_inline_prompt(
         execution,
         local_stage=local_stage,
@@ -1464,6 +1527,8 @@ def _orchestrator_prompt(
     patch_path: str,
     schema_path: str,
     command_client: str,
+    graph_read_scope: GraphReadScope | None = None,
+    staged_head: GraphHeadRef | None = None,
     messages_path: str | None,
     lifecycle_path: str | None,
     skill_pointers: list[dict[str, object]],
@@ -1490,7 +1555,9 @@ def _orchestrator_prompt(
         command_client=command_client,
         write_scope=write_scope,
         skill_pointers=skill_pointers,
-        allowed_verbs=auto_research_allowed_verbs("orchestrator"),
+        allowed_verbs=auto_research_allowed_verbs(
+            "orchestrator", graph_read_scope=graph_read_scope
+        ),
         child_profiles=child_profiles,
     )
 
@@ -1537,6 +1604,7 @@ def _orchestrator_prompt(
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
+            graph_read_scope=graph_read_scope,
             child_profiles=child_profiles,
         )
 
@@ -1567,6 +1635,7 @@ def _orchestrator_prompt(
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
+            graph_read_scope=graph_read_scope,
         )
 
     def continuation_parts() -> list[str]:
@@ -1584,6 +1653,7 @@ def _orchestrator_prompt(
         execution,
         browser_grant=browser_grant,
         values=values,
+        staged_head=staged_head,
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
@@ -1629,6 +1699,8 @@ def _worker_prompt(
     patch_path: str,
     schema_path: str,
     command_client: str,
+    graph_read_scope: GraphReadScope | None = None,
+    staged_head: GraphHeadRef | None = None,
     reply_key: str,
     messages_path: str | None,
     write_scope: ProjectWriteScope,
@@ -1662,7 +1734,7 @@ def _worker_prompt(
         command_client=command_client,
         write_scope=write_scope,
         reply_key=reply_key,
-        allowed_verbs=auto_research_allowed_verbs("worker"),
+        allowed_verbs=auto_research_allowed_verbs("worker", graph_read_scope=graph_read_scope),
     )
 
     def render_master() -> str:
@@ -1682,6 +1754,7 @@ def _worker_prompt(
             messages_path=messages_path,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
+            graph_read_scope=graph_read_scope,
         )
 
     def continuation_parts() -> list[str]:
@@ -1698,6 +1771,7 @@ def _worker_prompt(
         execution,
         browser_grant=browser_grant,
         values=values,
+        staged_head=staged_head,
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
@@ -1716,25 +1790,6 @@ def _worker_prompt(
     return contract_path, prompt, master, values
 
 
-async def _serve_worker_commands(
-    staged: StagedCommandMailbox,
-    *,
-    execution: AgentTaskExecution,
-    turn: _CanonicalWorkerTurn,
-    dispatcher: AutoResearchCommandDispatcher,
-    stop: asyncio.Event,
-    expected_turn_id: str,
-) -> None:
-    await _serve_auto_research_commands(
-        staged,
-        execution=execution,
-        turn=turn,
-        dispatcher=dispatcher,
-        stop=stop,
-        expected_turn_id=expected_turn_id,
-    )
-
-
 async def _serve_auto_research_commands(
     staged: StagedCommandMailbox,
     *,
@@ -1743,6 +1798,8 @@ async def _serve_auto_research_commands(
     dispatcher: AutoResearchCommandDispatcher,
     stop: asyncio.Event,
     expected_turn_id: str,
+    service: ProjectService | None = None,
+    graph_read_scope: GraphReadScope | None = None,
 ) -> None:
     async def handle(
         request: CommandRequest,
@@ -1757,6 +1814,13 @@ async def _serve_auto_research_commands(
                 request_id=request.request_id,
                 status="invalid",
                 message="AutoResearch command credential does not match this actor turn.",
+            )
+        if graph_read_scope is not None and request.verb in graph_read_scope.verbs:
+            from rcp.runs.graph_history_queries import handle_graph_history_command
+
+            assert service is not None
+            return await asyncio.to_thread(
+                handle_graph_history_command, service, graph_read_scope, request
             )
         return await asyncio.to_thread(dispatcher.dispatch, execution.operation_id, request)
 
@@ -1773,6 +1837,8 @@ class _ValidateOnlyAutoResearchCommandDispatcher(AutoResearchCommandDispatcher):
     """Keep dispatcher ledger semantics while denying every correction side effect."""
 
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
+        if self.graph_read_scope is not None and request.verb in self.graph_read_scope.verbs:
+            return super().dispatch(operation_id, request)
         if not isinstance(request, ValidateCommandRequest):
             context = self._context(operation_id)
             invocation = self.store.start_agent_command(
@@ -1955,6 +2021,7 @@ async def _settle_worker_patch(
     write_scope: ProjectWriteScope,
     provider_binary: str | None,
     native_session_id: str,
+    staged_head: GraphHeadRef | None = None,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
@@ -2070,6 +2137,18 @@ async def _settle_worker_patch(
             f"task-{token}-auto_research-work-correction-{correction_rounds}.json",
             {"kind": "work", "problem": failure.message},
         )
+        graph_read_scope = GraphReadScope(
+            project_id=turn.task.project_id, target=turn.task.graph_target
+        )
+        context = _auto_research_context(service, turn.request, stage)
+        correction_head = prepare_graph_observation(
+            execution,
+            service,
+            owner_id=_actor_seen_owner(turn),
+            target=graph_read_scope.target,
+            revision=context.graph_revision,
+            native_session_id=native_session_id,
+        )
         correction_mailbox = stage_command_mailbox(
             local_stage=stage.local,
             remote_stage=stage.remote,
@@ -2082,20 +2161,24 @@ async def _settle_worker_patch(
         async with _worker_mailbox_lifecycle(
             correction_mailbox,
             execution=execution,
-            start=lambda stop, mailbox=correction_mailbox, round_number=correction_rounds: (
-                _serve_worker_commands if _actor_role == "worker" else _serve_auto_research_commands
-            )(
-                mailbox,
-                execution=execution,
-                turn=turn,
-                dispatcher=_ValidateOnlyAutoResearchCommandDispatcher(
-                    command_dispatcher.store,
-                    command_dispatcher.effects,
-                ),
-                stop=stop,
-                expected_turn_id=(
-                    f"{execution.operation_id}:{_actor_role}-patch-correction:{round_number}"
-                ),
+            start=lambda stop, mailbox=correction_mailbox, round_number=correction_rounds, scope=graph_read_scope: (
+                _serve_auto_research_commands(
+                    mailbox,
+                    execution=execution,
+                    turn=turn,
+                    dispatcher=_ValidateOnlyAutoResearchCommandDispatcher(
+                        command_dispatcher.store,
+                        command_dispatcher.effects,
+                        service=service,
+                        graph_read_scope=scope,
+                    ),
+                    service=service,
+                    graph_read_scope=scope,
+                    stop=stop,
+                    expected_turn_id=(
+                        f"{execution.operation_id}:{_actor_role}-patch-correction:{round_number}"
+                    ),
+                )
             ),
         ):
             # This operation's own launch staged or restored the session's master moments ago,
@@ -2103,7 +2186,10 @@ async def _settle_worker_patch(
             correction_grant = BrowserGrant()
             correction_values = {
                 **values,
+                "graph": context.graph_path,
+                "research": context.research_md_path,
                 "command_prefix": correction_mailbox.client_command(),
+                "history_client": correction_mailbox.client_command(),
                 "browser": correction_grant.model_dump(
                     include={"status", "reason_code", "session_name", "invocation_dir"}
                 ),
@@ -2114,13 +2200,19 @@ async def _settle_worker_patch(
                     *auto_research_patch_correction_parts(
                         actor=_actor_role,
                         diagnostics_path=diagnostics_path,
+                        graph_read_scope=graph_read_scope,
+                        command_client=correction_mailbox.client_command(),
                     ),
                     stage_lessons_pointer(execution, stage.local, stage.remote),
                     browser_prompt_line(correction_grant),
                 ],
                 master=master,
-                delta=changed_since_master(master, correction_values),
+                delta={
+                    **(changed_since_master(master, correction_values) or {}),
+                    **graph_head_delta(staged_head, correction_head),
+                },
             )
+            staged_head = correction_head
             correction_path = record_inline_prompt(
                 execution,
                 local_stage=stage.local,
@@ -2281,6 +2373,7 @@ async def _settle_orchestrator_patch(
     write_scope: ProjectWriteScope,
     provider_binary: str | None,
     native_session_id: str,
+    staged_head: GraphHeadRef | None = None,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
 ) -> _PatchSettlement:
@@ -2292,6 +2385,7 @@ async def _settle_orchestrator_patch(
         stage,
         master=master,
         values=values,
+        staged_head=staged_head,
         patch_path=patch_path,
         read_dirs=read_dirs,
         write_dirs=write_dirs,

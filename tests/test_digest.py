@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import cast
 
 from rcp.core.models import Decision, Edge, GatedCard, GraphState, Patch, Proposal
+from rcp.core.transition_models import GraphHeadRef
 from rcp.digest import DigestProjector, assemble_digest, attribution, graph_event
+from rcp.history.delta import semantic_delta
+from rcp.history.engine import ProjectHistoryEngine
+from rcp.history.queries import StepRecord
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.digest import digest_event
@@ -44,17 +49,58 @@ def _events(store):
         ]
 
 
+def _engine(boundaries, *, requested_ranges=None, streamed_revisions=None) -> ProjectHistoryEngine:
+    def snapshot(_target):
+        captured = tuple(boundaries)
+        return SimpleNamespace(
+            result=SimpleNamespace(state=captured[-1][2]),
+            index=tuple(
+                SimpleNamespace(patch=patch, accepted=patch.admission != "rejected")
+                for _, patch, _ in captured
+            ),
+            head=lambda revision: GraphHeadRef(revision=revision),
+            boundaries=captured,
+        )
+
+    def steps(generation, head, *, from_revision=1):
+        if requested_ranges is not None:
+            requested_ranges.append(from_revision)
+        for before, patch, after in generation.boundaries:
+            if not from_revision <= patch.revision <= head.revision:
+                continue
+            if streamed_revisions is not None:
+                streamed_revisions.append(patch.revision)
+            yield StepRecord(
+                GraphHeadRef(revision=before.revision),
+                GraphHeadRef(revision=patch.revision),
+                before,
+                after,
+                patch,
+                semantic_delta(before, after),
+                frozenset(),
+                frozenset(),
+                patch.admission != "rejected",
+            )
+
+    return cast(ProjectHistoryEngine, SimpleNamespace(snapshot=snapshot, _steps=steps))
+
+
 def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path):
     store = _project_store(tmp_path)
     state = GraphState(revision=1)
     patch = _patch()
     boundaries = [(GraphState(), patch, state)]
-    history = SimpleNamespace(
-        accepted_patch_boundaries=lambda: (SimpleNamespace(state=state), boundaries)
+    requested_ranges, streamed_revisions = [], []
+    history = _engine(
+        boundaries, requested_ranges=requested_ranges, streamed_revisions=streamed_revisions
     )
     projector = DigestProjector(store, None, admission=RuntimeAdmissionGate())
     projector._project_history("p", "main", history)
     assert _events(store) == []
+    assert requested_ranges == streamed_revisions == []
+    projector._project_history("p", "main", history)
+    assert streamed_revisions == []
+    requested_ranges.clear()
     next_state = GraphState(revision=2, nodes={"d/one": _decision(status="ready")})
     boundaries.append((state, _patch(2), next_state))
     state = next_state
@@ -63,6 +109,8 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
         "p", "main", history
     )
     assert len(_events(store)) == 1
+    assert requested_ranges == [2]
+    assert streamed_revisions == [2]
     mark = {"seq": 0, "marked_at": store.now()}
     assert assemble_digest("p", "me", _events(store), mark, 1)["needs_you"]
     # A restored history removes the previously projected ready Decision.
@@ -74,23 +122,31 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
     assert result["needs_you"] == result["changed"] == []
     projector._project_history("p", "main", history)
     assert len(_events(store)) == 2
+    with store.connection() as conn:
+        accepted_head = tuple(conn.execute("SELECT revision,patch_id FROM digest_heads").fetchone())
+    boundaries.append((state, _patch(2, admission="rejected"), state))
+    projector._project_history("p", "main", history)
+    assert len(_events(store)) == 2
+    with store.connection() as conn:
+        assert (
+            tuple(conn.execute("SELECT revision,patch_id FROM digest_heads").fetchone())
+            == accepted_head
+        )
 
 
 def test_slower_projection_cannot_move_checkpoint_backward(tmp_path):
     store = _project_store(tmp_path)
     initial, first, second = GraphState(), GraphState(revision=1), GraphState(revision=2)
     boundaries = [(initial, _patch(), first)]
-    history = SimpleNamespace(
-        accepted_patch_boundaries=lambda: (SimpleNamespace(state=first), list(boundaries))
-    )
+    history = _engine(boundaries)
     fast = DigestProjector(store, None, admission=RuntimeAdmissionGate())
     slow = DigestProjector(store, None, admission=RuntimeAdmissionGate())
     fast._project_history("p", "main", history)
     newer_head = None
 
-    def delayed_replay():
+    def delayed_steps(generation, head, *, from_revision):
         nonlocal newer_head
-        stale = history.accepted_patch_boundaries()
+        stale = history._steps(generation, head, from_revision=from_revision)
         boundaries.append((first, _patch(2), second))
         fast._project_history("p", "main", history)
         with store.connection() as conn:
@@ -99,7 +155,14 @@ def test_slower_projection_cannot_move_checkpoint_backward(tmp_path):
             )
         return stale
 
-    slow._project_history("p", "main", SimpleNamespace(accepted_patch_boundaries=delayed_replay))
+    slow._project_history(
+        "p",
+        "main",
+        cast(
+            ProjectHistoryEngine,
+            SimpleNamespace(snapshot=history.snapshot, _steps=delayed_steps),
+        ),
+    )
     with store.connection() as conn:
         assert (
             tuple(conn.execute("SELECT revision,patch_id FROM digest_heads").fetchone())
@@ -391,7 +454,7 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     store = app.state.background_tasks.store
     projector = app.state.digest_projector
     # The project has a baseline; this newly discovered branch has none yet.
-    projector._project_history(episode.project_id, "main", main.history)
+    projector._project_history(episode.project_id, "main", main.history_engine)
     user_id = store.local_owner.user_id
     assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
     main_revision = main.history.current_accepted_revision()

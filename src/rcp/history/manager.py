@@ -11,7 +11,6 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -35,7 +34,6 @@ from rcp.core.materialize import (
     MaterializationResult,
     apply_valid_patch,
     finalize_patch_bookkeeping,
-    materialize_patches,
     prepare_patch_bookkeeping,
 )
 from rcp.core.models import (
@@ -46,7 +44,6 @@ from rcp.core.models import (
     Patch,
     ProjectHomeTransfer,
     ProjectIdentity,
-    ReplayFailure,
 )
 from rcp.core.operations import SetProjectTruthScopeOperation, adapt_persisted_patch_document
 from rcp.core.research_md import render_research_md
@@ -55,16 +52,14 @@ from rcp.core.transitions import (
     GraphTransitionManager,
     PreparedTransition,
     TransitionConflict,
-    accepted_transition_head_chain_failure,
     project_transition_projection,
 )
 from rcp.core.validation import ValidationReport, build_validation_context, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history.delta import (
     RefreshDelta,
-    RevisionSummary,
     build_refresh_delta,
-    render_revision_summary,
+    build_revision_summaries,
 )
 from rcp.limits import (
     PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
@@ -81,6 +76,7 @@ from rcp.transport import (
 
 if TYPE_CHECKING:
     from rcp.history.branches import BranchHistoryManager, BranchReadSnapshot
+    from rcp.history.engine import ProjectHistoryEngine
 
 
 @dataclass(frozen=True)
@@ -367,40 +363,6 @@ def _is_exact_prepared_identity_prefix(
     )
 
 
-def _patch_failure_created_at(path: Path) -> datetime:
-    """Retain useful failure chronology even when the Patch schema cannot load."""
-
-    with suppress(OSError, TypeError, ValueError):
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and isinstance(raw.get("created_at"), str):
-            created_at = datetime.fromisoformat(raw["created_at"])
-            return created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
-    with suppress(OSError):
-        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
-    return datetime.fromtimestamp(0, UTC)
-
-
-def _first_replay_revision(paths: list[Path]) -> int:
-    return int(paths[0].stem) if paths else 0
-
-
-def _first_replay_created_at(
-    paths: list[Path],
-    patches: list[Patch],
-    *,
-    fallback: Path | None = None,
-) -> datetime:
-    if patches:
-        return patches[0].created_at
-    if paths:
-        return _patch_failure_created_at(paths[0])
-    return (
-        _patch_failure_created_at(fallback)
-        if fallback is not None
-        else datetime.fromtimestamp(0, UTC)
-    )
-
-
 class HistoryManager:
     def __init__(
         self,
@@ -433,6 +395,16 @@ class HistoryManager:
         self.on_accepted_transition = on_accepted_transition
         self.on_accepted_branch_transition = on_accepted_branch_transition
         self._branch_materialization_repairs: set[str] = set()
+        self._history_engine: ProjectHistoryEngine | None = None
+
+    @property
+    def history_engine(self) -> ProjectHistoryEngine:
+        from rcp.history.engine import ProjectHistoryEngine
+
+        with self._process_lock:
+            if self._history_engine is None:
+                self._history_engine = ProjectHistoryEngine(self)
+            return self._history_engine
 
     def initialize(self) -> MaterializationResult:
         with self._process_lock:
@@ -1500,13 +1472,12 @@ class HistoryManager:
         accepted_patch_observer: AcceptedPatchObserver | None = None,
     ) -> MaterializationResult:
         with self._process_lock:
-            if accepted_patch_observer is None:
-                result = self._replay(pending_patch_paths)
-            else:
-                result = self._replay(
-                    pending_patch_paths,
-                    accepted_patch_observer=accepted_patch_observer,
-                )
+            result = self.history_engine.materialization(
+                self.graph_target,
+                refresh=False,
+                pending_patch_paths=pending_patch_paths,
+                accepted_patch_observer=accepted_patch_observer,
+            )
             if write_outputs and result.state.replay_status == "complete":
                 self.ensure_layout()
                 self._write_materialized_outputs(result)
@@ -1521,26 +1492,15 @@ class HistoryManager:
     def accepted_patch_boundaries(
         self,
     ) -> tuple[MaterializationResult, list[tuple[GraphState, Patch, GraphState]]]:
-        """Replay canonical history with each accepted Patch and its exact pre/post state."""
+        """Read each accepted Patch and its exact pre/post state from the shared engine."""
 
-        boundaries: list[tuple[GraphState, Patch, GraphState]] = []
-
-        def collect(previous: GraphState, patch: Patch, state: GraphState) -> None:
-            boundaries.append((previous, patch, state))
-
-        with self._process_lock:
-            # Graph-condition transitions require a proven current canonical
-            # snapshot. Unlike display-oriented reads, stale remote state must
-            # fail closed and be retried rather than evaluated as current.
-            if not self.workspace.refresh_if_stale():
-                raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
-            self._reload_manifest()
-            result = self.materialize(
-                write_outputs=False,
-                accepted_patch_observer=collect,
-            )
-            self._remember_accepted_revision(result)
-            return result, boundaries
+        engine = self.history_engine
+        generation = engine.snapshot(self.graph_target)
+        return generation.result, [
+            (step.before_state, step.patch, step.after_state)
+            for step in engine._steps(generation, generation.head(generation.result.state.revision))
+            if step.accepted
+        ]
 
     def _coherent_materialization(self) -> MaterializationResult | None:
         """Return replayed state only when every cached derived output already matches."""
@@ -1550,7 +1510,7 @@ class HistoryManager:
         required = self._materialized_paths(include_manifest=True)
         if not all((self.root / path).is_file() for path in required):
             return None
-        result = self._replay()
+        result = self.history_engine.materialization(self.graph_target, refresh=False)
         if result.state.project_truth_scope != self.manifest.project.truth_scope:
             return None
         expected_json = {
@@ -1575,111 +1535,6 @@ class HistoryManager:
             return None
         return result
 
-    def _replay(
-        self,
-        pending_patch_paths: list[Path] | None = None,
-        *,
-        accepted_patch_observer: AcceptedPatchObserver | None = None,
-    ) -> MaterializationResult:
-        pending = pending_patch_paths or []
-        patch_paths = sorted(
-            [*self._patch_paths(), *pending],
-            key=lambda path: int(path.stem),
-        )
-        patches: list[Patch] = []
-        structural_failure: ReplayFailure | None = None
-        for path in patch_paths:
-            try:
-                patches.append(self._decode_persisted_patch(path.read_text(encoding="utf-8")))
-            except OSError as exc:
-                structural_failure = ReplayFailure(
-                    revision=int(path.stem),
-                    created_at=_patch_failure_created_at(path),
-                    code="patch-read-failed",
-                    message=str(exc),
-                )
-                break
-            except ValueError as exc:
-                structural_failure = ReplayFailure(
-                    revision=int(path.stem),
-                    created_at=_patch_failure_created_at(path),
-                    code="patch-schema-invalid",
-                    message=str(exc),
-                )
-                break
-        scope_base_path = self.root / "scope-base.json"
-        scope_failure: ReplayFailure | None = None
-        if scope_base_path.is_file():
-            try:
-                initial_truth_scope = json.loads(scope_base_path.read_text(encoding="utf-8"))[
-                    "truth_scope"
-                ]
-                if not isinstance(initial_truth_scope, list) or not all(
-                    isinstance(alias, str) for alias in initial_truth_scope
-                ):
-                    raise ValueError("truth_scope must be a list of repository aliases")
-            except (OSError, KeyError, TypeError, ValueError) as exc:
-                initial_truth_scope = self.manifest.project.truth_scope
-                scope_failure = ReplayFailure(
-                    revision=_first_replay_revision(patch_paths),
-                    created_at=_first_replay_created_at(
-                        patch_paths,
-                        patches,
-                        fallback=scope_base_path,
-                    ),
-                    code="scope-provenance-invalid",
-                    message=f"Canonical scope provenance {scope_base_path} is invalid: {exc}",
-                )
-        elif patch_paths:
-            initial_truth_scope = self.manifest.project.truth_scope
-            scope_failure = ReplayFailure(
-                revision=_first_replay_revision(patch_paths),
-                created_at=_first_replay_created_at(patch_paths, patches),
-                code="scope-provenance-missing",
-                message=(
-                    f"Canonical scope provenance {scope_base_path} is absent while Patch history "
-                    "exists; replay is refused rather than substituting the current manifest scope."
-                ),
-            )
-        else:
-            initial_truth_scope = self.manifest.project.truth_scope
-        chain_failure = accepted_transition_head_chain_failure(
-            patches,
-            target=self.graph_target,
-            initial_transition_id=None,
-        )
-        chain_prefix = patches
-        if chain_failure is not None:
-            chain_prefix = []
-            for patch in patches:
-                if patch.revision == chain_failure.revision:
-                    break
-                chain_prefix.append(patch)
-        replayable_patches = [] if scope_failure is not None else chain_prefix
-        result = materialize_patches(
-            replayable_patches,
-            context=build_validation_context(
-                self.manifest,
-                GraphState(project_truth_scope=list(initial_truth_scope)),
-                mode="replay",
-            ),
-            accepted_patch_observer=accepted_patch_observer,
-        )
-        structural_or_chain_failure = min(
-            (item for item in (structural_failure, chain_failure) if item is not None),
-            key=lambda item: item.revision,
-            default=None,
-        )
-        failure = scope_failure or structural_or_chain_failure
-        if failure is not None and result.state.replay_status == "complete":
-            result.state = result.state.model_copy(
-                update={
-                    "replay_status": "degraded",
-                    "replay_failure": failure,
-                }
-            )
-        return result
-
     def _write_materialized_outputs(self, result: MaterializationResult) -> None:
         self._atomic_json(self.root / "graph.json", result.state.model_dump(mode="json"))
         self._atomic_json(
@@ -1699,27 +1554,25 @@ class HistoryManager:
     ) -> RefreshDelta:
         """Return the bounded delta without coupling context assembly to history I/O."""
 
-        with self._process_lock:
-            result = materialization or self.materialize(write_outputs=False)
-            return build_refresh_delta(result.patches, result)
+        if materialization is not None:
+            return build_refresh_delta(materialization.patches, materialization)
+        result, steps = self.history_engine.projection(self.graph_target)
+        return build_refresh_delta(result.patches, result, steps=steps)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
-        with self._process_lock:
-            with suppress(StateUnavailable):
-                self.workspace.refresh_if_stale()
-            end = to_revision if to_revision is not None else 10**12
-            materialization = self.materialize(write_outputs=False)
-            return [
-                {
-                    "revision": patch.revision,
-                    "kind": patch.kind,
-                    "created_at": patch.created_at.isoformat(),
-                    "summary": patch.summary,
-                    "change_summary": patch.change_summary,
-                }
-                for patch in materialization.patches
-                if from_revision <= patch.revision <= end
-            ]
+        _result, steps = self.history_engine.projection(
+            self.graph_target, from_revision=from_revision, to_revision=to_revision
+        )
+        return [
+            {
+                "revision": step.patch.revision,
+                "kind": step.patch.kind,
+                "created_at": step.patch.created_at.isoformat(),
+                "summary": step.patch.summary,
+                "change_summary": step.patch.change_summary,
+            }
+            for step in steps
+        ]
 
     def revision_summaries(
         self,
@@ -1728,21 +1581,18 @@ class HistoryManager:
     ) -> list[dict[str, object]]:
         """Return a reader-facing projection without changing the raw history contract."""
 
-        with self._process_lock:
-            with suppress(StateUnavailable):
-                self.workspace.refresh_if_stale()
-            end = to_revision if to_revision is not None else 10**12
-            summaries: list[RevisionSummary] = []
-
-            def collect(previous_state: GraphState, patch: Patch, state: GraphState) -> None:
-                if from_revision <= patch.revision <= end:
-                    summaries.append(render_revision_summary(previous_state, patch, state))
-
-            self.materialize(
-                write_outputs=False,
-                accepted_patch_observer=collect,
+        engine = self.history_engine
+        generation = engine.snapshot(self.graph_target)
+        latest = generation.result.state.revision
+        end = latest if to_revision is None else min(to_revision, latest)
+        if end < generation.initial_head.revision:
+            return []
+        return [
+            item.model_dump(mode="json")
+            for item in build_revision_summaries(
+                engine._steps(generation, generation.head(end), from_revision=from_revision)
             )
-            return [item.model_dump(mode="json") for item in summaries]
+        ]
 
     def _next_revision(self) -> int:
         paths = self._patch_paths()

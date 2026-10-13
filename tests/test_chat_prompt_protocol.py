@@ -434,9 +434,11 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         "browser",
         "discuss",
     }
-    # The revision is the one graph fact the session tracks, so a human Sync
-    # between turns can reach the conversation as a compact delta.
-    assert snapshot["values"]["current"]["graph_revision"] == service.graph_snapshot()["revision"]
+    assert "graph_revision" not in snapshot["values"]["current"]
+    seen = store.graph_seen_head(
+        project_id, f"chat:{request.chat_id}", session_id, service.history.graph_target
+    )
+    assert seen is not None and seen.revision == service.graph_snapshot()["revision"]
     assert snapshot["values"]["compute"] == {"active": []}
     assert "artifacts" not in snapshot["values"]
     launch_receipt = next(
@@ -1010,7 +1012,8 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
     turn("Third question, after a Sync.", resume=True)
 
     update = changed_values(launcher.prompts[2])
-    assert update["current.graph_revision"] == str(service.graph_snapshot()["revision"])
+    assert update["current.graph_head"] == f"main@{service.graph_snapshot()['revision']}"
+    assert "current.graph_changed_since" in update
     assert not any(key.startswith(("repositories", "settings")) for key in update)
 
 
@@ -1068,14 +1071,16 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
 
     turn("Now just answer something.", resume=True)
     second_delta = changed_values(launcher.prompts[1])
-    assert {key.split(".")[0] for key in second_delta} == {"patch"}
+    assert "current.graph_changed_since" not in second_delta
+    assert "current.graph_head" not in second_delta
     assert "rcp-agent-client-" in second_delta["patch.command_client"]
 
     # A Sync by someone else still reaches the conversation.
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
     third_delta = changed_values(launcher.prompts[2])
-    assert third_delta["current.graph_revision"] == str(service.graph_snapshot()["revision"])
+    assert third_delta["current.graph_head"] == f"main@{service.graph_snapshot()['revision']}"
+    assert "current.graph_changed_since" in third_delta
 
 
 @pytest.mark.parametrize("mode", ["work", "discuss"])

@@ -14,9 +14,13 @@ from rcp.agents.command_protocol import (
     AskResult,
     CommandRequest,
     CommandResponse,
+    GraphDiffCommandRequest,
+    GraphLogCommandRequest,
     LessonCommandRequest,
 )
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.limits import ASK_MAX_ATTEMPTS
+from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.lesson_commands import handle_lesson
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
@@ -24,7 +28,7 @@ from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
     from rcp.runs.tasks.compute_commands import WorkComputeCommands
-    from rcp.service import RunRequest
+    from rcp.service import ProjectService, RunRequest
 
 
 def handle_ask(
@@ -147,10 +151,18 @@ def discuss_ask_authorized(execution: AgentTaskExecution | None) -> bool:
     )
 
 
-def discuss_command_handler(execution: AgentTaskExecution | None) -> WorkCommandHandler:
-    """Discuss owns a single verb and never delegates to compute or graph handlers."""
+def discuss_command_handler(
+    execution: AgentTaskExecution | None,
+    *,
+    service: ProjectService | None = None,
+    graph_read_scope: GraphReadScope | None = None,
+) -> WorkCommandHandler:
+    """Discuss resolves questions and explicitly granted history reads."""
+    verbs = {"ask"} if discuss_ask_authorized(execution) else set()
+    if graph_read_scope is not None:
+        verbs.update(graph_read_scope.verbs)
     return WorkCommandHandler(
-        execution, None, frozenset({"ask"}) if discuss_ask_authorized(execution) else frozenset()
+        execution, None, frozenset(verbs), service=service, graph_read_scope=graph_read_scope
     )
 
 
@@ -275,12 +287,33 @@ class WorkCommandHandler:
         Callable[[ApplyCommandRequest, CommandTurnIdentity], CommandResponse] | None
     ) = None
 
+    service: ProjectService | None = None
+    graph_read_scope: GraphReadScope | None = None
+
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
-        def refuse(message: str) -> CommandResponse:
-            return CommandResponse(request_id=request.request_id, status="invalid", message=message)
+        def refuse(message: str, code: str | None = None) -> CommandResponse:
+            return CommandResponse(
+                request_id=request.request_id,
+                status="invalid",
+                message=message,
+                result={"code": code} if code else {},
+            )
 
         if request.verb not in self.allowed_verbs:
-            return refuse("This turn does not authorize that command.")
+            return refuse(
+                "This turn does not authorize that command.",
+                "graph_history_verb_not_granted"
+                if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
+                else None,
+            )
+        if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest)):
+            if self.graph_read_scope is None or self.service is None:
+                return refuse(
+                    "This turn has no graph history scope.", "graph_history_scope_required"
+                )
+            if self.execution is not None and identity.task_id != self.execution.operation_id:
+                return refuse("Graph history requires this turn's broker authority.")
+            return handle_graph_history_command(self.service, self.graph_read_scope, request)
         if isinstance(request, LessonCommandRequest):
             execution = self.execution
             if (
@@ -415,14 +448,24 @@ def work_command_handler(
     *,
     consolidation_apply: Callable[[ApplyCommandRequest, CommandTurnIdentity], CommandResponse]
     | None = None,
+    service: ProjectService | None = None,
+    graph_read_scope: GraphReadScope | None = None,
 ) -> WorkCommandHandler:
     from rcp.runs.consolidation import is_consolidation
 
     if is_consolidation(execution):
         return WorkCommandHandler(
-            execution, None, frozenset({"validate", "apply", "lesson"}), consolidation_apply
+            execution,
+            None,
+            frozenset({"validate", "apply", "lesson"})
+            | (graph_read_scope.verbs if graph_read_scope else frozenset()),
+            consolidation_apply,
+            service,
+            graph_read_scope,
         )
     verbs = {"validate"}
+    if graph_read_scope is not None:
+        verbs.update(graph_read_scope.verbs)
     if compute_commands is not None:
         verbs.update(compute_commands.allowed_verbs)
     if execution is not None:
@@ -435,4 +478,10 @@ def work_command_handler(
             verbs.add("lesson")
     if work_ask_authorized(execution):
         verbs.add("ask")
-    return WorkCommandHandler(execution, compute_commands, frozenset(verbs))
+    return WorkCommandHandler(
+        execution,
+        compute_commands,
+        frozenset(verbs),
+        service=service,
+        graph_read_scope=graph_read_scope,
+    )

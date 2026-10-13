@@ -17,7 +17,8 @@ from rcp.core.authority import (
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation import ValidationContext, validate_patch
-from rcp.history import HistoryManager, PatchRejected, build_revision_summaries
+from rcp.history import HistoryManager, PatchRejected
+from rcp.history.delta import render_revision_summary
 from tests.helpers import (
     refresh_patch,
     seated_on_every_project,
@@ -335,7 +336,7 @@ def test_episode_worker_keeps_ordinary_profile_and_episode_id(manifest) -> None:
     assert appended.profile == "ordinary"
     assert appended.episode_id == episode_id
     assert history.load_patches()[0].episode_id == episode_id
-    summary = build_revision_summaries(history.load_patches(), result)[0]
+    summary = render_revision_summary(GraphState(), appended, result.state)
     assert summary.profile == "ordinary"
     assert summary.episode_id == episode_id
 

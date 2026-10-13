@@ -699,9 +699,8 @@ explanations, such as validator exit codes, the launch helper, and the write
 boundary, live only in the master. A turn lists its attachments as plain lines
 with no rules beside them: what they may do is enforced, not explained. Current values take precedence over the
 master. Every master says so: a listed value replaces its own for that launch,
-and an unlisted one is its own. A chat's graph revision is the one value
-compared with the chat's last committed turn instead, so its own Apply is not
-announced back. An Experiment watcher-maintenance correction restates the rules
+and an unlisted one is its own. The graph head is the one value compared with
+the owner's seen head instead (see Graph history queries below). An Experiment watcher-maintenance correction restates the rules
 for its one resource, because that resource can be newer than the master. It ends with one pointer to the master. The pointer says this is the contract given at
 the session's start, and to read it only after a compaction or a lost grip on
 the graph rules or authority. A continuation never resends the master and never
@@ -739,6 +738,49 @@ Every owner builds its own parts and calls `compose` in
 `src/rcp/runs/session_master.py`. The
 [decision](../decisions/2026-09-27-continuations-point-to-their-master.md)
 explains the tradeoffs.
+
+## Graph history queries
+
+Every graph-reading run except episode reports and origin-bound artifact edits
+can ask RCP how the graph changed, through two read-only command verbs:
+`graph_diff <head A> <head B> [ids]` (or `--branch-changes <branch>`) and
+`graph_log <id> [--at <head>]`. Heads use the target-qualified grammar in
+[Graph, history, and transitions](graph-history-and-transitions.md#history-reads).
+That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
+its children, branch merge and its corrections, Seed and Refresh, the paper
+coach, and nightly consolidation. A run may read main and every branch of its
+project; its writes stay pinned to its one target.
+
+Each change in an answer gives the entity id, type, title, change kind, and
+every changed field's before and after value, never unchanged fields. Each step
+gives its head, producer, task id, episode id, and authored summary; inherited
+main steps on a branch log are marked inherited. A log lists its steps newest
+first, like `git log`. Answers are bounded by count
+and encoded size in `limits.py` and continue through a cursor pinned to the
+resolved heads, so a moving `@head` never shifts between pages. A long value
+continues on the next page rather than being cut. Neither verb is a mutating
+verb, writes a file, or contributes graph authority (invariant 4b).
+
+Each owner resolves one read scope at launch: project, readable targets, and the
+allowed verb set. The command handler checks every request and cursor against
+that same object, and the prompt renders it. Discuss, whose broker otherwise
+allows exactly `ask`, gains the two verbs the same way; a report or artifact
+edit keeps its command revocation. One prompt helper renders the query section
+from the launch's read scope; a session master or shared prompt finalizer that
+receives a scope appends it, so an owner passes its scope rather than writing
+the section itself.
+
+**Seen head.** RCP records, per conversation or episode lineage, provider
+session, and graph target, the head of the last graph snapshot a turn received.
+A turn's own Apply advances it only when no other accepted step landed between
+the snapshot and that Apply, so a teammate's mid-turn edit is never hidden. It
+is written when the turn commits, never at prompt construction, on a failed
+attempt, or because the agent queried a later head. A continuation whose staged
+head differs lists `current.graph_changed_since: <seen head>`; an unknown seen
+head lists nothing and is not "unchanged". The master states once how to query
+that range. Seed and Refresh get their refresh range the same way, and a
+consolidation run gets its covered head, which stays separate from any seen
+head.
 
 ## Graph rules in task contracts
 

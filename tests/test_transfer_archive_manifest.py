@@ -115,6 +115,7 @@ PROJECT_LINKED_TABLES = {
     "graph_run_outputs",
     "graph_run_receipts",
     "graph_runs",
+    "graph_seen_heads",
     "graph_watcher_reconciliation",
     "operational_lessons",
     "lesson_command_receipts",

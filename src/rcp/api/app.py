@@ -100,6 +100,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.dependency_check import DependencyChecker
 from rcp.digest import DigestProjector
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     ARTIFACT_IMPORT_RETRY_SECONDS,
@@ -1912,6 +1913,8 @@ def create_app(
                         SESSION_SLICE_CACHE_LIMITS,
                         layout="directories",
                     ).sweep()
+                for source_root, _slice_root in discover_project_cache_roots(app_data):
+                    graph_history_cache(source_root.parent / GRAPH_HISTORY_DIRECTORY).sweep()
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 startup_maintenance.append(asyncio.create_task(sweep_stale_control_sockets()))
                 if default_state_host:

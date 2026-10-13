@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
 from rcp.agents.context import ChatContext
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -268,6 +269,9 @@ async def stage_work_turn(
             if execution is not None
             else None
         )
+        graph_read_scope = GraphReadScope(
+            project_id=write_scope.project_id, target=service.history.graph_target
+        )
         validator_lifecycle = start_validator_mailbox(
             service,
             patch_inputs.validator_staged,
@@ -275,6 +279,7 @@ async def stage_work_turn(
             budget=validator_budget,
             compute_commands=compute_commands,
             run_truth_scope=context.run_truth_scope,
+            graph_read_scope=graph_read_scope,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = (
@@ -322,6 +327,7 @@ async def stage_work_turn(
             for item in context.repositories
         ]
         turn = WorkTurn(
+            graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,
             request=request,

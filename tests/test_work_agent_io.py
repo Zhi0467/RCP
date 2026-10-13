@@ -1752,10 +1752,16 @@ async def test_graph_only_repair_never_acquires_browser(
 ):
     from rcp.providers.browser_grant import BrowserGrant
 
+    from .test_experiment_loop_agent_io import _experiment_patch, _loop_request
+
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    request = _request().model_copy(
+    request = _request()
+    if repair_module is loop_module:
+        append_fixture_patch(service, _experiment_patch())
+        request = _loop_request(str(uuid.uuid4()), request.chat_id, invocation=1)
+    request = request.model_copy(
         update={"message": None, "session_id": "repair-session", "browser_requested": True}
     )
     request = work_module._resolve_work_execution(service, request, None).request
@@ -1808,3 +1814,28 @@ async def test_graph_only_repair_never_acquires_browser(
     assert grants == [BrowserGrant()]
     assert request.browser_requested is True
     assert execution.store.agent_task(execution.operation_id).request["browser_requested"] is True
+
+
+@pytest.mark.parametrize("entity", ["node", "edge"])
+def test_graph_command_arguments_round_trip_long_canonical_ids(entity):
+    from rcp.agents.command_protocol import GraphDiffArguments, GraphLogArguments
+    from rcp.core.models import Edge, Evidence
+
+    node = Evidence(
+        id="ev/" + "long-id-" * 40,
+        type="evidence",
+        title="Long identity",
+        observation="A valid canonical node.",
+        origin="analytic",
+    )
+    edge = Edge(
+        id=f"{node.id}::addresses::blk/target",
+        source=node.id,
+        relation="addresses",
+        target="blk/target",
+    )
+    entity_id = node.id if entity == "node" else edge.id
+    diff = GraphDiffArguments.model_validate({"from": "main@0", "to": "@head", "ids": [entity_id]})
+    log = GraphLogArguments(id=entity_id)
+    assert GraphDiffArguments.model_validate_json(diff.model_dump_json()).ids == [entity_id]
+    assert GraphLogArguments.model_validate_json(log.model_dump_json()).id == entity_id

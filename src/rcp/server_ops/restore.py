@@ -46,6 +46,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Graph seen heads (v48), fresh plus the immutable fixture upgrades
+        # and in-place upgrades.
+        "005c7faf995666de703a7d5fa51e41ad8aaa0514c345f8c6289aeb93a52ddb25",
+        "1efb0f24ddae48d026f6c1c1399cfbddf31bf3dc08a119a7ef2870dea6c940de",
+        "1f73be94ff8bbc7e6b7c19df4a14b8c9c6bb19281a672eefdf20c31f36ad6094",
+        "47259f331d9a576b06ae672b40d430125d3dee79e81d49f35d2c2163c2e8e838",
+        "489c353c87910f39ea932795dafa01858fb49a204228804c25e3e0c471a94326",
+        "89d3a4f88f9bccca43dce02ff6f969d948f2667226fc83eac93fc521fcaf70e0",
+        "a7c2c6815b141585f4c43947c469ce2252a3a5021db70210dcf5c1d5e337bc0c",
+        "d46122657ecfe5910d2f7f9b06fd7f7476db837fff851d6cda84c87f332a02e4",
+        "5bbf9a7ce6b4b22463e8196e2a964eae2f223874a7241c5a16ae28430285c01d",
+        "9442c15a01b9a012cfe53b1f7c844f928ab171bcbc789d003e727d8af052afb7",
+        "ceab96cc97971f3fc8a70872fa7dde9c7e466fb70bf3ec1c032835aaafbf6f0d",
         # Branch names (v47), fresh plus the immutable fixture upgrades
         # and in-place upgrades.
         "d725078e7dd9329f9dd3e3a6fb80c44fa0222875d5070ffb61fa880211e6397e",

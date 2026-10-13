@@ -357,6 +357,8 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(manifest, tmp_path,
             request=request,
             context=service.assemble_chat(request),
             compute_commands=None,
+            service=service,
+            graph_read_scope=None,
         ),
     )
     prompt = _loop_read_context(turn)

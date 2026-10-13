@@ -6,12 +6,14 @@ from typing import Literal
 
 from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_protocol import CommandVerb
+from rcp.agents.graph_read_scope import GRAPH_HISTORY_VERBS, GraphReadScope
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     ask_contract,
+    graph_read_contract,
     protected_belief_names,
     selected_skill_section,
     write_scope_section,
@@ -28,7 +30,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v5"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v6"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -126,6 +128,7 @@ def _command_invocations(
     commands = "\n".join(
         f"  - `{invocation}`"
         for verb in auto_research_allowed_verbs(role)
+        if verb not in GRAPH_HISTORY_VERBS
         for invocation in invocations[verb]
     )
     return f"""Staged command client:
@@ -419,6 +422,7 @@ def auto_research_prompt_values(
         "patch": patch_path,
         "patch_schema": output_schema_path,
         "command_prefix": command_client,
+        "history_client": command_client,
         "repositories": {
             item["alias"]: (
                 {"host": item["host"], "path": item["path"]} if item["host"] else item["path"]
@@ -464,6 +468,7 @@ def auto_research_orchestrator_task_contract(
     output_schema_path: str,
     command_client: str,
     write_scope: ProjectWriteScope,
+    graph_read_scope: GraphReadScope | None = None,
     ontology_extensions: bool = False,
     skill_pointers: list[dict[str, object]] | None = None,
     instruction_path: str | None = None,
@@ -474,7 +479,8 @@ def auto_research_orchestrator_task_contract(
     """Build the immutable contract for the sole elevated Auto-research profile."""
     child_profiles = child_profiles or {}
 
-    return f"""# RCP auto-research orchestrator contract
+    return graph_read_contract(
+        f"""# RCP auto-research orchestrator contract
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
@@ -518,7 +524,10 @@ Worker coordination:
 {REPLY_STYLE}
 Finish each turn with that reply, including the next useful continuation. Do not claim that RCP
 accepted a Patch until RCP says so.
-"""
+""",
+        graph_read_scope,
+        command_client,
+    )
 
 
 def auto_research_worker_task_contract(
@@ -536,12 +545,14 @@ def auto_research_worker_task_contract(
     command_client: str,
     reply_key: str,
     write_scope: ProjectWriteScope,
+    graph_read_scope: GraphReadScope | None = None,
     ontology_extensions: bool = False,
     messages_path: str | None = None,
 ) -> str:
     """Build the contract for an ordinary Work agent seated by an Auto-research episode."""
 
-    return f"""# RCP auto-research worker contract
+    return graph_read_contract(
+        f"""# RCP auto-research worker contract
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
@@ -590,7 +601,10 @@ Coordination:
 {REPLY_STYLE}
 Your final assistant message is read by the orchestrator and the human. Besides the result, say
 what the orchestrator still needs to decide or do.
-"""
+""",
+        graph_read_scope,
+        command_client,
+    )
 
 
 def auto_research_orchestrator_continuation_contract(
@@ -604,6 +618,7 @@ def auto_research_orchestrator_continuation_contract(
     output_schema_path: str,
     command_client: str,
     write_scope: ProjectWriteScope,
+    graph_read_scope: GraphReadScope | None = None,
     ontology_extensions: bool = False,
     skill_pointers: list[dict[str, object]] | None = None,
     messages_path: str | None = None,
@@ -621,7 +636,8 @@ def auto_research_orchestrator_continuation_contract(
     }[mode]
     if mode == "retry" and retry_diagnostics_path is None:
         raise ValueError("Auto-research orchestrator Retry requires exact diagnostics")
-    return f"""# RCP auto-research orchestrator continuation
+    return graph_read_contract(
+        f"""# RCP auto-research orchestrator continuation
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
@@ -668,7 +684,10 @@ file, graph-condition, worker-seating, and no-polling rules still apply.
 {REPLY_STYLE}
 Finish with that reply, including the next useful continuation. Do not claim that RCP accepted a
 Patch until RCP says so.
-"""
+""",
+        graph_read_scope,
+        command_client,
+    )
 
 
 _RESUME = "RCP resumed this interrupted {actor} allocation. Continue from its retained progress."
@@ -730,11 +749,12 @@ def auto_research_patch_correction_parts(
     *,
     actor: Literal["orchestrator", "worker"],
     diagnostics_path: str,
+    graph_read_scope: GraphReadScope | None = None,
+    command_client: str = "",
 ) -> list[str]:
-    """The validate-only correction of an actor's retained Patch, in its own session.
+    """The validation and history correction of an actor's retained Patch, in its own session.
 
-    The restriction matches the correction's command dispatcher, which refuses every verb
-    except `validate`.
+    The correction dispatcher permits validation and this launch's read scope.
     """
 
     return [
@@ -742,7 +762,8 @@ def auto_research_patch_correction_parts(
         "RCP could not accept your retained Patch. Correct only that Patch in this same session; "
         "the completed operational result stands.\n\n"
         f"- Exact failure diagnostics: `{diagnostics_path}`",
-        "This correction's `command_prefix` below permits only `validate` with the Patch path. "
+        "This correction's `command_prefix` permits `validate` with the Patch path and the "
+        "history reads in the retained master. "
         "Run it before removing or weakening any semantic operation and after each rewrite. Do "
         "not Apply, send mail, dispatch children, register watchers, or finish the episode.",
     ]
