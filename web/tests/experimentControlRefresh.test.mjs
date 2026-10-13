@@ -12,9 +12,7 @@ const server = await createServer({
 });
 const {
   activeBranchMergeTask,
-  experimentControlsNeedWrapupPolling,
   taskActionNeedsAuthoritativeProjectReload,
-  loadExperimentWatcherPoll,
   terminalTaskNeedsAuthoritativeProjectReload,
 } = await server.ssrLoadModule("/src/App.tsx");
 const { cloneAgentTasksSnapshot, mergeTaskListRead, reconcileKnownActiveTasks } =
@@ -94,22 +92,6 @@ test("terminal Experiment work refetches control state even without a graph revi
   );
 });
 
-test("hidden Experiment report wrap-up keeps authoritative polling alive", () => {
-  assert.equal(
-    experimentControlsNeedWrapupPolling({
-      "experiment/demo": { health: "wrapping_up" },
-    }),
-    true,
-  );
-  assert.equal(
-    experimentControlsNeedWrapupPolling({
-      "experiment/demo": { health: "completed" },
-      "experiment/other": { health: "needs_action" },
-    }),
-    false,
-  );
-});
-
 test("a fast merge completion remains observable while another task keeps polling active", () => {
   const main = withTaskAnswers({ operation_id: "main", kind: "auto_research", status: "running" });
   const merge = withTaskAnswers({ operation_id: "merge", kind: "branch_merge", status: "queued" });
@@ -150,46 +132,4 @@ test("Experiment Resume and Retry refetch authoritative control state", () => {
   assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "retry"), true);
   assert.equal(taskActionNeedsAuthoritativeProjectReload(experimentLoop, "pause"), false);
   assert.equal(taskActionNeedsAuthoritativeProjectReload(ordinaryWork, "retry"), false);
-});
-
-test("pending Experiment watcher polling always refreshes control state", async () => {
-  const watcher = {
-    watcher_id: "watcher-1",
-    status: "active",
-    notified: false,
-    notification_operation_id: null,
-    continuation: { patch_kind: "experiment_loop" },
-  };
-  const requested = [];
-  const base = "/api/projects/project-1";
-  const result = await loadExperimentWatcherPoll(async (path) => {
-    requested.push(path);
-    if (path.endsWith("/watchers")) return [watcher];
-    if (path.endsWith("/tasks")) return [];
-    return { experiment_control: { "experiment/demo": { operational: {} } } };
-  }, base);
-
-  assert.deepEqual(requested, [`${base}/watchers`, `${base}/tasks`, base]);
-  assert.deepEqual(result.watchers, [watcher]);
-  assert.ok(result.project.experiment_control);
-});
-
-test("branch polling retains all-target watchers and tasks while scoping the graph", async () => {
-  const requested = [];
-  const base = "/api/projects/project-1";
-  const watchers = ["main", "branch-one", "branch-two"].map((watcher_id) => ({ watcher_id }));
-  const result = await loadExperimentWatcherPoll(
-    async (path) => {
-      requested.push(path);
-      return new URL(path, "http://localhost").pathname.endsWith("/watchers") ? watchers : {};
-    },
-    base,
-    { kind: "branch", branch_id: "episode-branch" },
-  );
-  assert.deepEqual(result.watchers, watchers);
-  assert.deepEqual(requested, [
-    `${base}/watchers?all_targets=true&branch_id=episode-branch`,
-    `${base}/tasks`,
-    `${base}?branch_id=episode-branch`,
-  ]);
 });

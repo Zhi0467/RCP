@@ -20,14 +20,16 @@ import {
   formatTokenCount,
 } from "./campaigns";
 import { MarkdownAnswer } from "../core/chatMarkdown";
-import { ApiError, fetchEpisodeTimeline } from "../core/api";
+import { ApiError } from "../core/api";
 import { useRunArtifacts } from "./useRunArtifacts";
+import { useResource, useRefreshRuntime } from "../core/useResource";
+import { resourceKeyId } from "../core/resourceStore";
+import { episodeProfile } from "./episodeResources";
 import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
 import type {
   AgentTask,
   Episode,
-  EpisodeTimelineResponse,
   ExperimentLoopIndexEntry,
   GraphRef,
   MergeEpisodeBody,
@@ -105,9 +107,11 @@ export function AutoResearchEpisodeCard({
   const [localError, setLocalError] = useState<string | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const apiBase = `/api/projects/${encodeURIComponent(episode.project_id)}`;
-  const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
-  const [timelineRefresh, setTimelineRefresh] = useState(0);
-  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const { store } = useRefreshRuntime();
+  const timelineProfile = episodeProfile(episode.project_id, episode.episode_id);
+  const timelineResource = useResource(detailId, expanded ? timelineProfile : null);
+  const timeline = timelineResource.value?.timeline ?? null;
+  const timelineError = timelineResource.error ? String(timelineResource.error) : null;
   // Turn progress updates task rows without touching the episode's own timestamp.
   const taskSignature = episode.tasks
     .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
@@ -140,25 +144,6 @@ export function AutoResearchEpisodeCard({
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
   const episodeTimestamp = formatTimestamp(episode.created_at);
   const showStop = episode.can_stop || stopBusy;
-
-  useEffect(() => {
-    if (!expanded) return;
-    let cancelled = false;
-    void fetchEpisodeTimeline(apiBase, episode.episode_id).then(
-      (response) => {
-        if (!cancelled) {
-          setTimeline(response);
-          setTimelineError(null);
-        }
-      },
-      (error) => {
-        if (!cancelled) setTimelineError(error instanceof Error ? error.message : String(error));
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, episode.episode_id, episode.updated_at, expanded, taskSignature, timelineRefresh]);
 
   useEffect(() => {
     if (initiallyExpanded) setExpanded(true);
@@ -206,7 +191,7 @@ export function AutoResearchEpisodeCard({
         messageRequest.current.id,
       );
       messageRequest.current = null;
-      setTimelineRefresh((value) => value + 1);
+      store.invalidate(resourceKeyId(timelineProfile.key));
       setMessage("");
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
@@ -492,9 +477,16 @@ export function AutoResearchEpisodeCard({
           )}
 
           {timelineError && (
-            <div className="campaign-run-error" role="alert">
-              {timelineError}
-            </div>
+            <button
+              type="button"
+              className="button icon-button"
+              style={{ borderColor: "var(--danger, #c33)" }}
+              aria-label="Timeline stale. Retry"
+              title={timelineError}
+              onClick={() => store.invalidate(resourceKeyId(timelineProfile.key))}
+            >
+              <RotateCcw size={14} />
+            </button>
           )}
           {timeline?.episode_id === episode.episode_id && (
             <EpisodeTimeline

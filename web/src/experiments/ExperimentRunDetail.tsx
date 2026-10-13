@@ -8,9 +8,11 @@ import {
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
-import { ExternalLink, FlaskConical } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
-import { fetchEpisodeTimeline, loadEpisodes } from "../core/api";
+import { ExternalLink, FlaskConical, RotateCcw } from "lucide-react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { resourceKeyId } from "../core/resourceStore";
+import { useRefreshRuntime, useResource } from "../core/useResource";
+import { episodeProfile } from "./episodeResources";
 import { projectViewHash } from "../core/graphTarget";
 import { useRunArtifacts } from "./useRunArtifacts";
 import { RunArtifacts } from "./RunArtifacts";
@@ -29,8 +31,6 @@ import {
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../core/experimentGuidance";
 import type {
   AgentRunConfig,
-  EpisodeTask,
-  EpisodeTimelineResponse,
   ExperimentLoopHealth,
   ProjectSnapshot,
   WatcherRecord,
@@ -162,53 +162,21 @@ export function ExperimentRunDetail({
   const operational = control.operational;
   const session = operational.session;
   const episode = control.episode;
-  const [browserTasks, setBrowserTasks] = useState<EpisodeTask[]>([]);
-  const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
-  const [timelineError, setTimelineError] = useState<string | null>(null);
+  const resourceOwner = useId();
+  const { store } = useRefreshRuntime();
+  const episodeResource = useResource(
+    resourceOwner,
+    episode ? episodeProfile(episode.project_id, episode.episode_id) : null,
+  );
+  const browserTasks = episodeResource.value?.episode?.tasks ?? [];
+  const timeline = episodeResource.value?.timeline ?? null;
+  const timelineError = episodeResource.error ? String(episodeResource.error) : null;
   const runArtifacts = useRunArtifacts(
     apiBase,
     episode?.episode_id,
     true,
     `${episode?.updated_at}:${currentTask?.operation_id}:${currentTask?.status}:${currentTask?.updated_at}`,
   );
-  const watcherSignature = run.watchers
-    .map((watcher) => `${watcher.watcher_id}:${watcher.status}:${watcher.completed_at ?? ""}`)
-    .join("|");
-  useEffect(() => {
-    if (!episode) return;
-    let cancelled = false;
-    void Promise.all([
-      fetchEpisodeTimeline(apiBase, episode.episode_id),
-      loadEpisodes(apiBase, "experiment_loop", episode.episode_id),
-    ]).then(
-      ([response, episodes]) => {
-        if (!cancelled) {
-          setTimeline(response);
-          setBrowserTasks(
-            episodes.find((item) => item.episode_id === episode.episode_id)?.tasks ?? [],
-          );
-          setTimelineError(null);
-        }
-      },
-      (error) => {
-        if (!cancelled) setTimelineError(error instanceof Error ? error.message : String(error));
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-    // Turn progress updates the task row, and a watcher stops or completes,
-    // without touching the episode's own timestamp.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- episode is narrowed to its id and updated_at so unrelated control refreshes do not refetch
-  }, [
-    apiBase,
-    episode?.episode_id,
-    episode?.updated_at,
-    currentTask?.operation_id,
-    currentTask?.status,
-    currentTask?.updated_at,
-    watcherSignature,
-  ]);
   const stopUnsettled = control.stop_pending;
   const currentOperationId =
     currentTask?.operation_id ??
@@ -445,9 +413,21 @@ export function ExperimentRunDetail({
       </div>
 
       {timelineError && (
-        <div className="campaign-run-error" role="alert">
-          {timelineError}
-        </div>
+        <button
+          type="button"
+          className="button icon-button"
+          style={{ borderColor: "var(--danger, #c33)" }}
+          aria-label="Timeline stale. Retry"
+          title={timelineError}
+          onClick={() => {
+            if (episode)
+              store.invalidate(
+                resourceKeyId(episodeProfile(episode.project_id, episode.episode_id).key),
+              );
+          }}
+        >
+          <RotateCcw size={14} />
+        </button>
       )}
       {episode && timeline?.episode_id === episode.episode_id && (
         <EpisodeTimeline

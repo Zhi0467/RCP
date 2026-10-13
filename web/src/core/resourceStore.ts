@@ -42,7 +42,7 @@ export interface ResourceView<T> {
   value: T | undefined;
   /** No accepted read yet. */
   loading: boolean;
-  /** The last read failed or the scheduler cannot reach the backend. */
+  /** The last read failed or no longer matches the observed watermark. */
   stale: boolean;
   error: unknown;
   /** Operation ids of commands still waiting on the server. */
@@ -52,6 +52,7 @@ export interface ResourceView<T> {
 interface ResourceState {
   profile: ResourceProfile<unknown>;
   owners: Set<string>;
+  dormantOwners: Set<string>;
   value: unknown;
   hasValue: boolean;
   committed: string | undefined;
@@ -135,6 +136,7 @@ export class ResourceStore {
       state = {
         profile: profile as ResourceProfile<unknown>,
         owners: new Set(),
+        dormantOwners: new Set(),
         value: undefined,
         hasValue: false,
         committed: undefined,
@@ -155,6 +157,7 @@ export class ResourceStore {
       state.profile = profile as ResourceProfile<unknown>;
     }
     state.owners.add(owner);
+    state.dormantOwners.delete(owner);
     this.pump();
     return id;
   }
@@ -165,12 +168,24 @@ export class ResourceStore {
     let removed = false;
     for (const id of targets) {
       const state = this.states.get(id);
-      if (!state || !state.owners.delete(owner) || state.owners.size > 0) continue;
+      if (!state || !state.owners.delete(owner)) continue;
+      state.dormantOwners.delete(owner);
+      if (state.owners.size > 0) continue;
       state.inFlight?.abort();
       this.states.delete(id);
       removed = true;
     }
     if (removed) this.notify();
+  }
+
+  /** Retains a visited view without polling it; register resumes its demand. */
+  suspend(owner: string, ids: Iterable<string>): void {
+    for (const id of ids) {
+      const state = this.states.get(id);
+      if (!state?.owners.has(owner)) continue;
+      state.dormantOwners.add(owner);
+      if (state.owners.size === state.dormantOwners.size) this.fence(state);
+    }
   }
 
   /** Every resource of a project the member can no longer read. */
@@ -203,7 +218,7 @@ export class ResourceStore {
     const seen = new Map<string, ResourceRequest>();
     for (const state of this.states.values()) {
       const key = state.profile.key;
-      if (key.project !== project) continue;
+      if (key.project !== project || state.owners.size === state.dormantOwners.size) continue;
       const entry: ResourceRequest = { name: key.name };
       if (key.ref !== undefined) entry.ref = key.ref;
       if (key.entity !== undefined) entry.entity = key.entity;
@@ -240,13 +255,22 @@ export class ResourceStore {
       const key = state.profile.key;
       if (key.project !== project) continue;
       const version = versions.get(watermarkId(project, key));
-      if (version !== undefined) state.observed = version;
+      if (version !== undefined && version !== state.observed) {
+        state.observed = version;
+        state.view = null;
+      }
     }
+    this.notify();
     this.pump();
   }
 
   private owes(state: ResourceState): boolean {
-    if (state.inFlight || state.retryAt > this.now()) return false;
+    if (
+      state.owners.size === state.dormantOwners.size ||
+      state.inFlight ||
+      state.retryAt > this.now()
+    )
+      return false;
     return !state.hasValue || state.owed || state.committed !== state.observed;
   }
 
@@ -397,6 +421,7 @@ export class ResourceStore {
     if (!state) return;
     state.owed = true;
     state.retryAt = 0;
+    this.changed(state);
     this.pump();
   }
 
@@ -409,7 +434,7 @@ export class ResourceStore {
       state.view = {
         value,
         loading: !state.hasValue,
-        stale: state.error !== undefined,
+        stale: state.error !== undefined || state.owed || state.committed !== state.observed,
         error: state.error,
         pending: state.pending.map((operation) => operation.id),
       };

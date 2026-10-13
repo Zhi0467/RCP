@@ -21,10 +21,13 @@ toggle exposes incoming canonical content in the preview pane, and one reversibl
 Apply action swaps it with the editor content. Only a later human edit re-pins
 the draft and resumes canonical save.
 
-Opening Paper reads the Paper itself before showing an editor, because the
-project snapshot's copy can be older than the saved file; until that read
-answers, the view shows neither an empty editor nor Create introduction. Create
-and save also refresh the project snapshot's copy.
+Paper uses the ordinary project-scoped resource profile for its snapshot and
+coach sessions. Opening it paints accepted cached data immediately; unknown or
+stale absence never offers Create introduction. Resource updates preserve the
+editor buffers. Each save sends the buffer's `draft_revision`; a
+`paper_draft_moved` 409 keeps the typed text, refreshes the resource, and requires
+an explicit retry against the refreshed revision. Canonical `base_hash` conflict
+handling remains unchanged.
 
 No conflict strategy may discard either whole version or silently overwrite the
 human draft.

@@ -26,7 +26,7 @@ import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { listenDesktopEvent } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { errorMessage } from "../core/errors";
-import { startLiveEpisodePolling } from "../experiments/useEpisodeDialogs";
+import { startLiveArtifactPolling } from "./liveArtifactPolling";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
 import type { ArtifactViewerState } from "../core/types";
 import { DraggableWindow } from "../ui/DraggableWindow";
@@ -182,7 +182,7 @@ export function ArtifactViewer() {
     window.addEventListener("message", message);
     document.addEventListener("visibilitychange", visible);
     visible();
-    const stop = startLiveEpisodePolling(window, load, showError, () => {});
+    const stop = startLiveArtifactPolling(window, load, showError, () => {});
     return () => {
       disposed = true;
       controller.abort();

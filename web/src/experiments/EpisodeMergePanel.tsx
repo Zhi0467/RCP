@@ -33,6 +33,7 @@ export function EpisodeMergePanel({
   onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
 }) {
   const [preview, setPreview] = useState<MergePreview | null>(null);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
   // The target the shown preview answered; Merge waits until it matches the typed one.
   const [previewTarget, setPreviewTarget] = useState<string | null | undefined>(undefined);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -66,6 +67,7 @@ export function EpisodeMergePanel({
   }, [branchSnapshot]);
 
   useEffect(() => {
+    if (!open) return;
     let current = true;
     setPreviewError(null);
     // The old preview no longer answers this key; Merge waits for the new one.
@@ -74,6 +76,7 @@ export function EpisodeMergePanel({
       .then((next) => {
         if (!current) return;
         setPreview(next);
+        setPreviewKey(refreshKey);
         setPreviewTarget(target);
         if (next.code && !target) setTargetDraft(next.code.target_branch);
       })
@@ -84,13 +87,14 @@ export function EpisodeMergePanel({
       current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshKey already carries target and the episode fields that need a new preview
-  }, [apiBase, episode.episode_id, refreshKey]);
+  }, [apiBase, episode.episode_id, refreshKey, open]);
 
   const hasGraphBranch = episode.graph_branch !== null;
   const counts = preview ? mergeDiffCounts(preview.graph.paths) : null;
   const squash = preview !== null && squashAllowed(preview);
   const historyMode = squash ? choices.historyMode : "merge";
-  const previewCurrent = previewAnswersDraft(preview, previewTarget, target, targetDraft);
+  const previewCurrent =
+    previewKey === refreshKey && previewAnswersDraft(preview, previewTarget, target, targetDraft);
 
   const merge = async (confirmUnfinishedJobs = false) => {
     if (!preview || !previewCurrent || disabled) return;
@@ -144,7 +148,7 @@ export function EpisodeMergePanel({
           className="button secondary compact campaign-branch-merge"
           type="button"
           aria-expanded={open}
-          disabled={disabled || !preview}
+          disabled={disabled}
           onClick={() => setOpen(!open)}
         >
           {busy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}

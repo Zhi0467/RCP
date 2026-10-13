@@ -59,13 +59,14 @@ opening screen, the header and view stay mounted, and the previous ref's
 snapshot stays on screen with the panel inert until the new ref's snapshot
 arrives, under a thin progress line. The loading screen appears only for the
 first open of a project that is not on screen; identity re-checks and backend
-changes keep the displayed project inert instead. When a project opens, live
-branch snapshots load one at a time in the background into the per-ref cache,
-which never displaces a visited ref's state or draft, so a first switch usually
-paints at once. A ref visited before restores from its `(project, ref)` tab state. The
-session's target fences still drop responses for a ref already left, and each
-ref keeps its own staged draft. Heartbeat single-flight is keyed by project and
-ref. All project view URLs come from one helper over (project, ref, view) plus
+changes keep the displayed project inert instead. Open tabs retain UI state only:
+ref, selections, panels, drafts, scroll, and editor generations. Backend resources
+live in the shared store; reopening a cached ref paints before validation. The
+current ref remains subscribed while its tab is hidden; other visited refs stay
+dormant until reopened. Closing releases the tab's resources. There is no count
+cap or eager warming of unvisited branches. Immutable resource keys fence late
+responses for a ref already left, and each ref keeps its own staged draft.
+All project view URLs come from one helper over (project, ref, view) plus
 an optional chat or episode; an exact Experiment run route keeps its own
 `experiment`/`target`/`branch` fields.
 
@@ -613,10 +614,15 @@ second job-list polling lifecycle.
 
 ## Atomic client project snapshots
 
-The Web client stores a bounded project snapshot keyed by project id and exact
-head. A successful mutation atomically replaces graph, control, guidance,
-transition manifest, and derived inputs. The client never overlays a new graph
-on an old control map and never implements transition rules.
+The Web client holds one atomic `graph` resource per project and ref. Graph,
+control, guidance, attention, and head are accepted together, including control
+changes at an equal graph revision. History and the parameterized transition
+manifest use the same graph watermark. The client never overlays a new graph on
+an old control map and never implements transition rules. Human drafts and
+preview coordination remain local per ref and reconcile against accepted data.
+Chats, watchers, episode indexes and entity timelines use their own resources;
+transcripts are keyed by their owning ref. Merge previews remain demand-only,
+keyed by the episode, target, and preview inputs.
 
 Human edits that the backend manifest proves rule-inert may update a local draft
 immediately. A possible trigger, absent manifest, or stale tag previews through

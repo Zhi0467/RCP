@@ -1,3 +1,21 @@
+import { useRefreshRuntime, useResource } from "./core/useResource";
+import { resourceKeyId } from "./core/resourceStore";
+import {
+  graphProfile,
+  graphResourceKey,
+  manifestProfile,
+  refsProfile,
+  historyProfile,
+} from "./graph/graphResources";
+import { chatsResourceProfile } from "./chat/chatResources";
+import {
+  watchersProfile,
+  watcherResourceKey,
+  episodesProfile,
+  experimentIndexProfile,
+} from "./experiments/episodeResources";
+import { paperProfile } from "./paper/paperResources";
+import type { PaperEditorState } from "./paper/PaperWorkspace";
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
@@ -71,7 +89,6 @@ import {
   conversationHref,
   chatEntryConversationId,
   groupChatConversations,
-  chatIdForTask,
   startConversationTurn,
   unsentConversation,
   type ChatKind,
@@ -82,7 +99,6 @@ import {
   archiveEpisode,
   ApiError,
   loadEpisodes,
-  loadGraphRefs,
   loadProjectExperimentEpisodes,
   loadTeamSessions,
   loadProjectReadiness,
@@ -124,7 +140,6 @@ import {
   type ProjectHashRoute,
 } from "./experiments/experimentBoardModel";
 import {
-  decodeTransitionTriggerManifest,
   reduceProjectTransitionProjection,
   transitionSnapshotRefusal,
   transitionSyncCompletionDisposition,
@@ -132,7 +147,7 @@ import {
 } from "./graph/projectTransition";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./ui/floatingWindow";
 import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./experiments/campaigns";
-import { cloneAgentTasksSnapshot, useAgentTasks } from "./agents/useAgentTasks";
+import { useAgentTasks } from "./agents/useAgentTasks";
 import { useActorIdentity } from "./desktop/useActorIdentity";
 import {
   cloneChatStateSnapshot,
@@ -142,28 +157,20 @@ import {
   visibleUnreadChatId,
 } from "./chat/useChatState";
 import { useDesktopShell } from "./desktop/useDesktopShell";
-import { startLiveEpisodePolling, useEpisodeDialogs } from "./experiments/useEpisodeDialogs";
+import { useEpisodeDialogs } from "./experiments/useEpisodeDialogs";
 import { emptyGraph, useGraphSelection } from "./graph/useGraphSelection";
 import {
   cloneProjectHistorySnapshot,
   useProjectHistory,
   validationNoticeId,
 } from "./graph/useProjectHistory";
-import {
-  EXPERIMENT_BOARD_POLL_DELAY_MS,
-  startProjectCachePolling,
-  useProjectTabs,
-} from "./projects/useProjectTabs";
+import { EXPERIMENT_BOARD_POLL_DELAY_MS, useProjectTabs } from "./projects/useProjectTabs";
 import {
   cachedSnapshotCanReplace,
   canonicalGraphHead,
   latestSnapshotRequestCanApply,
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
-  projectHeartbeatSnapshotDisposition,
-  heartbeatNamesUnknownId,
-  heartbeatTaskStatusMoved,
-  projectHeartbeatMetadataChanged,
   projectSettingsSavedProject,
   RETAIN_ALL_PROJECT_READINESS,
   serializeProjectSessionTabState,
@@ -239,13 +246,11 @@ import type {
   ExperimentControlState,
   ExperimentStartResponse,
   LoopOverlap,
-  GraphRevisionSnapshot,
   GraphNode,
   GraphState,
   GraphTargetRef,
   GraphUpdateRecovery,
   Health,
-  PaperSnapshot,
   ProjectCard,
   ProjectInvitation,
   ProjectSnapshot,
@@ -340,20 +345,12 @@ import {
   shouldRequestProviderReadiness,
 } from "./projectReadiness";
 import {
-  type CachedProjectTabState,
-  canonicalRevisionNeedsReload,
+  type ProjectTabUiState,
   emptyProjectCounts,
-  loadExperimentWatcherPoll,
-  loadGraphRevision,
-  openProjectSequence,
-  projectIsStillReadable,
-  projectWatchersPath,
   projectWithTransitionProjection,
-  reconcileInactiveProjectTabState,
 } from "./projectSnapshot";
 import {
   activeBranchMergeTask,
-  experimentControlsNeedWrapupPolling,
   isExperimentLoopRecovery,
   retryProfileKind,
   taskActionNeedsAuthoritativeProjectReload,
@@ -388,18 +385,9 @@ export {
   shouldRequestProviderReadiness,
 } from "./projectReadiness";
 export type { ProjectReadinessGeneration } from "./projectReadiness";
-export {
-  canonicalRevisionNeedsReload,
-  loadExperimentWatcherPoll,
-  loadGraphRevision,
-  openProjectSequence,
-  projectIsStillReadable,
-  projectWithGraph,
-  reconcileInactiveProjectTabState,
-} from "./projectSnapshot";
+export { projectWithGraph } from "./projectSnapshot";
 export {
   activeBranchMergeTask,
-  experimentControlsNeedWrapupPolling,
   retryProfileKind,
   taskActionNeedsAuthoritativeProjectReload,
   taskRetryRequestBody,
@@ -504,10 +492,6 @@ function ArtifactsSubnav({
       ))}
     </div>
   );
-}
-
-function pageIsHidden(): boolean {
-  return document.visibilityState === "hidden";
 }
 
 export function AcceptanceAgentIndicator({
@@ -709,7 +693,6 @@ function MemberApp({
     dispatchProjectSession,
     getProjectSessionState,
     beginProjectSnapshotRequest,
-    projectSnapshotRequestIsCurrent,
     updateProjectHumanDraft,
     beginProjectSync,
     restoreProjectSessionTab,
@@ -718,7 +701,6 @@ function MemberApp({
     project: sessionProject,
     transitionHead,
     transitionRulesetTag,
-    transitionManifestRefresh,
     draftTransitionProjection,
     draftPreviewConflict,
     draftPreviewPending,
@@ -753,24 +735,21 @@ function MemberApp({
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
-    cacheProjectSnapshot,
     clearProjectCache,
-    cachedProjectSnapshotForOpen,
     rememberLeftGraphTarget,
     cachedProjectStateForOpen,
-    inactiveCachedProjectState,
-    updateInactiveProjectStates,
-    isProjectTabOpen,
-    projectIdsForHeartbeat,
     adjacentProjectId,
-    runProjectHeartbeat,
-  } = useProjectTabs<CachedProjectTabState>({
+  } = useProjectTabs<ProjectTabUiState>({
     initialProjectId: initialRoute.project.projectId,
     initialSetupOpen: initialRoute.setupOpen,
     projectIndexReady: backendSessionReady,
     project: sessionProject,
     reportError: reportErrorNotice,
   });
+  const graphView = useResource(
+    `${projectId}:graph-view`,
+    backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
+  );
   const { project: targetProject, humanDraft } = projectDraftPreviewEffectInputs(
     projectSession,
     projectId,
@@ -789,7 +768,11 @@ function MemberApp({
   const displayedProjectRef = useRef(project);
   displayedProjectRef.current = project;
   const graph = project?.graph ?? emptyGraph;
-  const paper = project?.paper ?? null;
+  const paperResource = useResource(
+    `${projectId}:paper-nav`,
+    backendSessionReady && projectId ? paperProfile(projectId) : null,
+  );
+  const paper = paperResource.value?.paper ?? project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
@@ -813,10 +796,29 @@ function MemberApp({
     // A failed read keeps the last snapshot inert; only a target paint releases it.
     if (heldRefProject && targetProject) setHeldRefProject(null);
   }, [heldRefProject, targetProject]);
+  useEffect(() => {
+    if (graphView.error && !graphView.value) {
+      setLoading(false);
+      setProjectReconciliation("failed");
+      setNotice({ kind: "error", text: String(graphView.error) });
+    }
+  }, [graphView.error, graphView.value]);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
-  const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
-  const watchersRef = useRef(watchers);
-  watchersRef.current = watchers;
+  const { store } = useRefreshRuntime();
+  const watcherView = useResource(
+    `${projectId}:watcher-view`,
+    backendSessionReady && projectId ? watchersProfile(projectId, graphTarget) : null,
+  );
+  const watchers = useMemo(() => watcherView.value ?? [], [watcherView.value]);
+  const setWatchers = useCallback(
+    (update: WatcherRecord[] | ((current: WatcherRecord[]) => WatcherRecord[])) => {
+      if (!projectId) return;
+      const id = resourceKeyId(watcherResourceKey(projectId, graphTarget));
+      const current = store.view<WatcherRecord[]>(id).value ?? [];
+      store.write(id, typeof update === "function" ? update(current) : update);
+    },
+    [store, projectId, graphTarget],
+  );
   const [providerReadinessRequests, setProviderReadinessRequests] = useState<
     Record<string, ProviderReadinessRequestState>
   >({});
@@ -891,7 +893,6 @@ function MemberApp({
     graphTarget: GraphTargetRef;
     setupOpen: boolean;
   } | null>(null);
-  const projectOpenInterrupted = useRef(false);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
     projectId: string;
@@ -902,7 +903,8 @@ function MemberApp({
   const providerReadinessRequestsInFlight = useRef(new Map<string, ProviderReadinessInFlight>());
   const projectReadinessGenerations = useRef(new Map<string, ProjectReadinessGeneration>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
-  const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
+  const paperEditorStates = useRef(new Map<string, PaperEditorState>());
+  const currentProjectStateRef = useRef<Omit<ProjectTabUiState, "viewState"> | null>(null);
   const updateProject = useCallback(
     (update: (current: ProjectSnapshot | null) => ProjectSnapshot | null) => {
       const current = getProjectSessionState().project;
@@ -932,7 +934,6 @@ function MemberApp({
     activityTask,
     beginTasksRead,
     replaceTasks,
-    replaceTasksReadBeforeRestore,
     consumeTerminalTasks,
     upsertTask,
     recordStartedTask,
@@ -943,19 +944,10 @@ function MemberApp({
     beginTaskStart,
     beginTaskAction,
     beginTaskRepair,
-    resetProjectTasks,
-    restoreProjectTasks,
   } = useAgentTasks({ projectId, reportError: reportErrorNotice });
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
   const projectTasksRef = useRef(projectTasks);
   projectTasksRef.current = projectTasks;
-  // Chat-summary refreshes the heartbeat still owes, per project. Each debt is a
-  // fresh object, so a retry clears only the debt it was started for.
-  const chatRefreshOwedRef = useRef(new Map<string, object>());
-  // The last steer epoch each project's heartbeat reported.
-  const steerEpochsRef = useRef(new Map<string, number>());
-  // The task status signal each project's task list was last read under.
-  const taskStatusSignalsRef = useRef(new Map<string, string>());
   const tasks = useMemo(
     () => projectTasks.filter((task) => sameGraphTarget(task.graph_target, graphTarget)),
     [projectTasks, graphTarget],
@@ -1007,14 +999,12 @@ function MemberApp({
     discardDraft,
     ensureConversation,
     refreshChatSummaries,
-    recordTaskUpdates,
-    recordWatcherResults,
     markVisibleChatRead,
     refreshChatReads,
     resetProjectChats,
     restoreProjectChats,
   } = useChatState({
-    projectId,
+    projectId: backendSessionReady ? projectId : null,
     apiBase,
     graphTarget,
     selectedExperimentChatId,
@@ -1045,7 +1035,7 @@ function MemberApp({
     refreshEpisodes,
     refreshEpisodeMessages,
   } = useEpisodeDialogs({
-    projectId,
+    projectId: backendSessionReady ? projectId : null,
     apiBase,
     selectedAutoResearchEpisodeId,
     isActiveProject,
@@ -1062,15 +1052,33 @@ function MemberApp({
       ),
     [episodes],
   );
-  // undefined while loading; null when the list could not be read.
-  const [graphRefs, setGraphRefs] = useState<{
-    projectId: string;
-    refs: GraphRef[] | null;
-    /** The last read failed; refs still hold the last good names for display. */
-    stale?: boolean;
-  } | null>(null);
-  const projectGraphRefs = graphRefs?.projectId === projectId ? graphRefs.refs : undefined;
-  const graphTargetKey = graphSessionKey("", graphTarget);
+  const refsView = useResource(
+    `${projectId}:refs-view`,
+    backendSessionReady && projectId ? refsProfile(projectId) : null,
+  );
+  const projectGraphRefs = refsView.value ?? (refsView.error ? null : undefined);
+  const graphRefs = projectId
+    ? { projectId, refs: projectGraphRefs ?? null, stale: refsView.stale }
+    : null;
+  const setGraphRefsReread = useCallback(
+    (_update: unknown) => {
+      if (projectId) store.invalidate(resourceKeyId(refsProfile(projectId).key));
+    },
+    [store, projectId],
+  );
+  const setGraphRefs = useCallback(
+    (update: (value: typeof graphRefs) => typeof graphRefs) => {
+      if (!projectId) return;
+      const id = resourceKeyId(refsProfile(projectId).key);
+      const next = update({
+        projectId,
+        refs: store.view<GraphRef[]>(id).value ?? null,
+        stale: false,
+      });
+      if (next?.refs) store.write(id, next.refs);
+    },
+    [store, projectId],
+  );
   const branchNamesInUse = useMemo(
     () => (projectGraphRefs ?? []).map((ref) => ref.name),
     [projectGraphRefs],
@@ -1080,36 +1088,6 @@ function MemberApp({
     activeBranchEpisode?.mode === "auto_research"
       ? { name: branchName(projectGraphRefs, graphTarget), episode: activeBranchEpisode }
       : null;
-  // Episode changes move a branch's chain member or merge state; any turn on
-  // the shown ref moves its head, which can also change its merge state.
-  // Opening the picker also rereads it: task and question markers move without a revision.
-  // A rename or archive rereads too, so an older in-flight read cannot restore the old label.
-  const [graphRefsReread, setGraphRefsReread] = useState(0);
-  const graphRefsKey = JSON.stringify([
-    graphRefsReread,
-    graph.revision,
-    episodes.map((episode) => [episode.episode_id, episode.status, episode.graph_branch]),
-  ]);
-  useEffect(() => {
-    if (!projectId || !backendSessionReady) return;
-    let current = true;
-    loadGraphRefs(projectId)
-      .then((refs) => {
-        if (current) setGraphRefs({ projectId, refs });
-      })
-      .catch(() => {
-        // A failed refresh keeps the last good names on screen but disables the picker.
-        if (current)
-          setGraphRefs((previous) =>
-            previous?.projectId === projectId && previous.refs !== null
-              ? { ...previous, stale: true }
-              : { projectId, refs: null },
-          );
-      });
-    return () => {
-      current = false;
-    };
-  }, [backendSessionReady, graphRefsKey, graphTargetKey, projectId]);
   // The branch diff's merge marks come from the same preview the Merge panel reads.
   const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
   const branchMergeKey = activeBranchEpisode
@@ -1140,7 +1118,7 @@ function MemberApp({
     restoreProjectHistory,
     dismissHistoryNotices,
   } = useProjectHistory({
-    projectId,
+    projectId: backendSessionReady ? projectId : null,
     apiBase,
     graphTarget,
     loadedProjectId: project?.id ?? null,
@@ -1159,7 +1137,6 @@ function MemberApp({
   currentProjectStateRef.current = targetProject
     ? {
         ...serializeProjectSessionTabState(projectSession),
-        project: targetProject,
         projectHeaderCollapsed,
         runScope,
         selectedNodeId: selectedNode?.id ?? null,
@@ -1170,12 +1147,13 @@ function MemberApp({
         selectedExperimentRoute,
         selectedAutoResearchEpisodeId,
         dockedNodeIds,
-        ...chatStateSnapshot,
+        ...cloneChatStateSnapshot(chatStateSnapshot),
         dagRelationFocusId,
-        ...agentTasksSnapshot,
-        ...projectHistorySnapshot,
-        usage,
-        watchers,
+        taskInspectorId: agentTasksSnapshot.taskInspectorId,
+        activityTaskId: agentTasksSnapshot.activityTaskId,
+        retryTaskId: agentTasksSnapshot.retryTask?.operation_id ?? null,
+        ...cloneProjectHistorySnapshot(projectHistorySnapshot),
+        paperEditorState: paperEditorStates.current.get(targetProject.id),
       }
     : null;
 
@@ -1185,15 +1163,14 @@ function MemberApp({
       // The routed target, so a branch still loading is remembered too.
       rememberLeftGraphTarget(id, activeGraphTargetRef.current);
       const current = currentProjectStateRef.current;
-      if (!current || current.project.id !== id) return;
-      const selection = captureProjectSelection(id, current.project.graph_target);
+      if (!current || current.projectId !== id) return;
+      const selection = captureProjectSelection(id, current.graphTarget);
       cacheProjectState(id, {
         ...current,
         ...selection,
+        paperEditorState: paperEditorStates.current.get(id),
         ...cloneChatStateSnapshot(current),
-        ...cloneAgentTasksSnapshot(current),
         ...cloneProjectHistorySnapshot(current),
-        watchers: [...current.watchers],
       });
     },
     [cacheProjectState, captureProjectSelection, rememberLeftGraphTarget],
@@ -1215,7 +1192,7 @@ function MemberApp({
   }, [dispatchProjectSession, projectSession.draftReconciliationDiscardedProposalIds]);
 
   const restoreProjectTabState = useCallback(
-    (id: string, state: CachedProjectTabState, requestedRoute?: ProjectHashRoute) => {
+    (id: string, state: ProjectTabUiState, requestedRoute?: ProjectHashRoute) => {
       const discardedProposalIds = state.draftReconciliationDiscardedProposalIds;
       const { next } = restoreProjectSessionTab(id, state, {
         consumeDiscardedProposals: true,
@@ -1226,7 +1203,6 @@ function MemberApp({
       cacheProjectState(id, {
         ...state,
         ...serializeProjectSessionTabState(next),
-        project: next.project,
       });
       authoritativeProjectId.current = id;
       restoreProjectHeader(state.projectHeaderCollapsed);
@@ -1239,10 +1215,13 @@ function MemberApp({
         next.graphTarget,
       );
       restoreProjectChats(state, presented.nodes);
-      restoreProjectTasks(state);
+      selectTaskInspector(state.taskInspectorId);
+      const retry = projectTasksRef.current.find((task) => task.operation_id === state.retryTaskId);
+      if (retry) chooseRetryTask(retry);
+      else closeRetryTask();
       restoreProjectHistory(state);
-      setUsage(state.usage);
-      setWatchers([...state.watchers]);
+      if (state.paperEditorState && !paperEditorStates.current.has(id))
+        paperEditorStates.current.set(id, state.paperEditorState);
       setProjectReconciliation("authoritative");
       setLoading(false);
       if (discardedProposalIds.length > 0) {
@@ -1256,160 +1235,41 @@ function MemberApp({
       restoreProjectHistory,
       restoreProjectSelection,
       restoreProjectSessionTab,
-      restoreProjectTasks,
+      selectTaskInspector,
+      chooseRetryTask,
+      closeRetryTask,
     ],
-  );
-
-  const applyProjectSnapshot = useCallback(
-    (
-      nextProject: ProjectSnapshot,
-      preserveReadiness: boolean,
-      request?: { projectId: string; requestId: number },
-    ): boolean => {
-      const { previous, next } = dispatchProjectSession({
-        kind: "snapshot_applied",
-        snapshot: nextProject,
-        preserve_readiness: preserveReadiness,
-        request: request
-          ? { project_id: request.projectId, request_id: request.requestId }
-          : undefined,
-      });
-      if (next === previous || !next.project) return false;
-      const authoritative = nextProject.snapshot_freshness === "fresh";
-      applyCanonicalProject(next.project, authoritative);
-      try {
-        persistProjectHumanDraft(
-          localStorage,
-          draftActorIdRef.current,
-          next.project.id,
-          next.humanDraft,
-          next.graphTarget,
-        );
-      } catch {
-        // The in-memory draft remains usable if browser storage is unavailable.
-      }
-      const nextGraph = next.project.graph;
-      reconcileFloatingChat(nextGraph.nodes, !authoritative);
-      return true;
-    },
-    [applyCanonicalProject, dispatchProjectSession, reconcileFloatingChat],
   );
 
   const reload = useCallback(
-    async (includeTasks = true) => {
+    async (_includeTasks = true) => {
       if (!projectId) return;
-      const requestedProjectId = projectId;
-      const requestId = beginProjectSnapshotRequest(requestedProjectId);
-      const responseIsCurrent = () =>
-        isActiveGraph(requestedProjectId) &&
-        projectSnapshotRequestIsCurrent(requestedProjectId, requestId);
-      const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-      const projectRequest = api<ProjectSnapshot>(graphPath(base)).then((nextProject) => {
-        if (!responseIsCurrent()) return;
-        const applied = applyProjectSnapshot(
-          nextProject,
-          authoritativeProjectId.current === requestedProjectId,
-          { projectId: requestedProjectId, requestId },
-        );
-        if (!applied) return;
-        authoritativeProjectId.current = requestedProjectId;
-        setProjectReconciliation("authoritative");
-      });
-      const tasksRead = beginTasksRead();
-      const tasksRequest = includeTasks
-        ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
-            if (responseIsCurrent()) replaceTasks(nextTasks, tasksRead);
-          })
-        : Promise.resolve();
-      const usageRequest = api<AgentUsageSnapshot>(`${base}/usage`)
-        .then((nextUsage) => {
-          if (responseIsCurrent()) setUsage(nextUsage);
-        })
-        .catch((error) => {
-          if (!(error instanceof ApiError && error.status === 404)) throw error;
-          if (responseIsCurrent()) setUsage(null);
-        });
-      const watchersRequest = api<WatcherRecord[]>(projectWatchersPath(base, graphTarget)).then(
-        (nextWatchers) => {
-          if (responseIsCurrent()) setWatchers(nextWatchers);
-        },
-      );
-      const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
-        if (responseIsCurrent()) {
-          setNotice({
-            kind: "error",
-            text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        }
-      });
-      await Promise.all([
-        projectRequest,
-        tasksRequest,
-        usageRequest,
-        watchersRequest,
-        chatsRequest,
-      ]);
+      // Commands invalidate concrete resources; there is no reload bundle.
+      store.invalidate(resourceKeyId(graphResourceKey(projectId, graphTarget)));
     },
-    [
-      applyProjectSnapshot,
-      graphPath,
-      graphTarget,
-      isActiveGraph,
-      beginProjectSnapshotRequest,
-      projectId,
-      projectSnapshotRequestIsCurrent,
-      refreshChatSummaries,
-      beginTasksRead,
-      replaceTasks,
-    ],
+    [store, projectId, graphTarget],
   );
   reloadRef.current = reload;
 
+  const manifestView = useResource(
+    `${projectId}:manifest-view`,
+    backendSessionReady && projectId
+      ? manifestProfile(projectId, graphTarget, projectSession.transitionManifestExpectedRulesetTag)
+      : null,
+  );
   useEffect(() => {
-    if (!projectId || !apiBase) return;
-    const requestedProjectId = projectId;
-    let cancelled = false;
-    const currentManifest = getProjectSessionState().transitionManifestState;
-    dispatchProjectSession({
-      kind: "manifest_loading",
-      project_id: requestedProjectId,
-      manifest: currentManifest.project_id === requestedProjectId ? currentManifest.manifest : null,
-    });
-    void api<unknown>(graphPath(`${apiBase}/transition-manifest`))
-      .then((payload) => {
-        if (cancelled || !isActiveGraph(requestedProjectId)) return;
-        const manifest = decodeTransitionTriggerManifest(
-          payload,
-          getProjectSessionState().transitionManifestExpectedRulesetTag,
-        );
-        if (!manifest) {
-          dispatchProjectSession({ kind: "manifest_invalid", project_id: requestedProjectId });
-          return;
-        }
-        dispatchProjectSession({
-          kind: "manifest_valid",
-          project_id: requestedProjectId,
-          manifest,
-        });
-      })
-      .catch(() => {
-        // A missing manifest is an intentional fail-safe state: staged edits use backend preview.
-        if (!cancelled && isActiveGraph(requestedProjectId)) {
-          dispatchProjectSession({ kind: "manifest_invalid", project_id: requestedProjectId });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+    if (!projectId || manifestView.loading) return;
+    dispatchProjectSession(
+      manifestView.value
+        ? { kind: "manifest_valid", project_id: projectId, manifest: manifestView.value }
+        : { kind: "manifest_invalid", project_id: projectId },
+    );
   }, [
-    apiBase,
-    graphPath,
-    isActiveGraph,
-    dispatchProjectSession,
-    getProjectSessionState,
-    isActiveProject,
     projectId,
-    transitionManifestRefresh,
+    manifestView.value,
+    manifestView.loading,
+    dispatchProjectSession,
+    projectSession.transitionManifestRefresh,
   ]);
 
   const reloadAuthoritativeProject = useCallback(
@@ -1466,278 +1326,11 @@ function MemberApp({
       } else if (
         terminalTasks.some((task) => task.kind === "node_chat" || task.kind === "project_chat")
       ) {
-        await api<WatcherRecord[]>(projectWatchersPath(base, target))
-          .then((nextWatchers) => {
-            if (stillCurrent()) setWatchers(nextWatchers);
-          })
-          .catch(report);
+        store.invalidate(resourceKeyId(watcherResourceKey(requestedProjectId, target)));
       }
     },
-    [isActiveProject, reloadAuthoritativeProject],
+    [isActiveProject, reloadAuthoritativeProject, store],
   );
-
-  const heartbeatProjectCache = useCallback(
-    (requestedProjectId: string): Promise<void> => {
-      const requestedTarget = isActiveProject(requestedProjectId)
-        ? activeGraphTargetRef.current
-        : MAIN_GRAPH;
-      // Single flight per (project, ref): a heartbeat for the ref just left
-      // must not swallow the first one for the ref now shown.
-      return runProjectHeartbeat(graphSessionKey(requestedProjectId, requestedTarget), async () => {
-        const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-        let observation: GraphRevisionSnapshot;
-        try {
-          observation = await loadGraphRevision(
-            (path) => api(graphTargetUrl(path, requestedTarget)),
-            base,
-          );
-        } catch (error) {
-          if (!(error instanceof ApiError && error.status === 404)) throw error;
-          // A 404 here is ambiguous: the display cache may merely be missing,
-          // or the project may have stopped being readable — deleted, or no
-          // longer ours. The filtered index answers which.
-          if (await projectIsStillReadable(api, requestedProjectId)) return;
-          // Close the tab *and* leave the view: closing alone would strand the
-          // reader on a project they can no longer load anything from.
-          closeProjectRoute(requestedProjectId);
-          removeProject(requestedProjectId);
-          forgetProjectViewport(requestedProjectId);
-          setNotice({ kind: "error", text: "This project is no longer available." });
-          return;
-        }
-        const observedRevision = observation.revision;
-        const tabIsOpen = () => isProjectTabOpen(requestedProjectId);
-        if (!tabIsOpen()) return;
-        if (isActiveProject(requestedProjectId)) {
-          if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
-          window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
-          const loadedTaskIds = projectTasksRef.current.map((task) => task.operation_id);
-          // A final steer receipt can land after its task stopped being polled.
-          // Recorded only once the tasks are read, so a failed read retries.
-          const seenSteerEpoch = steerEpochsRef.current.get(requestedProjectId);
-          // A first observation counts as moved: a receipt may have landed between
-          // this page's task load and its first heartbeat.
-          const steerMoved =
-            observation.steer_epoch !== undefined && seenSteerEpoch !== observation.steer_epoch;
-          // A teammate's task can finish while no task poll runs here.
-          const taskStatusMoved = heartbeatTaskStatusMoved(
-            observation.task_status_signal,
-            taskStatusSignalsRef.current.get(requestedProjectId),
-          );
-          let tasksCurrent = true;
-          if (
-            steerMoved ||
-            taskStatusMoved ||
-            heartbeatNamesUnknownId(observation.latest_task_id, loadedTaskIds)
-          ) {
-            const tasksRead = beginTasksRead();
-            // A failed read retries next beat; this one still checks the graph below.
-            const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
-            if (nextTasks && isActiveProject(requestedProjectId))
-              await settleTerminalTasks(
-                requestedProjectId,
-                requestedTarget,
-                consumeTerminalTasks(nextTasks),
-                () =>
-                  isActiveProject(requestedProjectId) &&
-                  sameGraphTarget(requestedTarget, activeGraphTargetRef.current),
-              );
-            // Left mid-read: this list may predate the one saved on leaving, so it is
-            // dropped; the signal stays unrecorded and the background sweep rereads.
-            if (!isActiveProject(requestedProjectId)) return;
-            if (nextTasks) {
-              replaceTasks(nextTasks, tasksRead);
-              // A teammate's turn may have started and finished between heartbeats;
-              // its chat history then changed without any status change seen here.
-              if (
-                nextTasks.some(
-                  (task) => chatIdForTask(task) && !loadedTaskIds.includes(task.operation_id),
-                )
-              )
-                chatRefreshOwedRef.current.set(requestedProjectId, {});
-            } else tasksCurrent = false;
-          }
-          if (tasksCurrent && observation.steer_epoch !== undefined)
-            steerEpochsRef.current.set(requestedProjectId, observation.steer_epoch);
-          if (tasksCurrent && observation.task_status_signal !== undefined)
-            taskStatusSignalsRef.current.set(requestedProjectId, observation.task_status_signal);
-          // Owed until it succeeds: the task is already listed, so no later
-          // heartbeat would notice it again.
-          const owed = chatRefreshOwedRef.current.get(requestedProjectId);
-          if (owed) {
-            await refreshChatSummaries(requestedProjectId, base)
-              .then(() => {
-                // A refresh for a project no longer shown returns without
-                // applying, so the debt stands until it is shown again.
-                if (
-                  isActiveProject(requestedProjectId) &&
-                  chatRefreshOwedRef.current.get(requestedProjectId) === owed
-                )
-                  chatRefreshOwedRef.current.delete(requestedProjectId);
-              })
-              .catch(() => {
-                // Stays owed; the next heartbeat retries.
-              });
-          }
-          const loadedWatcherIds = watchersRef.current.map((watcher) => watcher.watcher_id);
-          if (heartbeatNamesUnknownId(observation.latest_watcher_id, loadedWatcherIds)) {
-            const nextWatchers = await api<WatcherRecord[]>(
-              projectWatchersPath(base, requestedTarget),
-            );
-            if (
-              isActiveProject(requestedProjectId) &&
-              sameGraphTarget(requestedTarget, activeGraphTargetRef.current)
-            )
-              setWatchers(nextWatchers);
-          }
-          if (
-            canonicalRevisionNeedsReload(
-              observedRevision,
-              getProjectSessionState().renderedRevision,
-              observation.graph_mutation,
-              getProjectSessionState().project?.graph_mutation,
-            ) ||
-            (observedRevision === getProjectSessionState().renderedRevision &&
-              projectHeartbeatMetadataChanged(
-                observation,
-                getProjectSessionState().project,
-                requestedTarget,
-              ))
-          ) {
-            await reloadAuthoritativeProject(requestedProjectId);
-          }
-          return;
-        }
-
-        // A background tab keeps its saved task list current, so switching back
-        // shows each agent's real status at once instead of after the reload.
-        const taskStatusSignal = observation.task_status_signal;
-        // Tasks are project-wide, so every retained ref, branches included, takes them.
-        if (
-          taskStatusSignal !== undefined &&
-          heartbeatTaskStatusMoved(
-            taskStatusSignal,
-            taskStatusSignalsRef.current.get(requestedProjectId),
-          )
-        ) {
-          // A failed read retries next beat; this one still checks the graph below.
-          const nextTasks = await api<AgentTask[]>(`${base}/tasks`).catch(() => null);
-          if (nextTasks && isActiveProject(requestedProjectId)) {
-            // Activated mid-read: the restored list is older than this one.
-            if (replaceTasksReadBeforeRestore(nextTasks))
-              taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
-            return;
-          }
-          if (nextTasks) {
-            updateInactiveProjectStates(requestedProjectId, (state) => ({
-              ...state,
-              tasks: nextTasks,
-            }));
-            taskStatusSignalsRef.current.set(requestedProjectId, taskStatusSignal);
-          }
-        }
-        const retained = inactiveCachedProjectState(requestedProjectId);
-        if (
-          !retained ||
-          observedRevision < retained.project.graph.revision ||
-          (observedRevision === retained.project.graph.revision &&
-            !projectHeartbeatMetadataChanged(observation, retained.project))
-        )
-          return;
-        const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
-        const current = inactiveCachedProjectState(requestedProjectId);
-        const disposition = projectHeartbeatSnapshotDisposition({
-          requestedProjectId,
-          activeProjectId: getActiveProjectId(),
-          tabOpen: tabIsOpen(),
-          inactiveState: current,
-          snapshotRevision: snapshot.graph.revision,
-          renderedRevision: getProjectSessionState().renderedRevision,
-          metadataChanged: projectHeartbeatMetadataChanged(
-            snapshot,
-            getProjectSessionState().project,
-            activeGraphTargetRef.current,
-          ),
-        });
-        if (disposition.kind === "reload_active") {
-          await reloadAuthoritativeProject(requestedProjectId);
-          return;
-        }
-        if (disposition.kind === "ignore") {
-          return;
-        }
-        const next = reconcileInactiveProjectTabState(disposition.state, snapshot);
-        if (next === disposition.state) return;
-        cacheProjectState(requestedProjectId, next);
-        try {
-          persistProjectHumanDraft(
-            localStorage,
-            draftActorIdRef.current,
-            requestedProjectId,
-            next.humanDraft,
-          );
-        } catch {
-          // A background cache refresh must not discard the in-memory draft.
-        }
-      });
-    },
-    [
-      cacheProjectState,
-      closeProjectRoute,
-      forgetProjectViewport,
-      getActiveProjectId,
-      getProjectSessionState,
-      inactiveCachedProjectState,
-      isActiveProject,
-      isProjectTabOpen,
-      reloadAuthoritativeProject,
-      refreshChatSummaries,
-      removeProject,
-      beginTasksRead,
-      consumeTerminalTasks,
-      replaceTasks,
-      replaceTasksReadBeforeRestore,
-      runProjectHeartbeat,
-      settleTerminalTasks,
-      updateInactiveProjectStates,
-    ],
-  );
-
-  useEffect(() => {
-    if (!backendSessionReady) return;
-    const runHeartbeat = (id: string) => {
-      void heartbeatProjectCache(id).catch(() => {
-        // Heartbeat failures leave the last usable display cache intact.
-      });
-    };
-    return startProjectCachePolling(
-      {
-        setInterval: (callback, delay) => window.setInterval(callback, delay),
-        clearInterval: (intervalId) => window.clearInterval(intervalId),
-      },
-      {
-        isHidden: pageIsHidden,
-        listen: (callback) => {
-          document.addEventListener("visibilitychange", callback);
-          return () => document.removeEventListener("visibilitychange", callback);
-        },
-      },
-      () => projectIdsForHeartbeat().forEach(runHeartbeat),
-      () => {
-        const activeId = getActiveProjectId();
-        if (activeId) runHeartbeat(activeId);
-      },
-    );
-  }, [
-    actorIdentityChecked,
-    heartbeatProjectCache,
-    identityIssue,
-    identityReady,
-    getActiveProjectId,
-    projectIdsForHeartbeat,
-    teamSessionRequired,
-    backendSessionReady,
-  ]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1972,10 +1565,7 @@ function MemberApp({
       }
       try {
         // Agents reads only the index; provider logins belong to the Runs view.
-        await Promise.all([
-          refreshProjectExperimentLoops(projectId),
-          ...(view === "execution" ? [refreshProviderLogins()] : []),
-        ]);
+        await Promise.all([...(view === "execution" ? [refreshProviderLogins()] : [])]);
       } catch (error) {
         if (!stopped) {
           reportErrorNotice(
@@ -2072,20 +1662,6 @@ function MemberApp({
     }
   }, [dispatchProjectSession, project?.id, view]);
 
-  const updatePaper = useCallback(
-    (nextPaper: PaperSnapshot) => {
-      if (projectId) {
-        dispatchProjectSession({
-          kind: "paper_updated",
-          project_id: projectId,
-          editor_generation: projectSession.paperEditorGeneration,
-          paper: nextPaper,
-        });
-      }
-    },
-    [dispatchProjectSession, projectId, projectSession.paperEditorGeneration],
-  );
-
   useEffect(() => {
     const handleHashChange = () => {
       // A notification link is not a project route; the resolver below replaces it
@@ -2122,363 +1698,143 @@ function MemberApp({
     return () => window.removeEventListener("hashchange", handleHashChange);
   }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
+  const retainedViewKeys = useRef(new Map<string, string[]>());
+  const knownTabs = useRef(new Set<string>());
   useLayoutEffect(() => {
-    if (!backendSessionReady) {
-      if (lastProjectOpen.current) projectOpenInterrupted.current = true;
-      return;
-    }
-    const previousOpen = lastProjectOpen.current;
-    const sameOpen =
-      previousOpen !== null &&
-      previousOpen.projectId === projectId &&
-      previousOpen.setupOpen === setupOpen;
-    const interrupted = projectOpenInterrupted.current;
-    const backendChanged = previousOpen !== null && previousOpen.backendKey !== backendKey;
-    if (backendChanged) {
-      clearProjectCache();
-      authoritativeProjectId.current = null;
-      for (const id of new Set([
-        ...projectReadinessGenerations.current.keys(),
-        ...providerReadinessRequestsInFlight.current.keys(),
-      ])) {
-        invalidateProjectReadinessGenerations(projectReadinessGenerations.current, id, {
-          provider: false,
-          compute: false,
-        });
+    const open = new Set(openProjectTabs.map((tab) => tab.id));
+    if (projectId) open.add(projectId);
+    for (const id of knownTabs.current) {
+      if (!open.has(id)) {
+        store.release(id);
+        retainedViewKeys.current.delete(id);
+        paperEditorStates.current.delete(id);
       }
-      providerReadinessRequestsInFlight.current.clear();
-      setProviderReadinessRequests({});
-      if (providerSkillReadinessPoll.current) {
-        window.clearTimeout(providerSkillReadinessPoll.current.timeoutId);
-        providerSkillReadinessPoll.current = null;
-      }
-      setHeldRefProject(displayedProjectRef.current);
-      const current = getProjectSessionState();
-      let draft =
-        current.projectId === projectId && sameGraphTarget(current.graphTarget, graphTarget)
-          ? current.humanDraft
-          : null;
-      if (projectId && !sameGraphTarget(current.graphTarget, graphTarget)) {
-        try {
-          const key = humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget);
-          if (key) draft = deserializeHumanDraft(localStorage.getItem(key));
-        } catch (error) {
-          setNotice({ kind: "error", text: String(error) });
-        }
-      }
-      dispatchProjectSession({
-        kind: "reset",
-        project_id: projectId,
-        graph_target: graphTarget,
-        human_draft: draft,
-        invalidate_backend: true,
-      });
     }
-    const resumesOpen = sameOpen && (!projectId || displayedProjectRef.current?.id === projectId);
-    lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
-    projectOpenInterrupted.current = false;
-    // Ref activation has its own session lifecycle below. Dependency churn
-    // reconciles the displayed project instead of taking the cold-open path.
-    if (
-      resumesOpen &&
-      !interrupted &&
-      !backendChanged &&
-      !sameGraphTarget(previousOpen.graphTarget, graphTarget)
-    )
-      return;
-    if (resumesOpen) {
-      // Reconcile the project already on screen, including a held ref snapshot.
-      if (setupOpen) return;
-      if (!projectId) {
-        void refreshProjectInvitations();
-        let cancelled = false;
-        void loadProjectIndex()
-          .catch((error) => {
-            if (!cancelled)
-              setNotice({
-                kind: "error",
-                text: error instanceof Error ? error.message : String(error),
-              });
-          })
-          .finally(() => {
-            if (!cancelled) setLoading(false);
-          });
-        return () => {
-          cancelled = true;
-        };
-      }
-      let cancelled = false;
-      setProjectReconciliation((current) => (current === "opening" ? current : "reconciling"));
-      void reload()
-        .catch((error) => {
-          if (cancelled || !isActiveGraph(projectId)) return;
-          setProjectReconciliation(
-            authoritativeProjectId.current === projectId ? "authoritative" : "failed",
-          );
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-      return () => {
-        cancelled = true;
-        beginProjectSnapshotRequest(projectId);
-      };
-    }
-    const requestedRoute = parseProjectHash(window.location.hash);
-    const routeMatchesProject = requestedRoute.projectId === projectId;
-    const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
-    const retained = retainedOpen?.state;
-    setNotice(null);
-    if (projectId && retained) {
-      restoreProjectTabState(
-        projectId,
-        retained,
-        routeMatchesProject && requestedRoute.projectViewSpecified ? requestedRoute : undefined,
-      );
-    } else {
-      setLoading(!displayedProjectRef.current || displayedProjectRef.current.id !== projectId);
-      setProjectReconciliation("opening");
-      authoritativeProjectId.current = null;
-      let storedDraft: HumanDraft | null = null;
-      const draftKey = projectId
-        ? humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget)
-        : null;
-      if (draftKey) {
-        try {
-          storedDraft = deserializeHumanDraft(localStorage.getItem(draftKey));
-        } catch (error) {
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      dispatchProjectSession({
-        kind: "reset",
-        project_id: projectId,
-        graph_target: graphTarget,
-        human_draft: storedDraft,
-      });
-      // The hash already set the view; a node survives only if the new ref has it.
-      resetProjectSelection(
-        routeMatchesProject ? requestedRoute.view : "overview",
-        routeMatchesProject ? requestedRoute.experimentId : null,
-        routeMatchesProject ? requestedRoute.experimentRoute : null,
-        routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
-      );
-      resetProjectChats();
-      resetProjectTasks();
-      resetProjectHistory(projectId, graphTarget);
-      setUsage(null);
-      setWatchers([]);
-      setExperimentStartOverlap(null);
-      resetProjectHeader(projectId);
-    }
-    if (setupOpen) {
-      setLoading(false);
-      return;
-    }
+    knownTabs.current = open;
+  }, [openProjectTabs, projectId, store]);
+
+  useLayoutEffect(() => {
+    if (!backendSessionReady || setupOpen) return;
     if (!projectId) {
+      void loadProjectIndex().finally(() => setLoading(false));
       void refreshProjectInvitations();
-      loadProjectIndex()
-        .catch((error) =>
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          }),
-        )
-        .finally(() => setLoading(false));
       return;
     }
-    let cancelled = false;
-    const stillOpening = () => !cancelled && isActiveGraph(projectId);
-    const applyCachedSnapshot = async () => {
-      const cachedRequestId = beginProjectSnapshotRequest(projectId);
-      try {
-        const cachedProject = await api<ProjectSnapshot>(
-          graphPath(`/api/projects/${encodeURIComponent(projectId)}/cached`),
+    const previous = lastProjectOpen.current;
+    if (previous?.backendKey !== backendKey) {
+      clearProjectCache();
+      paperEditorStates.current.clear();
+    }
+    lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
+    store.suspend(projectId, retainedViewKeys.current.get(projectId) ?? []);
+    const profiles = [
+      graphProfile(projectId, graphTarget),
+      refsProfile(projectId),
+      watchersProfile(projectId, graphTarget),
+      chatsResourceProfile(projectId, apiBase),
+      episodesProfile(projectId),
+      experimentIndexProfile(projectId),
+      historyProfile(projectId, graphTarget),
+      manifestProfile(projectId, graphTarget, projectSession.transitionManifestExpectedRulesetTag),
+    ];
+    const ids = profiles.map((profile) =>
+      store.register(projectId, profile as import("./core/resourceStore").ResourceProfile<unknown>),
+    );
+    if (view === "paper") ids.push(store.register(projectId, paperProfile(projectId)));
+    retainedViewKeys.current.set(projectId, ids);
+    const current = getProjectSessionState();
+    if (
+      !previous ||
+      previous.backendKey !== backendKey ||
+      current.projectId !== projectId ||
+      !sameGraphTarget(current.graphTarget, graphTarget)
+    ) {
+      setHeldRefProject(displayedProjectRef.current);
+      const retained = cachedProjectStateForOpen(projectId, graphTarget)?.state;
+      if (retained)
+        restoreProjectTabState(projectId, retained, parseProjectHash(window.location.hash));
+      else {
+        let draft: HumanDraft | null = null;
+        const key = humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget);
+        try {
+          if (key) draft = deserializeHumanDraft(localStorage.getItem(key));
+        } catch {}
+        dispatchProjectSession({
+          kind: "reset",
+          project_id: projectId,
+          graph_target: graphTarget,
+          human_draft: draft,
+          invalidate_backend: previous?.backendKey !== backendKey,
+        });
+        const route = parseProjectHash(window.location.hash);
+        resetProjectSelection(
+          route.view,
+          route.experimentId,
+          route.experimentRoute,
+          route.autoResearchEpisodeId,
         );
-        if (!stillOpening()) return;
-        // The session declines a cached snapshot that lost to a newer snapshot
-        // request — the active-tab heartbeat may already be reloading — or that
-        // is behind the rendered revision. Only an accepted snapshot paints early;
-        // the authoritative reload finishes the open either way.
-        if (
-          !applyProjectSnapshot(cachedProject, false, {
-            projectId,
-            requestId: cachedRequestId,
-          })
-        )
-          return;
-        setProjectReconciliation("authoritative");
-        setLoading(false);
-      } catch (error) {
-        if (!(error instanceof ApiError && error.status === 404) && !cancelled) {
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        }
+        resetProjectChats();
+        resetProjectHistory(projectId, graphTarget);
+        resetProjectHeader(projectId);
       }
-    };
-    const reloadAuthoritative = async () => {
-      try {
-        // Always a fresh request: joining a reload already in flight (from the
-        // heartbeat, or from this project before a quick close and reopen) could
-        // hand this open a promise whose responses are all older than the cached
-        // request above and therefore discarded, settling an empty view.
-        await reload();
-      } catch (error) {
-        if (!stillOpening()) return;
-        if (!retained && authoritativeProjectId.current !== projectId) {
-          setProjectReconciliation("failed");
-        }
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-      }
-    };
-    void openProjectSequence({
-      applyCachedSnapshot,
-      reloadAuthoritative,
-      stillOpening,
-      settle: () => setLoading(false),
-    });
-    return () => {
-      cancelled = true;
-      beginProjectSnapshotRequest(projectId);
-    };
+    }
+    const snapshot = store.view<ProjectSnapshot>(
+      resourceKeyId(graphResourceKey(projectId, graphTarget)),
+    ).value;
+    if (snapshot) {
+      setProjectReconciliation("authoritative");
+    } else setProjectReconciliation("opening");
+    setLoading(!snapshot);
+    // Switching only paints retained data and registers demand. The scheduler
+    // validates the current ref without blocking this layout pass.
   }, [
-    applyProjectSnapshot,
-    actorIdentityChecked,
+    store,
+    backendSessionReady,
     backendKey,
-    beginProjectSnapshotRequest,
-    cachedProjectStateForOpen,
-    clearProjectCache,
-    getProjectSessionState,
-    dispatchProjectSession,
-    identityIssue,
-    identityReady,
-    isActiveProject,
-    loadProjectIndex,
     projectId,
     graphTarget,
-    graphPath,
-    isActiveGraph,
+    setupOpen,
+    view,
+    apiBase,
+    cachedProjectStateForOpen,
+    clearProjectCache,
+    dispatchProjectSession,
+    getProjectSessionState,
+    loadProjectIndex,
     refreshProjectInvitations,
-    reload,
     resetProjectChats,
     resetProjectHeader,
     resetProjectHistory,
     resetProjectSelection,
-    resetProjectTasks,
     restoreProjectTabState,
-    selectChat,
-    setupOpen,
-    teamSessionRequired,
-    backendSessionReady,
+    projectSession.transitionManifestExpectedRulesetTag,
   ]);
 
-  useLayoutEffect(() => {
-    if (!backendSessionReady || !projectId || setupOpen) return;
-    const current = getProjectSessionState();
-    if (current.projectId !== projectId || sameGraphTarget(current.graphTarget, graphTarget))
-      return;
-    setHeldRefProject(displayedProjectRef.current);
-    const retained = cachedProjectStateForOpen(projectId, graphTarget)?.state;
-    if (retained) {
-      restoreProjectTabState(projectId, retained, parseProjectHash(window.location.hash));
-    } else {
-      let draft: HumanDraft | null = null;
-      try {
-        const key = humanDraftStorageKey(draftActorIdRef.current, projectId, graphTarget);
-        if (key) draft = deserializeHumanDraft(localStorage.getItem(key));
-      } catch (error) {
-        setNotice({ kind: "error", text: String(error) });
-      }
-      dispatchProjectSession({
-        kind: "reset",
-        project_id: projectId,
-        graph_target: graphTarget,
-        human_draft: draft,
-      });
-      authoritativeProjectId.current = null;
-      setProjectReconciliation("reconciling");
-      resetProjectHistory(projectId, graphTarget);
-      const snapshot = cachedProjectSnapshotForOpen(projectId, graphTarget);
-      if (snapshot && applyProjectSnapshot(snapshot, false)) {
-        authoritativeProjectId.current = projectId;
-        setProjectReconciliation("authoritative");
-      }
-    }
-    let cancelled = false;
-    void reload().catch((error) => {
-      if (cancelled || !isActiveGraph(projectId)) return;
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-      setProjectReconciliation("failed");
-    });
-    return () => {
-      cancelled = true;
-      beginProjectSnapshotRequest(projectId);
-    };
-  }, [
-    backendSessionReady,
-    projectId,
-    setupOpen,
-    graphTarget,
-    getProjectSessionState,
-    cachedProjectStateForOpen,
-    cachedProjectSnapshotForOpen,
-    restoreProjectTabState,
-    dispatchProjectSession,
-    resetProjectHistory,
-    applyProjectSnapshot,
-    reload,
-    isActiveGraph,
-    beginProjectSnapshotRequest,
-  ]);
-
-  // Warm only live branches, sequentially, in the same per-ref cache as visits.
-  const prefetchQueue = useRef(Promise.resolve());
   useEffect(() => {
-    if (!backendSessionReady || !projectId || !projectGraphRefs) return;
-    let cancelled = false;
-    prefetchQueue.current = prefetchQueue.current.then(async () => {
-      for (const ref of projectGraphRefs) {
-        if (cancelled) return;
-        if (ref.kind !== "branch" || ref.archived) continue;
-        const target: GraphTargetRef = { kind: "branch", branch_id: ref.branch_id };
-        if (
-          sameGraphTarget(activeGraphTargetRef.current, target) ||
-          cachedProjectSnapshotForOpen(projectId, target)
-        )
-          continue;
-        try {
-          const snapshot = await api<ProjectSnapshot>(
-            graphTargetUrl(`/api/projects/${encodeURIComponent(projectId)}`, target),
-          );
-          if (!cancelled) cacheProjectSnapshot(snapshot);
-        } catch (error) {
-          if (!cancelled)
-            setNotice({
-              kind: "error",
-              text: `Branch could not be preloaded: ${error instanceof Error ? error.message : String(error)}`,
-            });
-        }
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
+    if (!targetProject || targetProject.id !== projectId) return;
+    authoritativeProjectId.current = projectId;
+    setLoading(false);
+    setProjectReconciliation("authoritative");
+    applyCanonicalProject(targetProject, true);
+    reconcileFloatingChat(targetProject.graph.nodes, false);
+    try {
+      persistProjectHumanDraft(
+        localStorage,
+        draftActorIdRef.current,
+        targetProject.id,
+        getProjectSessionState().humanDraft,
+        graphTarget,
+      );
+    } catch {
+      // The in-memory draft remains available if local storage is unavailable.
+    }
   }, [
-    backendKey,
-    backendSessionReady,
+    targetProject,
     projectId,
-    projectGraphRefs,
-    cacheProjectSnapshot,
-    cachedProjectSnapshotForOpen,
+    graphTarget,
+    applyCanonicalProject,
+    reconcileFloatingChat,
+    getProjectSessionState,
   ]);
 
   useEffect(() => {
@@ -2515,10 +1871,6 @@ function MemberApp({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [desktop]);
 
-  const watchersAwaitingDelivery = useMemo(
-    () => watchers.some((watcher) => !watcher.notified),
-    [watchers],
-  );
   const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
   const {
     consolidation,
@@ -2566,33 +1918,6 @@ function MemberApp({
   );
   const presentedExperimentControl =
     presentedTransitionProjection?.experiment_control ?? project?.experiment_control ?? {};
-  const experimentWrapupPollingActive = experimentControlsNeedWrapupPolling(
-    project?.experiment_control ?? {},
-  );
-  useEffect(() => {
-    if (!projectId || !experimentWrapupPollingActive) return;
-    const requestedProjectId = projectId;
-    return startLiveEpisodePolling(
-      {
-        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
-        clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
-      },
-      () => reloadAuthoritativeProject(requestedProjectId),
-      (error) => {
-        if (!isActiveProject(requestedProjectId)) return;
-        reportErrorNotice(
-          `Experiment report status could not refresh: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      },
-      () => undefined,
-    );
-  }, [
-    experimentWrapupPollingActive,
-    isActiveProject,
-    projectId,
-    reloadAuthoritativeProject,
-    reportErrorNotice,
-  ]);
   const experimentControlForNode = (node: GraphNode): ExperimentControlState | null => {
     if (!project || !isControlNode(node.type)) return null;
     const control = presentedExperimentControl[node.id];
@@ -3145,29 +2470,6 @@ function MemberApp({
   }, [apiBase, projectId, refreshChatSummaries, unlistedChatIds]);
 
   useEffect(() => {
-    if (recordTaskUpdates(projectTasks)) {
-      if (projectId) {
-        void refreshChatSummaries(projectId, apiBase).catch((error) => {
-          // The task change is already recorded, so the heartbeat owes the retry.
-          chatRefreshOwedRef.current.set(projectId, {});
-          setNotice({
-            kind: "error",
-            text: `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        });
-      }
-    }
-  }, [
-    apiBase,
-    graphPath,
-    isActiveGraph,
-    projectId,
-    recordTaskUpdates,
-    refreshChatSummaries,
-    projectTasks,
-  ]);
-
-  useEffect(() => {
     const visibleChatId = visibleUnreadChatId(
       view,
       selectedChatId,
@@ -3238,82 +2540,6 @@ function MemberApp({
     replaceTasks,
     reverifyIdentity,
     settleTerminalTasks,
-  ]);
-
-  useEffect(() => {
-    if (!projectId || !watchersAwaitingDelivery) return;
-    const requestedProjectId = projectId;
-    const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
-    let stopped = false;
-    let timer = 0;
-    const schedule = () => {
-      timer = window.setTimeout(() => void poll(), 5000);
-    };
-    const poll = async () => {
-      const requestId = beginProjectSnapshotRequest(requestedProjectId);
-      const tasksRead = beginTasksRead();
-      try {
-        const {
-          watchers: nextWatchers,
-          tasks: nextTasks,
-          project: nextProject,
-        } = await loadExperimentWatcherPoll(api, base, graphTarget);
-        if (
-          !stopped &&
-          isActiveProject(requestedProjectId) &&
-          projectSnapshotRequestIsCurrent(requestedProjectId, requestId)
-        ) {
-          const hasUnseenWatcherResults = recordWatcherResults(nextTasks);
-          const applied = applyProjectSnapshot(
-            nextProject,
-            authoritativeProjectId.current === requestedProjectId,
-            { projectId: requestedProjectId, requestId },
-          );
-          if (!applied) return;
-          authoritativeProjectId.current = requestedProjectId;
-          setProjectReconciliation("authoritative");
-          setWatchers(nextWatchers);
-          replaceTasks(nextTasks, tasksRead);
-          if (hasUnseenWatcherResults) {
-            void refreshChatSummaries(requestedProjectId, base).catch((error) => {
-              if (!stopped && isActiveProject(requestedProjectId)) {
-                reportErrorNotice(
-                  `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-                );
-              }
-            });
-          }
-        }
-      } catch (error) {
-        if (!stopped && isActiveProject(requestedProjectId)) {
-          reportErrorNotice(
-            `Watcher status could not refresh: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      } finally {
-        if (!stopped) schedule();
-      }
-    };
-    schedule();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-    };
-  }, [
-    applyProjectSnapshot,
-    graphPath,
-    isActiveGraph,
-    beginProjectSnapshotRequest,
-    isActiveProject,
-    projectId,
-    projectSnapshotRequestIsCurrent,
-    graphTarget,
-    recordWatcherResults,
-    refreshChatSummaries,
-    beginTasksRead,
-    replaceTasks,
-    reportErrorNotice,
-    watchersAwaitingDelivery,
   ]);
 
   const pendingProposals = useMemo(
@@ -3402,7 +2628,8 @@ function MemberApp({
         await reloadAuthoritativeProject(requestedProjectId);
       } else {
         // The saved draft is reconciled against its exact target on next open.
-        if (expectedHead.target.kind === "main") await heartbeatProjectCache(requestedProjectId);
+        if (expectedHead.target.kind === "main")
+          store.invalidate(resourceKeyId(graphResourceKey(requestedProjectId)));
       }
     };
     try {
@@ -3635,8 +2862,7 @@ function MemberApp({
       await api<WatcherRecord>(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/stop`, {
         method: "POST",
       });
-      const nextWatchers = await api<WatcherRecord[]>(projectWatchersPath(apiBase, graphTarget));
-      if (projectId && isActiveGraph(projectId)) setWatchers(nextWatchers);
+      if (projectId) store.invalidate(resourceKeyId(watcherResourceKey(projectId, graphTarget)));
       // Retiring an observer can release an Experiment that was held shut by it,
       // so the control projection is re-read here rather than waiting for a poll.
       await reload();
@@ -5238,29 +4464,45 @@ function MemberApp({
       </button>
     );
   const branchPicker = (
-    <GraphPicker
-      refs={projectGraphRefs}
-      unavailable={graphRefs?.projectId === project.id && graphRefs.stale === true}
-      activeRef={graphTarget}
-      projectId={project.id}
-      compact={phone}
-      onSelect={selectGraphRef}
-      onOpen={() => setGraphRefsReread((value) => value + 1)}
-      onRefUpdated={(updated) => {
-        setGraphRefsReread((value) => value + 1);
-        setGraphRefs((current) =>
-          current?.projectId === project.id
-            ? {
-                ...current,
-                refs:
-                  current.refs?.map((ref) =>
-                    ref.kind === "branch" && ref.branch_id === updated.branch_id ? updated : ref,
-                  ) ?? null,
-              }
-            : current,
-        );
-      }}
-    />
+    <>
+      {graphView.stale && (
+        <span aria-label="Graph may be stale" style={{ outline: "1px solid var(--danger, #c44)" }}>
+          <button
+            className="button icon"
+            aria-label="Retry graph"
+            title="Retry graph"
+            onClick={() =>
+              store.invalidate(resourceKeyId(graphResourceKey(project.id, graphTarget)))
+            }
+          >
+            ↻
+          </button>
+        </span>
+      )}
+      <GraphPicker
+        refs={projectGraphRefs}
+        unavailable={graphRefs?.projectId === project.id && graphRefs.stale === true}
+        activeRef={graphTarget}
+        projectId={project.id}
+        compact={phone}
+        onSelect={selectGraphRef}
+        onOpen={() => setGraphRefsReread(null)}
+        onRefUpdated={(updated) => {
+          setGraphRefsReread(null);
+          setGraphRefs((current) =>
+            current?.projectId === project.id
+              ? {
+                  ...current,
+                  refs:
+                    current.refs?.map((ref) =>
+                      ref.kind === "branch" && ref.branch_id === updated.branch_id ? updated : ref,
+                    ) ?? null,
+                }
+              : current,
+          );
+        }}
+      />
+    </>
   );
   const trustFilter = showTrustFilter && (
     <label className="trust-filter">
@@ -5466,10 +4708,15 @@ function MemberApp({
             </div>
           )}
         {episodeRefreshError && (
-          <div className="coverage-banner replay-degraded" role="alert">
-            <TriangleAlert size={16} />
-            <span>{episodeRefreshError}</span>
-          </div>
+          <button
+            className="button icon"
+            aria-label="Retry episode refresh"
+            title={episodeRefreshError}
+            style={{ outline: "1px solid var(--danger, #c44)" }}
+            onClick={() => void refreshEpisodes()}
+          >
+            ↻
+          </button>
         )}
         {!project.canonical_state.reachable && (
           <div className="coverage-banner state-offline">
@@ -5761,7 +5008,8 @@ function MemberApp({
                 project={project}
                 tasks={projectTasks}
                 onStartTask={startAgentTask}
-                onPaperChange={updatePaper}
+                editorState={paperEditorStates.current.get(project.id)}
+                onEditorStateChange={(state) => paperEditorStates.current.set(project.id, state)}
               />
             </div>
           )}

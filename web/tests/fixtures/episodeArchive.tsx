@@ -1,3 +1,4 @@
+import { ResourceRuntime } from "./resourceRuntime";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, archiveEpisode } from "../../src/core/api";
@@ -131,4 +132,8 @@ function Fixture() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(
+  <ResourceRuntime>
+    <Fixture />
+  </ResourceRuntime>,
+);
