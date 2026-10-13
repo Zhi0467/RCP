@@ -707,7 +707,7 @@ export function conversationHasUnread(
 function orchestratorOwnsChild(conversation: ChatConversation): boolean {
   return (
     conversation.conversationKind === "auto_research_child" &&
-    Boolean(conversation.humanTurnRefusal)
+    conversation.humanTurnRefusal?.code === "auto_research_child_read_only"
   );
 }
 

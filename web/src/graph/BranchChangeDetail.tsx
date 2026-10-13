@@ -66,7 +66,13 @@ export function ChangedFields({
     .filter(
       (key) =>
         !INTERNAL_FIELDS.has(key) ||
-        mergePaths.some((path) => path.field_path !== "" && pathCovers(path, key)),
+        mergePaths.some((path) =>
+          // A whole-entity conflict reveals an internal field only where main differs.
+          path.field_path === ""
+            ? path.conflict &&
+              JSON.stringify(fieldOf(path.main, key)) !== JSON.stringify(afterFields[key])
+            : pathCovers(path, key),
+        ),
     )
     .filter((key) => !(emptyValue(beforeFields[key]) && emptyValue(afterFields[key])))
     .filter((key) => JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key]));

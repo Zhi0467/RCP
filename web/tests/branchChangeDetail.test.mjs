@@ -84,10 +84,17 @@ test("edited fields omit internals and empty pairs unless the merge names them",
 
 test("a created node the merge must decide shows the competing main values", () => {
   const html = render(BranchChangeDetail, {
-    change: { before: null, after: { id: "n", title: "branch" }, change: "created", history: [] },
-    mergePaths: [{ field_path: "", main: { id: "n", title: "main" }, conflict: true }],
+    change: {
+      before: null,
+      after: { id: "n", title: "branch", type: "b" },
+      change: "created",
+      history: [],
+    },
+    mergePaths: [{ field_path: "", main: { id: "n", title: "main", type: "t" }, conflict: true }],
   });
   assert.ok(html.includes('class="branch-change-fields"'));
+  // Title and the differing internal type show; the shared id stays hidden.
+  assert.equal((html.match(/class="branch-change-field"/g) ?? []).length, 2);
   assert.ok(html.includes("Main now</span> main"));
 });
 

@@ -716,6 +716,9 @@ test("locked children stay visible without human attention across turn states", 
     const unlocked = { ...child, humanTurnRefusal: null };
     assert.equal(conversationHasUnread(unlocked, unread), true);
     assert.notEqual(conversationAgentStatus(unlocked, unread).group, "done");
+    // A merge reservation is not lineage ownership.
+    const reserved = { ...child, humanTurnRefusal: { code: "episode_merge_reserved", detail: "" } };
+    assert.equal(conversationHasUnread(reserved, unread), true);
   }
 });
 
