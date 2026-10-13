@@ -25,7 +25,7 @@ async def test_terminal_watermarks_follow_exposed_runtime_changes(
     manager.detach("project", session.session_id, queue)
     versions.append(manager.resource_generation("project"))
     await manager.write("project", session.session_id, b"input")
-    versions.append(manager.resource_generation("project"))
+    assert manager.resource_generation("project") == versions[-1]
     runtime = manager.sessions[session.session_id]
     os.close(doubles.slaves.pop())
     read_ready(manager, runtime)

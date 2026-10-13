@@ -18,7 +18,13 @@ aliases, transactional resource counters, and indexed deadlines. The route
 never opens a project, replays history, completes a snapshot, or waits for a
 snapshot lock. File families use published catalog content generations;
 terminal runtime changes use the terminal owner's per-project generation.
-`tasks.status` excludes progress-only changes; `tasks.progress` includes them.
+`tasks.status` and chat, episode, and terminal inventories exclude task progress;
+`tasks.progress` and entity details include it. Terminal input renews the idle
+lifetime without invalidating its inventory; retirement publishes the change.
+Question liveness renews its deadline without advancing the counter until it
+returns from not waiting to waiting. Publication failures are logged and do not
+fail the ask. Experiment runtime and report changes invalidate the graph
+control payload; unrelated episode ledgers do not.
 Entity counters are keyed by project, and chat read/pin counters by member.
 
 Each response captures one `as_of`. Tokens fold in the latest elapsed deadline,

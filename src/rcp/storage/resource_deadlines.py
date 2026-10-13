@@ -113,19 +113,27 @@ def record_question_activity(
     if row is None:
         return
     project_id = row[0]
-    connection.execute(
-        "INSERT INTO resource_versions(scope,resource,entity,generation) VALUES(?,'questions','',1) "
-        "ON CONFLICT(scope,resource,entity) DO UPDATE SET generation=generation+1",
-        (project_id,),
-    )
     if waiting:
+        now = time.time() if now is None else now
+        previous = connection.execute(
+            "SELECT deadline FROM resource_deadlines WHERE scope=? AND resource='questions' "
+            "AND entity='' AND owner=?",
+            (project_id, f"question_activity:{question_id}"),
+        ).fetchone()
+        if previous is None or previous[0] <= now:
+            connection.execute(
+                "INSERT INTO resource_versions(scope,resource,entity,generation) "
+                "VALUES(?,'questions','',1) ON CONFLICT(scope,resource,entity) "
+                "DO UPDATE SET generation=generation+1",
+                (project_id,),
+            )
         connection.execute(
             "INSERT OR REPLACE INTO resource_deadlines(scope,resource,entity,owner,deadline) "
             "VALUES(?,'questions','',?,?)",
             (
                 project_id,
                 f"question_activity:{question_id}",
-                (time.time() if now is None else now) + ASK_WAITING_FRESH_SECONDS,
+                now + ASK_WAITING_FRESH_SECONDS,
             ),
         )
     else:

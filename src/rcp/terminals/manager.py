@@ -868,7 +868,6 @@ class TerminalManager:
         # read the older time and expire a session being typed into.
         runtime.last_activity = time.monotonic()
         runtime.session.last_activity_at = timestamp()
-        self._bump_resource_generation(project_id)
         view = memoryview(data)
         while view:
             try:

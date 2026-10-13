@@ -23,37 +23,9 @@ _CASES = [
             "status_message": "",
         },
     ),
-    ("agent_usage", "usage", "count_reason", {"operation_id": "task", "counted": 1}),
-    ("watchers", "watchers", "status", {}),
-    ("compute_jobs", "watchers", "status", {"containment": "cooperative", "status": "running"}),
     ("chat_display", "chats", "title", {"chat_id": "chat"}),
-    (
-        "questions",
-        "questions",
-        "question",
-        {"owner_kind": "chat", "state": "pending", "multiple": 0},
-    ),
-    ("consolidation_schedules", "consolidation", "local_time", {}),
-    ("digest_heads", "digest", "patch_id", {}),
-    (
-        "operational_lessons",
-        "lessons",
-        "text",
-        {"author_kind": "agent", "operation_id": "task", "human_owned": 0},
-    ),
-    ("episodes", "episodes", "status", {"mode": "auto_research", "invocation_ceiling": 1}),
-    ("branch_names", "refs", "name", {}),
-    ("conversation_worktrees", "refs", "binding_json", {}),
-    ("artifacts", "artifacts", "metadata", {"metadata": "{}"}),
-    ("compute_backend_probes", "settings", "probe_json", {"route": "scheduler"}),
-    ("project_members", "members", "seated_by", {}),
-    ("paper_drafts", "paper", "content", {}),
-    ("writing_sessions", "paper", "title", {}),
     ("provider_login_states", "settings", "detail", {"state": "signed_in"}),
-    ("provider_skill_inventories", "settings", "diagnostic", {}),
-    ("provider_readiness_snapshots", "settings", "version", {}),
     ("chat_reads", "chats", "read_through", {"user_id": "member"}),
-    ("chat_pins", "chats", "pinned_at", {"user_id": "member"}),
 ]
 
 
@@ -71,9 +43,8 @@ def _insert(connection: sqlite3.Connection, table: str, overrides: dict, now: st
                 if name.endswith("_at")
                 else name
             )
-    fields["project_id"] = "p"
-    if table.startswith("provider_"):
-        fields.pop("project_id")
+    if any(row[1] == "project_id" for row in connection.execute(f"PRAGMA table_info({table})")):
+        fields["project_id"] = "p"
     fields.update(overrides)
     connection.execute(
         f"INSERT INTO {table}({','.join(fields)}) VALUES({','.join('?' for _ in fields)})",
@@ -93,8 +64,6 @@ def test_owner_writes_commit_atomically_and_pruning_invalidates(
 ) -> None:
     store = AppStore(tmp_path / "store.db")
     with store.connection() as connection:
-        if table == "agent_usage":
-            _insert(connection, "graph_runs", _CASES[0][3], store.now())
         initial = _generation(connection, resource)
     with store.connection() as connection:
         _insert(connection, table, fields, store.now())
@@ -106,13 +75,7 @@ def test_owner_writes_commit_atomically_and_pruning_invalidates(
         connection.execute("SAVEPOINT mutation")
         connection.execute(
             f"UPDATE {table} SET {column}=?",
-            (
-                "exited"
-                if table == "compute_jobs"
-                else json.dumps({"changed": True})
-                if column.endswith("json") or column == "metadata"
-                else "changed",
-            ),
+            ("changed",),
         )
         assert _generation(connection, resource) > inserted
         connection.execute("ROLLBACK TO mutation")
@@ -121,12 +84,30 @@ def test_owner_writes_commit_atomically_and_pruning_invalidates(
         assert _generation(connection, resource) > inserted
 
 
-def test_task_progress_never_moves_status_and_entities_are_project_scoped(tmp_path: Path) -> None:
+@pytest.mark.parametrize("experiment", [False, True])
+def test_task_progress_never_moves_status_and_entities_are_project_scoped(
+    tmp_path: Path, experiment: bool
+) -> None:
     store = AppStore(tmp_path / "store.db")
     with store.connection() as connection:
-        _insert(connection, "graph_runs", _CASES[0][3], store.now())
+        _insert(
+            connection,
+            "graph_runs",
+            {
+                **_CASES[0][3],
+                "episode_id": "episode",
+                "request_json": json.dumps(
+                    {"chat_id": "chat", "patch_kind": "experiment_loop" if experiment else "work"}
+                ),
+            },
+            store.now(),
+        )
     status = store.agent_task_status_signal("p")
     with store.connection() as connection:
+        inventories = {
+            name: _generation(connection, name)
+            for name in ("tasks.status", "chats", "episodes", "terminals", "refs", "graph")
+        }
         progress = _generation(connection, "tasks.progress")
         connection.execute(
             "UPDATE graph_runs SET status_message='checkpoint' WHERE operation_id='task'"
@@ -136,6 +117,7 @@ def test_task_progress_never_moves_status_and_entities_are_project_scoped(tmp_pa
             (store.now(),),
         )
         assert _generation(connection, "tasks.progress") > progress
+        assert {name: _generation(connection, name) for name in inventories} == inventories
         assert connection.execute(
             "SELECT generation FROM resource_versions WHERE scope='p' AND resource='task' AND entity='task'"
         ).fetchone()
@@ -151,6 +133,9 @@ def test_task_progress_never_moves_status_and_entities_are_project_scoped(tmp_pa
             "UPDATE graph_runs SET status='succeeded',finished_at=? WHERE operation_id='task'",
             (store.now(),),
         )
+        for name in ("tasks.status", "chats", "episodes", "terminals", "refs"):
+            assert _generation(connection, name) > inventories[name]
+        assert (_generation(connection, "graph") > inventories["graph"]) == experiment
     assert store.agent_task_status_signal("p") != status
 
 
@@ -198,3 +183,126 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
         ).fetchone()[0]
         connection.execute("UPDATE graph_runs SET status='succeeded'")
         assert _generation(connection, "tasks.status") > 0
+
+
+# Tables outside subscribed display resources. Provisioning belongs to setup;
+# notifications shown in Settings/membership are registered by their owners.
+_EXEMPT_TABLES = {
+    "_legacy_campaign_invocations_archive": "legacy",
+    "_legacy_campaign_messages_archive": "legacy",
+    "_legacy_campaign_recoveries_archive": "legacy",
+    "_legacy_campaign_reports_archive": "legacy",
+    "_legacy_campaigns_archive": "legacy",
+    "notification_episode_observations": "delivery",
+    "notification_graph_markers": "delivery",
+    "notification_outbox": "delivery",
+    "notification_phone_pairings": "pairing",
+    "notification_project_baselines": "delivery",
+    "notification_question_events": "delivery",
+    "notification_vapid_key": "credential",
+    "notification_web_push_subscriptions": "transport",
+    "owner_credentials": "credential",
+    "owner_sign_in_codes": "credential",
+    "project_aliases": "identity",
+    "project_provisioning_requests": "setup",
+    "project_provisioning_step_receipts": "setup",
+    "project_transfer_activations": "transfer",
+    "project_transfer_import_configurations": "transfer",
+    "project_transfer_imports": "transfer",
+    "project_transfer_proofs": "transfer",
+    "project_transfer_requests": "transfer",
+    "project_transfer_restore_reentries": "transfer",
+    "project_transfer_uploads": "transfer",
+    "resource_deadlines": "watermarks",
+    "resource_versions": "watermarks",
+    "resource_watermark_epoch": "watermarks",
+    "sqlite_sequence": "sqlite",
+    "storage_schema_migrations": "migration",
+    "team_bootstrap_codes": "credential",
+    "team_device_pairings": "pairing",
+    "team_member_tokens": "credential",
+    "team_sessions": "authentication",
+}
+
+
+def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(tmp_path):
+    from rcp.storage.resource_versions import (
+        _EPISODE_TABLES,
+        _GLOBAL_TABLES,
+        _PROJECT_TABLES,
+        _TASK_TABLES,
+    )
+
+    owners = (
+        set(_PROJECT_TABLES)
+        | set(_GLOBAL_TABLES)
+        | set(_EPISODE_TABLES)
+        | set(_TASK_TABLES)
+        | {
+            "graph_runs",
+            "projects",
+            "chat_reads",
+            "chat_pins",
+            "auto_research_experiment_invocations",
+            "auto_research_child_work_attempts",
+            "artifact_versions",
+            "artifact_operations",
+        }
+    )
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert not owners & _EXEMPT_TABLES.keys()
+        assert tables == owners | _EXEMPT_TABLES.keys()
+        triggers = {
+            row[0]: row[1]
+            for row in connection.execute(
+                "SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'"
+            )
+        }
+        for table in owners:
+            for event in ("insert", "update", "delete"):
+                assert triggers[f"resource_{table}_{event}"] == table
+        for event in ("insert", "update", "delete"):
+            assert triggers[f"resource_graph_runs_status_{event}"] == "graph_runs"
+
+
+@pytest.mark.parametrize(
+    "table,fields,changes_graph,changes_refs",
+    [
+        # The ref inventory marks branches that have open questions.
+        ("questions", {"owner_kind": "chat", "state": "pending", "multiple": 0}, False, True),
+        ("episode_invocations", {"invocation_number": 1, "operation_id": "task"}, False, False),
+        ("episode_reports", {"allocation_operation_id": "task"}, True, False),
+        ("experiment_episode_state", {}, True, False),
+    ],
+)
+def test_graph_invalidation_tracks_experiment_control_inputs(
+    tmp_path, table, fields, changes_graph, changes_refs
+):
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        _insert(
+            connection,
+            "episodes",
+            {"mode": "experiment_loop", "invocation_ceiling": 1},
+            store.now(),
+        )
+        _insert(connection, "graph_runs", _CASES[0][3], store.now())
+        if table == "episode_reports":
+            _insert(
+                connection,
+                "episode_report_attempts",
+                {
+                    "attempt_number": 1,
+                    "allocation_operation_id": "task",
+                },
+                store.now(),
+            )
+        graph, refs = _generation(connection, "graph"), _generation(connection, "refs")
+        _insert(connection, table, fields, store.now())
+        assert (_generation(connection, "graph") > graph) == changes_graph
+        assert (_generation(connection, "refs") > refs) == changes_refs
