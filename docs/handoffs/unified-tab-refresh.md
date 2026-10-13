@@ -52,6 +52,9 @@ remote-state projects.
 6. **Kept current:** each open tab's current view (project plus the ref it is
    on; project-wide data once). Other visited branch views stay cached and are
    validated only when reopened. Closing a tab frees its data. No count cap.
+7. **Task status and progress are separate tokens.** Hidden tabs watch status
+   only, so a running agent causes no background refetch. The active tab also
+   watches progress.
 
 ## Design
 
@@ -177,8 +180,6 @@ remote-state projects.
 
 ## Open questions
 
-- Should hidden tabs refetch on agent progress? The server design folds
-  progress into the task token; decision 3 assumed status changes only.
 - Paper: may it open from the store instead of its mandatory entry read? It
   first needs conditional saves against the Paper resource version, because
   saving today writes the stored draft before checking the canonical
