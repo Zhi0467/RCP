@@ -143,7 +143,7 @@ def resume_discuss_command_mailbox(
     scope = saved.get("graph_read_scope")
     handler = discuss_command_handler(
         execution,
-        service=service(),
+        service=service() if scope is not None else None,
         graph_read_scope=GraphReadScope.model_validate(scope) if scope is not None else None,
     )
     if saved.get("ask_allowed") is not True:

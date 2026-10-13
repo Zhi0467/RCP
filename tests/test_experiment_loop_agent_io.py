@@ -368,6 +368,8 @@ _TURN_VALUES = {
     "paths.artifacts",
     "commands.validate",
     "commands.launch",
+    "patch.command_client",
+    "history_client",
 }
 
 
@@ -1231,9 +1233,10 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
     assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
     # The correction repeats its browser state and replaces its validator.
-    assert set(_changed_values(launcher.contracts[2])) == {"commands.validate"} | (
-        {"browser"} if browser_requested else set()
-    )
+    assert set(_changed_values(launcher.contracts[2])) == {
+        "commands.validate",
+        "history_client",
+    } | ({"browser"} if browser_requested else set())
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None

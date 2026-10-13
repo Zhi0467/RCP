@@ -3058,7 +3058,7 @@ def _resume_work_command_handler(
         handler = _work_command_handler(
             execution,
             None,
-            service=service(),
+            service=service() if context.graph_read_scope is not None else None,
             graph_read_scope=context.graph_read_scope,
             consolidation_apply=consolidation_apply_handler(
                 service, execution, mailbox, context.run_truth_scope
@@ -3068,7 +3068,7 @@ def _resume_work_command_handler(
         handler = _work_command_handler(
             execution,
             compute_commands,
-            service=service(),
+            service=service() if context.graph_read_scope is not None else None,
             graph_read_scope=context.graph_read_scope,
         )
     if not context.ask_allowed:

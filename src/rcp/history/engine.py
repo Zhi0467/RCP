@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from rcp import limits
 from rcp.core.materialize import MaterializationResult, materialize_patches_from_state
-from rcp.core.models import GraphBranchMetadata, GraphState, Patch
+from rcp.core.models import GraphBranchMetadata, GraphState, Patch, ReplayFailure
 from rcp.core.operations import SetProjectTruthScopeOperation
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import accepted_transition_head_chain_failure
@@ -296,6 +296,7 @@ class ProjectHistoryEngine:
             return old
         unchanged_prefix = (
             old is not None
+            and old.result.state.replay_status == "complete"
             and old.context_key == context_key
             and source.inventory[: len(old.source.inventory)] == old.source.inventory
         )
@@ -310,6 +311,7 @@ class ProjectHistoryEngine:
             digests.append(_digest(digests[-1], str(revision).encode() + b"\0" + content))
         reusable = (
             old is not None
+            and old.result.state.replay_status == "complete"
             and old.context_key == context_key
             and tuple(digests[: len(old.digests)]) == old.digests
         )
@@ -329,12 +331,25 @@ class ProjectHistoryEngine:
         with _MEMORY_LOCK:
             states = OrderedDict(old.states) if reusable and old else OrderedDict()
             state_costs = dict(old.state_costs) if reusable and old else {}
-        patches = [
-            self.manager._decode_persisted_patch(content.decode())
-            for _, content in contents[start - verified :]
-        ]
+        patches: list[Patch] = []
+        structural_failure: ReplayFailure | None = None
+        for entry, (_, content) in zip(
+            source.inventory[start:], contents[start - verified :], strict=True
+        ):
+            try:
+                patches.append(self.manager._decode_persisted_patch(content.decode()))
+            except ValueError as exc:
+                from rcp.history.manager import _patch_failure_created_at
+
+                structural_failure = ReplayFailure(
+                    revision=entry.revision,
+                    created_at=_patch_failure_created_at(Path(entry.path)),
+                    code="patch-schema-invalid",
+                    message=str(exc),
+                )
+                break
         for offset, (patch, entry) in enumerate(
-            zip(patches, source.inventory[start:], strict=True)
+            zip(patches, source.inventory[start : start + len(patches)], strict=True)
         ):
             revision = entry.revision
             if revision != initial_head.revision + start + offset + 1 or patch.revision != revision:
@@ -349,7 +364,7 @@ class ProjectHistoryEngine:
         stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
         stored_index = (
             self.store.load_step_segments(tuple(digests), stride)
-            if self.store and not reusable
+            if self.store and not reusable and structural_failure is None
             else None
         )
         if stored_index is not None and (
@@ -470,6 +485,13 @@ class ProjectHistoryEngine:
                 checkpoints[tail.state.revision] = tail.state
                 if self.store and self.checkpoint_interval:
                     pending.append(before_head)
+        if structural_failure is not None:
+            previous = replace(
+                previous,
+                state=previous.state.model_copy(
+                    update={"replay_status": "degraded", "replay_failure": structural_failure}
+                ),
+            )
         return _Generation(
             source.target,
             context_key,
@@ -620,7 +642,7 @@ class ProjectHistoryEngine:
             # outside its lock; append never depends on checkpoint publication.
             if self.store:
                 for generation in built.values():
-                    if not generation.saved:
+                    if not generation.saved and generation.result.state.replay_status == "complete":
                         for head in generation.pending:
                             result = self._prefix_result(
                                 generation, head, state=generation.checkpoints[head.revision]

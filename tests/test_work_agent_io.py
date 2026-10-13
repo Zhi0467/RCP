@@ -1752,10 +1752,16 @@ async def test_graph_only_repair_never_acquires_browser(
 ):
     from rcp.providers.browser_grant import BrowserGrant
 
+    from .test_experiment_loop_agent_io import _experiment_patch, _loop_request
+
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    request = _request().model_copy(
+    request = _request()
+    if repair_module is loop_module:
+        append_fixture_patch(service, _experiment_patch())
+        request = _loop_request(str(uuid.uuid4()), request.chat_id, invocation=1)
+    request = request.model_copy(
         update={"message": None, "session_id": "repair-session", "browser_requested": True}
     )
     request = work_module._resolve_work_execution(service, request, None).request

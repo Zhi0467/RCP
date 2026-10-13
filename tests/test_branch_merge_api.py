@@ -475,7 +475,7 @@ class _PatchWritingLauncher:
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
         self.calls += 1
-        assert len(list(cwd.glob("rcp-command-*.credential.json"))) == 1
+        assert _kwargs["invocation_gate"] is not None
         (cwd / "patch.json").write_text(self.candidate, encoding="utf-8")
         yield AgentEvent(event="session", session_id=session_id or self.session_id)
         yield AgentEvent(event="provider_exit", text='{"return_code":0}')

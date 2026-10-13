@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from rcp.core.transition_models import GraphTargetRef
@@ -363,3 +365,33 @@ def test_shared_branch_prefix_is_charged_once_to_memory_budget(history, monkeypa
     monkeypatch.setattr(limits, "GRAPH_HISTORY_MEMORY_PROJECT_BYTES", shared_bytes)
     engine._pin([metadata.head.target])
     assert set(engine._generations) == {"main", metadata.head.target.key}
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_malformed_tail_preserves_coherent_history_and_recovers(history, tmp_path, warm):
+    engine = history.history_engine
+    engine.configure_store(tmp_path / "cache", "project")
+    if warm:
+        head(engine, "main@head")
+    history.append(_branch_patch("ev/later"))
+    path = history._patch_paths()[-1]
+    original = path.read_text()
+    document = json.loads(original)
+    document["kind"] = "retired-patch-kind"
+    path.write_text(json.dumps(document))
+
+    for _ in range(2):
+        result, steps = engine.projection(GraphTargetRef())
+        assert result.state.revision == 1
+        assert result.state.replay_status == "degraded"
+        assert result.state.replay_failure is not None
+        assert result.state.replay_failure.revision == 2
+        assert result.state.replay_failure.code == "patch-schema-invalid"
+        assert [step.patch.revision for step in steps] == [1]
+        assert "ev/later" not in result.state.nodes
+
+    path.write_text(original)
+    result, steps = engine.projection(GraphTargetRef())
+    assert result.state.replay_status == "complete"
+    assert [step.patch.revision for step in steps] == [1, 2]
+    assert "ev/later" in result.state.nodes
