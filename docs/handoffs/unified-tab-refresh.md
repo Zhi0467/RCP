@@ -1,8 +1,8 @@
 # Unified tab refresh
 
 Status: design only. Nothing is implemented; implementation waits for an
-explicit start. Implemented: none. Remaining: the design sections marked
-pending, then every slice below.
+explicit start. Implemented: none. Remaining: the open questions, then every
+slice below.
 
 ## Goal
 
