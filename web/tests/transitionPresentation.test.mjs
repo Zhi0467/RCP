@@ -12,6 +12,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { ExperimentBoard } = await server.ssrLoadModule("/src/experiments/ExperimentBoard.tsx");
 const { ExperimentRunDetail } = await server.ssrLoadModule(
   "/src/experiments/ExperimentRunDetail.tsx",
@@ -91,7 +98,7 @@ test("current-flow board copy omits stale Experiment summary and next action", (
     next_action: "Wait for the resolved Blocker.",
     next_action_stale: true,
   });
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExperimentBoard, {
       entries: [
         {
@@ -120,7 +127,7 @@ test("Experiment detail labels retained stale guidance without presenting it as 
     next_action_stale: true,
   });
   const run = buildExperimentRun(node, control(), [], []);
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExperimentRunDetail, {
       run,
       runBusy: false,

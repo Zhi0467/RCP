@@ -47,3 +47,33 @@ test("presenting a late command response cannot overwrite an accepted task read"
     assert.deepEqual(store.committedValue(id), [latest]);
   }
 });
+
+test("a failed task list read is reported, not shown as no tasks, and can be retried", async () => {
+  const store = new ResourceStore();
+  let reads = 0;
+  store.register("tab", {
+    ...taskStatusProfile("p"),
+    fetch: async () => {
+      reads += 1;
+      throw new Error("offline");
+    },
+  });
+  await new Promise(setImmediate);
+  let actions;
+  function Harness() {
+    actions = useAgentTasks({ projectId: "p" });
+    return null;
+  }
+  renderToStaticMarkup(
+    React.createElement(
+      RefreshRuntimeContext.Provider,
+      { value: { store } },
+      React.createElement(Harness),
+    ),
+  );
+  assert.equal(actions.tasksUnavailable, true);
+  const before = reads;
+  actions.retryTasks();
+  await new Promise(setImmediate);
+  assert.equal(reads, before + 1);
+});

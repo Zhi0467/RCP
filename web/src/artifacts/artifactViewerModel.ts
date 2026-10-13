@@ -37,6 +37,7 @@ export function useArtifactViewerTarget() {
       };
     },
     () => target,
+    () => null,
   );
 }
 

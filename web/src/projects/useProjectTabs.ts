@@ -130,7 +130,8 @@ export function useProjectTabs<
   const refreshProjectExperimentLoops = useCallback(
     async (requestedProjectId: string) => {
       const id = resourceKeyId(experimentIndexProfile(requestedProjectId).key);
-      store.invalidate(id);
+      // Callers hold their action lock until this read settles or fails.
+      await store.refresh(id);
       return store.view<ExperimentLoopIndex>(id).value?.entries ?? [];
     },
     [store],

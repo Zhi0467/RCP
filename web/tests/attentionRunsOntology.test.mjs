@@ -12,6 +12,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { AttentionOverview, ExecutionView } = await server.ssrLoadModule(
   "/src/graph/GraphViews.tsx",
 );
@@ -330,7 +337,7 @@ test("Inbox counts pending proposals, queued Decisions, and only asserted open b
     status: "pending",
   };
 
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(AttentionOverview, {
       consolidationCount: 3,
       proposals: [pending],
@@ -390,7 +397,7 @@ test("Decision attention rows show only title and state and open the existing no
       selected.push(nodeId);
     },
   };
-  const html = renderToStaticMarkup(React.createElement(AttentionRail, props));
+  const html = renderMarkup(React.createElement(AttentionRail, props));
 
   assert.match(html, /READY ROW/);
   assert.match(html, /REVISIT ROW/);
@@ -462,7 +469,7 @@ test("Runs is episode-first while Experiment placement and status stay control-a
     "2026-08-03T00:30:00Z",
     "EXP NEWEST",
   );
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ExecutionView, {
       graph: graph({
         nodes: {
@@ -573,7 +580,7 @@ test("Runs fails loudly when a cached Experiment control lacks backend lifecycle
   };
   assert.throws(
     () =>
-      renderToStaticMarkup(
+      renderMarkup(
         React.createElement(ExecutionView, {
           graph: graph({ nodes: { [experiment.id]: experiment } }),
           episodes: [],
@@ -651,7 +658,7 @@ test("Project Settings supports legacy profiles without an ontology authoring su
       reclaimable_bytes: 0,
       reclaimable_count: 0,
     };
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(ProjectSettings, {
         apiBase: "/api/projects/project",
         project: {

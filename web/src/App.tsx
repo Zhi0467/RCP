@@ -1061,6 +1061,8 @@ function MemberApp({
   const transitionManifest = trustedProjectTransitionManifest(projectSession, projectId);
   const {
     snapshot: agentTasksSnapshot,
+    tasksUnavailable,
+    retryTasks,
     taskStarting,
     taskActionId,
     taskInspectorLoading,
@@ -4367,6 +4369,18 @@ function MemberApp({
             onClick={() =>
               store.invalidate(resourceKeyId(graphResourceKey(project.id, graphTarget)))
             }
+          >
+            ↻
+          </button>
+        </span>
+      )}
+      {tasksUnavailable && (
+        <span aria-label="Tasks may be stale" style={{ outline: "1px solid var(--danger, #c44)" }}>
+          <button
+            className="button icon"
+            aria-label="Retry tasks"
+            title="Retry tasks"
+            onClick={retryTasks}
           >
             ↻
           </button>

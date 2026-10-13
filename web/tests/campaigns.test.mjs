@@ -42,6 +42,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/experiments/CampaignRuns.tsx");
 const { AutoResearchDialog } = await server.ssrLoadModule(
   "/src/experiments/AutoResearchDialog.tsx",
@@ -50,7 +57,7 @@ const { AutoResearchDialog } = await server.ssrLoadModule(
 after(() => server.close());
 
 test("the Auto-research dialog meters only operational invocations", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(AutoResearchDialog, {
       open: true,
       busy: false,
@@ -69,7 +76,7 @@ test("the Auto-research dialog meters only operational invocations", () => {
 
 test("the Auto-research dialog names its branch and keeps launch options in the agent picker", () => {
   const render = (props = {}) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(AutoResearchDialog, {
         open: true,
         busy: false,
@@ -100,7 +107,7 @@ test("on an Auto-research branch the dialog continues it", () => {
     provider_readiness: { local: { claude: { installed: false, authenticated: false } } },
   };
   const render = (state) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(AutoResearchDialog, {
         open: true,
         busy: false,
@@ -132,7 +139,7 @@ test("the branch field warns only on a bad name and reads server refusals", asyn
   const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
   const warns = (value) =>
     /role="alert"/.test(
-      renderToStaticMarkup(
+      renderMarkup(
         React.createElement(BranchNameField, { mode: "auto_research", value, onChange() {} }),
       ),
     );
@@ -153,7 +160,7 @@ test("the branch field warns only on a bad name and reads server refusals", asyn
 });
 
 function renderEpisodes(values, { busyAction = null } = {}) {
-  return renderToStaticMarkup(
+  return renderMarkup(
     React.createElement(
       "section",
       {},
@@ -778,7 +785,7 @@ test("the login notice names each signed-out account once and offers verificatio
       detail: null,
     },
   ];
-  const html = renderToStaticMarkup(React.createElement(ProviderLoginNotice, { states }));
+  const html = renderMarkup(React.createElement(ProviderLoginNotice, { states }));
 
   assert.doesNotMatch(html, /remote.example/);
 

@@ -28,6 +28,13 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
+const { ResourceRuntime, runtime } = await server.ssrLoadModule(
+  "/tests/fixtures/resourceRuntime.ts",
+);
+after(() => runtime.scheduler.stop());
+// Components that read backend data need the shared refresh runtime.
+const renderMarkup = (element) =>
+  renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { ProjectSetup, RepositoryEditor } = await server.ssrLoadModule(
   "/src/projects/ProjectSetup.tsx",
 );
@@ -91,7 +98,7 @@ test("only desktop local repositories offer the native folder picker", () => {
 });
 
 test("SSH repositories retain manual paths and offer the bounded remote browser", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(RepositoryEditor, {
       repository: {
         id: 8,
@@ -124,7 +131,7 @@ test("the repository path label targets only its input while the picker stays a 
   const originalWindow = globalThis.window;
   globalThis.window = { __TAURI_INTERNALS__: {} };
   try {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(RepositoryEditor, {
         repository: {
           id: 7,
@@ -240,14 +247,14 @@ test("the backend selects one setup intent and its primary label", () => {
 });
 
 test("personal and team setup use one visible wizard route with plainly named intents", () => {
-  const personal = renderToStaticMarkup(
+  const personal = renderMarkup(
     React.createElement(ProjectSetup, {
       projectCreation: personalCreation,
       onCancel() {},
       onCreated() {},
     }),
   );
-  const team = renderToStaticMarkup(
+  const team = renderMarkup(
     React.createElement(ProjectSetup, {
       projectCreation: teamCreation,
       onCancel() {},
@@ -371,7 +378,7 @@ test("the move route is consumed by the one wizard and locks its intent", () => 
   const originalWindow = globalThis.window;
   globalThis.window = { __TAURI_INTERNALS__: {} };
   try {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(ProjectSetup, {
         projectCreation: moveCreation,
         setupRoute: parseProjectSetupRoute(
@@ -392,7 +399,7 @@ test("the move route is consumed by the one wizard and locks its intent", () => 
 });
 
 test("invalid setup routes fail visibly without mounting a setup form", () => {
-  const html = renderToStaticMarkup(
+  const html = renderMarkup(
     React.createElement(ProjectSetup, {
       projectCreation: personalCreation,
       setupRoute: { kind: "invalid", reason: "invalid_move_route" },
@@ -571,7 +578,7 @@ test("a deep-linked request blocks the blank create form before its durable read
     },
   };
   try {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(TeamProjectSetup, {
         intentChooser: React.createElement("div", null, "intent chooser"),
         onCancel() {},
@@ -741,7 +748,7 @@ test("the provisioning view renders backend answers and hides native actions in 
     cancelled_at: null,
   };
   const noop = () => {};
-  const operatorHtml = renderToStaticMarkup(
+  const operatorHtml = renderMarkup(
     React.createElement(ProvisioningStatus, {
       request,
       events: [],
@@ -794,7 +801,7 @@ test("the provisioning view renders backend answers and hides native actions in 
       ready_at: "2026-08-30T00:00:00Z",
     },
   };
-  const readyHtml = renderToStaticMarkup(
+  const readyHtml = renderMarkup(
     React.createElement(ProvisioningStatus, {
       request: readyRequest,
       events: [],
@@ -863,7 +870,7 @@ test("an invalid deep link fails visibly without exposing the create form", () =
     },
   };
   try {
-    const html = renderToStaticMarkup(
+    const html = renderMarkup(
       React.createElement(TeamProjectSetup, {
         intentChooser: React.createElement("div", null, "intent chooser"),
         onCancel() {},
@@ -881,7 +888,7 @@ test("an invalid deep link fails visibly without exposing the create form", () =
 test("Project Settings opens the move route only for a personal project", () => {
   const project = settingsProject();
   const renderSettings = (spaceKind, onMove) =>
-    renderToStaticMarkup(
+    renderMarkup(
       React.createElement(ProjectSettings, {
         apiBase: "/api/projects/project",
         project,
