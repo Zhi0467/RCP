@@ -407,7 +407,7 @@ export function conversationAgentStatus(
   const latest = conversation.tasks.at(-1) ?? null;
   const unread = conversationHasUnread(conversation, unreadChatIds);
   const result = { latest, unread };
-  if (conversation.conversationKind === "auto_research_child") {
+  if (orchestratorOwnsChild(conversation)) {
     const state = latest?.active ? "working" : "done";
     return { ...result, state, group: state };
   }
@@ -560,8 +560,7 @@ export function chatIndicator(
   if (
     conversations.some(
       (conversation) =>
-        conversation.conversationKind !== "auto_research_child" &&
-        conversation.tasks.some(chatTaskNeedsAttention),
+        !orchestratorOwnsChild(conversation) && conversation.tasks.some(chatTaskNeedsAttention),
     )
   )
     return "active";
@@ -678,9 +677,14 @@ export function conversationHasUnread(
   conversation: ChatConversation,
   unreadChatIds: ReadonlySet<string>,
 ): boolean {
+  return !orchestratorOwnsChild(conversation) && unreadChatIds.has(conversation.chatId);
+}
+
+/** A child's attention belongs to its orchestrator only while the lineage keeps it read-only. */
+function orchestratorOwnsChild(conversation: ChatConversation): boolean {
   return (
-    conversation.conversationKind !== "auto_research_child" &&
-    unreadChatIds.has(conversation.chatId)
+    conversation.conversationKind === "auto_research_child" &&
+    Boolean(conversation.humanTurnRefusal)
   );
 }
 

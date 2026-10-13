@@ -62,15 +62,26 @@ test("edited fields omit internals and empty pairs unless the merge names them",
       render(ChangedFields, { before, after, mergePaths }).match(/class="branch-change-field"/g) ??
       []
     ).length;
+  const path = (field_path, main) => ({ field_path, main, conflict: true });
   // Title and extension fields are content; type, id, and source refs are internal.
-  assert.equal(fieldCount([{ field_path: "title", conflict: { main: "current" } }]), 2);
-  assert.equal(fieldCount([{ field_path: "source_refs.0", conflict: { main: [] } }]), 3);
+  assert.equal(fieldCount([path("title", "current")]), 2);
+  assert.equal(fieldCount([path("source_refs/0", "y")]), 3);
   const html = render(ChangedFields, {
     before,
     after,
-    mergePaths: [{ field_path: "extension_fields.x", conflict: { main: 2 } }],
+    mergePaths: [path("extension_fields/x", 2)],
   });
-  assert.ok(html.includes('class="branch-change-value main-now"'));
+  assert.equal((html.match(/class="branch-diff-word diff-conflict"/g) ?? []).length, 1);
+  assert.ok(html.includes("Main now</span> 2"));
+});
+
+test("a created node the merge must decide shows the competing main values", () => {
+  const html = render(BranchChangeDetail, {
+    change: { before: null, after: { id: "n", title: "branch" }, change: "created", history: [] },
+    mergePaths: [{ field_path: "", main: { id: "n", title: "main" }, conflict: true }],
+  });
+  assert.ok(html.includes('class="branch-change-fields"'));
+  assert.ok(html.includes("Main now</span> main"));
 });
 
 test("created edges and removed entities retain field values", () => {
