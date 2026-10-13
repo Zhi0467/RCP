@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from concurrent.futures import Future
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from rcp.background import BackgroundAgentTasks
 from rcp.limits import PROVIDER_STEER_ACK_TIMEOUT_SECONDS
@@ -288,44 +290,70 @@ def finish_chat_steer(
     return _message(stored)
 
 
+_ANSWER_STEERS_LOCK = threading.Lock()
+_ANSWER_STEERS_IN_FLIGHT: set[str] = set()
+
+
 def steer_question_answer(
     service: ProjectService,
     store: AppStore,
     background: BackgroundAgentTasks,
     question: QuestionRecord,
-) -> bool:
+) -> Literal["steered", "in_flight", "not_steered"]:
     """Deliver a chat answer into the chat's running turn instead of queueing a new one.
 
-    Only a turn bound exactly like the asker can receive it, so the receipt rule that
-    retires the follow-up accepts it. Unlike a composer steer, the transcript records
-    the answer only after the provider acknowledges it, as that turn's steer; refused
-    or unknown delivery leaves the answer to its ordinary projection and follow-up
-    turn, so the chat never shows a refusal for an answer that still arrives.
-    Returns whether the answer was delivered and recorded as a steer.
+    Only a later turn bound exactly like the asker can receive it, so the receipt
+    rule that retires the follow-up accepts it. The asking turn itself is never
+    steered: its own ask call returns the answer, and both would deliver it twice.
+    The transcript records the answer only after the provider acknowledges it, as
+    that turn's steer; refused or unknown delivery leaves the answer to its
+    ordinary projection and follow-up turn, so the chat never shows a refusal for
+    an answer that still arrives. While one steer awaits acknowledgment, other
+    reconcilers see `in_flight` and must leave the answer alone.
     """
     origin = question.origin
     if origin.owner_kind != "chat" or question.state != "answered":
-        return False
-    target = store.running_chat_task(origin.project_id, origin.owner_id)
-    if (
-        target is None
-        or not question_receiver_binds(origin, target)
-        # A live ask call returns the answer itself.
-        or (
-            target.operation_id == origin.operation_id
-            and store.question_activity.is_waiting(question.question_id)
-        )
-    ):
-        return False
-    state = chat_steering_state(background, target)
-    control = background.live_control(target.operation_id)
-    if not state.can_steer or state.turn_id is None or control is None:
-        return False
+        return "not_steered"
+    # Claimed before looking for a target: a reconciler that runs as the target
+    # settles finds no running turn, and must not fall back mid-steer.
+    with _ANSWER_STEERS_LOCK:
+        if question.question_id in _ANSWER_STEERS_IN_FLIGHT:
+            return "in_flight"
+        _ANSWER_STEERS_IN_FLIGHT.add(question.question_id)
+    try:
+        target = store.running_chat_task(origin.project_id, origin.owner_id)
+        if (
+            target is None
+            or target.operation_id == origin.operation_id
+            or not question_receiver_binds(origin, target)
+        ):
+            return "not_steered"
+        state = chat_steering_state(background, target)
+        control = background.live_control(target.operation_id)
+        if not state.can_steer or state.turn_id is None or control is None:
+            return "not_steered"
+        return _steer_answer(service, store, background, question, target, state.turn_id, control)
+    finally:
+        with _ANSWER_STEERS_LOCK:
+            _ANSWER_STEERS_IN_FLIGHT.discard(question.question_id)
+
+
+def _steer_answer(
+    service: ProjectService,
+    store: AppStore,
+    background: BackgroundAgentTasks,
+    question: QuestionRecord,
+    target: AgentTaskRecord,
+    turn_id: str,
+    control,
+) -> Literal["steered", "not_steered"]:
+    from rcp.runs.questions import reconcile_question_receipt
+
     message_id = question_answer_message_id(question)
     text = question_answer_text(question)
     try:
         delivered = (
-            control.steer(state.turn_id, message_id, text)
+            control.steer(turn_id, message_id, text)
             .result(timeout=PROVIDER_STEER_ACK_TIMEOUT_SECONDS)
             .status
             == "delivered"
@@ -333,7 +361,7 @@ def steer_question_answer(
     except Exception:
         delivered = False
     if not delivered:
-        return False
+        return "not_steered"
     request = load_stored_request(RunRequest, target.request, operation_id=target.operation_id)
     with service.history.workspace.transaction():
         _record_steer(
@@ -342,7 +370,7 @@ def steer_question_answer(
             target,
             message_id=message_id,
             text=text,
-            receipt=_receipt(target.attempt, state.turn_id, "delivered", None),
+            receipt=_receipt(target.attempt, turn_id, "delivered", None),
         )
     background.bump_steer_revision(target.operation_id, target.project_id)
     store.record_agent_task_receipt(
@@ -355,4 +383,7 @@ def steer_question_answer(
         },
         tier="diagnostic",
     )
-    return True
+    # The turn may have settled while the steer awaited acknowledgment; its
+    # settlement then saw no receipt, so replay the receipt rule now.
+    reconcile_question_receipt(store, question.question_id)
+    return "steered"

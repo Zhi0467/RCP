@@ -1793,14 +1793,20 @@ def reconcile_chat_question_answers(
 
                 # Steer over a new turn: a running turn in the same binding takes the
                 # answer now. The steer is the answer's transcript projection.
-                if (
-                    question.client_receipt_revision is None
+                steered = (
+                    steer_question_answer(service, store, background_tasks, question)
+                    if question.client_receipt_revision is None
                     and question.followup_operation_id is None
-                    and steer_question_answer(service, store, background_tasks, question)
-                ):
+                    else "not_steered"
+                )
+                if steered == "in_flight":
+                    statuses[question.question_id] = "answer_steer_in_flight"
+                    continue
+                if steered == "steered":
                     store.mark_question_answer_projected(
                         question.question_id, question.answer_revision
                     )
+                    question = store.get_question(question.question_id) or question
                 else:
                     project_chat_question_answer(service, store, question)
             if question.origin.owner_kind != "chat":

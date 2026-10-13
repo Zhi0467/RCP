@@ -1239,12 +1239,20 @@ def _claimed_messages(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
 ) -> list[AutoResearchMessageRecord]:
-    # Includes mail the allocation's first attempt harvested mid-turn: a retry,
-    # often in a clean native session, has not seen it.
+    # Includes mail the allocation's first attempt harvested mid-turn, since a
+    # retry, often in a clean native session, has not seen it; mail it cleared
+    # was acknowledged unread and stays unread.
+    cleared = {
+        message_id
+        for receipt in execution.store.auto_research_inbox_receipts(turn.request.episode_id)
+        if receipt.mode == "clear"
+        for message_id in receipt.message_ids
+    }
     return [
         message
         for message in execution.store.auto_research_messages(turn.request.episode_id)
         if message.delivery_operation_id == turn.allocation_operation_id
+        and message.message_id not in cleared
     ]
 
 

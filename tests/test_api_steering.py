@@ -613,13 +613,25 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_cha
         run.operation_id, native_session_id="live-session", stage_root=task.stage_root or "/stage"
     )
     task = store.agent_task(run.operation_id)
-    # The turn asked, then stopped waiting and kept working.
+    # An earlier, finished turn in this chat asked; the running turn has its binding.
+    with store.connection() as connection:
+        row = dict(
+            connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (run.operation_id,)
+            ).fetchone()
+        )
+        row.update(operation_id="earlier-turn", status="succeeded")
+        connection.execute(
+            f"INSERT INTO graph_runs ({','.join(row)}) VALUES ({','.join('?' * len(row))})",
+            tuple(row.values()),
+        )
+    asker = store.agent_task("earlier-turn")
     question = store.create_or_get_question(
         origin=QuestionOrigin(
             owner_kind="chat",
             project_id=run.project_id,
             owner_id=run.chat_id,
-            operation_id=run.operation_id,
+            operation_id=asker.operation_id,
             provider="codex",
             native_session_id="live-session",
             stage_root=task.stage_root,
@@ -641,7 +653,18 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(running_cha
     assert response.status_code == 200, response.text
     assert [(turn, text) for turn, _id, text in run.receipts] == [("owned-turn", "Use route A")]
     run.finish()
-    settled = store.get_question(question.question_id)
+    # Settlement records receipt or claims the follow-up just after the turn settles.
+    settled = wait_until(
+        lambda: (
+            (
+                (current := store.get_question(question.question_id)).client_receipt_operation_id
+                or current.followup_operation_id
+            )
+            and current
+        ),
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="the answer was neither received nor given a follow-up",
+    )
     answer = next(
         item
         for item in run.app.state.service.chat_transcript(run.chat_id).messages

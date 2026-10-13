@@ -894,10 +894,12 @@ class AutoResearchCommandDispatcher:
     def dispatch(self, operation_id: str, request: CommandRequest) -> CommandResponse:
         context = self._context(operation_id)
         response = self._dispatch(context, operation_id, request)
-        if context.request.role != "orchestrator":
+        # An inbox reply is the inbox itself, already bounded to its response size.
+        if context.request.role != "orchestrator" or request.verb == "inbox":
             return response
-        # Nothing is injected into a live turn, so every reply says what a Harvest
-        # would return now; the orchestrator need not poll to learn of new input.
+        # Nothing is injected into a live turn, so every reply says what is pending
+        # now; the orchestrator need not poll to learn of new input. A Harvest
+        # takes a bounded batch, so large counts may take several.
         pending = self.store.auto_research_inbox_pending_counts(context.episode.episode_id)
         if not any(pending.values()):
             return response

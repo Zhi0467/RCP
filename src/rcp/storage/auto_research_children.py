@@ -1687,7 +1687,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         return [notice.notice_id for notice in notices]
 
     def auto_research_inbox_pending_counts(self, episode_id: str) -> dict[str, int]:
-        """Count what a Harvest would consume now, through its own selection."""
+        """Count everything pending through the Harvest selection, before its batch bound."""
 
         with self.connection() as connection:
             root = connection.execute(

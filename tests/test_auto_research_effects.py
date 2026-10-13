@@ -1784,8 +1784,10 @@ def test_inbox_clear_refuses_before_mutation_then_clears_after_bounded_harvest(
     refused = dispatcher.dispatch(root.operation_id, refused_request)
 
     assert refused.status == "invalid"
-    assert refused.result["disposition"] == "response_too_large"
-    assert refused.result["inbox_pending"]["notices"] == len(all_ids)
+    assert refused.result == {
+        "action": "clear",
+        "disposition": "response_too_large",
+    }
     assert [
         notice.notice_id
         for notice in store.pending_auto_research_lifecycle_notices(
@@ -2290,26 +2292,25 @@ def test_inbox_receipt_failure_rolls_back_notices_and_mail(tmp_path) -> None:
     assert store.auto_research_inbox_receipt("atomic-harvest") is None
 
 
-def test_every_orchestrator_reply_reports_what_a_harvest_would_return(tmp_path) -> None:
+def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path) -> None:
     store, episode, root = _setup_auto_research(tmp_path)
     dispatcher = AutoResearchCommandDispatcher(
         store, _effects(store, BackgroundAgentTasks(store, _successful_stream))
     )
 
-    def harvest(request_id: str):
+    def status(request_id: str):
         return dispatcher.dispatch(
             root.operation_id,
-            InboxCommandRequest(
+            StatusCommandRequest(
                 mailbox_id=MAILBOX_ID,
                 request_id=request_id * 32,
                 credential=CREDENTIAL,
-                verb="inbox",
-                idempotency_key=f"harvest-{request_id}",
-                arguments=InboxHarvestArguments(action="harvest"),
+                verb="status",
+                arguments={},
             ),
         )
 
-    assert "inbox_pending" not in harvest("1").result
+    assert "inbox_pending" not in status("1").result
     record_auto_research_message(
         store,
         episode_id=episode.episode_id,
@@ -2319,15 +2320,18 @@ def test_every_orchestrator_reply_reports_what_a_harvest_would_return(tmp_path) 
         recipient_task_id=root.operation_id,
         body="An answer arrived mid-turn.",
     )
-    status = dispatcher.dispatch(
+    assert status("2").result["inbox_pending"] == {"notices": 0, "mail": 1}
+    harvested = dispatcher.dispatch(
         root.operation_id,
-        StatusCommandRequest(
+        InboxCommandRequest(
             mailbox_id=MAILBOX_ID,
-            request_id="2" * 32,
+            request_id="3" * 32,
             credential=CREDENTIAL,
-            verb="status",
-            arguments={},
+            verb="inbox",
+            idempotency_key="harvest-answer",
+            arguments=InboxHarvestArguments(action="harvest"),
         ),
     )
-    assert status.result["inbox_pending"] == {"notices": 0, "mail": 1}
-    assert "inbox_pending" not in harvest("3").result
+    # The inbox reply is the inbox itself and stays within its own size bound.
+    assert "inbox_pending" not in harvested.result
+    assert "inbox_pending" not in status("4").result

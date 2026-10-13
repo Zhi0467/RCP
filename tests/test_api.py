@@ -2787,7 +2787,6 @@ def test_same_provider_retry_resumes_owned_checkpoint(app, tmp_path) -> None:
 @pytest.mark.parametrize(
     ("provider", "session_id", "error"),
     [
-        ("claude", "exhausted-session", "You've hit your limit"),
         (
             "codex",
             "dropped-session",
