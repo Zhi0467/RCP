@@ -395,6 +395,10 @@ class ProviderSignInRunner:
                 )
             entry = self._logins.get(login_id)
             self._canceled[login_id] = member_id
+            # The code dies with the process; showing it would invite a sign-in
+            # that can never be saved.
+            status = status.model_copy(update={"user_code": None, "verification_url": None})
+            self._sign_ins[login_id] = status
         if entry is not None:
             process, login = entry
             _write(process, login.cancel_input())

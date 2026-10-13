@@ -633,10 +633,13 @@ def test_a_member_can_cancel_a_running_device_sign_in(
     started = runner.start_sign_in("codex", "", member_id="member")
     _status_when(runner, started.login_id, lambda status: status.user_code is not None)
 
-    runner.cancel_sign_in(started.login_id)
+    acknowledged = runner.cancel_sign_in(started.login_id)
 
+    # A cancelled attempt's code can never complete, so it is not offered.
+    assert acknowledged.user_code is None and acknowledged.verification_url is None
     ended = _status_when(runner, started.login_id, lambda status: status.state != "pending")
     assert ended.state == "failed"
+    assert ended.user_code is None
     assert ended.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
     state = runner.store.provider_login_state("codex", "")
     # The account must stop describing an attempt that is over.
