@@ -14,7 +14,7 @@ import { ApiError, renameGraphBranch, setGraphBranchArchived } from "../core/api
 import { branchName, branchNameProblem } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
 import type { GraphRef, GraphTargetRef } from "../core/types";
-import { graphPickerOptions, graphRefTarget } from "./graphPickerModel";
+import { graphPickerOptions, graphRefTarget, refNeedsYou } from "./graphPickerModel";
 import "./GraphPicker.css";
 
 interface GraphPickerProps {
@@ -72,8 +72,7 @@ export function GraphPicker({
   const options = graphPickerOptions(refs ?? [], activeRef);
   const currentName = branchName(refs, activeRef);
   const attention = (refs ?? []).some(
-    (ref) =>
-      ref.kind === "branch" && ref.needs_you && !sameGraphTarget(graphRefTarget(ref), activeRef),
+    (ref) => refNeedsYou(ref) && !sameGraphTarget(graphRefTarget(ref), activeRef),
   );
 
   useEffect(() => {
@@ -248,7 +247,7 @@ export function GraphPicker({
                             }
                           }}
                         />
-                        {ref.kind === "branch" && ref.needs_you && (
+                        {refNeedsYou(ref) && (
                           <span className="branch-picker-attention" aria-label="Needs you" />
                         )}
                         <button
@@ -284,7 +283,7 @@ export function GraphPicker({
                         >
                           {ref.name}
                         </button>
-                        {ref.kind === "branch" && ref.needs_you && (
+                        {refNeedsYou(ref) && (
                           <span className="branch-picker-attention" aria-label="Needs you" />
                         )}
                         {ref.kind === "branch" && (

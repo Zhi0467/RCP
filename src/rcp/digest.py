@@ -251,6 +251,7 @@ def assemble_digest(
     target: str = "main",
     runs: dict[str, str] | None = None,
     chain: frozenset[str] = frozenset(),
+    archived: frozenset[str] = frozenset(),
 ) -> dict:
     """The sole rendered-line grouping function, also used by landing counts.
 
@@ -351,7 +352,8 @@ def assemble_digest(
         groups[key]["edits"] += node_edits.get((key, node_id), 0)
     needs, run_needs = [], {}
     for item in attention.values():
-        if not item.pop("active"):
+        # An archived branch is silenced: nothing on it needs the human.
+        if not item.pop("active") or item["target"] in archived:
             continue
         run = item["target"] in runs and (item["kind"] == "episode" or target == "main")
         if run:
@@ -444,6 +446,18 @@ def _orchestrator_episodes(conn, project_id: str) -> frozenset[str]:
     )
 
 
+def _archived_branches(conn, project_id: str) -> frozenset[str]:
+    """Branch target keys the human archived."""
+    return frozenset(
+        "branch:" + str(row[0])
+        for row in conn.execute(
+            "SELECT owner_episode_id FROM episode_isolation_states WHERE project_id=? "
+            "AND json_extract(state_json, '$.graph_archived') = 1",
+            (project_id,),
+        )
+    )
+
+
 def _auto_research_runs(conn, project_id: str) -> dict[str, str]:
     """Each Auto-research run's branch target key and its branch name."""
     names = resolve_branch_names(conn, project_id)
@@ -495,6 +509,7 @@ def _assemble_current(store, project_id, user_id, events, mark, cursor, state=No
     with store.connection() as conn:
         runs = _auto_research_runs(conn, project_id)
         chain = _orchestrator_episodes(conn, project_id)
+        archived = _archived_branches(conn, project_id)
     result = assemble_digest(
         project_id,
         user_id,
@@ -506,6 +521,7 @@ def _assemble_current(store, project_id, user_id, events, mark, cursor, state=No
         target=target,
         runs=runs,
         chain=chain,
+        archived=archived,
     )
     _present_current(store, project_id, result, state, runs)
     return result
