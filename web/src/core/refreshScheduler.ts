@@ -244,7 +244,12 @@ export class RefreshScheduler {
         this.inFlight = null;
         store.pump();
         const retry = store.nextRetryAt();
-        const beatMs = this.failures ? retryBackoffMs(this.failures) : REFRESH_BEAT_MS;
+        // An activation queued during this request runs at once, not next beat.
+        const beatMs = this.failures
+          ? retryBackoffMs(this.failures)
+          : this.activated
+            ? 0
+            : REFRESH_BEAT_MS;
         const untilRetry = retry === null ? beatMs : Math.max(0, retry - this.clock.now());
         this.schedule(Math.min(beatMs, untilRetry));
       }

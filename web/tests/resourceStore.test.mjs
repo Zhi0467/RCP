@@ -183,6 +183,32 @@ test("a read accepted during a command outranks its late response", async () => 
   assert.equal(store.view(id).value, "v2");
 });
 
+test("a newer command settling without values still fences an older response", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("tasks.status");
+  const id = store.register("tab", profile);
+  reads[0].resolve("v0");
+  await settle();
+  const older = store.beginMutation("pause", new Map([[id, (value) => value]]));
+  const newer = store.beginMutation("resume", new Map([[id, (value) => value]]));
+  newer.settle();
+  older.settle(new Map([[id, "paused"]]));
+  assert.equal(store.view(id).value, "v0");
+});
+
+test("a command response from before an epoch change is not accepted", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("tasks.status");
+  const id = store.register("tab", profile);
+  store.observeEpoch("e1");
+  reads[0].resolve("v0");
+  await settle();
+  const command = store.beginMutation("retry", new Map([[id, (value) => value]]));
+  store.observeEpoch("e2");
+  command.settle(new Map([[id, "old epoch"]]));
+  assert.equal(store.view(id).value, "v0");
+});
+
 test("releasing the last owner forgets the resource", () => {
   const store = new ResourceStore();
   const { profile } = manualProfile("questions");

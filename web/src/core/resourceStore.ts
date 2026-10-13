@@ -387,12 +387,14 @@ export class ResourceStore {
     effects: ReadonlyMap<string, (value: unknown) => unknown>,
   ): { settle(values?: ReadonlyMap<string, unknown>): void; fail(): void } {
     const order = ++this.mutations;
-    const readsAtStart = new Map<string, number>();
+    // A response is accepted only within the generation and read history it
+    // started from: an epoch change or an accepted read outranks it.
+    const startedAt = new Map<string, { generation: number; reads: number }>();
     for (const [id, apply] of effects) {
       const state = this.states.get(id);
       if (!state) continue;
       this.fence(state);
-      readsAtStart.set(id, state.acceptedReads);
+      startedAt.set(id, { generation: state.generation, reads: state.acceptedReads });
       state.pending.push({ id: operationId, apply });
       state.view = null;
     }
@@ -404,14 +406,14 @@ export class ResourceStore {
         state.pending = state.pending.filter((operation) => operation.id !== operationId);
         if (ok) {
           this.fence(state);
-          // A response never replaces a newer command's response or a read
-          // accepted after this command started; it only owes a read.
-          if (
-            values?.has(id) &&
+          const start = startedAt.get(id);
+          const current =
             order > state.settledMutation &&
-            state.acceptedReads === readsAtStart.get(id)
-          ) {
-            state.settledMutation = order;
+            start?.generation === state.generation &&
+            start.reads === state.acceptedReads;
+          // Any successful settlement fences older commands, with or without values.
+          if (order > state.settledMutation) state.settledMutation = order;
+          if (current && values?.has(id)) {
             const value = values.get(id);
             state.value = state.profile.reconcile
               ? state.profile.reconcile(state.hasValue ? state.value : undefined, value)
