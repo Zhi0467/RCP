@@ -3072,15 +3072,16 @@ function MemberApp({
       selectedExperimentChatId,
       agentsBoard,
     );
-    markVisibleChatRead(tasks, visibleChatId);
+    // Project-wide, as unread is: an orchestrator opened from main has its turns on its branch.
+    markVisibleChatRead(projectTasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
   }, [
     agentsBoard,
     chatReads,
     markVisibleChatRead,
+    projectTasks,
     selectedChatId,
     selectedExperimentChatId,
-    tasks,
     view,
   ]);
 
