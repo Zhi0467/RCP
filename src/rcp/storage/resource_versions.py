@@ -41,7 +41,8 @@ _PROJECT_TABLES = {
     "auto_research_child_experiments": ("episodes",),
     "auto_research_child_work": ("episodes",),
     "episode_isolations": ("episodes", "refs", "terminals"),
-    "episode_isolation_states": ("episodes", "refs", "graph", "terminals"),
+    # The digest reads branch archival to suppress archived attention.
+    "episode_isolation_states": ("episodes", "refs", "graph", "digest", "terminals"),
     "branch_names": ("refs", "graph", "digest", "chats", "artifacts"),
     "branch_name_reservations": ("refs", "graph", "digest", "chats", "artifacts"),
     "conversation_worktrees": ("refs", "chats", "terminals"),

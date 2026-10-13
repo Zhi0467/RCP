@@ -13,7 +13,7 @@ from rcp.api.dependencies import (
     get_experiment_operation_lock,
     get_graph_service,
     get_identity_access,
-    get_project_service,
+    get_project_writer,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -336,7 +336,7 @@ def stop_bound_experiment_episode(
     except EpisodeNotRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
-        main_service = get_project_service(catalog, project_id)
+        main_service = get_project_writer(catalog, project_id)
         target_service = (
             main_service
             if episode.graph_target.kind == "main"
@@ -427,7 +427,7 @@ def continue_experiment_episode(
     last_turn = store.agent_task(experiment.last_turn_operation_id)
     if last_turn is None:
         raise HTTPException(status_code=409, detail="The episode lost its last turn record.")
-    main_service = get_project_service(catalog, project_id)
+    main_service = get_project_writer(catalog, project_id)
     target_service = (
         main_service
         if source.graph_target.kind == "main"

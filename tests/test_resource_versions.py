@@ -333,6 +333,19 @@ def test_only_launch_receipts_move_terminals(tmp_path: Path) -> None:
         assert _generation(connection, "terminals") > before
 
 
+def test_branch_archival_moves_the_digest(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO episode_isolation_states VALUES ('project', 'branch', '{}')"
+        )
+        before = _generation(connection, "digest")
+        connection.execute(
+            "UPDATE episode_isolation_states SET state_json='{\"graph_archived\": true}'"
+        )
+        assert _generation(connection, "digest") > before
+
+
 def test_artifact_edit_lifecycle_invalidates_viewer(tmp_path):
     store = AppStore(tmp_path / "store.db")
     with store.connection() as connection:

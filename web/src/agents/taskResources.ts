@@ -48,13 +48,22 @@ export function usageProfile(projectId: string): ResourceProfile<AgentUsageSnaps
  * Live fields such as steering, status message, and session move only the
  * progress watermark while a task runs. An equal timestamp still replaces:
  * elapsed time and progress move with the clock while the persisted row does not.
+ * A pending or refused command owns its row's controls, so only the clock fields
+ * enrich it until the command settles.
  */
 export function selectTasks(status: AgentTask[] = [], progress: AgentTask[] = []): AgentTask[] {
   const byId = new Map(progress.map((task) => [task.operation_id, task]));
   return status.map((task) => {
     const detail = byId.get(task.operation_id);
-    return detail && detail.status === task.status && detail.updated_at >= task.updated_at
-      ? detail
-      : task;
+    if (!detail || detail.status !== task.status || detail.updated_at < task.updated_at)
+      return task;
+    if (!task.action_pending && !task.action_error) return detail;
+    return {
+      ...task,
+      phase: detail.phase,
+      progress: detail.progress,
+      elapsed_seconds: detail.elapsed_seconds,
+      last_activity_at: detail.last_activity_at,
+    };
   });
 }

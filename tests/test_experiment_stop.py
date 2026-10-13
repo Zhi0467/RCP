@@ -3179,7 +3179,7 @@ def test_stop_acceptance_survives_display_failure(loop, monkeypatch, route) -> N
     def unavailable(*_args, **_kwargs):
         raise StateUnavailable("display generation unavailable")
 
-    monkeypatch.setattr(experiments, "get_project_service", unavailable)
+    monkeypatch.setattr(experiments, "get_project_writer", unavailable)
     resource = NODE_PATH if route == "experiments" else loop.episode_id
     response = loop.client.post(f"/api/projects/{loop.project_id}/{route}/{resource}/stop", json={})
     assert response.status_code == 200, response.text

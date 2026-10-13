@@ -123,6 +123,11 @@ test("progress cannot regress status or overwrite a pending action", () => {
   const [live] = selectTasks([{ ...task("running"), can_steer: false }], [ticked]);
   assert.equal(live.progress, 0.5);
   assert.equal(live.can_steer, true);
+  // A pending command keeps its painted controls over a progress row.
+  const pending = { ...task("running"), action_pending: "pause", can_pause: false };
+  const [held] = selectTasks([pending], [{ ...ticked, can_pause: true }]);
+  assert.equal(held.can_pause, false);
+  assert.equal(held.progress, 0.5);
 });
 
 test("task commands paint intent, settle a retry and retain failure on the task", async () => {

@@ -363,7 +363,7 @@ def _refresh_machine_compute_probes(
 ) -> None:
     project_id = catalog.resolve_project_id(project_id)
     try:
-        manifest = get_project_service(catalog, project_id).manifest
+        manifest = get_project_writer(catalog, project_id).manifest
         refresh_compute_probes(
             store, manifest, project_id, data_dir=catalog.data_dir, machines=machines
         )
