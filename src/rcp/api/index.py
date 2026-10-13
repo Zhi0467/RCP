@@ -605,10 +605,12 @@ def space_runs(
             state.archived for state in archive_states_by_project[record.project_id].values()
         ):
             continue
+        # A chain's newest member stands for the run; an archived source is not its own row.
         archived = [
             episode
             for episode in store.archived_episodes(record.project_id)
             if episode.episode_id not in indexed_ids
+            and store.episode_continuation(episode.episode_id) is None
         ]
         if not archived:
             continue

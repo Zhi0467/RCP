@@ -1274,7 +1274,9 @@ def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTa
         )
     # Only Resume reruns its parent's turn in place. A wake, Retry, or repair
     # reuses the native session but opens a turn of its own, often with no parent.
-    resumed = payload.get("continuation_cause") == "resume"
+    # A receipt that names no cause keeps the meaning its `resumed` flag recorded.
+    cause = payload.get("continuation_cause")
+    resumed = cause == "resume" if cause is not None else payload["resumed"] is True
     actual_has_parent = record.parent_operation_id is not None
     if has_parent != actual_has_parent or (resumed and not actual_has_parent):
         raise _resume_lineage_error(

@@ -690,6 +690,15 @@ def test_space_runs_lists_only_the_newest_auto_research_chain_member(
     )
 
     assert [snapshot.episode.episode_id for snapshot in snapshots] == [continuation_id]
+    # An archived source stays folded into its chain rather than returning as history.
+    authorizer = authorized_human(store)
+    store.set_episode_archived(project_id, parent.episode_id, authorizer.user_id, archived=True)
+    client = signed_in_client(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    response = client.get("/api/space/runs")
+    assert response.status_code == 200, response.text
+    listed = {entry["episode_id"] for entry in response.json() if entry["mode"] == "auto_research"}
+    assert listed == {continuation_id}
 
 
 def test_space_runs_filters_old_completed_auto_research_before_hydration(
