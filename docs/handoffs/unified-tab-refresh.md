@@ -55,6 +55,11 @@ remote-state projects.
 7. **Task status and progress are separate tokens.** Hidden tabs watch status
    only, so a running agent causes no background refetch. The active tab also
    watches progress.
+8. **Paper is a plain profile.** No scheduler or store special case; its
+   mandatory entry read goes. The one addition is a draft-version guard on
+   save: today `save` overwrites the stored draft before any check, so a save
+   from a stale copy refuses instead of replacing a newer draft. The existing
+   canonical `base_hash` conflict path is unchanged.
 
 ## Design
 
@@ -180,10 +185,7 @@ remote-state projects.
 
 ## Open questions
 
-- Paper: may it open from the store instead of its mandatory entry read? It
-  first needs conditional saves against the Paper resource version, because
-  saving today writes the stored draft before checking the canonical
-  `base_hash`.
+None.
 
 ## Slices
 
