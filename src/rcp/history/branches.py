@@ -132,7 +132,7 @@ class BranchHistoryManager:
     def branch_metadata(self) -> GraphBranchMetadata:
         with self._process_lock:
             self._metadata = self._read_metadata()
-            result = self.materialize(write_outputs=False)
+            result = self.history_engine.materialization(self.graph_target, refresh=False)
             return self._metadata.model_copy(update={"head": self.head_ref(result)})
 
     def head_ref(self, materialization: MaterializationResult | None = None) -> GraphHeadRef:
@@ -565,8 +565,8 @@ class BranchHistoryManager:
         """Read every retained receipt and verify it against branch and main replay."""
 
         with self._process_lock:
-            branch = self.materialize(write_outputs=False)
-            main = self.parent.materialize(write_outputs=False)
+            branch = self.history_engine.materialization(self.graph_target, refresh=False)
+            main = self.history_engine.materialization(GraphTargetRef(), refresh=False)
             self.require_writable(branch.state)
             self.parent.require_writable(main.state)
             return [

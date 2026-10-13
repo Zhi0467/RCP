@@ -5,12 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
+import stat
+import sys
 import threading
 import weakref
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from rcp import limits
 from rcp.core.materialize import MaterializationResult, materialize_patches_from_state
@@ -21,8 +25,9 @@ from rcp.core.transitions import accepted_transition_head_chain_failure
 from rcp.core.validation.settings import build_validation_context
 from rcp.history.delta import semantic_delta
 from rcp.history.memory_size import retained_size
+from rcp.history.pages import DiffAnswer, LogAnswer
 from rcp.history.queries import GraphDiffPage, GraphLogPage, HeadSpec, StepRecord
-from rcp.history.state_delta import apply_state_delta, capture_state_delta
+from rcp.history.state_delta import apply_state_delta, capture_state_delta, copy_state
 from rcp.history.store import GraphHistoryStore, IndexedStep
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.transport import StateUnavailable
@@ -31,8 +36,9 @@ if TYPE_CHECKING:
     from rcp.config import Manifest
     from rcp.history.manager import HistoryManager
 
-_VERSION = "graph-history-2"
+_VERSION = "graph-history-3"
 _LOGGER = logging.getLogger(__name__)
+_PATCH_NAME = re.compile(r"[0-9]{6}\.json")
 _MEMORY_LOCK = threading.RLock()
 _MEMORY: OrderedDict[tuple[int, str], weakref.ReferenceType[ProjectHistoryEngine]] = OrderedDict()
 
@@ -41,13 +47,80 @@ def _digest(previous: str, content: bytes) -> str:
     return hashlib.sha256(previous.encode() + len(content).to_bytes(8, "big") + content).hexdigest()
 
 
+class _PatchFile(NamedTuple):
+    revision: int
+    path: str
+    size: int
+    mtime_ns: int
+    inode: int
+    ctime_ns: int
+
+
+def _inventory(
+    directory: Path, previous: tuple[_PatchFile, ...] = (), *, batches: bool = False
+) -> tuple[_PatchFile, ...]:
+    entries: list[_PatchFile] = []
+    known = {item.path: item for item in previous}
+    directories = [directory]
+    for root in directories:
+        if root.is_symlink():
+            raise ValueError("retained Patch directory must not be a symlink")
+        try:
+            descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            if root == directory:
+                return ()
+            continue
+        try:
+            with os.scandir(descriptor) as scan:
+                for entry in scan:
+                    if _PATCH_NAME.fullmatch(entry.name):
+                        info = entry.stat(follow_symlinks=False)
+                        if not stat.S_ISREG(info.st_mode):
+                            raise ValueError("retained Patch must be a regular file")
+                        path = f"{root}/{entry.name}"
+                        old = known.get(path)
+                        if old is not None and (
+                            old.size == info.st_size
+                            and old.mtime_ns == info.st_mtime_ns
+                            and old.inode == info.st_ino
+                            and old.ctime_ns == info.st_ctime_ns
+                        ):
+                            entries.append(old)
+                            continue
+                        entries.append(
+                            _PatchFile(
+                                int(entry.name[:6]),
+                                path,
+                                info.st_size,
+                                info.st_mtime_ns,
+                                info.st_ino,
+                                info.st_ctime_ns,
+                            )
+                        )
+                    elif (
+                        batches
+                        and root == directory
+                        and entry.name.startswith("batch-")
+                        and entry.is_dir()
+                    ):
+                        directories.append(root / entry.name)
+        except FileNotFoundError:
+            if root == directory:
+                return ()
+        finally:
+            os.close(descriptor)
+    inventory = tuple(sorted(entries, key=lambda item: item.revision))
+    return previous if inventory == previous else inventory
+
+
 @dataclass(frozen=True)
 class _Source:
     target: GraphTargetRef
     manifest: Manifest
     context_key: str
     scope: list[str]
-    contents: tuple[tuple[int, bytes], ...]
+    inventory: tuple[_PatchFile, ...]
     metadata: GraphBranchMetadata | None = None
 
 
@@ -61,9 +134,13 @@ class _Generation:
     initial_head: GraphHeadRef
     index: tuple[IndexedStep, ...]
     result: MaterializationResult
+    source: _Source
     inherited: tuple[IndexedStep, ...] = ()
+    checkpoints: dict[int, GraphState] = field(default_factory=dict)
+    states: OrderedDict[int, GraphState] = field(default_factory=OrderedDict)
+    state_costs: dict[int, int] = field(default_factory=dict)
     pending: list[GraphHeadRef] = field(default_factory=list)
-    pending_start: GraphState | None = None
+    start: int = 0
     saved: bool = False
 
     def head(self, revision: int) -> GraphHeadRef:
@@ -95,7 +172,9 @@ class ProjectHistoryEngine:
         self._branch_identities: dict[str, str] = {}
         self._verified_serial = 0
         self._published_serial = 0
+        self._resolved = threading.local()
         self._retained_bytes = 0
+        self._answers: OrderedDict[str, tuple[str, DiffAnswer | LogAnswer, int]] = OrderedDict()
 
     def configure_store(self, data_dir: Path, project_id: str) -> None:
         with self.manager.workspace.snapshot_lock:
@@ -113,7 +192,6 @@ class ProjectHistoryEngine:
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, _Source]:
         from rcp.history.branches import (
-            BranchHistoryManager,
             _require_regular_file,
             _safe_branch_root,
             canonical_branch_id,
@@ -124,13 +202,15 @@ class ProjectHistoryEngine:
             raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
         parent._reload_manifest()
         manifest = parent.manifest.model_copy(deep=True)
-        main_paths = parent._patch_paths()
+        with _MEMORY_LOCK:
+            inventories = {key: value.source.inventory for key, value in self._generations.items()}
+        main_inventory = _inventory(parent.patches_dir, inventories.get("main", ()), batches=True)
         scope_path = parent.root / "scope-base.json"
         if scope_path.exists():
             scope = json.loads(scope_path.read_bytes())["truth_scope"]
             if not isinstance(scope, list) or any(not isinstance(item, str) for item in scope):
                 raise ValueError("invalid canonical scope provenance")
-        elif main_paths:
+        elif main_inventory:
             raise ValueError("canonical scope provenance is missing")
         else:
             scope = list(manifest.project.truth_scope)
@@ -151,20 +231,13 @@ class ProjectHistoryEngine:
             sort_keys=True,
         )
 
-        def contents(paths: list[Path]) -> tuple[tuple[int, bytes], ...]:
-            retained = []
-            for path in paths:
-                _require_regular_file(path, "retained Patch")
-                retained.append((int(path.stem), path.read_bytes()))
-            return tuple(retained)
-
         sources = {
             "main": _Source(
                 GraphTargetRef(),
                 manifest,
                 key,
                 scope,
-                contents(main_paths),
+                main_inventory,
             )
         }
         for target in targets:
@@ -184,13 +257,12 @@ class ProjectHistoryEngine:
                 raise ValueError("branch path and identity disagree")
             if parent.project_id is not None and metadata.project_id != parent.project_id:
                 raise ValueError("branch belongs to another project")
-            branch = BranchHistoryManager(parent, metadata)
             sources[target.key] = _Source(
                 target,
                 manifest,
                 key,
                 scope,
-                contents(branch._patch_paths()),
+                _inventory(root / "patches", inventories.get(target.key, ())),
                 metadata,
             )
         return sources
@@ -216,34 +288,55 @@ class ProjectHistoryEngine:
             if known is not None and known != identity:
                 raise ValueError("graph branch immutable metadata changed")
             base = source.metadata.base_head
-            base_result = self._prefix_result(main, base)
-            initial = base_result.state
             initial_head = base.model_copy(update={"target": source.target})
-            inherited = tuple(r for r in main.index if r.after_head.revision <= base.revision)
-            context_key += source.metadata.model_dump_json(exclude={"head"}) + main.prefix(base)
-        digests = [_digest("", context_key.encode())]
-        for revision, content in source.contents:
-            digests.append(_digest(digests[-1], str(revision).encode() + b"\0" + content))
+            context_key += identity + main.prefix(base)
         with _MEMORY_LOCK:
             old = self._generations.get(source.target.key)
-        if old is not None and old.context_key == context_key and old.digests == tuple(digests):
+        if old is not None and old.context_key == context_key and old.source == source:
             return old
+        unchanged_prefix = (
+            old is not None
+            and old.context_key == context_key
+            and source.inventory[: len(old.source.inventory)] == old.source.inventory
+        )
+        verified = len(old.index) if unchanged_prefix and old else 0
+        digests = (
+            list(old.digests) if unchanged_prefix and old else [_digest("", context_key.encode())]
+        )
+        contents = []
+        for entry in source.inventory[verified:]:
+            revision, content = entry.revision, Path(entry.path).read_bytes()
+            contents.append((revision, content))
+            digests.append(_digest(digests[-1], str(revision).encode() + b"\0" + content))
         reusable = (
             old is not None
             and old.context_key == context_key
-            and len(old.digests) <= len(digests)
             and tuple(digests[: len(old.digests)]) == old.digests
         )
+        if reusable and old and len(digests) == len(old.digests):
+            return replace(old, source=source, start=len(old.index))
+        if source.metadata is not None and not reusable:
+            assert main is not None
+            base_result = self._prefix_result(main, source.metadata.base_head)
+            initial = base_result.state
+            inherited = main.index[: source.metadata.base_head.revision]
+        elif reusable and old:
+            initial, inherited = old.initial, old.inherited
         index = list(old.index) if reusable and old else []
         previous = old.result if reusable and old else base_result
         start = len(index)
+        checkpoints = dict(old.checkpoints) if reusable and old else {}
+        with _MEMORY_LOCK:
+            states = OrderedDict(old.states) if reusable and old else OrderedDict()
+            state_costs = dict(old.state_costs) if reusable and old else {}
         patches = [
             self.manager._decode_persisted_patch(content.decode())
-            for _, content in source.contents[start:]
+            for _, content in contents[start - verified :]
         ]
-        for offset, (patch, (revision, _)) in enumerate(
-            zip(patches, source.contents[start:], strict=True)
+        for offset, (patch, entry) in enumerate(
+            zip(patches, source.inventory[start:], strict=True)
         ):
+            revision = entry.revision
             if revision != initial_head.revision + start + offset + 1 or patch.revision != revision:
                 raise ValueError("retained Patch revision sequence is invalid")
         before_head = index[-1].after_head if index else initial_head
@@ -253,9 +346,14 @@ class ProjectHistoryEngine:
         if failure is not None:
             raise ValueError(f"invalid retained transition chain: {failure.code}")
         all_patches = [*previous.patches, *patches]
-        stored_index = self.store.load_steps(digests[-1]) if self.store and not reusable else None
+        stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
+        stored_index = (
+            self.store.load_step_segments(tuple(digests), stride)
+            if self.store and not reusable
+            else None
+        )
         if stored_index is not None and (
-            len(stored_index) != len(source.contents)
+            len(stored_index) != len(source.inventory)
             or any(step.patch != patch for step, patch in zip(stored_index, patches, strict=False))
         ):
             stored_index = None
@@ -263,7 +361,19 @@ class ProjectHistoryEngine:
             # The store is an acceleration, never an alternative Patch inventory.
             if all(step.patch == patch for step, patch in zip(stored_index, patches, strict=True)):
                 index = stored_index
-                for offset in range(len(index) if self.checkpoint_interval else 0, 0, -1):
+                for item, patch in zip(index, patches, strict=True):
+                    item.patch = patch
+                last_checkpoint = initial_head.revision + len(index)
+                last_checkpoint -= last_checkpoint % stride
+                for revision in dict.fromkeys(
+                    [
+                        initial_head.revision + len(index),
+                        *range(last_checkpoint, initial_head.revision, -stride),
+                    ]
+                ):
+                    offset = revision - initial_head.revision
+                    if offset == 0 or not self.checkpoint_interval:
+                        continue
                     checkpoint = self.store.load_checkpoint(digests[offset]) if self.store else None
                     if checkpoint is not None and checkpoint.head == index[offset - 1].after_head:
                         previous = checkpoint.result
@@ -279,10 +389,8 @@ class ProjectHistoryEngine:
         else:
             stored_index = None
         pending: list[GraphHeadRef] = []
-        pending_start = previous.state
         # Work in checkpoint intervals, releasing replay boundary dictionaries
         # once their compact semantic facts have been extracted.
-        stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
         first = stride - previous.state.revision % stride
         chunks = [
             patches[:first],
@@ -347,6 +455,10 @@ class ProjectHistoryEngine:
                     )
                     current = after
                 before_head = after_head
+            for _, after in list(accepted.values())[-limits.GRAPH_HISTORY_MEMORY_STATES :]:
+                states[after.revision] = after
+            while len(states) > limits.GRAPH_HISTORY_MEMORY_STATES:
+                states.popitem(last=False)
             previous = MaterializationResult(
                 tail.state,
                 {**previous.reports, **tail.reports},
@@ -354,12 +466,10 @@ class ProjectHistoryEngine:
                 {**previous.processed_cursors, **tail.processed_cursors},
                 [*previous.patches, *tail.patches],
             )
-            if (
-                self.store
-                and self.checkpoint_interval
-                and tail.state.revision % self.checkpoint_interval == 0
-            ):
-                pending.append(before_head)
+            if tail.state.revision % stride == 0:
+                checkpoints[tail.state.revision] = tail.state
+                if self.store and self.checkpoint_interval:
+                    pending.append(before_head)
         return _Generation(
             source.target,
             context_key,
@@ -369,9 +479,13 @@ class ProjectHistoryEngine:
             initial_head,
             tuple(index),
             previous,
+            source,
             inherited,
+            checkpoints,
+            states,
+            state_costs,
             pending,
-            pending_start if pending else None,
+            len(old.index) if reusable and old else 0,
             saved=stored_index is not None,
         )
 
@@ -380,17 +494,41 @@ class ProjectHistoryEngine:
             if serial < self._published_serial:
                 return
             self._published_serial = serial
-            changed = False
+            recount = False
             for target, generation in built.items():
                 key = (id(self), target)
-                if self._generations.get(target) is not generation:
+                previous = self._generations.get(target)
+                if previous is not generation:
                     self._generations[target] = generation
-                    changed = True
+                    if (
+                        previous is not None
+                        and generation.context_key == previous.context_key
+                        and generation.start == len(previous.index)
+                    ):
+                        # Charge the new tail conservatively without walking its retained prefix.
+                        self._retained_bytes += retained_size(generation.index[generation.start :])
+                        self._retained_bytes += sum(
+                            sys.getsizeof(value)
+                            for value in generation.result.state.__dict__.values()
+                        )
+                    else:
+                        recount = True
                 _MEMORY[key] = weakref.ref(self)
                 _MEMORY.move_to_end(key)
-            if changed:
+            if recount:
                 # Count shared inherited prefixes once for their project owner.
-                self._retained_bytes = retained_size(tuple(self._generations.values()))
+                self._recount_memory()
+            self._trim_memory()
+
+    def _recount_memory(self) -> None:
+        self._retained_bytes = (
+            retained_size(tuple(self._generations.values())) if self._generations else 0
+        ) + sum(size for _, _, size in self._answers.values())
+        for generation in self._generations.values():
+            generation.state_costs.clear()
+
+    def _trim_memory(self) -> None:
+        with _MEMORY_LOCK:
             owners = {}
             for key, reference in list(_MEMORY.items()):
                 owner = reference()
@@ -412,10 +550,29 @@ class ProjectHistoryEngine:
                 )
                 owner = _MEMORY.pop(victim)()
                 if owner is not None:
-                    owner._generations.pop(victim[1], None)
-                    owner._retained_bytes = (
-                        retained_size(tuple(owner._generations.values())) if owner._generations else 0
-                    )
+                    if victim[1] == "answers":
+                        owner._answers.clear()
+                    else:
+                        owner._generations.pop(victim[1], None)
+                    owner._recount_memory()
+
+    def _build_sources(self, sources: dict[str, _Source]) -> dict[str, _Generation]:
+        main = self._build(sources["main"], None)
+        return {
+            "main": main,
+            **{key: self._build(source, main) for key, source in sources.items() if key != "main"},
+        }
+
+    def _extends_verified(self, source: _Source) -> bool:
+        with _MEMORY_LOCK:
+            old = self._generations.get(source.target.key)
+        return (
+            old is not None
+            and old.source.context_key == source.context_key
+            and source.inventory[: len(old.index)] == old.source.inventory
+            and len(source.inventory) - len(old.index)
+            <= (self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL)
+        )
 
     def _pin(
         self,
@@ -424,51 +581,58 @@ class ProjectHistoryEngine:
         refresh: bool = True,
         refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, _Generation]:
-        # Copy canonical bytes under the workspace fence; replay never holds it.
+        self._resolved.generations = None
         while True:
+            built: dict[str, _Generation] | None = None
+            serial: int | None = None
             with self.manager.workspace.snapshot_lock:
                 sources = self._capture(
                     targets, refresh=refresh, refresh_max_age_seconds=refresh_max_age_seconds
                 )
-            main = self._build(sources["main"], None)
-            built = {"main": main}
-            for key, source in sources.items():
-                if key != "main":
-                    built[key] = self._build(source, main)
-            with self.manager.workspace.snapshot_lock:
-                if sources != self._capture(targets, refresh=False):
-                    continue
-                for key, source in sources.items():
-                    if source.metadata is not None:
-                        self._branch_identities[key] = source.metadata.model_dump_json(
-                            exclude={"head"}
-                        )
-                self._verified_serial += 1
-                serial = self._verified_serial
+                incremental = all(self._extends_verified(source) for source in sources.values())
+                if incremental:
+                    # A bounded tail can stay inside the canonical fence. No second inventory
+                    # scan is needed: neither append nor mirror refresh can race its replay.
+                    built = self._build_sources(sources)
+                    self._verified_serial += 1
+                    serial = self._verified_serial
+            if not incremental:
+                try:
+                    built = self._build_sources(sources)
+                except (OSError, ValueError):
+                    with self.manager.workspace.snapshot_lock:
+                        if sources != self._capture(targets, refresh=False):
+                            continue
+                    raise
+                with self.manager.workspace.snapshot_lock:
+                    if sources != self._capture(targets, refresh=False):
+                        continue
+                    for key, source in sources.items():
+                        if source.metadata is not None:
+                            self._branch_identities[key] = source.metadata.model_dump_json(
+                                exclude={"head"}
+                            )
+                    self._verified_serial += 1
+                    serial = self._verified_serial
+            assert built is not None and serial is not None
             self._remember(built, serial)
             # Optional cache writes happen only after canonical confirmation,
             # outside its lock; append never depends on checkpoint publication.
             if self.store:
                 for generation in built.values():
                     if not generation.saved:
-                        state = generation.pending_start
-                        pending = {head.revision: head for head in generation.pending}
-                        if state is not None:
-                            for step in generation.index:
-                                if step.after_head.revision <= state.revision:
-                                    continue
-                                state = apply_state_delta(state, step.state_delta)
-                                checkpoint_head = pending.get(state.revision)
-                                if checkpoint_head is not None:
-                                    result = self._prefix_result(
-                                        generation, checkpoint_head, state=state
-                                    )
-                                    self.store.save_checkpoint(
-                                        generation.prefix(checkpoint_head), checkpoint_head, result
-                                    )
-                        self.store.save_steps(generation.digests[-1], list(generation.index))
+                        for head in generation.pending:
+                            result = self._prefix_result(
+                                generation, head, state=generation.checkpoints[head.revision]
+                            )
+                            self.store.save_checkpoint(generation.prefix(head), head, result)
+                        self.store.save_step_segments(
+                            generation.digests,
+                            list(generation.index),
+                            self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL,
+                            start=generation.start,
+                        )
                         generation.pending.clear()
-                        generation.pending_start = None
                         generation.saved = True
             return built
 
@@ -478,29 +642,70 @@ class ProjectHistoryEngine:
             return generation.initial
         if head.revision == generation.result.state.revision:
             return generation.result.state
-        state = generation.initial
+        with _MEMORY_LOCK:
+            if head.revision in generation.states:
+                generation.states.move_to_end(head.revision)
+                return generation.states[head.revision]
+            state = max(
+                (
+                    value
+                    for value in (*generation.checkpoints.values(), *generation.states.values())
+                    if value.revision <= head.revision
+                ),
+                key=lambda value: value.revision,
+                default=generation.initial,
+            )
+        stride = self.checkpoint_interval or limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL
         if self.store and self.checkpoint_interval:
-            for offset in range(head.revision - generation.initial_head.revision, 0, -1):
+            revision = head.revision - head.revision % stride
+            while revision > state.revision:
+                offset = revision - generation.initial_head.revision
                 checkpoint = self.store.load_checkpoint(generation.digests[offset])
-                if checkpoint is not None and checkpoint.head == generation.head(
-                    offset + generation.initial_head.revision
-                ):
+                if checkpoint is not None and checkpoint.head == generation.head(revision):
                     state = checkpoint.result.state
                     break
-        for item in generation.index:
-            if state.revision < item.after_head.revision <= head.revision:
-                state = apply_state_delta(state, item.state_delta)
+                revision -= stride
+        start = state.revision - generation.initial_head.revision
+        stop = head.revision - generation.initial_head.revision
+        if start < stop:
+            result = materialize_patches_from_state(
+                [item.patch for item in generation.index[start:stop]],
+                initial_state=state,
+                context=build_validation_context(
+                    generation.manifest, generation.initial, mode="replay"
+                ),
+            )
+            self.manager.require_writable(result.state)
+            state = result.state
+        size = retained_size(state)
+        with _MEMORY_LOCK:
+            generation.states[head.revision] = state
+            retained = self._generations.get(generation.target.key) is generation
+            if retained:
+                previous_cost = generation.state_costs.get(head.revision, 0)
+                generation.state_costs[head.revision] = size
+                self._retained_bytes += size - previous_cost
+            while len(generation.states) > limits.GRAPH_HISTORY_MEMORY_STATES:
+                revision, _ = generation.states.popitem(last=False)
+                removed = generation.state_costs.pop(revision, 0)
+                if retained:
+                    self._retained_bytes -= removed
+            self._trim_memory()
         return state
 
     def resolve(self, spec: HeadSpec, *, default_target: GraphTargetRef) -> GraphHeadRef:
         target = spec.target or default_target
-        generation = self._pin([target])[target.key]
+        generations = self._pin([target])
+        generation = generations[target.key]
         revision = generation.result.state.revision if spec.revision == "head" else spec.revision
-        return generation.head(revision)
+        head = generation.head(revision)
+        self._resolved.generations = {key: weakref.ref(value) for key, value in generations.items()}
+        self._resolved.head = head
+        return head
 
     def state_at(self, head: GraphHeadRef) -> GraphState:
-        generation = self._pin([head.target])[head.target.key]
-        return self._state(generation, head).model_copy(deep=True)
+        generation = self._query_generations([head], None)[head.target.key]
+        return copy_state(self._state(generation, head))
 
     @staticmethod
     def _index(generation: _Generation, head: GraphHeadRef, inherited: bool) -> list[IndexedStep]:
@@ -535,9 +740,7 @@ class ProjectHistoryEngine:
         return records
 
     def steps(self, head: GraphHeadRef, *, include_inherited: bool = False) -> list[StepRecord]:
-        from dataclasses import replace
-
-        generations = self._pin([head.target])
+        generations = self._query_generations([head], None)
         generation = generations[head.target.key]
         inherited = []
         if include_inherited and generation.inherited:
@@ -598,6 +801,15 @@ class ProjectHistoryEngine:
     def _query_generations(
         self, heads: list[GraphHeadRef], cursor: str | None
     ) -> dict[str, _Generation]:
+        resolved = getattr(self._resolved, "generations", None)
+        self._resolved.generations = None
+        if resolved is not None and getattr(self._resolved, "head", None) in heads:
+            pinned = {key: reference() for key, reference in resolved.items()}
+            if all(pinned.get(head.target.key) is not None for head in heads):
+                generations = {key: value for key, value in pinned.items() if value is not None}
+                for head in heads:
+                    generations[head.target.key].prefix(head)
+                return generations
         if cursor is not None:
             # A continuation reads its already verified historical snapshot;
             # it does not resolve a moving head again. Eviction re-proves inputs.
@@ -614,6 +826,35 @@ class ProjectHistoryEngine:
                         return pinned
         return self._pin([h.target for h in heads])
 
+    def _cached_answer(self, cursor: str, request: str) -> DiffAnswer | LogAnswer | None:
+        from rcp.history.pages import cursor_key
+
+        self._resolved.generations = None
+        key = cursor_key(cursor)
+        with _MEMORY_LOCK:
+            cached = self._answers.get(key)
+            if cached is None:
+                return None
+            if cached[0] != request:
+                raise ValueError("history cursor does not match this query")
+            self._answers.move_to_end(key)
+            return cached[1]
+
+    def _remember_answer(self, request: str, answer: DiffAnswer | LogAnswer) -> None:
+        size = answer.retained_bytes
+        with _MEMORY_LOCK:
+            previous = self._answers.pop(answer.key, None)
+            if previous is not None:
+                self._retained_bytes -= previous[2]
+            self._answers[answer.key] = request, answer, size
+            self._retained_bytes += size
+            while self._answers and (len(self._answers) > limits.GRAPH_HISTORY_MEMORY_ANSWERS):
+                _, (_, _, removed) = self._answers.popitem(last=False)
+                self._retained_bytes -= removed
+            _MEMORY[(id(self), "answers")] = weakref.ref(self)
+            _MEMORY.move_to_end((id(self), "answers"))
+            self._trim_memory()
+
     def diff(
         self,
         from_head: GraphHeadRef,
@@ -622,32 +863,66 @@ class ProjectHistoryEngine:
         ids: frozenset[str] = frozenset(),
         cursor: str | None = None,
     ) -> GraphDiffPage:
-        from rcp.history.pages import diff_page
+        from rcp.history.pages import compute_diff, diff_key
 
+        request = diff_key(from_head, to_head, ids, "")
+        if cursor is not None:
+            cached = self._cached_answer(cursor, request)
+            if isinstance(cached, DiffAnswer):
+                return cached.page(cursor)
         generations = self._query_generations([from_head, to_head], cursor)
         before, after = generations[from_head.target.key], generations[to_head.target.key]
-        return diff_page(
+        identity = before.prefix(from_head) + after.prefix(to_head)
+        key = diff_key(from_head, to_head, ids, identity)
+        cached = self._answers.get(key)
+        if cached is not None and isinstance(cached[1], DiffAnswer):
+            return cached[1].page(cursor)
+        if before is after:
+            low, high = sorted((from_head.revision, to_head.revision))
+            base = before.initial_head.revision
+            changed_steps = list(before.index[low - base : high - base])
+            from_steps, to_steps = (
+                (changed_steps, [])
+                if from_head.revision > to_head.revision
+                else ([], changed_steps)
+            )
+        else:
+            from_steps = self._index(before, from_head, True)
+            to_steps = self._index(after, to_head, True)
+        answer = compute_diff(
             from_head,
             to_head,
             self._state(before, from_head),
             self._state(after, to_head),
-            self._index(before, from_head, True),
-            self._index(after, to_head, True),
+            from_steps,
+            to_steps,
             ids=ids,
-            cursor=cursor,
-            identity=before.prefix(from_head) + after.prefix(to_head),
+            identity=identity,
         )
+        self._remember_answer(request, answer)
+        return answer.page(cursor)
 
     def log(
         self, entity_id: str, at_head: GraphHeadRef, *, cursor: str | None = None
     ) -> GraphLogPage:
-        from rcp.history.pages import log_page
+        from rcp.history.pages import compute_log, log_key
 
+        request = log_key(entity_id, at_head, "")
+        if cursor is not None:
+            cached = self._cached_answer(cursor, request)
+            if isinstance(cached, LogAnswer):
+                return cached.page(cursor)
         generation = self._query_generations([at_head], cursor)[at_head.target.key]
-        return log_page(
+        identity = generation.prefix(at_head)
+        key = log_key(entity_id, at_head, identity)
+        cached = self._answers.get(key)
+        if cached is not None and isinstance(cached[1], LogAnswer):
+            return cached[1].page(cursor)
+        answer = compute_log(
             entity_id,
             at_head,
             self._index(generation, at_head, True),
-            cursor=cursor,
-            identity=generation.prefix(at_head),
+            identity=identity,
         )
+        self._remember_answer(request, answer)
+        return answer.page(cursor)

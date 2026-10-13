@@ -205,8 +205,8 @@ class GraphHistoryStore:
         except (ValueError, TypeError):
             _LOGGER.warning("Could not encode graph history checkpoint", exc_info=True)
 
-    def load_steps(self, prefix_digest: str) -> list[IndexedStep] | None:
-        payload = self._load(prefix_digest, "steps")
+    def load_steps(self, prefix_digest: str, *, touch: bool = True) -> list[IndexedStep] | None:
+        payload = self._load(prefix_digest, "steps", touch=touch)
         if payload is None:
             return None
         try:
@@ -221,6 +221,38 @@ class GraphHistoryStore:
         except (ValueError, TypeError):
             _LOGGER.warning("Could not encode graph history step index", exc_info=True)
 
+    def load_step_segments(
+        self, digests: tuple[str, ...], interval: int
+    ) -> list[IndexedStep] | None:
+        steps: list[IndexedStep] = []
+        for start in range(0, len(digests) - 1, interval):
+            end = min(start + interval, len(digests) - 1)
+            segment = self.load_steps(digests[end], touch=end == len(digests) - 1)
+            if segment is None or len(segment) != end - start:
+                return None
+            steps.extend(segment)
+        return steps
+
+    def save_step_segments(
+        self,
+        digests: tuple[str, ...],
+        steps: list[IndexedStep],
+        interval: int,
+        start: int = 0,
+    ) -> None:
+        try:
+            if len(digests) != len(steps) + 1 or not 0 <= start <= len(steps):
+                raise ValueError("history step segments do not match the prefix inventory")
+            if start == len(steps):
+                return
+            for offset in range(start - start % interval, len(steps), interval):
+                end = min(offset + interval, len(steps))
+                payload = _StepsPayload(steps=steps[offset:end]).model_dump_json()
+                self._save(digests[end], "steps", payload, sweep=False)
+            self.cache.sweep()
+        except (OSError, ValueError, TypeError):
+            _LOGGER.warning("Could not save graph history step segments", exc_info=True)
+
     def _path(self, prefix_digest: str, kind: str) -> Path:
         if _DIGEST.fullmatch(prefix_digest) is None:
             raise ValueError("invalid history prefix digest")
@@ -231,7 +263,7 @@ class GraphHistoryStore:
             raise ValueError("unsafe graph history cache root")
         return self.root / f"{prefix_digest}.{kind}.json"
 
-    def _load(self, prefix_digest: str, kind: str) -> str | None:
+    def _load(self, prefix_digest: str, kind: str, *, touch: bool = True) -> str | None:
         try:
             path = self._path(prefix_digest, kind)
             with self.cache.pin([path]):
@@ -243,7 +275,8 @@ class GraphHistoryStore:
                     or envelope.checksum != hashlib.sha256(envelope.payload.encode()).hexdigest()
                 ):
                     raise ValueError("graph history cache identity or checksum mismatch")
-                self.cache.touch(path)
+                if touch:
+                    self.cache.touch(path)
                 return envelope.payload
         except FileNotFoundError:
             return None
@@ -251,7 +284,7 @@ class GraphHistoryStore:
             _LOGGER.warning("Could not read graph history cache; rebuilding", exc_info=True)
             return None
 
-    def _save(self, prefix_digest: str, kind: str, payload: str) -> None:
+    def _save(self, prefix_digest: str, kind: str, payload: str, *, sweep: bool = True) -> None:
         temporary: Path | None = None
         try:
             path = self._path(prefix_digest, kind)
@@ -277,8 +310,8 @@ class GraphHistoryStore:
                     os.fsync(directory)
                 finally:
                     os.close(directory)
-                self.cache.touch(path)
-            self.cache.sweep()
+            if sweep:
+                self.cache.sweep()
         except (OSError, ValueError):
             _LOGGER.warning("Could not write graph history cache", exc_info=True)
         finally:

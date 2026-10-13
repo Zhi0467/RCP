@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, cast, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 
 from rcp.core.models import Edge, GraphState
 from rcp.core.operations import adapt_persisted_graph_state_document
+
+_SCALAR_TYPES = {str, int, float, bool, type(None), datetime}
 
 _FIELD_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     name: TypeAdapter(field.annotation) for name, field in GraphState.model_fields.items()
@@ -16,6 +19,35 @@ _EDGE_LAYER: TypeAdapter[Any] = TypeAdapter(Edge.model_fields["layer"].annotatio
 _MAP_FIELDS = {
     name for name, field in GraphState.model_fields.items() if get_origin(field.annotation) is dict
 }
+
+
+def copy_state(state: GraphState) -> GraphState:
+    """Isolate mutable public snapshot data without copying immutable scalar values."""
+    return cast(GraphState, _copy_snapshot(state))
+
+
+def _copy_snapshot(value: Any) -> Any:
+    if type(value) in _SCALAR_TYPES:
+        return value
+    if isinstance(value, dict):
+        return {key: _copy_snapshot(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_snapshot(item) for item in value]
+    if isinstance(value, BaseModel):
+        copied = value.model_copy(
+            update={key: _copy_snapshot(item) for key, item in value.__dict__.items()}
+        )
+        copied.__pydantic_fields_set__ = value.__pydantic_fields_set__.copy()
+        if value.__pydantic_extra__ is not None:
+            copied.__pydantic_extra__ = _copy_snapshot(value.__pydantic_extra__)
+        if value.__pydantic_private__ is not None:
+            copied.__pydantic_private__ = _copy_snapshot(value.__pydantic_private__)
+        return copied
+    if isinstance(value, tuple):
+        return tuple(_copy_snapshot(item) for item in value)
+    if isinstance(value, set):
+        return set(value)
+    return value
 
 
 class StateDelta(BaseModel):

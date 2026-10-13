@@ -4,7 +4,8 @@
 Cold means a fresh interpreter with previously generated checkpoints (OS caches
 remain warm). Ingest measures retained receipt ingestion; append additionally
 measures HistoryManager admission and publication using fixture authority.
-Fixtures never touch an existing project or real data.
+Fixtures never touch an existing project or real data. ``--history-copy`` reads
+an existing local copy without appending or following its configured workspace.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import resource
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, TypeVar
 
+from rcp import limits
 from rcp.config import load_manifest
 from rcp.core.authority import WriteAuthority
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata, Patch
@@ -28,6 +31,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.manager import HistoryManager
 from rcp.history.memory_size import retained_size
 from rcp.history.queries import HeadSpec
+from rcp.transport import LocalStateWorkspace
 
 _T = TypeVar("_T")
 
@@ -173,9 +177,12 @@ def worker(args: argparse.Namespace) -> dict[str, float]:
         file=sys.stderr,
         flush=True,
     )
-    _, warm = timed(lambda: engine.state_at(resolve(revision)))
+    warm = statistics.median(timed(lambda: engine.state_at(resolve(revision)))[1] for _ in range(3))
     end = resolve("head")
     start = resolve(max(1, args.count // 2))
+    recent = resolve(max(1, args.count - 1))
+    engine.diff(recent, end)
+    small_diff = statistics.median(timed(lambda: engine.diff(recent, end))[1] for _ in range(3))
 
     def diff() -> int:
         page = engine.diff(start, end)
@@ -227,6 +234,7 @@ def worker(args: argparse.Namespace) -> dict[str, float]:
     return {
         "cold": cold,
         "warm": warm,
+        "small_diff": small_diff,
         "diff": diff_ms,
         "log": log_ms,
         "branch": branch_ms,
@@ -236,6 +244,64 @@ def worker(args: argparse.Namespace) -> dict[str, float]:
         "disk": disk_mb,
         "retained": retained,
     }
+
+
+def history_copy(root: Path, interval: int) -> dict[str, float | int]:
+    research = root.resolve() / ".research"
+    manager = HistoryManager(
+        load_manifest(research / "manifest.toml"),
+        workspace=LocalStateWorkspace(research, "history-benchmark-copy"),
+        project_id="benchmark",
+        write_authority=WriteAuthority(),
+    )
+    engine = manager.history_engine
+    engine.checkpoint_interval = interval
+
+    def state():
+        head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+        return engine.state_at(head)
+
+    with tempfile.TemporaryDirectory(prefix="rcp-history-copy-cache-") as temporary:
+        engine.configure_store(Path(temporary), "benchmark")
+        current, cold = timed(state)
+        warm = statistics.median(timed(state)[1] for _ in range(3))
+        head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+        index = engine._generations["main"].index
+        sizes: dict[str, int] = {}
+        for step in index:
+            for change in step.delta.nodes:
+                sizes[change.node_id] = sizes.get(change.node_id, 0) + len(
+                    change.model_dump_json().encode()
+                )
+            for change in step.delta.edges:
+                sizes[change.edge_id] = sizes.get(change.edge_id, 0) + len(
+                    change.model_dump_json().encode()
+                )
+        entity_id = max(sizes, key=lambda key: sizes[key])
+
+        def log() -> tuple[int, int, int]:
+            page = engine.log(entity_id, head)
+            pages = encoded_bytes = entries = 0
+            while True:
+                pages += 1
+                encoded_bytes += len(page.model_dump_json().encode())
+                entries += len(page.entries)
+                if page.cursor is None:
+                    return pages, encoded_bytes, entries
+                page = engine.log(entity_id, head, cursor=page.cursor)
+
+        (pages, encoded_bytes, entries), log_ms = timed(log)
+        return {
+            "patches": len(index),
+            "entities": len(current.nodes) + len(current.edges),
+            "interval": interval,
+            "cold_ms": cold,
+            "warm_ms": warm,
+            "log_ms": log_ms,
+            "log_pages": pages,
+            "log_bytes": encoded_bytes,
+            "log_entries": entries,
+        }
 
 
 def main() -> None:
@@ -248,7 +314,14 @@ def main() -> None:
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--count", type=int)
     parser.add_argument("--interval", type=int)
+    parser.add_argument("--history-copy", type=Path)
     args = parser.parse_args()
+    if args.history_copy:
+        interval = (
+            limits.GRAPH_HISTORY_CHECKPOINT_INTERVAL if args.interval is None else args.interval
+        )
+        print(json.dumps(history_copy(args.history_copy, interval)), flush=True)
+        return
     if args.worker:
         print(json.dumps(worker(args)), flush=True)
         return
@@ -257,7 +330,7 @@ def main() -> None:
         flush=True,
     )
     print(
-        "patches K cold@R warm@R diff full_log branch_diff ingest append RSS_MiB cache_MB retained_MiB",
+        "patches K cold@R warm@R small_diff diff full_log branch_diff ingest append RSS_MiB cache_MB retained_MiB",
         flush=True,
     )
     with tempfile.TemporaryDirectory(prefix="rcp-history-benchmark-") as temporary:
@@ -296,6 +369,7 @@ def main() -> None:
                         for key in (
                             "cold",
                             "warm",
+                            "small_diff",
                             "diff",
                             "log",
                             "branch",

@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Literal, cast
 
 from pydantic import JsonValue
@@ -97,18 +99,29 @@ def _cursor(key: str, offset: int) -> str:
     return base64.urlsafe_b64encode(_json([key, offset]).encode()).decode().rstrip("=")
 
 
-def _offset(cursor: str | None, key: str) -> int:
-    if cursor is None:
-        return 0
+def _position(cursor: str) -> tuple[str, int]:
     try:
         if len(cursor) > limits.GRAPH_HISTORY_CURSOR_MAX_BYTES:
             raise ValueError("history cursor exceeds its bound")
         stored_key, offset = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-        if stored_key != key or type(offset) is not int or offset < 0:
-            raise ValueError("history cursor does not match this query")
-        return offset
+        if not isinstance(stored_key, str) or type(offset) is not int or offset < 0:
+            raise ValueError("invalid history cursor position")
+        return stored_key, offset
     except (ValueError, TypeError, UnicodeError) as error:
         raise ValueError("invalid history cursor") from error
+
+
+def cursor_key(cursor: str) -> str:
+    return _position(cursor)[0]
+
+
+def _offset(cursor: str | None, key: str) -> int:
+    if cursor is None:
+        return 0
+    stored_key, offset = _position(cursor)
+    if stored_key != key:
+        raise ValueError("history cursor does not match this query")
+    return offset
 
 
 def _parts(value: JsonValue) -> list[JsonValue]:
@@ -121,7 +134,7 @@ def _parts(value: JsonValue) -> list[JsonValue]:
     start = 0
     size = 0
     for index, char in enumerate(text):
-        width = len(_json(char).encode()) - 2
+        width = 2 if char in '"\\\b\f\n\r\t' else 6 if ord(char) < 32 else len(char.encode())
         if size + width > limits.GRAPH_HISTORY_VALUE_CHUNK_BYTES:
             result.append(text[start:index])
             start, size = index, 0
@@ -179,32 +192,38 @@ def _supports(delta: SemanticDelta, changed: set[tuple[str, str]]) -> bool:
     )
 
 
-def _diff_units(
-    changes: list[EntityChange],
-    steps: list[StepRecord | IndexedStep],
-    offset: int,
-) -> Iterator[tuple[int, EntityChange | StepAttribution]]:
-    position = 0
-    for change in changes:
-        for fragment in _fragments(change):
-            if position >= offset:
-                yield position, fragment
-            position += 1
-    for step in steps:
-        summaries = _parts(step.patch.summary)
-        if position + len(summaries) <= offset:
-            position += len(summaries)
-            continue
-        item = attribution(step)
-        for part in summaries:
-            if position >= offset:
-                yield position, item.model_copy(update={"summary": part})
-            position += 1
-    if position < offset:
-        raise ValueError("history cursor is out of range")
+def diff_key(
+    from_head: GraphHeadRef,
+    to_head: GraphHeadRef,
+    ids: frozenset[str],
+    identity: str,
+) -> str:
+    return _key(
+        identity,
+        ["diff", from_head.model_dump(mode="json"), to_head.model_dump(mode="json"), sorted(ids)],
+    )
 
 
-def diff_page(
+@dataclass(frozen=True)
+class DiffAnswer:
+    key: str
+    from_head: str
+    to_head: str
+    units: tuple[bytes, ...]
+    change_count: int
+    byte_size: int
+
+    @property
+    def retained_bytes(self) -> int:
+        return _retained_bytes(self)
+
+    def page(self, cursor: str | None = None) -> GraphDiffPage:
+        page = GraphDiffPage(from_head=self.from_head, to_head=self.to_head, changes=[], steps=[])
+        _fill(page, self.units, self.key, cursor, self.change_count)
+        return page
+
+
+def compute_diff(
     from_head: GraphHeadRef,
     to_head: GraphHeadRef,
     before: GraphState,
@@ -212,9 +231,8 @@ def diff_page(
     from_steps: list[StepRecord] | list[IndexedStep],
     to_steps: list[StepRecord] | list[IndexedStep],
     ids: frozenset[str],
-    cursor: str | None,
     identity: str,
-) -> GraphDiffPage:
+) -> DiffAnswer:
     changes = [
         change
         for change in entity_changes(semantic_delta(before, after))
@@ -223,43 +241,25 @@ def diff_page(
     changed = {(change.kind, change.id) for change in changes}
     left, right = {_step_key(step) for step in from_steps}, {_step_key(step) for step in to_steps}
     common = left & right
-    steps = [
-        step
-        for step in [*from_steps, *to_steps]
-        if step.accepted and _step_key(step) not in common and _supports(step.delta, changed)
+    units = [
+        fragment.model_dump_json().encode() for change in changes for fragment in _fragments(change)
     ]
-    key = _key(
-        identity,
-        ["diff", from_head.model_dump(mode="json"), to_head.model_dump(mode="json"), sorted(ids)],
+    change_count = len(units)
+    for step in [*from_steps, *to_steps]:
+        if step.accepted and _step_key(step) not in common and _supports(step.delta, changed):
+            item = attribution(step)
+            units.extend(
+                item.model_copy(update={"summary": part}).model_dump_json().encode()
+                for part in _parts(item.summary)
+            )
+    return DiffAnswer(
+        diff_key(from_head, to_head, ids, identity),
+        format_head(from_head),
+        format_head(to_head),
+        tuple(units),
+        change_count,
+        sum(map(len, units)),
     )
-    offset = _offset(cursor, key)
-    page = GraphDiffPage(
-        from_head=format_head(from_head), to_head=format_head(to_head), changes=[], steps=[]
-    )
-    _fill(page, _diff_units(changes, steps, offset), key)
-    return page
-
-
-def _log_cursor(key: str, step: int, fragment: int) -> str:
-    return base64.urlsafe_b64encode(_json([key, step, fragment]).encode()).decode().rstrip("=")
-
-
-def _log_position(cursor: str | None, key: str) -> tuple[int, int]:
-    if cursor is None:
-        return 0, 0
-    try:
-        if len(cursor) > limits.GRAPH_HISTORY_CURSOR_MAX_BYTES:
-            raise ValueError("history cursor exceeds its bound")
-        stored_key, step, fragment = json.loads(
-            base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
-        )
-        if stored_key != key or any(
-            type(value) is not int or value < 0 for value in (step, fragment)
-        ):
-            raise ValueError("history cursor does not match this query")
-        return step, fragment
-    except (ValueError, TypeError, UnicodeError) as error:
-        raise ValueError("invalid history cursor") from error
 
 
 def _id_changes(delta: SemanticDelta, entity_id: str) -> Iterator[EntityChange]:
@@ -294,60 +294,96 @@ def _log_units(step: StepRecord | IndexedStep, entity_id: str) -> Iterator[Graph
             )
 
 
-def log_page(
+def log_key(entity_id: str, head: GraphHeadRef, identity: str) -> str:
+    return _key(identity, ["log", entity_id, head.model_dump(mode="json")])
+
+
+@dataclass(frozen=True)
+class LogAnswer:
+    key: str
+    entity_id: str
+    head: str
+    units: tuple[bytes, ...]
+    byte_size: int
+
+    @property
+    def retained_bytes(self) -> int:
+        return _retained_bytes(self)
+
+    def page(self, cursor: str | None = None) -> GraphLogPage:
+        page = GraphLogPage(id=self.entity_id, at_head=self.head, entries=[])
+        _fill(page, self.units, self.key, cursor)
+        return page
+
+
+def compute_log(
     entity_id: str,
     head: GraphHeadRef,
     steps: list[StepRecord] | list[IndexedStep],
-    cursor: str | None,
     identity: str,
-) -> GraphLogPage:
-    key = _key(identity, ["log", entity_id, head.model_dump(mode="json")])
-    start, fragment_start = _log_position(cursor, key)
-    if cursor is not None and (
-        start >= len(steps) or fragment_start >= sum(1 for _ in _log_units(steps[start], entity_id))
-    ):
-        raise ValueError("history cursor is out of range")
-    page = GraphLogPage(id=entity_id, at_head=format_head(head), entries=[])
-    for step_index in range(start, len(steps)):
-        for fragment_index, unit in enumerate(_log_units(steps[step_index], entity_id)):
-            if step_index == start and fragment_index < fragment_start:
-                continue
-            if len(page.entries) >= limits.GRAPH_HISTORY_PAGE_MAX_ENTRIES:
-                page.cursor = _log_cursor(key, step_index, fragment_index)
-                return page
-            page.entries.append(unit)
-            page.cursor = _log_cursor(key, step_index, fragment_index + 1)
-            if len(page.model_dump_json().encode()) > limits.GRAPH_HISTORY_PAGE_MAX_BYTES:
-                page.entries.pop()
-                if not page.entries:
-                    raise ValueError("history entry metadata exceeds page size")
-                page.cursor = _log_cursor(key, step_index, fragment_index)
-                return page
-    page.cursor = None
-    return page
+) -> LogAnswer:
+    units = tuple(
+        unit.model_dump_json().encode() for step in steps for unit in _log_units(step, entity_id)
+    )
+    return LogAnswer(
+        log_key(entity_id, head, identity),
+        entity_id,
+        format_head(head),
+        units,
+        sum(map(len, units)),
+    )
+
+
+def _retained_bytes(answer: DiffAnswer | LogAnswer) -> int:
+    # Fields have fixed count; serialized units need only their known payload
+    # bytes plus one bytes-object header each. Shared scalars are overcounted.
+    namespace = vars(answer)
+    return (
+        sys.getsizeof(answer)
+        + sys.getsizeof(namespace)
+        + sum(sys.getsizeof(key) + sys.getsizeof(value) for key, value in namespace.items())
+        + answer.byte_size
+        + len(answer.units) * sys.getsizeof(b"")
+    )
 
 
 def _fill(
-    page: GraphDiffPage,
-    units: Iterator[tuple[int, EntityChange | StepAttribution]],
+    page: GraphDiffPage | GraphLogPage,
+    units: tuple[bytes, ...],
     key: str,
+    cursor: str | None,
+    change_count: int = 0,
 ) -> None:
-    for count, (index, unit) in enumerate(units):
-        if count >= limits.GRAPH_HISTORY_PAGE_MAX_ENTRIES:
+    offset = _offset(cursor, key)
+    if cursor is not None and offset >= len(units):
+        raise ValueError("history cursor is out of range")
+    # The empty envelope includes `cursor:null`; each populated array contributes
+    # unit bytes and commas, and the actual next cursor replaces those four bytes.
+    size = len(page.model_dump_json().encode())
+    for index in range(offset, len(units)):
+        if index - offset >= limits.GRAPH_HISTORY_PAGE_MAX_ENTRIES:
             page.cursor = _cursor(key, index)
             return
-        if isinstance(unit, EntityChange):
-            page.changes.append(unit)
+        unit = units[index]
+        if isinstance(page, GraphLogPage):
+            comma = bool(page.entries)
+        elif index < change_count:
+            comma = bool(page.changes)
         else:
-            page.steps.append(unit)
-        page.cursor = _cursor(key, index + 1)
-        if len(page.model_dump_json().encode()) > limits.GRAPH_HISTORY_PAGE_MAX_BYTES:
-            if isinstance(unit, EntityChange):
-                page.changes.pop()
-            else:
-                page.steps.pop()
-            if not count:
+            comma = bool(page.steps)
+        next_cursor = _cursor(key, index + 1) if index + 1 < len(units) else None
+        cursor_size = len(next_cursor) + 2 if next_cursor is not None else 4
+        next_size = size + len(unit) + comma
+        if next_size + cursor_size - 4 > limits.GRAPH_HISTORY_PAGE_MAX_BYTES:
+            if index == offset:
                 raise ValueError("history entry metadata exceeds page size")
             page.cursor = _cursor(key, index)
             return
+        if isinstance(page, GraphLogPage):
+            page.entries.append(GraphLogEntry.model_validate_json(unit))
+        elif index < change_count:
+            page.changes.append(EntityChange.model_validate_json(unit))
+        else:
+            page.steps.append(StepAttribution.model_validate_json(unit))
+        size = next_size
     page.cursor = None

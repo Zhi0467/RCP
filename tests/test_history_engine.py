@@ -68,6 +68,69 @@ def test_prefix_proof_and_incremental_replay(history, monkeypatch):
     assert lengths == [1, 2]
 
 
+def test_stat_cache_reverifies_changed_earlier_patch(history, monkeypatch):
+    from pathlib import Path
+
+    history.append(_branch_patch("ev/later"))
+    engine = history.history_engine
+    current = head(engine, "main@head")
+    engine.state_at(current)
+    paths = history._patch_paths()
+    reads = []
+    original = Path.read_bytes
+
+    def read(path):
+        if path in paths:
+            reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    engine.state_at(current)
+    assert reads == []
+    paths[0].write_text(paths[0].read_text() + "\n")
+    assert engine.state_at(current).revision == current.revision
+    assert reads == paths
+
+
+def test_append_hashes_only_new_patch_and_reuses_resolved_pin(history, monkeypatch):
+    from pathlib import Path
+
+    engine = history.history_engine
+    engine.state_at(head(engine, "main@head"))
+    history.append(_branch_patch("ev/next"))
+    reads = []
+    original = Path.read_bytes
+
+    def read(path):
+        if path.parent == history.patches_dir:
+            reads.append(path)
+        return original(path)
+
+    captures = []
+    capture = engine._capture
+
+    def observe(*args, **kwargs):
+        captures.append(True)
+        return capture(*args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(engine, "_capture", observe)
+    assert engine.state_at(head(engine, "main@head")).revision == 2
+    assert reads == [history._patch_paths()[-1]]
+    assert len(captures) == 1
+
+
+def test_returned_snapshot_cannot_mutate_retained_history(history):
+    engine = history.history_engine
+    current = head(engine, "main@head")
+    state = engine.state_at(current)
+    expected = state.model_copy(deep=True)
+    next(iter(state.nodes.values())).title = "Changed by caller"
+    state.project_truth_scope.clear()
+    state.nodes.clear()
+    assert engine.state_at(current) == expected
+
+
 def test_rejected_receipt_and_refresh_failure(history, monkeypatch):
     from rcp.transport import StateUnavailable
 
