@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tomllib
 import venv
 from dataclasses import replace
 from pathlib import Path
@@ -307,12 +308,47 @@ def test_excluded_profiles_do_not_add_browser_shell(capability, tmp_path):
             invocation_gate=staged.invocation_gate,
         )
         turn = profile.runtime(profile.legacy_runtime_id).turn(request)
+        client = shlex.join(staged.client_argv()[:4])
         if provider == "claude":
-            assert not any(arg.startswith("Bash(") for arg in turn.command)
+            assert [arg for arg in turn.command if arg.startswith("Bash(")] == (
+                [f"Bash({client}:*)"] if capability == "paper_readonly" else []
+            )
+            if capability == "paper_readonly":
+                assert turn.command[turn.command.index("--permission-mode") + 1] == "plan"
         else:
             config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
             agent = turn.command[turn.command.index("--agent") + 1]
-            assert "bash" not in config["agent"][agent]["permission"]
+            rules = config["agent"][agent]["permission"]
+            assert rules.get("bash") == (
+                {"*": "deny", f"{client} *": "allow"} if capability == "paper_readonly" else None
+            )
+            if capability == "paper_readonly":
+                assert rules["*"] == "deny" and "edit" not in rules
+    staged.cleanup()
+
+
+@pytest.mark.parametrize("runtime", ["codex.exec-json.v1", "codex.app-server-stdio.v1"])
+@pytest.mark.parametrize("session_id", [None, "continued-session"])
+def test_coach_codex_client_keeps_readonly_filesystem(runtime, session_id, tmp_path):
+    staged = _staged_discuss_mailbox(tmp_path, broker=True, layout="split")
+    request = replace(
+        _request("codex", "not_requested"),
+        capability="paper_readonly",
+        provider_version="0.149.0",
+        session_id=session_id,
+        invocation_gate=staged.invocation_gate,
+        hidden_read_scope=HiddenReadScope(
+            execution_machine="local",
+            execution_host="",
+            os_account="test",
+            enforcement=HiddenReadStatus(status="enforced"),
+        ),
+    )
+    turn = profile_for("codex").runtime(runtime).turn(request)
+    policy = next(arg for arg in turn.command if arg.startswith("permissions="))
+    stage = tomllib.loads(policy)["permissions"]["rcp_stage"]
+    assert stage["filesystem"] == {":root": "read"}
+    assert stage["network"]["enabled"] is True
     staged.cleanup()
 
 

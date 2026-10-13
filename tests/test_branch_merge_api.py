@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -15,6 +16,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.command_protocol import GraphDiffCommandRequest
+from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.prompts import render_graph_history
 from rcp.api.app import create_app
 from rcp.api.episode_routes import _resolved_branch_merge_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -1412,3 +1416,80 @@ def test_no_change_receipt_rechecks_live_project_membership(
         harness.branch.write_merge_receipt(_current_receipt(harness, task_id=task.operation_id))
 
     assert harness.branch.merge_receipts() == []
+
+
+def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypatch):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    for title in ("Branch title", "Main title"):
+        patch = Patch(
+            kind="work",
+            author="agent",
+            summary="Change the merge gate title.",
+            run_truth_scope=["repo-a"],
+            source_operation_id=harness.root.operation_id,
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [{"id": "blk/merge-ready", "changes": {"title": title}}],
+                }
+            ],
+        )
+        if title == "Branch title":
+            harness.branch.append(patch, expected_revision=harness.branch.state().revision)
+        else:
+            append_fixture_patch(harness.service, patch)
+    serving = asyncio.Event()
+    handlers = []
+
+    async def serve(**kwargs):
+        handlers.append(kwargs)
+        serving.set()
+        await kwargs["stop"].wait()
+
+    monkeypatch.setattr("rcp.runs.tasks.branch_merge.serve_patch_validation_mailbox", serve)
+    calls = []
+
+    async def launch(_provider, _prompt, *, cwd, invocation_gate, **_kwargs):
+        assert invocation_gate is not None
+        master = next((cwd.parent / "inputs").glob("*-branch-merge.md")).read_text()
+        await serving.wait()
+        scope = GraphReadScope(project_id=harness.project_id, target=GraphTargetRef())
+        assert render_graph_history(scope, handlers[0]["staged"].client_command()) in master
+        response = handlers[0]["command_handler"](
+            GraphDiffCommandRequest.model_validate(
+                {
+                    "mailbox_id": invocation_gate.mailbox_id,
+                    "request_id": uuid.uuid4().hex,
+                    "credential": "0" * 64,
+                    "verb": "graph_diff",
+                    "arguments": {"from": "main@0", "to": "main@head"},
+                }
+            ),
+            None,
+        )
+        assert response.status == "ok"
+        assert response.result["changes"]
+        calls.append(response)
+        patch = json.loads(_candidate_for("status"))
+        patch["ops"][0]["nodes"][0]["changes"]["title"] = "Merged title"
+        (cwd / "patch.json").write_text("invalid" if len(calls) == 1 else json.dumps(patch))
+        yield AgentEvent(event="session", session_id="merge-reader-session")
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launch)
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
+    )
+    assert response.status_code == 202, response.text
+    task = next(
+        task
+        for task in harness.store.agent_tasks(harness.project_id)
+        if task.kind == "branch_merge"
+    )
+    task = wait_for_task(harness.store, task.operation_id, expect="succeeded")
+    assert len(calls) == 2
+    seen = harness.store.graph_seen_head(
+        harness.project_id, harness.episode.episode_id, "merge-reader-session", GraphTargetRef()
+    )
+    assert seen == harness.service.history.head_ref()
+    assert seen.revision == task.applied_revision

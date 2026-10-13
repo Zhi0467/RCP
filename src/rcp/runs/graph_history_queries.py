@@ -90,7 +90,7 @@ def handle_graph_history_command(
         return refuse("graph_history_verb_not_granted")
     if request.verb not in scope.verbs:
         return refuse("graph_history_verb_not_granted")
-    project_id = service.history.project_id
+    project_id = service._project_id
     if project_id is None or not scope.readable(project_id, scope.target):
         return refuse("graph_history_scope_refused")
     arguments = request.arguments
