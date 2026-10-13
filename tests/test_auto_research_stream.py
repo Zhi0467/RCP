@@ -2543,10 +2543,8 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     )
     assert events[-1].event == "done"
     retained_lifecycle = (stage / "lifecycle.json").read_text(encoding="utf-8")
-    retained_mail = (stage / "messages.json").read_text(encoding="utf-8")
-    # A second answer arrives mid-turn and this turn harvests it; the harvest
-    # names the turn, yet it is not part of the batch the wake claimed.
-    record_auto_research_message(
+    # A second answer arrives mid-turn and this turn harvests it before failing.
+    second = record_auto_research_message(
         store,
         episode_id=auto_research.episode_id,
         sender_role="human",
@@ -2572,7 +2570,11 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
 
     def recovery_writer(_contract_text, workspace):
         assert (workspace / "lifecycle.json").read_text(encoding="utf-8") == (retained_lifecycle)
-        assert (workspace / "messages.json").read_text(encoding="utf-8") == retained_mail
+        # The retry gets the claimed answer and the one harvested before the failure.
+        mail = parse_auto_research_mail_delivery(
+            (workspace / "messages.json").read_text(encoding="utf-8")
+        )
+        assert mail.message_ids == [message.message_id, second.message_id]
 
     recovery_events = await _orchestrator_events(
         service,
@@ -2585,19 +2587,10 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     assert recovery_events[-1].event == "done", recovery_events[-1].text
 
 
-@pytest.mark.parametrize(
-    ("retained_kind", "error_match"),
-    [
-        ("valid", None),
-        ("mismatch", "differs from its durable claimed batch"),
-        ("oversize", "exceeds .* bytes"),
-        ("non_regular", "not a regular file"),
-    ],
-)
-def test_retained_claimed_mail_is_validated_directly_before_recovery(
+@pytest.mark.parametrize("retained_kind", ["valid", "mismatch", "oversize"])
+def test_recovery_restages_the_durable_claimed_mail_over_any_left_copy(
     tmp_path,
     retained_kind,
-    error_match,
 ) -> None:
     execution, turn, stage, delivery = _claimed_mail_recovery(tmp_path)
     retained_path = stage.workspace / "messages.json"
@@ -2607,24 +2600,16 @@ def test_retained_claimed_mail_is_validated_directly_before_recovery(
         payload = delivery.model_dump(mode="json")
         payload["messages"][0]["body"] = "Different retained hearsay."
         retained_path.write_text(json.dumps(payload), encoding="utf-8")
-    elif retained_kind == "oversize":
+    else:
         retained_path.write_text(
             " " * (auto_research_mail_module.AUTO_RESEARCH_MAIL_MAX_BYTES + 1),
             encoding="utf-8",
         )
-    else:
-        retained_path.mkdir()
 
-    if error_match is None:
-        assert auto_research_stream_module._stage_claimed_mail(execution, turn, stage) == str(
-            retained_path
-        )
-        assert (
-            parse_auto_research_mail_delivery(retained_path.read_text(encoding="utf-8")) == delivery
-        )
-    else:
-        with pytest.raises(ValueError, match=error_match):
-            auto_research_stream_module._stage_claimed_mail(execution, turn, stage)
+    assert auto_research_stream_module._stage_claimed_mail(execution, turn, stage) == str(
+        retained_path
+    )
+    assert parse_auto_research_mail_delivery(retained_path.read_text(encoding="utf-8")) == delivery
 
 
 @pytest.mark.asyncio

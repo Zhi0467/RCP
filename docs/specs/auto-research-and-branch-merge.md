@@ -53,7 +53,10 @@ forward.
 
 Every orchestrator turn, worker turn, mail wake, graph-condition wake, and other
 Auto-research operational continuation spends one unit of B. Exact recovery of
-the same allocation spends none. Current turns finish at exhaustion; new work
+the same allocation spends none. Recovery restages the allocation's mail and
+lifecycle input from the durable claim, over any copy a failed attempt left, and
+includes mail that attempt harvested, since a retry may run in a clean session.
+Current turns finish at exhaustion; new work
 does not start.
 
 The same authorization derives a shared child-Experiment allowance **E = 5 ×

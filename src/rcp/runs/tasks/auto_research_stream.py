@@ -48,7 +48,7 @@ from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
-from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_BYTES, PATCH_CORRECTION_MAX_ROUNDS
+from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.loop_status import other_branch_loops
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
@@ -66,14 +66,11 @@ from rcp.runs.auto_research_admission import (
 from rcp.runs.auto_research_lifecycle import (
     AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
     auto_research_lifecycle_delivery,
-    parse_auto_research_lifecycle_delivery,
     stage_auto_research_lifecycle_delivery,
 )
 from rcp.runs.auto_research_mail import (
     AUTO_RESEARCH_MAIL_HANDOFF_FILE,
-    AUTO_RESEARCH_MAIL_MAX_BYTES,
     auto_research_mail_delivery,
-    parse_auto_research_mail_delivery,
     stage_auto_research_mail_delivery,
 )
 from rcp.runs.auto_research_questions import (
@@ -1242,18 +1239,12 @@ def _claimed_messages(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
 ) -> list[AutoResearchMessageRecord]:
-    # A running turn's Harvest also names that turn, but its mail was never part
-    # of the batch the wake claimed and staged; recovery must not count it.
-    harvested = {
-        message_id
-        for receipt in execution.store.auto_research_inbox_receipts(turn.request.episode_id)
-        for message_id in receipt.message_ids
-    }
+    # Includes mail the allocation's first attempt harvested mid-turn: a retry,
+    # often in a clean native session, has not seen it.
     return [
         message
         for message in execution.store.auto_research_messages(turn.request.episode_id)
         if message.delivery_operation_id == turn.allocation_operation_id
-        and message.message_id not in harvested
     ]
 
 
@@ -1299,19 +1290,9 @@ def _stage_claimed_mail(
             delivery_operation_id=turn.allocation_operation_id,
             messages=messages,
         )
-        if turn.recovering_allocation and AUTO_RESEARCH_MAIL_HANDOFF_FILE in mailbox.entry_names():
-            retained = parse_auto_research_mail_delivery(
-                mailbox.read_text(
-                    AUTO_RESEARCH_MAIL_HANDOFF_FILE,
-                    max_bytes=AUTO_RESEARCH_MAIL_MAX_BYTES,
-                )
-            )
-            if retained != delivery:
-                raise ValueError(
-                    "Retained auto_research mail differs from its durable claimed batch."
-                )
-        else:
-            stage_auto_research_mail_delivery(mailbox, delivery)
+        # The durable claim is the record; a recovery restages it rather than
+        # trusting or refusing whatever copy an earlier attempt left behind.
+        stage_auto_research_mail_delivery(mailbox, delivery)
         return str(stage.workspace / AUTO_RESEARCH_MAIL_HANDOFF_FILE)
     mailbox.remove(AUTO_RESEARCH_MAIL_HANDOFF_FILE)
     if turn.request.wake_cause == "message" and not turn.recovering_allocation:
@@ -1335,22 +1316,7 @@ def _stage_claimed_lifecycle(
             delivery_operation_id=turn.allocation_operation_id,
             notices=notices,
         )
-        if (
-            turn.recovering_allocation
-            and AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE in mailbox.entry_names()
-        ):
-            retained = parse_auto_research_lifecycle_delivery(
-                mailbox.read_text(
-                    AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
-                    max_bytes=AUTO_RESEARCH_LIFECYCLE_MAX_BYTES,
-                )
-            )
-            if retained != delivery:
-                raise ValueError(
-                    "Retained Auto-research lifecycle input differs from its durable claim."
-                )
-        else:
-            stage_auto_research_lifecycle_delivery(mailbox, delivery)
+        stage_auto_research_lifecycle_delivery(mailbox, delivery)
         return str(stage.workspace / AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE)
     mailbox.remove(AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE)
     if turn.request.wake_cause == "lifecycle":
