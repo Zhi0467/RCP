@@ -247,6 +247,14 @@ interface Props {
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
 }
 
+/** Whether the transcript already carries the in-flight turn as a store overlay. */
+export function pendingTurnShownByHistory(
+  clientId: string,
+  messages: readonly { operation_id?: string | null }[],
+): boolean {
+  return messages.some((message) => message.operation_id === clientId);
+}
+
 interface PendingChatTurn {
   clientId: string;
   /** The start's Idempotency-Key, kept across a Resend. */
@@ -411,7 +419,9 @@ export function NodeChat({
       orderTranscriptLines([
         ...reconcileChatHistoryArtifacts(displayedMessages, relatedTasks),
         ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, displayedMessages)),
-        ...(pendingTurn
+        // The shared store already shows the sent message while its start is in
+        // flight; this local line covers only a chat with no loaded transcript.
+        ...(pendingTurn && !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages)
           ? [
               {
                 lineId: `pending:${pendingTurn.clientId}`,
