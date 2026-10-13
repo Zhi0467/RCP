@@ -435,9 +435,9 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
 
     assert response.status_code == 200, response.text
     entries = response.json()
+    # The orchestrator's child is listed on the orchestrator's run, not alone.
     assert {(entry["mode"], entry["episode_id"]) for entry in entries} == {
         ("experiment_loop", current_episode),
-        ("experiment_loop", child.episode_id),
         ("auto_research", parent.episode_id),
     }
     assert all(entry["project_id"] == project_id for entry in entries)
@@ -447,9 +447,6 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert experiment["started_by"]["kind"] == "human"
     assert experiment["started_by"]["human"] == authorizer.model_dump(mode="json")
     assert experiment["checkout"]["kind"] == "shared"
-    child_entry = next(entry for entry in entries if entry["episode_id"] == child.episode_id)
-    assert child_entry["started_by"]["kind"] == "auto_research"
-    assert child_entry["auto_research_parent_episode_id"] == parent.episode_id
     assert experiment["experiment_id"] == "exp/launched"
     assert experiment["run_section"] == "actionable"
     auto_research = next(entry for entry in entries if entry["episode_id"] == parent.episode_id)
@@ -458,7 +455,6 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert auto_research["run_section"] == "running"
     branch_name = store.branch_names(project_id)[parent.episode_id]
     assert auto_research["graph_branch_name"] == branch_name
-    assert child_entry["graph_branch_name"] == branch_name
     assert experiment["graph_branch_name"] == "main"
 
     episodes = client.get(f"/api/projects/{project_id}/episodes")
@@ -640,22 +636,60 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
     response = client.get("/api/space/runs")
     assert response.status_code == 200, response.text
     entries = {item["episode_id"]: item for item in response.json()}
-    assert set(entries) == archived_ids | {current_episode_id, replacement_id}
+    listed_ids = archived_ids - {child.episode_id}
+    assert set(entries) == listed_ids | {current_episode_id, replacement_id}
     assert metadata_batches == [archived_ids]
-    assert all(entries[item]["archived"] for item in archived_ids)
-    assert all(entries[item]["can_archive"] for item in archived_ids)
-    assert all(entries[item]["run_section"] == "completed" for item in archived_ids)
+    assert all(entries[item]["archived"] for item in listed_ids)
+    assert all(entries[item]["can_archive"] for item in listed_ids)
+    assert all(entries[item]["run_section"] == "completed" for item in listed_ids)
     assert all(
-        entries[item]["authorized_by"] == authorizer.model_dump(mode="json")
-        for item in archived_ids
+        entries[item]["authorized_by"] == authorizer.model_dump(mode="json") for item in listed_ids
     )
     assert entries[older_task.episode_id]["title"] == "Launched loop"
     assert entries[older_task.episode_id]["experiment_id"] == "exp/launched"
     assert entries[parent.episode_id]["title"] == "Auto-research"
     assert entries[parent.episode_id]["graph_target"] == parent.graph_target.model_dump(mode="json")
-    assert entries[child.episode_id]["graph_target"] == child.graph_target.model_dump(mode="json")
-    assert entries[child.episode_id]["parent_episode_id"] == parent.episode_id
-    assert entries[child.episode_id]["experiment_id"] == "exp/never-run"
+
+
+def test_space_runs_lists_only_the_newest_auto_research_chain_member(
+    manifest, tmp_path: Path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, _current_episode = _seed_indexed_project(app)
+    parent, _child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
+    store = app.state.background_tasks.store
+    continuation_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        # The source ends before its continuation goes live, as one chain does.
+        connection.execute(
+            "UPDATE episodes SET status = 'completed', ended_at = ? WHERE episode_id = ?",
+            (store.now(), parent.episode_id),
+        )
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(episodes)")]
+        copied = ", ".join(
+            "?" if column in {"episode_id", "continues_episode_id", "root_operation_id"} else column
+            for column in columns
+        )
+        values = {
+            "episode_id": continuation_id,
+            "continues_episode_id": parent.episode_id,
+            "root_operation_id": None,
+        }
+        connection.execute(
+            f"INSERT INTO episodes ({', '.join(columns)}) SELECT {copied} FROM episodes "
+            "WHERE episode_id = ?",
+            (*(values[column] for column in columns if column in values), parent.episode_id),
+        )
+        connection.execute(
+            "UPDATE episodes SET status = 'running', ended_at = NULL WHERE episode_id = ?",
+            (continuation_id,),
+        )
+
+    snapshots = store.auto_research_space_run_projection_snapshots(
+        {project_id}, completed_since="2000-01-01T00:00:00+00:00"
+    )
+
+    assert [snapshot.episode.episode_id for snapshot in snapshots] == [continuation_id]
 
 
 def test_space_runs_filters_old_completed_auto_research_before_hydration(

@@ -665,8 +665,14 @@ def space_runs(
         )
         for entry in entries
     ]
+    # An Auto-research child is listed on its orchestrator's run, never alone.
     return sorted(
-        (entry for entry in entries if _space_run_is_visible(entry, as_of=as_of)),
+        (
+            entry
+            for entry in entries
+            if entry.auto_research_parent_episode_id is None
+            and _space_run_is_visible(entry, as_of=as_of)
+        ),
         key=lambda entry: (entry.started_at, entry.episode_id),
         reverse=True,
     )

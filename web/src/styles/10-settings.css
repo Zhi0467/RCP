@@ -1533,6 +1533,10 @@ button.agent-provider-label {
   grid-template-columns: 28px minmax(0, 1fr);
   padding: 18px 20px;
 }
+.project-members > header {
+  grid-auto-columns: max-content;
+  grid-auto-flow: column;
+}
 .project-members > header > span:first-child,
 .project-notifications > header > span:first-child,
 .project-consolidation > header > span:first-child,
